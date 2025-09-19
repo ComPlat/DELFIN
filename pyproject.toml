@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "delfin"
+version = "1.0.0"
+description = "Automated ORCA, xTB and CREST workflow for predicting preferred spin states and associated redox potentials."
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.9"
+authors = [{ name = "Maximilian Hartmann" }]
+license = "MIT"
+dependencies = []
+
+[project.scripts]
+delfin = "delfin.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["delfin*"]
