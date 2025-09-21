@@ -160,20 +160,44 @@ given in the manual.
 
 
 
-# Dependencies
- 
-To use DELFIN, you must be authorized to use ORCA 6.1.0. You can download the latest version of ORCA here:  
-https://orcaforum.kofo.mpg.de/app.php/portal  
+# Dependencies and Legal Notice
 
-***ORCA 6.0.1 is free for academic use. Please note the license conditions of ORCA when using it.***  
+**DISCLAIMER: DELFIN is a workflow tool that interfaces with external quantum chemistry software. Users are responsible for obtaining proper licenses for all required software.**
+
+## ORCA Requirements
+To use DELFIN, you must be authorized to use ORCA 6.1.0. You can download the latest version of ORCA here:
+https://orcaforum.kofo.mpg.de/app.php/portal
+
+***IMPORTANT: ORCA 6.1.0 requires a valid license and registration. Academic users can obtain free access, but commercial use requires a commercial license. Please carefully review and comply with ORCA's license terms before use.***
 https://www.faccts.de/
 
-***xTB is free for academic use under the GNU General Public License (GPLv3).***  
+**ORCA License Requirements:**
+- Academic use: Free after registration and license agreement
+- Commercial use: Requires commercial license
+- Users must register and agree to license terms before downloading
+- Redistribution of ORCA is prohibited
+- Each user must obtain their own license
+- DELFIN does not include or distribute ORCA
+
+## xTB Requirements
+***xTB is free for academic use under the GNU General Public License (GPLv3).***
 The code and license information are available here: https://github.com/grimme-lab/xtb
+- Commercial use may require different licensing terms
+- DELFIN does not include or distribute xTB
 
-***CREST is free for academic use under the GNU General Public License (GPLv3).***  
+## CREST Requirements
+***CREST is free for academic use under the GNU General Public License (GPLv3).***
 The code and license information are available here: https://github.com/crest-lab/crest
+- Commercial use may require different licensing terms
+- DELFIN does not include or distribute CREST
 
+**Legal Notice:** DELFIN itself is licensed under LGPL-3.0-or-later, but this does not grant any rights to use ORCA, xTB, or CREST. Users must comply with the individual license terms of each external software package.
+
+## Export Control and Compliance
+Users are responsible for ensuring compliance with applicable export control laws and regulations when using DELFIN and its dependencies, particularly ORCA, in international collaborations or when sharing results across borders.
+
+## Warranty and Liability
+DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim all warranties, express or implied, including but not limited to implied warranties of merchantability and fitness for a particular purpose. In no event shall the authors be liable for any damages arising from the use of this software.
 
 ---
 
@@ -181,20 +205,20 @@ The code and license information are available here: https://github.com/crest-la
 
 If you use DELFIN in a scientific publication, please cite:
 
-Hartmann, M. et al. (2025). *<TITLE OF THE PAPER>*. <JOURNAL>, <VOLUME>(<ISSUE>), <FIRST–LAST>. https://doi.org/<DOI>
+Hartmann, M. et al. (2025). *DELFIN: Automated workflow for predicting preferred spin states and redox potentials using ORCA, xTB and CREST*. TBD, TBD, TBD. https://doi.org/TBD
 
 ### BibTeX
 ```bibtex
-@article{<your-key>,
-  author  = {Hartmann, Maximilian and <Coauthors>},
-  title   = {<TITLE OF THE PAPER>},
-  journal = {<JOURNAL>},
+@article{hartmann2025delfin,
+  author  = {Hartmann, Maximilian and others},
+  title   = {DELFIN: Automated workflow for predicting preferred spin states and redox potentials using ORCA, xTB and CREST},
+  journal = {TBD},
   year    = {2025},
-  volume  = {<VOLUME>},
-  number  = {<ISSUE>},
-  pages   = {<FIRST--LAST>},
-  doi     = {<DOI>},
-  url     = {https://doi.org/<DOI>}
+  volume  = {TBD},
+  number  = {TBD},
+  pages   = {TBD},
+  doi     = {TBD},
+  url     = {https://doi.org/TBD}
 }
 ```
 ## License

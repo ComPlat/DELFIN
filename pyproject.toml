@@ -9,8 +9,16 @@ description = "Automated ORCA, xTB and CREST workflow for predicting preferred s
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.9"
 authors = [{ name = "Maximilian Hartmann" }]
-license = "MIT"
+license = {text = "LGPL-3.0-or-later"}
 dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov",
+    "black",
+    "flake8",
+]
 
 [project.scripts]
 delfin = "delfin.main:main"

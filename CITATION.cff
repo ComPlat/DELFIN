@@ -1,24 +1,29 @@
 cff-version: 1.2.0
 message: "If you use this software in research, please cite the associated paper."
-title: "<PROJECT NAME>"
+title: "DELFIN: Automated ORCA, xTB and CREST workflow for predicting preferred spin states and associated redox potentials"
 type: software
 
 authors:
   - family-names: Hartmann
     given-names: Maximilian
-    orcid: "0000-0000-0000-0000"
+    orcid: "0009-0007-0398-8313"
   # - family-names: <Coauthor Lastname>
   #   given-names: <Coauthor Firstname>
   #   orcid: "<ORCID>"
 
-repository-code: "https://github.com/<USER>/<REPO>"
-url: "https://github.com/<USER>/<REPO>"
+repository-code: "https://github.com/ComPlat/DELFIN"
+url: "https://github.com/ComPlat/DELFIN"
 license: "LGPL-3.0-or-later"
 version: "v1.0.0"
 date-released: "2025-09-05"
-# keywords:
-#   - computational chemistry
-#   - <another keyword>
+keywords:
+  - computational chemistry
+  - density functional theory
+  - redox potentials
+  - spin states
+  - ORCA
+  - xTB
+  - CREST
 
 preferred-citation:
   type: article
