@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software in research, please cite the associated paper."
-title: "DELFIN: Automated ORCA, xTB and CREST workflow for predicting preferred spin states and associated redox potentials"
+title: "DELFIN: Automated prediction of preferred spin states and associated redox potentials"
 type: software
 
 authors:
@@ -32,7 +32,7 @@ preferred-citation:
       given-names: Maximilian
     # - family-names: <Coauthor Lastname>
     #   given-names: <Coauthor Firstname>
-  title: "<TITLE OF THE PAPER>"
+  title: "DELFIN: Automated prediction of preferred spin states and associated redox potentials"
   journal: "<JOURNAL>"
   volume: "<VOLUME>"
   number: "<ISSUE>"

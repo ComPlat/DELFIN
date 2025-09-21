@@ -178,6 +178,9 @@ https://www.faccts.de/
 - Redistribution of ORCA is prohibited
 - Each user must obtain their own license
 - DELFIN does not include or distribute ORCA
+- ORCA is proprietary software owned by the Max Planck Institute for Coal Research
+- End users must comply with ORCA's terms of service and usage restrictions
+- DELFIN authors are not affiliated with or endorsed by the ORCA development team
 
 ## xTB Requirements
 ***xTB is free for academic use under the GNU General Public License (GPLv3).***
@@ -205,13 +208,13 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 
 If you use DELFIN in a scientific publication, please cite:
 
-Hartmann, M. et al. (2025). *DELFIN: Automated workflow for predicting preferred spin states and redox potentials using ORCA, xTB and CREST*. TBD, TBD, TBD. https://doi.org/TBD
+Hartmann, M. et al. (2025). *DELFIN: Automated prediction of preferred spin states and associated redox potentials*. TBD, TBD, TBD. https://doi.org/TBD
 
 ### BibTeX
 ```bibtex
 @article{hartmann2025delfin,
   author  = {Hartmann, Maximilian and others},
-  title   = {DELFIN: Automated workflow for predicting preferred spin states and redox potentials using ORCA, xTB and CREST},
+  title   = {DELFIN: Automated prediction of preferred spin states and associated redox potentials},
   journal = {TBD},
   year    = {2025},
   volume  = {TBD},
