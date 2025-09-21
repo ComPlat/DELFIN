@@ -160,6 +160,14 @@ def _implicit_token(config, solvent):
         return ""
     return f"{mdl}({solvent})" if solvent else mdl
 
+def _build_freq_block(config):
+    """
+    Build %freq block with temperature configuration.
+    Always returns %freq block when called, using temperature from config.
+    """
+    temperature = config.get('temperature', '298.15')
+    return f"%freq\n  Temp {temperature}\nend\n"
+
 def _build_bang_line(config, rel_token, main_basis, aux_jk, implicit, include_freq=False, geom_key="geom_opt"):
     """
     Construct the ORCA '!' line according to new CONTROL keys.
@@ -272,6 +280,11 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
     if additions and additions.strip():
         lines.append(f"{additions.strip()}\n")
 
+    # Add %freq block with temperature if FREQ is enabled (after %pal, before * xyz)
+    if include_freq:
+        freq_block = _build_freq_block(config)
+        lines.append(freq_block)
+
     # geometry
     lines.append(f"* xyz {charge} {multiplicity}\n")
     geom = [ln if ln.endswith("\n") else ln + "\n" for ln in coord_lines]
@@ -333,6 +346,11 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
     lines.append(f"%maxcore {config['maxcore']}\n%pal nprocs {config['PAL']} end\n")
     if additions and additions.strip():
         lines.append(f"{additions.strip()}\n")
+
+    # Add %freq block with temperature if FREQ is enabled (after %pal, before * xyz)
+    if include_freq:
+        freq_block = _build_freq_block(config)
+        lines.append(freq_block)
 
     # geometry
     lines.append(f"* xyz {charge} {multiplicity}\n")
@@ -499,6 +517,11 @@ def read_xyz_and_create_input3(xyz_file_path, output_file_path, charge, multipli
     lines.append(f"%maxcore {config['maxcore']}\n%pal nprocs {config['PAL']} end\n")
     if additions and additions.strip():
         lines.append(f"{additions.strip()}\n")
+
+    # Add %freq block with temperature if FREQ is enabled (after %pal, before * xyz)
+    if include_freq:
+        freq_block = _build_freq_block(config)
+        lines.append(freq_block)
 
     lines.append(f"* xyz {charge} {multiplicity}\n")
     geom = [ln if ln.endswith("\n") else ln + "\n" for ln in xyz_lines]

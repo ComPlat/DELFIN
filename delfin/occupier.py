@@ -239,6 +239,12 @@ def run_OCCUPIER():
         if additions and additions.strip():
             modified_lines.append(f"{additions.strip()}\n")
 
+        # Add %freq block with temperature if FREQ is enabled
+        if freq_flag:
+            from .xyz_io import _build_freq_block
+            freq_block = _build_freq_block(config)
+            modified_lines.append(freq_block)
+
         # Start XYZ
         modified_lines.append(f"* xyz {charge} {multiplicity}\n")
 

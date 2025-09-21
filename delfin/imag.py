@@ -233,6 +233,11 @@ def read_and_modify_xyz_IMAG(input_file_path, output_file_path, charge, multipli
     if str(config.get('print_Loewdin_population_analysis', 'no')).lower() == "yes":
         out.append("%output\nprint[P_ReducedOrbPopMO_L] 1\nend\n")
 
+    # Add %freq block with temperature (IMAG always uses FREQ)
+    from .xyz_io import _build_freq_block
+    freq_block = _build_freq_block(config)
+    out.append(freq_block)
+
     out.append(f"* xyz {charge} {multiplicity}\n")
 
     # Write coordinates + optional NewGTO tags

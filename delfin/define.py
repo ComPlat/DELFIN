@@ -23,6 +23,7 @@ multiplicity_global_opt=
 ------------------------------------
 IMAG=yes
 allow_imaginary_freq=0
+temperature=298.15
 ------------------------------------
 Redox steps:
 calc_initial=yes
