@@ -94,7 +94,11 @@ def main(argv: list[str] | None = None) -> int:
     # ---- Friendly checks for missing CONTROL.txt / input file ----
     # Read CONTROL.txt once and derive all settings from it
     control_file_path = resolve_path(args.control)
-    config = read_control_file(str(control_file_path))
+    try:
+        config = read_control_file(str(control_file_path))
+    except ValueError as exc:
+        logger.error("Invalid CONTROL configuration: %s", exc)
+        return 2
 
     # Validate required files
     normalized_input = _normalize_input_file(config, control_file_path)

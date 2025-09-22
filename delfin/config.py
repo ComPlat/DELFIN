@@ -2,6 +2,8 @@ import ast
 import re
 from typing import Dict, Any, Optional, Union
 
+from delfin.common.control_validator import validate_control_config
+
 from delfin.common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -75,7 +77,8 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
             elif ':' in line:
                 continue
 
-    return config
+    validated = validate_control_config(config)
+    return validated
 
 def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     """Parse OCCUPIER-specific configuration file.
@@ -139,7 +142,8 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
             elif ':' in line:
                 continue
 
-    return config
+    validated = validate_control_config(config)
+    return validated
 
 
 def _coerce_float(val: Any) -> Optional[float]:
