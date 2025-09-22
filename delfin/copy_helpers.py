@@ -65,7 +65,9 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
     return multiplicity, additions, min_fspe_index
 # -------------------------------------------------------------------------------------------------------
 def prepare_occ_folder(folder_name, charge_delta=0):
-    folder = Path(folder_name)
+    cwd = Path.cwd()
+    orig_folder = Path(folder_name)
+    folder = orig_folder if orig_folder.is_absolute() else cwd / orig_folder
     folder.mkdir(parents=True, exist_ok=True)
     os.chdir(folder)
     files_to_copy = ["input.txt", "CONTROL.txt"]
@@ -112,12 +114,14 @@ def prepare_occ_folder(folder_name, charge_delta=0):
         print("CONTROL.txt not found.")
         sys.exit(1)
     run_OCCUPIER()
-    print(f"{folder} finished!")
+    print(f"{folder_name} finished!")
     print(f"")
-    os.chdir(folder.parent)
+    os.chdir(cwd)
 # -------------------------------------------------------------------------------------------------------
 def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=None):
-    folder = Path(folder_name)
+    cwd = Path.cwd()
+    orig_folder = Path(folder_name)
+    folder = orig_folder if orig_folder.is_absolute() else cwd / orig_folder
     folder.mkdir(parents=True, exist_ok=True)
     os.chdir(folder)
     parent_control = Path("..") / "CONTROL.txt"
@@ -136,7 +140,7 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
                 k, v = line.split("=", 1)
                 cfg[k.strip()] = v.strip()
         config = cfg
-    os.chdir(folder.parent)
+    os.chdir(cwd)
     res = read_occupier_file(source_occ_folder, "OCCUPIER.txt", None, None, None, config)
     if not res:
         print(f"read_occupier_file failed for '{source_occ_folder}'. Abort.")
@@ -192,7 +196,7 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
         f.writelines(control_lines)
     print("Updated CONTROL.txt (input_file=input.xyz, charge adjusted).")
     run_OCCUPIER()
-    print(f"{folder} finished!\n")
+    print(f"{folder_name} finished!\n")
     os.chdir(folder.parent)
 # -------------------------------------------------------------------------------------------------------
 def copy_preferred_files_with_names(
