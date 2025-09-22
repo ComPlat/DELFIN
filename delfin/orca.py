@@ -1,25 +1,44 @@
-import platform
-import subprocess
 import logging
+import subprocess
 import sys
+from shutil import which
 from typing import Optional
+
+ORCA_PLOT_INPUT_TEMPLATE = (
+    "1\n"
+    "1\n"
+    "4\n"
+    "100\n"
+    "5\n"
+    "7\n"
+    "2\n"
+    "{index}\n"
+    "10\n"
+    "11\n"
+)
 
 def find_orca_executable() -> Optional[str]:
     """Locate ORCA executable in system PATH.
 
-    Uses platform-appropriate command ('which' on Unix, 'where' on Windows)
-    to find the ORCA executable.
-
     Returns:
         Path to ORCA executable, or None if not found
     """
-    command = "where" if platform.system() == "Windows" else "which"
-    result = subprocess.run([command, "orca"], capture_output=True, text=True)
-    orca_path = result.stdout.strip()
+    orca_path = which("orca")
     if not orca_path:
         logging.error("ORCA executable not found. Please ensure ORCA is installed and in your PATH.")
         return None
     return orca_path
+
+
+def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str) -> bool:
+    """Run ORCA subprocess and capture output. Returns True when successful."""
+    with open(output_log, "w") as output_file:
+        try:
+            subprocess.run([orca_path, input_file_path], check=True, stdout=output_file, stderr=output_file)
+        except subprocess.CalledProcessError as error:
+            logging.error(f"Error running ORCA: {error}")
+            return False
+    return True
 
 def run_orca(input_file_path: str, output_log: str) -> None:
     """Execute ORCA calculation with specified input file.
@@ -34,12 +53,9 @@ def run_orca(input_file_path: str, output_log: str) -> None:
     orca_path = find_orca_executable()
     if not orca_path:
         return
-    with open(output_log, "w") as output_file:
-        try:
-            subprocess.run([orca_path, input_file_path], check=True, stdout=output_file, stderr=output_file)
-            logging.info(f"ORCA run successful for '{input_file_path}'")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Error running ORCA: {e}")
+
+    if _run_orca_subprocess(orca_path, input_file_path, output_log):
+        logging.info(f"ORCA run successful for '{input_file_path}'")
 
 def run_orca_IMAG(input_file_path: str, iteration: int) -> None:
     """Execute ORCA calculation for imaginary frequency workflow.
@@ -52,14 +68,15 @@ def run_orca_IMAG(input_file_path: str, iteration: int) -> None:
         iteration: Iteration number for output file naming
     """
     orca_path = find_orca_executable()
+    if not orca_path:
+        logging.error("Cannot run ORCA IMAG calculation because the ORCA executable was not found in PATH.")
+        sys.exit(1)
+
     output_log = f"output_{iteration}.out"
-    with open(output_log, "w") as output_file:
-        try:
-            subprocess.run([orca_path, input_file_path], check=True, stdout=output_file, stderr=output_file)
-            logging.info(f"ORCA run successful for '{input_file_path}', output saved to '{output_log}'")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Error running ORCA: {e}")
-            sys.exit(1)
+    if _run_orca_subprocess(orca_path, input_file_path, output_log):
+        logging.info(f"ORCA run successful for '{input_file_path}', output saved to '{output_log}'")
+    else:
+        sys.exit(1)
 
 def run_orca_plot(homo_index: int) -> None:
     """Generate molecular orbital plots around HOMO using orca_plot.
@@ -71,10 +88,25 @@ def run_orca_plot(homo_index: int) -> None:
         homo_index: Index of the HOMO orbital
     """
     for index in range(homo_index - 10, homo_index + 11):
-        process = subprocess.Popen(['orca_plot', 'input.gbw', '-i'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        inputs = f'1\n1\n4\n100\n5\n7\n2\n{index}\n10\n11\n'.encode()
-        stdout, stderr = process.communicate(input=inputs)
-        if process.returncode == 0:
+        success, stderr_output = _run_orca_plot_for_index(index)
+        if success:
             logging.info(f"orca_plot ran successfully for index {index}")
         else:
-            logging.error(f"orca_plot encountered an error for index {index}: {stderr.decode()}")
+            logging.error(f"orca_plot encountered an error for index {index}: {stderr_output}")
+
+
+def _run_orca_plot_for_index(index: int) -> tuple[bool, str]:
+    """Run orca_plot for a single orbital index and return success flag and stderr."""
+    process = subprocess.Popen(
+        ["orca_plot", "input.gbw", "-i"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    _, stderr = process.communicate(input=_prepare_orca_plot_input(index))
+    return process.returncode == 0, stderr.decode()
+
+
+def _prepare_orca_plot_input(index: int) -> bytes:
+    """Build the scripted user input for orca_plot."""
+    return ORCA_PLOT_INPUT_TEMPLATE.format(index=index).encode()

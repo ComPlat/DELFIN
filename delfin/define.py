@@ -1,6 +1,6 @@
 # delfin/define.py
 # -*- coding: utf-8 -*-
-import os
+from pathlib import Path
 
 TEMPLATE = """input_file=input.txt
 ------------------------------------
@@ -159,24 +159,20 @@ use yes/no not Yes/No !!!!!!
 # -------------------------------------------------------------------------------------------------------
 def _convert_xyz_to_input_txt(src_xyz: str, dst_txt: str = "input.txt") -> str:
     """Convert an XYZ file to input.txt by dropping the first two lines."""
-    src = os.path.abspath(os.path.expanduser(src_xyz))
-    dst = os.path.abspath(dst_txt)
-    if not os.path.exists(src):
+    src_path = Path(src_xyz).expanduser()
+    dst_path = Path(dst_txt).expanduser()
+
+    if not src_path.exists():
         print(f"XYZ source '{src_xyz}' not found. Creating empty {dst_txt} instead.")
-        with open(dst, "w", encoding="utf-8") as f:
-            pass
+        dst_path.touch(exist_ok=True)
         return dst_txt
 
-    with open(src, "r", encoding="utf-8", errors="ignore") as f:
-        lines = f.readlines()
-
-    # Drop the first two lines if present (atom count + comment)
+    lines = src_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
     content = "".join(lines[2:]) if len(lines) >= 2 else ""
-    with open(dst, "w", encoding="utf-8") as f:
-        f.write(content)
-        if content and not content.endswith("\n"):
-            f.write("\n")
+    if content and not content.endswith("\n"):
+        content += "\n"
 
+    dst_path.write_text(content, encoding="utf-8")
     print(f"Converted '{src_xyz}' → '{dst_txt}' (dropped first two lines).")
     return dst_txt
 # -------------------------------------------------------------------------------------------------------
@@ -193,18 +189,18 @@ def create_control_file(filename: str = "CONTROL.txt",
         target_input = _convert_xyz_to_input_txt(input_file, "input.txt")
     else:
         # Ensure empty input file exists
-        if not os.path.exists(target_input):
-            with open(target_input, "a", encoding="utf-8"):
-                pass
+        target_path = Path(target_input).expanduser()
+        if not target_path.exists():
+            target_path.touch()
             print(f"{target_input} has been created (empty).")
 
-    # CONTROL.txt writing
-    if os.path.exists(filename) and not overwrite:
+    control_path = Path(filename).expanduser()
+
+    if control_path.exists() and not overwrite:
         print(f"{filename} already exists. Use --overwrite to replace it.")
         return
 
     content = TEMPLATE.replace("{INPUT_FILE}", target_input)
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(content)
+    control_path.write_text(content, encoding="utf-8")
     print(f"{filename} has been written (input_file={target_input}).")
 # -------------------------------------------------------------------------------------------------------
