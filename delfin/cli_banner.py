@@ -13,7 +13,8 @@ def print_delfin_banner():
 
     #############################################################
     #                           -***-                           #
-    #                        M. Hartmann                        #
+    #                          ComPlat                          #
+    #           Karlsruhe Institute of Technology (KIT)         #
     #   Automates ORCA 6.1.0, xTB 6.7.1 and CREST 3.0.2 runs    #
     #                       Version 1.0.0                       #
     #                           -***-                           #
