@@ -85,7 +85,11 @@ e.g. `DELFIN.txt`, `OCCUPIER.txt`, and step folders.
 delfin/
   __init__.py
   __main__.py       # enables `python -m delfin`
-  cli.py            # entry point orchestrating the full workflow & CLI flags (--define, --cleanup, ...)
+  cli.py            # main CLI entry point orchestrating the full workflow
+  cli_helpers.py    # CLI argument parsing and helper functions
+  cli_recalc.py     # recalc mode wrapper functions for computational tools
+  cli_banner.py     # banner display and file validation utilities
+  cli_calculations.py # redox potential calculation methods (M1, M2, M3)
   main.py           # optional small loader (may delegate to cli.main)
   define.py         # CONTROL template generator (+ .xyz → input.txt conversion)
   cleanup.py        # delete temporary files
@@ -96,9 +100,14 @@ delfin/
   xyz_io.py         # XYZ/ORCA-input read/write helpers
   xtb_crest.py      # xTB / GOAT / CREST / ALPB solvation workflows
   energies.py       # extractors for energies (FSPE, Gibbs, ZPE, electronic energies)
-  report.py         # writing DELFIN.txt and OCCUPIER.txt
+  parser.py         # parser utilities for ORCA output files
+  report.py         # backward-compatible imports for report generation
   occupier.py       # OCCUPIER workflow (sequence execution + summary)
   copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
+  reporting/        # modular report generation
+    __init__.py     # reporting submodule exports
+    occupier_reports.py  # OCCUPIER-specific report generation functions
+    delfin_reports.py    # DELFIN-specific report generation functions
 ```
 ---
 ## Typical workflow switches (in CONTROL.txt)

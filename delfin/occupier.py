@@ -9,7 +9,7 @@ from .utils import (
     search_transition_metals,
     select_rel_and_aux,
 )
-from .report import generate_summary_report_OCCUPIER
+from .reporting import generate_summary_report_OCCUPIER
 from .orca import run_orca
 
 

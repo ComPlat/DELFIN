@@ -15,9 +15,12 @@ from .xyz_io import (
 )
 from .xtb_crest import XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
 from .energies import find_gibbs_energy, find_ZPE, find_electronic_energy
-from .report import generate_summary_report_DELFIN as generate_summary_report
+from .reporting import generate_summary_report_DELFIN as generate_summary_report
 from .copy_helpers import read_occupier_file, prepare_occ_folder, prepare_occ_folder_2, copy_if_exists
 from .cli_helpers import _avg_or_none, _build_parser
+from .cli_recalc import setup_recalc_mode, patch_modules_for_recalc
+from .cli_banner import print_delfin_banner, validate_required_files, get_file_paths
+from .cli_calculations import calculate_redox_potentials, select_final_potentials
 
 
 
@@ -34,96 +37,17 @@ def main():
         # IMPORTANT: override the global bindings so all call sites use the wrappers
         global run_orca, XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
 
-        _run_orca_real = run_orca
-        _XTB_real = XTB
-        _XTB_GOAT_real = XTB_GOAT
-        _CREST_real = run_crest_workflow
-        _SOLV_real = XTB_SOLVATOR
-
-
-        OK_MARKER = "ORCA TERMINATED NORMALLY"
-
-        def _run_orca_wrapper(inp_file, out_file):
-            need = True
-            if os.path.exists(out_file):
-                try:
-                    with open(out_file, "r", errors="ignore") as f:
-                        need = (OK_MARKER not in f.read())
-                    if not need:
-                        logging.info("[recalc] skipping ORCA; %s appears complete.", out_file)
-                        return None
-                except Exception as e:
-                    logging.debug("[recalc] could not check %s (%s) -> will run", out_file, e)
-            logging.info("[recalc] (re)running ORCA for %s", out_file)
-            return _run_orca_real(inp_file, out_file)
-
-
-        def _xtb_wrapper(multiplicity, charge, config):
-            # Skip if typical XTB artifacts or a marker exist
-            artifacts = ("xtbopt.xyz", "xtb.trj", "xtbopt.log")
-            marker = Path(".delfin_done_xtb")
-            if marker.exists() or any(os.path.exists(a) for a in artifacts):
-                logging.info("[recalc] skipping XTB; artifacts/marker found.")
-                return None
-            res = _XTB_real(multiplicity, charge, config)
-            try:
-                marker.touch()
-            except Exception:
-                pass
-            return res
-
-        def _goat_wrapper(multiplicity, charge, config):
-            artifacts = ("GOAT.txt", "goat.out", "goat.log")
-            marker = Path(".delfin_done_goat")
-            if marker.exists() or any(os.path.exists(a) for a in artifacts):
-                logging.info("[recalc] skipping XTB_GOAT; artifacts/marker found.")
-                return None
-            res = _XTB_GOAT_real(multiplicity, charge, config)
-            try:
-                marker.touch()
-            except Exception:
-                pass
-            return res
-
-        def _crest_wrapper(PAL, solvent, charge, multiplicity):
-            artifacts = ("crest_conformers.xyz", "crest_best.xyz", "crest.energies", "crest.out")
-            marker = Path(".delfin_done_crest")
-            if marker.exists() or any(os.path.exists(a) for a in artifacts):
-                logging.info("[recalc] skipping CREST; artifacts/marker found.")
-                return None
-            res = _CREST_real(PAL, solvent, charge, multiplicity)
-            try:
-                marker.touch()
-            except Exception:
-                pass
-            return res
-
-        def _solv_wrapper(input_path, multiplicity, charge, solvent, n_solv, config):
-            # If your implementation produces a specific, stable output, prefer checking for it.
-            marker = Path(".delfin_done_xtb_solvator")
-            if marker.exists():
-                logging.info("[recalc] skipping XTB_SOLVATOR; marker found.")
-                return None
-            res = _SOLV_real(input_path, multiplicity, charge, solvent, n_solv, config)
-            try:
-                marker.touch()
-            except Exception:
-                pass
-            return res
+        wrappers, reals = setup_recalc_mode()
 
         # Swap in wrappers in THIS module
-        run_orca = _run_orca_wrapper
-        XTB = _xtb_wrapper
-        XTB_GOAT = _goat_wrapper
-        run_crest_workflow = _crest_wrapper
-        XTB_SOLVATOR = _solv_wrapper
+        run_orca = wrappers['run_orca']
+        XTB = wrappers['XTB']
+        XTB_GOAT = wrappers['XTB_GOAT']
+        run_crest_workflow = wrappers['run_crest_workflow']
+        XTB_SOLVATOR = wrappers['XTB_SOLVATOR']
 
-        # --- CRUCIAL: also patch the modules that captured their own references ---
-        from . import orca as _orca_mod
-        _orca_mod.run_orca = _run_orca_wrapper
-
-        from . import occupier as _occupier_mod
-        _occupier_mod.run_orca = _run_orca_wrapper
+        # Patch other modules that captured their own references
+        patch_modules_for_recalc(wrappers)
 
 
     # Only define template and exit
@@ -141,49 +65,19 @@ def main():
 
 
     # --------------------- From here: normal pipeline run with banner --------------------
-    print("""
-                          ******************
-                          *     DELFIN     *
-                          ******************
-
-    #############################################################
-    #                           -***-                           #
-    #                        M. Hartmann                        #
-    #   Automates ORCA 6.1.0, xTB 6.7.1 and CREST 3.0.2 runs    #
-    #                       Version 1.0.0                       #
-    #                           -***-                           #
-    #############################################################
-          
-With DELFIN, it is possible to automatically identify preferred electron configurations of any hypothetical 
-or known system, track the changes in orbital occupations upon reduction and oxidation, calculate 
-redox potentials, and, for closed-shell species, calculate E_00 energies and excited-state redox potentials.
-DELFIN does not address the fundamental question of whether a hypothetical system is chemically viable or 
-synthetically accessible.
-
-To use DELFIN, install ORCA 6.1.0 and add it to your PATH. CREST 3.0.2 is optional.
-
-ORCA 6.1.0 is available free of charge for academic use.
-CREST 3.0 is released under the GNU General Public License (GPL).
-""")
+    print_delfin_banner()
 
     # ---- Friendly checks for missing CONTROL.txt / input file ----
-    control_file_path = os.path.join(os.getcwd(), "CONTROL.txt")
-    if not os.path.exists(control_file_path):
-        print("CONTROL.txt was not found in the current directory.")
-        print("Tip: run `delfin --define` to generate a template, or see `delfin --help` for usage.")
-        return 2
-
     # Read CONTROL.txt once and derive all settings from it
+    control_file_path = os.path.join(os.getcwd(), "CONTROL.txt")
     config = read_control_file(control_file_path)
-    E_ref = get_E_ref(config)
 
-    # Default to input.txt if not set
-    input_file = (config.get('input_file') or 'input.txt').strip() or 'input.txt'
-    if not os.path.exists(input_file):
-        print(f"Input file '{input_file}' was not found.")
-        print("Tip: run `delfin --define=your.xyz` to convert an XYZ into input.txt, "
-              "or create the file manually and update CONTROL.txt (input_file=...).")
-        return 2 
+    # Validate required files
+    success, error_code, input_file = validate_required_files(config)
+    if not success:
+        return error_code
+
+    E_ref = get_E_ref(config) 
 
     NAME = (config.get('NAME') or '').strip()
 
