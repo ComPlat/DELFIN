@@ -101,7 +101,6 @@ delfin/
   xtb_crest.py      # xTB / GOAT / CREST / ALPB solvation workflows
   energies.py       # extractors for energies (FSPE, Gibbs, ZPE, electronic energies)
   parser.py         # parser utilities for ORCA output files
-  report.py         # backward-compatible imports for report generation
   occupier.py       # OCCUPIER workflow (sequence execution + summary)
   copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
   reporting/        # modular report generation
