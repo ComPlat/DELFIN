@@ -23,7 +23,6 @@ multiplicity_global_opt=
 ------------------------------------
 IMAG=yes
 allow_imaginary_freq=0
-temperature=298.15
 ------------------------------------
 Redox steps:
 calc_initial=yes
@@ -81,6 +80,7 @@ first_coordination_sphere_metal_basisset=no
 first_coordination_sphere_scale=1.20
 geom_opt=OPT
 initial_guess=PModel
+temperature=298.15
 ------------------------------------
 Reference value:
 E_ref=

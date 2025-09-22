@@ -196,9 +196,6 @@ The code and license information are available here: https://github.com/crest-la
 
 **Legal Notice:** DELFIN itself is licensed under LGPL-3.0-or-later, but this does not grant any rights to use ORCA, xTB, or CREST. Users must comply with the individual license terms of each external software package.
 
-## Export Control and Compliance
-Users are responsible for ensuring compliance with applicable export control laws and regulations when using DELFIN and its dependencies, particularly ORCA, in international collaborations or when sharing results across borders.
-
 ## Warranty and Liability
 DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim all warranties, express or implied, including but not limited to implied warranties of merchantability and fitness for a particular purpose. In no event shall the authors be liable for any damages arising from the use of this software.
 
