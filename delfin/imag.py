@@ -1,4 +1,5 @@
 import os, re, sys, shutil, logging, subprocess, math
+from pathlib import Path
 
 from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks
 
@@ -92,11 +93,12 @@ def _build_bang_line_IMAG(config, rel_token, main_basisset, aux_jk, implicit):
     tokens.append(initg)
     return " ".join(t for t in tokens if t).replace("  ", " ").strip()
 
-def _has_ok_marker(path: str) -> bool:
-    if not os.path.exists(path):
+def _has_ok_marker(path: str | Path) -> bool:
+    candidate = Path(path)
+    if not candidate.exists():
         return False
     try:
-        with open(path, "r", errors="ignore") as f:
+        with candidate.open("r", errors="ignore") as f:
             return OK_MARKER in f.read()
     except Exception:
         return False
@@ -118,22 +120,25 @@ def search_imaginary_mode2(log_file):
         logging.error(f"Log file '{log_file}' not found.")
         sys.exit(1)
 
-def _imag_resolved(out_path: str, threshold: float) -> bool:
-    if not os.path.exists(out_path):
+def _imag_resolved(out_path: str | Path, threshold: float) -> bool:
+    candidate = Path(out_path)
+    if not candidate.exists():
         return False
-    freq = search_imaginary_mode2(out_path)
+    freq = search_imaginary_mode2(str(candidate))
     return (freq is None) or (freq >= threshold)
 
-def _find_last_ok_iteration(folder: str):
+def _find_last_ok_iteration(folder: str | Path):
     best_i, best_path = None, None
-    for name in os.listdir(folder):
-        m = re.fullmatch(r"output_(\d+)\.out", name)
+    folder_path = Path(folder)
+    for entry in folder_path.iterdir():
+        if not entry.is_file():
+            continue
+        m = re.fullmatch(r"output_(\d+)\.out", entry.name)
         if not m:
             continue
         i = int(m.group(1))
-        p = os.path.join(folder, name)
-        if _has_ok_marker(p) and (best_i is None or i > best_i):
-            best_i, best_path = i, p
+        if _has_ok_marker(entry) and (best_i is None or i > best_i):
+            best_i, best_path = i, entry
     return best_i, best_path
 
 def run_plotvib(iteration):
@@ -141,11 +146,11 @@ def run_plotvib(iteration):
         plotvib_cmd = f"orca_pltvib input_{iteration}.hess 6"
         subprocess.run(plotvib_cmd, shell=True, check=True)
         logging.info(f"plotvib run successful for 'input_{iteration}.hess'")
-        new_structure_file = f"input_{iteration}.hess.v006.xyz"
-        if not os.path.exists(new_structure_file):
+        new_structure_file = Path(f"input_{iteration}.hess.v006.xyz")
+        if not new_structure_file.exists():
             logging.error(f"Expected structure file '{new_structure_file}' not found after plotvib.")
             sys.exit(1)
-        return new_structure_file
+        return str(new_structure_file)
     except subprocess.CalledProcessError as e:
         logging.error(f"Error running plotvib: {e}")
         sys.exit(1)
@@ -155,11 +160,11 @@ def run_plotvib0(input_file):
         plotvib_cmd = f"orca_pltvib {input_file}.hess 6"
         subprocess.run(plotvib_cmd, shell=True, check=True)
         logging.info(f"plotvib run successful for '{input_file}.hess'")
-        new_structure_file = f"{input_file}.hess.v006.xyz"
-        if not os.path.exists(new_structure_file):
+        new_structure_file = Path(f"{input_file}.hess.v006.xyz")
+        if not new_structure_file.exists():
             logging.error(f"Expected structure file '{new_structure_file}' not found after plotvib.")
             sys.exit(1)
-        return new_structure_file
+        return str(new_structure_file)
     except subprocess.CalledProcessError as e:
         logging.error(f"Error running plotvib: {e}")
         sys.exit(1)
@@ -322,19 +327,20 @@ def run_IMAG(input_file, hess_file, charge, multiplicity, solvent, metals, confi
         logging.info(f"Imag within tolerance (freq={first_freq}, thr={threshold}) -> no IMAG.")
         return
 
-    imag_folder = f"{hess_file}_IMAG"
-    if recalc and os.path.isdir(imag_folder):
+    imag_folder = Path(f"{hess_file}_IMAG")
+    if recalc and imag_folder.is_dir():
         last_i, last_out = _find_last_ok_iteration(imag_folder)
         if last_i is not None and last_out and _imag_resolved(last_out, threshold):
             logging.info(f"[recalc] IMAG complete at iter {last_i}; skip.")
-            final_log = last_out
-            final_xyz = os.path.join(imag_folder, f"input_{last_i}.xyz")
-            parent = os.path.dirname(os.path.abspath(imag_folder))
-            dest_log = os.path.join(parent, input_file)
-            dest_xyz = os.path.join(parent, f"{hess_file}.xyz")
+            final_log = Path(last_out)
+            final_xyz = imag_folder / f"input_{last_i}.xyz"
+            parent = imag_folder.resolve().parent
+            input_path = Path(input_file)
+            dest_log = input_path if input_path.is_absolute() else parent / input_path
+            dest_xyz = parent / f"{hess_file}.xyz"
             try: shutil.copy2(final_log, dest_log)
             except Exception as e: logging.warning(f"copy log: {e}")
-            if os.path.exists(final_xyz):
+            if final_xyz.exists():
                 try: shutil.copy2(final_xyz, dest_xyz)
                 except Exception as e: logging.warning(f"copy xyz: {e}")
             return
@@ -345,15 +351,15 @@ def run_IMAG(input_file, hess_file, charge, multiplicity, solvent, metals, confi
     run_plotvib0(hess_file)
     extract_structure0(hess_file)
     seed_xyz = f"{hess_file}_structure_5.xyz"
-    os.makedirs(imag_folder, exist_ok=True)
+    imag_folder.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.copy2(seed_xyz, os.path.join(imag_folder, seed_xyz))
-        logging.info(f"Seed structure copied to {imag_folder}/{seed_xyz}")
+        shutil.copy2(seed_xyz, imag_folder / seed_xyz)
+        logging.info(f"Seed structure copied to {imag_folder / seed_xyz}")
     except Exception as e:
         logging.error(f"Seed copy failed: {e}")
         return
 
-    cwd = os.getcwd()
+    cwd = Path.cwd()
     os.chdir(imag_folder)
     iteration = 1
     try:
@@ -361,11 +367,11 @@ def run_IMAG(input_file, hess_file, charge, multiplicity, solvent, metals, confi
             current_input_file = seed_xyz if iteration == 1 else f"input_{iteration - 1}_structure_5.xyz"
             output_file = f"input_{iteration}.inp"
             if iteration == 1:
-                candidates = [os.path.join("..", f"{hess_file}.gbw"), os.path.join("..", "input.gbw")]
-                gbw_path = next((c for c in candidates if os.path.exists(c)), None)
+                candidates = [Path("..") / f"{hess_file}.gbw", Path("..") / "input.gbw"]
+                gbw_path = next((c for c in candidates if c.exists()), None)
             else:
                 gbw_prev = f"input_{iteration - 1}.gbw"
-                gbw_path = gbw_prev if os.path.exists(gbw_prev) else None
+                gbw_path = Path(gbw_prev) if Path(gbw_prev).exists() else None
             parts = []
             if gbw_path: parts.append(f'%moinp "{gbw_path}"')
             if additions and additions.strip(): parts.append(additions.strip())
@@ -391,17 +397,18 @@ def run_IMAG(input_file, hess_file, charge, multiplicity, solvent, metals, confi
     finally:
         os.chdir(cwd)
 
-    final_log_file = os.path.join(imag_folder, f"output_{iteration}.out")
-    final_xyz_file = os.path.join(imag_folder, f"input_{iteration}.xyz")
-    destination_folder = os.path.abspath(".")
-    destination_log = os.path.join(destination_folder, input_file)
-    destination_structure = os.path.join(destination_folder, f"{hess_file}.xyz")
-    if os.path.exists(final_log_file):
-        try: shutil.copy2(final_log_file, destination_log); print(f"Log file 'output_{iteration}.out' copied back as '{input_file}'.")
+    final_log_file = imag_folder / f"output_{iteration}.out"
+    final_xyz_file = imag_folder / f"input_{iteration}.xyz"
+    destination_folder = Path.cwd()
+    input_path = Path(input_file)
+    destination_log = input_path if input_path.is_absolute() else destination_folder / input_path
+    destination_structure = destination_folder / f"{hess_file}.xyz"
+    if final_log_file.exists():
+        try: shutil.copy2(final_log_file, destination_log); print(f"Log file 'output_{iteration}.out' copied back as '{destination_log.name}'.")
         except Exception as e: logging.warning(f"copy back log: {e}")
     else:
         print(f"ERROR: Log file 'output_{iteration}.out' not found.")
-    if os.path.exists(final_xyz_file):
+    if final_xyz_file.exists():
         try: shutil.copy2(final_xyz_file, destination_structure); print(f"Structure file 'input_{iteration}.xyz' copied back as '{hess_file}.xyz'.")
         except Exception as e: logging.warning(f"copy back xyz: {e}")
     else:
