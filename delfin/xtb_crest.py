@@ -129,7 +129,7 @@ def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="input.txt
     crest_out = work / "CREST.out"
     crest_best = work / "crest_best.xyz"
 
-    # recalc-skip: genügt uns ein fertiges Ergebnis?
+    # recalc skip: reuse existing result if it is already present
     if _recalc_on() and crest_best.exists() and crest_out.exists():
         logging.info("[recalc] skipping CREST; crest_best.xyz already present.")
     else:

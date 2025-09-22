@@ -176,10 +176,10 @@ def read_and_modify_xyz_IMAG(input_file_path, output_file_path, charge, multipli
                              solvent, metals, config, main_basisset, metal_basisset, additions):
     """
     Build IMAG iteration input:
-      - policy-basierte '!' Zeile mit ri_jkx / aux_jk und ZORA/X2C/DKH falls 4d/5d,
-      - Haupt-/Metall-Basissätze via utils.set_main_basisset(found_metals, config),
-      - per-Atom NewGTO (Metall + optionale 1. Sphäre),
-      - FREQ-Job (wie im Original), optionale Print-Blöcke.
+      - policy-based "!" line with ri_jkx / aux_jk and ZORA/X2C/DKH enabled for 4d/5d metals
+      - main/metal basis sets via ``utils.set_main_basisset`` (arguments act as overrides)
+      - per-atom ``NewGTO`` tags for metals plus optional first coordination sphere entries
+      - FREQ job configuration and optional %output blocks just like the original workflow
     """
     try:
         with open(input_file_path, 'r') as file:

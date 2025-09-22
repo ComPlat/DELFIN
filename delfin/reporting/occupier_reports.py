@@ -16,33 +16,34 @@ from ..parser import extract_last_uhf_deviation, extract_last_J3
 # Functions will be moved here from report.py
 
 def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, solvent, config, main_basisset, sequence):
-    """
-    Auswahlprinzip (überarbeitet):
-      1) Primär nach Energie; bei Toleranzmodus alle Kandidaten innerhalb epsilon.
-      2) Wenn nur 1 Kandidat im Energie-Fenster:
-         - Clean-Override: ziehe "sauberere" (qualitativ deutlich bessere) Kandidaten in einem
-           kleinen Hartree-Fenster um das Minimum zusätzlich in die Kandidatenliste.
-      3) Tie-Breaks:
-         - Bevorzuge kleinere Spin-Kontamination ("Qualität"):
-             non-BS -> effektive Dev; BS -> |Dev − erwartete BS-Paarzahl|.
-         - Kein Bias nach m/BS, nur nach Sauberkeit.
-      4) Clean-Bias vor Energy-Bias:
-         - Wenn Energien nahe, nimm deutlich "saubereren".
-         - Wenn Qualität nahe, nimm energieärmeren.
+    """Generate the OCCUPIER summary report using the revised selection logic.
 
-    Neue CONTROL-Schalter (alles optional, sinnvolle Defaults):
-      clean_override_window_h   (float, default 0.003): E-Fenster, um sauberere Kandidaten nachzuziehen, wenn nur 1 Energiesieger.
-      clean_quality_improvement (float, default 0.05): Mindestverbesserung der Qualitätsmetrik für Nachzug.
-      clean_quality_good        (float, default 0.05): Absolut "gut"-Schwelle der Qualitätsmetrik.
-      clean_bias_window_h       (float, default 0.003): Energienähe für Clean-Bias.
-      quality_bias_window       (float, default 0.05): Mindest-Qualitätsdifferenz, damit Clean-Bias greift.
+    Selection logic (revised):
+      1) Energy is the primary criterion; in tolerance mode include all candidates within epsilon.
+      2) If there is only a single energy winner, apply the *clean override* and add significantly
+         "cleaner" candidates (better spin quality) within a small Hartree window around the minimum.
+      3) Tie breaks:
+         • Prefer lower spin contamination ("quality"): non-BS uses the effective deviation,
+           BS uses |Dev − expected BS pair count|.
+         • No explicit bias on multiplicity/BS beyond quality.
+      4) Apply the *clean bias* before the energy bias:
+         • If energies are comparable, choose the cleaner solution.
+         • If quality is comparable, choose the lower-energy solution.
 
-    Zusätzlich konfigurierbar gemacht:
-      dev_similarity            (float, default 0.15): Ähnlichkeitsschwelle bei Dev-Vergleichen.
-      bs_override_window_h      (float, default 0.002): AF-Override Energie-Fenster.
+    Additional CONTROL switches (optional, meaningful defaults):
+      clean_override_window_h   (float, default 0.003): energy window for pulling in cleaner candidates
+                                  when there is only one energy winner.
+      clean_quality_improvement (float, default 0.05): minimum quality improvement required for the override.
+      clean_quality_good        (float, default 0.05): absolute threshold regarded as "good" quality.
+      clean_bias_window_h       (float, default 0.003): energy proximity used by the clean bias.
+      quality_bias_window       (float, default 0.05): minimum quality difference for the clean bias to trigger.
 
-    Bestehende Schalter, die weiter wirken:
-      occupier_selection=tolerance|truncation|rounding
+    Further configurable knobs:
+      dev_similarity            (float, default 0.15): similarity threshold when comparing deviations.
+      bs_override_window_h      (float, default 0.002): AF override energy window.
+
+    Existing switches that continue to apply:
+      occupier_selection = tolerance | truncation | rounding
       occupier_precision
       occupier_epsilon
       energy_bias_window_h
@@ -213,7 +214,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
     except (TypeError, ValueError):
         epsilon = 10.0**(-prec)
 
-    # optional dev_max (file-local, nicht CONTROL) – filtert stark verschmutzte
+    # optional dev_max (file-local, not CONTROL-driven) – filters heavily contaminated entries early
     try:
         dev_max = float(config.get('dev_max')) if config.get('dev_max') is not None else None
     except (TypeError, ValueError):
@@ -226,14 +227,14 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
     DEV_HIGH       = 0.50
     DEV_MATCH_WINDOW = 0.30
 
-    # AF-Override (E-Fenster für BS-Nachzug bei hoher Kontamination)
+    # AF override (energy window to pull BS candidates back in when contamination is high)
     EPS_AF = float(config.get('bs_override_window_h', 0.002))
 
     # Energy-bias (wie bisher)
     E_BIAS_H = float(config.get('energy_bias_window_h', 0.002))
     MIS_BIAS = float(config.get('mismatch_bias_window', 0.05))
 
-    # NEU: Clean-Preference Knöpfe
+    # Clean-preference knobs
     CLEAN_OVERRIDE_H = float(config.get('clean_override_window_h', 0.003))
     CLEAN_Q_IMPROVE  = float(config.get('clean_quality_improvement', 0.05))
     CLEAN_Q_GOOD     = float(config.get('clean_quality_good', 0.05))
@@ -328,7 +329,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
         eps_eff = epsilon + 1e-12
         cands = [(i, f) for i, f in valid if (f - min_raw) <= eps_eff]
 
-    # --- AF-override (unverändert, aber Parameter konfigurierbar) --------------
+    # --- AF override (unchanged logic, but parameters configurable) --------------
     if len(cands) == 1:
         best_idx, _best_val = cands[0]
         if effective_dev(best_idx) >= DEV_HIGH:
@@ -342,7 +343,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
             if extra:
                 cands = cands + extra  # unify flow below
 
-    # --- CLEAN-override: sauberere in Energie-Nähe nachziehen ------------------
+    # --- Clean override: pull in cleaner candidates that are close in energy ----
     if len(cands) == 1:
         best_idx, _ = cands[0]
         q_best = (abs(effective_dev(best_idx) - bs_pair_count(best_idx))
@@ -393,10 +394,10 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
         min_dev_nb = _min_eff_dev(nb_cands)
 
         if bs_cands and nb_cands:
-            # A) non-BS klar sauberer und nicht hoch → nimm best non-BS
+            # A) non-BS clearly cleaner and not high-contamination → pick best non-BS candidate
             if (min_dev_nb + DEV_GOOD_MARGIN < min_dev_bs) and (min_dev_nb < DEV_HIGH):
                 pick = min(nb_cands, key=lambda p: score_nb(p[0]))
-            # B) ähnlich & beide hoch → best BS nach mismatch
+            # B) similar in quality and both high → pick the BS candidate with the better mismatch score
             elif (abs(min_dev_nb - min_dev_bs) <= DEV_SIMILARITY) and (min_dev_nb > DEV_HIGH) and (min_dev_bs > DEV_HIGH):
                 pick = min(bs_cands, key=lambda p: score_bs(p[0]))
             # C) Fallback → kombiniere, bevorzuge sauberer (non-BS first), dann Dev, dann Index
@@ -431,7 +432,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
             if energy_close and (pick_Q - Qj) >= QUAL_BIAS_WIN:
                 pick_i, pick_E, pick_Q = j, Ej, Qj
 
-        # 2) Energy-Bias (nur wenn Qualitäten quasi gleich)
+        # 2) Energy bias (only when quality is practically identical)
         for j, _ in cands:
             if j == pick_i:
                 continue

@@ -132,7 +132,7 @@ delfin/
 ## Cluster & Workflow Integration
 
 * **Scratch directory:** set `DELFIN_SCRATCH=/path/to/scratch` before launching jobs. Temporary files, markers, and runtime artefacts are written there (directories are created automatically).
-* **Schema validation:** `delfin` prüft `CONTROL.txt` beim Einlesen (fehlende Pflichtfelder, falsche Typen, inkonsistente Sequenzen) und bricht mit einer verständlichen Fehlermeldung ab, falls etwas nicht passt.
+* **Schema validation:** `delfin` validates `CONTROL.txt` on load (missing required keys, wrong types, inconsistent sequences) and aborts with a clear error message if something is off.
 * **Logging configuration:** call `delfin.common.logging.configure_logging(level, fmt, stream)` in custom drivers to fit site policies. The CLI configures logging lazily if no handlers exist.
 * **Programmatic API:** use `delfin.api.run(control_file="CONTROL.txt")` for notebooks, workflow engines, or SLURM batch scripts. Add `cleanup=False` to preserve intermediates (`--no-cleanup`). Additional CLI flags can be provided through the `extra_args` parameter.
 * **Alternate CONTROL locations:** supply `--control path/to/CONTROL.txt` (or the `control_file` argument in `delfin.api.run`) to stage input files outside the working directory.
