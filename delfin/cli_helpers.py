@@ -28,6 +28,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "  • If you pass a non-.xyz name (e.g. --define=mycoords.txt), an empty file with that name\n"
         "    is created and referenced in CONTROL.txt.\n"
         "  • If you omit a value (just --define), 'input.txt' is created by default.\n\n"
+        "Notes on --control:\n"
+        "  • Use --control=/path/to/CONTROL.txt to run with a CONTROL file outside the current directory.\n"
+        "  • This is particularly useful for staged HPC jobs or batch workflows.\n\n"
+        "Notes on --no-cleanup:\n"
+        "  • Skips removal of intermediate files at the end of a run (they reside in DELFIN_SCRATCH when set).\n"
+        "  • Handy when debugging or inspecting intermediates after automated runs.\n\n"
         "Notes on --recalc:\n"
         "  • Only (re)runs external jobs whose output (.out) files are missing or appear incomplete.\n"
         "  • Existing results are preserved; parsing/aggregation is redone from what is on disk.\n"
@@ -95,4 +101,3 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only (re)run external jobs whose .out files are missing or incomplete."
     )
     return p
-
