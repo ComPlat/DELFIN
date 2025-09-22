@@ -26,9 +26,17 @@ _ELEM_FROM_TOKEN = re.compile(r'^([A-Za-z]{1,2})(?![A-Za-z])')
 # Metal detection
 # ------------------------------------------------------------------------------------
 def search_transition_metals(inputfile: str) -> List[str]:
-    """
-    Return a list of unique transition-metal symbols present in a coordinate-like file.
-    Tolerant to formats (plain XYZ, ORCA '* xyz' block, raw lines).
+    """Detect transition metals in molecular geometry file.
+
+    Scans coordinate file for transition metal elements (Sc-Cn)
+    and returns unique symbols found. Tolerant to various formats
+    including XYZ files and ORCA input blocks.
+
+    Args:
+        inputfile: Path to coordinate file (XYZ, ORCA input, etc.)
+
+    Returns:
+        List of unique transition metal symbols (e.g., ['Fe', 'Co'])
     """
     try:
         with open(inputfile, 'r', errors="ignore") as f:
@@ -59,12 +67,17 @@ def search_transition_metals(inputfile: str) -> List[str]:
 
 
 def classify_tm_presence(found_metals: List[str]) -> str:
-    """
-    Classify the TM set:
-      - 'none'  : no TMs
-      - '3d'    : only 3d TMs present (subset of _TM_D3)
-      - '4d5d'  : only 4d/5d TMs present (subset of _TM_D45)
-      - 'mixed' : both 3d and 4d/5d present
+    """Classify transition metal composition for computational policy.
+
+    Determines computational approach based on d-orbital period:
+    - 3d metals: Sc-Zn (typically no relativistic effects needed)
+    - 4d/5d metals: Y-Cd, Hf-Hg (require relativistic corrections)
+
+    Args:
+        found_metals: List of transition metal symbols
+
+    Returns:
+        Classification: 'none', '3d', '4d5d', or 'mixed'
     """
     if not found_metals:
         return 'none'
@@ -82,29 +95,50 @@ def classify_tm_presence(found_metals: List[str]) -> str:
 # d3 metals → non-rel; any 4d/5d (or mixed) → relativistic
 # ------------------------------------------------------------------------------------
 def _rel_method_token(config: Dict[str, Any]) -> str:
-    """
-    Map CONTROL 'relativity' to the ORCA method token (printed on the '!' line).
-    Supports: none|zora|x2c|dkh|dkh2. Returns '' if none/unknown.
+    """Convert relativity setting to ORCA method keyword.
+
+    Maps configuration relativity option to appropriate ORCA token
+    for the method line (!-line).
+
+    Args:
+        config: Configuration dictionary with 'relativity' key
+
+    Returns:
+        ORCA relativity token ('ZORA', 'X2C', 'DKH', or '')
     """
     rel = str(config.get("relativity", "none")).strip().lower()
     return {"zora": "ZORA", "x2c": "X2C", "dkh": "DKH", "dkh2": "DKH"}.get(rel, "")
 
 
 def _should_use_rel(found_metals: List[str]) -> bool:
-    """
-    Relativity if classification is '4d5d' or 'mixed'.
-    (Uses _TM_D3 actively via classify_tm_presence to satisfy policy.)
+    """Determine if relativistic corrections are needed.
+
+    Policy: Apply relativistic methods for 4d/5d metals or mixed systems.
+    Pure 3d metal systems use non-relativistic methods.
+
+    Args:
+        found_metals: List of transition metal symbols
+
+    Returns:
+        True if relativistic corrections should be applied
     """
     cls = classify_tm_presence(found_metals)
     return cls in ('4d5d', 'mixed')
 
 
 def select_rel_and_aux(found_metals: List[str], config: Dict[str, Any]) -> Tuple[str, str, bool]:
-    """
-    Decide relativity token and aux-JK set following the policy:
-      - only 3d → non-rel ⇒ rel_token='', aux=aux_jk
-      - any 4d/5d (or mixed) → rel ⇒ rel_token from CONTROL, aux=aux_jk_rel
-    Returns (rel_token, aux_jk_value, use_rel_bool).
+    """Select relativity method and auxiliary basis sets based on metal composition.
+
+    Implements intelligent basis set policy:
+    - 3d metals only: non-relativistic with standard auxiliary sets
+    - 4d/5d metals: relativistic methods with appropriate auxiliary sets
+
+    Args:
+        found_metals: List of transition metal symbols found
+        config: Configuration dictionary with basis set settings
+
+    Returns:
+        Tuple of (relativity_token, auxiliary_basis, use_relativistic_flag)
     """
     if _should_use_rel(found_metals):
         return _rel_method_token(config), str(config.get("aux_jk_rel", "")).strip(), True
@@ -112,12 +146,19 @@ def select_rel_and_aux(found_metals: List[str], config: Dict[str, Any]) -> Tuple
 
 
 def set_main_basisset(found_metals: List[str], config: Dict[str, Any]) -> Tuple[str, Optional[str]]:
-    """
-    Choose orbital bases for the '!' line and the metal override (inline NewGTO):
-      - any 4d/5d (or mixed) → use main_basisset_rel / metal_basisset_rel
-      - only 3d or none      → use main_basisset / metal_basisset
-    There is no 'basisset_org' fallback anymore.
-    Returns (main_basis, metal_basis or None). If no TM is present → metal_basis=None.
+    """Select appropriate basis sets based on transition metal composition.
+
+    Implements basis set selection policy:
+    - 3d metals: standard basis sets (def2-SVP family)
+    - 4d/5d metals: relativistic basis sets (ZORA-def2-SVP family)
+    - No metals: main basis only, no per-atom overrides
+
+    Args:
+        found_metals: List of transition metal symbols detected
+        config: Configuration with basis set preferences
+
+    Returns:
+        Tuple of (main_basisset, metal_basisset_or_None)
     """
     use_rel = _should_use_rel(found_metals)
     if use_rel:
@@ -190,11 +231,17 @@ def _looks_like_xyz(lines: List[str]) -> bool:
 
 
 def calculate_total_electrons_txt(control_file_path: str) -> Optional[Tuple[int, int]]:
-    """
-    Read the geometry file referenced by CONTROL ('input_file=...') if present,
-    otherwise 'input.txt' next to CONTROL. Count total electrons by summing
-    atomic numbers of element tokens in the coordinate block.
-    Returns (total_electrons, guess_multiplicity_1_or_2), or None on error.
+    """Calculate total electron count and suggest spin multiplicity.
+
+    Reads molecular geometry from CONTROL-referenced file and sums
+    atomic numbers to determine total electron count. Suggests
+    initial spin multiplicity based on even/odd electron number.
+
+    Args:
+        control_file_path: Path to CONTROL.txt file
+
+    Returns:
+        Tuple of (total_electrons, suggested_multiplicity) or None on error
     """
     input_file_path = _parse_control_for_input_file(control_file_path)
     if not os.path.exists(input_file_path):

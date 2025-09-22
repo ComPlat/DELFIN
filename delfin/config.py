@@ -5,6 +5,20 @@ import re
 from typing import Dict, Any, Optional, Union
 
 def read_control_file(file_path: str) -> Dict[str, Any]:
+    """Parse CONTROL.txt file and return configuration dictionary.
+
+    Supports:
+    - Key=value pairs with type inference
+    - Multi-line lists in [...] format
+    - Comma-separated values converted to lists
+    - Comments starting with # or --- or ***
+
+    Args:
+        file_path: Path to CONTROL.txt file
+
+    Returns:
+        Dictionary containing parsed configuration parameters
+    """
     config = {}
     multi_key = None
     multi_val = ""
@@ -62,6 +76,16 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     return config
 
 def OCCUPIER_parser(path: str) -> Dict[str, Any]:
+    """Parse OCCUPIER-specific configuration file.
+
+    Similar to read_control_file but with specialized handling for OCCUPIER workflow.
+
+    Args:
+        path: Path to configuration file
+
+    Returns:
+        Dictionary containing parsed OCCUPIER configuration
+    """
     config = {}
     multi_key = None
     multi_val = ""
@@ -117,6 +141,20 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
 
 
 def _coerce_float(val: Any) -> Optional[float]:
+    """Convert various types to float with robust error handling.
+
+    Handles:
+    - Integers and floats
+    - String representations (including comma as decimal separator)
+    - Boolean values (returns None)
+    - Infinity and NaN checks
+
+    Args:
+        val: Value to convert to float
+
+    Returns:
+        Float value or None if conversion fails
+    """
     if val is None:
         return None
     if isinstance(val, bool):
@@ -141,6 +179,17 @@ def _coerce_float(val: Any) -> Optional[float]:
 
 
 def get_E_ref(config: Dict[str, Any]) -> float:
+    """Get reference electrode potential for redox calculations.
+
+    Returns user-specified E_ref if available, otherwise looks up
+    solvent-specific reference potentials vs. SHE.
+
+    Args:
+        config: Configuration dictionary containing 'E_ref' and 'solvent'
+
+    Returns:
+        Reference electrode potential in V vs. SHE (default: 4.345 V)
+    """
     e_ref = _coerce_float(config.get('E_ref', None))
     if e_ref is not None:
         return e_ref
