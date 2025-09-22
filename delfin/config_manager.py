@@ -1,10 +1,11 @@
 # config_manager.py
 # Centralized configuration management for DELFIN
 
-import os
-import logging
 from typing import Dict, Any, Optional, Union, List
 from dataclasses import dataclass, field
+
+from delfin.common.paths import resolve_path
+
 from .config import read_control_file, get_E_ref
 
 
@@ -83,13 +84,14 @@ class DelfinConfig:
             FileNotFoundError: If CONTROL.txt doesn't exist
             ValueError: If configuration is invalid
         """
-        if not os.path.exists(file_path):
+        control_path = resolve_path(file_path)
+        if not control_path.exists():
             raise FileNotFoundError(f"CONTROL.txt not found at {file_path}")
 
-        raw_config = read_control_file(file_path)
+        raw_config = read_control_file(str(control_path))
         instance = cls._from_dict(raw_config)
         instance._raw_config = raw_config
-        instance._file_path = file_path
+        instance._file_path = str(control_path)
 
         return instance
 
@@ -202,7 +204,7 @@ class DelfinConfig:
         issues = []
 
         # Check required files
-        if not os.path.exists(self.input_file):
+        if not resolve_path(self.input_file).exists():
             issues.append(f"Input file '{self.input_file}' not found")
 
         # Validate charge and multiplicity

@@ -2,8 +2,12 @@
 # Recalc mode wrapper functions for DELFIN CLI
 
 import os
-import logging
 from pathlib import Path
+
+from delfin.common.logging import get_logger
+from delfin.common.paths import resolve_path
+
+logger = get_logger(__name__)
 
 
 def setup_recalc_mode():
@@ -20,24 +24,25 @@ def setup_recalc_mode():
 
     def _run_orca_wrapper(inp_file, out_file):
         need = True
-        if os.path.exists(out_file):
+        out_path = resolve_path(out_file)
+        if out_path.exists():
             try:
-                with open(out_file, "r", errors="ignore") as f:
+                with out_path.open("r", errors="ignore") as f:
                     need = (OK_MARKER not in f.read())
                 if not need:
-                    logging.info("[recalc] skipping ORCA; %s appears complete.", out_file)
+                    logger.info("[recalc] skipping ORCA; %s appears complete.", out_file)
                     return None
             except Exception as e:
-                logging.debug("[recalc] could not check %s (%s) -> will run", out_file, e)
-        logging.info("[recalc] (re)running ORCA for %s", out_file)
+                logger.debug("[recalc] could not check %s (%s) -> will run", out_file, e)
+        logger.info("[recalc] (re)running ORCA for %s", out_file)
         return _run_orca_real(inp_file, out_file)
 
     def _xtb_wrapper(multiplicity, charge, config):
         # Skip if typical XTB artifacts or a marker exist
         artifacts = ("xtbopt.xyz", "xtb.trj", "xtbopt.log")
         marker = Path(".delfin_done_xtb")
-        if marker.exists() or any(os.path.exists(a) for a in artifacts):
-            logging.info("[recalc] skipping XTB; artifacts/marker found.")
+        if marker.exists() or any(resolve_path(a).exists() for a in artifacts):
+            logger.info("[recalc] skipping XTB; artifacts/marker found.")
             return None
         res = _XTB_real(multiplicity, charge, config)
         try:
@@ -49,8 +54,8 @@ def setup_recalc_mode():
     def _goat_wrapper(multiplicity, charge, config):
         artifacts = ("GOAT.txt", "goat.out", "goat.log")
         marker = Path(".delfin_done_goat")
-        if marker.exists() or any(os.path.exists(a) for a in artifacts):
-            logging.info("[recalc] skipping XTB_GOAT; artifacts/marker found.")
+        if marker.exists() or any(resolve_path(a).exists() for a in artifacts):
+            logger.info("[recalc] skipping XTB_GOAT; artifacts/marker found.")
             return None
         res = _XTB_GOAT_real(multiplicity, charge, config)
         try:
@@ -62,8 +67,8 @@ def setup_recalc_mode():
     def _crest_wrapper(PAL, solvent, charge, multiplicity):
         artifacts = ("crest_conformers.xyz", "crest_best.xyz", "crest.energies", "crest.out")
         marker = Path(".delfin_done_crest")
-        if marker.exists() or any(os.path.exists(a) for a in artifacts):
-            logging.info("[recalc] skipping CREST; artifacts/marker found.")
+        if marker.exists() or any(resolve_path(a).exists() for a in artifacts):
+            logger.info("[recalc] skipping CREST; artifacts/marker found.")
             return None
         res = _CREST_real(PAL, solvent, charge, multiplicity)
         try:
@@ -76,7 +81,7 @@ def setup_recalc_mode():
         # If your implementation produces a specific, stable output, prefer checking for it.
         marker = Path(".delfin_done_xtb_solvator")
         if marker.exists():
-            logging.info("[recalc] skipping XTB_SOLVATOR; marker found.")
+            logger.info("[recalc] skipping XTB_SOLVATOR; marker found.")
             return None
         res = _SOLV_real(input_path, multiplicity, charge, solvent, n_solv, config)
         try:

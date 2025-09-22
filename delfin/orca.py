@@ -1,8 +1,11 @@
-import logging
 import subprocess
 import sys
 from shutil import which
 from typing import Optional
+
+from delfin.common.logging import get_logger
+
+logger = get_logger(__name__)
 
 ORCA_PLOT_INPUT_TEMPLATE = (
     "1\n"
@@ -25,7 +28,7 @@ def find_orca_executable() -> Optional[str]:
     """
     orca_path = which("orca")
     if not orca_path:
-        logging.error("ORCA executable not found. Please ensure ORCA is installed and in your PATH.")
+        logger.error("ORCA executable not found. Please ensure ORCA is installed and in your PATH.")
         return None
     return orca_path
 
@@ -36,7 +39,7 @@ def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str) 
         try:
             subprocess.run([orca_path, input_file_path], check=True, stdout=output_file, stderr=output_file)
         except subprocess.CalledProcessError as error:
-            logging.error(f"Error running ORCA: {error}")
+            logger.error(f"Error running ORCA: {error}")
             return False
     return True
 
@@ -55,7 +58,7 @@ def run_orca(input_file_path: str, output_log: str) -> None:
         return
 
     if _run_orca_subprocess(orca_path, input_file_path, output_log):
-        logging.info(f"ORCA run successful for '{input_file_path}'")
+        logger.info(f"ORCA run successful for '{input_file_path}'")
 
 def run_orca_IMAG(input_file_path: str, iteration: int) -> None:
     """Execute ORCA calculation for imaginary frequency workflow.
@@ -69,12 +72,12 @@ def run_orca_IMAG(input_file_path: str, iteration: int) -> None:
     """
     orca_path = find_orca_executable()
     if not orca_path:
-        logging.error("Cannot run ORCA IMAG calculation because the ORCA executable was not found in PATH.")
+        logger.error("Cannot run ORCA IMAG calculation because the ORCA executable was not found in PATH.")
         sys.exit(1)
 
     output_log = f"output_{iteration}.out"
     if _run_orca_subprocess(orca_path, input_file_path, output_log):
-        logging.info(f"ORCA run successful for '{input_file_path}', output saved to '{output_log}'")
+        logger.info(f"ORCA run successful for '{input_file_path}', output saved to '{output_log}'")
     else:
         sys.exit(1)
 
@@ -90,9 +93,9 @@ def run_orca_plot(homo_index: int) -> None:
     for index in range(homo_index - 10, homo_index + 11):
         success, stderr_output = _run_orca_plot_for_index(index)
         if success:
-            logging.info(f"orca_plot ran successfully for index {index}")
+            logger.info(f"orca_plot ran successfully for index {index}")
         else:
-            logging.error(f"orca_plot encountered an error for index {index}: {stderr_output}")
+            logger.error(f"orca_plot encountered an error for index {index}: {stderr_output}")
 
 
 def _run_orca_plot_for_index(index: int) -> tuple[bool, str]:

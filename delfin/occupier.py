@@ -1,7 +1,10 @@
 # OCCUPIER.py
 
-import os, shutil, re, time, logging, ast, math
+import os, shutil, re, time, ast, math
 from decimal import Decimal, ROUND_DOWN
+
+from delfin.common.logging import get_logger
+from delfin.common.paths import resolve_path
 
 from .config import OCCUPIER_parser, read_control_file
 from .utils import (
@@ -11,6 +14,8 @@ from .utils import (
 )
 from .reporting import generate_summary_report_OCCUPIER
 from .orca import run_orca
+
+logger = get_logger(__name__)
 
 
 def run_OCCUPIER():
@@ -43,20 +48,21 @@ def run_OCCUPIER():
             "Fl": 114, "Mc": 115, "Lv": 116, "Ts": 117, "Og": 118
         }
 
-        config = read_control_file(control_file_path)
-        input_file_path = config.get("input_file")
-        if not input_file_path:
-            logging.error("'input_file' not in CONTROL.txt.")
+        control_path = resolve_path(control_file_path)
+        config = read_control_file(str(control_path))
+        input_file_entry = config.get("input_file")
+        if not input_file_entry:
+            logger.error("'input_file' not in CONTROL.txt.")
             return
 
-        input_file_path = os.path.join(os.path.dirname(control_file_path), input_file_path)
-        if not os.path.exists(input_file_path):
-            logging.error(f"Input file '{input_file_path}' not found.")
+        input_file_path = resolve_path(control_path.parent / input_file_entry)
+        if not input_file_path.exists():
+            logger.error(f"Input file '{input_file_path}' not found.")
             return
 
         total_electrons = 0
         try:
-            with open(input_file_path, 'r') as input_file:
+            with input_file_path.open('r') as input_file:
                 lines = input_file.readlines()
                 for line in lines[2:]:
                     parts = line.split()
@@ -66,10 +72,10 @@ def run_OCCUPIER():
                     if element in atom_electrons:
                         total_electrons += atom_electrons[element]
                     else:
-                        logging.warning(f"Unknown element '{element}' in line: {line.strip()}")
+                        logger.warning(f"Unknown element '{element}' in line: {line.strip()}")
             return total_electrons
         except Exception as e:
-            logging.error(f"Error reading file '{input_file_path}': {e}")
+            logger.error(f"Error reading file '{input_file_path}': {e}")
 
     def clean_xyz_block(lines):
         """Return coordinate lines without stray '*' end markers."""
@@ -85,7 +91,7 @@ def run_OCCUPIER():
         try:
             from mendeleev import element
         except Exception as e:
-            #logging.warning("Could not import 'mendeleev' (%s). Falling back to internal radii.", e)
+            #logger.warning("Could not import 'mendeleev' (%s). Falling back to internal radii.", e)
             return None
 
         attr = {"pyykko2009": "covalent_radius_pyykko", "cordero2008": "covalent_radius_cordero"}.get(
@@ -101,7 +107,7 @@ def run_OCCUPIER():
             if r is not None:
                 radii[el.symbol] = float(r)
             else:
-                logging.warning("Missing covalent radius for %s (Z=%d); will use fallback.", el.symbol, Z)
+                logger.warning("Missing covalent radius for %s (Z=%d); will use fallback.", el.symbol, Z)
         return radii
 
     COVALENT_RADII_FALLBACK = {
@@ -181,11 +187,12 @@ def run_OCCUPIER():
           - optional per-atom NewGTO for the first coordination sphere.
         """
         xyz_file = "input.xyz" if from_index == 1 else f"input{from_index}.xyz"
-        if not os.path.exists(xyz_file):
-            logging.error(f"XYZ input file '{xyz_file}' not found.")
+        xyz_path = resolve_path(xyz_file)
+        if not xyz_path.exists():
+            logger.error(f"XYZ input file '{xyz_path}' not found.")
             return
 
-        with open(xyz_file, 'r') as file:
+        with xyz_path.open('r') as file:
             lines = file.readlines()
 
         # Radii source and cutoff scaling
@@ -251,7 +258,7 @@ def run_OCCUPIER():
         cleaned_xyz = clean_xyz_block(lines[2:])  # skip count/comment lines
         atoms = _parse_xyz_atoms_with_indices(cleaned_xyz)
         if not atoms:
-            logging.error("No atoms parsed from XYZ.")
+            logger.error("No atoms parsed from XYZ.")
             return
 
         # Metals found by symbol
@@ -265,7 +272,7 @@ def run_OCCUPIER():
 
         # Logging
         def _fmt_idx(i): return f"{i}({atoms[i]['elem']})"
-        logging.info("Metals: %s | 1st sphere: %s",
+        logger.info("Metals: %s | 1st sphere: %s",
                      ", ".join(map(_fmt_idx, metal_indices)) if metal_indices else "-",
                      ", ".join(map(_fmt_idx, sorted(first_sphere))) if first_sphere else "-")
 
@@ -295,7 +302,7 @@ def run_OCCUPIER():
         with open(output_file_path, 'w') as file:
             file.writelines(modified_lines)
 
-        logging.info(f"Input file from '{xyz_file}' modified and saved as '{output_file_path}'")
+        logger.info(f"Input file from '{xyz_file}' modified and saved as '{output_file_path}'")
 
     # ------------------------ output parsers ------------------------
 
@@ -306,7 +313,7 @@ def run_OCCUPIER():
             with open(filename, 'r') as file:
                 lines = file.readlines()
         except FileNotFoundError:
-            logging.warning(f"File {filename} not found. Skipping.")
+            logger.warning(f"File {filename} not found. Skipping.")
             return None
 
         for line in reversed(lines):
@@ -316,9 +323,9 @@ def run_OCCUPIER():
                 try:
                     return float(energy_str)
                 except ValueError:
-                    logging.error(f"Could not convert '{energy_str}' to float.")
+                    logger.error(f"Could not convert '{energy_str}' to float.")
                     continue
-        logging.warning("No FINAL SINGLE POINT ENERGY found in the file.")
+        logger.warning("No FINAL SINGLE POINT ENERGY found in the file.")
         return None
 
     def find_G(filename):
@@ -333,29 +340,32 @@ def run_OCCUPIER():
                         try:
                             return float(energy_str)
                         except ValueError:
-                            logging.error(f"Could not convert '{energy_str}' to float.")
+                            logger.error(f"Could not convert '{energy_str}' to float.")
                             return None
         except FileNotFoundError:
-            logging.warning(f"File {filename} not found. Skipping.")
+            logger.warning(f"File {filename} not found. Skipping.")
         return None
 
     # --------------------------- main flow -------------------------
 
     try:
         start_time = time.time()
-        control_file_path = os.path.join(os.getcwd(), "CONTROL.txt")
-        config = OCCUPIER_parser(control_file_path)
+        control_file_path = resolve_path("CONTROL.txt")
+        config = OCCUPIER_parser(str(control_file_path))
 
-        input_file = config.get("input_file")
-        if not input_file:
-            logging.error("Missing 'input_file' in the configuration.")
+        input_file_entry = config.get("input_file")
+        if not input_file_entry:
+            logger.error("Missing 'input_file' in the configuration.")
             return
-        if not os.path.exists(input_file):
-            logging.error(f"Input file '{input_file}' does not exist.")
+        input_file_path = resolve_path(control_file_path.parent / input_file_entry)
+        if not input_file_path.exists():
+            logger.error(f"Input file '{input_file_path}' does not exist.")
             return
+
+        input_file = str(input_file_path)
 
         solvent = config.get("solvent", None)
-        total_electrons = calculate_total_electrons(control_file_path)
+        total_electrons = calculate_total_electrons(str(control_file_path))
         charge = int(config.get("charge", 0))
         total_electrons = (total_electrons or 0) - charge
         is_even = (total_electrons % 2 == 0)
@@ -373,7 +383,7 @@ def run_OCCUPIER():
         seq_key = "even_seq" if is_even else "odd_seq"
         sequence = config.get(seq_key, [])
         if not sequence:
-            logging.error(f"No sequence found under '{seq_key}' in CONTROL.txt.")
+            logger.error(f"No sequence found under '{seq_key}' in CONTROL.txt.")
             return
 
         inputs = {0: input_file}
@@ -395,7 +405,7 @@ def run_OCCUPIER():
             try:
                 src_idx = int(raw_from)
             except ValueError:
-                logging.error(f"Invalid 'from' value: {raw_from}")
+                logger.error(f"Invalid 'from' value: {raw_from}")
                 continue
 
             stem = _stem(idx)
@@ -405,12 +415,13 @@ def run_OCCUPIER():
             # Wavefunction passing (%moinp) if requested and available
             _pass_wf = str(config.get('pass_wavefunction', 'no')).strip().lower() in ('yes', 'true', '1', 'on', 'y')
             gbw_candidate = "input.gbw" if src_idx == 1 else f"input{src_idx}.gbw"
+            gbw_path = resolve_path(gbw_candidate)
 
             parts = []
-            if _pass_wf and os.path.exists(gbw_candidate):
-                parts.append(f'%moinp "{gbw_candidate}"')
-            elif _pass_wf and not os.path.exists(gbw_candidate):
-                logging.info(f"No GBW found for from={src_idx} ({gbw_candidate}) – starting with standard guess.")
+            if _pass_wf and gbw_path.exists():
+                parts.append(f'%moinp "{gbw_path}"')
+            elif _pass_wf and not gbw_path.exists():
+                logger.info(f"No GBW found for from={src_idx} ({gbw_path}) – starting with standard guess.")
 
             # Broken Symmetry + APMethod
             apm = config.get("approximate_spin_projection_APMethod")
@@ -437,16 +448,17 @@ def run_OCCUPIER():
             recalc = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
 
             def _has_ok_marker(path: str) -> bool:
-                if not os.path.exists(path):
+                candidate = resolve_path(path)
+                if not candidate.exists():
                     return False
                 try:
-                    with open(path, "r", errors="ignore") as _f:
+                    with candidate.open("r", errors="ignore") as _f:
                         return OK in _f.read()
                 except Exception:
                     return False
 
             if recalc and _has_ok_marker(out):
-                logging.info("[recalc] Skipping ORCA for %s; found '%s'.", out, OK)
+                logger.info("[recalc] Skipping ORCA for %s; found '%s'.", out, OK)
             else:
                 run_orca(inp, out)
 
@@ -457,7 +469,7 @@ def run_OCCUPIER():
 
         duration = time.time() - start_time
         generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, solvent, config, main_basisset, sequence)
-        logging.info("Summary report generated and saved as 'OCCUPIER.txt'")
+        logger.info("Summary report generated and saved as 'OCCUPIER.txt'")
 
     except Exception as e:
-        logging.error(f"An error occurred in the OCCUPIER workflow: {e}")
+        logger.error(f"An error occurred in the OCCUPIER workflow: {e}")

@@ -1,8 +1,10 @@
 import ast
-import logging
-import os
 import re
 from typing import Dict, Any, Optional, Union
+
+from delfin.common.logging import get_logger
+
+logger = get_logger(__name__)
 
 def read_control_file(file_path: str) -> Dict[str, Any]:
     """Parse CONTROL.txt file and return configuration dictionary.
@@ -106,7 +108,7 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
                         parsed = ast.literal_eval(multi_val)
                         config[multi_key] = parsed
                     except Exception as e:
-                        logging.error(f"Could not parse list for {multi_key}: {e}")
+                        logger.error(f"Could not parse list for {multi_key}: {e}")
                         config[multi_key] = []
                     multi_key = None
                     multi_val = ""
@@ -208,6 +210,5 @@ def get_E_ref(config: Dict[str, Any]) -> float:
     }
 
     return solvent_E_ref.get(solvent_key, 4.345)
-
 
 

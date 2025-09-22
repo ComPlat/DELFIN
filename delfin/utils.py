@@ -1,7 +1,9 @@
 import re
-import os
-import logging
+from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
+
+from delfin.common.logging import get_logger
+from delfin.common.paths import resolve_path
 
 # ------------------------------------------------------------------------------------
 # Transition metals (IUPAC blocks)
@@ -20,6 +22,8 @@ _TM_D45 = {'Y','Zr','Nb','Mo','Tc','Ru','Rh','Pd','Ag','Cd',
 
 # Regex: extract an element symbol from a token like "Fe", "Fe(1)", "Fe1"
 _ELEM_FROM_TOKEN = re.compile(r'^([A-Za-z]{1,2})(?![A-Za-z])')
+
+logger = get_logger(__name__)
 
 
 # ------------------------------------------------------------------------------------
@@ -42,7 +46,7 @@ def search_transition_metals(inputfile: str) -> List[str]:
         with open(inputfile, 'r', errors="ignore") as f:
             lines = f.readlines()
     except FileNotFoundError:
-        logging.error(f"File '{inputfile}' not found.")
+        logger.error(f"File '{inputfile}' not found.")
         return []
 
     found: List[str] = []
@@ -173,7 +177,7 @@ def set_main_basisset(found_metals: List[str], config: Dict[str, Any]) -> Tuple[
 
     # Explicit debug helps to see why Fe (3d) stays non-rel:
     cls = classify_tm_presence(found_metals)
-    logging.debug(f"[utils] TM class={cls} → use_rel={use_rel}; main='{main}'; metal='{metal}'")
+    logger.debug(f"[utils] TM class={cls} → use_rel={use_rel}; main='{main}'; metal='{metal}'")
     return main, metal
 
 
@@ -199,24 +203,23 @@ _ATOM_ELECTRONS = {
 }
 
 
-def _parse_control_for_input_file(control_file_path: str) -> str:
-    """
-    Find 'input_file=...' in CONTROL; fallback to 'input.txt' in the same folder.
-    """
-    control_dir = os.path.dirname(control_file_path)
-    candidate = os.path.join(control_dir, "input.txt")
+def _parse_control_for_input_file(control_file_path: str) -> Path:
+    """Find 'input_file=...' in CONTROL; fallback to 'input.txt' in the same folder."""
+    control_path = resolve_path(control_file_path)
+    control_dir = control_path.parent
+    candidate = control_dir / "input.txt"
     try:
-        with open(control_file_path, "r", encoding="utf-8", errors="ignore") as f:
+        with control_path.open("r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 if line.strip().lower().startswith("input_file"):
                     eq = line.split("=", 1)
                     if len(eq) == 2:
                         val = eq[1].strip()
                         if val:
-                            return os.path.join(control_dir, val)
+                            return resolve_path(control_dir / val)
     except Exception as e:
-        logging.info(f"CONTROL parse fallback (input_file): {e}")
-    return candidate
+        logger.info(f"CONTROL parse fallback (input_file): {e}")
+    return resolve_path(candidate)
 
 
 def _looks_like_xyz(lines: List[str]) -> bool:
@@ -244,15 +247,15 @@ def calculate_total_electrons_txt(control_file_path: str) -> Optional[Tuple[int,
         Tuple of (total_electrons, suggested_multiplicity) or None on error
     """
     input_file_path = _parse_control_for_input_file(control_file_path)
-    if not os.path.exists(input_file_path):
-        logging.error(f"Input file '{input_file_path}' not found.")
+    if not input_file_path.exists():
+        logger.error(f"Input file '{input_file_path}' not found.")
         return None
 
     try:
-        with open(input_file_path, 'r', encoding='utf-8', errors="ignore") as input_file:
+        with input_file_path.open('r', encoding='utf-8', errors="ignore") as input_file:
             lines = input_file.readlines()
     except Exception as e:
-        logging.error(f"Error reading the file '{input_file_path}': {e}")
+        logger.error(f"Error reading the file '{input_file_path}': {e}")
         return None
 
     # If XYZ: skip first two lines (natoms + comment)
@@ -274,7 +277,7 @@ def calculate_total_electrons_txt(control_file_path: str) -> Optional[Tuple[int,
         if sym in _ATOM_ELECTRONS:
             total_electrons_txt += _ATOM_ELECTRONS[sym]
         else:
-            logging.warning(f"Unknown element '{sym}' in line: {line.strip()}")
+            logger.warning(f"Unknown element '{sym}' in line: {line.strip()}")
 
     multiplicity_guess = 1 if (total_electrons_txt % 2 == 0) else 2
     return total_electrons_txt, multiplicity_guess

@@ -1,6 +1,9 @@
 import os, time, re, sys, logging, argparse
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 from pathlib import Path
+
+from delfin.common.logging import get_logger
+from delfin.common.paths import resolve_path
 from .define import create_control_file
 from .cleanup import cleanup_all
 from .config import read_control_file, get_E_ref
@@ -21,6 +24,8 @@ from .cli_helpers import _avg_or_none, _build_parser
 from .cli_recalc import setup_recalc_mode, patch_modules_for_recalc
 from .cli_banner import print_delfin_banner, validate_required_files, get_file_paths
 from .cli_calculations import calculate_redox_potentials, select_final_potentials
+
+logger = get_logger(__name__)
 
 
 
@@ -69,8 +74,8 @@ def main():
 
     # ---- Friendly checks for missing CONTROL.txt / input file ----
     # Read CONTROL.txt once and derive all settings from it
-    control_file_path = os.path.join(os.getcwd(), "CONTROL.txt")
-    config = read_control_file(control_file_path)
+    control_file_path = resolve_path("CONTROL.txt")
+    config = read_control_file(str(control_file_path))
 
     # Validate required files
     success, error_code, input_file = validate_required_files(config)
@@ -102,17 +107,17 @@ def main():
     try:
         charge = int(str(config.get('charge', 0)).strip())
     except ValueError:
-        logging.error("Invalid 'charge' in CONTROL.txt; falling back to 0.")
+        logger.error("Invalid 'charge' in CONTROL.txt; falling back to 0.")
         charge = 0
     try:
         PAL = int(str(config.get('PAL', 6)).strip())
     except ValueError:
-        logging.error("Invalid 'PAL' in CONTROL.txt; falling back to 6.")
+        logger.error("Invalid 'PAL' in CONTROL.txt; falling back to 6.")
         PAL = 6
     try:
         number_explicit_solv_molecules = int(str(config.get('number_explicit_solv_molecules', 0)).strip())
     except ValueError:
-        logging.error("Invalid 'number_explicit_solv_molecules'; falling back to 0.")
+        logger.error("Invalid 'number_explicit_solv_molecules'; falling back to 0.")
         number_explicit_solv_molecules = 0
 
     min_fspe_index = None
@@ -123,11 +128,11 @@ def main():
 
     metals = search_transition_metals(input_file)
     if metals:
-        logging.info("Found transition metals:")
+        logger.info("Found transition metals:")
         for metal in metals:
-            logging.info(metal)
+            logger.info(metal)
     else:
-        logging.info("No transition metals found in the file.")
+        logger.info("No transition metals found in the file.")
 
     main_basisset, metal_basisset = set_main_basisset(metals, config)
 
@@ -138,15 +143,15 @@ def main():
     use_rel = any(m in D45_SET for m in metals)
     if not use_rel:
         if str(config.get('relativity', '')).lower() != 'none':
-            logging.info("3d-only system detected → relativity=none (ZORA/X2C/DKH is deactivated).")
+            logger.info("3d-only system detected → relativity=none (ZORA/X2C/DKH is deactivated).")
         config['relativity'] = 'none' 
 
 
-    total_electrons_txt, multiplicity_guess = calculate_total_electrons_txt(control_file_path)
+    total_electrons_txt, multiplicity_guess = calculate_total_electrons_txt(str(control_file_path))
     try:
         total_electrons_txt = int(total_electrons_txt)
     except (TypeError, ValueError):
-        logging.error("Could not parse total electrons from CONTROL.txt; assuming 0.")
+        logger.error("Could not parse total electrons from CONTROL.txt; assuming 0.")
         total_electrons_txt = 0
 
     total_electrons = total_electrons_txt - charge
@@ -235,14 +240,14 @@ def main():
                     read_xyz_and_create_input3(xyz_file_initial_OCCUPIER, output_file, charge, multiplicity_0, solvent, metals, metal_basisset, main_basisset, config, additions_0)
                     run_orca(output_file, "initial.out")
                     run_IMAG("initial.out", "initial", charge, multiplicity_0, solvent, metals, config, main_basisset, metal_basisset, additions_0)
-                    logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
 
                 if config['absorption_spec'] == "yes":
                     multiplicity = 1
                     additions=config['additions_TDDFT']
                     read_xyz_and_create_input2(xyz_file_initial_OCCUPIER, output_file3, charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
                     run_orca(output_file3, "absorption_spec.out")
-                    logging.info("TD-DFT absorption spectra calculation complete!")   
+                    logger.info("TD-DFT absorption spectra calculation complete!")   
 
                 if config['E_00'] == "yes":
 
@@ -251,47 +256,47 @@ def main():
                         additions=config['additions_TDDFT']
                         read_xyz_and_create_input3(xyz_file, "t1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
                         run_orca("t1_state_opt.inp", "t1_state_opt.out")
-                        logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
+                        logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
                         if config['emission_spec'] == "yes":
                             multiplicity = 1
                             additions=config['additions_TDDFT']
                             read_xyz_and_create_input2("t1_state_opt.xyz", "emission_t1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
                             run_orca("emission_t1.inp", "emission_t1.out")
-                            logging.info("TD-DFT T1 emission spectra calculation complete!") 
+                            logger.info("TD-DFT T1 emission spectra calculation complete!") 
 
                     if "s" in config.get("excitation", ""):
                         multiplicity = 1
                         additions=config['additions_TDDFT']
                         read_xyz_and_create_input4(xyz_file, "s1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
                         run_orca("s1_state_opt.inp", "s1_state_opt.out")
-                        logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
+                        logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
                         if config['emission_spec'] == "yes":
                             multiplicity = 1
                             additions=config['additions_TDDFT']
                             read_xyz_and_create_input2("s1_state_opt.xyz", "emission_s1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
                             run_orca("emission_s1.inp", "emission_s1.out")
-                            logging.info("TD-DFT S1 emission spectra calculation complete!") 
+                            logger.info("TD-DFT S1 emission spectra calculation complete!") 
 
                 if "1" in config['oxidation_steps']:
                     multiplicity_ox1, additions_ox1, min_fspe_index = read_occupier_file("ox_step_1_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
                     charge = int(config['charge']) + 1
                     read_xyz_and_create_input3(xyz_file_ox_step_1_OCCUPIER, output_file5, charge, multiplicity_ox1, solvent, metals, metal_basisset, main_basisset, config, additions_ox1)
                     run_orca(output_file5, "ox_step_1.out")
-                    logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
                 if "2" in config['oxidation_steps']:
                     multiplicity_ox2, additions_ox2, min_fspe_index = read_occupier_file("ox_step_2_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
                     charge = int(config['charge']) + 2
                     read_xyz_and_create_input3(xyz_file_ox_step_2_OCCUPIER, output_file9, charge, multiplicity_ox2, solvent, metals, metal_basisset, main_basisset, config, additions_ox2)
                     run_orca(output_file9, "ox_step_2.out")
-                    logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
                 if "3" in config['oxidation_steps']:
                     multiplicity_ox3, additions_ox3, min_fspe_index = read_occupier_file("ox_step_3_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
                     charge = int(config['charge']) + 3
                     read_xyz_and_create_input3(xyz_file_ox_step_3_OCCUPIER, output_file10, charge, multiplicity_ox3, solvent, metals, metal_basisset, main_basisset, config, additions_ox3)
                     run_orca(output_file10, "ox_step_3.out")
-                    logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
 
 
@@ -301,21 +306,21 @@ def main():
                     charge = int(config['charge']) - 1
                     read_xyz_and_create_input3(xyz_file_red_step_1_OCCUPIER, output_file6, charge, multiplicity_red1, solvent, metals, metal_basisset, main_basisset, config, additions_red1)
                     run_orca(output_file6, "red_step_1.out")
-                    logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
 
                 if "2" in config['reduction_steps']:
                     multiplicity_red2, additions_red2, min_fspe_index = read_occupier_file("red_step_2_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
                     charge = int(config['charge']) - 2
                     read_xyz_and_create_input3(xyz_file_red_step_2_OCCUPIER, output_file7, charge, multiplicity_red2, solvent, metals, metal_basisset, main_basisset, config, additions_red2)
                     run_orca(output_file7, "red_step_2.out")
-                    logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
 
                 if "3" in config['reduction_steps']:
                     multiplicity_red3, additions_red3, min_fspe_index = read_occupier_file("red_step_3_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
                     charge = int(config['charge']) - 3
                     read_xyz_and_create_input3(xyz_file_red_step_3_OCCUPIER, output_file8, charge, multiplicity_red3, solvent, metals, metal_basisset, main_basisset, config, additions_red3)
                     run_orca(output_file8, "red_step_3.out")
-                    logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
 
             if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == "yes":
                 # read OCCUPIER info (unchanged)
@@ -377,14 +382,14 @@ def main():
                 read_and_modify_file_1(input_file, output_file, charge, multiplicity_0, solvent, metals, metal_basisset, main_basisset, config, additions_0)
                 run_orca(output_file, "initial.out")
                 run_IMAG("initial.out", "initial", charge, multiplicity_0, solvent, metals, config, main_basisset, metal_basisset, additions_0)
-                logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
 
             if config['absorption_spec'] == "yes":
                 multiplicity = 1
                 additions=config['additions_TDDFT']
                 read_xyz_and_create_input2(xyz_file, output_file3, charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
                 run_orca(output_file3, "absorption_spec.out")
-                logging.info("TD-DFT absorption spectra calculation complete!")
+                logger.info("TD-DFT absorption spectra calculation complete!")
 
 
             if config['E_00'] == "yes":
@@ -393,25 +398,25 @@ def main():
                     multiplicity = 3
                     read_xyz_and_create_input3(xyz_file, "t1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
                     run_orca("t1_state_opt.inp", "t1_state_opt.out")
-                    logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
                     if config['emission_spec'] == "yes":
                         multiplicity = 1
                         additions=config['additions_TDDFT']
                         read_xyz_and_create_input2("t1_state_opt.xyz", "emission_t1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
                         run_orca("emission_t1.inp", "emission_t1.out")
-                        logging.info("TD-DFT emission spectra calculation complete!") 
+                        logger.info("TD-DFT emission spectra calculation complete!") 
 
                 if "s" in config.get("excitation", ""):
                     multiplicity = 1
                     read_xyz_and_create_input4(xyz_file, "s1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
                     run_orca("s1_state_opt.inp", "s1_state_opt.out")
-                    logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
                     if config['emission_spec'] == "yes":
                         multiplicity = 1
                         additions=config['additions_TDDFT']
                         read_xyz_and_create_input2("s1_state_opt.xyz", "emission_s1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
                         run_orca("emission_s1.inp", "emission_s1.out")
-                        logging.info("TD-DFT emission spectra calculation complete!") 
+                        logger.info("TD-DFT emission spectra calculation complete!") 
 
 
 
@@ -420,21 +425,21 @@ def main():
                 charge = int(config['charge']) + 1
                 read_xyz_and_create_input3(xyz_file, output_file5, charge, multiplicity_ox1, solvent, metals, metal_basisset, main_basisset, config, additions_ox1)
                 run_orca(output_file5, "ox_step_1.out")
-                logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
             if "2" in config['oxidation_steps']:
                 multiplicity_ox2, additions_ox2, min_fspe_index = read_occupier_file("ox_step_2_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
                 charge = int(config['charge']) + 2
                 read_xyz_and_create_input3(xyz_file4, output_file9, charge, multiplicity_ox2, solvent, metals, metal_basisset, main_basisset, config, additions_ox2)
                 run_orca(output_file9, "ox_step_2.out")
-                logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
             if "3" in config['oxidation_steps']:
                 multiplicity_ox3, additions_ox3, min_fspe_index = read_occupier_file("ox_step_3_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
                 charge = int(config['charge']) + 3
                 read_xyz_and_create_input3(xyz_file8, output_file10, charge, multiplicity_ox3, solvent, metals, metal_basisset, main_basisset, config, additions_ox3)
                 run_orca(output_file10, "ox_step_3.out")
-                logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
 
 
@@ -443,21 +448,21 @@ def main():
                 charge = int(config['charge']) - 1
                 read_xyz_and_create_input3(xyz_file, output_file6, charge, multiplicity_red1, solvent, metals, metal_basisset, main_basisset, config, additions_red1)
                 run_orca(output_file6, "red_step_1.out")
-                logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
 
             if "2" in config['reduction_steps']:
                 multiplicity_red2, additions_red2, min_fspe_index = read_occupier_file("red_step_2_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
                 charge = int(config['charge']) - 2
                 read_xyz_and_create_input3(xyz_file2, output_file7, charge, multiplicity_red2, solvent, metals, metal_basisset, main_basisset, config, additions_red2)
                 run_orca(output_file7, "red_step_2.out")
-                logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
 
             if "3" in config['reduction_steps']:
                 multiplicity_red3, additions_red3, min_fspe_index = read_occupier_file("red_step_3_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
                 charge = int(config['charge']) - 3
                 read_xyz_and_create_input3(xyz_file3, output_file8, charge, multiplicity_red3, solvent, metals, metal_basisset, main_basisset, config, additions_red3)
                 run_orca(output_file8, "red_step_3.out")
-                logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
 
 
 
@@ -484,14 +489,14 @@ def main():
             read_and_modify_file_1(input_file, output_file, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file, "initial.out")
             run_IMAG("initial.out", "initial", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
 
         if config['absorption_spec'] == "yes":
             multiplicity = 1
             additions=config['additions_TDDFT']
             read_xyz_and_create_input2(xyz_file, output_file3, charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
             run_orca(output_file3, "absorption_spec.out")
-            logging.info("TD-DFT absorption spectra calculation complete!")
+            logger.info("TD-DFT absorption spectra calculation complete!")
 
         if config['E_00'] == "yes":
 
@@ -499,25 +504,25 @@ def main():
                 multiplicity = 3
                 read_xyz_and_create_input3(xyz_file, "t1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
                 run_orca("t1_state_opt.inp", "t1_state_opt.out")
-                logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
                 if config['emission_spec'] == "yes":
                     multiplicity = 1
                     additions=config['additions_TDDFT']
                     read_xyz_and_create_input2("t1_state_opt.xyz", "emission_t1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
                     run_orca("emission_t1.inp", "emission_t1.out")
-                    logging.info("TD-DFT emission spectra calculation complete!") 
+                    logger.info("TD-DFT emission spectra calculation complete!") 
 
             if "s" in config.get("excitation", ""):
                 multiplicity = 1
                 read_xyz_and_create_input4(xyz_file, "s1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
                 run_orca("s1_state_opt.inp", "s1_state_opt.out")
-                logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
                 if config['emission_spec'] == "yes":
                     multiplicity = 1
                     additions=config['additions_TDDFT']
                     read_xyz_and_create_input2("s1_state_opt.xyz", "emission_s1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
                     run_orca("emission_s1.inp", "emission_s1.out")
-                    logging.info("TD-DFT emission spectra calculation complete!") 
+                    logger.info("TD-DFT emission spectra calculation complete!") 
 
 
         if "1" in config['oxidation_steps']:
@@ -530,7 +535,7 @@ def main():
                 multiplicity = 2
             read_xyz_and_create_input3(xyz_file, output_file5, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file5, "ox_step_1.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
 
         if "2" in config['oxidation_steps']:
@@ -543,7 +548,7 @@ def main():
                 multiplicity = 2
             read_xyz_and_create_input3(xyz_file4, output_file9, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file9, "ox_step_2.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization dication!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization dication!")
 
         if "3" in config['oxidation_steps']:
             charge = int(config['charge']) + 3
@@ -555,7 +560,7 @@ def main():
                 multiplicity = 2
             read_xyz_and_create_input3(xyz_file8, output_file10, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file10, "ox_step_3.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization trication!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization trication!")
 
 
 
@@ -569,7 +574,7 @@ def main():
                 multiplicity = 2
             read_xyz_and_create_input3(xyz_file, output_file6, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file6, "red_step_1.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
 
         if "2" in config['reduction_steps']:
             charge = int(config['charge']) - 2
@@ -581,7 +586,7 @@ def main():
                 multiplicity = 2
             read_xyz_and_create_input3(xyz_file2, output_file7, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file7, "red_step_2.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
 
         if "3" in config['reduction_steps']:
             charge = int(config['charge']) - 3
@@ -593,7 +598,7 @@ def main():
                 multiplicity = 2
             read_xyz_and_create_input3(xyz_file3, output_file8, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file8, "red_step_3.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
 
 
 
@@ -628,14 +633,14 @@ def main():
             read_and_modify_file_1(input_file, output_file, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file, "initial.out")
             run_IMAG("initial.out", "initial", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
 
         if config['absorption_spec'] == "yes":
             multiplicity = 1
             additions=config['additions_TDDFT']
             read_xyz_and_create_input2(xyz_file, output_file3, charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
             run_orca(output_file3, "absorption_spec.out")
-            logging.info("TD-DFT absorption spectra calculation complete!")   
+            logger.info("TD-DFT absorption spectra calculation complete!")   
 
         if config['E_00'] == "yes":
 
@@ -643,25 +648,25 @@ def main():
                 multiplicity = 3
                 read_xyz_and_create_input3(xyz_file, "t1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
                 run_orca("t1_state_opt.inp", "t1_state_opt.out")
-                logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
                 if config['emission_spec'] == "yes":
                     multiplicity = 1
                     additions=config['additions_TDDFT']
                     read_xyz_and_create_input2("t1_state_opt.xyz", "emission_t1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
                     run_orca("emission_t1.inp", "emission_t1.out")
-                    logging.info("TD-DFT emission spectra calculation complete!") 
+                    logger.info("TD-DFT emission spectra calculation complete!") 
 
             if "s" in config.get("excitation", ""):
                 multiplicity = 1
                 read_xyz_and_create_input4(xyz_file, "s1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
                 run_orca("s1_state_opt.inp", "s1_state_opt.out")
-                logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
                 if config['emission_spec'] == "yes":
                     multiplicity = 1
                     additions=config['additions_TDDFT']
                     read_xyz_and_create_input2("s1_state_opt.xyz", "emission_s1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
                     run_orca("emission_s1.inp", "emission_s1.out")
-                    logging.info("TD-DFT emission spectra calculation complete!") 
+                    logger.info("TD-DFT emission spectra calculation complete!") 
 
 
         if "1" in config['oxidation_steps']:
@@ -680,7 +685,7 @@ def main():
                 additions = ""
             read_xyz_and_create_input3(xyz_file, output_file5, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file5, "ox_step_1.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
         if "2" in config['oxidation_steps']:
             charge = int(config['charge']) + 2
@@ -698,7 +703,7 @@ def main():
                 additions = ""
             read_xyz_and_create_input3(xyz_file4, output_file9, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file9, "ox_step_2.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
         if "3" in config['oxidation_steps']:
             charge = int(config['charge']) + 3
@@ -716,7 +721,7 @@ def main():
                 additions = ""
             read_xyz_and_create_input3(xyz_file8, output_file10, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file10, "ox_step_3.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
 
 
@@ -738,7 +743,7 @@ def main():
                 additions = ""
             read_xyz_and_create_input3(xyz_file, output_file6, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file6, "red_step_1.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
 
         if "2" in config['reduction_steps']:
             charge = int(config['charge']) - 2
@@ -756,7 +761,7 @@ def main():
                 additions = ""
             read_xyz_and_create_input3(xyz_file2, output_file7, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file7, "red_step_2.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
 
         if "3" in config['reduction_steps']:
             charge = int(config['charge']) - 3
@@ -774,7 +779,7 @@ def main():
                 additions = ""
             read_xyz_and_create_input3(xyz_file3, output_file8, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
             run_orca(output_file8, "red_step_3.out")
-            logging.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
+            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
 
 
 
@@ -803,9 +808,9 @@ def main():
 
     ZPE_S0 = find_ZPE(filename0)
     if ZPE_S0 is not None:
-        logging.info(f"ZPE S_0 (eV): {ZPE_S0}")
+        logger.info(f"ZPE S_0 (eV): {ZPE_S0}")
     #else:
-        #logging.error("ZPE S_0 not found in 'initial.out' or conversion failed.")
+        #logger.error("ZPE S_0 not found in 'initial.out' or conversion failed.")
 
     ZPE_T1 = None
     ZPE_S1 = None
@@ -815,16 +820,16 @@ def main():
         if "t" in config.get("excitation", ""):
                 ZPE_T1 = find_ZPE(filename_t1)
                 if ZPE_T1 is not None:
-                    logging.info(f"ZPE T_1 (eV): {ZPE_T1}")
+                    logger.info(f"ZPE T_1 (eV): {ZPE_T1}")
                 #else:
-                    #logging.error("ZPE T_1 not found in 't1_state_opt.out' or conversion failed.")
+                    #logger.error("ZPE T_1 not found in 't1_state_opt.out' or conversion failed.")
 
         if "s" in config.get("excitation", ""):
                 ZPE_S1 = find_ZPE(filename_s1)
                 if ZPE_S1 is not None:
-                    logging.info(f"ZPE S_1 (eV): {ZPE_S1}")
+                    logger.info(f"ZPE S_1 (eV): {ZPE_S1}")
                 #else:
-                    #logging.error("ZPE S_1 not found in 's1_state_opt.out' or conversion failed.")
+                    #logger.error("ZPE S_1 not found in 's1_state_opt.out' or conversion failed.")
 
         E_0 = None
         E_S1 = None
@@ -832,22 +837,22 @@ def main():
         if config['E_00'] == "yes":
             E_0 = find_electronic_energy(filename0)
             if E_0 is not None:
-                logging.info(f"Electronic energy S_0 (Eh): {E_0}")
+                logger.info(f"Electronic energy S_0 (Eh): {E_0}")
             #else:
-                #logging.error("Electronic energy S_0 not found in 'initial.out' or conversion failed.")
+                #logger.error("Electronic energy S_0 not found in 'initial.out' or conversion failed.")
 
         if "t" in config.get("excitation", ""):
             E_T1 = find_electronic_energy(filename_t1)
             if E_T1 is not None:
-                logging.info(f"Electronic energy T_1 (Eh): {E_T1}")
+                logger.info(f"Electronic energy T_1 (Eh): {E_T1}")
             #else:
-                #logging.error("Electronic energy S_1 not found in 't1_state_opt.out' or conversion failed.")
+                #logger.error("Electronic energy S_1 not found in 't1_state_opt.out' or conversion failed.")
         if "s" in config.get("excitation", ""):
             E_S1 = find_electronic_energy(filename_s1)
             if E_S1 is not None:
-                logging.info(f"Electronic energy S_1 (Eh): {E_S1}")
+                logger.info(f"Electronic energy S_1 (Eh): {E_S1}")
             #else:
-                #logging.error("Electronic energy S_1 not found in 's1_state_opt.out' or conversion failed.")
+                #logger.error("Electronic energy S_1 not found in 's1_state_opt.out' or conversion failed.")
 
 
 
@@ -857,53 +862,53 @@ def main():
 
     free_gibbs_0 = find_gibbs_energy(filename0)
     if free_gibbs_0 is not None:
-        logging.info(f"Free Gibbs Free Energy 0 (H): {free_gibbs_0}")
+        logger.info(f"Free Gibbs Free Energy 0 (H): {free_gibbs_0}")
     #else:
-        #logging.error("Final Gibbs free energy not found in 'initial.out' or conversion failed.")
+        #logger.error("Final Gibbs free energy not found in 'initial.out' or conversion failed.")
 
 
 
     if "1" in config['oxidation_steps']:
         free_gibbs_plus_1 = find_gibbs_energy(filename_plus_1)
         if free_gibbs_plus_1 is not None:
-            logging.info(f"Free Gibbs Free Energy +1 (H): {free_gibbs_plus_1}")
+            logger.info(f"Free Gibbs Free Energy +1 (H): {free_gibbs_plus_1}")
         #else:
-            #logging.error("Final Gibbs free energy not found in 'ox_step_1.out' or conversion failed.")
+            #logger.error("Final Gibbs free energy not found in 'ox_step_1.out' or conversion failed.")
 
     if "2" in config['oxidation_steps']:
         free_gibbs_plus_2 = find_gibbs_energy(filemane_plus_2)
         if free_gibbs_plus_2 is not None:
-            logging.info(f"Free Gibbs Free Energy +2 (H): {free_gibbs_plus_2}")
+            logger.info(f"Free Gibbs Free Energy +2 (H): {free_gibbs_plus_2}")
         #else:
-            #logging.error("Final Gibbs free energy not found in 'ox_step_2.out' or conversion failed.")
+            #logger.error("Final Gibbs free energy not found in 'ox_step_2.out' or conversion failed.")
 
     if "3" in config['oxidation_steps']:
         free_gibbs_plus_3 = find_gibbs_energy(filemane_plus_3)
         if free_gibbs_plus_3 is not None:
-            logging.info(f"Free Gibbs Free Energy +3 (H): {free_gibbs_plus_3}")
+            logger.info(f"Free Gibbs Free Energy +3 (H): {free_gibbs_plus_3}")
         #else:
-            #logging.error("Final Gibbs free energy not found in 'ox_step_3.out' or conversion failed.")
+            #logger.error("Final Gibbs free energy not found in 'ox_step_3.out' or conversion failed.")
 
     if "1" in config['reduction_steps']:
         free_gibbs_minus_1 = find_gibbs_energy(filename_minus_1)
         if free_gibbs_minus_1 is not None:
-            logging.info(f"Free Gibbs Free Energy -1 (H): {free_gibbs_minus_1}")
+            logger.info(f"Free Gibbs Free Energy -1 (H): {free_gibbs_minus_1}")
         #else:
-            #logging.error("Final Gibbs free energy not found in 'red_step_1.out' or conversion failed.")
+            #logger.error("Final Gibbs free energy not found in 'red_step_1.out' or conversion failed.")
 
     if "2" in config['reduction_steps']:
         free_gibbs_minus_2 = find_gibbs_energy(filename_minus_2)
         if free_gibbs_minus_2 is not None:
-            logging.info(f"Free Gibbs Free Energy -2 (H): {free_gibbs_minus_2}")
+            logger.info(f"Free Gibbs Free Energy -2 (H): {free_gibbs_minus_2}")
         #else:
-            #logging.error("Final Gibbs free energy not found in 'red_step_2.out' or conversion failed.")
+            #logger.error("Final Gibbs free energy not found in 'red_step_2.out' or conversion failed.")
 
     if "3" in config['reduction_steps']:
         free_gibbs_minus_3 = find_gibbs_energy(filename_minus_3)   
         if free_gibbs_minus_3 is not None:
-            logging.info(f"Free Gibbs Free Energy -3 (H): {free_gibbs_minus_3}")
+            logger.info(f"Free Gibbs Free Energy -3 (H): {free_gibbs_minus_3}")
         #else:
-            #logging.error("Final Gibbs free energy not found in 'red_step_3.out' or conversion failed.")
+            #logger.error("Final Gibbs free energy not found in 'red_step_3.out' or conversion failed.")
 
 
 
@@ -997,12 +1002,12 @@ def main():
             for src, bag in (('M3', m3_mix), ('M2', m2_step), ('M1', m1_avg)):
                 if bag.get(key) is not None:
                     val = bag[key]
-                    logging.warning(f"Using fallback from {src} for {key} (selected method missing).")
+                    logger.warning(f"Using fallback from {src} for {key} (selected method missing).")
                     return val
             val = None
-            #logging.warning(f"{key} unavailable in all methods.")
+            #logger.warning(f"{key} unavailable in all methods.")
             return val
-        logging.info(f"[{src}] {key} = {val}")
+        logger.info(f"[{src}] {key} = {val}")
         return val
 
     # Assign the names your report expects:
@@ -1021,21 +1026,21 @@ def main():
             if ZPE_S0 is not None and ZPE_T1 is not None:
                 if E_0 is not None and E_T1 is not None:
                     E_00_t1 = ((E_T1 - E_0) + (ZPE_T1 - ZPE_S0)) * 27.211386245988
-                    logging.info(f"E_00_t (eV): {E_00_t1}")
+                    logger.info(f"E_00_t (eV): {E_00_t1}")
                 else:
-                    logging.error("E_00_t calculation cannot be performed due to missing state1 data.")
+                    logger.error("E_00_t calculation cannot be performed due to missing state1 data.")
             else:
-                logging.error("E_00_t calculation cannot be performed due to missing ZPE data.")
+                logger.error("E_00_t calculation cannot be performed due to missing ZPE data.")
         
         if "s" in config.get("excitation", ""):
             if ZPE_S0 is not None and ZPE_S1 is not None:
                 if E_0 is not None and E_S1 is not None:
                     E_00_s1 = ((E_S1 - E_0) + (ZPE_S1 - ZPE_S0)) * 27.211386245988
-                    logging.info(f"E_00_s (eV): {E_00_s1}")
+                    logger.info(f"E_00_s (eV): {E_00_s1}")
                 else:
-                    logging.error("E_00_s calculation cannot be performed due to missing state1 data.")
+                    logger.error("E_00_s calculation cannot be performed due to missing state1 data.")
             else:
-                logging.error("E_00_s calculation cannot be performed due to missing ZPE data.")
+                logger.error("E_00_s calculation cannot be performed due to missing ZPE data.")
 
 
     charge = int(config['charge'])
@@ -1047,7 +1052,7 @@ def main():
         multiplicity = int(config['multiplicity_0'])
 
     if config['method'] == "classic":
-        total_electrons_txt, multiplicity = calculate_total_electrons_txt(control_file_path)
+        total_electrons_txt, multiplicity = calculate_total_electrons_txt(str(control_file_path))
         total_electrons_txt = int(total_electrons_txt)  # Ensure integer
 
         total_electrons = total_electrons_txt - charge
@@ -1063,5 +1068,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
