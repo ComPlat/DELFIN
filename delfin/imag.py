@@ -73,7 +73,8 @@ def _build_bang_line_IMAG(config, rel_token, main_basisset, aux_jk, implicit):
     ri_jkx = str(config.get("ri_jkx", "")).strip()
     disp   = str(config.get("disp_corr", "")).strip()
     geom   = str(config.get("geom_opt", "OPT")).strip()
-    initg  = str(config.get("initial_guess", "PModel")).split()[0]
+    init_tokens = str(config.get("initial_guess", "PModel")).split()
+    initg  = init_tokens[0] if init_tokens else "PModel"
 
     tokens = ["!", str(config["functional"])]
     if rel_token:
