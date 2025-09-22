@@ -2,6 +2,7 @@
 # OCCUPIER-specific report generation functions
 
 from decimal import Decimal, ROUND_DOWN
+from pathlib import Path
 from typing import Optional
 import os, re
 
