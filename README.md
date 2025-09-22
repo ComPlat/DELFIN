@@ -135,6 +135,8 @@ delfin/
 * **Logging configuration:** call `delfin.common.logging.configure_logging(level, fmt, stream)` in custom drivers to fit site policies. The CLI configures logging lazily if no handlers exist.
 * **Programmatic API:** use `delfin.api.run(control_file="CONTROL.txt")` for notebooks, workflow engines, or SLURM batch scripts. Add `cleanup=False` to preserve intermediates (`--no-cleanup`). Additional CLI flags can be provided through the `extra_args` parameter.
 * **Alternate CONTROL locations:** supply `--control path/to/CONTROL.txt` (or the `control_file` argument in `delfin.api.run`) to stage input files outside the working directory.
+* **XYZ geometry support:** if `input_file` in CONTROL (or the CLI/API) points to an `.xyz`, DELFIN converts it automatically to a matching `.txt` (header dropped) before the run.
+* **SLURM template:** see `examples/slurm_submit_example.sh` for a minimal job script that sets `DELFIN_SCRATCH`, activates environments, and calls the programmatic API.
 
 ## Troubleshooting
 
