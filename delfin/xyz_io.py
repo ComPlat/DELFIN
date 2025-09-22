@@ -1,6 +1,8 @@
 import logging, re, math
 from typing import List, Dict, Optional, Any
 
+from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks
+
 # import canonical selection helpers from utils
 from .utils import set_main_basisset, select_rel_and_aux
 
@@ -267,24 +269,15 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
     bang = _build_bang_line(config, rel_token, main, aux_jk, implicit,
                             include_freq=include_freq, geom_key="geom_opt")
 
-    output_blocks: List[str] = []
-    if str(config.get('print_MOs', 'no')).lower() == "yes":
-        output_blocks.append("%output\nprint[p_mos] 1\nprint[p_basis] 2\nend\n")
-    if str(config.get('print_Loewdin_population_analysis', 'no')).lower() == "yes":
-        output_blocks.append("%output\nprint[P_ReducedOrbPopMO_L] 1\nend\n")
-
-    lines: List[str] = []
-    lines.append(bang + "\n")
-    lines.append(f"%maxcore {config['maxcore']}\n%pal nprocs {config['PAL']} end\n")
-    if additions and additions.strip():
-        lines.append(f"{additions.strip()}\n")
-
-    # Add %freq block with temperature if FREQ is enabled (after %pal, before * xyz)
+    output_blocks = collect_output_blocks(config)
+    builder = OrcaInputBuilder(bang)
+    builder.add_resources(config['maxcore'], config['PAL'])
+    builder.add_additions(additions)
     if include_freq:
-        freq_block = _build_freq_block(config)
-        lines.append(freq_block)
+        builder.add_block(_build_freq_block(config))
+    builder.add_blocks(output_blocks)
 
-    lines.extend(output_blocks)
+    lines = builder.lines
 
     # geometry
     lines.append(f"* xyz {charge} {multiplicity}\n")
@@ -335,24 +328,15 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
         else:
             bang = bang + " FREQ"
 
-    output_blocks: List[str] = []
-    if str(config.get('print_MOs', 'no')).lower() == "yes":
-        output_blocks.append("%output\nprint[p_mos] 1\nprint[p_basis] 2\nend\n")
-    if str(config.get('print_Loewdin_population_analysis', 'no')).lower() == "yes":
-        output_blocks.append("%output\nprint[P_ReducedOrbPopMO_L] 1\nend\n")
-
-    lines: List[str] = []
-    lines.append(bang + "\n" if not bang.endswith("\n") else bang)
-    lines.append(f"%maxcore {config['maxcore']}\n%pal nprocs {config['PAL']} end\n")
-    if additions and additions.strip():
-        lines.append(f"{additions.strip()}\n")
-
-    # Add %freq block with temperature if FREQ is enabled (after %pal, before * xyz)
+    output_blocks = collect_output_blocks(config)
+    builder = OrcaInputBuilder(bang)
+    builder.add_resources(config['maxcore'], config['PAL'])
+    builder.add_additions(additions)
     if include_freq:
-        freq_block = _build_freq_block(config)
-        lines.append(freq_block)
+        builder.add_block(_build_freq_block(config))
+    builder.add_blocks(output_blocks)
 
-    lines.extend(output_blocks)
+    lines = builder.lines
 
     # geometry
     lines.append(f"* xyz {charge} {multiplicity}\n")
@@ -509,24 +493,15 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
     bang = _build_bang_line(config, rel_token, main, aux_jk, implicit,
                             include_freq=include_freq, geom_key="geom_opt")
 
-    output_blocks: List[str] = []
-    if str(config.get('print_MOs', 'no')).lower() == "yes":
-        output_blocks.append("%output\nprint[p_mos] 1\nprint[p_basis] 2\nend\n")
-    if str(config.get('print_Loewdin_population_analysis', 'no')).lower() == "yes":
-        output_blocks.append("%output\nprint[P_ReducedOrbPopMO_L] 1\nend\n")
-
-    lines: List[str] = []
-    lines.append(bang + "\n")
-    lines.append(f"%maxcore {config['maxcore']}\n%pal nprocs {config['PAL']} end\n")
-    if additions and additions.strip():
-        lines.append(f"{additions.strip()}\n")
-
-    # Add %freq block with temperature if FREQ is enabled (after %pal, before * xyz)
+    output_blocks = collect_output_blocks(config)
+    builder = OrcaInputBuilder(bang)
+    builder.add_resources(config['maxcore'], config['PAL'])
+    builder.add_additions(additions)
     if include_freq:
-        freq_block = _build_freq_block(config)
-        lines.append(freq_block)
+        builder.add_block(_build_freq_block(config))
+    builder.add_blocks(output_blocks)
 
-    lines.extend(output_blocks)
+    lines = builder.lines
 
     lines.append(f"* xyz {charge} {multiplicity}\n")
     geom = [ln if ln.endswith("\n") else ln + "\n" for ln in xyz_lines]

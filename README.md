@@ -103,6 +103,12 @@ delfin/
   parser.py         # parser utilities for ORCA output files
   occupier.py       # OCCUPIER workflow (sequence execution + summary)
   copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
+  common/           # shared utilities
+    __init__.py     # exposes common helpers
+    banners.py      # CLI banner art + static strings
+    logging.py      # lightweight get_logger helper (no config side-effects)
+    orca_blocks.py  # reusable ORCA block assembly utilities
+    paths.py        # central path resolver used across modules
   reporting/        # modular report generation
     __init__.py     # reporting submodule exports
     occupier_reports.py  # OCCUPIER-specific report generation functions

@@ -1,10 +1,9 @@
 # delfin/define.py
 # -*- coding: utf-8 -*-
-import logging
-from pathlib import Path
-from typing import Union
+from delfin.common.logging import get_logger
+from delfin.common.paths import resolve_path
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 TEMPLATE = """input_file=input.txt
 NAME=
@@ -160,19 +159,10 @@ EXPLICIT SOLVATION MODEL IS VERY EXPENSIVE, especially in combination with OCCUP
 use yes/no not Yes/No !!!!!!
 """
 # -------------------------------------------------------------------------------------------------------
-def _resolve_path(path: Union[str, Path]) -> Path:
-    """Return absolute, user-expanded path without altering unresolved behaviour."""
-    candidate = Path(path).expanduser()
-    try:
-        return candidate.resolve()
-    except FileNotFoundError:
-        return candidate
-
-
 def _convert_xyz_to_input_txt(src_xyz: str, dst_txt: str = "input.txt") -> str:
     """Convert an XYZ file to input.txt by dropping the first two lines."""
-    src_path = _resolve_path(src_xyz)
-    dst_path = _resolve_path(dst_txt)
+    src_path = resolve_path(src_xyz)
+    dst_path = resolve_path(dst_txt)
 
     if not src_path.exists():
         message = f"XYZ source '{src_xyz}' not found. Creating empty {dst_txt} instead."
@@ -205,14 +195,14 @@ def create_control_file(filename: str = "CONTROL.txt",
         target_input = _convert_xyz_to_input_txt(input_file, "input.txt")
     else:
         # Ensure empty input file exists
-        target_path = _resolve_path(target_input)
+        target_path = resolve_path(target_input)
         if not target_path.exists():
             target_path.touch()
             message = f"{target_input} has been created (empty)."
             print(message)
             logger.info(message)
 
-    control_path = _resolve_path(filename)
+    control_path = resolve_path(filename)
 
     if control_path.exists() and not overwrite:
         message = f"{filename} already exists. Use --overwrite to replace it."

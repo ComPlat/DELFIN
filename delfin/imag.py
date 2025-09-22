@@ -1,4 +1,7 @@
 import os, re, sys, shutil, logging, subprocess, math
+
+from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks
+
 from .utils import search_transition_metals, set_main_basisset, select_rel_and_aux
 from .orca import run_orca_IMAG
 
@@ -222,26 +225,18 @@ def read_and_modify_xyz_IMAG(input_file_path, output_file_path, charge, multipli
     first_line_set = {atoms[i]['line_idx'] for i in first_indices}
 
     # Assemble input
-    out = []
-    out.append(bang + "\n")
-    out.append(f"%maxcore {config['maxcore']}\n")
-    out.append(f"%pal nprocs {config['PAL']} end\n")
-    if additions and additions.strip():
-        out.append(additions if additions.endswith("\n") else additions + "\n")
-
-    output_blocks = []
-    if str(config.get('print_MOs', 'no')).lower() == "yes":
-        output_blocks.append("%output\nprint[p_mos] 1\nprint[p_basis] 2\nend\n")
-    if str(config.get('print_Loewdin_population_analysis', 'no')).lower() == "yes":
-        output_blocks.append("%output\nprint[P_ReducedOrbPopMO_L] 1\nend\n")
+    output_blocks = collect_output_blocks(config)
+    builder = OrcaInputBuilder(bang)
+    builder.add_resources(config['maxcore'], config['PAL'])
+    builder.add_additions(additions)
 
     # Add %freq block with temperature (IMAG always uses FREQ)
     from .xyz_io import _build_freq_block
     freq_block = _build_freq_block(config)
-    out.append(freq_block)
+    builder.add_block(freq_block)
+    builder.add_blocks(output_blocks)
 
-    out.extend(output_blocks)
-
+    out = builder.lines
     out.append(f"* xyz {charge} {multiplicity}\n")
 
     # Write coordinates + optional NewGTO tags
