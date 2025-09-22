@@ -1,7 +1,9 @@
+import os
 import subprocess
 import sys
+from pathlib import Path
 from shutil import which
-from typing import Optional
+from typing import Iterable, Optional
 
 from delfin.common.logging import get_logger
 
@@ -20,17 +22,69 @@ ORCA_PLOT_INPUT_TEMPLATE = (
     "11\n"
 )
 
-def find_orca_executable() -> Optional[str]:
-    """Locate ORCA executable in system PATH.
-
-    Returns:
-        Path to ORCA executable, or None if not found
-    """
-    orca_path = which("orca")
-    if not orca_path:
-        logger.error("ORCA executable not found. Please ensure ORCA is installed and in your PATH.")
+def _validate_candidate(candidate: str) -> Optional[str]:
+    """Return a usable executable path when candidate points to a file."""
+    if not candidate:
         return None
-    return orca_path
+
+    expanded = Path(candidate.strip()).expanduser()
+    if not expanded.is_file():
+        return None
+
+    if not os.access(expanded, os.X_OK):
+        return None
+
+    return str(expanded.resolve())
+
+
+def _iter_orca_candidates() -> Iterable[str]:
+    """Yield potential ORCA paths from environment and helper tools."""
+    env_keys = ("ORCA_BINARY", "ORCA_PATH")
+    for key in env_keys:
+        value = os.environ.get(key)
+        if value:
+            yield value
+
+    which_targets = ["orca"]
+    if sys.platform.startswith("win"):
+        which_targets.append("orca.exe")
+
+    for target in which_targets:
+        located = which(target)
+        if located:
+            yield located
+
+    locator = which("orca_locate")
+    if locator:
+        try:
+            result = subprocess.run([locator], check=False, capture_output=True, text=True)
+        except Exception as exc:
+            logger.debug(f"Failed to query orca_locate: {exc}")
+        else:
+            if result.returncode != 0:
+                logger.debug(
+                    "orca_locate returned non-zero exit status %s with stderr: %s",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+            else:
+                for line in result.stdout.splitlines():
+                    stripped = line.strip()
+                    if stripped:
+                        yield stripped
+
+
+def find_orca_executable() -> Optional[str]:
+    """Locate a valid ORCA executable by validating several candidate sources."""
+    for candidate in _iter_orca_candidates():
+        valid_path = _validate_candidate(candidate)
+        if valid_path:
+            return valid_path
+
+        logger.debug(f"Discarding invalid ORCA candidate path: {candidate!r}")
+
+    logger.error("ORCA executable not found. Please ensure ORCA is installed and in your PATH.")
+    return None
 
 
 def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str) -> bool:
