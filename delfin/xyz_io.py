@@ -503,8 +503,9 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
     implicit = _implicit_token(config, solvent)
 
     # method line with FREQ
+    include_freq = True
     bang = _build_bang_line(config, rel_token, main, aux_jk, implicit,
-                            include_freq=True, geom_key="geom_opt")
+                            include_freq=include_freq, geom_key="geom_opt")
 
     lines: List[str] = []
     # optional print blocks
