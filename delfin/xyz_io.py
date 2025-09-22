@@ -1,5 +1,5 @@
 import logging, re, math
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 # import canonical selection helpers from utils
 from .utils import set_main_basisset, select_rel_and_aux
@@ -7,13 +7,13 @@ from .utils import set_main_basisset, select_rel_and_aux
 # -------------------------------------------------------------------------
 # generic IO helpers (unchanged API)
 # -------------------------------------------------------------------------
-def write_to_file(lines, output_file_path):
+def write_to_file(lines: List[str], output_file_path: str) -> None:
     with open(output_file_path, 'w') as file:
         for line in lines:
             file.write(line + '\n')
     logging.info(f"Lines written to '{output_file_path}'")
 
-def modify_file(file_path):
+def modify_file(file_path: str) -> None:
     with open(file_path, 'r') as file:
         lines = file.readlines()
     modified_lines = lines[2:-3]
@@ -22,7 +22,7 @@ def modify_file(file_path):
             file.write(line)
     logging.info(f"File '{file_path}' modified")
 
-def extract_orbital_energies(file_path):
+def extract_orbital_energies(file_path: str) -> List[str]:
     with open(file_path, 'r') as file:
         lines = file.readlines()
     start_marker = "ORBITAL ENERGIES"
@@ -364,8 +364,8 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
     logging.info(f"Input file '{input_file_path}' modified and saved as '{output_file_path}'")
 
 
-def read_xyz_and_create_input2(xyz_file_path, output_file_path, charge, multiplicity, solvent,
-                               found_metals, config, main_basisset, metal_basisset, additions):
+def read_xyz_and_create_input2(xyz_file_path: str, output_file_path: str, charge: int, multiplicity: int, solvent: str,
+                               found_metals: List[str], config: Dict[str, Any], main_basisset: str, metal_basisset: Optional[str], additions: str) -> None:
     """
     TDDFT single-point builder (no freq). Uses new CONTROL keys and per-atom basis tagging.
     """
@@ -479,8 +479,8 @@ def read_xyz_and_create_input2_2(xyz_file_path, output_file_path, charge, multip
     except Exception as e:
         logging.error(f"Error writing '{output_file_path}': {e}")
 
-def read_xyz_and_create_input3(xyz_file_path, output_file_path, charge, multiplicity,
-                               solvent, found_metals, metal_basisset, main_basisset, config, additions):
+def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge: int, multiplicity: int,
+                               solvent: str, found_metals: List[str], metal_basisset: Optional[str], main_basisset: str, config: Dict[str, Any], additions: str) -> None:
     """
     Frequency job builder (adds FREQ). Uses new CONTROL keys and per-atom basis tagging.
     """
@@ -533,8 +533,8 @@ def read_xyz_and_create_input3(xyz_file_path, output_file_path, charge, multipli
         file.writelines(lines)
     logging.info(f"XYZ file '{xyz_file_path}' processed and saved as '{output_file_path}'")
 
-def read_xyz_and_create_input4(xyz_file_path, output_file_path, charge, multiplicity,
-                               solvent, found_metals, metal_basisset, main_basisset, config, additions):
+def read_xyz_and_create_input4(xyz_file_path: str, output_file_path: str, charge: int, multiplicity: int,
+                               solvent: str, found_metals: List[str], metal_basisset: Optional[str], main_basisset: str, config: Dict[str, Any], additions: str) -> None:
     """
     E00 / selected-root TDDFT builder (with %TDDFT IROOT/FOLLOWIROOT).
     Uses new CONTROL keys and per-atom basis tagging.

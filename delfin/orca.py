@@ -2,8 +2,9 @@ import platform
 import subprocess
 import logging
 import sys
+from typing import Optional
 
-def find_orca_executable():
+def find_orca_executable() -> Optional[str]:
     command = "where" if platform.system() == "Windows" else "which"
     result = subprocess.run([command, "orca"], capture_output=True, text=True)
     orca_path = result.stdout.strip()
@@ -12,7 +13,7 @@ def find_orca_executable():
         return None
     return orca_path
 
-def run_orca(input_file_path, output_log):
+def run_orca(input_file_path: str, output_log: str) -> None:
     orca_path = find_orca_executable()
     if not orca_path:
         return
@@ -23,7 +24,7 @@ def run_orca(input_file_path, output_log):
         except subprocess.CalledProcessError as e:
             logging.error(f"Error running ORCA: {e}")
 
-def run_orca_IMAG(input_file_path, iteration):
+def run_orca_IMAG(input_file_path: str, iteration: int) -> None:
     orca_path = find_orca_executable()
     output_log = f"output_{iteration}.out"
     with open(output_log, "w") as output_file:
@@ -34,7 +35,7 @@ def run_orca_IMAG(input_file_path, iteration):
             logging.error(f"Error running ORCA: {e}")
             sys.exit(1)
 
-def run_orca_plot(homo_index):
+def run_orca_plot(homo_index: int) -> None:
     for index in range(homo_index - 10, homo_index + 11):
         process = subprocess.Popen(['orca_plot', 'input.gbw', '-i'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         inputs = f'1\n1\n4\n100\n5\n7\n2\n{index}\n10\n11\n'.encode()

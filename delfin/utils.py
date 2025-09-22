@@ -1,7 +1,7 @@
 import re
 import os
 import logging
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 # ------------------------------------------------------------------------------------
 # Transition metals (IUPAC blocks)
@@ -81,7 +81,7 @@ def classify_tm_presence(found_metals: List[str]) -> str:
 # Relativity policy and basis selection
 # d3 metals → non-rel; any 4d/5d (or mixed) → relativistic
 # ------------------------------------------------------------------------------------
-def _rel_method_token(config: dict) -> str:
+def _rel_method_token(config: Dict[str, Any]) -> str:
     """
     Map CONTROL 'relativity' to the ORCA method token (printed on the '!' line).
     Supports: none|zora|x2c|dkh|dkh2. Returns '' if none/unknown.
@@ -99,7 +99,7 @@ def _should_use_rel(found_metals: List[str]) -> bool:
     return cls in ('4d5d', 'mixed')
 
 
-def select_rel_and_aux(found_metals: List[str], config: dict) -> Tuple[str, str, bool]:
+def select_rel_and_aux(found_metals: List[str], config: Dict[str, Any]) -> Tuple[str, str, bool]:
     """
     Decide relativity token and aux-JK set following the policy:
       - only 3d → non-rel ⇒ rel_token='', aux=aux_jk
@@ -111,7 +111,7 @@ def select_rel_and_aux(found_metals: List[str], config: dict) -> Tuple[str, str,
     return "", str(config.get("aux_jk", "")).strip(), False
 
 
-def set_main_basisset(found_metals: List[str], config: dict) -> Tuple[str, Optional[str]]:
+def set_main_basisset(found_metals: List[str], config: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     """
     Choose orbital bases for the '!' line and the metal override (inline NewGTO):
       - any 4d/5d (or mixed) → use main_basisset_rel / metal_basisset_rel

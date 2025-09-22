@@ -1,7 +1,7 @@
 # energies.py
 import re
 import logging
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Dict, Any, Tuple
 
 FLOAT_RE = r'([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)'
 
@@ -51,7 +51,7 @@ def find_electronic_energy(filename: str) -> Optional[float]:
     return _search_last_float(filename, patterns)
 
 
-def find_state1_ohne_SOC(filename3):
+def find_state1_ohne_SOC(filename3: str) -> Optional[float]:
     search_text = "CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
     last_value = None
     try:
@@ -73,7 +73,7 @@ def find_state1_ohne_SOC(filename3):
         return None
     return last_value
 
-def find_state3_ohne_SOC(filename3):
+def find_state3_ohne_SOC(filename3: str) -> Optional[float]:
     search_text = "CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
     last_value = None
     try:
@@ -96,7 +96,7 @@ def find_state3_ohne_SOC(filename3):
     return last_value
 
 
-def find_state1_mit_SOC(filename3):
+def find_state1_mit_SOC(filename3: str) -> Optional[float]:
     search_text = "SOC CORRECTED CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
     try:
         with open(filename3, 'r') as file:
@@ -116,7 +116,7 @@ def find_state1_mit_SOC(filename3):
         logging.error(f"File {filename3} not found.")
     return None
 
-def find_state3_mit_SOC(filename3):
+def find_state3_mit_SOC(filename3: str) -> Optional[float]:
     search_text = "SOC CORRECTED CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
     try:
         with open(filename3, 'r') as file:
@@ -136,7 +136,7 @@ def find_state3_mit_SOC(filename3):
         logging.error(f"File {filename3} not found.")
     return None
 
-def check_and_execute_SOC(filename3, config):
+def check_and_execute_SOC(filename3: str, config: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
     if config['DOSOC'] == "TRUE":
         state1_mit_SOC = find_state1_mit_SOC(filename3)  # Direct value
         state3_mit_SOC = find_state3_mit_SOC(filename3)

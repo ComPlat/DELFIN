@@ -2,8 +2,9 @@ import ast
 import logging
 import os
 import re
+from typing import Dict, Any, Optional, Union
 
-def read_control_file(file_path):
+def read_control_file(file_path: str) -> Dict[str, Any]:
     config = {}
     multi_key = None
     multi_val = ""
@@ -60,7 +61,7 @@ def read_control_file(file_path):
 
     return config
 
-def OCCUPIER_parser(path):
+def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     config = {}
     multi_key = None
     multi_val = ""
@@ -115,7 +116,7 @@ def OCCUPIER_parser(path):
     return config
 
 
-def _coerce_float(val):
+def _coerce_float(val: Any) -> Optional[float]:
     if val is None:
         return None
     if isinstance(val, bool):
@@ -139,7 +140,7 @@ def _coerce_float(val):
     return None
 
 
-def get_E_ref(config):
+def get_E_ref(config: Dict[str, Any]) -> float:
     e_ref = _coerce_float(config.get('E_ref', None))
     if e_ref is not None:
         return e_ref
