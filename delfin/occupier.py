@@ -415,7 +415,13 @@ def run_OCCUPIER():
             # Broken Symmetry + APMethod
             apm = config.get("approximate_spin_projection_APMethod")
             if bs:
-                parts.append(f"%scf\n  BrokenSym {bs}\n  APMethod {apm}\nend")
+                # Check if frequency calculation is enabled for OCCUPIER
+                freq_enabled = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
+                if freq_enabled:
+                    # When frequency calculation is enabled, APMethod should not be in SCF block
+                    parts.append(f"%scf\n  BrokenSym {bs}\nend")
+                else:
+                    parts.append(f"%scf\n  BrokenSym {bs}\n  APMethod {apm}\nend")
 
             additions = "\n".join(parts)
 
