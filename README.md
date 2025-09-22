@@ -91,13 +91,13 @@ delfin/
   cli_banner.py     # banner display and file validation utilities
   cli_calculations.py # redox potential calculation methods (M1, M2, M3)
   main.py           # optional small loader (may delegate to cli.main)
-  define.py         # CONTROL template generator (+ .xyz → input.txt conversion)
+  define.py         # CONTROL template generator (+ .xyz → input.txt conversion, path normalisation + logging hooks)
   cleanup.py        # delete temporary files
   config.py         # CONTROL.txt parsing & helpers
   utils.py          # common helpers (transition metal scan, basis-set selection, electron counts)
   orca.py           # ORCA executable discovery & runs
-  imag.py           # IMAG workflow (plotvib helpers, imaginary-mode loop)
-  xyz_io.py         # XYZ/ORCA-input read/write helpers
+  imag.py           # IMAG workflow (plotvib helpers, imaginary-mode loop, freq-first order for optional output blocks)
+  xyz_io.py         # XYZ/ORCA-input read/write helpers (freq block comes before any optional %output sections)
   xtb_crest.py      # xTB / GOAT / CREST / ALPB solvation workflows
   energies.py       # extractors for energies (FSPE, Gibbs, ZPE, electronic energies)
   parser.py         # parser utilities for ORCA output files

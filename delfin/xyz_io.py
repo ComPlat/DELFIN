@@ -267,14 +267,13 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
     bang = _build_bang_line(config, rel_token, main, aux_jk, implicit,
                             include_freq=include_freq, geom_key="geom_opt")
 
-    lines: List[str] = []
-    # optional print blocks
+    output_blocks: List[str] = []
     if str(config.get('print_MOs', 'no')).lower() == "yes":
-        lines.append("%output\nprint[p_mos] 1\nprint[p_basis] 2\nend\n")
+        output_blocks.append("%output\nprint[p_mos] 1\nprint[p_basis] 2\nend\n")
     if str(config.get('print_Loewdin_population_analysis', 'no')).lower() == "yes":
-        lines.append("%output\nprint[P_ReducedOrbPopMO_L] 1\nend\n")
+        output_blocks.append("%output\nprint[P_ReducedOrbPopMO_L] 1\nend\n")
 
-    # header
+    lines: List[str] = []
     lines.append(bang + "\n")
     lines.append(f"%maxcore {config['maxcore']}\n%pal nprocs {config['PAL']} end\n")
     if additions and additions.strip():
@@ -284,6 +283,8 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
     if include_freq:
         freq_block = _build_freq_block(config)
         lines.append(freq_block)
+
+    lines.extend(output_blocks)
 
     # geometry
     lines.append(f"* xyz {charge} {multiplicity}\n")
@@ -334,14 +335,13 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
         else:
             bang = bang + " FREQ"
 
-    lines: List[str] = []
-    # optional print blocks
+    output_blocks: List[str] = []
     if str(config.get('print_MOs', 'no')).lower() == "yes":
-        lines.append("%output\nprint[p_mos] 1\nprint[p_basis] 2\nend\n")
+        output_blocks.append("%output\nprint[p_mos] 1\nprint[p_basis] 2\nend\n")
     if str(config.get('print_Loewdin_population_analysis', 'no')).lower() == "yes":
-        lines.append("%output\nprint[P_ReducedOrbPopMO_L] 1\nend\n")
+        output_blocks.append("%output\nprint[P_ReducedOrbPopMO_L] 1\nend\n")
 
-    # header
+    lines: List[str] = []
     lines.append(bang + "\n" if not bang.endswith("\n") else bang)
     lines.append(f"%maxcore {config['maxcore']}\n%pal nprocs {config['PAL']} end\n")
     if additions and additions.strip():
@@ -351,6 +351,8 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
     if include_freq:
         freq_block = _build_freq_block(config)
         lines.append(freq_block)
+
+    lines.extend(output_blocks)
 
     # geometry
     lines.append(f"* xyz {charge} {multiplicity}\n")
@@ -507,13 +509,13 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
     bang = _build_bang_line(config, rel_token, main, aux_jk, implicit,
                             include_freq=include_freq, geom_key="geom_opt")
 
-    lines: List[str] = []
-    # optional print blocks
+    output_blocks: List[str] = []
     if str(config.get('print_MOs', 'no')).lower() == "yes":
-        lines.append("%output\nprint[p_mos] 1\nprint[p_basis] 2\nend\n")
+        output_blocks.append("%output\nprint[p_mos] 1\nprint[p_basis] 2\nend\n")
     if str(config.get('print_Loewdin_population_analysis', 'no')).lower() == "yes":
-        lines.append("%output\nprint[P_ReducedOrbPopMO_L] 1\nend\n")
+        output_blocks.append("%output\nprint[P_ReducedOrbPopMO_L] 1\nend\n")
 
+    lines: List[str] = []
     lines.append(bang + "\n")
     lines.append(f"%maxcore {config['maxcore']}\n%pal nprocs {config['PAL']} end\n")
     if additions and additions.strip():
@@ -523,6 +525,8 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
     if include_freq:
         freq_block = _build_freq_block(config)
         lines.append(freq_block)
+
+    lines.extend(output_blocks)
 
     lines.append(f"* xyz {charge} {multiplicity}\n")
     geom = [ln if ln.endswith("\n") else ln + "\n" for ln in xyz_lines]

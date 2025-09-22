@@ -1,9 +1,12 @@
 # delfin/define.py
 # -*- coding: utf-8 -*-
+import logging
 from pathlib import Path
+from typing import Union
+
+logger = logging.getLogger(__name__)
 
 TEMPLATE = """input_file=input.txt
-------------------------------------
 NAME=
 SMILES=
 charge=[CHARGE]
@@ -157,13 +160,24 @@ EXPLICIT SOLVATION MODEL IS VERY EXPENSIVE, especially in combination with OCCUP
 use yes/no not Yes/No !!!!!!
 """
 # -------------------------------------------------------------------------------------------------------
+def _resolve_path(path: Union[str, Path]) -> Path:
+    """Return absolute, user-expanded path without altering unresolved behaviour."""
+    candidate = Path(path).expanduser()
+    try:
+        return candidate.resolve()
+    except FileNotFoundError:
+        return candidate
+
+
 def _convert_xyz_to_input_txt(src_xyz: str, dst_txt: str = "input.txt") -> str:
     """Convert an XYZ file to input.txt by dropping the first two lines."""
-    src_path = Path(src_xyz).expanduser()
-    dst_path = Path(dst_txt).expanduser()
+    src_path = _resolve_path(src_xyz)
+    dst_path = _resolve_path(dst_txt)
 
     if not src_path.exists():
-        print(f"XYZ source '{src_xyz}' not found. Creating empty {dst_txt} instead.")
+        message = f"XYZ source '{src_xyz}' not found. Creating empty {dst_txt} instead."
+        print(message)
+        logger.warning(message)
         dst_path.touch(exist_ok=True)
         return dst_txt
 
@@ -173,7 +187,9 @@ def _convert_xyz_to_input_txt(src_xyz: str, dst_txt: str = "input.txt") -> str:
         content += "\n"
 
     dst_path.write_text(content, encoding="utf-8")
-    print(f"Converted '{src_xyz}' → '{dst_txt}' (dropped first two lines).")
+    message = f"Converted '{src_xyz}' → '{dst_txt}' (dropped first two lines)."
+    print(message)
+    logger.info(message)
     return dst_txt
 # -------------------------------------------------------------------------------------------------------
 def create_control_file(filename: str = "CONTROL.txt",
@@ -189,18 +205,24 @@ def create_control_file(filename: str = "CONTROL.txt",
         target_input = _convert_xyz_to_input_txt(input_file, "input.txt")
     else:
         # Ensure empty input file exists
-        target_path = Path(target_input).expanduser()
+        target_path = _resolve_path(target_input)
         if not target_path.exists():
             target_path.touch()
-            print(f"{target_input} has been created (empty).")
+            message = f"{target_input} has been created (empty)."
+            print(message)
+            logger.info(message)
 
-    control_path = Path(filename).expanduser()
+    control_path = _resolve_path(filename)
 
     if control_path.exists() and not overwrite:
-        print(f"{filename} already exists. Use --overwrite to replace it.")
+        message = f"{filename} already exists. Use --overwrite to replace it."
+        print(message)
+        logger.warning(message)
         return
 
     content = TEMPLATE.replace("{INPUT_FILE}", target_input)
     control_path.write_text(content, encoding="utf-8")
-    print(f"{filename} has been written (input_file={target_input}).")
+    message = f"{filename} has been written (input_file={target_input})."
+    print(message)
+    logger.info(message)
 # -------------------------------------------------------------------------------------------------------

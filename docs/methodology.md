@@ -59,6 +59,11 @@ DELFIN implements three primary calculation modes:
 - **Purpose**: User-defined calculation sequences
 - **Implementation**: Flexible workflow based on CONTROL.txt specifications
 
+### Input File Preparation
+
+- `delfin.define._resolve_path` normalises all filesystem inputs (user expansion + absolute paths) to guarantee that CONTROL and XYZ artefacts are written reproducibly across runs.
+- `_convert_xyz_to_input_txt` and `create_control_file` emit paired console messages and log records so that batch experiments retain a human-readable audit trail without changing existing behaviour.
+
 ### 2. Basis Set Selection Policy
 
 DELFIN implements an intelligent basis set selection policy based on metal composition:
@@ -76,9 +81,9 @@ def classify_tm_presence(found_metals):
 ```
 
 **Policy Implementation**:
-- **3d metals only**: Standard basis sets (def2-TZVP), no relativistic effects
-- **4d/5d metals**: Extended basis sets (def2-TZVPP), relativistic corrections (ZORA/X2C)
-- **Mixed systems**: Conservative approach favoring larger basis sets and relativity
+- **3d metals only**: Non-relativistic def2-SVP family as global main basis. Optional per-metal overrides are taken from the `metal_basisset` control key when provided.
+- **4d/5d metals**: Relativistic ZORA-def2-SVP family as main basis together with any `metal_basisset_rel` overrides (e.g. SARC-ZORA-TZVP when present in the CONTROL file).
+- **Mixed systems**: Treated like 4d/5d metals to ensure relativistic settings for all transition metals in the structure.
 
 ### 3. Per-Atom Basis Set Assignment
 
