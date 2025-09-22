@@ -30,6 +30,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "  • If you omit a value (just --define), 'input.txt' is created by default.\n\n"
         "Notes on --control:\n"
         "  • Use --control=/path/to/CONTROL.txt to run with a CONTROL file outside the current directory.\n"
+        "  • If the referenced CONTROL file points to an .xyz geometry, DELFIN automatically converts it\n"
+        "    to a matching .txt input before the run starts (atom count/comment lines are removed).\n"
         "  • This is particularly useful for staged HPC jobs or batch workflows.\n\n"
         "Notes on --no-cleanup:\n"
         "  • Skips removal of intermediate files at the end of a run (they reside in DELFIN_SCRATCH when set).\n"
