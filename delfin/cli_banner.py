@@ -2,6 +2,7 @@
 # Banner and initial setup utilities for DELFIN CLI
 
 import os
+from pathlib import Path
 
 
 def print_delfin_banner():
@@ -33,7 +34,7 @@ CREST 3.0 is released under the GNU General Public License (GPL).
 """)
 
 
-def validate_required_files(config):
+def validate_required_files(config, control_path):
     """Validate that required control and input files exist.
 
     Args:
@@ -43,21 +44,24 @@ def validate_required_files(config):
         tuple: (success: bool, error_code: int, input_file: str)
     """
     # Check CONTROL.txt
-    control_file_path = os.path.join(os.getcwd(), "CONTROL.txt")
-    if not os.path.exists(control_file_path):
-        print("CONTROL.txt was not found in the current directory.")
+    if not control_path.exists():
+        print(f"CONTROL file was not found at {control_path}")
         print("Tip: run `delfin --define` to generate a template, or see `delfin --help` for usage.")
         return False, 2, None
 
     # Check input file
-    input_file = (config.get('input_file') or 'input.txt').strip() or 'input.txt'
-    if not os.path.exists(input_file):
-        print(f"Input file '{input_file}' was not found.")
+    input_file_entry = (config.get('input_file') or 'input.txt').strip() or 'input.txt'
+    input_path = Path(input_file_entry)
+    if not input_path.is_absolute():
+        input_path = control_path.parent / input_path
+    input_path = input_path.expanduser()
+    if not input_path.exists():
+        print(f"Input file '{input_path}' was not found.")
         print("Tip: run `delfin --define=your.xyz` to convert an XYZ into input.txt, "
               "or create the file manually and update CONTROL.txt (input_file=...).")
         return False, 2, None
 
-    return True, 0, input_file
+    return True, 0, str(input_path)
 
 
 def get_file_paths():

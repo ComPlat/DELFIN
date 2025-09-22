@@ -159,7 +159,7 @@ EXPLICIT SOLVATION MODEL IS VERY EXPENSIVE, especially in combination with OCCUP
 use yes/no not Yes/No !!!!!!
 """
 # -------------------------------------------------------------------------------------------------------
-def _convert_xyz_to_input_txt(src_xyz: str, dst_txt: str = "input.txt") -> str:
+def convert_xyz_to_input_txt(src_xyz: str, dst_txt: str = "input.txt") -> str:
     """Convert an XYZ file to input.txt by dropping the first two lines."""
     src_path = resolve_path(src_xyz)
     dst_path = resolve_path(dst_txt)
@@ -192,7 +192,7 @@ def create_control_file(filename: str = "CONTROL.txt",
     # If user passed an .xyz, convert to input.txt and use that in CONTROL.txt
     target_input = input_file
     if str(input_file).lower().endswith(".xyz"):
-        target_input = _convert_xyz_to_input_txt(input_file, "input.txt")
+        target_input = convert_xyz_to_input_txt(input_file, "input.txt")
     else:
         # Ensure empty input file exists
         target_path = resolve_path(target_input)

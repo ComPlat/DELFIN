@@ -4,6 +4,7 @@ from pathlib import Path
 
 from delfin.common.logging import configure_logging, get_logger
 from delfin.common.paths import get_runtime_dir, resolve_path
+from delfin.define import convert_xyz_to_input_txt
 from .define import create_control_file
 from .cleanup import cleanup_all
 from .config import read_control_file, get_E_ref
@@ -26,6 +27,23 @@ from .cli_banner import print_delfin_banner, validate_required_files, get_file_p
 from .cli_calculations import calculate_redox_potentials, select_final_potentials
 
 logger = get_logger(__name__)
+
+
+def _normalize_input_file(config, control_path: Path) -> str:
+    input_entry = (config.get('input_file') or 'input.txt').strip() or 'input.txt'
+    entry_path = Path(input_entry)
+    if entry_path.is_absolute():
+        input_path = resolve_path(entry_path)
+    else:
+        input_path = resolve_path(control_path.parent / entry_path)
+    if input_path.suffix.lower() == '.xyz':
+        target = input_path.with_suffix('.txt')
+        convert_xyz_to_input_txt(str(input_path), str(target))
+        config['input_file'] = str(target)
+        return str(target)
+    config['input_file'] = str(input_path)
+    return str(input_path)
+
 
 
 
@@ -79,7 +97,9 @@ def main(argv: list[str] | None = None) -> int:
     config = read_control_file(str(control_file_path))
 
     # Validate required files
-    success, error_code, input_file = validate_required_files(config)
+    normalized_input = _normalize_input_file(config, control_file_path)
+    success, error_code, _ = validate_required_files(config, control_file_path)
+    input_file = normalized_input
     if not success:
         return error_code
 
