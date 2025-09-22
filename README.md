@@ -103,12 +103,13 @@ delfin/
   parser.py         # parser utilities for ORCA output files
   occupier.py       # OCCUPIER workflow (sequence execution + summary)
   copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
+  api.py            # programmatic API (e.g. `delfin.api.run(...)` for notebooks/workflows)
   common/           # shared utilities
     __init__.py     # exposes common helpers
     banners.py      # CLI banner art + static strings
-    logging.py      # lightweight get_logger helper (no config side-effects)
+    logging.py      # logging configuration/get_logger helpers (cluster-friendly)
     orca_blocks.py  # reusable ORCA block assembly utilities
-    paths.py        # central path resolver used across modules
+    paths.py        # central path & scratch-directory helpers (`DELFIN_SCRATCH` aware)
   reporting/        # modular report generation
     __init__.py     # reporting submodule exports
     occupier_reports.py  # OCCUPIER-specific report generation functions
@@ -127,6 +128,13 @@ delfin/
 * Basis/functional/solvent/RI flags (as before)
 
 ---
+
+## Cluster & Workflow Integration
+
+* **Scratch directory:** set `DELFIN_SCRATCH=/path/to/scratch` before launching jobs. Temporary files, markers, and runtime artefacts are written there (directories are created automatically).
+* **Logging configuration:** call `delfin.common.logging.configure_logging(level, fmt, stream)` in custom drivers to fit site policies. The CLI configures logging lazily if no handlers exist.
+* **Programmatic API:** use `delfin.api.run(control_file="CONTROL.txt")` for notebooks, workflow engines, or SLURM batch scripts. Add `cleanup=False` to preserve intermediates (`--no-cleanup`). Additional CLI flags can be provided through the `extra_args` parameter.
+* **Alternate CONTROL locations:** supply `--control path/to/CONTROL.txt` (or the `control_file` argument in `delfin.api.run`) to stage input files outside the working directory.
 
 ## Troubleshooting
 

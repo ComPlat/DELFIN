@@ -1,9 +1,9 @@
-import os, time, re, sys, logging, argparse
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+from __future__ import annotations
+import os, time, re, sys, argparse
 from pathlib import Path
 
-from delfin.common.logging import get_logger
-from delfin.common.paths import resolve_path
+from delfin.common.logging import configure_logging, get_logger
+from delfin.common.paths import get_runtime_dir, resolve_path
 from .define import create_control_file
 from .cleanup import cleanup_all
 from .config import read_control_file, get_E_ref
@@ -31,10 +31,11 @@ logger = get_logger(__name__)
 
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
+    configure_logging()
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
-    args, _unknown = parser.parse_known_args(sys.argv[1:])
+    args, _unknown = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
     RECALC_MODE = bool(getattr(args, "recalc", False))
     os.environ["DELFIN_RECALC"] = "1" if RECALC_MODE else "0"
 
@@ -57,14 +58,14 @@ def main():
 
     # Only define template and exit
     if args.define:
-        create_control_file(filename="CONTROL.txt",
+        create_control_file(filename=str(resolve_path(args.control)),
                             input_file=args.define,
                             overwrite=args.overwrite)
         return 0
 
     # Only cleanup and exit
     if args.cleanup:
-        cleanup_all()
+        cleanup_all(str(get_runtime_dir()))
         print("Cleanup done.")
         return 0
 
@@ -74,7 +75,7 @@ def main():
 
     # ---- Friendly checks for missing CONTROL.txt / input file ----
     # Read CONTROL.txt once and derive all settings from it
-    control_file_path = resolve_path("CONTROL.txt")
+    control_file_path = resolve_path(args.control)
     config = read_control_file(str(control_file_path))
 
     # Validate required files
@@ -1064,8 +1065,10 @@ def main():
     duration = end_time - start_time
     generate_summary_report(charge, multiplicity, solvent, E_ox, E_ox_2, E_ox_3, E_red, E_red_2, E_red_3, E_00_t1, E_00_s1, metals, metal_basisset, NAME, main_basisset, config, duration, E_ref)
 
-    cleanup_all(".")
+    if not args.no_cleanup:
+        cleanup_all(str(get_runtime_dir()))
+    return 0
+
 
 if __name__ == "__main__":
-    main()
-
+    sys.exit(main())

@@ -68,9 +68,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Overwrite CONTROL.txt and the input file if they already exist."
     )
     p.add_argument(
+        "--control",
+        default="CONTROL.txt",
+        metavar="FILE",
+        help="Path to CONTROL file (default: CONTROL.txt)."
+    )
+    p.add_argument(
         "-C", "--cleanup",
         action="store_true",
         help="Clean up intermediate files/folders and exit."
+    )
+    p.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Keep intermediate files instead of removing them at the end of the run."
     )
     p.add_argument(
         "-V", "--version",
@@ -84,5 +95,4 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only (re)run external jobs whose .out files are missing or incomplete."
     )
     return p
-
 

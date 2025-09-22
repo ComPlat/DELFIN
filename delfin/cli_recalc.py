@@ -1,11 +1,8 @@
 # cli_recalc.py
 # Recalc mode wrapper functions for DELFIN CLI
 
-import os
-from pathlib import Path
-
 from delfin.common.logging import get_logger
-from delfin.common.paths import resolve_path
+from delfin.common.paths import resolve_path, scratch_path
 
 logger = get_logger(__name__)
 
@@ -40,8 +37,8 @@ def setup_recalc_mode():
     def _xtb_wrapper(multiplicity, charge, config):
         # Skip if typical XTB artifacts or a marker exist
         artifacts = ("xtbopt.xyz", "xtb.trj", "xtbopt.log")
-        marker = Path(".delfin_done_xtb")
-        if marker.exists() or any(resolve_path(a).exists() for a in artifacts):
+        marker = scratch_path(".delfin_done_xtb")
+        if marker.exists() or any(scratch_path(a).exists() for a in artifacts):
             logger.info("[recalc] skipping XTB; artifacts/marker found.")
             return None
         res = _XTB_real(multiplicity, charge, config)
@@ -53,8 +50,8 @@ def setup_recalc_mode():
 
     def _goat_wrapper(multiplicity, charge, config):
         artifacts = ("GOAT.txt", "goat.out", "goat.log")
-        marker = Path(".delfin_done_goat")
-        if marker.exists() or any(resolve_path(a).exists() for a in artifacts):
+        marker = scratch_path(".delfin_done_goat")
+        if marker.exists() or any(scratch_path(a).exists() for a in artifacts):
             logger.info("[recalc] skipping XTB_GOAT; artifacts/marker found.")
             return None
         res = _XTB_GOAT_real(multiplicity, charge, config)
@@ -66,8 +63,8 @@ def setup_recalc_mode():
 
     def _crest_wrapper(PAL, solvent, charge, multiplicity):
         artifacts = ("crest_conformers.xyz", "crest_best.xyz", "crest.energies", "crest.out")
-        marker = Path(".delfin_done_crest")
-        if marker.exists() or any(resolve_path(a).exists() for a in artifacts):
+        marker = scratch_path(".delfin_done_crest")
+        if marker.exists() or any(scratch_path(a).exists() for a in artifacts):
             logger.info("[recalc] skipping CREST; artifacts/marker found.")
             return None
         res = _CREST_real(PAL, solvent, charge, multiplicity)
@@ -79,7 +76,7 @@ def setup_recalc_mode():
 
     def _solv_wrapper(input_path, multiplicity, charge, solvent, n_solv, config):
         # If your implementation produces a specific, stable output, prefer checking for it.
-        marker = Path(".delfin_done_xtb_solvator")
+        marker = scratch_path(".delfin_done_xtb_solvator")
         if marker.exists():
             logger.info("[recalc] skipping XTB_SOLVATOR; marker found.")
             return None
