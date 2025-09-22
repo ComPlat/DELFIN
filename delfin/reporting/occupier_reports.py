@@ -84,7 +84,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
             if v: cands.append(str(v))
 
         ofile = file_for_index(idx)
-        base, _ext = os.path.splitext(ofile)
+        base = Path(ofile).stem
         cands += [base + ".inp"]
         if base.lower().startswith("output"):
             cands.append("input" + base[6:] + ".inp")
@@ -101,7 +101,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
 
     def _inp_for_index(idx: int) -> Optional[str]:
         for p in _inp_candidates_for_index(idx):
-            if os.path.exists(p):
+            if Path(p).exists():
                 return p
         return None
 
@@ -579,7 +579,7 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
             if v: cands.append(str(v))
 
         ofile = file_for_index(idx)
-        base, _ext = os.path.splitext(ofile)
+        base = Path(ofile).stem
         cands += [base + ".inp"]
         if base.lower().startswith("output"):
             cands.append("input" + base[6:] + ".inp")
@@ -596,7 +596,7 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
 
     def _inp_for_index(idx: int) -> Optional[str]:
         for p in _inp_candidates_for_index(idx):
-            if os.path.exists(p):
+            if Path(p).exists():
                 return p
         return None
 
