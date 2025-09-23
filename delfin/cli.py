@@ -22,12 +22,166 @@ from .xtb_crest import XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
 from .energies import find_gibbs_energy, find_ZPE, find_electronic_energy
 from .reporting import generate_summary_report_DELFIN as generate_summary_report
 from .copy_helpers import read_occupier_file, prepare_occ_folder, prepare_occ_folder_2, copy_if_exists
+from .thread_safe_helpers import prepare_occ_folder_2_threadsafe
 from .cli_helpers import _avg_or_none, _build_parser
 from .cli_recalc import setup_recalc_mode, patch_modules_for_recalc
 from .cli_banner import print_delfin_banner, validate_required_files, get_file_paths
 from .cli_calculations import calculate_redox_potentials, select_final_potentials
+from .parallel_classic import (
+    execute_classic_parallel_workflows,
+    execute_classic_sequential_workflows,
+    execute_manually_parallel_workflows,
+)
 
 logger = get_logger(__name__)
+
+
+def _execute_oxidation_workflow(config):
+    """Execute oxidation steps workflow."""
+    from pathlib import Path
+
+    logger.info("Starting oxidation workflow")
+
+    # Remember original working directory
+    original_cwd = Path.cwd()
+
+    try:
+        if "1" in config.get("oxidation_steps", ""):
+            print("\nOCCUPIER for the first oxidation step:\n")
+            success = prepare_occ_folder_2_threadsafe("ox_step_1_OCCUPIER", source_occ_folder="initial_OCCUPIER", charge_delta=+1, config=config, original_cwd=original_cwd)
+            if not success:
+                logger.error("Failed to prepare ox_step_1_OCCUPIER")
+                return False
+
+        if "2" in config.get("oxidation_steps", ""):
+            print("\nOCCUPIER for the second oxidation step:\n")
+            success = prepare_occ_folder_2_threadsafe("ox_step_2_OCCUPIER", source_occ_folder="ox_step_1_OCCUPIER", charge_delta=+2, config=config, original_cwd=original_cwd)
+            if not success:
+                logger.error("Failed to prepare ox_step_2_OCCUPIER")
+                return False
+
+        if "3" in config.get("oxidation_steps", ""):
+            print("\nOCCUPIER for the third oxidation step:\n")
+            success = prepare_occ_folder_2_threadsafe("ox_step_3_OCCUPIER", source_occ_folder="ox_step_2_OCCUPIER", charge_delta=+3, config=config, original_cwd=original_cwd)
+            if not success:
+                logger.error("Failed to prepare ox_step_3_OCCUPIER")
+                return False
+
+        logger.info("Oxidation workflow completed")
+        return True
+
+    except Exception as e:
+        logger.error(f"Oxidation workflow failed: {e}")
+        return False
+
+
+def _execute_reduction_workflow(config):
+    """Execute reduction steps workflow."""
+    from pathlib import Path
+
+    logger.info("Starting reduction workflow")
+
+    # Remember original working directory
+    original_cwd = Path.cwd()
+
+    try:
+        if "1" in config.get("reduction_steps", ""):
+            print("\nOCCUPIER for the first reduction step:\n")
+            success = prepare_occ_folder_2_threadsafe("red_step_1_OCCUPIER", source_occ_folder="initial_OCCUPIER", charge_delta=-1, config=config, original_cwd=original_cwd)
+            if not success:
+                logger.error("Failed to prepare red_step_1_OCCUPIER")
+                return False
+
+        if "2" in config.get("reduction_steps", ""):
+            print("\nOCCUPIER for the second reduction step:\n")
+            success = prepare_occ_folder_2_threadsafe("red_step_2_OCCUPIER", source_occ_folder="red_step_1_OCCUPIER", charge_delta=-2, config=config, original_cwd=original_cwd)
+            if not success:
+                logger.error("Failed to prepare red_step_2_OCCUPIER")
+                return False
+
+        if "3" in config.get("reduction_steps", ""):
+            print("\nOCCUPIER for the third reduction step:\n")
+            success = prepare_occ_folder_2_threadsafe("red_step_3_OCCUPIER", source_occ_folder="red_step_2_OCCUPIER", charge_delta=-3, config=config, original_cwd=original_cwd)
+            if not success:
+                logger.error("Failed to prepare red_step_3_OCCUPIER")
+                return False
+
+        logger.info("Reduction workflow completed")
+        return True
+
+    except Exception as e:
+        logger.error(f"Reduction workflow failed: {e}")
+        return False
+
+
+def _execute_parallel_workflows(config):
+    """Execute oxidation and reduction workflows in parallel."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    workflows = []
+
+    # Add oxidation workflow if configured
+    if config.get("oxidation_steps", ""):
+        workflows.append(("oxidation", _execute_oxidation_workflow, config))
+
+    # Add reduction workflow if configured
+    if config.get("reduction_steps", ""):
+        workflows.append(("reduction", _execute_reduction_workflow, config))
+
+    if not workflows:
+        logger.warning("No oxidation or reduction steps configured")
+        return True
+
+    logger.info(f"Starting {len(workflows)} workflows in parallel")
+
+    # Execute workflows in parallel
+    with ThreadPoolExecutor(max_workers=len(workflows)) as executor:
+        # Submit all workflows
+        future_to_workflow = {}
+        for workflow_name, workflow_func, workflow_config in workflows:
+            future = executor.submit(workflow_func, workflow_config)
+            future_to_workflow[future] = workflow_name
+
+        # Wait for completion and collect results
+        all_success = True
+        for future in as_completed(future_to_workflow):
+            workflow_name = future_to_workflow[future]
+            try:
+                success = future.result()
+                if success:
+                    logger.info(f"{workflow_name} workflow completed successfully")
+                else:
+                    logger.error(f"{workflow_name} workflow failed")
+                    all_success = False
+            except Exception as e:
+                logger.error(f"{workflow_name} workflow raised exception: {e}")
+                all_success = False
+
+    if all_success:
+        logger.info("All parallel workflows completed successfully")
+    else:
+        logger.error("Some parallel workflows failed")
+
+    return all_success
+
+
+def _execute_sequential_workflows(config):
+    """Execute oxidation and reduction workflows sequentially."""
+    all_success = True
+
+    # Execute oxidation workflow first
+    if config.get("oxidation_steps", ""):
+        success = _execute_oxidation_workflow(config)
+        if not success:
+            all_success = False
+
+    # Execute reduction workflow second
+    if config.get("reduction_steps", ""):
+        success = _execute_reduction_workflow(config)
+        if not success:
+            all_success = False
+
+    return all_success
 
 
 def _normalize_input_file(config, control_path: Path) -> str:
@@ -113,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         'calc_initial': 'yes',
         'oxidation_steps': '',
         'reduction_steps': '',
+        'parallel_workflows': 'yes',  # parallel ox/red workflows
         'absorption_spec': 'no',
         'emission_spec': 'no',
         'E_00': 'no',
@@ -277,31 +432,24 @@ def main(argv: list[str] | None = None) -> int:
             if "yes" in config.get("calc_initial", ""):
                 print("\nOCCUPIER for the initial system:\n")
                 prepare_occ_folder("initial_OCCUPIER", charge_delta=0)
-                        
-            if "1" in config.get("oxidation_steps", ""):
-                print("\nOCCUPIER for the first oxidation step:\n")
-                prepare_occ_folder_2("ox_step_1_OCCUPIER", source_occ_folder="initial_OCCUPIER", charge_delta=+1, config=config)
-             
-            if "2" in config.get("oxidation_steps", ""):
-                print("\nOCCUPIER for the second oxidation step:\n")
-                prepare_occ_folder_2("ox_step_2_OCCUPIER", source_occ_folder="ox_step_1_OCCUPIER", charge_delta=+2, config=config)
-            
-            if "3" in config.get("oxidation_steps", ""):
-                print("\nOCCUPIER for the third oxidation step:\n") 
-                prepare_occ_folder_2("ox_step_3_OCCUPIER", source_occ_folder="ox_step_2_OCCUPIER", charge_delta=+3, config=config)
-                
+                logger.info("Initial OCCUPIER completed successfully")
 
-            if "1" in config.get("reduction_steps", ""):
-                print("\nOCCUPIER for the first reduction step:\n")
-                prepare_occ_folder_2("red_step_1_OCCUPIER", source_occ_folder="initial_OCCUPIER", charge_delta=-1, config=config)
-                 
-            if "2" in config.get("reduction_steps", ""):
-                print("\nOCCUPIER for the second reduction step:\n")
-                prepare_occ_folder_2("red_step_2_OCCUPIER", source_occ_folder="red_step_1_OCCUPIER", charge_delta=-2, config=config)
-            
-            if "3" in config.get("reduction_steps", ""):
-                print("\nOCCUPIER for the third reduction step:\n") 
-                prepare_occ_folder_2("red_step_3_OCCUPIER", source_occ_folder="red_step_2_OCCUPIER", charge_delta=-3, config=config)
+            # IMPORTANT: Only start ox/red workflows AFTER initial_OCCUPIER is completely finished
+            # Check if we need to run ox/red workflows
+            needs_ox_red = config.get("oxidation_steps", "").strip() or config.get("reduction_steps", "").strip()
+
+            if needs_ox_red:
+                # Check if parallel workflow execution is enabled
+                parallel_workflows = str(config.get('parallel_workflows', 'yes')).lower() in ('yes', 'true', '1')
+
+                if parallel_workflows and config.get("oxidation_steps", "") and config.get("reduction_steps", ""):
+                    logger.info("Executing oxidation and reduction workflows in parallel")
+                    _execute_parallel_workflows(config)
+                else:
+                    logger.info("Executing workflows sequentially")
+                    _execute_sequential_workflows(config)
+            else:
+                logger.info("No oxidation or reduction steps configured")
                 
 
             xyz_file_initial_OCCUPIER = f"input_initial_OCCUPIER.xyz"
@@ -603,81 +751,36 @@ def main(argv: list[str] | None = None) -> int:
                     logger.info("TD-DFT emission spectra calculation complete!") 
 
 
-        if "1" in config['oxidation_steps']:
-            charge = int(config['charge']) + 1
-            total_electrons = total_electrons_txt - charge
-            is_even = total_electrons % 2 == 0
-            if is_even:
-                multiplicity = 1
-            else:
-                multiplicity = 2
-            read_xyz_and_create_input3(xyz_file, output_file5, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file5, "ox_step_1.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+        parallel_cli_enabled = str(config.get('parallel_workflows', 'yes')).lower() in ('yes', 'true', '1')
+        classic_kwargs = {
+            'total_electrons_txt': total_electrons_txt,
+            'xyz_file': xyz_file,
+            'xyz_file2': xyz_file2,
+            'xyz_file3': xyz_file3,
+            'xyz_file4': xyz_file4,
+            'xyz_file8': xyz_file8,
+            'output_file5': output_file5,
+            'output_file9': output_file9,
+            'output_file10': output_file10,
+            'output_file6': output_file6,
+            'output_file7': output_file7,
+            'output_file8': output_file8,
+            'solvent': solvent,
+            'metals': metals,
+            'metal_basisset': metal_basisset,
+            'main_basisset': main_basisset,
+            'additions': additions,
+        }
 
+        oxidation_requested = bool(str(config.get('oxidation_steps', '')).strip())
+        reduction_requested = bool(str(config.get('reduction_steps', '')).strip())
 
-        if "2" in config['oxidation_steps']:
-            charge = int(config['charge']) + 2
-            total_electrons = total_electrons_txt - charge
-            is_even = total_electrons % 2 == 0
-            if is_even:
-                multiplicity = 1
-            else:
-                multiplicity = 2
-            read_xyz_and_create_input3(xyz_file4, output_file9, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file9, "ox_step_2.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization dication!")
-
-        if "3" in config['oxidation_steps']:
-            charge = int(config['charge']) + 3
-            total_electrons = total_electrons_txt - charge
-            is_even = total_electrons % 2 == 0
-            if is_even:
-                multiplicity = 1
-            else:
-                multiplicity = 2
-            read_xyz_and_create_input3(xyz_file8, output_file10, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file10, "ox_step_3.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization trication!")
-
-
-
-        if "1" in config['reduction_steps']:
-            charge = int(config['charge']) - 1
-            total_electrons = total_electrons_txt - charge
-            is_even = total_electrons % 2 == 0
-            if is_even:
-                multiplicity = 1
-            else:
-                multiplicity = 2
-            read_xyz_and_create_input3(xyz_file, output_file6, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file6, "red_step_1.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
-
-        if "2" in config['reduction_steps']:
-            charge = int(config['charge']) - 2
-            total_electrons = total_electrons_txt - charge
-            is_even = total_electrons % 2 == 0
-            if is_even:
-                multiplicity = 1
-            else:
-                multiplicity = 2
-            read_xyz_and_create_input3(xyz_file2, output_file7, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file7, "red_step_2.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
-
-        if "3" in config['reduction_steps']:
-            charge = int(config['charge']) - 3
-            total_electrons = total_electrons_txt - charge
-            is_even = total_electrons % 2 == 0
-            if is_even:
-                multiplicity = 1
-            else:
-                multiplicity = 2
-            read_xyz_and_create_input3(xyz_file3, output_file8, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file8, "red_step_3.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
-
+        if parallel_cli_enabled and (oxidation_requested or reduction_requested):
+            if not execute_classic_parallel_workflows(config, **classic_kwargs):
+                logger.error("Classic parallel execution failed; falling back to sequential mode")
+                execute_classic_sequential_workflows(config, **classic_kwargs)
+        else:
+            execute_classic_sequential_workflows(config, **classic_kwargs)
 
 
     # ------------------- manually --------------------
@@ -747,117 +850,145 @@ def main(argv: list[str] | None = None) -> int:
                     logger.info("TD-DFT emission spectra calculation complete!") 
 
 
-        if "1" in config['oxidation_steps']:
-            charge = int(config['charge']) + 1
-            multiplicity = config['multiplicity_ox1']
-            wert = config.get('additions_ox1', "")
+        oxidation_requested = bool(str(config.get('oxidation_steps', '')).strip())
+        reduction_requested = bool(str(config.get('reduction_steps', '')).strip())
+        parallel_cli_enabled = str(config.get('parallel_workflows', 'yes')).lower() in ('yes', 'true', '1')
 
-            if isinstance(wert, str):
-                if re.fullmatch(r"\d+,\d+", wert):
-                    additions = f"%scf BrokenSym {wert} end"
-                else:
-                    additions = wert
-            elif isinstance(wert, list):
-                additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
+        manual_kwargs = {
+            'total_electrons_txt': total_electrons_txt,
+            'xyz_file': xyz_file,
+            'xyz_file2': xyz_file2,
+            'xyz_file3': xyz_file3,
+            'xyz_file4': xyz_file4,
+            'xyz_file8': xyz_file8,
+            'output_file5': output_file5,
+            'output_file9': output_file9,
+            'output_file10': output_file10,
+            'output_file6': output_file6,
+            'output_file7': output_file7,
+            'output_file8': output_file8,
+            'solvent': solvent,
+            'metals': metals,
+            'metal_basisset': metal_basisset,
+            'main_basisset': main_basisset,
+            'additions': additions,
+        }
+
+        run_manual_sequential = True
+        if parallel_cli_enabled and (oxidation_requested or reduction_requested):
+            if execute_manually_parallel_workflows(config, **manual_kwargs):
+                run_manual_sequential = False
             else:
-                additions = ""
-            read_xyz_and_create_input3(xyz_file, output_file5, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file5, "ox_step_1.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+                logger.error("Manual parallel execution failed; falling back to sequential mode")
 
-        if "2" in config['oxidation_steps']:
-            charge = int(config['charge']) + 2
-            multiplicity = config['multiplicity_ox2']
-            wert = config.get('additions_ox2', "")
+        if run_manual_sequential:
+            if "1" in config['oxidation_steps']:
+                charge = int(config['charge']) + 1
+                multiplicity = config['multiplicity_ox1']
+                wert = config.get('additions_ox1', "")
 
-            if isinstance(wert, str):
-                if re.fullmatch(r"\d+,\d+", wert):
-                    additions = f"%scf BrokenSym {wert} end"
+                if isinstance(wert, str):
+                    if re.fullmatch(r"\d+,\d+", wert):
+                        additions = f"%scf BrokenSym {wert} end"
+                    else:
+                        additions = wert
+                elif isinstance(wert, list):
+                    additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
                 else:
-                    additions = wert
-            elif isinstance(wert, list):
-                additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
-            else:
-                additions = ""
-            read_xyz_and_create_input3(xyz_file4, output_file9, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file9, "ox_step_2.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+                    additions = ""
+                read_xyz_and_create_input3(xyz_file, output_file5, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
+                run_orca(output_file5, "ox_step_1.out")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
-        if "3" in config['oxidation_steps']:
-            charge = int(config['charge']) + 3
-            multiplicity = config['multiplicity_ox3']
-            wert = config.get('additions_ox3', "")
+            if "2" in config['oxidation_steps']:
+                charge = int(config['charge']) + 2
+                multiplicity = config['multiplicity_ox2']
+                wert = config.get('additions_ox2', "")
 
-            if isinstance(wert, str):
-                if re.fullmatch(r"\d+,\d+", wert):
-                    additions = f"%scf BrokenSym {wert} end"
+                if isinstance(wert, str):
+                    if re.fullmatch(r"\d+,\d+", wert):
+                        additions = f"%scf BrokenSym {wert} end"
+                    else:
+                        additions = wert
+                elif isinstance(wert, list):
+                    additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
                 else:
-                    additions = wert
-            elif isinstance(wert, list):
-                additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
-            else:
-                additions = ""
-            read_xyz_and_create_input3(xyz_file8, output_file10, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file10, "ox_step_3.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
+                    additions = ""
+                read_xyz_and_create_input3(xyz_file4, output_file9, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
+                run_orca(output_file9, "ox_step_2.out")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
+            if "3" in config['oxidation_steps']:
+                charge = int(config['charge']) + 3
+                multiplicity = config['multiplicity_ox3']
+                wert = config.get('additions_ox3', "")
 
-
-
-
-        if "1" in config['reduction_steps']:
-            charge = int(config['charge']) - 1
-            multiplicity = config['multiplicity_red1']
-            wert = config.get('additions_red1', "")
-
-            if isinstance(wert, str):
-                if re.fullmatch(r"\d+,\d+", wert):
-                    additions = f"%scf BrokenSym {wert} end"
+                if isinstance(wert, str):
+                    if re.fullmatch(r"\d+,\d+", wert):
+                        additions = f"%scf BrokenSym {wert} end"
+                    else:
+                        additions = wert
+                elif isinstance(wert, list):
+                    additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
                 else:
-                    additions = wert
-            elif isinstance(wert, list):
-                additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
-            else:
-                additions = ""
-            read_xyz_and_create_input3(xyz_file, output_file6, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file6, "red_step_1.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
+                    additions = ""
+                read_xyz_and_create_input3(xyz_file8, output_file10, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
+                run_orca(output_file10, "ox_step_3.out")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
 
-        if "2" in config['reduction_steps']:
-            charge = int(config['charge']) - 2
-            multiplicity = config['multiplicity_red2']
-            wert = config.get('additions_red2', "")
+            if "1" in config['reduction_steps']:
+                charge = int(config['charge']) - 1
+                multiplicity = config['multiplicity_red1']
+                wert = config.get('additions_red1', "")
 
-            if isinstance(wert, str):
-                if re.fullmatch(r"\d+,\d+", wert):
-                    additions = f"%scf BrokenSym {wert} end"
+                if isinstance(wert, str):
+                    if re.fullmatch(r"\d+,\d+", wert):
+                        additions = f"%scf BrokenSym {wert} end"
+                    else:
+                        additions = wert
+                elif isinstance(wert, list):
+                    additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
                 else:
-                    additions = wert
-            elif isinstance(wert, list):
-                additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
-            else:
-                additions = ""
-            read_xyz_and_create_input3(xyz_file2, output_file7, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file7, "red_step_2.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
+                    additions = ""
+                read_xyz_and_create_input3(xyz_file, output_file6, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
+                run_orca(output_file6, "red_step_1.out")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
 
-        if "3" in config['reduction_steps']:
-            charge = int(config['charge']) - 3
-            multiplicity = config['multiplicity_red3']
-            wert = config.get('additions_red3', "")
+            if "2" in config['reduction_steps']:
+                charge = int(config['charge']) - 2
+                multiplicity = config['multiplicity_red2']
+                wert = config.get('additions_red2', "")
 
-            if isinstance(wert, str):
-                if re.fullmatch(r"\d+,\d+", wert):
-                    additions = f"%scf BrokenSym {wert} end"
+                if isinstance(wert, str):
+                    if re.fullmatch(r"\d+,\d+", wert):
+                        additions = f"%scf BrokenSym {wert} end"
+                    else:
+                        additions = wert
+                elif isinstance(wert, list):
+                    additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
                 else:
-                    additions = wert
-            elif isinstance(wert, list):
-                additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
-            else:
-                additions = ""
-            read_xyz_and_create_input3(xyz_file3, output_file8, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file8, "red_step_3.out")
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
+                    additions = ""
+                read_xyz_and_create_input3(xyz_file2, output_file7, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
+                run_orca(output_file7, "red_step_2.out")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
+
+            if "3" in config['reduction_steps']:
+                charge = int(config['charge']) - 3
+                multiplicity = config['multiplicity_red3']
+                wert = config.get('additions_red3', "")
+
+                if isinstance(wert, str):
+                    if re.fullmatch(r"\d+,\d+", wert):
+                        additions = f"%scf BrokenSym {wert} end"
+                    else:
+                        additions = wert
+                elif isinstance(wert, list):
+                    additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
+                else:
+                    additions = ""
+                read_xyz_and_create_input3(xyz_file3, output_file8, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
+                run_orca(output_file8, "red_step_3.out")
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
 
 
 
