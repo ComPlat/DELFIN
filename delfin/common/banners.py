@@ -40,6 +40,7 @@ class BannerGenerator:
 
     @staticmethod
     def create_info_banner(author: str = "ComPlat",
+                          author_name: str = "M. Hartmann",
                           institution: str = "Karlsruhe Institute of Technology (KIT)",
                           description: str = "Automates ORCA 6.1.0 calculations",
                           version: str = "Version 1.0.0") -> str:
@@ -65,6 +66,7 @@ class BannerGenerator:
             border,
             center_line("-***-"),
             center_line(author),
+            center_line(author_name),
             center_line(institution),
             center_line(description),
             center_line(version),
@@ -76,6 +78,7 @@ class BannerGenerator:
 
     @staticmethod
     def create_compact_banner(author: str = "ComPlat",
+                            author_name: str = "M. Hartmann",
                             institution: str = "Karlsruhe Institute of Technology (KIT)",
                             description: str = "Automates ORCA 6.1.0 calculations",
                             version: str = "Version 1.0.0",
@@ -103,6 +106,7 @@ class BannerGenerator:
             border,
             center_line("-***-"),
             center_line(author),
+            center_line(author_name),
             center_line(institution),
             center_line(description),
             center_line(version),

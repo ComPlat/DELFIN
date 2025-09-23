@@ -20,7 +20,7 @@ pip install -e .
 ```
 regular install
 ```bash
-pip install .
+pip install delfin-complat
 ```
 
 All Python dependencies (for example `mendeleev` for covalent radii) are installed automatically. Using a virtual environment or tools such as `pipx` keeps the scientific software stack reproducible and avoids system-wide modifications.
