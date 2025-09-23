@@ -88,14 +88,18 @@ def run_OCCUPIER():
         Load single-bond covalent radii (Å) for H–Og using 'mendeleev'.
         Returns None if the package is unavailable; a small fallback map is used then.
         """
+        key = str(source).lower()
+        if key in COVALENT_RADII_CACHE:
+            return COVALENT_RADII_CACHE[key]
         try:
             from mendeleev import element
         except Exception as e:
             #logger.warning("Could not import 'mendeleev' (%s). Falling back to internal radii.", e)
+            COVALENT_RADII_CACHE[key] = None
             return None
 
         attr = {"pyykko2009": "covalent_radius_pyykko", "cordero2008": "covalent_radius_cordero"}.get(
-            str(source).lower(), "covalent_radius_pyykko"
+            key, "covalent_radius_pyykko"
         )
         radii = {}
         for Z in range(1, 119):
@@ -108,6 +112,7 @@ def run_OCCUPIER():
                 radii[el.symbol] = float(r)
             else:
                 logger.warning("Missing covalent radius for %s (Z=%d); will use fallback.", el.symbol, Z)
+        COVALENT_RADII_CACHE[key] = radii
         return radii
 
     COVALENT_RADII_FALLBACK = {
@@ -120,6 +125,9 @@ def run_OCCUPIER():
         "Rb": 2.20, "Sr": 1.95, "Y": 1.90, "Zr": 1.75, "Nb": 1.64, "Mo": 1.54, "Ru": 1.46, "Rh": 1.42, "Pd": 1.39,
         "Ag": 1.45, "Cd": 1.44, "In": 1.42, "Sn": 1.39, "Sb": 1.39, "Te": 1.38, "I": 1.39, "Xe": 1.40,
     }
+
+    COVALENT_RADII_CACHE: Dict[str, Optional[Dict[str, float]]] = {}
+
 
     def _elem_from_label(label: str) -> str:
         """Extract the chemical symbol from 'Fe(1)' or 'Fe'."""
@@ -196,8 +204,8 @@ def run_OCCUPIER():
             lines = file.readlines()
 
         # Radii source and cutoff scaling
-        radii_all = load_covalent_radii(source=str(config.get("covalent_radii_source", "pyykko2009")))
         enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
+        radii_all = load_covalent_radii(source=str(config.get('covalent_radii_source', 'pyykko2009'))) if enable_first else None
         sphere_scale = float(config.get('first_coordination_sphere_scale', 1.20))
 
         # Relativity token + AUX-JK token follow 3d/4d5 policy
