@@ -12,19 +12,18 @@
 
 From the `delfin` folder (the one containing `pyproject.toml`):
 
-
-editable (dev) install
+recommended (isolated) install
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
-or regular install
+regular install
 ```bash
 pip install .
 ```
-global install 
-```bash
-sudo python3 -m pip install . --break-system-packages
-```
+
+All Python dependencies (for example `mendeleev` for covalent radii) are installed automatically. Using a virtual environment or tools such as `pipx` keeps the scientific software stack reproducible and avoids system-wide modifications.
 
 This exposes the console command **`delfin`** and enables `python -m delfin`.
 

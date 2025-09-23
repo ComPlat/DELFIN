@@ -100,6 +100,42 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Invalid CONTROL configuration: %s", exc)
         return 2
 
+    # Populate optional flags with safe defaults so reduced CONTROL files remain usable
+    default_config = {
+        'XTB_OPT': 'no',
+        'XTB_GOAT': 'no',
+        'CREST': 'no',
+        'XTB_SOLVATOR': 'no',
+        'calc_initial': 'yes',
+        'oxidation_steps': '',
+        'reduction_steps': '',
+        'absorption_spec': 'no',
+        'emission_spec': 'no',
+        'E_00': 'no',
+        'additions_TDDFT': '',
+        'DONTO': 'FALSE',
+        'DOSOC': 'FALSE',
+        'FOLLOWIROOT': 'TRUE',
+        'IROOT': '1',
+        'NROOTS': '15',
+        'TDA': 'FALSE',
+        'implicit_solvation_model': 'CPCM',
+        'maxcore': 3800,
+        'maxiter_occupier': 100,
+        'mcore_E00': 10000,
+        'multiplicity_0': None,
+        'multiplicity_ox1': None,
+        'multiplicity_ox2': None,
+        'multiplicity_ox3': None,
+        'multiplicity_red1': None,
+        'multiplicity_red2': None,
+        'multiplicity_red3': None,
+        'out_files': None,
+        'inp_files': None,
+    }
+    for key, value in default_config.items():
+        config.setdefault(key, value)
+
     # Validate required files
     normalized_input = _normalize_input_file(config, control_file_path)
     success, error_code, _ = validate_required_files(config, control_file_path)
@@ -200,6 +236,19 @@ def main(argv: list[str] | None = None) -> int:
         ctl_mult = None
 
     multiplicity = cfg_mult if cfg_mult is not None else (ctl_mult if ctl_mult is not None else (1 if is_even else 2))
+
+    # Ensure optional multiplicity slots share the detected ground-state multiplicity by default
+    for mult_key in (
+        'multiplicity_0',
+        'multiplicity_ox1',
+        'multiplicity_ox2',
+        'multiplicity_ox3',
+        'multiplicity_red1',
+        'multiplicity_red2',
+        'multiplicity_red3',
+    ):
+        if config.get(mult_key) in (None, ''):
+            config[mult_key] = multiplicity
 
 
 

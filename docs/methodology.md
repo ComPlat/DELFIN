@@ -2,7 +2,7 @@
 
 ## Overview
 
-DELFIN (DFT-based automated prediction of preferred spin states and associated redox potentials) is a comprehensive computational pipeline that automates density functional theory (DFT) calculations for predicting molecular spin states and redox potentials. The software interfaces with ORCA, xTB and CREST qantum chemistry package to perform systematic calculations across multiple spin states and redox conditions.
+DELFIN (DFT-based automated prediction of preferred spin states and associated redox potentials) is a comprehensive computational pipeline that automates density functional theory (DFT) calculations for predicting molecular spin states and redox potentials. The software interfaces with ORCA, xTB and CREST quantum chemistry package to perform systematic calculations across multiple spin states and redox conditions.
 
 ## Theoretical Foundation
 
