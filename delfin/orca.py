@@ -87,17 +87,20 @@ def find_orca_executable() -> Optional[str]:
     return None
 
 
-def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str) -> bool:
+def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str, timeout: Optional[int] = None) -> bool:
     """Run ORCA subprocess and capture output. Returns True when successful."""
     with open(output_log, "w") as output_file:
         try:
-            subprocess.run([orca_path, input_file_path], check=True, stdout=output_file, stderr=output_file)
+            subprocess.run([orca_path, input_file_path], check=True, stdout=output_file, stderr=output_file, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.error(f"ORCA calculation timed out after {timeout} seconds for '{input_file_path}'")
+            return False
         except subprocess.CalledProcessError as error:
             logger.error(f"Error running ORCA: {error}")
             return False
     return True
 
-def run_orca(input_file_path: str, output_log: str) -> None:
+def run_orca(input_file_path: str, output_log: str, timeout: Optional[int] = None) -> None:
     """Execute ORCA calculation with specified input file.
 
     Runs ORCA subprocess with input file and captures output to log file.
@@ -106,12 +109,13 @@ def run_orca(input_file_path: str, output_log: str) -> None:
     Args:
         input_file_path: Path to ORCA input file (.inp)
         output_log: Path for ORCA output file (.out)
+        timeout: Optional timeout in seconds for ORCA calculation
     """
     orca_path = find_orca_executable()
     if not orca_path:
         return
 
-    if _run_orca_subprocess(orca_path, input_file_path, output_log):
+    if _run_orca_subprocess(orca_path, input_file_path, output_log, timeout):
         logger.info(f"ORCA run successful for '{input_file_path}'")
 
 def run_orca_IMAG(input_file_path: str, iteration: int) -> None:

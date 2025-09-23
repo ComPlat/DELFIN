@@ -4,6 +4,7 @@ from pathlib import Path
 
 from delfin.common.logging import configure_logging, get_logger
 from delfin.common.paths import get_runtime_dir, resolve_path
+from delfin.cluster_utils import auto_configure_resources, detect_cluster_environment
 from delfin.define import convert_xyz_to_input_txt
 from .define import create_control_file
 from .cleanup import cleanup_all
@@ -99,6 +100,9 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         logger.error("Invalid CONTROL configuration: %s", exc)
         return 2
+
+    # Auto-configure cluster resources if not explicitly set
+    config = auto_configure_resources(config)
 
     # Populate optional flags with safe defaults so reduced CONTROL files remain usable
     default_config = {

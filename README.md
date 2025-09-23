@@ -136,7 +136,11 @@ delfin/
 * **Programmatic API:** use `delfin.api.run(control_file="CONTROL.txt")` for notebooks, workflow engines, or SLURM batch scripts. Add `cleanup=False` to preserve intermediates (`--no-cleanup`). Additional CLI flags can be provided through the `extra_args` parameter.
 * **Alternate CONTROL locations:** supply `--control path/to/CONTROL.txt` (or the `control_file` argument in `delfin.api.run`) to stage input files outside the working directory.
 * **XYZ geometry support:** if `input_file` in CONTROL (or the CLI/API) points to an `.xyz`, DELFIN converts it automatically to a matching `.txt` (header dropped) before the run.
-* **SLURM template:** see `examples/slurm_submit_example.sh` for a minimal job script that sets `DELFIN_SCRATCH`, activates environments, and calls the programmatic API.
+* **Cluster templates:** see `examples/` for submit scripts:
+  - `slurm_submit_example.sh` (SLURM)
+  - `pbs_submit_example.sh` (PBS/Torque)
+  - `lsf_submit_example.sh` (LSF)
+* **Auto-resource detection:** DELFIN automatically detects available CPUs and memory on SLURM/PBS/LSF clusters and configures PAL/maxcore accordingly if not explicitly set in CONTROL.txt.
 
 ## Troubleshooting
 
