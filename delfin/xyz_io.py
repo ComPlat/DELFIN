@@ -233,7 +233,11 @@ def _apply_per_atom_newgto(geom_lines: List[str], found_metals: List[str],
     metal_syms = {m.strip().capitalize() for m in (found_metals or [])}
     metal_indices = [i for i, a in enumerate(atoms) if a["elem"].capitalize() in metal_syms]
 
-    scale = float(config.get('first_coordination_sphere_scale', 1.20))
+    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
+    if sphere_scale_raw:
+        scale = float(sphere_scale_raw)
+    else:
+        scale = 1.20
     first = _first_sphere_indices(atoms, metal_indices, scale, radii_map) if (enable_first and metal_indices) else set()
 
     metal_line_set = {atoms[i]['line_idx'] for i in metal_indices}
@@ -265,9 +269,10 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
         coord_lines = [ln for ln in file.readlines() if ln.strip() and ln.strip() != "*"]
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
+    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
 
-    # radii (only needed when first coordination sphere tagging enabled)
-    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if enable_first else None
+    load_radii = enable_first and not sphere_scale_raw
+    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if load_radii else None
 
     # decide main/metal bases per d3 vs. d4/5 policy; allow explicit overrides
     auto_main, auto_metal = set_main_basisset(found_metals, config)
@@ -317,8 +322,10 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
         coord_lines = [ln for ln in file.readlines() if ln.strip() and ln.strip() != "*"]
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
+    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
 
-    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if enable_first else None
+    load_radii = enable_first and not sphere_scale_raw
+    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if load_radii else None
 
     # decide main/metal bases per d3 vs. d4/5 policy; allow explicit overrides
     auto_main, auto_metal = set_main_basisset(found_metals, config)
@@ -378,8 +385,10 @@ def read_xyz_and_create_input2(xyz_file_path: str, output_file_path: str, charge
         return
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
+    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
 
-    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if enable_first else None
+    load_radii = enable_first and not sphere_scale_raw
+    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if load_radii else None
 
     # TDDFT block
     triplet_flag = str(config.get("triplet_flag", "FALSE")).upper()
@@ -439,8 +448,10 @@ def read_xyz_and_create_input2_2(xyz_file_path, output_file_path, charge, multip
         return
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
+    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
 
-    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if enable_first else None
+    load_radii = enable_first and not sphere_scale_raw
+    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if load_radii else None
 
     # TDDFT block
     tddft_block = [
@@ -497,8 +508,10 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
         return
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
+    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
 
-    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if enable_first else None
+    load_radii = enable_first and not sphere_scale_raw
+    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if load_radii else None
 
     # bases
     auto_main, auto_metal = set_main_basisset(found_metals, config)
@@ -548,8 +561,10 @@ def read_xyz_and_create_input4(xyz_file_path: str, output_file_path: str, charge
         return
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
+    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
 
-    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if enable_first else None
+    load_radii = enable_first and not sphere_scale_raw
+    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if load_radii else None
 
     # TDDFT block (root following)
     tddft_block = [

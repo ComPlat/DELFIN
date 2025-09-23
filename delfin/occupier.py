@@ -203,10 +203,19 @@ def run_OCCUPIER():
         with xyz_path.open('r') as file:
             lines = file.readlines()
 
-        # Radii source and cutoff scaling
         enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
-        radii_all = load_covalent_radii(source=str(config.get('covalent_radii_source', 'pyykko2009'))) if enable_first else None
-        sphere_scale = float(config.get('first_coordination_sphere_scale', 1.20))
+        sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
+
+        if enable_first:
+            if sphere_scale_raw:
+                sphere_scale = float(sphere_scale_raw)
+                radii_all = None
+            else:
+                radii_all = load_covalent_radii(source=str(config.get('covalent_radii_source', 'pyykko2009')))
+                sphere_scale = 1.20
+        else:
+            radii_all = None
+            sphere_scale = float(sphere_scale_raw or 1.20)
 
         # Relativity token + AUX-JK token follow 3d/4d5 policy
         rel_token, aux_jk_token, _use_rel = select_rel_and_aux(found_metals or [], config)
