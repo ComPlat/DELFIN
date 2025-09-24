@@ -565,6 +565,13 @@ def run_OCCUPIER():
             out = f"output{'' if idx == 1 else idx}.out"
 
             def _work(cores: int) -> None:
+                if recalc and _has_ok_marker(out):
+                    logger.info("[recalc] Skipping ORCA for %s; found '%s'.", out, OK)
+                    parsed_val = finder(out)
+                    with results_lock:
+                        fspe_results[idx] = parsed_val
+                    return
+
                 parts: list[str] = []
 
                 if pass_wf_enabled:
@@ -605,10 +612,7 @@ def run_OCCUPIER():
 
                 _update_pal_block(inp, cores)
 
-                if recalc and _has_ok_marker(out):
-                    logger.info("[recalc] Skipping ORCA for %s; found '%s'.", out, OK)
-                else:
-                    run_orca(inp, out)
+                run_orca(inp, out)
 
                 parsed_val = finder(out)
                 with results_lock:
