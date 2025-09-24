@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import re
+import time
+import statistics
 import threading
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Optional, Set
 
@@ -19,6 +22,9 @@ from delfin.xyz_io import (
 )
 
 logger = get_logger(__name__)
+
+
+JOB_DURATION_HISTORY: Dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=8))
 
 
 @dataclass
@@ -72,7 +78,13 @@ class _WorkflowManager:
         else:
             default_opt = self._base_share()
             if hint:
-                default_opt = self._suggest_optimal_from_hint(hint, default_opt, cores_max, cores_min)
+                default_opt = self._suggest_optimal_from_hint(
+                    hint,
+                    default_opt,
+                    cores_max,
+                    cores_min,
+                    None,
+                )
 
         if preferred_opt is not None:
             default_opt = preferred_opt
@@ -146,6 +158,7 @@ class _WorkflowManager:
     def _submit(self, job: WorkflowJob) -> None:
         def runner(*_args, **kwargs):
             cores = kwargs.get('cores', job.cores_optimal)
+            start_time = time.time()
             logger.info(
                 "[%s] Starting %s with %d cores (%s)",
                 self.label,
@@ -163,6 +176,8 @@ class _WorkflowManager:
                 self._mark_failed(job.job_id, exc)
                 raise
             else:
+                duration = time.time() - start_time
+                self._record_duration(job, duration)
                 logger.info("[%s] Job %s completed", self.label, job.job_id)
                 self._mark_completed(job.job_id)
 
@@ -209,7 +224,14 @@ class _WorkflowManager:
 
         base_share = self._base_share()
         hint = f"{job.job_id} {job.description}".lower()
-        suggestion = self._suggest_optimal_from_hint(hint, base_share, job.cores_max, job.cores_min)
+        duration_hint = self._get_duration_hint(job)
+        suggestion = self._suggest_optimal_from_hint(
+            hint,
+            base_share,
+            job.cores_max,
+            job.cores_min,
+            duration_hint,
+        )
 
         if job.cores_optimal >= job.cores_max:
             job.cores_optimal = suggestion
@@ -222,20 +244,97 @@ class _WorkflowManager:
         base_share: int,
         cores_max: int,
         cores_min: int,
+        duration_hint: Optional[float],
     ) -> int:
         hint_lc = hint.lower()
 
         light_tokens = ("absorption", "emission", "spectrum", "td-dft", "td dft", "tddft")
-        heavy_tokens = ("optimization", "freq", "frequency", "geometry", "fob", "ox", "red", "initial")
+        heavy_tokens = ("optimization", "freq", "frequency", "geometry", "ox", "red", "initial")
 
-        if any(token in hint_lc for token in light_tokens):
-            return max(cores_min, min(cores_max, max(1, base_share // 2)))
+        suggestion = base_share
 
-        if any(token in hint_lc for token in heavy_tokens):
+        if "fob" in hint_lc or "occ_" in hint_lc:
+            cap = self._foB_cap()
+            suggestion = min(cap, base_share)
+        elif any(token in hint_lc for token in light_tokens):
+            suggestion = max(1, base_share // 2)
+        elif any(token in hint_lc for token in heavy_tokens):
             extra = max(1, self.total_cores // max(2, self.max_jobs))
-            return max(cores_min, min(cores_max, base_share + extra))
+            suggestion = base_share + extra
 
-        return max(cores_min, min(cores_max, base_share))
+        suggestion = self._apply_duration_bias(
+            suggestion,
+            cores_min,
+            cores_max,
+            duration_hint,
+            hint_lc,
+        )
+
+        return max(cores_min, min(cores_max, suggestion))
+
+    def _foB_cap(self) -> int:
+        if self.total_cores <= 8:
+            return max(2, self.total_cores)
+
+        default_cap = 16
+        pal = max(1, _parse_int(self.config.get('PAL'), fallback=self.total_cores))
+        if pal >= 48:
+            default_cap = 24
+        if pal >= 64:
+            default_cap = 32
+
+        return min(default_cap, self.total_cores)
+
+    def _apply_duration_bias(
+        self,
+        suggestion: int,
+        cores_min: int,
+        cores_max: int,
+        duration_hint: Optional[float],
+        hint_lc: str,
+    ) -> int:
+        if duration_hint is None:
+            return suggestion
+
+        if duration_hint <= 45:
+            adjusted = max(cores_min, suggestion // 2)
+            if "fob" in hint_lc or "occ_" in hint_lc:
+                adjusted = max(cores_min, min(adjusted, self._foB_cap()))
+            return adjusted
+
+        if duration_hint >= 180:
+            boost = max(1, suggestion // 2)
+            adjusted = min(cores_max, suggestion + boost)
+            if "fob" in hint_lc or "occ_" in hint_lc:
+                adjusted = min(adjusted, self._foB_cap())
+            return adjusted
+
+        return suggestion
+
+    def _get_duration_hint(self, job: WorkflowJob) -> Optional[float]:
+        history = JOB_DURATION_HISTORY.get(self._duration_key(job))
+        if not history:
+            return None
+        if len(history) == 1:
+            return history[0]
+        try:
+            return statistics.median(history)
+        except statistics.StatisticsError:  # pragma: no cover - defensive fallback
+            return sum(history) / len(history)
+
+    def _duration_key(self, job: WorkflowJob) -> str:
+        return f"{self.label}:{job.job_id}:{job.description}".lower()
+
+    def _record_duration(self, job: WorkflowJob, duration: float) -> None:
+        key = self._duration_key(job)
+        JOB_DURATION_HISTORY[key].append(duration)
+        logger.debug(
+            "[%s] Duration recorded for %s: %.1fs (samples=%d)",
+            self.label,
+            job.job_id,
+            duration,
+            len(JOB_DURATION_HISTORY[key]),
+        )
 
 
 def normalize_parallel_token(value: Any, default: str = "auto") -> str:
@@ -282,6 +381,31 @@ def jobs_have_parallel_potential(jobs: Iterable[WorkflowJob]) -> bool:
     return estimate_parallel_width(jobs) > 1
 
 
+def determine_effective_slots(
+    total_cores: int,
+    jobs: Iterable[WorkflowJob],
+    requested_slots: int,
+    width: int,
+) -> int:
+    width = max(1, width)
+    requested = requested_slots if requested_slots > 0 else width
+    baseline = max(1, min(width, requested))
+
+    job_list = list(jobs)
+    if not job_list or baseline >= width:
+        return baseline
+
+    min_opt = min(max(job.cores_optimal, job.cores_min) for job in job_list)
+    capacity_limit = max(1, total_cores // max(1, min_opt))
+
+    light_threshold = max(2, total_cores // 8)
+    light_jobs = sum(1 for job in job_list if job.cores_optimal <= light_threshold)
+    bonus = max(0, light_jobs // 2)
+
+    candidate = min(width, baseline + bonus, capacity_limit)
+    return max(1, max(baseline, candidate))
+
+
 def execute_classic_parallel_workflows(config: Dict[str, Any], **kwargs) -> bool:
     """Run classic oxidation/reduction steps with dependency-aware scheduling."""
 
@@ -295,9 +419,12 @@ def execute_classic_parallel_workflows(config: Dict[str, Any], **kwargs) -> bool
 
         width = estimate_parallel_width(manager._jobs.values())
         pal_jobs_cap = _parse_int(config.get('pal_jobs'), fallback=0)
-        if pal_jobs_cap <= 0:
-            pal_jobs_cap = manager.pool.max_concurrent_jobs
-        effective = max(1, min(width or 1, pal_jobs_cap, manager.pool.max_concurrent_jobs))
+        effective = determine_effective_slots(
+            manager.total_cores,
+            manager._jobs.values(),
+            pal_jobs_cap,
+            width,
+        )
         if effective != manager.pool.max_concurrent_jobs:
             logger.info("[classic] Adjusting parallel slots to %d (width=%d, pal_jobs=%s)", effective, width, config.get('pal_jobs'))
             manager.pool.max_concurrent_jobs = effective
@@ -327,9 +454,12 @@ def execute_manually_parallel_workflows(config: Dict[str, Any], **kwargs) -> boo
 
         width = estimate_parallel_width(manager._jobs.values())
         pal_jobs_cap = _parse_int(config.get('pal_jobs'), fallback=0)
-        if pal_jobs_cap <= 0:
-            pal_jobs_cap = manager.pool.max_concurrent_jobs
-        effective = max(1, min(width or 1, pal_jobs_cap, manager.pool.max_concurrent_jobs))
+        effective = determine_effective_slots(
+            manager.total_cores,
+            manager._jobs.values(),
+            pal_jobs_cap,
+            width,
+        )
         if effective != manager.pool.max_concurrent_jobs:
             logger.info("[manually] Adjusting parallel slots to %d (width=%d, pal_jobs=%s)", effective, width, config.get('pal_jobs'))
             manager.pool.max_concurrent_jobs = effective

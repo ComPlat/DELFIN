@@ -24,6 +24,7 @@ from .parallel_classic import (
     _update_pal_block,
     _verify_orca_output,
     estimate_parallel_width,
+    determine_effective_slots,
     normalize_parallel_token,
 )
 
@@ -405,6 +406,21 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
         try:
             for job in jobs:
                 manager.add_job(job)
+            dynamic_slots = determine_effective_slots(
+                manager.total_cores,
+                manager._jobs.values(),
+                effective_max_jobs,
+                width,
+            )
+            if dynamic_slots != manager.pool.max_concurrent_jobs:
+                logger.info(
+                    "[occupier] Adjusting ORCA job slots to %d (width=%d, requested=%d)",
+                    dynamic_slots,
+                    width,
+                    effective_max_jobs,
+                )
+                manager.pool.max_concurrent_jobs = dynamic_slots
+                manager.max_jobs = dynamic_slots
             manager.run()
             return True
         except Exception as exc:  # noqa: BLE001

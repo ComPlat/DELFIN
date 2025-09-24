@@ -19,6 +19,7 @@ from .parallel_classic import (
     _WorkflowManager,
     WorkflowJob,
     _update_pal_block,
+    determine_effective_slots,
     normalize_parallel_token,
 )
 
@@ -627,6 +628,22 @@ def run_OCCUPIER():
                 cores_bounds = manager.derive_core_bounds(hint=job.description)
                 job.cores_min, job.cores_optimal, job.cores_max = cores_bounds
                 manager.add_job(job)
+
+            dynamic_slots = determine_effective_slots(
+                manager.total_cores,
+                manager._jobs.values(),
+                effective_pal_jobs,
+                sequence_width,
+            )
+            if dynamic_slots != manager.pool.max_concurrent_jobs:
+                logger.info(
+                    "[occupier_core] Updating parallel slots to %d (width=%d, requested=%d)",
+                    dynamic_slots,
+                    sequence_width,
+                    effective_pal_jobs,
+                )
+                manager.pool.max_concurrent_jobs = dynamic_slots
+                manager.max_jobs = dynamic_slots
 
             manager.run()
         finally:
