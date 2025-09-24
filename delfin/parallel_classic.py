@@ -233,6 +233,9 @@ class _WorkflowManager:
             duration_hint,
         )
 
+        min_required = self._minimum_required_cores(hint, base_share, duration_hint)
+        job.cores_min = max(job.cores_min, min(min_required, suggestion, job.cores_max))
+
         if job.cores_optimal >= job.cores_max:
             job.cores_optimal = suggestion
         else:
@@ -310,6 +313,32 @@ class _WorkflowManager:
             return adjusted
 
         return suggestion
+
+    def _minimum_required_cores(
+        self,
+        hint: str,
+        base_share: int,
+        duration_hint: Optional[float],
+    ) -> int:
+        hint_lc = hint.lower()
+        light_tokens = ("absorption", "emission", "spectrum", "td-dft", "td dft", "tddft")
+        heavy_tokens = ("optimization", "freq", "frequency", "geometry", "ox", "red", "initial")
+
+        min_required = 2
+
+        if "fob" in hint_lc or "occ_" in hint_lc:
+            min_required = max(4, min(self._foB_cap(), base_share))
+        elif any(token in hint_lc for token in heavy_tokens):
+            min_required = max(4, base_share)
+        elif any(token in hint_lc for token in light_tokens):
+            min_required = 2
+        else:
+            min_required = max(2, base_share // 2)
+
+        if duration_hint is not None and duration_hint >= 180:
+            min_required = max(min_required, min(self.total_cores // 2, base_share))
+
+        return min_required
 
     def _get_duration_hint(self, job: WorkflowJob) -> Optional[float]:
         history = JOB_DURATION_HISTORY.get(self._duration_key(job))
