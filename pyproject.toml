@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77", "wheel"]
+requires = ["setuptools>=77", "wheel", "psutil"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "delfin-complat"
 version = "1.0.0"
 description = "Automated ORCA, xTB and CREST workflow for predicting preferred spin states and associated redox potentials."
 readme = { file = "README.md", content-type = "text/markdown" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [{ name = "Maximilian Hartmann" }]
 license = {text = "LGPL-3.0-or-later"}
 dependencies = [
