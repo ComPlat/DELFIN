@@ -15,7 +15,12 @@ from .utils import (
 )
 from .reporting import generate_summary_report_OCCUPIER
 from .orca import run_orca
-from .parallel_classic import _WorkflowManager, WorkflowJob, _update_pal_block
+from .parallel_classic import (
+    _WorkflowManager,
+    WorkflowJob,
+    _update_pal_block,
+    normalize_parallel_token,
+)
 
 logger = get_logger(__name__)
 
@@ -468,12 +473,53 @@ def run_OCCUPIER():
 
         # Parallel OCCUPIER execution
         resolved_pal_jobs = _resolve_pal_jobs_value(config)
+
+        def _sequence_parallel_width(seq) -> int:
+            if not seq:
+                return 0
+            known = {int(entry["index"]) for entry in seq if "index" in entry}
+            deps_map = {
+                idx: {
+                    dep for dep in _parse_dependency_indices(entry.get("from", idx - 1))
+                    if dep in known
+                }
+                for entry, idx in ((entry, int(entry["index"])) for entry in seq if "index" in entry)
+            }
+
+            completed: set[int] = set()
+            remaining = set(known)
+            max_width = 0
+            guard = 0
+
+            while remaining and guard <= len(known) * 2:
+                ready = {idx for idx in remaining if deps_map[idx] <= completed}
+                if not ready:
+                    break
+                max_width = max(max_width, len(ready))
+                completed.update(ready)
+                remaining -= ready
+                guard += 1
+
+            if remaining:
+                return max_width or 1
+
+            return max(max_width, 1)
+
+        sequence_width = _sequence_parallel_width(sequence)
+        parallel_setting = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+        parallel_allowed = (
+            parallel_setting == 'enable'
+            or (parallel_setting == 'auto' and sequence_width > 1)
+        )
+        effective_pal_jobs = max(1, min(resolved_pal_jobs, sequence_width)) if parallel_allowed else 1
+
         logger.info(
-            "Scheduling %d OCCUPIER FoBs (parallel_workflows=%s, pal_jobs=%s → resolved=%d)",
+            "Scheduling %d OCCUPIER FoBs (parallel=%s, pal_jobs=%s → resolved=%d, width=%d)",
             len(sequence),
-            str(config.get('parallel_workflows', 'yes')).strip().lower(),
+            parallel_setting,
             config.get('pal_jobs'),
-            resolved_pal_jobs,
+            effective_pal_jobs,
+            sequence_width,
         )
 
         known_indices = {int(entry["index"]) for entry in sequence if "index" in entry}
@@ -485,9 +531,7 @@ def run_OCCUPIER():
             for entry in sequence
         }
 
-        pal_jobs_override = resolved_pal_jobs if str(config.get('parallel_workflows', 'yes')).strip().lower() in ('yes', 'true', '1', 'on') else 1
-
-        manager = _WorkflowManager(config, label="occupier_core", max_jobs_override=pal_jobs_override)
+        manager = _WorkflowManager(config, label="occupier_core", max_jobs_override=effective_pal_jobs)
         fspe_results: dict[int, float | None] = {}
         results_lock = threading.Lock()
 
@@ -580,7 +624,7 @@ def run_OCCUPIER():
                     description=f"FoB index {idx}",
                     dependencies=dependencies_map.get(idx, set()),
                 )
-                cores_bounds = manager.derive_core_bounds()
+                cores_bounds = manager.derive_core_bounds(hint=job.description)
                 job.cores_min, job.cores_optimal, job.cores_max = cores_bounds
                 manager.add_job(job)
 

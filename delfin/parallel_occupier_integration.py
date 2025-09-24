@@ -23,6 +23,8 @@ from .parallel_classic import (
     _parse_int,
     _update_pal_block,
     _verify_orca_output,
+    estimate_parallel_width,
+    normalize_parallel_token,
 )
 
 logger = get_logger(__name__)
@@ -383,12 +385,23 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
         return True
 
     pal_jobs_value = _resolve_pal_jobs(context.config)
-    parallel_token = str(context.config.get('parallel_workflows', 'yes')).strip().lower()
-    requested_parallel = parallel_token in ('yes', 'true', '1', 'on')
-    use_parallel = bool(parallel_enabled) and requested_parallel and pal_jobs_value > 1 and len(jobs) > 1
+    parallel_mode = normalize_parallel_token(context.config.get('parallel_workflows', 'auto'))
+    width = estimate_parallel_width(jobs)
+    requested_parallel = (
+        parallel_mode == 'enable'
+        or (parallel_mode == 'auto' and width > 1)
+    )
+    effective_max_jobs = max(1, min(pal_jobs_value, width)) if requested_parallel else 1
+    use_parallel = (
+        bool(parallel_enabled)
+        and requested_parallel
+        and pal_jobs_value > 1
+        and len(jobs) > 1
+        and width > 1
+    )
 
     if use_parallel:
-        manager = _WorkflowManager(context.config, label="occupier", max_jobs_override=pal_jobs_value)
+        manager = _WorkflowManager(context.config, label="occupier", max_jobs_override=effective_max_jobs)
         try:
             for job in jobs:
                 manager.add_job(job)
@@ -414,11 +427,20 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
                 logger.debug("Parallel manager shutdown raised", exc_info=True)
 
     if parallel_enabled and not requested_parallel:
-        logger.info("[occupier] Parallel workflows disabled via CONTROL.txt → running ORCA jobs sequentially")
+        logger.info(
+            "[occupier] Parallel workflows disabled (mode=%s) → running ORCA jobs sequentially",
+            parallel_mode,
+        )
     elif parallel_enabled and pal_jobs_value <= 1:
         logger.info("[occupier] Parallel execution requested but PAL_JOBS=1 → running sequentially")
     elif len(jobs) <= 1:
         logger.info("[occupier] Single OCCUPIER ORCA job detected → running sequentially")
+    elif parallel_enabled and width <= 1:
+        logger.info(
+            "[occupier] Parallel mode=%s but dependency graph is serial (width=%d) → running sequentially",
+            parallel_mode,
+            width,
+        )
 
     # Sequential path or fallback after errors
     return _run_jobs_sequentially(jobs, context, pal_jobs_value)

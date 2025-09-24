@@ -54,6 +54,8 @@ class _WorkflowManager:
             total_memory_mb=self.maxcore_mb * self.total_cores,
             max_jobs=max_jobs
         )
+        self.max_jobs = max_jobs
+        self._parallel_enabled = self.pool.max_concurrent_jobs > 1 and self.total_cores > 1
 
         self._jobs: Dict[str, WorkflowJob] = {}
         self._completed: Set[str] = set()
@@ -61,13 +63,22 @@ class _WorkflowManager:
         self._lock = threading.RLock()
         self._event = threading.Event()
 
-    def derive_core_bounds(self, preferred_opt: Optional[int] = None) -> tuple[int, int, int]:
+    def derive_core_bounds(self, preferred_opt: Optional[int] = None, *, hint: Optional[str] = None) -> tuple[int, int, int]:
         cores_min = 1 if self.total_cores == 1 else 2
         cores_max = self.total_cores
-        if preferred_opt is None:
-            preferred_opt = cores_max
-        preferred_opt = max(cores_min, min(preferred_opt, cores_max))
-        return cores_min, preferred_opt, cores_max
+
+        if not self._parallel_enabled:
+            default_opt = cores_max
+        else:
+            default_opt = self._base_share()
+            if hint:
+                default_opt = self._suggest_optimal_from_hint(hint, default_opt, cores_max, cores_min)
+
+        if preferred_opt is not None:
+            default_opt = preferred_opt
+
+        preferred = max(cores_min, min(default_opt, cores_max))
+        return cores_min, preferred, cores_max
 
     def add_job(self, job: WorkflowJob) -> None:
         if job.job_id in self._jobs:
@@ -79,6 +90,9 @@ class _WorkflowManager:
         job.cores_min = max(1, min(job.cores_min, self.total_cores))
         job.cores_max = max(job.cores_min, min(job.cores_max, self.total_cores))
         job.cores_optimal = max(job.cores_min, min(job.cores_optimal, job.cores_max))
+
+        self._auto_tune_job(job)
+
         if job.memory_mb is None:
             job.memory_mb = job.cores_optimal * self.maxcore_mb
 
@@ -181,6 +195,92 @@ class _WorkflowManager:
         parts = [f"{job_id}: {message}" for job_id, message in self._failed.items()]
         return f"Workflow failures ({self.label}): " + "; ".join(parts)
 
+    def _base_share(self) -> int:
+        if not self._parallel_enabled:
+            return self.total_cores
+        share = max(1, self.total_cores // max(1, self.max_jobs))
+        if self.total_cores > 2:
+            share = max(2, share)
+        return min(self.total_cores, share)
+
+    def _auto_tune_job(self, job: WorkflowJob) -> None:
+        if not self._parallel_enabled:
+            return
+
+        base_share = self._base_share()
+        hint = f"{job.job_id} {job.description}".lower()
+        suggestion = self._suggest_optimal_from_hint(hint, base_share, job.cores_max, job.cores_min)
+
+        if job.cores_optimal >= job.cores_max:
+            job.cores_optimal = suggestion
+        else:
+            job.cores_optimal = max(job.cores_min, min(job.cores_optimal, suggestion))
+
+    def _suggest_optimal_from_hint(
+        self,
+        hint: str,
+        base_share: int,
+        cores_max: int,
+        cores_min: int,
+    ) -> int:
+        hint_lc = hint.lower()
+
+        light_tokens = ("absorption", "emission", "spectrum", "td-dft", "td dft", "tddft")
+        heavy_tokens = ("optimization", "freq", "frequency", "geometry", "fob", "ox", "red", "initial")
+
+        if any(token in hint_lc for token in light_tokens):
+            return max(cores_min, min(cores_max, max(1, base_share // 2)))
+
+        if any(token in hint_lc for token in heavy_tokens):
+            extra = max(1, self.total_cores // max(2, self.max_jobs))
+            return max(cores_min, min(cores_max, base_share + extra))
+
+        return max(cores_min, min(cores_max, base_share))
+
+
+def normalize_parallel_token(value: Any, default: str = "auto") -> str:
+    token = str(value).strip().lower() if value not in (None, "") else default
+    if token in ("no", "false", "off", "0"):  # explicit disable
+        return "disable"
+    if token in ("yes", "true", "on", "1"):  # explicit enable
+        return "enable"
+    return "auto"
+
+
+def estimate_parallel_width(jobs: Iterable[WorkflowJob]) -> int:
+    job_list = list(jobs)
+    if not job_list:
+        return 0
+
+    job_ids = {job.job_id for job in job_list}
+    dependency_map: Dict[str, Set[str]] = {
+        job.job_id: set(dep for dep in job.dependencies if dep in job_ids)
+        for job in job_list
+    }
+
+    completed: Set[str] = set()
+    remaining = set(job_ids)
+    max_width = 0
+    guard = 0
+
+    while remaining and guard <= len(job_ids) * 2:
+        ready = {job_id for job_id in remaining if dependency_map[job_id] <= completed}
+        if not ready:
+            break
+        max_width = max(max_width, len(ready))
+        completed.update(ready)
+        remaining -= ready
+        guard += 1
+
+    if remaining:
+        return max_width or 1
+
+    return max(max_width, 1)
+
+
+def jobs_have_parallel_potential(jobs: Iterable[WorkflowJob]) -> bool:
+    return estimate_parallel_width(jobs) > 1
+
 
 def execute_classic_parallel_workflows(config: Dict[str, Any], **kwargs) -> bool:
     """Run classic oxidation/reduction steps with dependency-aware scheduling."""
@@ -192,6 +292,16 @@ def execute_classic_parallel_workflows(config: Dict[str, Any], **kwargs) -> bool
         if not manager.has_jobs():
             logger.info("[classic] No oxidation/reduction jobs queued for parallel execution")
             return True
+
+        width = estimate_parallel_width(manager._jobs.values())
+        pal_jobs_cap = _parse_int(config.get('pal_jobs'), fallback=0)
+        if pal_jobs_cap <= 0:
+            pal_jobs_cap = manager.pool.max_concurrent_jobs
+        effective = max(1, min(width or 1, pal_jobs_cap, manager.pool.max_concurrent_jobs))
+        if effective != manager.pool.max_concurrent_jobs:
+            logger.info("[classic] Adjusting parallel slots to %d (width=%d, pal_jobs=%s)", effective, width, config.get('pal_jobs'))
+            manager.pool.max_concurrent_jobs = effective
+            manager.max_jobs = effective
 
         manager.run()
         return True
@@ -214,6 +324,16 @@ def execute_manually_parallel_workflows(config: Dict[str, Any], **kwargs) -> boo
         if not manager.has_jobs():
             logger.info("[manually] No oxidation/reduction jobs queued for parallel execution")
             return True
+
+        width = estimate_parallel_width(manager._jobs.values())
+        pal_jobs_cap = _parse_int(config.get('pal_jobs'), fallback=0)
+        if pal_jobs_cap <= 0:
+            pal_jobs_cap = manager.pool.max_concurrent_jobs
+        effective = max(1, min(width or 1, pal_jobs_cap, manager.pool.max_concurrent_jobs))
+        if effective != manager.pool.max_concurrent_jobs:
+            logger.info("[manually] Adjusting parallel slots to %d (width=%d, pal_jobs=%s)", effective, width, config.get('pal_jobs'))
+            manager.pool.max_concurrent_jobs = effective
+            manager.max_jobs = effective
 
         manager.run()
         return True

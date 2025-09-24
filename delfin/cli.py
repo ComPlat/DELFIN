@@ -31,6 +31,7 @@ from .parallel_classic import (
     execute_classic_parallel_workflows,
     execute_classic_sequential_workflows,
     execute_manually_parallel_workflows,
+    normalize_parallel_token,
 )
 from .parallel_occupier_integration import (
     OccupierExecutionContext,
@@ -479,13 +480,18 @@ def main(argv: list[str] | None = None) -> int:
             needs_ox_red = config.get("oxidation_steps", "").strip() or config.get("reduction_steps", "").strip()
 
             if needs_ox_red:
-                # Check if parallel workflow execution is enabled
-                parallel_token = str(config.get('parallel_workflows', 'yes')).strip().lower()
-                parallel_workflows = parallel_token in ('yes', 'true', '1', 'on')
+                parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+                has_ox = bool(config.get("oxidation_steps", "").strip())
+                has_red = bool(config.get("reduction_steps", "").strip())
+                can_parallel = has_ox and has_red
 
-                if parallel_workflows and config.get("oxidation_steps", "") and config.get("reduction_steps", ""):
-                    logger.info("Executing oxidation and reduction workflows in parallel")
-                    _execute_parallel_workflows(config)
+                if parallel_mode == 'enable' or (parallel_mode == 'auto' and can_parallel):
+                    if can_parallel:
+                        logger.info("Executing oxidation and reduction workflows in parallel")
+                        _execute_parallel_workflows(config)
+                    else:
+                        logger.info("Only one workflow configured → executing sequentially")
+                        _execute_sequential_workflows(config)
                 else:
                     logger.info("Executing workflows sequentially")
                     _execute_sequential_workflows(config)
@@ -493,8 +499,8 @@ def main(argv: list[str] | None = None) -> int:
                 logger.info("No oxidation or reduction steps configured")
                 
 
-            parallel_flag = str(config.get('parallel_workflows', 'yes')).strip().lower()
-            parallel_workflows_enabled = parallel_flag in ('yes', 'true', '1', 'on')
+            parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+            parallel_workflows_enabled = parallel_mode != 'disable'
             metals_list = list(metals) if isinstance(metals, (list, tuple, set)) else ([metals] if metals else [])
 
             if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() != "yes":
@@ -672,7 +678,8 @@ def main(argv: list[str] | None = None) -> int:
 
         ground_multiplicity = multiplicity
         additions_ground = ""
-        parallel_cli_enabled = str(config.get('parallel_workflows', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
+        parallel_cli_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+        parallel_cli_enabled = parallel_cli_mode != 'disable'
 
         if not parallel_cli_enabled:
             if config['calc_initial'] == "yes":
@@ -785,7 +792,8 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             ground_multiplicity = 1
 
-        parallel_cli_enabled = str(config.get('parallel_workflows', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
+        parallel_cli_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+        parallel_cli_enabled = parallel_cli_mode != 'disable'
 
         if not parallel_cli_enabled:
             if config['calc_initial'] == "yes":
