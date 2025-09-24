@@ -10,7 +10,13 @@ from typing import Any, Callable, Dict, Iterable, Optional, Set
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import DynamicCorePool, PoolJob, JobPriority
 from delfin.orca import run_orca
-from delfin.xyz_io import read_xyz_and_create_input3
+from delfin.imag import run_IMAG
+from delfin.xyz_io import (
+    read_and_modify_file_1,
+    read_xyz_and_create_input2,
+    read_xyz_and_create_input3,
+    read_xyz_and_create_input4,
+)
 
 logger = get_logger(__name__)
 
@@ -34,12 +40,15 @@ class WorkflowJob:
 class _WorkflowManager:
     """Schedules dependent ORCA jobs on the dynamic core pool."""
 
-    def __init__(self, config: Dict[str, Any], label: str):
+    def __init__(self, config: Dict[str, Any], label: str, *, max_jobs_override: Optional[int] = None):
         self.config = config
         self.label = label
         self.total_cores = max(1, _parse_int(config.get('PAL'), fallback=1))
         self.maxcore_mb = max(256, _parse_int(config.get('maxcore'), fallback=1000))
-        max_jobs = max(1, min(4, max(1, self.total_cores // 2)))
+        if max_jobs_override is not None and max_jobs_override > 0:
+            max_jobs = max(1, max_jobs_override)
+        else:
+            max_jobs = max(1, min(4, max(1, self.total_cores // 2)))
         self.pool = DynamicCorePool(
             total_cores=self.total_cores,
             total_memory_mb=self.maxcore_mb * self.total_cores,
@@ -480,6 +489,185 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
     main_basis = kwargs['main_basisset']
     additions = kwargs['additions']
     total_electrons_txt = kwargs['total_electrons_txt']
+    include_excited = bool(kwargs.get('include_excited_jobs', False))
+
+    base_charge = _parse_int(config.get('charge'))
+    base_multiplicity = _parse_int(kwargs.get('ground_multiplicity'), fallback=1)
+
+    initial_job_id: Optional[str] = None
+
+    def _add_job(job_id: str, description: str, work: Callable[[int], None],
+                 dependencies: Optional[Set[str]] = None,
+                 preferred_opt: Optional[int] = None) -> None:
+        cores_min, cores_opt, cores_max = manager.derive_core_bounds(preferred_opt)
+        manager.add_job(
+            WorkflowJob(
+                job_id=job_id,
+                work=work,
+                description=description,
+                dependencies=dependencies or set(),
+                cores_min=cores_min,
+                cores_optimal=cores_opt,
+                cores_max=cores_max,
+            )
+        )
+
+    if include_excited and str(config.get('calc_initial', 'yes')).strip().lower() == 'yes':
+        input_path = kwargs.get('input_file_path')
+        output_initial = kwargs.get('output_initial', 'initial.inp')
+
+        def run_initial(cores: int) -> None:
+            if not input_path:
+                raise RuntimeError("Input file path for classic initial job missing")
+            read_and_modify_file_1(
+                input_path,
+                output_initial,
+                base_charge,
+                base_multiplicity,
+                solvents,
+                metals,
+                metal_basis,
+                main_basis,
+                config,
+                additions,
+            )
+            _update_pal_block(output_initial, cores)
+            run_orca(output_initial, 'initial.out')
+            if not _verify_orca_output('initial.out'):
+                raise RuntimeError('ORCA terminated abnormally for initial.out')
+            run_IMAG(
+                'initial.out',
+                'initial',
+                base_charge,
+                base_multiplicity,
+                solvents,
+                metals,
+                config,
+                main_basis,
+                metal_basis,
+                additions,
+            )
+
+        initial_job_id = 'classic_initial'
+        _add_job(initial_job_id, 'initial frequency & geometry optimization', run_initial)
+
+    if include_excited and str(config.get('absorption_spec', 'no')).strip().lower() == 'yes':
+        additions_tddft = config.get('additions_TDDFT', '')
+
+        def run_absorption(cores: int) -> None:
+            read_xyz_and_create_input2(
+                'initial.xyz',
+                'absorption_td.inp',
+                base_charge,
+                1,
+                solvents,
+                metals,
+                config,
+                main_basis,
+                metal_basis,
+                additions_tddft,
+            )
+            _update_pal_block('absorption_td.inp', cores)
+            run_orca('absorption_td.inp', 'absorption_spec.out')
+            if not _verify_orca_output('absorption_spec.out'):
+                raise RuntimeError('ORCA terminated abnormally for absorption_spec.out')
+
+        deps = {initial_job_id} if initial_job_id else set()
+        _add_job('classic_absorption', 'TD-DFT absorption spectrum', run_absorption, deps, preferred_opt=manager.total_cores // 2 or None)
+
+    if include_excited and str(config.get('E_00', 'no')).strip().lower() == 'yes':
+        excitation = str(config.get('excitation', '')).lower()
+        additions_tddft = config.get('additions_TDDFT', '')
+
+        if 't' in excitation:
+
+            def run_t1_state(cores: int) -> None:
+                read_xyz_and_create_input3(
+                    'initial.xyz',
+                    't1_state_opt.inp',
+                    base_charge,
+                    3,
+                    solvents,
+                    metals,
+                    metal_basis,
+                    main_basis,
+                    config,
+                    additions,
+                )
+                _update_pal_block('t1_state_opt.inp', cores)
+                run_orca('t1_state_opt.inp', 't1_state_opt.out')
+                if not _verify_orca_output('t1_state_opt.out'):
+                    raise RuntimeError('ORCA terminated abnormally for t1_state_opt.out')
+
+            deps = {initial_job_id} if initial_job_id else set()
+            _add_job('classic_t1_state', 'T1 geometry optimization', run_t1_state, deps)
+
+            if str(config.get('emission_spec', 'no')).strip().lower() == 'yes':
+
+                def run_t1_emission(cores: int) -> None:
+                    read_xyz_and_create_input2(
+                        't1_state_opt.xyz',
+                        'emission_t1.inp',
+                        base_charge,
+                        1,
+                        solvents,
+                        metals,
+                        config,
+                        main_basis,
+                        metal_basis,
+                        additions_tddft,
+                    )
+                    _update_pal_block('emission_t1.inp', cores)
+                    run_orca('emission_t1.inp', 'emission_t1.out')
+                    if not _verify_orca_output('emission_t1.out'):
+                        raise RuntimeError('ORCA terminated abnormally for emission_t1.out')
+
+                _add_job('classic_t1_emission', 'T1 emission spectrum', run_t1_emission, {'classic_t1_state'}, preferred_opt=manager.total_cores // 2 or None)
+
+        if 's' in excitation:
+
+            def run_s1_state(cores: int) -> None:
+                read_xyz_and_create_input4(
+                    'initial.xyz',
+                    's1_state_opt.inp',
+                    base_charge,
+                    1,
+                    solvents,
+                    metals,
+                    metal_basis,
+                    main_basis,
+                    config,
+                    additions,
+                )
+                _update_pal_block('s1_state_opt.inp', cores)
+                run_orca('s1_state_opt.inp', 's1_state_opt.out')
+                if not _verify_orca_output('s1_state_opt.out'):
+                    raise RuntimeError('ORCA terminated abnormally for s1_state_opt.out')
+
+            deps = {initial_job_id} if initial_job_id else set()
+            _add_job('classic_s1_state', 'S1 geometry optimization', run_s1_state, deps)
+
+            if str(config.get('emission_spec', 'no')).strip().lower() == 'yes':
+
+                def run_s1_emission(cores: int) -> None:
+                    read_xyz_and_create_input2(
+                        's1_state_opt.xyz',
+                        'emission_s1.inp',
+                        base_charge,
+                        1,
+                        solvents,
+                        metals,
+                        config,
+                        main_basis,
+                        metal_basis,
+                        additions_tddft,
+                    )
+                    _update_pal_block('emission_s1.inp', cores)
+                    run_orca('emission_s1.inp', 'emission_s1.out')
+                    if not _verify_orca_output('emission_s1.out'):
+                        raise RuntimeError('ORCA terminated abnormally for emission_s1.out')
+
+                _add_job('classic_s1_emission', 'S1 emission spectrum', run_s1_emission, {'classic_s1_state'}, preferred_opt=manager.total_cores // 2 or None)
 
     ox_sources = {1: kwargs['xyz_file'], 2: kwargs['xyz_file4'], 3: kwargs['xyz_file8']}
     ox_inputs = {1: kwargs['output_file5'], 2: kwargs['output_file9'], 3: kwargs['output_file10']}
@@ -489,13 +677,13 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
     red_inputs = {1: kwargs['output_file6'], 2: kwargs['output_file7'], 3: kwargs['output_file8']}
     red_outputs = {1: "red_step_1.out", 2: "red_step_2.out", 3: "red_step_3.out"}
 
-    base_charge = _parse_int(config.get('charge'))
-
     for step in (1, 2, 3):
         if not _step_enabled(config.get('oxidation_steps'), step):
             continue
 
         dependencies = {f"classic_ox{step - 1}"} if step > 1 else set()
+        if initial_job_id:
+            dependencies.add(initial_job_id)
         cores_min, cores_opt, cores_max = manager.derive_core_bounds()
 
         def make_work(idx: int) -> Callable[[int], None]:
@@ -540,6 +728,8 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
             continue
 
         dependencies = {f"classic_red{step - 1}"} if step > 1 else set()
+        if initial_job_id:
+            dependencies.add(initial_job_id)
         cores_min, cores_opt, cores_max = manager.derive_core_bounds()
 
         def make_work(idx: int) -> Callable[[int], None]:
@@ -586,6 +776,184 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
     metal_basis = kwargs['metal_basisset']
     main_basis = kwargs['main_basisset']
     total_electrons_txt = kwargs['total_electrons_txt']
+    include_excited = bool(kwargs.get('include_excited_jobs', False))
+    base_charge = _parse_int(config.get('charge'))
+    base_multiplicity = _parse_int(kwargs.get('ground_multiplicity'), fallback=1)
+    ground_additions = kwargs.get('ground_additions', '')
+    initial_job_id: Optional[str] = None
+
+    def _add_job(job_id: str, description: str, work: Callable[[int], None],
+                 dependencies: Optional[Set[str]] = None,
+                 preferred_opt: Optional[int] = None) -> None:
+        cores_min, cores_opt, cores_max = manager.derive_core_bounds(preferred_opt)
+        manager.add_job(
+            WorkflowJob(
+                job_id=job_id,
+                work=work,
+                description=description,
+                dependencies=dependencies or set(),
+                cores_min=cores_min,
+                cores_optimal=cores_opt,
+                cores_max=cores_max,
+            )
+        )
+
+    if include_excited:
+        input_path = kwargs.get('input_file_path')
+        output_initial = kwargs.get('output_initial', 'initial.inp')
+
+        def run_initial(cores: int) -> None:
+            if not input_path:
+                raise RuntimeError('Input file path missing for manual initial job')
+            read_and_modify_file_1(
+                input_path,
+                output_initial,
+                base_charge,
+                base_multiplicity,
+                solvents,
+                metals,
+                metal_basis,
+                main_basis,
+                config,
+                ground_additions,
+            )
+            _update_pal_block(output_initial, cores)
+            run_orca(output_initial, 'initial.out')
+            if not _verify_orca_output('initial.out'):
+                raise RuntimeError('ORCA terminated abnormally for initial.out')
+            run_IMAG(
+                'initial.out',
+                'initial',
+                base_charge,
+                base_multiplicity,
+                solvents,
+                metals,
+                config,
+                main_basis,
+                metal_basis,
+                ground_additions,
+            )
+
+        initial_job_id = 'manual_initial'
+        _add_job(initial_job_id, 'manual initial frequency job', run_initial)
+
+        additions_td = config.get('additions_TDDFT', '')
+
+        def run_absorption(cores: int) -> None:
+            read_xyz_and_create_input2(
+                'initial.xyz',
+                'absorption_td.inp',
+                base_charge,
+                1,
+                solvents,
+                metals,
+                config,
+                main_basis,
+                metal_basis,
+                additions_td,
+            )
+            _update_pal_block('absorption_td.inp', cores)
+            run_orca('absorption_td.inp', 'absorption_spec.out')
+            if not _verify_orca_output('absorption_spec.out'):
+                raise RuntimeError('ORCA terminated abnormally for absorption_spec.out')
+
+        deps_abs = {initial_job_id} if initial_job_id else set()
+        _add_job('manual_absorption', 'manual TD-DFT absorption', run_absorption, deps_abs, preferred_opt=manager.total_cores // 2 or None)
+
+        if str(config.get('E_00', 'no')).strip().lower() == 'yes':
+            excitation = str(config.get('excitation', '')).lower()
+
+            if 't' in excitation:
+                add_t1 = _extract_manual_additions(config.get('additions_T1', '')) or ground_additions
+
+                def run_t1_state(cores: int) -> None:
+                    read_xyz_and_create_input3(
+                        'initial.xyz',
+                        't1_state_opt.inp',
+                        base_charge,
+                        3,
+                        solvents,
+                        metals,
+                        metal_basis,
+                        main_basis,
+                        config,
+                        add_t1,
+                    )
+                    _update_pal_block('t1_state_opt.inp', cores)
+                    run_orca('t1_state_opt.inp', 't1_state_opt.out')
+                    if not _verify_orca_output('t1_state_opt.out'):
+                        raise RuntimeError('ORCA terminated abnormally for t1_state_opt.out')
+
+                deps_t1 = {initial_job_id} if initial_job_id else set()
+                _add_job('manual_t1_state', 'manual T1 geometry optimization', run_t1_state, deps_t1)
+
+                if str(config.get('emission_spec', 'no')).strip().lower() == 'yes':
+
+                    def run_t1_emission(cores: int) -> None:
+                        read_xyz_and_create_input2(
+                            't1_state_opt.xyz',
+                            'emission_t1.inp',
+                            base_charge,
+                            1,
+                            solvents,
+                            metals,
+                            config,
+                            main_basis,
+                            metal_basis,
+                            additions_td,
+                        )
+                        _update_pal_block('emission_t1.inp', cores)
+                        run_orca('emission_t1.inp', 'emission_t1.out')
+                        if not _verify_orca_output('emission_t1.out'):
+                            raise RuntimeError('ORCA terminated abnormally for emission_t1.out')
+
+                    _add_job('manual_t1_emission', 'manual T1 emission spectrum', run_t1_emission, {'manual_t1_state'}, preferred_opt=manager.total_cores // 2 or None)
+
+            if 's' in excitation:
+                add_s1 = _extract_manual_additions(config.get('additions_S1', '')) or ground_additions
+
+                def run_s1_state(cores: int) -> None:
+                    read_xyz_and_create_input4(
+                        'initial.xyz',
+                        's1_state_opt.inp',
+                        base_charge,
+                        1,
+                        solvents,
+                        metals,
+                        metal_basis,
+                        main_basis,
+                        config,
+                        add_s1,
+                    )
+                    _update_pal_block('s1_state_opt.inp', cores)
+                    run_orca('s1_state_opt.inp', 's1_state_opt.out')
+                    if not _verify_orca_output('s1_state_opt.out'):
+                        raise RuntimeError('ORCA terminated abnormally for s1_state_opt.out')
+
+                deps_s1 = {initial_job_id} if initial_job_id else set()
+                _add_job('manual_s1_state', 'manual S1 geometry optimization', run_s1_state, deps_s1)
+
+                if str(config.get('emission_spec', 'no')).strip().lower() == 'yes':
+
+                    def run_s1_emission(cores: int) -> None:
+                        read_xyz_and_create_input2(
+                            's1_state_opt.xyz',
+                            'emission_s1.inp',
+                            base_charge,
+                            1,
+                            solvents,
+                            metals,
+                            config,
+                            main_basis,
+                            metal_basis,
+                            additions_td,
+                        )
+                        _update_pal_block('emission_s1.inp', cores)
+                        run_orca('emission_s1.inp', 'emission_s1.out')
+                        if not _verify_orca_output('emission_s1.out'):
+                            raise RuntimeError('ORCA terminated abnormally for emission_s1.out')
+
+                    _add_job('manual_s1_emission', 'manual S1 emission spectrum', run_s1_emission, {'manual_s1_state'}, preferred_opt=manager.total_cores // 2 or None)
 
     ox_sources = {1: kwargs['xyz_file'], 2: kwargs['xyz_file4'], 3: kwargs['xyz_file8']}
     ox_inputs = {1: kwargs['output_file5'], 2: kwargs['output_file9'], 3: kwargs['output_file10']}
@@ -595,13 +963,13 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
     red_inputs = {1: kwargs['output_file6'], 2: kwargs['output_file7'], 3: kwargs['output_file8']}
     red_outputs = {1: "red_step_1.out", 2: "red_step_2.out", 3: "red_step_3.out"}
 
-    base_charge = _parse_int(config.get('charge'))
-
     for step in (1, 2, 3):
         if not _step_enabled(config.get('oxidation_steps'), step):
             continue
 
         dependencies = {f"manual_ox{step - 1}"} if step > 1 else set()
+        if initial_job_id:
+            dependencies.add(initial_job_id)
         cores_min, cores_opt, cores_max = manager.derive_core_bounds()
 
         additions_key = f"additions_ox{step}"
@@ -649,6 +1017,8 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
             continue
 
         dependencies = {f"manual_red{step - 1}"} if step > 1 else set()
+        if initial_job_id:
+            dependencies.add(initial_job_id)
         cores_min, cores_opt, cores_max = manager.derive_core_bounds()
 
         additions_key = f"additions_red{step}"

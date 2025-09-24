@@ -1,7 +1,8 @@
 # OCCUPIER.py
 
-import os, shutil, re, time, ast, math
+import os, shutil, re, time, ast, math, threading
 from decimal import Decimal, ROUND_DOWN
+from pathlib import Path
 
 from delfin.common.logging import get_logger
 from delfin.common.paths import resolve_path
@@ -14,6 +15,7 @@ from .utils import (
 )
 from .reporting import generate_summary_report_OCCUPIER
 from .orca import run_orca
+from .parallel_classic import _WorkflowManager, WorkflowJob, _update_pal_block
 
 logger = get_logger(__name__)
 
@@ -403,86 +405,190 @@ def run_OCCUPIER():
             logger.error(f"No sequence found under '{seq_key}' in CONTROL.txt.")
             return
 
-        inputs = {0: input_file}
-        fspe_values = []
-
         # Helper to build filename stems: 1 -> "input", n>=2 -> "input{n}"
         def _stem(i: int, base: str = "input") -> str:
             return base if i == 1 else f"{base}{i}"
+
+        def _resolve_primary_source(raw_from, fallback: int) -> int:
+            if isinstance(raw_from, (list, tuple, set)):
+                for candidate in raw_from:
+                    try:
+                        parsed = int(str(candidate).strip())
+                    except (TypeError, ValueError):
+                        continue
+                    else:
+                        return parsed
+                return fallback
+            try:
+                return int(str(raw_from).strip())
+            except (TypeError, ValueError):
+                return fallback
+
+        def _parse_dependency_indices(raw_from):
+            deps: set[int] = set()
+            if raw_from in (None, "", 0):
+                return deps
+
+            tokens = []
+            if isinstance(raw_from, (list, tuple, set)):
+                tokens = list(raw_from)
+            else:
+                text = str(raw_from)
+                tokens = [tok for tok in re.split(r"[;,|]", text) if tok.strip()]
+
+            if not tokens:
+                tokens = [raw_from]
+
+            for token in tokens:
+                try:
+                    parsed = int(str(token).strip())
+                except (TypeError, ValueError):
+                    continue
+                if parsed > 0:
+                    deps.add(parsed)
+            return deps
+
+        def _resolve_pal_jobs_value(config_dict) -> int:
+            raw = config_dict.get('pal_jobs')
+            try:
+                parsed = int(str(raw).strip()) if raw not in (None, "") else 0
+            except (TypeError, ValueError):
+                parsed = 0
+            if parsed <= 0:
+                try:
+                    total = int(str(config_dict.get('PAL', 1)).strip())
+                except (TypeError, ValueError):
+                    total = 1
+                parsed = max(1, min(4, max(1, total // 2)))
+            return parsed
 
         # Energy extractor: FSPE unless frequency run is requested
         use_gibbs = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
         finder = find_G if use_gibbs else find_FSPE
 
-        for entry in sequence:
-            idx = entry["index"]
-            multiplicity = entry["m"]
-            bs = entry.get("BS", "")
-            raw_from = entry.get("from", idx - 1)
+        # Parallel OCCUPIER execution
+        resolved_pal_jobs = _resolve_pal_jobs_value(config)
+        logger.info(
+            "Scheduling %d OCCUPIER FoBs (parallel_workflows=%s, pal_jobs=%s → resolved=%d)",
+            len(sequence),
+            str(config.get('parallel_workflows', 'yes')).strip().lower(),
+            config.get('pal_jobs'),
+            resolved_pal_jobs,
+        )
+
+        known_indices = {int(entry["index"]) for entry in sequence if "index" in entry}
+        dependencies_map = {
+            int(entry["index"]): {
+                f"occ_{dep}" for dep in _parse_dependency_indices(entry.get("from", entry["index"] - 1))
+                if dep in known_indices
+            }
+            for entry in sequence
+        }
+
+        pal_jobs_override = resolved_pal_jobs if str(config.get('parallel_workflows', 'yes')).strip().lower() in ('yes', 'true', '1', 'on') else 1
+
+        manager = _WorkflowManager(config, label="occupier_core", max_jobs_override=pal_jobs_override)
+        fspe_results: dict[int, float | None] = {}
+        results_lock = threading.Lock()
+
+        OK = "ORCA TERMINATED NORMALLY"
+        recalc = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+
+        def _has_ok_marker(path: str) -> bool:
+            candidate = resolve_path(path)
+            if not candidate.exists():
+                return False
             try:
-                src_idx = int(raw_from)
-            except ValueError:
-                logger.error(f"Invalid 'from' value: {raw_from}")
-                continue
+                with candidate.open("r", errors="ignore") as _f:
+                    return OK in _f.read()
+            except Exception:
+                return False
+
+        freq_enabled = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
+        pass_wf_enabled = str(config.get('pass_wavefunction', 'no')).strip().lower() in ('yes', 'true', '1', 'on', 'y')
+        apm = config.get("approximate_spin_projection_APMethod")
+
+        def make_work(entry_dict: dict) -> callable:
+            idx = int(entry_dict["index"])
+            multiplicity = entry_dict["m"]
+            bs = entry_dict.get("BS", "")
+            raw_from = entry_dict.get("from", idx - 1)
+            src_idx = _resolve_primary_source(raw_from, idx - 1)
 
             stem = _stem(idx)
             inp = f"{stem}.inp"
             out = f"output{'' if idx == 1 else idx}.out"
 
-            # Wavefunction passing (%moinp) if requested and available
-            _pass_wf = str(config.get('pass_wavefunction', 'no')).strip().lower() in ('yes', 'true', '1', 'on', 'y')
-            gbw_candidate = "input.gbw" if src_idx == 1 else f"input{src_idx}.gbw"
-            gbw_path = resolve_path(gbw_candidate)
+            def _work(cores: int) -> None:
+                parts: list[str] = []
 
-            parts = []
-            if _pass_wf and gbw_path.exists():
-                parts.append(f'%moinp "{gbw_path}"')
-            elif _pass_wf and not gbw_path.exists():
-                logger.info(f"No GBW found for from={src_idx} ({gbw_path}) – starting with standard guess.")
+                if pass_wf_enabled:
+                    gbw_candidate = "input.gbw" if src_idx == 1 else f"input{src_idx}.gbw"
+                    gbw_path = resolve_path(gbw_candidate)
+                    if gbw_path.exists():
+                        parts.append(f'%moinp "{gbw_path}"')
+                    else:
+                        logger.info(
+                            "No GBW found for from=%s (%s) – starting with standard guess.",
+                            src_idx,
+                            gbw_path,
+                        )
 
-            # Broken Symmetry + APMethod
-            apm = config.get("approximate_spin_projection_APMethod")
-            if bs:
-                # Check if frequency calculation is enabled for OCCUPIER
-                freq_enabled = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
-                if freq_enabled:
-                    # When frequency calculation is enabled, APMethod should not be in SCF block
-                    parts.append(f"%scf\n  BrokenSym {bs}\nend")
+                if bs:
+                    if freq_enabled:
+                        parts.append(f"%scf\n  BrokenSym {bs}\nend")
+                    else:
+                        parts.append(f"%scf\n  BrokenSym {bs}\n  APMethod {apm}\nend")
+
+                additions = "\n".join(parts)
+
+                read_and_modify_file_OCCUPIER(
+                    src_idx,
+                    inp,
+                    charge,
+                    multiplicity,
+                    solvent,
+                    metals,
+                    metal_basisset,
+                    main_basisset,
+                    config,
+                    additions,
+                )
+
+                if not Path(inp).exists():
+                    raise RuntimeError(f"Failed to create OCCUPIER input '{inp}'")
+
+                _update_pal_block(inp, cores)
+
+                if recalc and _has_ok_marker(out):
+                    logger.info("[recalc] Skipping ORCA for %s; found '%s'.", out, OK)
                 else:
-                    parts.append(f"%scf\n  BrokenSym {bs}\n  APMethod {apm}\nend")
+                    run_orca(inp, out)
 
-            additions = "\n".join(parts)
+                parsed_val = finder(out)
+                with results_lock:
+                    fspe_results[idx] = parsed_val
 
-            # Write ORCA input (includes per-atom basis tagging and policy-based method line)
-            read_and_modify_file_OCCUPIER(
-                src_idx, inp, charge, multiplicity,
-                solvent, metals, metal_basisset,
-                main_basisset, config, additions
-            )
+            return _work
 
-            # Re-run policy: skip when DELFIN_RECALC=1 and output already OK
-            OK = "ORCA TERMINATED NORMALLY"
-            recalc = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+        try:
+            for entry in sequence:
+                idx = int(entry["index"])
+                job = WorkflowJob(
+                    job_id=f"occ_{idx}",
+                    work=make_work(entry),
+                    description=f"FoB index {idx}",
+                    dependencies=dependencies_map.get(idx, set()),
+                )
+                cores_bounds = manager.derive_core_bounds()
+                job.cores_min, job.cores_optimal, job.cores_max = cores_bounds
+                manager.add_job(job)
 
-            def _has_ok_marker(path: str) -> bool:
-                candidate = resolve_path(path)
-                if not candidate.exists():
-                    return False
-                try:
-                    with candidate.open("r", errors="ignore") as _f:
-                        return OK in _f.read()
-                except Exception:
-                    return False
+            manager.run()
+        finally:
+            manager.shutdown()
 
-            if recalc and _has_ok_marker(out):
-                logger.info("[recalc] Skipping ORCA for %s; found '%s'.", out, OK)
-            else:
-                run_orca(inp, out)
-
-            # Parse energy and collect
-            parsed_val = finder(out)
-            inputs[idx] = inp
-            fspe_values.append(parsed_val)
+        fspe_values = [fspe_results.get(int(entry["index"])) for entry in sequence]
 
         duration = time.time() - start_time
         generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, solvent, config, main_basisset, sequence)

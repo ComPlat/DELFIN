@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, time, re, sys, argparse
+import os, time, re, sys, argparse, difflib
 from pathlib import Path
 
 from delfin.common.logging import configure_logging, get_logger
@@ -31,6 +31,10 @@ from .parallel_classic import (
     execute_classic_parallel_workflows,
     execute_classic_sequential_workflows,
     execute_manually_parallel_workflows,
+)
+from .parallel_occupier_integration import (
+    OccupierExecutionContext,
+    run_occupier_orca_jobs,
 )
 
 logger = get_logger(__name__)
@@ -268,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         'oxidation_steps': '',
         'reduction_steps': '',
         'parallel_workflows': 'yes',  # parallel ox/red workflows
+        'pal_jobs': None,
         'absorption_spec': 'no',
         'emission_spec': 'no',
         'E_00': 'no',
@@ -409,6 +414,41 @@ def main(argv: list[str] | None = None) -> int:
         if config.get(mult_key) in (None, ''):
             config[mult_key] = multiplicity
 
+    try:
+        multiplicity_0 = int(config.get('multiplicity_0'))
+    except (TypeError, ValueError):
+        multiplicity_0 = config.get('multiplicity_0')
+
+    raw_method = str(config.get('method', '')).strip()
+    typo_corrections = {
+        'calssic': 'classic',
+    }
+    normalized_method = typo_corrections.get(raw_method.lower(), raw_method.lower())
+
+    method_aliases = {
+        'classic': 'classic',
+        'manually': 'manually',
+        'occupier': 'OCCUPIER',
+    }
+
+    canonical_method = method_aliases.get(normalized_method)
+    if canonical_method is None:
+        logger.error(
+            "Unknown method '%s'. Supported methods: %s.",
+            raw_method,
+            ", ".join(sorted(method_aliases.values())),
+        )
+        if raw_method:
+            suggestions = difflib.get_close_matches(raw_method, method_aliases.keys(), n=1)
+            if suggestions:
+                logger.error("Did you mean '%s'?", suggestions[0])
+        return 2
+
+    if canonical_method != raw_method and canonical_method.lower() != raw_method.lower():
+        logger.warning("CONTROL.txt method '%s' interpreted as '%s'.", raw_method, canonical_method)
+
+    config['method'] = canonical_method
+
 
 
 
@@ -440,7 +480,8 @@ def main(argv: list[str] | None = None) -> int:
 
             if needs_ox_red:
                 # Check if parallel workflow execution is enabled
-                parallel_workflows = str(config.get('parallel_workflows', 'yes')).lower() in ('yes', 'true', '1')
+                parallel_token = str(config.get('parallel_workflows', 'yes')).strip().lower()
+                parallel_workflows = parallel_token in ('yes', 'true', '1', 'on')
 
                 if parallel_workflows and config.get("oxidation_steps", "") and config.get("reduction_steps", ""):
                     logger.info("Executing oxidation and reduction workflows in parallel")
@@ -452,101 +493,22 @@ def main(argv: list[str] | None = None) -> int:
                 logger.info("No oxidation or reduction steps configured")
                 
 
-            xyz_file_initial_OCCUPIER = f"input_initial_OCCUPIER.xyz"
-            xyz_file_ox_step_1_OCCUPIER = f"input_ox_step_1_OCCUPIER.xyz"
-            xyz_file_ox_step_2_OCCUPIER = f"input_ox_step_2_OCCUPIER.xyz"
-            xyz_file_ox_step_3_OCCUPIER = f"input_ox_step_3_OCCUPIER.xyz"
-            xyz_file_red_step_1_OCCUPIER = f"input_red_step_1_OCCUPIER.xyz"
-            xyz_file_red_step_2_OCCUPIER = f"input_red_step_2_OCCUPIER.xyz"
-            xyz_file_red_step_3_OCCUPIER = f"input_red_step_3_OCCUPIER.xyz"
+            parallel_flag = str(config.get('parallel_workflows', 'yes')).strip().lower()
+            parallel_workflows_enabled = parallel_flag in ('yes', 'true', '1', 'on')
+            metals_list = list(metals) if isinstance(metals, (list, tuple, set)) else ([metals] if metals else [])
 
-            if config['frequency_calculation_OCCUPIER'] == "no":
-                if config['calc_initial'] == "yes":
-                    multiplicity_0, additions_0, min_fspe_index = read_occupier_file("initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                    read_xyz_and_create_input3(xyz_file_initial_OCCUPIER, output_file, charge, multiplicity_0, solvent, metals, metal_basisset, main_basisset, config, additions_0)
-                    run_orca(output_file, "initial.out")
-                    run_IMAG("initial.out", "initial", charge, multiplicity_0, solvent, metals, config, main_basisset, metal_basisset, additions_0)
-                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
-
-                if config['absorption_spec'] == "yes":
-                    multiplicity = 1
-                    additions=config['additions_TDDFT']
-                    read_xyz_and_create_input2(xyz_file_initial_OCCUPIER, output_file3, charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-                    run_orca(output_file3, "absorption_spec.out")
-                    logger.info("TD-DFT absorption spectra calculation complete!")   
-
-                if config['E_00'] == "yes":
-
-                    if "t" in config.get("excitation", ""):
-                        multiplicity = 3
-                        additions=config['additions_TDDFT']
-                        read_xyz_and_create_input3(xyz_file, "t1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-                        run_orca("t1_state_opt.inp", "t1_state_opt.out")
-                        logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
-                        if config['emission_spec'] == "yes":
-                            multiplicity = 1
-                            additions=config['additions_TDDFT']
-                            read_xyz_and_create_input2("t1_state_opt.xyz", "emission_t1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-                            run_orca("emission_t1.inp", "emission_t1.out")
-                            logger.info("TD-DFT T1 emission spectra calculation complete!") 
-
-                    if "s" in config.get("excitation", ""):
-                        multiplicity = 1
-                        additions=config['additions_TDDFT']
-                        read_xyz_and_create_input4(xyz_file, "s1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-                        run_orca("s1_state_opt.inp", "s1_state_opt.out")
-                        logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
-                        if config['emission_spec'] == "yes":
-                            multiplicity = 1
-                            additions=config['additions_TDDFT']
-                            read_xyz_and_create_input2("s1_state_opt.xyz", "emission_s1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-                            run_orca("emission_s1.inp", "emission_s1.out")
-                            logger.info("TD-DFT S1 emission spectra calculation complete!") 
-
-                if "1" in config['oxidation_steps']:
-                    multiplicity_ox1, additions_ox1, min_fspe_index = read_occupier_file("ox_step_1_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                    charge = int(config['charge']) + 1
-                    read_xyz_and_create_input3(xyz_file_ox_step_1_OCCUPIER, output_file5, charge, multiplicity_ox1, solvent, metals, metal_basisset, main_basisset, config, additions_ox1)
-                    run_orca(output_file5, "ox_step_1.out")
-                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
-
-                if "2" in config['oxidation_steps']:
-                    multiplicity_ox2, additions_ox2, min_fspe_index = read_occupier_file("ox_step_2_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                    charge = int(config['charge']) + 2
-                    read_xyz_and_create_input3(xyz_file_ox_step_2_OCCUPIER, output_file9, charge, multiplicity_ox2, solvent, metals, metal_basisset, main_basisset, config, additions_ox2)
-                    run_orca(output_file9, "ox_step_2.out")
-                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
-
-                if "3" in config['oxidation_steps']:
-                    multiplicity_ox3, additions_ox3, min_fspe_index = read_occupier_file("ox_step_3_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                    charge = int(config['charge']) + 3
-                    read_xyz_and_create_input3(xyz_file_ox_step_3_OCCUPIER, output_file10, charge, multiplicity_ox3, solvent, metals, metal_basisset, main_basisset, config, additions_ox3)
-                    run_orca(output_file10, "ox_step_3.out")
-                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
-
-
-
-
-                if "1" in config['reduction_steps']:
-                    multiplicity_red1, additions_red1, min_fspe_index = read_occupier_file("red_step_1_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                    charge = int(config['charge']) - 1
-                    read_xyz_and_create_input3(xyz_file_red_step_1_OCCUPIER, output_file6, charge, multiplicity_red1, solvent, metals, metal_basisset, main_basisset, config, additions_red1)
-                    run_orca(output_file6, "red_step_1.out")
-                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
-
-                if "2" in config['reduction_steps']:
-                    multiplicity_red2, additions_red2, min_fspe_index = read_occupier_file("red_step_2_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                    charge = int(config['charge']) - 2
-                    read_xyz_and_create_input3(xyz_file_red_step_2_OCCUPIER, output_file7, charge, multiplicity_red2, solvent, metals, metal_basisset, main_basisset, config, additions_red2)
-                    run_orca(output_file7, "red_step_2.out")
-                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
-
-                if "3" in config['reduction_steps']:
-                    multiplicity_red3, additions_red3, min_fspe_index = read_occupier_file("red_step_3_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                    charge = int(config['charge']) - 3
-                    read_xyz_and_create_input3(xyz_file_red_step_3_OCCUPIER, output_file8, charge, multiplicity_red3, solvent, metals, metal_basisset, main_basisset, config, additions_red3)
-                    run_orca(output_file8, "red_step_3.out")
-                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
+            if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() != "yes":
+                occ_context = OccupierExecutionContext(
+                    charge=charge,
+                    solvent=solvent,
+                    metals=metals_list,
+                    main_basisset=main_basisset,
+                    metal_basisset=metal_basisset,
+                    config=config,
+                )
+                if not run_occupier_orca_jobs(occ_context, parallel_workflows_enabled):
+                    logger.error("OCCUPIER post-processing failed; aborting run")
+                    return 1
 
             if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == "yes":
                 # read OCCUPIER info (unchanged)
@@ -708,50 +670,48 @@ def main(argv: list[str] | None = None) -> int:
         if config['XTB_SOLVATOR'] == "yes":
             XTB_SOLVATOR(str(Path("input.txt").resolve()), multiplicity, charge, solvent, number_explicit_solv_molecules, config)
 
+        ground_multiplicity = multiplicity
+        additions_ground = ""
+        parallel_cli_enabled = str(config.get('parallel_workflows', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
 
+        if not parallel_cli_enabled:
+            if config['calc_initial'] == "yes":
+                read_and_modify_file_1(input_file, output_file, charge, ground_multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions_ground)
+                run_orca(output_file, "initial.out")
+                run_IMAG("initial.out", "initial", charge, ground_multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions_ground)
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
 
-        additions= ""
-        if config['calc_initial'] == "yes":
-            read_and_modify_file_1(input_file, output_file, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file, "initial.out")
-            run_IMAG("initial.out", "initial", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
+            if config['absorption_spec'] == "yes":
+                additions_td = config.get('additions_TDDFT', '')
+                read_xyz_and_create_input2(xyz_file, output_file3, charge, 1, solvent, metals, config, main_basisset, metal_basisset, additions_td)
+                run_orca(output_file3, "absorption_spec.out")
+                logger.info("TD-DFT absorption spectra calculation complete!")
 
-        if config['absorption_spec'] == "yes":
-            multiplicity = 1
-            additions=config['additions_TDDFT']
-            read_xyz_and_create_input2(xyz_file, output_file3, charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-            run_orca(output_file3, "absorption_spec.out")
-            logger.info("TD-DFT absorption spectra calculation complete!")
+            if config['E_00'] == "yes":
 
-        if config['E_00'] == "yes":
+                if "t" in config.get("excitation", ""):
+                    read_xyz_and_create_input3(xyz_file, "t1_state_opt.inp", charge, 3, solvent, metals, metal_basisset, main_basisset, config, additions_ground)
+                    run_orca("t1_state_opt.inp", "t1_state_opt.out")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
+                    if config['emission_spec'] == "yes":
+                        additions_td = config.get('additions_TDDFT', '')
+                        read_xyz_and_create_input2("t1_state_opt.xyz", "emission_t1.inp", charge, 1, solvent, metals, config, main_basisset, metal_basisset, additions_td)
+                        run_orca("emission_t1.inp", "emission_t1.out")
+                        logger.info("TD-DFT emission spectra calculation complete!") 
 
-            if "t" in config.get("excitation", ""):
-                multiplicity = 3
-                read_xyz_and_create_input3(xyz_file, "t1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-                run_orca("t1_state_opt.inp", "t1_state_opt.out")
-                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
-                if config['emission_spec'] == "yes":
-                    multiplicity = 1
-                    additions=config['additions_TDDFT']
-                    read_xyz_and_create_input2("t1_state_opt.xyz", "emission_t1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-                    run_orca("emission_t1.inp", "emission_t1.out")
-                    logger.info("TD-DFT emission spectra calculation complete!") 
+                if "s" in config.get("excitation", ""):
+                    read_xyz_and_create_input4(xyz_file, "s1_state_opt.inp", charge, 1, solvent, metals, metal_basisset, main_basisset, config, additions_ground)
+                    run_orca("s1_state_opt.inp", "s1_state_opt.out")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
+                    if config['emission_spec'] == "yes":
+                        additions_td = config.get('additions_TDDFT', '')
+                        read_xyz_and_create_input2("s1_state_opt.xyz", "emission_s1.inp", charge, 1, solvent, metals, config, main_basisset, metal_basisset, additions_td)
+                        run_orca("emission_s1.inp", "emission_s1.out")
+                        logger.info("TD-DFT emission spectra calculation complete!") 
+        else:
+            logger.info("[classic] Initial and excited-state ORCA jobs delegated to parallel scheduler")
 
-            if "s" in config.get("excitation", ""):
-                multiplicity = 1
-                read_xyz_and_create_input4(xyz_file, "s1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-                run_orca("s1_state_opt.inp", "s1_state_opt.out")
-                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
-                if config['emission_spec'] == "yes":
-                    multiplicity = 1
-                    additions=config['additions_TDDFT']
-                    read_xyz_and_create_input2("s1_state_opt.xyz", "emission_s1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-                    run_orca("emission_s1.inp", "emission_s1.out")
-                    logger.info("TD-DFT emission spectra calculation complete!") 
-
-
-        parallel_cli_enabled = str(config.get('parallel_workflows', 'yes')).lower() in ('yes', 'true', '1')
+        multiplicity = ground_multiplicity
         classic_kwargs = {
             'total_electrons_txt': total_electrons_txt,
             'xyz_file': xyz_file,
@@ -769,18 +729,27 @@ def main(argv: list[str] | None = None) -> int:
             'metals': metals,
             'metal_basisset': metal_basisset,
             'main_basisset': main_basisset,
-            'additions': additions,
+            'additions': additions_ground,
+            'input_file_path': input_file,
+            'output_initial': output_file,
+            'ground_multiplicity': ground_multiplicity,
+            'include_excited_jobs': parallel_cli_enabled,
         }
 
         oxidation_requested = bool(str(config.get('oxidation_steps', '')).strip())
         reduction_requested = bool(str(config.get('reduction_steps', '')).strip())
 
-        if parallel_cli_enabled and (oxidation_requested or reduction_requested):
-            if not execute_classic_parallel_workflows(config, **classic_kwargs):
-                logger.error("Classic parallel execution failed; falling back to sequential mode")
+        if oxidation_requested or reduction_requested:
+            if parallel_cli_enabled:
+                logger.info("[classic] Dispatching oxidation/reduction workflows to parallel scheduler")
+                if not execute_classic_parallel_workflows(config, **classic_kwargs):
+                    logger.error("Classic parallel execution failed; falling back to sequential mode")
+                    execute_classic_sequential_workflows(config, **classic_kwargs)
+            else:
+                logger.info("[classic] Parallel workflows disabled in CONTROL.txt; running sequentially")
                 execute_classic_sequential_workflows(config, **classic_kwargs)
         else:
-            execute_classic_sequential_workflows(config, **classic_kwargs)
+            logger.info("[classic] No oxidation or reduction steps configured; skipping workflows")
 
 
     # ------------------- manually --------------------
@@ -810,49 +779,58 @@ def main(argv: list[str] | None = None) -> int:
             additions = f"%scf BrokenSym {','.join(map(str, wert))} end"
         else:
             additions = ""
-        if config['calc_initial'] == "yes":
-            read_and_modify_file_1(input_file, output_file, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-            run_orca(output_file, "initial.out")
-            run_IMAG("initial.out", "initial", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-            logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
+        ground_additions = additions
+        try:
+            ground_multiplicity = int(str(config.get('multiplicity_0', 1)).strip())
+        except Exception:
+            ground_multiplicity = 1
 
-        if config['absorption_spec'] == "yes":
-            multiplicity = 1
-            additions=config['additions_TDDFT']
-            read_xyz_and_create_input2(xyz_file, output_file3, charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-            run_orca(output_file3, "absorption_spec.out")
-            logger.info("TD-DFT absorption spectra calculation complete!")   
+        parallel_cli_enabled = str(config.get('parallel_workflows', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
 
-        if config['E_00'] == "yes":
+        if not parallel_cli_enabled:
+            if config['calc_initial'] == "yes":
+                read_and_modify_file_1(input_file, output_file, charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
+                run_orca(output_file, "initial.out")
+                run_IMAG("initial.out", "initial", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
+                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
 
-            if "t" in config.get("excitation", ""):
-                multiplicity = 3
-                read_xyz_and_create_input3(xyz_file, "t1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-                run_orca("t1_state_opt.inp", "t1_state_opt.out")
-                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
-                if config['emission_spec'] == "yes":
-                    multiplicity = 1
-                    additions=config['additions_TDDFT']
-                    read_xyz_and_create_input2("t1_state_opt.xyz", "emission_t1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-                    run_orca("emission_t1.inp", "emission_t1.out")
-                    logger.info("TD-DFT emission spectra calculation complete!") 
-
-            if "s" in config.get("excitation", ""):
+            if config['absorption_spec'] == "yes":
                 multiplicity = 1
-                read_xyz_and_create_input4(xyz_file, "s1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-                run_orca("s1_state_opt.inp", "s1_state_opt.out")
-                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
-                if config['emission_spec'] == "yes":
-                    multiplicity = 1
-                    additions=config['additions_TDDFT']
-                    read_xyz_and_create_input2("s1_state_opt.xyz", "emission_s1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-                    run_orca("emission_s1.inp", "emission_s1.out")
-                    logger.info("TD-DFT emission spectra calculation complete!") 
+                additions=config['additions_TDDFT']
+                read_xyz_and_create_input2(xyz_file, output_file3, charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
+                run_orca(output_file3, "absorption_spec.out")
+                logger.info("TD-DFT absorption spectra calculation complete!")   
 
+            if config['E_00'] == "yes":
+
+                if "t" in config.get("excitation", ""):
+                    multiplicity = 3
+                    read_xyz_and_create_input3(xyz_file, "t1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
+                    run_orca("t1_state_opt.inp", "t1_state_opt.out")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
+                    if config['emission_spec'] == "yes":
+                        multiplicity = 1
+                        additions=config['additions_TDDFT']
+                        read_xyz_and_create_input2("t1_state_opt.xyz", "emission_t1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
+                        run_orca("emission_t1.inp", "emission_t1.out")
+                        logger.info("TD-DFT emission spectra calculation complete!") 
+
+                if "s" in config.get("excitation", ""):
+                    multiplicity = 1
+                    read_xyz_and_create_input4(xyz_file, "s1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
+                    run_orca("s1_state_opt.inp", "s1_state_opt.out")
+                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
+                    if config['emission_spec'] == "yes":
+                        multiplicity = 1
+                        additions=config['additions_TDDFT']
+                        read_xyz_and_create_input2("s1_state_opt.xyz", "emission_s1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
+                        run_orca("emission_s1.inp", "emission_s1.out")
+                        logger.info("TD-DFT emission spectra calculation complete!") 
+        else:
+            logger.info("[manually] Initial and excited-state ORCA jobs delegated to parallel scheduler")
 
         oxidation_requested = bool(str(config.get('oxidation_steps', '')).strip())
         reduction_requested = bool(str(config.get('reduction_steps', '')).strip())
-        parallel_cli_enabled = str(config.get('parallel_workflows', 'yes')).lower() in ('yes', 'true', '1')
 
         manual_kwargs = {
             'total_electrons_txt': total_electrons_txt,
@@ -871,17 +849,29 @@ def main(argv: list[str] | None = None) -> int:
             'metals': metals,
             'metal_basisset': metal_basisset,
             'main_basisset': main_basisset,
-            'additions': additions,
+            'additions': ground_additions,
+            'input_file_path': input_file,
+            'output_initial': output_file,
+            'ground_multiplicity': ground_multiplicity,
+            'ground_additions': ground_additions,
+            'include_excited_jobs': parallel_cli_enabled,
         }
 
         run_manual_sequential = True
-        if parallel_cli_enabled and (oxidation_requested or reduction_requested):
-            if execute_manually_parallel_workflows(config, **manual_kwargs):
-                run_manual_sequential = False
+        if oxidation_requested or reduction_requested:
+            if parallel_cli_enabled:
+                logger.info("[manually] Dispatching oxidation/reduction workflows to parallel scheduler")
+                if execute_manually_parallel_workflows(config, **manual_kwargs):
+                    run_manual_sequential = False
+                else:
+                    logger.error("Manual parallel execution failed; falling back to sequential mode")
             else:
-                logger.error("Manual parallel execution failed; falling back to sequential mode")
+                logger.info("[manually] Parallel workflows disabled in CONTROL.txt; running sequentially")
 
         if run_manual_sequential:
+            if not (oxidation_requested or reduction_requested):
+                logger.info("[manually] No oxidation or reduction steps configured; skipping workflows")
+
             if "1" in config['oxidation_steps']:
                 charge = int(config['charge']) + 1
                 multiplicity = config['multiplicity_ox1']
