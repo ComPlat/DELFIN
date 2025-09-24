@@ -20,18 +20,35 @@ def setup_recalc_mode():
     OK_MARKER = "ORCA TERMINATED NORMALLY"
 
     def _run_orca_wrapper(inp_file, out_file):
-        need = True
-        out_path = resolve_path(out_file)
-        if out_path.exists():
+        def _check_completion(path):
+            """Check if output file is complete with proper error handling."""
+            if not path.exists():
+                return False
             try:
-                with out_path.open("r", errors="ignore") as f:
-                    need = (OK_MARKER not in f.read())
-                if not need:
-                    logger.info("[recalc] skipping ORCA; %s appears complete.", out_file)
-                    return None
+                # Check file size to avoid reading incomplete files
+                if path.stat().st_size < 100:  # Files with OK_MARKER should be larger
+                    return False
+                with path.open("r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                    return OK_MARKER in content
             except Exception as e:
-                logger.debug("[recalc] could not check %s (%s) -> will run", out_file, e)
+                logger.debug("[recalc] could not check %s (%s) -> will run", path, e)
+                return False
+
+        out_path = resolve_path(out_file)
+
+        # First check
+        if _check_completion(out_path):
+            logger.info("[recalc] skipping ORCA; %s appears complete.", out_file)
+            return None
+
         logger.info("[recalc] (re)running ORCA for %s", out_file)
+
+        # Second check right before execution (race condition protection)
+        if _check_completion(out_path):
+            logger.info("[recalc] skipping ORCA; %s completed by another process.", out_file)
+            return None
+
         return _run_orca_real(inp_file, out_file)
 
     def _xtb_wrapper(multiplicity, charge, config):
@@ -110,6 +127,12 @@ def patch_modules_for_recalc(wrappers):
     """Patch modules that have captured their own function references."""
     from . import orca as _orca_mod
     from . import occupier as _occupier_mod
+    from . import cli as _cli_mod
+    from . import parallel_classic as _parallel_classic_mod
+    from . import parallel_occupier_integration as _parallel_occupier_integration_mod
 
     _orca_mod.run_orca = wrappers['run_orca']
     _occupier_mod.run_orca = wrappers['run_orca']
+    _cli_mod.run_orca = wrappers['run_orca']
+    _parallel_classic_mod.run_orca = wrappers['run_orca']
+    _parallel_occupier_integration_mod.run_orca = wrappers['run_orca']

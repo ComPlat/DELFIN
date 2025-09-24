@@ -544,9 +544,14 @@ def run_OCCUPIER():
             if not candidate.exists():
                 return False
             try:
-                with candidate.open("r", errors="ignore") as _f:
-                    return OK in _f.read()
-            except Exception:
+                # Check file size to avoid reading incomplete files
+                if candidate.stat().st_size < 100:  # Files with OK marker should be larger
+                    return False
+                with candidate.open("r", encoding="utf-8", errors="replace") as _f:
+                    content = _f.read()
+                    return OK in content
+            except Exception as e:
+                logger.debug("[recalc] could not check %s (%s) -> will run", path, e)
                 return False
 
         freq_enabled = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
@@ -611,6 +616,14 @@ def run_OCCUPIER():
                     raise RuntimeError(f"Failed to create OCCUPIER input '{inp}'")
 
                 _update_pal_block(inp, cores)
+
+                # Second check right before execution (race condition protection)
+                if recalc and _has_ok_marker(out):
+                    logger.info("[recalc] Skipping ORCA for %s; completed by another process.", out)
+                    parsed_val = finder(out)
+                    with results_lock:
+                        fspe_results[idx] = parsed_val
+                    return
 
                 run_orca(inp, out)
 
