@@ -1,6 +1,5 @@
 import ast
-import re
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional
 
 from delfin.common.control_validator import validate_control_config
 
@@ -120,8 +119,8 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
             # Normal key=value line
             if '=' in line:
                 key, value = line.split('=', 1)
-                key = key.strip()
-                value = value.strip()
+                key : str = key.strip()
+                value : str = value.strip()
 
                 # Start of a multiline list
                 if value.startswith('[') and not value.endswith(']'):

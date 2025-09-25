@@ -1,7 +1,6 @@
 # cli_banner.py
 # Banner and initial setup utilities for DELFIN CLI
 
-import os
 from pathlib import Path
 
 
@@ -40,6 +39,7 @@ def validate_required_files(config, control_path):
 
     Args:
         config: Configuration dictionary
+        control_path: Path to CONTROL.txt file
 
     Returns:
         tuple: (success: bool, error_code: int, input_file: str)
