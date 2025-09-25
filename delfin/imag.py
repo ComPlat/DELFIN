@@ -213,7 +213,8 @@ def read_and_modify_xyz_IMAG(input_file_path, output_file_path, charge, multipli
 
     # 1. Coordination sphere
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
-    scale = float(config.get('first_coordination_sphere_scale', 1.20))
+    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
+    scale = float(sphere_scale_raw) if sphere_scale_raw else 1.20
 
     # only output the first contiguous coordinate block
     coord_only = []

@@ -435,7 +435,7 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
                 )
                 return False
             logger.info("Falling back to sequential OCCUPIER ORCA execution")
-            return _run_jobs_sequentially(fallback_jobs, context)
+            return _run_jobs_sequentially(fallback_jobs, context, pal_jobs_value)
         finally:
             try:
                 manager.shutdown()
