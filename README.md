@@ -123,8 +123,12 @@ delfin/
 * `reduction_steps = 1,2,3` (string; steps to compute)
 * `E_00 = yes | no`
 * `absorption_spec = yes | no`
-* xTB/CREST flags: `XTB_OPT`, `XTB_GOAT`, `CREST`, `XTB_SOLVATOR`
-* Basis/functional/solvent/RI flags (as before)
+* `parallel_workflows = yes | no | auto` (parallelization)
+* `pal_jobs = N` (number of parallel PAL processes; auto-detected from cluster if not set)
+* `XTB_OPT = yes | no`
+* `XTB_GOAT = yes | no`
+* `CREST = yes | no`
+* `XTB_SOLVATOR = yes | no`
 
 ---
 

@@ -1,0 +1,2 @@
+# Ignore PDFs in docs folder
+docs/*.pdf
