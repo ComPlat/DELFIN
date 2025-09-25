@@ -1,0 +1,50 @@
+
+                     *******************
+                     *     OCCUPIER    *
+                     *******************
+
+      #####################################################
+      #                     -***-                         #
+      #         Program written by :  M. Hartmann         #
+      #         Automates ORCA 6.1.0 calculations         #
+      #                 Version 1.0.0                     #
+      #                     -***-                         #
+      #####################################################
+
+Method: PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(Acetonitrile) OPT PAL30
+        Zn def2-TZVP
+
+Charge: 2     
+-------------  
+FINAL SINGLE POINT ENERGY (1)   = -3953.261 (H) <-- PREFERRED VALUE
+multiplicity 1
+Spin Contamination (⟨S²⟩ - S(S+1))   : N/A
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (2)   = -3953.261 (H)
+multiplicity 1, BrokenSym 1,1
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.000
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -11482.23 cm**-1
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (3)   = -3953.261 (H)
+multiplicity 1, BrokenSym 2,2
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.000
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -7716.45 cm**-1
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (4)   = -3953.165 (H)
+multiplicity 3
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.045
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (5)   = -3953.130 (H)
+multiplicity 3, BrokenSym 3,1
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.045
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -5381.81 cm**-1
+----------------------------------------------------------------
+
+
+TOTAL RUN TIME: 04 hours 27 minutes 34.98 seconds
+
+LOWEST FINAL SINGLE POINT ENERGY: -3953.261 (H)
+
+(Selection: tolerance, APmethod 2, dev_max none, precision=3, epsilon=0.0005)
+(Preferred Index: 1)
+(Electron number: is_even)

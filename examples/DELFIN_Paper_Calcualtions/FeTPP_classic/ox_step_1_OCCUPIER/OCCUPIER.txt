@@ -1,0 +1,58 @@
+
+                     *******************
+                     *     OCCUPIER    *
+                     *******************
+
+      #####################################################
+      #                     -***-                         #
+      #         Program written by :  M. Hartmann         #
+      #         Automates ORCA 6.1.0 calculations         #
+      #                 Version 1.0.0                     #
+      #                     -***-                         #
+      #####################################################
+
+Method: PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(DMF) OPT PAL30
+        Fe def2-TZVP
+
+Charge: 1     
+-------------  
+FINAL SINGLE POINT ENERGY (1)   = -3172.561 (H)
+multiplicity 2
+Spin Contamination (⟨S²⟩ - S(S+1))   : 1.072
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (2)   = Not a valid value
+multiplicity 2, BrokenSym 2,1
+Spin Contamination (⟨S²⟩ - S(S+1))   : N/A
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : N/A
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (3)   = Not a valid value
+multiplicity 2, BrokenSym 3,2
+Spin Contamination (⟨S²⟩ - S(S+1))   : N/A
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : N/A
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (4)   = -3172.570 (H) <-- PREFERRED VALUE
+multiplicity 4
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.058
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (5)   = -3172.560 (H)
+multiplicity 4, BrokenSym 4,1
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.070
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -949.28 cm**-1
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (6)   = -3172.544 (H)
+multiplicity 4, BrokenSym 5,2
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.710
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -1381.57 cm**-1
+----------------------------------------------------------------
+
+
+TOTAL RUN TIME: 00 hours 00 minutes 00.05 seconds
+
+LOWEST FINAL SINGLE POINT ENERGY: -3172.570 (H)
+
+(Selection: tolerance, APmethod 2, precision=3, epsilon=0.0005)
+(Energy-bias: energy_bias_window_h=0.002, mismatch_bias_window=0.05 -> prefer lower E only when qualities are similar)
+(Clean-bias: clean_bias_window_h=0.003, quality_bias_window=0.05 -> prefer cleaner when energies are close)
+(Clean-override: clean_override_window_h=0.003, clean_quality_improvement=0.05, clean_quality_good=0.05)
+(Preferred Index: 4)
+(Electron number: is_odd)
