@@ -43,7 +43,6 @@ logger = get_logger(__name__)
 
 def _execute_oxidation_workflow(config):
     """Execute oxidation steps workflow."""
-    from pathlib import Path
 
     logger.info("Starting oxidation workflow")
 
@@ -82,7 +81,6 @@ def _execute_oxidation_workflow(config):
 
 def _execute_reduction_workflow(config):
     """Execute reduction steps workflow."""
-    from pathlib import Path
 
     logger.info("Starting reduction workflow")
 
@@ -167,7 +165,7 @@ def _execute_parallel_workflows(config):
     else:
         logger.error("Some parallel workflows failed")
 
-    return all_success
+    return all_success # return value will not be used
 
 
 def _execute_sequential_workflows(config):
@@ -186,7 +184,7 @@ def _execute_sequential_workflows(config):
         if not success:
             all_success = False
 
-    return all_success
+    return all_success # return value will not be used
 
 
 def _normalize_input_file(config, control_path: Path) -> str:
@@ -213,13 +211,13 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging()
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
-    args, _unknown = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
-    RECALC_MODE = bool(getattr(args, "recalc", False))
+    args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:]) # second return value is not used anymore
+    RECALC_MODE = bool(getattr(args, "recalc", False)) # default is False, so XTB will not be set -> could crash if config['method'] == "OCCUPIER"
     os.environ["DELFIN_RECALC"] = "1" if RECALC_MODE else "0"
 
     if RECALC_MODE:
         # IMPORTANT: override the global bindings so all call sites use the wrappers
-        global run_orca, XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
+        global run_orca, XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR # please check Global variable i.a. 'XTB' is undefined at the module level, variables have no init value outside of RECALC_MODE
 
         wrappers, reals = setup_recalc_mode()
 
@@ -313,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
     NAME = (config.get('NAME') or '').strip()
 
     # Examples: filenames, parsing, conversions with sensible defaults, etc.
+    # unclear use, maybe use array / list / mapping / enum instead and define near to the first use.
     xyz_file = "initial.xyz"
     xyz_file2 = "red_step_1.xyz"
     xyz_file3 = "red_step_2.xyz"
@@ -321,14 +320,14 @@ def main(argv: list[str] | None = None) -> int:
 
     output_file = "initial.inp"
     output_file3 = "absorption_td.inp"
-    output_file4 = "e_state_opt.inp"
+    output_file4 = "e_state_opt.inp" # never used
     output_file5 = "ox_step_1.inp"
     output_file6 = "red_step_1.inp"
     output_file7 = "red_step_2.inp"
     output_file8 = "red_step_3.inp"
     output_file9 = "ox_step_2.inp"
     output_file10 = "ox_step_3.inp"
-    output_file11 = "emission_td.inp"
+    output_file11 = "emission_td.inp" # never used
 
     try:
         charge = int(str(config.get('charge', 0)).strip())
@@ -346,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Invalid 'number_explicit_solv_molecules'; falling back to 0.")
         number_explicit_solv_molecules = 0
 
-    min_fspe_index = None
+    # min_fspe_index = None # value assigned but never used
     solvent = (config.get('solvent') or '').strip()
     start_time = time.time()
 
@@ -383,7 +382,6 @@ def main(argv: list[str] | None = None) -> int:
     total_electrons = total_electrons_txt - charge
     is_even = (total_electrons % 2 == 0)
 
-    cfg_mult = None
     try:
         cfg_mult_raw = config.get('multiplicity_global_opt') if config is not None else None
         cfg_mult = int(cfg_mult_raw) if cfg_mult_raw not in (None, "") else None
@@ -422,13 +420,13 @@ def main(argv: list[str] | None = None) -> int:
 
     raw_method = str(config.get('method', '')).strip()
     typo_corrections = {
-        'calssic': 'classic',
+        'calssic': 'classic', # more typos could be added later
     }
     normalized_method = typo_corrections.get(raw_method.lower(), raw_method.lower())
 
     method_aliases = {
-        'classic': 'classic',
-        'manually': 'manually',
+        'classic': 'classic', # Self-Mapping for better rebase
+        'manually': 'manually', # Self-Mapping for better rebase
         'occupier': 'OCCUPIER',
     }
 
@@ -456,16 +454,16 @@ def main(argv: list[str] | None = None) -> int:
 
 
     # ------------------- OCCUPIER --------------------
-    if config['method'] == "OCCUPIER":
+    if config['method'] == "OCCUPIER":  # and XTB in globals() "or" and RECALL_MODE "or set XTB to a callable default value during init
 
         if config['XTB_OPT'] == "yes":
-            XTB(multiplicity, charge, config)
+            XTB(multiplicity, charge, config) # Name 'XTB' can be undefined if RECALL_MODE is not True
 
         if config['XTB_GOAT'] == "yes":
-            XTB_GOAT(multiplicity, charge, config)
+            XTB_GOAT(multiplicity, charge, config) # Same issue
 
         if config['CREST'] == "yes":
-            run_crest_workflow(PAL, solvent, charge, multiplicity)
+            run_crest_workflow(PAL, solvent, charge, multiplicity) # Same issue
 
         if config['XTB_SOLVATOR'] == "no":
 
@@ -569,12 +567,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
             multiplicity_0, additions_0, min_fspe_index = read_occupier_file("initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-            XTB_SOLVATOR(str(Path("input_initial_OCCUPIER.xyz").resolve()), multiplicity_0, charge, solvent, number_explicit_solv_molecules, config)
+            XTB_SOLVATOR(str(Path("input_initial_OCCUPIER.xyz").resolve()), multiplicity_0, charge, solvent, number_explicit_solv_molecules, config) # Same undefined issue
 
 
             if config['calc_initial'] == "yes":
                 read_and_modify_file_1(input_file, output_file, charge, multiplicity_0, solvent, metals, metal_basisset, main_basisset, config, additions_0)
-                run_orca(output_file, "initial.out")
+                run_orca(output_file, "initial.out") # Same undefined issue
                 run_IMAG("initial.out", "initial", charge, multiplicity_0, solvent, metals, config, main_basisset, metal_basisset, additions_0)
                 logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
 
@@ -662,7 +660,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
     # ------------------- classic --------------------
-    if config['method'] == "classic":
+    if config['method'] == "classic": # same XTB crash for non RECALL_MODE
 
         if config['XTB_OPT'] == "yes":
             XTB(multiplicity, charge, config)
@@ -760,7 +758,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
     # ------------------- manually --------------------
-    if config['method'] == "manually":
+    if config['method'] == "manually": # same XTB crash for non RECALL_MODE
 
         multiplicity = config['multiplicity_0']
 
@@ -1022,6 +1020,10 @@ def main(argv: list[str] | None = None) -> int:
     ZPE_T1 = None
     ZPE_S1 = None
 
+    E_0 = None
+    E_S1 = None
+    E_T1 = None
+
     if config['E_00'] == "yes":
 
         if "t" in config.get("excitation", ""):
@@ -1038,9 +1040,6 @@ def main(argv: list[str] | None = None) -> int:
                 #else:
                     #logger.error("ZPE S_1 not found in 's1_state_opt.out' or conversion failed.")
 
-        E_0 = None
-        E_S1 = None
-        E_T1 = None
         if config['E_00'] == "yes":
             E_0 = find_electronic_energy(filename0)
             if E_0 is not None:
@@ -1120,14 +1119,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
     # ----------------- Calculations ------------------------
-    
-    E_ox = None
-    E_ox_2 = None
-    E_ox_3 = None
-    E_red = None
-    E_red_2 = None
-    E_red_3 = None
-    E_00_t1 = None
+
+    E_00_t1 = None # variables until E_red_3 are not used here according to IDE, could be removed?
     E_00_s1 = None
 
     # --- read selection (default -> '2'), no new parser module needed ---
@@ -1197,24 +1190,24 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---------- FINAL SELECTION: assign legacy variable names for the report ----------
     # Priority: if multiple selected, prefer 3 > 2 > 1. Fallback if missing.
-    def _pick(key):
-        if use_m3 and m3_mix.get(key) is not None:
-            src = 'M3'; val = m3_mix[key]
-        elif use_m2 and m2_step.get(key) is not None:
-            src = 'M2'; val = m2_step[key]
-        elif use_m1 and m1_avg.get(key) is not None:
-            src = 'M1'; val = m1_avg[key]
+    def _pick(_key):
+        if use_m3 and m3_mix.get(_key) is not None:
+            src = 'M3'; val = m3_mix[_key]
+        elif use_m2 and m2_step.get(_key) is not None:
+            src = 'M2'; val = m2_step[_key]
+        elif use_m1 and m1_avg.get(_key) is not None:
+            src = 'M1'; val = m1_avg[_key]
         else:
             # secondary fallbacks (ensure something is set if available)
             for src, bag in (('M3', m3_mix), ('M2', m2_step), ('M1', m1_avg)):
-                if bag.get(key) is not None:
-                    val = bag[key]
-                    logger.warning(f"Using fallback from {src} for {key} (selected method missing).")
+                if bag.get(_key) is not None:
+                    val = bag[_key]
+                    logger.warning(f"Using fallback from {src} for {_key} (selected method missing).")
                     return val
             val = None
-            #logger.warning(f"{key} unavailable in all methods.")
+            #logger.warning(f"{_key} unavailable in all methods.")
             return val
-        logger.info(f"[{src}] {key} = {val}")
+        logger.info(f"[{src}] {_key} = {val}")
         return val
 
     # Assign the names your report expects:
