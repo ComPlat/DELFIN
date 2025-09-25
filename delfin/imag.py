@@ -399,6 +399,8 @@ def run_IMAG(input_file, hess_file, charge, multiplicity, solvent, metals, confi
     finally:
         os.chdir(cwd)
 
+    # noinspection PyUnreachableCode
+    # check that while True could not be endless
     final_log_file = imag_folder / f"output_{iteration}.out"
     final_xyz_file = imag_folder / f"input_{iteration}.xyz"
     destination_folder = Path.cwd()

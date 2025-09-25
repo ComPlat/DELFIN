@@ -1,3 +1,5 @@
+# getting > 30 import ERRORS, please fix them
+
 def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge, solvent, config, main_basisset, sequence):
     """
     Selection is driven by energy first; if tied, use spin-contamination only.
