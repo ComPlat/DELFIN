@@ -43,7 +43,6 @@ logger = get_logger(__name__)
 
 def _execute_oxidation_workflow(config):
     """Execute oxidation steps workflow."""
-    from pathlib import Path
 
     logger.info("Starting oxidation workflow")
 
@@ -82,7 +81,6 @@ def _execute_oxidation_workflow(config):
 
 def _execute_reduction_workflow(config):
     """Execute reduction steps workflow."""
-    from pathlib import Path
 
     logger.info("Starting reduction workflow")
 

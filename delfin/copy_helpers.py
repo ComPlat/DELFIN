@@ -12,16 +12,16 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
     folder = Path(folder_name)
     if not folder.is_dir():
         print(f"Folder '{folder}' not found.")
-        return
+        return None, None, None
     file_path = folder / file_name
     if not file_path.is_file():
         print(f"File '{file_name}' not found in '{folder}'.")
-        return
+        return None, None, None
     with file_path.open("r", encoding="utf-8") as file:
         lines = file.readlines()
     if len(lines) < 2:
         print("File does not have enough lines.")
-        return
+        return None, None, None
     min_fspe_index = None
     last_but_one_line = lines[-2].strip().replace("(", "").replace(")", "")
     if "Preferred Index:" in last_but_one_line:
@@ -29,7 +29,7 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
             min_fspe_index = int(last_but_one_line.split(':')[-1].strip())
         except ValueError:
             print("Error parsing min_fspe_index.")
-            return
+            return None, None, None
     parity = None
     last_line = lines[-1].strip().replace("(", "").replace(")", "")
     if "Electron number:" in last_line:
@@ -37,12 +37,12 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
         parity = "even_seq" if parity_value == "is_even" else "odd_seq"
     if min_fspe_index is None or parity is None:
         print("Missing values for min_fspe_index or parity.")
-        return
+        return None, None, None
     sequence = config.get(parity, [])
     entry = next((item for item in sequence if item["index"] == min_fspe_index), None)
     if not entry:
         print(f"No entry with index {min_fspe_index} in {parity}.")
-        return
+        return None, None, None
     multiplicity = entry["m"]
     bs = entry.get("BS", "")
     additions = f"%scf BrokenSym {bs} end" if bs else ""
@@ -162,8 +162,8 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
     shutil.copy(preferred_parent_xyz, Path("input0.xyz"))
     print(f"Copied preferred geometry to {folder}/input.xyz")
     def _ensure_xyz_header(xyz_path: Path):
-        with xyz_path.open("r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
+        with xyz_path.open("r", encoding="utf-8", errors="ignore") as xyz_file:
+            lines = xyz_file.readlines()
         try:
             int(lines[0].strip())
             return
