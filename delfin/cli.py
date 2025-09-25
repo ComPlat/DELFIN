@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging()
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
-    args, _unknown = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
+    args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
     RECALC_MODE = bool(getattr(args, "recalc", False))
     os.environ["DELFIN_RECALC"] = "1" if RECALC_MODE else "0"
 
@@ -346,7 +346,6 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Invalid 'number_explicit_solv_molecules'; falling back to 0.")
         number_explicit_solv_molecules = 0
 
-    min_fspe_index = None
     solvent = (config.get('solvent') or '').strip()
     start_time = time.time()
 
@@ -383,7 +382,6 @@ def main(argv: list[str] | None = None) -> int:
     total_electrons = total_electrons_txt - charge
     is_even = (total_electrons % 2 == 0)
 
-    cfg_mult = None
     try:
         cfg_mult_raw = config.get('multiplicity_global_opt') if config is not None else None
         cfg_mult = int(cfg_mult_raw) if cfg_mult_raw not in (None, "") else None
@@ -1022,6 +1020,10 @@ def main(argv: list[str] | None = None) -> int:
     ZPE_T1 = None
     ZPE_S1 = None
 
+    E_0 = None
+    E_S1 = None
+    E_T1 = None
+
     if config['E_00'] == "yes":
 
         if "t" in config.get("excitation", ""):
@@ -1038,9 +1040,6 @@ def main(argv: list[str] | None = None) -> int:
                 #else:
                     #logger.error("ZPE S_1 not found in 's1_state_opt.out' or conversion failed.")
 
-        E_0 = None
-        E_S1 = None
-        E_T1 = None
         if config['E_00'] == "yes":
             E_0 = find_electronic_energy(filename0)
             if E_0 is not None:
@@ -1120,13 +1119,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
     # ----------------- Calculations ------------------------
-    
-    E_ox = None
-    E_ox_2 = None
-    E_ox_3 = None
-    E_red = None
-    E_red_2 = None
-    E_red_3 = None
+
     E_00_t1 = None
     E_00_s1 = None
 
@@ -1197,24 +1190,24 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---------- FINAL SELECTION: assign legacy variable names for the report ----------
     # Priority: if multiple selected, prefer 3 > 2 > 1. Fallback if missing.
-    def _pick(key):
-        if use_m3 and m3_mix.get(key) is not None:
-            src = 'M3'; val = m3_mix[key]
-        elif use_m2 and m2_step.get(key) is not None:
-            src = 'M2'; val = m2_step[key]
-        elif use_m1 and m1_avg.get(key) is not None:
-            src = 'M1'; val = m1_avg[key]
+    def _pick(_key):
+        if use_m3 and m3_mix.get(_key) is not None:
+            src = 'M3'; val = m3_mix[_key]
+        elif use_m2 and m2_step.get(_key) is not None:
+            src = 'M2'; val = m2_step[_key]
+        elif use_m1 and m1_avg.get(_key) is not None:
+            src = 'M1'; val = m1_avg[_key]
         else:
             # secondary fallbacks (ensure something is set if available)
             for src, bag in (('M3', m3_mix), ('M2', m2_step), ('M1', m1_avg)):
-                if bag.get(key) is not None:
-                    val = bag[key]
-                    logger.warning(f"Using fallback from {src} for {key} (selected method missing).")
+                if bag.get(_key) is not None:
+                    val = bag[_key]
+                    logger.warning(f"Using fallback from {src} for {_key} (selected method missing).")
                     return val
             val = None
-            #logger.warning(f"{key} unavailable in all methods.")
+            #logger.warning(f"{_key} unavailable in all methods.")
             return val
-        logger.info(f"[{src}] {key} = {val}")
+        logger.info(f"[{src}] {_key} = {val}")
         return val
 
     # Assign the names your report expects:
