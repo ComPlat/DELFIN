@@ -402,21 +402,50 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
     )
 
     if use_parallel:
+        # First, run the initial job separately (may trigger IMAG)
+        initial_job = None
+        other_jobs = []
+        for job in jobs:
+            if job.job_id == "occupier_initial":
+                initial_job = job
+            else:
+                other_jobs.append(job)
+
+        # Run initial job first
+        if initial_job:
+            logger.info("[occupier] Running initial job first before parallel execution")
+            initial_job.work(max(1, _parse_int(context.config.get('PAL'), fallback=1)))
+
+        # Rebuild remaining jobs after potential IMAG modifications
+        try:
+            updated_jobs = _build_occupier_jobs(context)
+            # Filter out the initial job since it's already done
+            remaining_jobs = [job for job in updated_jobs if job.job_id != "occupier_initial"]
+
+            if not remaining_jobs:
+                logger.info("No remaining jobs after initial completion")
+                return True
+
+        except Exception as rebuild_exc:
+            logger.warning("Failed to rebuild jobs after initial: %s", rebuild_exc)
+            remaining_jobs = other_jobs  # fallback to original jobs
+
+        # Run remaining jobs in parallel
         manager = _WorkflowManager(context.config, label="occupier", max_jobs_override=effective_max_jobs)
         try:
-            for job in jobs:
+            for job in remaining_jobs:
                 manager.add_job(job)
             dynamic_slots = determine_effective_slots(
                 manager.total_cores,
                 manager._jobs.values(),
                 effective_max_jobs,
-                width,
+                len(remaining_jobs),
             )
             if dynamic_slots != manager.pool.max_concurrent_jobs:
                 logger.info(
                     "[occupier] Adjusting ORCA job slots to %d (width=%d, requested=%d)",
                     dynamic_slots,
-                    width,
+                    len(remaining_jobs),
                     effective_max_jobs,
                 )
                 manager.pool.max_concurrent_jobs = dynamic_slots
