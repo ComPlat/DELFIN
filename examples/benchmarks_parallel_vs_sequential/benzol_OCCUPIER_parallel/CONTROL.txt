@@ -1,0 +1,144 @@
+input_file=input.txt
+NAME=
+SMILES=
+charge=0
+------------------------------------
+Solvation:
+implicit_solvation_model=CPCM
+solvent=Acetonitrile
+XTB_SOLVATOR=no
+number_explicit_solv_molecules=2
+------------------------------------
+Global geometry optimisation:
+xTB_method=XTB2
+XTB_OPT=yes
+XTB_GOAT=no
+CREST=no
+multiplicity_global_opt=
+------------------------------------
+IMAG=yes
+allow_imaginary_freq=0
+------------------------------------
+Redox steps:
+calc_initial=yes
+oxidation_steps=1,2
+reduction_steps=1,2
+method=OCCUPIER
+calc_potential_method=2
+------------------------------------
+E_00=yes
+excitation=s,t
+triplet_flag=FALSE
+absorption_spec=yes
+emission_spec=yes
+NROOTS=15
+TDA=FALSE
+DONTO=TRUE
+DOSOC=FALSE
+singlet exitation:
+IROOT=1
+FOLLOWIROOT=TRUE
+mcore_E00=10000
+------------------------------------
+MANUALLY:
+multiplicity_0=
+additions_0=m,n
+additions_TDDFT=
+additions_T1=
+additions_S1=
+multiplicity_ox1=
+additions_ox1=
+multiplicity_ox2=
+additions_ox2=
+multiplicity_ox3=
+additions_ox3=
+multiplicity_red1=
+additions_red1=
+multiplicity_red2=
+additions_red2=
+multiplicity_red3=
+additions_red3=
+------------------------------------
+Level of Theory:
+functional=r2scan-3c
+disp_corr=D4
+ri_jkx=RIJCOSX
+ri_soc=RI-SOMF(1X)
+relativity=ZORA
+aux_jk=def2/J
+aux_jk_rel=SARC/J
+main_basisset=def2-SVP
+main_basisset_rel=ZORA-def2-SVP
+metal_basisset=def2-TZVP
+metal_basisset_rel=SARC-ZORA-TZVP
+first_coordination_sphere_metal_basisset=no
+first_coordination_sphere_scale=1.20
+geom_opt=OPT
+initial_guess=PModel
+temperature=298.15
+------------------------------------
+Reference value:
+E_ref=4.345
+------------------------------------
+Literature_reference=
+reference_CV=V Vs. Fc+/Fc
+E_00_exp=
+E_red_exp=
+E_red_2_exp=
+E_red_3_exp=
+E_ox_exp=
+E_ox_2_exp=
+E_ox_3_exp=
+*E_red_exp=
+*E_ox_exp=
+------------------------------------
+Prints:
+print_MOs=yes
+print_Loewdin_population_analysis=yes
+------------------------------------
+Resource Settings:
+PAL=38
+maxcore=3800
+------------------------------------
+Parallelization Settings:
+parallel_workflows=yes
+pal_jobs=4
+------------------------------------
+OCCUPIER-Settings:
+--------------------
+frequency_calculation_OCCUPIER=no
+occupier_selection=tolerance|truncation|rounding
+occupier_precision=3
+occupier_epsilon=5e-4
+maxiter_occupier=100
+geom_opt_OCCUPIER=OPT
+pass_wavefunction=yes
+approximate_spin_projection_APMethod=2
+--------------------
+even electron number:
+even_seq = [
+  {"index": 1, "m": 1, "BS": "",    "from": 0},
+  {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+  {"index": 4, "m": 3, "BS": "",    "from": 0},
+]
+-------------------
+odd electron number:
+odd_seq = [
+  {"index": 1, "m": 2, "BS": "",    "from": 0},
+  {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+  {"index": 4, "m": 4, "BS": "",    "from": 0},
+]
+
+INFOS:
+-------------------------------------------------
+Available METHODS: classic, manually, OCCUPIER
+Available ADDITIONS: %SCF BrokenSym m,n END
+Available OX_STEPS: 1 ; 1,2 ; 1,2,3 ; 2 ; 3 ; 2,3 ; 1,3
+Available RED_STEPS: 1 ; 1,2 ; 1,2,3 ; 2 ; 3 ; 2,3 ; 1,3
+Available IMPLICIT SOLVATION MODELS: CPCM ; CPCMC ; SMD
+Available dispersion corrections DISP_CORR: D4 ; D3 ; D3BJ ; D3ZERO ; NONE
+Available EXCITATIONS: s (singulet) ; t (triplet) (s is more difficult to converge, there may be no convergence).
+E_00 can only be calculated for closed shell systems (use classic or manually!)
+EXPLICIT SOLVATION MODEL IS VERY EXPENSIVE, especially in combination with OCCUPIER!!!!!
+
+use yes/no not Yes/No !!!!!!
