@@ -9,7 +9,8 @@ description = "Automated ORCA, xTB and CREST workflow for predicting preferred s
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 authors = [{ name = "Maximilian Hartmann" }]
-license = {text = "LGPL-3.0-or-later"}
+license = "LGPL-3.0-or-later"
+urls = { "Homepage" = "https://github.com/ComPlat/DELFIN", "Repository" = "https://github.com/ComPlat/DELFIN" }
 dependencies = [
     "mendeleev>=0.14",
     "psutil"
