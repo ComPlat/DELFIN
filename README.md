@@ -1,5 +1,11 @@
 # DELFIN
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17208145.svg)](https://doi.org/10.5281/zenodo.17208145)
+
+**Automated prediction of preferred spin states and associated redox potentials**
+
+This repository contains DELFIN, a comprehensive workflow tool for automated quantum chemistry calculations using ORCA, xTB, and CREST. DELFIN automates the identification of preferred electron configurations, tracks orbital occupation changes during redox processes, and calculates redox potentials.
+
 > **Prereqs**
 >
 > * ORCA **6.1.0** in your `PATH` (`orca` and `orca_pltvib`)
