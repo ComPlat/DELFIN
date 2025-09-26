@@ -43,7 +43,7 @@ class BannerGenerator:
                           author_name: str = "M. Hartmann",
                           institution: str = "Karlsruhe Institute of Technology (KIT)",
                           description: str = "Automates ORCA 6.1.0 calculations",
-                          version: str = "Version 1.0.0") -> str:
+                          version: str = "Version 1.0.2") -> str:
         """Create a standard info banner with author and institution info.
 
         Args:
@@ -81,7 +81,7 @@ class BannerGenerator:
                             author_name: str = "M. Hartmann",
                             institution: str = "Karlsruhe Institute of Technology (KIT)",
                             description: str = "Automates ORCA 6.1.0 calculations",
-                            version: str = "Version 1.0.0",
+                            version: str = "Version 1.0.2",
                             width: int = 49) -> str:
         """Create a compact banner for smaller spaces.
 

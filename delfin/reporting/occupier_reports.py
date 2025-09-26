@@ -506,7 +506,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
       #                    ComPlat                        #
       #     Karlsruhe Institute of Technology (KIT)       #
       #         Automates ORCA 6.1.0 calculations         #
-      #                 Version 1.0.0                     #
+      #                 Version 1.0.2                     #
       #                     -***-                         #
       #####################################################
 
@@ -962,7 +962,7 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
       #                    ComPlat                        #
       #     Karlsruhe Institute of Technology (KIT)       #
       #         Automates ORCA 6.1.0 calculations         #
-      #                 Version 1.0.0                     #
+      #                 Version 1.0.2                     #
       #                     -***-                         #
       #####################################################
 

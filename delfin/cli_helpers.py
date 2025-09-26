@@ -94,7 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "-V", "--version",
         action="version",
-        version="DELFIN 1.0.0",
+        version="DELFIN 1.0.2",
         help="Show version and exit."
     )
     p.add_argument(

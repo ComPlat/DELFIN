@@ -1,0 +1,8 @@
+mendeleev>=0.14
+psutil
+
+[dev]
+pytest>=6.0
+pytest-cov
+black
+flake8
