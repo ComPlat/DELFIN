@@ -10,6 +10,8 @@
 
 ## Install
 
+**PyPI Package**: https://pypi.org/project/delfin-complat/
+
 From the `delfin` folder (the one containing `pyproject.toml`):
 
 recommended (isolated) install
