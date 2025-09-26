@@ -1,43 +1,13 @@
 cff-version: 1.2.0
-message: "If you use this software in research, please cite the associated paper."
-title: "DELFIN: Automated prediction of preferred spin states and associated redox potentials"
-type: software
-
+message: "If you use this software, please cite it as below."
 authors:
-  - family-names: Hartmann
-    given-names: Maximilian
-    orcid: "0009-0007-0398-8313"
-  # - family-names: <Coauthor Lastname>
-  #   given-names: <Coauthor Firstname>
-  #   orcid: "<ORCID>"
-
-repository-code: "https://github.com/ComPlat/DELFIN"
-url: "https://github.com/ComPlat/DELFIN"
-license: "LGPL-3.0-or-later"
+- family-names: Hartmann
+  given-names: Maximilian
+  orcid: "0009-0007-0973-3605"
+title: "DELFIN: Automated prediction of preferred spin states and associated redox potentials"
 version: "v1.0.2"
-date-released: "2025-01-26"
-keywords:
-  - computational chemistry
-  - density functional theory
-  - redox potentials
-  - spin states
-  - ORCA
-  - xTB
-  - CREST
-
-preferred-citation:
-  type: article
-  authors:
-    - family-names: Hartmann
-      given-names: Maximilian
-    # - family-names: <Coauthor Lastname>
-    #   given-names: <Coauthor Firstname>
-  title: "DELFIN: Automated prediction of preferred spin states and associated redox potentials"
-  journal: "<JOURNAL>"
-  volume: "<VOLUME>"
-  number: "<ISSUE>"
-  pages: "<FIRST–LAST>"
-  year: 2025
-  doi: "10.xxxx/xxxxx"
-  url: "https://doi.org/10.xxxx/xxxxx"
+date-released: 2025-01-26
+url: "https://github.com/ComPlat/DELFIN"
+repository-code: "https://github.com/ComPlat/DELFIN"
+license: LGPL-3.0-or-later
 
