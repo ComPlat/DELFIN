@@ -15,7 +15,7 @@ repository-code: "https://github.com/ComPlat/DELFIN"
 url: "https://github.com/ComPlat/DELFIN"
 license: "LGPL-3.0-or-later"
 version: "v1.0.2"
-date-released: "2025-09-05"
+date-released: "2025-01-26"
 keywords:
   - computational chemistry
   - density functional theory
