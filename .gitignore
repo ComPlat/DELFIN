@@ -1,2 +1,6 @@
 # Ignore PDFs in docs folder
 docs/*.pdf
+
+# Ignore build artifacts
+dist/
+*.egg-info/
