@@ -160,7 +160,9 @@ class DynamicCorePool:
 
             # Unable to start due to resource limits; backoff briefly
             job.retry_count += 1
-            delay = min(0.2 * (2 ** (job.retry_count - 1)), 2.0)
+            # Prevent overflow by limiting retry_count in the exponential calculation
+            limited_retry_count = min(job.retry_count - 1, 10)  # Cap at 2^10 = 1024
+            delay = min(0.2 * (2 ** limited_retry_count), 2.0)
             job.next_retry_time = now + delay
             self._job_queue.put((job.priority.value, job.next_retry_time, next(self._job_counter), job))
             return False
