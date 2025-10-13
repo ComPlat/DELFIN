@@ -7,6 +7,19 @@ from pathlib import Path
 from typing import Optional, Tuple
 from .occupier import run_OCCUPIER
 
+
+_XYZ_COORD_LINE_RE = re.compile(
+    r"^\s*[A-Za-z]{1,2}[A-Za-z0-9()]*\s+"      # Atom label, optional index
+    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?\s+"  # X coordinate
+    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?\s+"  # Y coordinate
+    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?"      # Z coordinate
+)
+
+
+def _count_xyz_coord_lines(lines) -> int:
+    """Return number of lines that look like XYZ coordinates."""
+    return sum(1 for line in lines if _XYZ_COORD_LINE_RE.match(line))
+
 # -------------------------------------------------------------------------------------------------------
 def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe_index, config):
     folder = Path(folder_name)
@@ -85,8 +98,9 @@ def prepare_occ_folder(folder_name, charge_delta=0):
         input_txt.rename(input_xyz)
         with input_xyz.open("r", encoding="utf-8") as f:
             lines = f.readlines()
+        coord_count = _count_xyz_coord_lines(lines)
         with input_xyz.open("w", encoding="utf-8") as f:
-            f.write(f"{len(lines)}\n\n")
+            f.write(f"{coord_count}\n\n")
             f.writelines(lines)
         shutil.copy(input_xyz, Path("input0.xyz"))
         print("Renamed to input.xyz and added header lines.")
@@ -169,8 +183,9 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
             return
         except Exception:
             body = [ln for ln in lines if ln.strip()]
+            coord_count = _count_xyz_coord_lines(body)
             with xyz_path.open("w", encoding="utf-8") as g:
-                g.write(f"{len(body)}\n")
+                g.write(f"{coord_count}\n")
                 g.write(f"from {preferred_parent_xyz.name}\n")
                 g.writelines(body)
     _ensure_xyz_header(Path("input.xyz"))

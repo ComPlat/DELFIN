@@ -1,6 +1,7 @@
 """Thread-safe helpers for parallel workflow execution."""
 
 import os
+import re
 import sys
 import shutil
 import subprocess
@@ -15,6 +16,18 @@ logger = get_logger(__name__)
 
 # Thread-local storage for working directories
 _thread_local = threading.local()
+
+_XYZ_COORD_LINE_RE = re.compile(
+    r"^\s*[A-Za-z]{1,2}[A-Za-z0-9()]*\s+"      # Atom label, optional index
+    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?\s+"  # X coordinate
+    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?\s+"  # Y coordinate
+    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?"      # Z coordinate
+)
+
+
+def _count_xyz_coord_lines(lines) -> int:
+    """Return number of lines that look like XYZ coordinates."""
+    return sum(1 for line in lines if _XYZ_COORD_LINE_RE.match(line))
 
 
 def prepare_occ_folder_2_threadsafe(folder_name: str, source_occ_folder: str,
@@ -114,8 +127,9 @@ def _ensure_xyz_header_threadsafe(xyz_path: Path, source_path: Path):
         except (ValueError, IndexError):
             # Need to fix header
             body = [ln for ln in lines if ln.strip()]
+            coord_count = _count_xyz_coord_lines(body)
             with xyz_path.open("w", encoding="utf-8") as f:
-                f.write(f"{len(body)}\n")
+                f.write(f"{coord_count}\n")
                 f.write(f"from {source_path.name}\n")
                 f.writelines(body)
 
@@ -127,8 +141,6 @@ def _ensure_xyz_header_threadsafe(xyz_path: Path, source_path: Path):
 
 def _update_control_file_threadsafe(control_path: Path, charge_delta: int):
     """Update input_file and charge in CONTROL.txt file thread-safely."""
-    import re
-
     try:
         with control_path.open("r", encoding="utf-8") as f:
             control_lines = f.readlines()

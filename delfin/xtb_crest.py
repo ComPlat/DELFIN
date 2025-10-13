@@ -1,9 +1,16 @@
-import os, shutil, subprocess, logging
+import os, re, shutil, subprocess, logging
 from pathlib import Path
 from .orca import run_orca
 from .xyz_io import modify_file2
 
 OK_MARKER = "ORCA TERMINATED NORMALLY"
+
+_XYZ_COORD_LINE_RE = re.compile(
+    r"^\s*[A-Za-z]{1,2}[A-Za-z0-9()]*\s+"      # Atom label, optional index
+    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?\s+"  # X coordinate
+    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?\s+"  # Y coordinate
+    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?"      # Z coordinate
+)
 
 def _recalc_on() -> bool:
     return str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on", "y")
@@ -121,7 +128,7 @@ def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="input.txt
     initial_xyz = work / "initial_opt.xyz"
     with src_input.open("r", encoding="utf-8") as f:
         coords = f.readlines()
-    atom_count = len(coords)
+    atom_count = sum(1 for line in coords if _XYZ_COORD_LINE_RE.match(line))
     with initial_xyz.open("w", encoding="utf-8") as f:
         f.write(f"{atom_count}\n\n")
         f.writelines(coords)
