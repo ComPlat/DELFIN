@@ -140,6 +140,16 @@ class _WorkflowManager:
                 self._event.clear()
                 continue
 
+            try:
+                status = self.pool.get_status()
+            except Exception:
+                status = None
+
+            if (status and len(ready) == 1 and
+                    status.get('running_jobs', 0) == 0 and
+                    status.get('queued_jobs', 0) == 0):
+                self._apply_exclusive_allocation(ready[0])
+
             for job in ready:
                 self._submit(job)
                 pending.pop(job.job_id, None)
@@ -217,6 +227,23 @@ class _WorkflowManager:
         if self.total_cores > 2:
             share = max(2, share)
         return min(self.total_cores, share)
+
+    def _apply_exclusive_allocation(self, job: WorkflowJob) -> None:
+        target = max(1, self.total_cores)
+        if job.cores_optimal >= target and job.cores_max >= target:
+            return
+
+        job.cores_max = target
+        job.cores_optimal = target
+        job.memory_mb = target * self.maxcore_mb
+
+        logger.info(
+            "[%s] Exclusive allocation for %s (%s) → %d cores",
+            self.label,
+            job.job_id,
+            job.description,
+            target,
+        )
 
     def _auto_tune_job(self, job: WorkflowJob) -> None:
         if not self._parallel_enabled:
