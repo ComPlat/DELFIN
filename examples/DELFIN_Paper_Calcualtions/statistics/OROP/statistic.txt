@@ -1,0 +1,36 @@
+Total data points collected:
+  E_ox: 128
+  E_red: 64
+  Total: 192
+
+Removed outliers (5 largest absolute errors):
+======================================================================
+ 1. Compound 176 (E_ox ) | Calc= 1.810 | Exp= 0.710 | Error=1.100
+ 2. Compound 175 (E_ox ) | Calc= 1.440 | Exp= 0.260 | Error=1.180
+ 3. Compound 174 (E_red) | Calc=-1.470 | Exp=-0.200 | Error=1.270
+ 4. Compound 161 (E_red) | Calc=-3.530 | Exp=-2.130 | Error=1.400
+ 5. Compound 179 (E_red) | Calc=-2.910 | Exp=-0.270 | Error=2.640
+
+==========================================================================================
+Statistical Analysis:
+==========================================================================================
+Dataset                             N     MD       MAD      SD       AMAX     R²       Adj. R² 
+------------------------------------------------------------------------------------------
+Initial Values                      192   -0.0467  0.2497   0.4031   2.6400   0.9312   0.9308  
+Initial Values (-5 outliers)        187   -0.0318  0.2158   0.3121   0.9900   0.9592   0.9590  
+
+Number of complete data points: 192
+Number after removing outliers: 187
+
+Linear fit (adjusted data, fixed slope=1.0): y = 1.0000x + -0.0318
+R²: 0.9596, R-value: 0.9796
+Intercept removed from calculated values: -0.0318
+
+==========================================================================================
+Final Statistical Analysis (including adjusted calculated values):
+==========================================================================================
+Dataset                             N     MD       MAD      SD       AMAX     R²       Adj. R² 
+------------------------------------------------------------------------------------------
+Initial Values                      192   -0.0467  0.2497   0.4031   2.6400   0.9312   0.9308  
+Initial Values (-5 outliers)        187   -0.0318  0.2158   0.3121   0.9900   0.9592   0.9590  
+Adjusted Calc Values (-5 outliers)  187   -0.0000  0.2138   0.3121   1.0218   0.9596   0.9594  

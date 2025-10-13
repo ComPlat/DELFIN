@@ -1,0 +1,31 @@
+Removed outliers (5 largest absolute E_red errors):
+======================================================================
+ 1. Compound 232 | Calc=-1.336 | Exp= 0.010 | Error=1.346
+ 2. Compound 196 | Calc=-1.109 | Exp= 0.360 | Error=1.469
+ 3. Compound 242 | Calc= 3.336 | Exp= 1.860 | Error=1.476
+ 4. Compound 286 | Calc=-2.047 | Exp=-0.310 | Error=1.737
+ 5. Compound 273 | Calc=-1.530 | Exp= 0.780 | Error=2.310
+
+==========================================================================================
+Statistical Analysis (E_red):
+==========================================================================================
+Dataset                             N     MD       MAD      SD       AMAX     R²       Adj. R² 
+-----------------------------------------------------------------------------------------------
+Initial Values                      119   -0.2401  0.4700   0.5843   2.3096   0.6143   0.6110  
+Initial Values (-5 outliers)        114   -0.2034  0.4175   0.4972   1.3455   0.7208   0.7183  
+
+Number of complete data points: 119
+Number after removing outliers: 114
+
+Linear fit (adjusted data, slope fixed at 1.0): y = 1.0000x + -0.2034
+R²: 0.7611, R-value: 0.8724
+Intercept removed from calculated values: -0.2034
+
+==========================================================================================
+Final Statistical Analysis (E_red, adjusted values):
+==========================================================================================
+Dataset                             N     MD       MAD      SD       AMAX     R²       Adj. R² 
+-----------------------------------------------------------------------------------------------
+Initial Values                      119   -0.2401  0.4700   0.5843   2.3096   0.6143   0.6110  
+Initial Values (-5 outliers)        114   -0.2034  0.4175   0.4972   1.3455   0.7208   0.7183  
+Adjusted Calc Values (-5 outliers)  114   -0.0000  0.3839   0.4972   1.4368   0.7611   0.7590  
