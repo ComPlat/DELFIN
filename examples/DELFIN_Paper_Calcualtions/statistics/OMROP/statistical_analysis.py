@@ -185,6 +185,11 @@ df_adjusted['E_red_calc_adjusted'] = np.where(
     np.nan,
 )
 
+# Round numeric columns for tidy CSV output
+numeric_cols = ['E_red_calc', 'E_red_exp', 'delta_E_red', 'E_red_calc_adjusted']
+present_cols = [col for col in numeric_cols if col in df_adjusted.columns]
+df_adjusted[present_cols] = df_adjusted[present_cols].apply(lambda series: series.round(3))
+
 df_adjusted.to_csv(OUTPUT_ADJUSTED, sep=';', decimal=',', index=False)
 
 # Evaluate statistics for adjusted values using the same mask

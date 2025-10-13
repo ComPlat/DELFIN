@@ -11,14 +11,14 @@ Statistical Analysis (E_red):
 ==========================================================================================
 Dataset                             N     MD       MAD      SD       AMAX     R²       Adj. R² 
 -----------------------------------------------------------------------------------------------
-Initial Values                      119   -0.2401  0.4700   0.5843   2.3096   0.6143   0.6110  
-Initial Values (-5 outliers)        114   -0.2034  0.4175   0.4972   1.3455   0.7208   0.7183  
+Initial Values                      119   -0.2401  0.4700   0.5843   2.3100   0.6143   0.6110  
+Initial Values (-5 outliers)        114   -0.2034  0.4174   0.4971   1.3450   0.7208   0.7183  
 
 Number of complete data points: 119
 Number after removing outliers: 114
 
 Linear fit (adjusted data, slope fixed at 1.0): y = 1.0000x + -0.2034
-R²: 0.7611, R-value: 0.8724
+R²: 0.7612, R-value: 0.8725
 Intercept removed from calculated values: -0.2034
 
 ==========================================================================================
@@ -26,6 +26,6 @@ Final Statistical Analysis (E_red, adjusted values):
 ==========================================================================================
 Dataset                             N     MD       MAD      SD       AMAX     R²       Adj. R² 
 -----------------------------------------------------------------------------------------------
-Initial Values                      119   -0.2401  0.4700   0.5843   2.3096   0.6143   0.6110  
-Initial Values (-5 outliers)        114   -0.2034  0.4175   0.4972   1.3455   0.7208   0.7183  
-Adjusted Calc Values (-5 outliers)  114   -0.0000  0.3839   0.4972   1.4368   0.7611   0.7590  
+Initial Values                      119   -0.2401  0.4700   0.5843   2.3100   0.6143   0.6110  
+Initial Values (-5 outliers)        114   -0.2034  0.4174   0.4971   1.3450   0.7208   0.7183  
+Adjusted Calc Values (-5 outliers)  114   -0.0004  0.3839   0.4971   1.4360   0.7612   0.7590  

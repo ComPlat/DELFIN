@@ -187,6 +187,15 @@ df_adjusted['E_red_calc_adjusted'] = np.where(
     np.nan
 )
 
+# Round numeric columns for tidy CSV output
+numeric_cols = [
+    'E_ox_calc', 'E_ox_exp', 'delta_E_ox',
+    'E_red_calc', 'E_red_exp', 'delta_E_red',
+    'E_ox_calc_adjusted', 'E_red_calc_adjusted'
+]
+present_cols = [col for col in numeric_cols if col in df_adjusted.columns]
+df_adjusted[present_cols] = df_adjusted[present_cols].apply(lambda series: series.round(3))
+
 # Save adjusted data to CSV with same format as OROP.csv
 df_adjusted.to_csv('OROP_adjusted.csv', sep=';', decimal=',', index=False)
 
