@@ -502,23 +502,6 @@ def main(argv: list[str] | None = None) -> int:
             _run_occ_workflows(config)
                 
 
-            parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
-            parallel_workflows_enabled = parallel_mode != 'disable'
-            metals_list = list(metals) if isinstance(metals, (list, tuple, set)) else ([metals] if metals else [])
-
-            if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() != "yes":
-                occ_context = OccupierExecutionContext(
-                    charge=charge,
-                    solvent=solvent,
-                    metals=metals_list,
-                    main_basisset=main_basisset,
-                    metal_basisset=metal_basisset,
-                    config=config,
-                )
-                if not run_occupier_orca_jobs(occ_context, parallel_workflows_enabled):
-                    logger.error("OCCUPIER post-processing failed; aborting run")
-                    return 1
-
             if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == "yes":
                 # read OCCUPIER info (unchanged)
                 multiplicity_0, additions_0, min_fspe_index = read_occupier_file(
@@ -549,95 +532,22 @@ def main(argv: list[str] | None = None) -> int:
             multiplicity_0, additions_0, min_fspe_index = read_occupier_file("initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
             XTB_SOLVATOR(str(Path("input_initial_OCCUPIER.xyz").resolve()), multiplicity_0, charge, solvent, number_explicit_solv_molecules, config)
 
+        parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+        parallel_workflows_enabled = parallel_mode != 'disable'
+        metals_list = list(metals) if isinstance(metals, (list, tuple, set)) else ([metals] if metals else [])
 
-            if config['calc_initial'] == "yes":
-                read_and_modify_file_1(input_file, output_file, charge, multiplicity_0, solvent, metals, metal_basisset, main_basisset, config, additions_0)
-                run_orca(output_file, "initial.out")
-                run_IMAG("initial.out", "initial", charge, multiplicity_0, solvent, metals, config, main_basisset, metal_basisset, additions_0)
-                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of the initial system complete!")
-
-            if config['absorption_spec'] == "yes":
-                multiplicity = 1
-                additions=config['additions_TDDFT']
-                read_xyz_and_create_input2(xyz_file, output_file3, charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-                run_orca(output_file3, "absorption_spec.out")
-                logger.info("TD-DFT absorption spectra calculation complete!")
-
-
-            if config['E_00'] == "yes":
-                additions = config.get('additions_TDDFT', '')
-                if "t" in config.get("excitation", ""):
-                    multiplicity = 3
-                    read_xyz_and_create_input3(xyz_file, "t1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-                    run_orca("t1_state_opt.inp", "t1_state_opt.out")
-                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of T_1 complete!")
-                    if config['emission_spec'] == "yes":
-                        multiplicity = 1
-                        additions=config['additions_TDDFT']
-                        read_xyz_and_create_input2("t1_state_opt.xyz", "emission_t1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-                        run_orca("emission_t1.inp", "emission_t1.out")
-                        logger.info("TD-DFT emission spectra calculation complete!") 
-
-                if "s" in config.get("excitation", ""):
-                    multiplicity = 1
-                    read_xyz_and_create_input4(xyz_file, "s1_state_opt.inp", charge, multiplicity, solvent, metals, metal_basisset, main_basisset, config, additions)
-                    run_orca("s1_state_opt.inp", "s1_state_opt.out")
-                    logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization of S_1 complete!")
-                    if config['emission_spec'] == "yes":
-                        multiplicity = 1
-                        additions=config['additions_TDDFT']
-                        read_xyz_and_create_input2("s1_state_opt.xyz", "emission_s1.inp", charge, multiplicity, solvent, metals, config, main_basisset, metal_basisset, additions)
-                        run_orca("emission_s1.inp", "emission_s1.out")
-                        logger.info("TD-DFT emission spectra calculation complete!") 
-
-
-
-            if "1" in config['oxidation_steps']:
-                multiplicity_ox1, additions_ox1, min_fspe_index = read_occupier_file("ox_step_1_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                charge = int(config['charge']) + 1
-                read_xyz_and_create_input3(xyz_file, output_file5, charge, multiplicity_ox1, solvent, metals, metal_basisset, main_basisset, config, additions_ox1)
-                run_orca(output_file5, "ox_step_1.out")
-                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
-
-            if "2" in config['oxidation_steps']:
-                multiplicity_ox2, additions_ox2, min_fspe_index = read_occupier_file("ox_step_2_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                charge = int(config['charge']) + 2
-                read_xyz_and_create_input3(xyz_file4, output_file9, charge, multiplicity_ox2, solvent, metals, metal_basisset, main_basisset, config, additions_ox2)
-                run_orca(output_file9, "ox_step_2.out")
-                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
-
-            if "3" in config['oxidation_steps']:
-                multiplicity_ox3, additions_ox3, min_fspe_index = read_occupier_file("ox_step_3_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                charge = int(config['charge']) + 3
-                read_xyz_and_create_input3(xyz_file8, output_file10, charge, multiplicity_ox3, solvent, metals, metal_basisset, main_basisset, config, additions_ox3)
-                run_orca(output_file10, "ox_step_3.out")
-                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization cation!")
-
-
-
-            if "1" in config['reduction_steps']:
-                multiplicity_red1, additions_red1, min_fspe_index = read_occupier_file("red_step_1_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                charge = int(config['charge']) - 1
-                read_xyz_and_create_input3(xyz_file, output_file6, charge, multiplicity_red1, solvent, metals, metal_basisset, main_basisset, config, additions_red1)
-                run_orca(output_file6, "red_step_1.out")
-                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization anion!")
-
-            if "2" in config['reduction_steps']:
-                multiplicity_red2, additions_red2, min_fspe_index = read_occupier_file("red_step_2_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                charge = int(config['charge']) - 2
-                read_xyz_and_create_input3(xyz_file2, output_file7, charge, multiplicity_red2, solvent, metals, metal_basisset, main_basisset, config, additions_red2)
-                run_orca(output_file7, "red_step_2.out")
-                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization dianion!")
-
-            if "3" in config['reduction_steps']:
-                multiplicity_red3, additions_red3, min_fspe_index = read_occupier_file("red_step_3_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-                charge = int(config['charge']) - 3
-                read_xyz_and_create_input3(xyz_file3, output_file8, charge, multiplicity_red3, solvent, metals, metal_basisset, main_basisset, config, additions_red3)
-                run_orca(output_file8, "red_step_3.out")
-                logger.info(f"{config['functional']} {main_basisset} freq & geometry optimization trianion!")
-
-
-
+        if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() != "yes":
+            occ_context = OccupierExecutionContext(
+                charge=charge,
+                solvent=solvent,
+                metals=metals_list,
+                main_basisset=main_basisset,
+                metal_basisset=metal_basisset,
+                config=config,
+            )
+            if not run_occupier_orca_jobs(occ_context, parallel_workflows_enabled):
+                logger.error("OCCUPIER post-processing failed; aborting run")
+                return 1
 
     # ------------------- classic --------------------
     if config['method'] == "classic":
