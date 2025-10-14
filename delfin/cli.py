@@ -187,6 +187,32 @@ def _execute_sequential_workflows(config):
     return all_success
 
 
+def _run_occ_workflows(config) -> None:
+    """Coordinate oxidation/reduction OCCUPIER workflows with parallelization."""
+
+    needs_ox_red = config.get("oxidation_steps", "").strip() or config.get("reduction_steps", "").strip()
+
+    if not needs_ox_red:
+        logger.info("No oxidation or reduction steps configured")
+        return
+
+    parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+    has_ox = bool(config.get("oxidation_steps", "").strip())
+    has_red = bool(config.get("reduction_steps", "").strip())
+    can_parallel = has_ox and has_red
+
+    if parallel_mode == 'enable' or (parallel_mode == 'auto' and can_parallel):
+        if can_parallel:
+            logger.info("Executing oxidation and reduction workflows in parallel")
+            _execute_parallel_workflows(config)
+        else:
+            logger.info("Only one workflow configured → executing sequentially")
+            _execute_sequential_workflows(config)
+    else:
+        logger.info("Executing workflows sequentially")
+        _execute_sequential_workflows(config)
+
+
 def _normalize_input_file(config, control_path: Path) -> str:
     input_entry = (config.get('input_file') or 'input.txt').strip() or 'input.txt'
     entry_path = Path(input_entry)
@@ -465,7 +491,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if config['XTB_SOLVATOR'] == "no":
 
-            
+
             if "yes" in config.get("calc_initial", ""):
                 print("\nOCCUPIER for the initial system:\n")
                 prepare_occ_folder("initial_OCCUPIER", charge_delta=0)
@@ -473,26 +499,7 @@ def main(argv: list[str] | None = None) -> int:
 
             # IMPORTANT: Only start ox/red workflows AFTER initial_OCCUPIER is completely finished
             # Check if we need to run ox/red workflows
-            needs_ox_red = config.get("oxidation_steps", "").strip() or config.get("reduction_steps", "").strip()
-
-            if needs_ox_red:
-                parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
-                has_ox = bool(config.get("oxidation_steps", "").strip())
-                has_red = bool(config.get("reduction_steps", "").strip())
-                can_parallel = has_ox and has_red
-
-                if parallel_mode == 'enable' or (parallel_mode == 'auto' and can_parallel):
-                    if can_parallel:
-                        logger.info("Executing oxidation and reduction workflows in parallel")
-                        _execute_parallel_workflows(config)
-                    else:
-                        logger.info("Only one workflow configured → executing sequentially")
-                        _execute_sequential_workflows(config)
-                else:
-                    logger.info("Executing workflows sequentially")
-                    _execute_sequential_workflows(config)
-            else:
-                logger.info("No oxidation or reduction steps configured")
+            _run_occ_workflows(config)
                 
 
             parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
@@ -536,32 +543,7 @@ def main(argv: list[str] | None = None) -> int:
             if "yes" in config.get("calc_initial", ""):
                 print("\nOCCUPIER for the initial system:\n")
                 prepare_occ_folder("initial_OCCUPIER", charge_delta=0)
-               
-            if "1" in config.get("oxidation_steps", ""):
-                print("\nOCCUPIER for the first oxidation step:\n")
-                prepare_occ_folder_2("ox_step_1_OCCUPIER", source_occ_folder="initial_OCCUPIER", charge_delta=+1, config=config)
- 
-            if "2" in config.get("oxidation_steps", ""):
-                print("\nOCCUPIER for the second oxidation step:\n")
-                prepare_occ_folder_2("ox_step_2_OCCUPIER", source_occ_folder="ox_step_1_OCCUPIER", charge_delta=+2, config=config)
-
-            if "3" in config.get("oxidation_steps", ""):
-                print("\nOCCUPIER for the third oxidation step:\n") 
-                prepare_occ_folder_2("ox_step_3_OCCUPIER", source_occ_folder="ox_step_2_OCCUPIER", charge_delta=+3, config=config)
-                
-
-            if "1" in config.get("reduction_steps", ""):
-                print("\nOCCUPIER for the first reduction step:\n")
-                prepare_occ_folder_2("red_step_1_OCCUPIER", source_occ_folder="initial_OCCUPIER", charge_delta=-1, config=config)
-
-            if "2" in config.get("reduction_steps", ""):
-                print("\nOCCUPIER for the second reduction step:\n") 
-                prepare_occ_folder_2("red_step_2_OCCUPIER", source_occ_folder="red_step_1_OCCUPIER", charge_delta=-2, config=config)
-
-            if "3" in config.get("reduction_steps", ""):
-                print("\nOCCUPIER for the third reduction step:\n") 
-                prepare_occ_folder_2("red_step_3_OCCUPIER", source_occ_folder="red_step_2_OCCUPIER", charge_delta=-3, config=config)
-                
+            _run_occ_workflows(config)
 
 
             multiplicity_0, additions_0, min_fspe_index = read_occupier_file("initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config)

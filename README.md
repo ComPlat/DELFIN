@@ -6,11 +6,22 @@
 
 This repository contains DELFIN, a comprehensive workflow tool for automated quantum chemistry calculations using ORCA, xTB, and CREST. DELFIN automates the identification of preferred electron configurations, tracks orbital occupation changes during redox processes, and calculates redox potentials.
 
+## 🚀 Quick Install
+
+```bash
+pip install delfin-complat
+```
+
+**Requirements:**
+- **Python 3.10+**
+- **ORCA 6.1.0** in your `PATH` ([free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal))
+- **Optional:** CREST, xTB (for extended workflows)
+
 > **Prereqs**
 >
 > * ORCA **6.1.0** in your `PATH` (`orca` and `orca_pltvib`)
 > * Optional: `crest` (for CREST workflow), **xTB** if used (`xtb` and `crest` in `PATH`)
-> * Python **3.9+** recommended
+> * Python **3.10+** required
 
 ---
 
