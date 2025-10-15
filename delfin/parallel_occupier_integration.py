@@ -1,5 +1,6 @@
 """Integration of dynamic pool with OCCUPIER workflow."""
 
+import os
 import time
 import shutil
 from dataclasses import dataclass, field
@@ -9,8 +10,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import DynamicCorePool, PoolJob, JobPriority, create_orca_job
+from delfin.global_manager import get_global_manager
 from delfin.copy_helpers import read_occupier_file
-from delfin.imag import run_IMAG
+from delfin.imag import run_IMAG, search_imaginary_mode2
 from delfin.orca import run_orca
 from delfin.xyz_io import (
     read_xyz_and_create_input2,
@@ -42,6 +44,10 @@ class ParallelOccupierManager:
         self.per_job_share = max(1 if self.total_cores == 1 else 2,
                                  max(1, self.total_cores // max(1, self.max_jobs)))
 
+        # Track if we're running unified (ox+red parallel) to adjust PAL allocation
+        self.unified_mode = False
+        self.unified_workflow_count = 1
+
         # Create dynamic pool
         self.pool = DynamicCorePool(
             total_cores=self.total_cores,
@@ -56,45 +62,216 @@ class ParallelOccupierManager:
 
         logger.info("Starting parallel OCCUPIER execution: ox_steps + red_steps")
 
-        # Create workflow executors
-        workflows = []
+        # Merge both sequences into a unified job list with proper identification
+        unified_sequence = []
 
         if ox_sequence:
-            workflows.append(('ox_steps', ox_sequence, JobPriority.NORMAL))
+            for entry in ox_sequence:
+                unified_entry = entry.copy()
+                unified_entry['_workflow'] = 'ox'
+                unified_entry['_original_index'] = entry['index']
+                unified_sequence.append(unified_entry)
 
         if red_sequence:
-            workflows.append(('red_steps', red_sequence, JobPriority.NORMAL))
+            for entry in red_sequence:
+                unified_entry = entry.copy()
+                unified_entry['_workflow'] = 'red'
+                unified_entry['_original_index'] = entry['index']
+                unified_sequence.append(unified_entry)
 
-        if not workflows:
+        if not unified_sequence:
             logger.warning("No ox or red sequences to execute")
             return True
 
-        # Execute workflows in parallel
-        with ThreadPoolExecutor(max_workers=len(workflows)) as executor:
-            futures = []
+        logger.info(
+            f"Unified execution: {len(ox_sequence or [])} ox jobs + "
+            f"{len(red_sequence or [])} red jobs = {len(unified_sequence)} total jobs"
+        )
 
-            for workflow_name, sequence, priority in workflows:
-                future = executor.submit(
-                    self._execute_sequence_with_pool,
-                    workflow_name, sequence, priority
+        # Enable unified mode to split cores between workflows
+        self.unified_mode = True
+        workflow_count = sum(1 for seq in [ox_sequence, red_sequence] if seq)
+        self.unified_workflow_count = workflow_count
+
+        logger.info(
+            f"Unified mode enabled: {workflow_count} workflows sharing {self.total_cores} cores"
+        )
+
+        # Execute all jobs in a single unified workflow with shared resource pool
+        try:
+            return self._execute_unified_sequence(unified_sequence)
+        finally:
+            self.unified_mode = False
+            self.unified_workflow_count = 1
+
+    def _execute_unified_sequence(self, unified_sequence: List[Dict]) -> bool:
+        """Execute unified ox+red sequence with proper resource sharing."""
+
+        logger.info(f"Starting unified execution with {len(unified_sequence)} jobs")
+
+        # Analyze cross-workflow dependencies
+        dependencies = self._analyze_unified_dependencies(unified_sequence)
+
+        # Submit jobs to pool based on dependencies
+        submitted_jobs = {}
+        completed_jobs = set()
+        job_submit_times = {}
+
+        start_time = time.time()
+        max_wait_cycles = 1800  # 1 hour timeout
+        wait_cycles = 0
+        last_progress_time = start_time
+
+        while len(completed_jobs) < len(unified_sequence):
+            # Find jobs ready to run
+            ready_jobs = []
+            for entry in unified_sequence:
+                job_key = (entry['_workflow'], entry['_original_index'])
+                if (job_key not in submitted_jobs and
+                    job_key not in completed_jobs and
+                    dependencies[job_key].issubset(completed_jobs)):
+                    ready_jobs.append(entry)
+
+            # Submit ready jobs to pool
+            for entry in ready_jobs:
+                workflow = entry['_workflow']
+                idx = entry['_original_index']
+                job_key = (workflow, idx)
+                job_id = f"{workflow}_steps_job_{idx}"
+
+                inp_file = self._get_workflow_input_filename(workflow, idx)
+                out_file = self._get_workflow_output_filename(workflow, idx)
+
+                # Estimate job complexity for resource allocation
+                cores_min, cores_opt, cores_max = self._estimate_job_requirements(entry)
+
+                # Create and submit job
+                pool_job = create_orca_job(
+                    job_id=job_id,
+                    inp_file=inp_file,
+                    out_file=out_file,
+                    cores_min=cores_min,
+                    cores_optimal=cores_opt,
+                    cores_max=cores_max,
+                    priority=JobPriority.NORMAL,
+                    estimated_duration=self._estimate_duration(entry)
                 )
-                futures.append((workflow_name, future))
 
-            # Wait for all workflows to complete
-            all_success = True
-            for workflow_name, future in futures:
-                try:
-                    success = future.result()
-                    if success:
-                        logger.info(f"Workflow {workflow_name} completed successfully")
-                    else:
-                        logger.error(f"Workflow {workflow_name} failed")
-                        all_success = False
-                except Exception as e:
-                    logger.error(f"Workflow {workflow_name} raised exception: {e}")
-                    all_success = False
+                self.pool.submit_job(pool_job)
+                submitted_jobs[job_key] = job_id
+                job_submit_times[job_key] = time.time()
 
-        return all_success
+                logger.info(f"Submitted {job_id} to unified pool")
+
+            # Wait for some jobs to complete
+            if ready_jobs:
+                time.sleep(1)
+
+            # Check for completed jobs
+            newly_completed = self._check_completed_unified_jobs(submitted_jobs, completed_jobs)
+            completed_jobs.update(newly_completed)
+
+            # Track progress
+            if newly_completed or ready_jobs:
+                last_progress_time = time.time()
+                wait_cycles = 0
+            else:
+                wait_cycles += 1
+
+            # Deadlock detection
+            if not ready_jobs and not newly_completed:
+                elapsed_since_progress = time.time() - last_progress_time
+
+                if len(submitted_jobs) > len(completed_jobs):
+                    # We have running jobs, just wait
+                    if wait_cycles % 30 == 0:
+                        running = len(submitted_jobs) - len(completed_jobs)
+                        logger.info(
+                            f"[unified] Waiting for {running} running jobs to complete "
+                            f"({elapsed_since_progress:.0f}s since last progress)"
+                        )
+                    time.sleep(2)
+                elif len(submitted_jobs) < len(unified_sequence):
+                    # Deadlock detected
+                    pending_keys = set((e['_workflow'], e['_original_index']) for e in unified_sequence) - set(submitted_jobs.keys())
+                    logger.error(
+                        f"[unified] Deadlock detected: {len(pending_keys)} jobs waiting. "
+                        f"Pending: {sorted(pending_keys)}"
+                    )
+                    for job_key in sorted(pending_keys):
+                        deps = dependencies.get(job_key, set())
+                        missing_deps = deps - completed_jobs
+                        logger.error(f"  Job {job_key} waiting for: {sorted(missing_deps)}")
+                    return False
+                else:
+                    logger.warning("[unified] Unexpected state: breaking loop")
+                    break
+
+                if wait_cycles >= max_wait_cycles:
+                    logger.error(
+                        f"[unified] Timeout after {wait_cycles * 2}s. "
+                        f"Completed: {len(completed_jobs)}/{len(unified_sequence)}"
+                    )
+                    return False
+
+        duration = time.time() - start_time
+        logger.info(f"Unified execution completed in {duration:.1f}s")
+
+        return True
+
+    def _analyze_unified_dependencies(self, unified_sequence: List[Dict]) -> Dict[tuple, Set[tuple]]:
+        """Analyze dependencies across ox and red workflows."""
+        dependencies = {}
+
+        for entry in unified_sequence:
+            workflow = entry['_workflow']
+            idx = entry['_original_index']
+            job_key = (workflow, idx)
+
+            raw_from = entry.get("from", idx - 1)
+            dep_indices = self._parse_dependency_field(raw_from)
+            dep_indices.discard(idx)
+
+            # Dependencies are within the same workflow
+            dep_keys = set((workflow, dep_idx) for dep_idx in dep_indices)
+            dependencies[job_key] = dep_keys
+
+        return dependencies
+
+    def _check_completed_unified_jobs(self, submitted_jobs: Dict[tuple, str],
+                                     completed_jobs: Set[tuple]) -> Set[tuple]:
+        """Check for newly completed jobs in unified execution."""
+        newly_completed = set()
+
+        # Use pool feedback first
+        finished_ids = set(self.pool.drain_completed_jobs())
+        inverse_map = {job_id: key for key, job_id in submitted_jobs.items()}
+
+        for job_id in finished_ids:
+            key = inverse_map.get(job_id)
+            if key is not None and key not in completed_jobs:
+                newly_completed.add(key)
+                logger.info(f"Job {job_id} completed (pool notification)")
+
+        # Fallback to file-based detection
+        for key, job_id in submitted_jobs.items():
+            if key in completed_jobs or key in newly_completed:
+                continue
+            workflow, idx = key
+            out_file = self._get_workflow_output_filename(workflow, idx)
+            if self._verify_job_completion(out_file):
+                newly_completed.add(key)
+                logger.info(f"Job {job_id} completed (output check)")
+
+        return newly_completed
+
+    def _get_workflow_input_filename(self, workflow: str, idx: int) -> str:
+        """Get input filename for workflow job."""
+        return f"input{'' if idx == 1 else idx}.inp"
+
+    def _get_workflow_output_filename(self, workflow: str, idx: int) -> str:
+        """Get output filename for workflow job."""
+        return f"output{'' if idx == 1 else idx}.out"
 
     def _execute_sequence_with_pool(self, workflow_name: str, sequence: List[Dict],
                                    priority: JobPriority) -> bool:
@@ -108,8 +285,12 @@ class ParallelOccupierManager:
         # Submit jobs to pool based on dependencies
         submitted_jobs = {}
         completed_jobs = set()
+        job_submit_times = {}
 
         start_time = time.time()
+        max_wait_cycles = 1800  # 1 hour timeout (1800 * 2s)
+        wait_cycles = 0
+        last_progress_time = start_time
 
         while len(completed_jobs) < len(sequence):
             # Find jobs ready to run
@@ -144,6 +325,7 @@ class ParallelOccupierManager:
 
                 self.pool.submit_job(pool_job)
                 submitted_jobs[entry['index']] = job_id
+                job_submit_times[entry['index']] = time.time()
 
                 logger.info(f"Submitted {job_id} to pool")
 
@@ -155,9 +337,54 @@ class ParallelOccupierManager:
             newly_completed = self._check_completed_jobs(submitted_jobs, completed_jobs)
             completed_jobs.update(newly_completed)
 
-            # Avoid busy waiting
+            # Track progress
+            if newly_completed or ready_jobs:
+                last_progress_time = time.time()
+                wait_cycles = 0
+            else:
+                wait_cycles += 1
+
+            # Deadlock detection
             if not ready_jobs and not newly_completed:
-                time.sleep(2)
+                elapsed_since_progress = time.time() - last_progress_time
+
+                # Check if we're truly stuck
+                if len(submitted_jobs) > len(completed_jobs):
+                    # We have running jobs, just wait
+                    if wait_cycles % 30 == 0:  # Log every minute
+                        running = len(submitted_jobs) - len(completed_jobs)
+                        logger.info(
+                            f"[{workflow_name}] Waiting for {running} running jobs to complete "
+                            f"({elapsed_since_progress:.0f}s since last progress)"
+                        )
+                    time.sleep(2)
+                elif len(submitted_jobs) < len(sequence):
+                    # We have unsubmitted jobs but can't submit them (dependency deadlock)
+                    pending_indices = set(entry["index"] for entry in sequence) - set(submitted_jobs.keys())
+                    logger.error(
+                        f"[{workflow_name}] Deadlock detected: {len(pending_indices)} jobs waiting "
+                        f"but dependencies not satisfied. Pending: {sorted(pending_indices)}"
+                    )
+                    # Log dependency info for debugging
+                    for idx in sorted(pending_indices):
+                        deps = dependencies.get(idx, set())
+                        missing_deps = deps - completed_jobs
+                        logger.error(
+                            f"  Job {idx} waiting for dependencies: {sorted(missing_deps)}"
+                        )
+                    return False
+                else:
+                    # All jobs submitted and completed - this shouldn't happen but break anyway
+                    logger.warning(f"[{workflow_name}] Unexpected state: breaking loop")
+                    break
+
+                # Global timeout
+                if wait_cycles >= max_wait_cycles:
+                    logger.error(
+                        f"[{workflow_name}] Timeout after {wait_cycles * 2}s with no progress. "
+                        f"Completed: {len(completed_jobs)}/{len(sequence)}"
+                    )
+                    return False
 
         duration = time.time() - start_time
         logger.info(f"{workflow_name} completed in {duration:.1f}s")
@@ -209,9 +436,19 @@ class ParallelOccupierManager:
 
     def _estimate_job_requirements(self, entry: Dict) -> tuple[int, int, int]:
         """Estimate core requirements for a job."""
+        # Adjust total cores if in unified mode (ox+red parallel)
+        effective_total_cores = self.total_cores
+        if self.unified_mode and self.unified_workflow_count > 1:
+            # Split cores between parallel workflows
+            effective_total_cores = max(2, self.total_cores // self.unified_workflow_count)
+            logger.debug(
+                f"Unified mode: reducing effective cores from {self.total_cores} "
+                f"to {effective_total_cores} ({self.unified_workflow_count} workflows)"
+            )
+
         # Base requirements
-        cores_min = 1 if self.total_cores == 1 else 2
-        burst_capacity = max(cores_min, min(self.total_cores, self.per_job_share * 2))
+        cores_min = 1 if effective_total_cores == 1 else 2
+        burst_capacity = max(cores_min, min(effective_total_cores, self.per_job_share * 2))
         cores_max = burst_capacity
 
         # Adjust based on multiplicity and job characteristics
@@ -257,12 +494,24 @@ class ParallelOccupierManager:
         """Check for newly completed jobs."""
         newly_completed = set()
 
+        # Use pool feedback first
+        finished_ids = set(self.pool.drain_completed_jobs())
+        inverse_map = {job_id: idx for idx, job_id in submitted_jobs.items()}
+
+        for job_id in finished_ids:
+            idx = inverse_map.get(job_id)
+            if idx is not None and idx not in completed_jobs:
+                newly_completed.add(idx)
+                logger.info(f"Job {job_id} completed (pool notification)")
+
+        # Fallback to file-based detection for any remaining jobs
         for idx, job_id in submitted_jobs.items():
-            if idx not in completed_jobs:
-                out_file = self._get_output_filename(idx)
-                if self._verify_job_completion(out_file):
-                    newly_completed.add(idx)
-                    logger.info(f"Job {job_id} completed")
+            if idx in completed_jobs or idx in newly_completed:
+                continue
+            out_file = self._get_output_filename(idx)
+            if self._verify_job_completion(out_file):
+                newly_completed.add(idx)
+                logger.info(f"Job {job_id} completed (output check)")
 
         return newly_completed
 
@@ -402,50 +651,22 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
     )
 
     if use_parallel:
-        # First, run the initial job separately (may trigger IMAG)
-        initial_job = None
-        other_jobs = []
-        for job in jobs:
-            if job.job_id == "occupier_initial":
-                initial_job = job
-            else:
-                other_jobs.append(job)
-
-        # Run initial job first
-        if initial_job:
-            logger.info("[occupier] Running initial job first before parallel execution")
-            initial_job.work(max(1, _parse_int(context.config.get('PAL'), fallback=1)))
-
-        # Rebuild remaining jobs after potential IMAG modifications
+        # Use global pool to ensure coordination with other workflows
+        manager = _WorkflowManager(context.config, label="occupier", max_jobs_override=effective_max_jobs, use_global_pool=True)
         try:
-            updated_jobs = _build_occupier_jobs(context)
-            # Filter out the initial job since it's already done
-            remaining_jobs = [job for job in updated_jobs if job.job_id != "occupier_initial"]
-
-            if not remaining_jobs:
-                logger.info("No remaining jobs after initial completion")
-                return True
-
-        except Exception as rebuild_exc:
-            logger.warning("Failed to rebuild jobs after initial: %s", rebuild_exc)
-            remaining_jobs = other_jobs  # fallback to original jobs
-
-        # Run remaining jobs in parallel
-        manager = _WorkflowManager(context.config, label="occupier", max_jobs_override=effective_max_jobs)
-        try:
-            for job in remaining_jobs:
+            for job in jobs:
                 manager.add_job(job)
             dynamic_slots = determine_effective_slots(
                 manager.total_cores,
                 manager._jobs.values(),
                 effective_max_jobs,
-                len(remaining_jobs),
+                len(jobs),
             )
             if dynamic_slots != manager.pool.max_concurrent_jobs:
                 logger.info(
                     "[occupier] Adjusting ORCA job slots to %d (width=%d, requested=%d)",
                     dynamic_slots,
-                    len(remaining_jobs),
+                    len(jobs),
                     effective_max_jobs,
                 )
                 manager.pool.max_concurrent_jobs = dynamic_slots
@@ -539,14 +760,41 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
 
     total_cores = max(1, _parse_int(config.get('PAL'), fallback=1))
     pal_jobs_value = _resolve_pal_jobs(config)
-    cores_min = 1 if total_cores == 1 else 2
-    cores_max = total_cores
 
-    def core_bounds(preferred_opt: Optional[int] = None) -> tuple[int, int, int]:
+    # Check if ox and red will run in parallel - if so, split cores
+    oxidation_steps = _parse_step_list(config.get('oxidation_steps'))
+    reduction_steps = _parse_step_list(config.get('reduction_steps'))
+    has_ox = len(oxidation_steps) > 0
+    has_red = len(reduction_steps) > 0
+
+    parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+    ox_red_parallel = (has_ox and has_red) and parallel_mode != 'disable'
+
+    # If ox and red will run in parallel, split cores between them
+    effective_total_cores = total_cores
+    if ox_red_parallel:
+        effective_total_cores = max(2, total_cores // 2)
+        logger.info(
+            f"[occupier] Ox and red workflows will run in parallel: "
+            f"splitting {total_cores} cores → {effective_total_cores} cores per workflow"
+        )
+
+    cores_min = 1 if effective_total_cores == 1 else 2
+    cores_max = effective_total_cores
+
+    def core_bounds(preferred_opt: Optional[int] = None, job_count_at_level: Optional[int] = None) -> tuple[int, int, int]:
+        """Calculate core bounds with awareness of parallel job potential."""
         if pal_jobs_value > 0:
-            default_opt = max(cores_min, total_cores // pal_jobs_value)
+            default_opt = max(cores_min, effective_total_cores // pal_jobs_value)
         else:
-            default_opt = max(cores_min, total_cores)
+            default_opt = max(cores_min, effective_total_cores)
+
+        # If we know multiple jobs will run in parallel, reduce optimal cores for better sharing
+        if job_count_at_level and job_count_at_level > 1:
+            # Allow more jobs to run simultaneously by reducing per-job cores
+            adjusted_opt = max(cores_min, effective_total_cores // min(job_count_at_level, pal_jobs_value))
+            default_opt = min(default_opt, adjusted_opt)
+
         if preferred_opt is None:
             preferred = max(cores_min, min(cores_max, default_opt))
         else:
@@ -570,12 +818,66 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
     base_charge = context.charge
     functional = config.get('functional', 'ORCA')
 
-    if str(config.get('calc_initial', 'yes')).strip().lower() == 'yes':
+    calc_initial_flag = str(config.get('calc_initial', 'yes')).strip().lower()
+    xtb_solvator_enabled = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
+    if calc_initial_flag == 'yes' or xtb_solvator_enabled:
         multiplicity_0, additions_0, _ = read_occ("initial_OCCUPIER")
+
+        if xtb_solvator_enabled:
+            solvated_xyz = Path("XTB_SOLVATOR") / "XTB_SOLVATOR.solvator.xyz"
+            target_parent_xyz = Path("input_initial_OCCUPIER.xyz")
+            if solvated_xyz.exists():
+                try:
+                    shutil.copyfile(solvated_xyz, target_parent_xyz)
+                    logger.info("[occupier] Enforced solvator geometry for %s", target_parent_xyz)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[occupier] Could not copy solvator geometry to %s: %s",
+                        target_parent_xyz,
+                        exc,
+                    )
 
         def run_initial(cores: int,
                         _mult=multiplicity_0,
                         _adds=additions_0) -> None:
+            recalc_mode = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+            existing_log = Path("initial.out")
+            existing_xyz = Path("initial.xyz")
+            geom_source = Path("input_initial_OCCUPIER.xyz")
+            geometry_newer = False
+            if existing_log.exists() and geom_source.exists():
+                try:
+                    geometry_newer = geom_source.stat().st_mtime >= existing_log.stat().st_mtime
+                except Exception:  # noqa: BLE001
+                    geometry_newer = False
+            force_rerun = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
+            if (not recalc_mode and not force_rerun and existing_log.exists()
+                    and _verify_orca_output(str(existing_log))):
+                allow_cfg = config.get('allow_imaginary_freq', 0)
+                try:
+                    allow_raw = float(str(allow_cfg).strip() or 0)
+                except Exception:  # noqa: BLE001
+                    allow_raw = 0.0
+                threshold = allow_raw if allow_raw <= 0 else -allow_raw
+                freq = search_imaginary_mode2(str(existing_log))
+                if not geometry_newer and (freq is None or freq >= threshold):
+                    freq_display = "n/a" if freq is None else f"{freq:.6f}"
+                    logger.info(
+                        "[occupier] Reusing converged initial.out (freq=%s ≥ %s); skipping initial rerun.",
+                        freq_display,
+                        threshold,
+                    )
+                    if not existing_xyz.exists():
+                        source_xyz = Path("input_initial_OCCUPIER.xyz")
+                        if source_xyz.exists():
+                            shutil.copy(source_xyz, existing_xyz)
+                        else:
+                            logger.warning("initial.xyz missing and no backup geometry found")
+                    return
+                if geometry_newer:
+                    logger.info(
+                        "[occupier] input_initial_OCCUPIER.xyz newer than initial.out → rerunning initial optimization.",
+                    )
             logger.info("[occupier] Preparing initial frequency job")
             read_xyz_and_create_input3(
                 "input_initial_OCCUPIER.xyz",
@@ -630,8 +932,9 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
         additions_tddft = config.get('additions_TDDFT', '')
 
         def run_absorption(cores: int, _adds=additions_tddft) -> None:
+            absorption_source = "initial.xyz" if xtb_solvator_enabled else "input_initial_OCCUPIER.xyz"
             read_xyz_and_create_input2(
-                "input_initial_OCCUPIER.xyz",
+                absorption_source,
                 "absorption_td.inp",
                 base_charge,
                 1,
@@ -653,6 +956,7 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
             description="absorption spectrum",
             work=run_absorption,
             produces={"absorption_spec.out"},
+            requires={"initial.xyz"} if xtb_solvator_enabled else set(),
         ))
 
     excitation_flags = str(config.get('excitation', '')).lower()
@@ -733,6 +1037,12 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
         def run_s1_state(cores: int, _adds=additions_tddft) -> None:
             if not Path(xyz_initial).exists():
                 raise RuntimeError(f"Required geometry '{xyz_initial}' not found")
+            failed_flag = Path("s1_state_opt.failed")
+            if failed_flag.exists():
+                try:
+                    failed_flag.unlink()
+                except Exception:  # noqa: BLE001
+                    pass
             read_xyz_and_create_input4(
                 xyz_initial,
                 "s1_state_opt.inp",
@@ -749,14 +1059,30 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
             if not inp_path.exists():
                 raise RuntimeError("Failed to create s1_state_opt.inp")
             _update_pal_block(str(inp_path), cores)
-            run_orca("s1_state_opt.inp", "s1_state_opt.out")
-            if not _verify_orca_output("s1_state_opt.out"):
-                raise RuntimeError("ORCA terminated abnormally for s1_state_opt.out")
+            try:
+                run_orca("s1_state_opt.inp", "s1_state_opt.out")
+                if not _verify_orca_output("s1_state_opt.out"):
+                    raise RuntimeError("ORCA terminated abnormally for s1_state_opt.out")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[occupier] Skipping singlet state optimization; ORCA failed: %s",
+                    exc,
+                )
+                try:
+                    failed_flag.write_text(str(exc))
+                except Exception:  # noqa: BLE001
+                    pass
+                return
             logger.info(
                 "%s %s freq & geometry optimization of S_1 complete!",
                 functional,
                 main_basis,
             )
+            if failed_flag.exists():
+                try:
+                    failed_flag.unlink()
+                except Exception:  # noqa: BLE001
+                    pass
 
         s1_job_id = "occupier_s1_state"
         register_descriptor(JobDescriptor(
@@ -769,6 +1095,18 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
 
         if emission_enabled:
             def run_s1_emission(cores: int, _adds=additions_tddft) -> None:
+                failed_flag = Path("s1_state_opt.failed")
+                if failed_flag.exists():
+                    logger.info(
+                        "[occupier] Skipping singlet emission; singlet optimization failed (see %s).",
+                        failed_flag,
+                    )
+                    return
+                if not Path("s1_state_opt.xyz").exists():
+                    logger.info(
+                        "[occupier] Skipping singlet emission; missing geometry 's1_state_opt.xyz'.",
+                    )
+                    return
                 read_xyz_and_create_input2(
                     "s1_state_opt.xyz",
                     "emission_s1.inp",
@@ -802,7 +1140,37 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
     for step in oxidation_steps:
         folder = f"ox_step_{step}_OCCUPIER"
         multiplicity_step, additions_step, _ = read_occ(folder)
-        xyz_source = f"input_ox_step_{step}_OCCUPIER.xyz"
+        if xtb_solvator_enabled:
+            if step == 1:
+                primary_geom = Path("initial.xyz")
+                requires = {"initial.out"}
+            else:
+                primary_geom = Path(f"ox_step_{step - 1}.xyz")
+                requires = {f"ox_step_{step - 1}.out"}
+        else:
+            primary_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
+            requires = set()
+
+        if primary_geom.exists() or xtb_solvator_enabled:
+            xyz_source_path = primary_geom
+        else:
+            fallback_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
+            if fallback_geom.exists():
+                if primary_geom != fallback_geom:
+                    logger.warning(
+                        "[occupier] Primary oxidation geometry %s missing; using OCCUPIER fallback %s",
+                        primary_geom,
+                        fallback_geom,
+                    )
+                xyz_source_path = fallback_geom
+            else:
+                logger.warning(
+                    "[occupier] No geometry found for oxidation step %d; proceeding with %s",
+                    step,
+                    primary_geom,
+                )
+                xyz_source_path = primary_geom
+        xyz_source = str(xyz_source_path)
         inp_path = f"ox_step_{step}.inp"
         out_path = f"ox_step_{step}.out"
         step_charge = base_charge + step
@@ -843,14 +1211,45 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
             job_id=f"occupier_ox_{step}",
             description=f"oxidation step {step}",
             work=make_oxidation_work(step, multiplicity_step, additions_step, xyz_source, inp_path, out_path, step_charge),
-            produces={out_path},
+            produces={out_path, f"ox_step_{step}.xyz"},
+            requires=requires,
         ))
 
     reduction_steps = _parse_step_list(config.get('reduction_steps'))
     for step in reduction_steps:
         folder = f"red_step_{step}_OCCUPIER"
         multiplicity_step, additions_step, _ = read_occ(folder)
-        xyz_source = f"input_red_step_{step}_OCCUPIER.xyz"
+        if xtb_solvator_enabled:
+            if step == 1:
+                primary_geom = Path("initial.xyz")
+                requires = {"initial.out"}
+            else:
+                primary_geom = Path(f"red_step_{step - 1}.xyz")
+                requires = {f"red_step_{step - 1}.out"}
+        else:
+            primary_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
+            requires = set()
+
+        if primary_geom.exists() or xtb_solvator_enabled:
+            xyz_source_path = primary_geom
+        else:
+            fallback_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
+            if fallback_geom.exists():
+                if primary_geom != fallback_geom:
+                    logger.warning(
+                        "[occupier] Primary reduction geometry %s missing; using OCCUPIER fallback %s",
+                        primary_geom,
+                        fallback_geom,
+                    )
+                xyz_source_path = fallback_geom
+            else:
+                logger.warning(
+                    "[occupier] No geometry found for reduction step %d; proceeding with %s",
+                    step,
+                    primary_geom,
+                )
+                xyz_source_path = primary_geom
+        xyz_source = str(xyz_source_path)
         inp_path = f"red_step_{step}.inp"
         out_path = f"red_step_{step}.out"
         step_charge = base_charge - step
@@ -891,7 +1290,8 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
             job_id=f"occupier_red_{step}",
             description=f"reduction step {step}",
             work=make_reduction_work(step, multiplicity_step, additions_step, xyz_source, inp_path, out_path, step_charge),
-            produces={out_path},
+            produces={out_path, f"red_step_{step}.xyz"},
+            requires=requires,
         ))
 
     # Resolve implicit dependencies based on produced artifacts
@@ -900,14 +1300,51 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
         for artifact in descriptor.produces:
             produced_by.setdefault(artifact, descriptor.job_id)
 
+    # Build dependency graph
+    job_deps: Dict[str, Set[str]] = {}
     for descriptor in descriptors:
         dependencies: Set[str] = set(descriptor.explicit_dependencies)
         for requirement in descriptor.requires:
             producer = produced_by.get(requirement)
             if producer and producer != descriptor.job_id:
                 dependencies.add(producer)
+        job_deps[descriptor.job_id] = dependencies
 
-        cores_min_v, cores_opt_v, cores_max_v = core_bounds(descriptor.preferred_cores)
+    # Calculate dependency levels for better parallelization
+    def get_dependency_level(job_id: str, memo: Dict[str, int]) -> int:
+        """Get the dependency level of a job (0 = no deps, 1 = depends on level 0, etc.)."""
+        if job_id in memo:
+            return memo[job_id]
+        deps = job_deps.get(job_id, set())
+        if not deps:
+            memo[job_id] = 0
+            return 0
+        level = max(get_dependency_level(dep, memo) for dep in deps) + 1
+        memo[job_id] = level
+        return level
+
+    level_memo: Dict[str, int] = {}
+    job_levels: Dict[str, int] = {}
+    for descriptor in descriptors:
+        job_levels[descriptor.job_id] = get_dependency_level(descriptor.job_id, level_memo)
+
+    # Count jobs at each level for better core allocation
+    levels_count: Dict[int, int] = {}
+    for level in job_levels.values():
+        levels_count[level] = levels_count.get(level, 0) + 1
+
+    # Build WorkflowJob objects with optimized core allocation
+    for descriptor in descriptors:
+        dependencies = job_deps[descriptor.job_id]
+        job_level = job_levels[descriptor.job_id]
+        parallel_jobs_at_level = levels_count.get(job_level, 1)
+
+        # Use parallel job count to optimize core allocation
+        cores_min_v, cores_opt_v, cores_max_v = core_bounds(
+            descriptor.preferred_cores,
+            job_count_at_level=parallel_jobs_at_level if parallel_jobs_at_level > 1 else None
+        )
+
         jobs.append(
             WorkflowJob(
                 job_id=descriptor.job_id,
@@ -920,7 +1357,7 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
             )
         )
 
-    _log_job_plan(descriptors)
+    _log_job_plan_with_levels(descriptors, job_levels, levels_count)
     return jobs
 
 
@@ -933,18 +1370,44 @@ def _resolve_pal_jobs(config: Dict[str, Any]) -> int:
     return parsed
 
 
-def _log_job_plan(descriptors: List[JobDescriptor]) -> None:
+def _log_job_plan_with_levels(
+    descriptors: List[JobDescriptor],
+    job_levels: Dict[str, int],
+    levels_count: Dict[int, int]
+) -> None:
+    """Log job plan with dependency levels for parallelization analysis."""
     logger.info("Planned OCCUPIER ORCA jobs (%d total):", len(descriptors))
+
+    # Group jobs by level
+    jobs_by_level: Dict[int, List[JobDescriptor]] = {}
     for descriptor in descriptors:
-        deps = sorted(descriptor.explicit_dependencies | descriptor.requires)
-        produces = sorted(descriptor.produces)
-        logger.info(
-            "  - %s: %s | deps=%s | outputs=%s",
-            descriptor.job_id,
-            descriptor.description,
-            deps or ['none'],
-            produces or ['none'],
-        )
+        level = job_levels.get(descriptor.job_id, 0)
+        if level not in jobs_by_level:
+            jobs_by_level[level] = []
+        jobs_by_level[level].append(descriptor)
+
+    # Log summary of parallelization potential
+    max_parallel = max(levels_count.values()) if levels_count else 0
+    logger.info(
+        "Parallelization potential: %d levels, max %d jobs in parallel",
+        len(levels_count),
+        max_parallel
+    )
+
+    # Log jobs grouped by level
+    for level in sorted(jobs_by_level.keys()):
+        job_list = jobs_by_level[level]
+        logger.info("  Level %d (%d jobs can run in parallel):", level, len(job_list))
+        for descriptor in job_list:
+            deps = sorted(descriptor.explicit_dependencies | descriptor.requires)
+            produces = sorted(descriptor.produces)
+            logger.info(
+                "    - %s: %s | deps=%s | outputs=%s",
+                descriptor.job_id,
+                descriptor.description,
+                deps or ['none'],
+                produces or ['none'],
+            )
 
 
 def _parse_step_list(raw_steps: Any) -> List[int]:

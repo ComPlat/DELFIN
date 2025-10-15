@@ -1,10 +1,11 @@
 from __future__ import annotations
-import os, time, re, sys, argparse, difflib
+import os, time, re, sys, argparse, difflib, shutil
 from pathlib import Path
 
 from delfin.common.logging import configure_logging, get_logger
 from delfin.common.paths import get_runtime_dir, resolve_path
 from delfin.cluster_utils import auto_configure_resources, detect_cluster_environment
+from delfin.global_manager import get_global_manager
 from delfin.define import convert_xyz_to_input_txt
 from .define import create_control_file
 from .cleanup import cleanup_all
@@ -41,7 +42,7 @@ from .parallel_occupier_integration import (
 logger = get_logger(__name__)
 
 
-def _execute_oxidation_workflow(config):
+def _execute_oxidation_workflow(config, pal_override=None):
     """Execute oxidation steps workflow."""
 
     logger.info("Starting oxidation workflow")
@@ -52,21 +53,21 @@ def _execute_oxidation_workflow(config):
     try:
         if "1" in config.get("oxidation_steps", ""):
             print("\nOCCUPIER for the first oxidation step:\n")
-            success = prepare_occ_folder_2_threadsafe("ox_step_1_OCCUPIER", source_occ_folder="initial_OCCUPIER", charge_delta=+1, config=config, original_cwd=original_cwd)
+            success = prepare_occ_folder_2_threadsafe("ox_step_1_OCCUPIER", source_occ_folder="initial_OCCUPIER", charge_delta=+1, config=config, original_cwd=original_cwd, pal_override=pal_override)
             if not success:
                 logger.error("Failed to prepare ox_step_1_OCCUPIER")
                 return False
 
         if "2" in config.get("oxidation_steps", ""):
             print("\nOCCUPIER for the second oxidation step:\n")
-            success = prepare_occ_folder_2_threadsafe("ox_step_2_OCCUPIER", source_occ_folder="ox_step_1_OCCUPIER", charge_delta=+2, config=config, original_cwd=original_cwd)
+            success = prepare_occ_folder_2_threadsafe("ox_step_2_OCCUPIER", source_occ_folder="ox_step_1_OCCUPIER", charge_delta=+2, config=config, original_cwd=original_cwd, pal_override=pal_override)
             if not success:
                 logger.error("Failed to prepare ox_step_2_OCCUPIER")
                 return False
 
         if "3" in config.get("oxidation_steps", ""):
             print("\nOCCUPIER for the third oxidation step:\n")
-            success = prepare_occ_folder_2_threadsafe("ox_step_3_OCCUPIER", source_occ_folder="ox_step_2_OCCUPIER", charge_delta=+3, config=config, original_cwd=original_cwd)
+            success = prepare_occ_folder_2_threadsafe("ox_step_3_OCCUPIER", source_occ_folder="ox_step_2_OCCUPIER", charge_delta=+3, config=config, original_cwd=original_cwd, pal_override=pal_override)
             if not success:
                 logger.error("Failed to prepare ox_step_3_OCCUPIER")
                 return False
@@ -79,7 +80,7 @@ def _execute_oxidation_workflow(config):
         return False
 
 
-def _execute_reduction_workflow(config):
+def _execute_reduction_workflow(config, pal_override=None):
     """Execute reduction steps workflow."""
 
     logger.info("Starting reduction workflow")
@@ -90,21 +91,21 @@ def _execute_reduction_workflow(config):
     try:
         if "1" in config.get("reduction_steps", ""):
             print("\nOCCUPIER for the first reduction step:\n")
-            success = prepare_occ_folder_2_threadsafe("red_step_1_OCCUPIER", source_occ_folder="initial_OCCUPIER", charge_delta=-1, config=config, original_cwd=original_cwd)
+            success = prepare_occ_folder_2_threadsafe("red_step_1_OCCUPIER", source_occ_folder="initial_OCCUPIER", charge_delta=-1, config=config, original_cwd=original_cwd, pal_override=pal_override)
             if not success:
                 logger.error("Failed to prepare red_step_1_OCCUPIER")
                 return False
 
         if "2" in config.get("reduction_steps", ""):
             print("\nOCCUPIER for the second reduction step:\n")
-            success = prepare_occ_folder_2_threadsafe("red_step_2_OCCUPIER", source_occ_folder="red_step_1_OCCUPIER", charge_delta=-2, config=config, original_cwd=original_cwd)
+            success = prepare_occ_folder_2_threadsafe("red_step_2_OCCUPIER", source_occ_folder="red_step_1_OCCUPIER", charge_delta=-2, config=config, original_cwd=original_cwd, pal_override=pal_override)
             if not success:
                 logger.error("Failed to prepare red_step_2_OCCUPIER")
                 return False
 
         if "3" in config.get("reduction_steps", ""):
             print("\nOCCUPIER for the third reduction step:\n")
-            success = prepare_occ_folder_2_threadsafe("red_step_3_OCCUPIER", source_occ_folder="red_step_2_OCCUPIER", charge_delta=-3, config=config, original_cwd=original_cwd)
+            success = prepare_occ_folder_2_threadsafe("red_step_3_OCCUPIER", source_occ_folder="red_step_2_OCCUPIER", charge_delta=-3, config=config, original_cwd=original_cwd, pal_override=pal_override)
             if not success:
                 logger.error("Failed to prepare red_step_3_OCCUPIER")
                 return False
@@ -121,15 +122,53 @@ def _execute_parallel_workflows(config):
     """Execute oxidation and reduction workflows in parallel."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    # Determine PAL splitting for parallel execution
+    total_pal = max(1, int(config.get('PAL', 12)))
+
+    # Check if both ox and red workflows will run
+    has_ox = bool(config.get("oxidation_steps", "").strip())
+    has_red = bool(config.get("reduction_steps", "").strip())
+
+    # Calculate reduced PAL: split cores between ox and red workflows
+    if has_ox and has_red:
+        reduced_pal = max(2, total_pal // 2)
+
+        def _format_parallel_banner(orig_pal: int, split_pal: int) -> str:
+            box_width = 65
+            inner_width = box_width - 2
+
+            def _box_line(text: str = "") -> str:
+                return f"║{text.ljust(inner_width)}║"
+
+            def _label_value(label: str, value: str) -> str:
+                return f"{label:<29}: {value}".ljust(inner_width)
+
+            header = "PARALLEL WORKFLOW EXECUTION".center(inner_width)
+            body_lines = [
+                header,
+                _label_value("Original PAL", str(orig_pal)),
+                _label_value("Reduced PAL per workflow", str(split_pal)),
+                _label_value("Reason", "ox and red running in parallel"),
+            ]
+
+            top = "╔" + "═" * (box_width - 2) + "╗"
+            bottom = "╚" + "═" * (box_width - 2) + "╝"
+            return "\n".join([top, *[_box_line(line) for line in body_lines], bottom])
+
+        print(_format_parallel_banner(total_pal, reduced_pal))
+    else:
+        reduced_pal = None  # Single workflow gets full PAL
+        logger.info(f"Single workflow execution - using full PAL={total_pal}")
+
     workflows = []
 
     # Add oxidation workflow if configured
-    if config.get("oxidation_steps", ""):
-        workflows.append(("oxidation", _execute_oxidation_workflow, config))
+    if has_ox:
+        workflows.append(("oxidation", _execute_oxidation_workflow, config, reduced_pal))
 
     # Add reduction workflow if configured
-    if config.get("reduction_steps", ""):
-        workflows.append(("reduction", _execute_reduction_workflow, config))
+    if has_red:
+        workflows.append(("reduction", _execute_reduction_workflow, config, reduced_pal))
 
     if not workflows:
         logger.warning("No oxidation or reduction steps configured")
@@ -141,8 +180,8 @@ def _execute_parallel_workflows(config):
     with ThreadPoolExecutor(max_workers=len(workflows)) as executor:
         # Submit all workflows
         future_to_workflow = {}
-        for workflow_name, workflow_func, workflow_config in workflows:
-            future = executor.submit(workflow_func, workflow_config)
+        for workflow_name, workflow_func, workflow_config, pal_override in workflows:
+            future = executor.submit(workflow_func, workflow_config, pal_override)
             future_to_workflow[future] = workflow_name
 
         # Wait for completion and collect results
@@ -172,15 +211,18 @@ def _execute_sequential_workflows(config):
     """Execute oxidation and reduction workflows sequentially."""
     all_success = True
 
-    # Execute oxidation workflow first
+    total_pal = max(1, int(config.get('PAL', 12)))
+    logger.info(f"Sequential workflow execution - each workflow uses full PAL={total_pal}")
+
+    # Execute oxidation workflow first (no PAL override - uses full PAL)
     if config.get("oxidation_steps", ""):
-        success = _execute_oxidation_workflow(config)
+        success = _execute_oxidation_workflow(config, pal_override=None)
         if not success:
             all_success = False
 
-    # Execute reduction workflow second
+    # Execute reduction workflow second (no PAL override - uses full PAL)
     if config.get("reduction_steps", ""):
-        success = _execute_reduction_workflow(config)
+        success = _execute_reduction_workflow(config, pal_override=None)
         if not success:
             all_success = False
 
@@ -286,6 +328,23 @@ def main(argv: list[str] | None = None) -> int:
 
     # Auto-configure cluster resources if not explicitly set
     config = auto_configure_resources(config)
+
+    # Initialize global job manager with configuration
+    global_mgr = get_global_manager()
+    global_mgr.initialize(config)
+    logger.info("Global job manager initialized")
+
+    def _finalize(exit_code: int) -> int:
+        """Shutdown global resources and perform optional cleanup before exiting."""
+        try:
+            global_mgr.shutdown()
+            logger.info("Global job manager shutdown complete")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Global manager shutdown raised: {exc}")
+
+        if not args.no_cleanup:
+            cleanup_all(str(get_runtime_dir()))
+        return exit_code
 
     # Populate optional flags with safe defaults so reduced CONTROL files remain usable
     default_config = {
@@ -523,14 +582,92 @@ def main(argv: list[str] | None = None) -> int:
 
         if config['XTB_SOLVATOR'] == "yes":
 
-            if "yes" in config.get("calc_initial", ""):
+            calc_initial_flag = str(config.get("calc_initial", "")).strip().lower()
+            initial_requested = "yes" in calc_initial_flag
+            initial_folder = Path("initial_OCCUPIER")
+            initial_report = initial_folder / "OCCUPIER.txt"
+
+            initial_rerun = False
+            if initial_requested or not initial_report.exists():
                 print("\nOCCUPIER for the initial system:\n")
                 prepare_occ_folder("initial_OCCUPIER", charge_delta=0)
-            _run_occ_workflows(config)
+                initial_rerun = True
+            else:
+                logger.info(
+                    "Reusing existing OCCUPIER results in %s (calc_initial=%s)",
+                    initial_folder,
+                    config.get("calc_initial"),
+                )
 
+            if config.get("oxidation_steps", "").strip() or config.get("reduction_steps", "").strip():
+                def _extract_steps(raw: str) -> list[int]:
+                    if not raw:
+                        return []
+                    return [int(token) for token in re.findall(r"\\d+", str(raw)) if token.strip()]
 
-            multiplicity_0, additions_0, min_fspe_index = read_occupier_file("initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config)
-            XTB_SOLVATOR(str(Path("input_initial_OCCUPIER.xyz").resolve()), multiplicity_0, charge, solvent, number_explicit_solv_molecules, config)
+                need_occ_workflows = initial_rerun
+
+                if not need_occ_workflows:
+                    for step in _extract_steps(config.get("oxidation_steps", "")):
+                        occ_report = Path(f"ox_step_{step}_OCCUPIER") / "OCCUPIER.txt"
+                        if not occ_report.exists():
+                            need_occ_workflows = True
+                            break
+
+                if not need_occ_workflows:
+                    for step in _extract_steps(config.get("reduction_steps", "")):
+                        occ_report = Path(f"red_step_{step}_OCCUPIER") / "OCCUPIER.txt"
+                        if not occ_report.exists():
+                            need_occ_workflows = True
+                            break
+
+                if need_occ_workflows:
+                    logger.info("Preparing OCCUPIER oxidation/reduction workflows prior to solvation")
+                    _run_occ_workflows(config)
+                else:
+                    logger.info("Reusing existing OCCUPIER oxidation/reduction workflows")
+
+            multiplicity_0, additions_0, min_fspe_index = read_occupier_file(
+                "initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config
+            )
+
+            preferred_parent_xyz = Path("input_initial_OCCUPIER.xyz")
+            if not preferred_parent_xyz.exists():
+                logger.warning(
+                    "Preferred OCCUPIER geometry %s missing; falling back to input.txt for solvator run.",
+                    preferred_parent_xyz,
+                )
+                solvator_source = Path("input.txt")
+            else:
+                solvator_source = preferred_parent_xyz
+
+            XTB_SOLVATOR(
+                str(solvator_source.resolve()),
+                multiplicity_0,
+                charge,
+                solvent,
+                number_explicit_solv_molecules,
+                config,
+            )
+
+            solvated_xyz = Path("XTB_SOLVATOR") / "XTB_SOLVATOR.solvator.xyz"
+            target_parent_xyz = Path("input_initial_OCCUPIER.xyz")
+            if solvated_xyz.exists():
+                try:
+                    shutil.copyfile(solvated_xyz, target_parent_xyz)
+                    logger.info("Propagated solvated geometry to %s", target_parent_xyz)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to update %s with solvated coordinates: %s",
+                        target_parent_xyz,
+                        exc,
+                    )
+
+            else:
+                logger.warning(
+                    "XTB_SOLVATOR completed but %s is missing; OCCUPIER workflows will reuse unsolvated geometry.",
+                    solvated_xyz,
+                )
 
         parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
         parallel_workflows_enabled = parallel_mode != 'disable'
@@ -547,7 +684,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if not run_occupier_orca_jobs(occ_context, parallel_workflows_enabled):
                 logger.error("OCCUPIER post-processing failed; aborting run")
-                return 1
+                return _finalize(1)
 
     # ------------------- classic --------------------
     if config['method'] == "classic":
@@ -638,8 +775,9 @@ def main(argv: list[str] | None = None) -> int:
             if parallel_cli_enabled:
                 logger.info("[classic] Dispatching oxidation/reduction workflows to parallel scheduler")
                 if not execute_classic_parallel_workflows(config, **classic_kwargs):
-                    logger.error("Classic parallel execution failed; falling back to sequential mode")
-                    execute_classic_sequential_workflows(config, **classic_kwargs)
+                    logger.warning(
+                        "Classic parallel execution failed; skipping sequential fallback and continuing."
+                    )
             else:
                 logger.info("[classic] Parallel workflows disabled in CONTROL.txt; running sequentially")
                 execute_classic_sequential_workflows(config, **classic_kwargs)
@@ -753,21 +891,24 @@ def main(argv: list[str] | None = None) -> int:
             'include_excited_jobs': parallel_cli_enabled,
         }
 
-        run_manual_sequential = True
+        run_manual_sequential = False
         if oxidation_requested or reduction_requested:
             if parallel_cli_enabled:
                 logger.info("[manually] Dispatching oxidation/reduction workflows to parallel scheduler")
                 if execute_manually_parallel_workflows(config, **manual_kwargs):
                     run_manual_sequential = False
                 else:
-                    logger.error("Manual parallel execution failed; falling back to sequential mode")
+                    logger.error(
+                        "Manual parallel execution failed; skipping sequential fallback and continuing."
+                    )
             else:
                 logger.info("[manually] Parallel workflows disabled in CONTROL.txt; running sequentially")
+                run_manual_sequential = True
+        else:
+            logger.info("[manually] No oxidation or reduction steps configured; skipping workflows")
 
         if run_manual_sequential:
-            if not (oxidation_requested or reduction_requested):
-                logger.info("[manually] No oxidation or reduction steps configured; skipping workflows")
-
+            
             if "1" in config['oxidation_steps']:
                 charge = int(config['charge']) + 1
                 multiplicity = config['multiplicity_ox1']
@@ -1154,9 +1295,7 @@ def main(argv: list[str] | None = None) -> int:
     duration = end_time - start_time
     generate_summary_report(charge, multiplicity, solvent, E_ox, E_ox_2, E_ox_3, E_red, E_red_2, E_red_3, E_00_t1, E_00_s1, metals, metal_basisset, NAME, main_basisset, config, duration, E_ref)
 
-    if not args.no_cleanup:
-        cleanup_all(str(get_runtime_dir()))
-    return 0
+    return _finalize(0)
 
 
 if __name__ == "__main__":

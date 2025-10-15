@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 import time
 import statistics
 import threading
+from pathlib import Path
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import DynamicCorePool, PoolJob, JobPriority
+from delfin.global_manager import get_global_manager
 from delfin.orca import run_orca
-from delfin.imag import run_IMAG
+from delfin.imag import run_IMAG, search_imaginary_mode2
 from delfin.xyz_io import (
     read_and_modify_file_1,
     read_xyz_and_create_input2,
@@ -44,22 +48,57 @@ class WorkflowJob:
 
 
 class _WorkflowManager:
-    """Schedules dependent ORCA jobs on the dynamic core pool."""
+    """Schedules dependent ORCA jobs on the global shared dynamic core pool."""
 
-    def __init__(self, config: Dict[str, Any], label: str, *, max_jobs_override: Optional[int] = None):
+    def __init__(self, config: Dict[str, Any], label: str, *, max_jobs_override: Optional[int] = None, use_global_pool: bool = True):
         self.config = config
         self.label = label
         self.total_cores = max(1, _parse_int(config.get('PAL'), fallback=1))
         self.maxcore_mb = max(256, _parse_int(config.get('maxcore'), fallback=1000))
+
         if max_jobs_override is not None and max_jobs_override > 0:
             max_jobs = max(1, max_jobs_override)
         else:
             max_jobs = max(1, min(4, max(1, self.total_cores // 2)))
-        self.pool = DynamicCorePool(
-            total_cores=self.total_cores,
-            total_memory_mb=self.maxcore_mb * self.total_cores,
-            max_jobs=max_jobs
-        )
+
+        # Use global pool if requested, otherwise create local pool (for backward compatibility)
+        self.use_global_pool = use_global_pool
+        if use_global_pool:
+            global_mgr = get_global_manager()
+            # Check if global manager is actually initialized
+            if global_mgr.is_initialized():
+                try:
+                    self.pool = global_mgr.get_pool()
+                    pool_id = id(self.pool)
+                    logger.info(f"[{label}] ✓ USING GLOBAL SHARED POOL (pool_id={pool_id}, {self.total_cores} cores)")
+                except RuntimeError:
+                    # Fallback to local pool if global pool not available
+                    logger.warning(f"[{label}] Global pool not available, falling back to local pool")
+                    self.use_global_pool = False
+                    self.pool = DynamicCorePool(
+                        total_cores=self.total_cores,
+                        total_memory_mb=self.maxcore_mb * self.total_cores,
+                        max_jobs=max_jobs
+                    )
+                    logger.info(f"[{label}] Created local pool (pool_id={id(self.pool)})")
+            else:
+                # Global manager not initialized (likely subprocess) - use local pool
+                logger.info(f"[{label}] Global manager not initialized (subprocess?), using local pool")
+                self.use_global_pool = False
+                self.pool = DynamicCorePool(
+                    total_cores=self.total_cores,
+                    total_memory_mb=self.maxcore_mb * self.total_cores,
+                    max_jobs=max_jobs
+                )
+                logger.info(f"[{label}] Created local pool (pool_id={id(self.pool)})")
+        else:
+            self.pool = DynamicCorePool(
+                total_cores=self.total_cores,
+                total_memory_mb=self.maxcore_mb * self.total_cores,
+                max_jobs=max_jobs
+            )
+            logger.info(f"[{label}] Created local pool (pool_id={id(self.pool)})")
+
         self.max_jobs = max_jobs
         self._parallel_enabled = self.pool.max_concurrent_jobs > 1 and self.total_cores > 1
 
@@ -126,8 +165,10 @@ class _WorkflowManager:
             return
 
         pending: Dict[str, WorkflowJob] = dict(self._jobs)
+        pool_type = "GLOBAL SHARED" if self.use_global_pool else "LOCAL"
         logger.info(
-            "[%s] Scheduling %d jobs across %d cores", self.label, len(pending), self.total_cores
+            "[%s] Scheduling %d jobs across %d cores using %s pool (pool_id=%d)",
+            self.label, len(pending), self.total_cores, pool_type, id(self.pool)
         )
 
         while pending:
@@ -136,14 +177,34 @@ class _WorkflowManager:
 
             ready = [job for job in pending.values() if job.dependencies <= self._completed]
             if not ready:
+                if logger.isEnabledFor(logging.DEBUG):
+                    blocked = {
+                        job.job_id: sorted(job.dependencies - self._completed)
+                        for job in pending.values()
+                    }
+                    logger.debug(
+                        "[%s] Waiting; blocked jobs=%s | completed=%s",
+                        self.label,
+                        blocked,
+                        sorted(self._completed),
+                    )
                 self._event.wait(timeout=0.5)
                 self._event.clear()
                 continue
+
+            ready.sort(key=self._job_order_key)
 
             try:
                 status = self.pool.get_status()
             except Exception:
                 status = None
+
+            logger.debug(
+                "[%s] Ready jobs=%s | completed=%s",
+                self.label,
+                [job.job_id for job in ready],
+                sorted(self._completed),
+            )
 
             if (status and len(ready) == 1 and
                     status.get('running_jobs', 0) == 0 and
@@ -160,10 +221,14 @@ class _WorkflowManager:
             raise RuntimeError(self._format_failure())
 
     def shutdown(self) -> None:
-        try:
-            self.pool.shutdown()
-        except Exception:
-            logger.debug("[%s] Pool shutdown raised", self.label, exc_info=True)
+        # Only shutdown if using local pool, not global pool
+        if not self.use_global_pool:
+            try:
+                self.pool.shutdown()
+            except Exception:
+                logger.debug("[%s] Pool shutdown raised", self.label, exc_info=True)
+        else:
+            logger.debug("[%s] Using global pool - not shutting down", self.label)
 
     def _submit(self, job: WorkflowJob) -> None:
         def runner(*_args, **kwargs):
@@ -205,6 +270,14 @@ class _WorkflowManager:
         )
 
         self.pool.submit_job(pool_job)
+
+    @staticmethod
+    def _job_order_key(job: WorkflowJob):
+        """Provide a stable sort key so lower-index FoBs dispatch first."""
+        digits = re.findall(r"\d+", job.job_id)
+        numeric = int(digits[0]) if digits else 0
+        priority_value = getattr(job.priority, "value", 0)
+        return (priority_value, numeric, job.job_id)
 
     def _mark_completed(self, job_id: str) -> None:
         with self._lock:
@@ -825,6 +898,39 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
         def run_initial(cores: int) -> None:
             if not input_path:
                 raise RuntimeError("Input file path for classic initial job missing")
+            recalc_mode = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+            existing_log = Path("initial.out")
+            geom_source = Path(input_path)
+            geometry_newer = False
+            if existing_log.exists() and geom_source.exists():
+                try:
+                    geometry_newer = geom_source.stat().st_mtime >= existing_log.stat().st_mtime
+                except Exception:  # noqa: BLE001
+                    geometry_newer = False
+            force_rerun = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
+            if (not recalc_mode and not force_rerun
+                    and existing_log.exists() and _verify_orca_output('initial.out')):
+                allow_cfg = config.get('allow_imaginary_freq', 0)
+                try:
+                    allow_raw = float(str(allow_cfg).strip() or 0)
+                except Exception:  # noqa: BLE001
+                    allow_raw = 0.0
+                threshold = allow_raw if allow_raw <= 0 else -allow_raw
+                freq = search_imaginary_mode2('initial.out')
+                if not geometry_newer and (freq is None or freq >= threshold):
+                    freq_display = "n/a" if freq is None else f"{freq:.6f}"
+                    logger.info(
+                        "[classic] Reusing converged initial.out (freq=%s ≥ %s); skipping initial rerun.",
+                        freq_display,
+                        threshold,
+                    )
+                    if not Path('initial.xyz').exists():
+                        logger.warning("initial.xyz missing but initial.out indicates convergence; leaving as-is.")
+                    return
+                if geometry_newer or force_rerun:
+                    logger.info(
+                        "[classic] Input geometry updated after last initial.out → rerunning initial optimization.",
+                    )
             read_and_modify_file_1(
                 input_path,
                 output_initial,
@@ -1111,6 +1217,39 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
         def run_initial(cores: int) -> None:
             if not input_path:
                 raise RuntimeError('Input file path missing for manual initial job')
+            recalc_mode = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+            existing_log = Path('initial.out')
+            geom_source = Path(input_path)
+            geometry_newer = False
+            if existing_log.exists() and geom_source.exists():
+                try:
+                    geometry_newer = geom_source.stat().st_mtime >= existing_log.stat().st_mtime
+                except Exception:  # noqa: BLE001
+                    geometry_newer = False
+            force_rerun = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
+            if (not recalc_mode and not force_rerun
+                    and existing_log.exists() and _verify_orca_output('initial.out')):
+                allow_cfg = config.get('allow_imaginary_freq', 0)
+                try:
+                    allow_raw = float(str(allow_cfg).strip() or 0)
+                except Exception:  # noqa: BLE001
+                    allow_raw = 0.0
+                threshold = allow_raw if allow_raw <= 0 else -allow_raw
+                freq = search_imaginary_mode2('initial.out')
+                if not geometry_newer and (freq is None or freq >= threshold):
+                    freq_display = "n/a" if freq is None else f"{freq:.6f}"
+                    logger.info(
+                        "[manual] Reusing converged initial.out (freq=%s ≥ %s); skipping initial rerun.",
+                        freq_display,
+                        threshold,
+                    )
+                    if not Path('initial.xyz').exists():
+                        logger.warning("initial.xyz missing but initial.out indicates convergence; leaving as-is.")
+                    return
+                if geometry_newer or force_rerun:
+                    logger.info(
+                        "[manual] Input geometry updated after last initial.out → rerunning initial optimization.",
+                    )
             read_and_modify_file_1(
                 input_path,
                 output_initial,

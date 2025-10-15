@@ -206,8 +206,22 @@ def run_OCCUPIER():
         xyz_file = "input.xyz" if from_index == 1 else f"input{from_index}.xyz"
         xyz_path = resolve_path(xyz_file)
         if not xyz_path.exists():
-            logger.error(f"XYZ input file '{xyz_path}' not found.")
-            return
+            if from_index == 1:
+                # Some workflows maintain only input0.xyz; fall back gracefully.
+                alt_path = resolve_path("input0.xyz")
+                if alt_path.exists():
+                    logger.warning(
+                        "Primary geometry '%s' missing; falling back to '%s'.",
+                        xyz_path,
+                        alt_path,
+                    )
+                    xyz_path = alt_path
+                else:
+                    logger.error(f"XYZ input file '{xyz_path}' not found.")
+                    return
+            else:
+                logger.error(f"XYZ input file '{xyz_path}' not found.")
+                return
 
         with xyz_path.open('r') as file:
             lines = file.readlines()

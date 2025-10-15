@@ -99,15 +99,22 @@ class DynamicCorePool:
                 return None
 
             # Calculate allocation based on current load and job requirements
+            reserve = 0
+            if self.total_cores > 1:
+                reserve = self._min_waiting_cores_locked(job.cores_min)
+                reserve = min(reserve, max(0, available_cores - job.cores_min))
+
+            effective_available = max(job.cores_min, available_cores - reserve)
+
             if len(self._running_jobs) == 0:
-                # No other jobs running, give optimal cores
-                cores = min(job.cores_optimal, available_cores)
+                # No other jobs running, give optimal cores while keeping reserved capacity if required
+                cores = min(job.cores_optimal, effective_available)
             else:
                 # Balance between current jobs and new job
-                cores = self._calculate_balanced_allocation(job, available_cores)
+                cores = self._calculate_balanced_allocation(job, effective_available)
 
             # Ensure we stay within job constraints
-            cores = max(job.cores_min, min(cores, job.cores_max, available_cores))
+            cores = max(job.cores_min, min(cores, job.cores_max, effective_available))
 
             return cores
 
@@ -138,6 +145,17 @@ class DynamicCorePool:
         )
 
         return min(allocation, available_cores)
+
+    def _min_waiting_cores_locked(self, default: int = 0) -> int:
+        """Return minimum cores_min among queued jobs (expects caller holds lock)."""
+        if self._job_queue.empty():
+            return 0
+        try:
+            pending = [item[3] for item in list(self._job_queue.queue)]
+        except Exception:
+            return default
+        mins = [job.cores_min for job in pending if hasattr(job, 'cores_min')]
+        return min(mins) if mins else default
 
     def _try_start_next_job(self) -> bool:
         """Try to start the next job from the queue."""
@@ -231,6 +249,13 @@ class DynamicCorePool:
         self._try_rebalance_resources()
         self._signal_state_change()
 
+    def drain_completed_jobs(self) -> List[str]:
+        """Return and clear list of recently completed job ids."""
+        with self._lock:
+            done = list(self._completed_jobs)
+            self._completed_jobs.clear()
+            return done
+
     def _try_rebalance_resources(self):
         """Attempt to rebalance resources and start new jobs."""
         self._schedule_pending_jobs()
@@ -241,6 +266,10 @@ class DynamicCorePool:
         """Consider reallocating cores to running jobs for better utilization."""
         with self._lock:
             if not self._running_jobs:
+                return
+
+            # Do not reallocate while there are queued jobs waiting for resources.
+            if not self._job_queue.empty():
                 return
 
             spare_cores = self.total_cores - self._allocated_cores
