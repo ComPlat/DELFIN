@@ -548,6 +548,12 @@ def run_OCCUPIER():
         }
 
         manager = _WorkflowManager(config, label="occupier_core", max_jobs_override=effective_pal_jobs)
+
+        if effective_pal_jobs <= 1 and manager.pool.max_concurrent_jobs != 1:
+            manager.pool.max_concurrent_jobs = 1
+            manager.max_jobs = 1
+            manager._sync_parallel_flag()
+
         fspe_results: dict[int, float | None] = {}
         results_lock = threading.Lock()
 
@@ -676,6 +682,7 @@ def run_OCCUPIER():
                 )
                 manager.pool.max_concurrent_jobs = dynamic_slots
                 manager.max_jobs = dynamic_slots
+                manager._sync_parallel_flag()
 
             manager.run()
         finally:

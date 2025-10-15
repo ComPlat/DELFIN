@@ -1,15 +1,15 @@
 """Integration of dynamic pool with OCCUPIER workflow."""
 
 import os
+import re
 import time
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from delfin.common.logging import get_logger
-from delfin.dynamic_pool import DynamicCorePool, PoolJob, JobPriority, create_orca_job
+from delfin.dynamic_pool import JobPriority, create_orca_job
 from delfin.global_manager import get_global_manager
 from delfin.copy_helpers import read_occupier_file
 from delfin.imag import run_IMAG, search_imaginary_mode2
@@ -38,24 +38,30 @@ class ParallelOccupierManager:
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.total_cores = config.get('PAL', 1)
-        self.max_jobs = max(1, _resolve_pal_jobs(config))
-        self.total_memory = config.get('maxcore', 1000) * self.total_cores
-        self.per_job_share = max(1 if self.total_cores == 1 else 2,
-                                 max(1, self.total_cores // max(1, self.max_jobs)))
+        global_mgr = get_global_manager()
+        if not global_mgr.is_initialized():
+            raise RuntimeError(
+                "ParallelOccupierManager requires the global job manager to be initialized."
+            )
+
+        self.pool = global_mgr.get_pool()
+        self.total_cores = max(1, global_mgr.total_cores)
+        configured_max_jobs = max(1, _resolve_pal_jobs(config))
+        self.max_jobs = max(1, min(configured_max_jobs, self.pool.max_concurrent_jobs))
+        self.per_job_share = max(
+            1 if self.total_cores == 1 else 2,
+            max(1, self.total_cores // max(1, self.max_jobs)),
+        )
 
         # Track if we're running unified (ox+red parallel) to adjust PAL allocation
         self.unified_mode = False
         self.unified_workflow_count = 1
 
-        # Create dynamic pool
-        self.pool = DynamicCorePool(
-            total_cores=self.total_cores,
-            total_memory_mb=self.total_memory,
-            max_jobs=min(self.max_jobs, max(1, self.total_cores))
+        logger.info(
+            "Parallel OCCUPIER manager using GLOBAL SHARED pool (pool_id=%d, %d cores)",
+            id(self.pool),
+            self.total_cores,
         )
-
-        logger.info(f"Parallel OCCUPIER manager initialized with {self.total_cores} cores")
 
     def execute_parallel_workflows(self, ox_sequence: List[Dict], red_sequence: List[Dict]) -> bool:
         """Execute ox and red workflows in parallel with dynamic resource management."""
@@ -587,8 +593,7 @@ class ParallelOccupierManager:
 
     def shutdown(self):
         """Shutdown the parallel manager."""
-        logger.info("Shutting down parallel OCCUPIER manager")
-        self.pool.shutdown()
+        logger.debug("Parallel OCCUPIER manager relies on global pool; nothing to shutdown")
 
 
 @dataclass
@@ -652,8 +657,12 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
 
     if use_parallel:
         # Use global pool to ensure coordination with other workflows
-        manager = _WorkflowManager(context.config, label="occupier", max_jobs_override=effective_max_jobs, use_global_pool=True)
+        manager = _WorkflowManager(context.config, label="occupier", max_jobs_override=effective_max_jobs)
         try:
+            if effective_max_jobs <= 1 and manager.pool.max_concurrent_jobs != 1:
+                manager.pool.max_concurrent_jobs = 1
+                manager.max_jobs = 1
+                manager._sync_parallel_flag()
             for job in jobs:
                 manager.add_job(job)
             dynamic_slots = determine_effective_slots(
@@ -671,6 +680,7 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
                 )
                 manager.pool.max_concurrent_jobs = dynamic_slots
                 manager.max_jobs = dynamic_slots
+                manager._sync_parallel_flag()
             manager.run()
             return True
         except Exception as exc:  # noqa: BLE001
@@ -770,6 +780,9 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
     parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
     ox_red_parallel = (has_ox and has_red) and parallel_mode != 'disable'
 
+    if parallel_mode == 'disable':
+        pal_jobs_value = 1
+
     # If ox and red will run in parallel, split cores between them
     effective_total_cores = total_cores
     if ox_red_parallel:
@@ -804,12 +817,93 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
     def register_descriptor(descriptor: JobDescriptor) -> None:
         descriptors.append(descriptor)
 
+    def _fallback_multiplicity(folder: str) -> int:
+        folder_lower = folder.lower()
+        candidates: List[str] = []
+        if folder_lower.startswith('initial_'):
+            candidates.extend(['multiplicity_0', 'multiplicity'])
+        elif folder_lower.startswith('ox_step_'):
+            step_match = re.search(r"ox_step_(\d+)_occupier", folder_lower)
+            if step_match:
+                step = step_match.group(1)
+                candidates.append(f'multiplicity_ox{step}')
+        elif folder_lower.startswith('red_step_'):
+            step_match = re.search(r"red_step_(\d+)_occupier", folder_lower)
+            if step_match:
+                step = step_match.group(1)
+                candidates.append(f'multiplicity_red{step}')
+
+        for key in candidates:
+            value = config.get(key)
+            if value is None:
+                continue
+            try:
+                return int(str(value).strip())
+            except (TypeError, ValueError):
+                logger.warning("[occupier] Cannot parse %s='%s' from CONTROL.txt; ignoring.", key, value)
+
+        logger.warning(
+            "[occupier] Missing OCCUPIER multiplicity for %s; defaulting to 1.",
+            folder,
+        )
+        return 1
+
+    def _fallback_additions(folder: str) -> str:
+        folder_lower = folder.lower()
+        candidates: List[str] = []
+        if folder_lower.startswith('initial_'):
+            candidates.append('additions_0')
+        elif folder_lower.startswith('ox_step_'):
+            step_match = re.search(r"ox_step_(\d+)_occupier", folder_lower)
+            if step_match:
+                step = step_match.group(1)
+                candidates.append(f'additions_ox{step}')
+        elif folder_lower.startswith('red_step_'):
+            step_match = re.search(r"red_step_(\d+)_occupier", folder_lower)
+            if step_match:
+                step = step_match.group(1)
+                candidates.append(f'additions_red{step}')
+
+        for key in candidates:
+            value = config.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    continue
+                if re.fullmatch(r"\d+,\d+", stripped):
+                    return f"%scf BrokenSym {stripped} end"
+                return stripped
+            if isinstance(value, (list, tuple)):
+                tokens = [str(item).strip() for item in value if str(item).strip()]
+                if tokens:
+                    return f"%scf BrokenSym {','.join(tokens)} end"
+
+        return ""
+
     def read_occ(folder: str) -> tuple[int, str, Optional[int]]:
         result = read_occupier_file(folder, "OCCUPIER.txt", None, None, None, config)
-        if not result:
-            raise RuntimeError(f"read_occupier_file failed for '{folder}'")
-        multiplicity, additions, min_fspe_index = result
-        return int(multiplicity), additions, min_fspe_index
+        if result:
+            multiplicity, additions, min_fspe_index = result
+            try:
+                multiplicity_int = int(multiplicity)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                logger.warning(
+                    "[occupier] OCCUPIER multiplicity invalid for %s; falling back to CONTROL settings.",
+                    folder,
+                )
+                multiplicity_int = _fallback_multiplicity(folder)
+            additions_str = additions or ""
+            if not str(additions_str).strip():
+                additions_str = _fallback_additions(folder)
+            return multiplicity_int, additions_str, min_fspe_index
+
+        logger.warning(
+            "[occupier] OCCUPIER.txt missing in %s; using CONTROL multiplicity/additions fallback.",
+            folder,
+        )
+        return _fallback_multiplicity(folder), _fallback_additions(folder), None
 
     solvent = context.solvent
     metals = context.metals

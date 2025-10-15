@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Optional, Set
 
 from delfin.common.logging import get_logger
-from delfin.dynamic_pool import DynamicCorePool, PoolJob, JobPriority
+from delfin.dynamic_pool import PoolJob, JobPriority
 from delfin.global_manager import get_global_manager
 from delfin.orca import run_orca
 from delfin.imag import run_IMAG, search_imaginary_mode2
@@ -48,59 +48,39 @@ class WorkflowJob:
 
 
 class _WorkflowManager:
-    """Schedules dependent ORCA jobs on the global shared dynamic core pool."""
+    """Schedules dependent ORCA jobs on the shared global dynamic core pool."""
 
-    def __init__(self, config: Dict[str, Any], label: str, *, max_jobs_override: Optional[int] = None, use_global_pool: bool = True):
+    def __init__(self, config: Dict[str, Any], label: str, *, max_jobs_override: Optional[int] = None):
         self.config = config
         self.label = label
-        self.total_cores = max(1, _parse_int(config.get('PAL'), fallback=1))
+
+        global_mgr = get_global_manager()
+        if not global_mgr.is_initialized():
+            raise RuntimeError(
+                f"[{label}] Global job manager not initialized; call get_global_manager().initialize(config) first."
+            )
+
+        self.pool = global_mgr.get_pool()
+        pool_id = id(self.pool)
+
+        self.total_cores = max(1, global_mgr.total_cores)
         self.maxcore_mb = max(256, _parse_int(config.get('maxcore'), fallback=1000))
 
         if max_jobs_override is not None and max_jobs_override > 0:
-            max_jobs = max(1, max_jobs_override)
+            desired_jobs = max(1, max_jobs_override)
         else:
-            max_jobs = max(1, min(4, max(1, self.total_cores // 2)))
+            desired_jobs = max(1, global_mgr.max_jobs)
 
-        # Use global pool if requested, otherwise create local pool (for backward compatibility)
-        self.use_global_pool = use_global_pool
-        if use_global_pool:
-            global_mgr = get_global_manager()
-            # Check if global manager is actually initialized
-            if global_mgr.is_initialized():
-                try:
-                    self.pool = global_mgr.get_pool()
-                    pool_id = id(self.pool)
-                    logger.info(f"[{label}] ✓ USING GLOBAL SHARED POOL (pool_id={pool_id}, {self.total_cores} cores)")
-                except RuntimeError:
-                    # Fallback to local pool if global pool not available
-                    logger.warning(f"[{label}] Global pool not available, falling back to local pool")
-                    self.use_global_pool = False
-                    self.pool = DynamicCorePool(
-                        total_cores=self.total_cores,
-                        total_memory_mb=self.maxcore_mb * self.total_cores,
-                        max_jobs=max_jobs
-                    )
-                    logger.info(f"[{label}] Created local pool (pool_id={id(self.pool)})")
-            else:
-                # Global manager not initialized (likely subprocess) - use local pool
-                logger.info(f"[{label}] Global manager not initialized (subprocess?), using local pool")
-                self.use_global_pool = False
-                self.pool = DynamicCorePool(
-                    total_cores=self.total_cores,
-                    total_memory_mb=self.maxcore_mb * self.total_cores,
-                    max_jobs=max_jobs
-                )
-                logger.info(f"[{label}] Created local pool (pool_id={id(self.pool)})")
-        else:
-            self.pool = DynamicCorePool(
-                total_cores=self.total_cores,
-                total_memory_mb=self.maxcore_mb * self.total_cores,
-                max_jobs=max_jobs
-            )
-            logger.info(f"[{label}] Created local pool (pool_id={id(self.pool)})")
+        self.max_jobs = max(1, min(desired_jobs, self.pool.max_concurrent_jobs))
 
-        self.max_jobs = max_jobs
-        self._parallel_enabled = self.pool.max_concurrent_jobs > 1 and self.total_cores > 1
+        logger.info(
+            "[%s] ✓ USING GLOBAL SHARED POOL (pool_id=%d, %d cores)",
+            label,
+            pool_id,
+            self.total_cores,
+        )
+
+        self._sync_parallel_flag()
 
         self._jobs: Dict[str, WorkflowJob] = {}
         self._completed: Set[str] = set()
@@ -165,10 +145,13 @@ class _WorkflowManager:
             return
 
         pending: Dict[str, WorkflowJob] = dict(self._jobs)
-        pool_type = "GLOBAL SHARED" if self.use_global_pool else "LOCAL"
+        self._sync_parallel_flag()
         logger.info(
-            "[%s] Scheduling %d jobs across %d cores using %s pool (pool_id=%d)",
-            self.label, len(pending), self.total_cores, pool_type, id(self.pool)
+            "[%s] Scheduling %d jobs across %d cores using GLOBAL SHARED pool (pool_id=%d)",
+            self.label,
+            len(pending),
+            self.total_cores,
+            id(self.pool),
         )
 
         while pending:
@@ -221,14 +204,12 @@ class _WorkflowManager:
             raise RuntimeError(self._format_failure())
 
     def shutdown(self) -> None:
-        # Only shutdown if using local pool, not global pool
-        if not self.use_global_pool:
-            try:
-                self.pool.shutdown()
-            except Exception:
-                logger.debug("[%s] Pool shutdown raised", self.label, exc_info=True)
-        else:
-            logger.debug("[%s] Using global pool - not shutting down", self.label)
+        logger.debug("[%s] Global pool in use - shutdown handled by GlobalJobManager", self.label)
+
+    def _sync_parallel_flag(self) -> None:
+        self._parallel_enabled = (
+            self.pool.max_concurrent_jobs > 1 and self.total_cores > 1
+        )
 
     def _submit(self, job: WorkflowJob) -> None:
         def runner(*_args, **kwargs):
@@ -320,6 +301,8 @@ class _WorkflowManager:
 
     def _auto_tune_job(self, job: WorkflowJob) -> None:
         if not self._parallel_enabled:
+            job.cores_min = job.cores_max = job.cores_optimal = self.total_cores
+            job.memory_mb = job.cores_optimal * self.maxcore_mb
             return
 
         base_share = self._base_share()

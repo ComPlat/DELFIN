@@ -247,24 +247,43 @@ DELFIN maintains organized directory structures:
 - ORCA inputs: `.inp` files with systematic naming
 - Results: `DELFIN.txt` and `OCCUPIER.txt` summary reports
 
-### 2. Parallel Processing
+### 2. Parallel Processing and Global Resource Management
 
-DELFIN implements sophisticated multi-level parallelization:
+DELFIN implements sophisticated multi-level parallelization with a **global job manager singleton** to ensure consistent resource allocation across all computational workflows:
+
+#### Global Job Manager Architecture
+- **Singleton pattern**: A single `GlobalJobManager` instance coordinates all workflows throughout execution
+- **Centralized PAL management**: CPU cores (`PAL`) are read once from `CONTROL.txt` at startup and managed globally
+- **Thread-safe coordination**: All parallel workflows coordinate through a shared `DynamicCorePool` with proper locking
+- **Subprocess coordination**: OCCUPIER subprocesses receive their allocated PAL via environment variables (`DELFIN_CHILD_GLOBAL_MANAGER`)
+- **No double allocation**: When oxidation and reduction workflows run in parallel, cores are automatically split (e.g., PAL=12 → 6 cores per workflow)
 
 #### Dynamic Core Pool Management
-- **Intelligent resource allocation**: Dynamic distribution of CPU cores across concurrent jobs
+- **Intelligent resource allocation**: Dynamic distribution of CPU cores across concurrent jobs through the global pool
 - **Memory-aware scheduling**: Jobs allocated based on both core and memory requirements
 - **Priority-based execution**: High-priority jobs receive preferential resource allocation
+- **Automatic PAL splitting**: When `parallel_workflows = yes` and both ox/red workflows are configured, PAL is divided between workflows
+- **Sequential mode**: When `parallel_workflows = no`, each workflow uses the full PAL sequentially
 
 #### Workflow-Level Parallelization
-- **Oxidation/Reduction workflows**: Independent execution of redox workflows when `parallel_workflows = yes`
-- **OCCUPIER FoB parallelization**: Multiple Fragments of Bulk (FoB) calculations executed simultaneously
+- **Oxidation/Reduction workflows**: Independent execution of redox workflows with automatic core splitting
+- **OCCUPIER FoB parallelization**: Multiple Fragments of Bulk (FoB) calculations executed simultaneously within allocated resources
 - **Dependency-aware scheduling**: Jobs with dependencies scheduled appropriately to maximize throughput
+- **Thread-safe file operations**: `thread_safe_helpers.py` ensures proper handling of CONTROL.txt updates and geometry files
 
 #### ORCA Integration
 - **PAL process management**: Configurable number of CPU cores per ORCA calculation (`PAL` parameter)
+- **Consistent PAL enforcement**: All ORCA jobs respect the globally managed PAL limits
 - **Memory optimization**: Per-job memory allocation (`maxcore` specification)
-- **Cluster environment detection**: Automatic resource detection on SLURM/PBS/LSF systems
+- **Cluster environment detection**: Automatic resource detection on SLURM/PBS/LSF systems via `cluster_utils.py`
+
+#### Implementation Details
+- **Main process**: Initializes global manager with full PAL from CONTROL.txt
+- **Parallel execution**: Calculates `reduced_pal = max(2, total_pal // 2)` when both workflows run
+- **CONTROL.txt propagation**: Each subprocess folder gets updated CONTROL.txt with correct PAL value
+- **Environment bootstrap**: Subprocesses initialize their global manager from `DELFIN_CHILD_GLOBAL_MANAGER` JSON payload
+
+This architecture ensures that the total CPU allocation (PAL) is never exceeded, regardless of how many workflows or subprocesses are running simultaneously.
 
 ### 3. Reproducibility
 

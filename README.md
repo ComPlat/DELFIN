@@ -121,6 +121,12 @@ delfin/
   parser.py         # parser utilities for ORCA output files
   occupier.py       # OCCUPIER workflow (sequence execution + summary)
   copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
+  thread_safe_helpers.py  # thread-safe workflow execution with PAL management
+  global_manager.py       # singleton global job manager for resource coordination
+  dynamic_pool.py         # dynamic core pool for job scheduling
+  parallel_classic.py     # parallel execution for classic/manually modes
+  parallel_occupier_integration.py  # parallel OCCUPIER workflow integration
+  cluster_utils.py        # cluster resource detection (SLURM/PBS/LSF)
   api.py            # programmatic API (e.g. `delfin.api.run(...)` for notebooks/workflows)
   common/           # shared utilities
     __init__.py     # exposes common helpers
@@ -164,6 +170,22 @@ delfin/
   - `pbs_submit_example.sh` (PBS/Torque)
   - `lsf_submit_example.sh` (LSF)
 * **Auto-resource detection:** DELFIN automatically detects available CPUs and memory on SLURM/PBS/LSF clusters and configures PAL/maxcore accordingly if not explicitly set in CONTROL.txt.
+
+### Global Resource Management
+
+DELFIN uses a **global job manager singleton** to coordinate all computational workflows and ensure that CPU resources (PAL) are never over-allocated:
+
+* **Single source of truth:** PAL is read once from `CONTROL.txt` at startup and managed centrally throughout execution
+* **Automatic PAL splitting:** When oxidation and reduction workflows run in parallel, DELFIN automatically splits available cores between them (e.g., PAL=12 → 6 cores per workflow)
+* **Thread-safe execution:** All parallel workflows coordinate through a shared resource pool, preventing race conditions
+* **Subprocess coordination:** OCCUPIER subprocesses receive their allocated PAL via environment variables and respect global limits
+* **Sequential mode:** When workflows run sequentially (`parallel_workflows=no`), each workflow uses the full PAL
+
+This architecture ensures:
+- No double allocation of cores when ox/red workflows run simultaneously
+- Consistent resource limits across all ORCA jobs spawned by DELFIN
+- Proper coordination between main process and OCCUPIER subprocesses
+- Efficient utilization of cluster resources without exceeding allocation
 
 ## Troubleshooting
 

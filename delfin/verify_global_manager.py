@@ -42,8 +42,8 @@ def main():
     # Test 3: Verify workflow managers use the same pool
     print("\n[TEST 3] Creating workflow managers with global pool...")
 
-    wf1 = _WorkflowManager(config, label="test_workflow_1", use_global_pool=True)
-    wf2 = _WorkflowManager(config, label="test_workflow_2", use_global_pool=True)
+    wf1 = _WorkflowManager(config, label="test_workflow_1")
+    wf2 = _WorkflowManager(config, label="test_workflow_2")
 
     pool1_id = id(wf1.pool)
     pool2_id = id(wf2.pool)
@@ -59,22 +59,8 @@ def main():
         print("✗ FAIL: Workflows are using different pools!")
         return False
 
-    # Test 4: Verify local pool creates separate instance
-    print("\n[TEST 4] Creating workflow manager with local pool...")
-    wf3 = _WorkflowManager(config, label="test_workflow_3", use_global_pool=False)
-    pool3_id = id(wf3.pool)
-
-    print(f"  Global pool ID:     {global_pool_id}")
-    print(f"  Workflow 3 pool ID: {pool3_id}")
-
-    if pool3_id != global_pool_id:
-        print("✓ PASS: Local pool is different from global pool")
-    else:
-        print("✗ FAIL: Local pool should be different!")
-        return False
-
-    # Test 5: Verify pool attributes
-    print("\n[TEST 5] Verifying pool attributes...")
+    # Test 4: Verify pool attributes
+    print("\n[TEST 4] Verifying pool attributes...")
     print(f"  Global pool total cores: {mgr1.pool.total_cores}")
     print(f"  Global pool max jobs: {mgr1.pool.max_concurrent_jobs}")
 
@@ -87,7 +73,6 @@ def main():
     # Cleanup
     wf1.shutdown()
     wf2.shutdown()
-    wf3.shutdown()
     mgr1.shutdown()
 
     print("\n" + "=" * 70)
@@ -95,9 +80,9 @@ def main():
     print("=" * 70)
     print("\nConclusion:")
     print("  1. Global manager is a proper singleton")
-    print("  2. Multiple workflows share the same pool when use_global_pool=True")
+    print("  2. Multiple workflows now share the same pool automatically")
     print("  3. This ensures cores are never over-allocated globally")
-    print("  4. ox and red workflows will coordinate through the shared pool")
+    print("  4. ox and red workflows coordinate through the shared pool")
     print("=" * 70)
 
     return True
