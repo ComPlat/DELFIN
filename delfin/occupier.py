@@ -438,14 +438,14 @@ def run_OCCUPIER():
                     except (TypeError, ValueError):
                         continue
                     else:
-                        if parsed > 0:
+                        if parsed >= 0:
                             return parsed
-                return fallback if fallback > 0 else 1
+                return fallback if fallback >= 0 else 0
             try:
                 parsed = int(str(raw_from).strip())
             except (TypeError, ValueError):
-                return fallback if fallback > 0 else 1
-            return parsed if parsed > 0 else (fallback if fallback > 0 else 1)
+                return fallback if fallback >= 0 else 0
+            return parsed if parsed >= 0 else (fallback if fallback >= 0 else 0)
 
         def _parse_dependency_indices(raw_from):
             deps: set[int] = set()
