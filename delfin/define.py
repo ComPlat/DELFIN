@@ -83,7 +83,7 @@ first_coordination_sphere_scale=
 geom_opt=OPT
 initial_guess=PModel
 temperature=298.15
-maxiter=50
+maxiter=125
 ------------------------------------
 Reference value:
 E_ref=
@@ -116,7 +116,7 @@ frequency_calculation_OCCUPIER=no
 occupier_selection=tolerance|truncation|rounding
 occupier_precision=3
 occupier_epsilon=5e-4
-maxiter_occupier=100
+maxiter_occupier=125
 geom_opt_OCCUPIER=OPT
 pass_wavefunction=no
 approximate_spin_projection_APMethod=2
