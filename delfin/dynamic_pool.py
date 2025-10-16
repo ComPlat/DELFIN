@@ -180,7 +180,15 @@ class DynamicCorePool:
             job.retry_count += 1
             # Prevent overflow by limiting retry_count in the exponential calculation
             limited_retry_count = min(job.retry_count - 1, 10)  # Cap at 2^10 = 1024
-            delay = min(0.2 * (2 ** limited_retry_count), 2.0)
+
+            # Use shorter delays for the first few retries, then cap at 1s instead of 2s
+            if job.retry_count <= 3:
+                # Fast retries for first attempts (100ms, 200ms, 400ms)
+                delay = min(0.1 * (2 ** limited_retry_count), 0.5)
+            else:
+                # Slower retries after initial attempts, max 1s
+                delay = min(0.2 * (2 ** limited_retry_count), 1.0)
+
             job.next_retry_time = now + delay
             self._job_queue.put((job.priority.value, job.next_retry_time, next(self._job_counter), job))
             return False
@@ -380,12 +388,26 @@ class DynamicCorePool:
 
     def _schedule_pending_jobs(self):
         """Start as many queued jobs as resources allow."""
+        # Keep trying to pack jobs until we can't start any more
         while True:
-            with self._lock:
-                if self._job_queue.empty() or len(self._running_jobs) >= self.max_concurrent_jobs:
+            started_any = False
+            # Inner loop: try to start jobs until no more will fit
+            while True:
+                with self._lock:
+                    if self._job_queue.empty() or len(self._running_jobs) >= self.max_concurrent_jobs:
+                        break
+                if self._try_start_next_job():
+                    started_any = True
+                else:
+                    # Failed to start - either resources exhausted or job needs retry
                     break
-            if not self._try_start_next_job():
+
+            # If we started nothing in this round, we're done
+            if not started_any:
                 break
+
+            # We started something - try another round to pack more jobs
+            # This handles cases where starting a small job frees up space for others
 
     def _scheduler_loop(self):
         """Reactively schedule jobs when resources or queue state changes."""

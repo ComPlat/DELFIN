@@ -169,9 +169,9 @@ class ParallelOccupierManager:
 
                 logger.info(f"Submitted {job_id} to unified pool")
 
-            # Wait for some jobs to complete
-            if ready_jobs:
-                time.sleep(1)
+            # Brief pause only on first submission to let jobs start
+            if ready_jobs and len(submitted_jobs) == len(ready_jobs):
+                time.sleep(0.1)
 
             # Check for completed jobs
             newly_completed = self._check_completed_unified_jobs(submitted_jobs, completed_jobs)
@@ -335,9 +335,9 @@ class ParallelOccupierManager:
 
                 logger.info(f"Submitted {job_id} to pool")
 
-            # Wait for some jobs to complete
-            if ready_jobs:
-                time.sleep(1)  # Brief pause to let jobs start
+            # Brief pause only on first submission to let jobs start
+            if ready_jobs and len(submitted_jobs) == len(ready_jobs):
+                time.sleep(0.1)
 
             # Check for completed jobs
             newly_completed = self._check_completed_jobs(submitted_jobs, completed_jobs)
