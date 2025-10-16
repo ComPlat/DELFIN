@@ -204,15 +204,11 @@ class DynamicCorePool:
 
             # Create modified execution function with allocated cores
             def execute_with_cores():
-                try:
-                    # Add allocated cores to kwargs for ORCA
-                    modified_kwargs = job.kwargs.copy()
-                    modified_kwargs['cores'] = allocated_cores
+                # Add allocated cores to kwargs for ORCA
+                modified_kwargs = job.kwargs.copy()
+                modified_kwargs['cores'] = allocated_cores
 
-                    return job.execute_func(*job.args, **modified_kwargs)
-                except Exception as e:
-                    logger.error(f"Job {job.job_id} failed: {e}")
-                    raise
+                return job.execute_func(*job.args, **modified_kwargs)
 
             # Submit to executor
             future = self._executor.submit(execute_with_cores)

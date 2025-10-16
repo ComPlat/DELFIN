@@ -787,7 +787,7 @@ def _run_jobs_sequentially(
             try:
                 job.work(allocated)
             except Exception as exc:  # noqa: BLE001
-                logger.error("Sequential OCCUPIER job %s failed: %s", job_id, exc, exc_info=True)
+                logger.error("Sequential OCCUPIER job %s failed: %s", job_id, exc)
                 failed[job_id] = f"{exc.__class__.__name__}: {exc}"
                 pending.pop(job_id, None)
                 progressed = True
