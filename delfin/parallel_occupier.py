@@ -1033,7 +1033,7 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
                 except Exception:  # noqa: BLE001
                     geometry_newer = False
             force_rerun = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
-            if (not recalc_mode and not force_rerun and existing_log.exists()
+            if (recalc_mode and not force_rerun and existing_log.exists()
                     and _verify_orca_output(str(existing_log))):
                 allow_cfg = config.get('allow_imaginary_freq', 0)
                 try:
