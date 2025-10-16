@@ -418,6 +418,9 @@ def read_xyz_and_create_input2(xyz_file_path: str, output_file_path: str, charge
     input_lines.append(bang + "\n")
     input_lines.extend(tddft_block)
     input_lines.append(f"%maxcore {config['maxcore']}\n%pal nprocs {config['PAL']} end\n")
+    maxiter_val = resolve_maxiter(config)
+    if maxiter_val is not None:
+        input_lines.append(f"%scf maxiter {maxiter_val} end\n")
     if additions and additions.strip():
         input_lines.append(f"{additions.strip()}\n")
 
@@ -478,6 +481,9 @@ def read_xyz_and_create_input2_2(xyz_file_path, output_file_path, charge, multip
     input_lines.append(bang + "\n")
     input_lines.extend(tddft_block)
     input_lines.append(f"%maxcore {config['maxcore']}\n%pal nprocs {config['PAL']} end\n")
+    maxiter_val = resolve_maxiter(config)
+    if maxiter_val is not None:
+        input_lines.append(f"%scf maxiter {maxiter_val} end\n")
     if additions and additions.strip():
         input_lines.append(f"{additions.strip()}\n")
 
@@ -593,6 +599,9 @@ def read_xyz_and_create_input4(xyz_file_path: str, output_file_path: str, charge
     lines.extend(tddft_block)
     # special mcore for E00 flows (kept from your original)
     lines.append(f"%maxcore {config['mcore_E00']}\n%pal nprocs {config['PAL']} end\n")
+    maxiter_val = resolve_maxiter(config)
+    if maxiter_val is not None:
+        lines.append(f"%scf maxiter {maxiter_val} end\n")
     if additions and additions.strip():
         lines.append(f"{additions.strip()}\n")
 
