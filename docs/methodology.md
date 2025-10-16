@@ -66,15 +66,18 @@ DELFIN implements three primary calculation modes:
   - Geometry optimization for each state
   - Frequency calculations for thermodynamic corrections
   - Excited state calculations (TD-DFT) when requested
+  - Shared orchestration in `parallel_classic_manually.py` with automatic multiplicity detection from the current electron count
 
 #### Manual Method
 - **Purpose**: User-defined calculation sequences
 - **Implementation**: Flexible workflow based on CONTROL.txt specifications
+  - Uses the same parallel orchestrator but honours explicit `multiplicity_*` and `additions_*` entries from `CONTROL.txt`
 
 ### Input File Preparation
 
-- `delfin.define._resolve_path` normalises all filesystem inputs (user expansion + absolute paths) to guarantee that CONTROL and XYZ artefacts are written reproducibly across runs.
-- `_convert_xyz_to_input_txt` and `create_control_file` emit paired console messages and log records so that batch experiments retain a human-readable audit trail without changing existing behaviour.
+- `delfin.common.paths.resolve_path` normalises all filesystem paths (user expansion plus absolute paths) so CONTROL and geometry assets remain reproducible across runs.
+- `convert_xyz_to_input_txt` and `create_control_file` emit paired console messages and log records so that batch experiments retain a human-readable audit trail without changing existing behaviour.
+- `normalize_input_file` converts CONTROL-referenced `.xyz` inputs into ORCA-ready `.txt` geometries prior to starting the pipeline.
 
 ### 2. Basis Set Selection Policy
 

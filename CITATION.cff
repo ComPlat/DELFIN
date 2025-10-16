@@ -5,7 +5,7 @@ authors:
   given-names: Maximilian
   orcid: "0009-0007-0973-3605"
 title: "DELFIN: Automated prediction of preferred spin states and associated redox potentials"
-version: "v1.0.2"
+version: "v1.0.3"
 date-released: "2025-01-26"
 url: "https://github.com/ComPlat/DELFIN"
 repository-code: "https://github.com/ComPlat/DELFIN"

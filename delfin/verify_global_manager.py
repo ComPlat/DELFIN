@@ -2,7 +2,7 @@
 """Verification script to demonstrate global manager singleton behavior."""
 
 from delfin.global_manager import get_global_manager
-from delfin.parallel_classic import _WorkflowManager
+from delfin.parallel_classic_manually import _WorkflowManager
 
 def main():
     print("=" * 70)

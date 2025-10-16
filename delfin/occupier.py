@@ -16,7 +16,7 @@ from .utils import (
 )
 from .reporting import generate_summary_report_OCCUPIER
 from .orca import run_orca
-from .parallel_classic import (
+from .parallel_classic_manually import (
     _WorkflowManager,
     WorkflowJob,
     _update_pal_block,

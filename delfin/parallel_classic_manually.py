@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, Optional, Set
+from typing import Any, Callable, Dict, Iterable, Optional, Set, List
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import PoolJob, JobPriority
@@ -45,6 +45,19 @@ class WorkflowJob:
     priority: JobPriority = JobPriority.NORMAL
     memory_mb: Optional[int] = None
     estimated_duration: float = 3600.0
+
+
+@dataclass
+class WorkflowRunResult:
+    """Summary of a workflow scheduler execution."""
+
+    completed: Set[str] = field(default_factory=set)
+    failed: Dict[str, str] = field(default_factory=dict)
+    skipped: Dict[str, List[str]] = field(default_factory=dict)
+
+    @property
+    def success(self) -> bool:
+        return not self.failed and not self.skipped
 
 
 class _WorkflowManager:
@@ -85,6 +98,7 @@ class _WorkflowManager:
         self._jobs: Dict[str, WorkflowJob] = {}
         self._completed: Set[str] = set()
         self._failed: Dict[str, str] = {}
+        self._skipped: Dict[str, List[str]] = {}
         self._lock = threading.RLock()
         self._event = threading.Event()
 
@@ -155,25 +169,52 @@ class _WorkflowManager:
         )
 
         while pending:
-            if self._failed:
-                break
-
             ready = [job for job in pending.values() if job.dependencies <= self._completed]
+
             if not ready:
+                blocked = {
+                    job.job_id: sorted(job.dependencies - self._completed)
+                    for job in pending.values()
+                }
+
+                failed_ids = set(self._failed)
+                skipped_any = False
+                if failed_ids:
+                    for job_id, missing in list(blocked.items()):
+                        if any(dep in failed_ids for dep in missing):
+                            self._mark_skipped(job_id, missing)
+                            pending.pop(job_id, None)
+                            skipped_any = True
+                if skipped_any:
+                    continue
+
+                try:
+                    status = self.pool.get_status()
+                except Exception:
+                    status = None
+
                 if logger.isEnabledFor(logging.DEBUG):
-                    blocked = {
-                        job.job_id: sorted(job.dependencies - self._completed)
-                        for job in pending.values()
-                    }
                     logger.debug(
                         "[%s] Waiting; blocked jobs=%s | completed=%s",
                         self.label,
                         blocked,
                         sorted(self._completed),
                     )
-                self._event.wait(timeout=0.5)
-                self._event.clear()
-                continue
+
+                running = (status and (
+                    status.get('running_jobs', 0) > 0 or
+                    status.get('queued_jobs', 0) > 0
+                ))
+
+                if running:
+                    self._event.wait(timeout=0.5)
+                    self._event.clear()
+                    continue
+
+                for job_id, missing in blocked.items():
+                    self._mark_skipped(job_id, missing or ['unresolved dependency'])
+                    pending.pop(job_id, None)
+                break
 
             ready.sort(key=self._job_order_key)
 
@@ -201,7 +242,20 @@ class _WorkflowManager:
         self.pool.wait_for_completion()
 
         if self._failed:
-            raise RuntimeError(self._format_failure())
+            logger.warning(
+                "[%s] Workflow encountered failures: %s",
+                self.label,
+                ", ".join(f"{job_id} ({msg})" for job_id, msg in self._failed.items()),
+            )
+        if self._skipped:
+            logger.warning(
+                "[%s] Workflow skipped jobs due to unmet dependencies: %s",
+                self.label,
+                ", ".join(
+                    f"{job_id} (missing {', '.join(deps) if deps else 'unknown'})"
+                    for job_id, deps in self._skipped.items()
+                ),
+            )
 
     def shutdown(self) -> None:
         logger.debug("[%s] Global pool in use - shutdown handled by GlobalJobManager", self.label)
@@ -266,13 +320,34 @@ class _WorkflowManager:
             self._event.set()
 
     def _mark_failed(self, job_id: str, exc: Exception) -> None:
+        message = f"{exc.__class__.__name__}: {exc}"
         with self._lock:
-            self._failed[job_id] = str(exc)
+            self._failed[job_id] = message
+            self._event.set()
+
+    def _mark_skipped(self, job_id: str, missing: Iterable[str]) -> None:
+        with self._lock:
+            self._skipped[job_id] = list(missing)
             self._event.set()
 
     def _format_failure(self) -> str:
         parts = [f"{job_id}: {message}" for job_id, message in self._failed.items()]
         return f"Workflow failures ({self.label}): " + "; ".join(parts)
+
+    @property
+    def completed_jobs(self) -> Set[str]:
+        with self._lock:
+            return set(self._completed)
+
+    @property
+    def failed_jobs(self) -> Dict[str, str]:
+        with self._lock:
+            return dict(self._failed)
+
+    @property
+    def skipped_jobs(self) -> Dict[str, List[str]]:
+        with self._lock:
+            return {job_id: list(deps) for job_id, deps in self._skipped.items()}
 
     def _base_share(self) -> int:
         if not self._parallel_enabled:
@@ -518,330 +593,130 @@ def determine_effective_slots(
     return max(1, max(baseline, candidate))
 
 
-def execute_classic_parallel_workflows(config: Dict[str, Any], **kwargs) -> bool:
-    """Run classic oxidation/reduction steps with dependency-aware scheduling."""
+def execute_classic_workflows(config: Dict[str, Any], *, allow_parallel: bool, **kwargs) -> WorkflowRunResult:
+    """Run classic oxidation/reduction steps via the shared workflow scheduler."""
 
     manager = _WorkflowManager(config, label="classic")
 
     try:
         _populate_classic_jobs(manager, config, kwargs)
         if not manager.has_jobs():
-            logger.info("[classic] No oxidation/reduction jobs queued for parallel execution")
-            return True
+            logger.info("[classic] No oxidation/reduction jobs queued for execution")
+            return WorkflowRunResult()
 
         width = estimate_parallel_width(manager._jobs.values())
         pal_jobs_cap = _parse_int(config.get('pal_jobs'), fallback=0)
-        effective = determine_effective_slots(
-            manager.total_cores,
-            manager._jobs.values(),
-            pal_jobs_cap,
-            width,
-        )
-        if effective != manager.pool.max_concurrent_jobs:
-            logger.info("[classic] Adjusting parallel slots to %d (width=%d, pal_jobs=%s)", effective, width, config.get('pal_jobs'))
+
+        if allow_parallel:
+            effective = determine_effective_slots(
+                manager.total_cores,
+                manager._jobs.values(),
+                pal_jobs_cap,
+                width,
+            )
+        else:
+            effective = 1
+
+        if effective <= 0:
+            effective = 1
+
+        if manager.pool.max_concurrent_jobs != effective:
+            logger.info(
+                "[classic] Adjusting scheduler slots to %d (width=%d, pal_jobs=%s, allow_parallel=%s)",
+                effective,
+                width,
+                config.get('pal_jobs'),
+                allow_parallel,
+            )
             manager.pool.max_concurrent_jobs = effective
             manager.max_jobs = effective
+            manager._sync_parallel_flag()
 
         manager.run()
-        return True
+        return WorkflowRunResult(
+            completed=set(manager.completed_jobs),
+            failed=dict(manager.failed_jobs),
+            skipped={job_id: list(deps) for job_id, deps in manager.skipped_jobs.items()},
+        )
 
     except Exception as exc:  # noqa: BLE001
-        logger.error("Classic parallel workflows failed: %s", exc)
-        return False
+        logger.error("Classic workflows failed: %s", exc)
+        result = WorkflowRunResult(
+            completed=set(getattr(manager, 'completed_jobs', set())),
+            failed=dict(getattr(manager, 'failed_jobs', {}) or {}),
+            skipped={
+                job_id: list(deps)
+                for job_id, deps in (getattr(manager, 'skipped_jobs', {}) or {}).items()
+            },
+        )
+        result.failed.setdefault('scheduler_error', f"{exc.__class__.__name__}: {exc}")
+        return result
 
     finally:
         manager.shutdown()
 
 
-def execute_manually_parallel_workflows(config: Dict[str, Any], **kwargs) -> bool:
-    """Run manual oxidation/reduction steps with dependency-aware scheduling."""
+def execute_manually_workflows(config: Dict[str, Any], *, allow_parallel: bool, **kwargs) -> WorkflowRunResult:
+    """Run manual oxidation/reduction steps via the shared workflow scheduler."""
 
     manager = _WorkflowManager(config, label="manually")
 
     try:
         _populate_manual_jobs(manager, config, kwargs)
         if not manager.has_jobs():
-            logger.info("[manually] No oxidation/reduction jobs queued for parallel execution")
-            return True
+            logger.info("[manually] No oxidation/reduction jobs queued for execution")
+            return WorkflowRunResult()
 
         width = estimate_parallel_width(manager._jobs.values())
         pal_jobs_cap = _parse_int(config.get('pal_jobs'), fallback=0)
-        effective = determine_effective_slots(
-            manager.total_cores,
-            manager._jobs.values(),
-            pal_jobs_cap,
-            width,
-        )
-        if effective != manager.pool.max_concurrent_jobs:
-            logger.info("[manually] Adjusting parallel slots to %d (width=%d, pal_jobs=%s)", effective, width, config.get('pal_jobs'))
+
+        if allow_parallel:
+            effective = determine_effective_slots(
+                manager.total_cores,
+                manager._jobs.values(),
+                pal_jobs_cap,
+                width,
+            )
+        else:
+            effective = 1
+
+        if effective <= 0:
+            effective = 1
+
+        if manager.pool.max_concurrent_jobs != effective:
+            logger.info(
+                "[manually] Adjusting scheduler slots to %d (width=%d, pal_jobs=%s, allow_parallel=%s)",
+                effective,
+                width,
+                config.get('pal_jobs'),
+                allow_parallel,
+            )
             manager.pool.max_concurrent_jobs = effective
             manager.max_jobs = effective
+            manager._sync_parallel_flag()
 
         manager.run()
-        return True
+        return WorkflowRunResult(
+            completed=set(manager.completed_jobs),
+            failed=dict(manager.failed_jobs),
+            skipped={job_id: list(deps) for job_id, deps in manager.skipped_jobs.items()},
+        )
 
     except Exception as exc:  # noqa: BLE001
-        logger.error("Manual parallel workflows failed: %s", exc)
-        return False
+        logger.error("Manual workflows failed: %s", exc)
+        result = WorkflowRunResult(
+            completed=set(getattr(manager, 'completed_jobs', set())),
+            failed=dict(getattr(manager, 'failed_jobs', {}) or {}),
+            skipped={
+                job_id: list(deps)
+                for job_id, deps in (getattr(manager, 'skipped_jobs', {}) or {}).items()
+            },
+        )
+        result.failed.setdefault('scheduler_error', f"{exc.__class__.__name__}: {exc}")
+        return result
 
     finally:
         manager.shutdown()
-
-
-def execute_classic_oxidation_steps(config: Dict[str, Any], total_electrons_txt: int,
-                                   xyz_file: str, xyz_file4: str, xyz_file8: str,
-                                   output_file5: str, output_file9: str, output_file10: str,
-                                   solvent: str, metals: list, metal_basisset: str,
-                                   main_basisset: str, additions: str) -> bool:
-    """Sequential classic oxidation workflow (legacy helper)."""
-    logger.info("Starting classic oxidation steps")
-
-    try:
-        if _step_enabled(config.get('oxidation_steps'), 1):
-            charge = _parse_int(config.get('charge')) + 1
-            total_electrons = total_electrons_txt - charge
-            multiplicity = 1 if total_electrons % 2 == 0 else 2
-
-            read_xyz_and_create_input3(
-                xyz_file,
-                output_file5,
-                charge,
-                multiplicity,
-                solvent,
-                metals,
-                metal_basisset,
-                main_basisset,
-                config,
-                additions,
-            )
-            run_orca(output_file5, "ox_step_1.out")
-            logger.info("Classic ox_step_1 completed")
-
-        if _step_enabled(config.get('oxidation_steps'), 2):
-            charge = _parse_int(config.get('charge')) + 2
-            total_electrons = total_electrons_txt - charge
-            multiplicity = 1 if total_electrons % 2 == 0 else 2
-
-            read_xyz_and_create_input3(
-                xyz_file4,
-                output_file9,
-                charge,
-                multiplicity,
-                solvent,
-                metals,
-                metal_basisset,
-                main_basisset,
-                config,
-                additions,
-            )
-            run_orca(output_file9, "ox_step_2.out")
-            logger.info("Classic ox_step_2 completed")
-
-        if _step_enabled(config.get('oxidation_steps'), 3):
-            charge = _parse_int(config.get('charge')) + 3
-            total_electrons = total_electrons_txt - charge
-            multiplicity = 1 if total_electrons % 2 == 0 else 2
-
-            read_xyz_and_create_input3(
-                xyz_file8,
-                output_file10,
-                charge,
-                multiplicity,
-                solvent,
-                metals,
-                metal_basisset,
-                main_basisset,
-                config,
-                additions,
-            )
-            run_orca(output_file10, "ox_step_3.out")
-            logger.info("Classic ox_step_3 completed")
-
-        return True
-
-    except Exception as exc:  # noqa: BLE001
-        logger.error(f"Classic oxidation steps failed: {exc}")
-        return False
-
-
-def execute_classic_reduction_steps(config: Dict[str, Any], total_electrons_txt: int,
-                                   xyz_initial: str, xyz_file2: str, xyz_file3: str,
-                                   output_file6: str, output_file7: str, output_file8: str,
-                                   solvent: str, metals: list, metal_basisset: str,
-                                   main_basisset: str, additions: str) -> bool:
-    """Sequential classic reduction workflow (legacy helper)."""
-    logger.info("Starting classic reduction steps")
-
-    try:
-        if _step_enabled(config.get('reduction_steps'), 1):
-            charge = _parse_int(config.get('charge')) - 1
-            total_electrons = total_electrons_txt - charge
-            multiplicity = 1 if total_electrons % 2 == 0 else 2
-
-            read_xyz_and_create_input3(
-                xyz_initial,
-                output_file6,
-                charge,
-                multiplicity,
-                solvent,
-                metals,
-                metal_basisset,
-                main_basisset,
-                config,
-                additions,
-            )
-            run_orca(output_file6, "red_step_1.out")
-            logger.info("Classic red_step_1 completed")
-
-        if _step_enabled(config.get('reduction_steps'), 2):
-            charge = _parse_int(config.get('charge')) - 2
-            total_electrons = total_electrons_txt - charge
-            multiplicity = 1 if total_electrons % 2 == 0 else 2
-
-            read_xyz_and_create_input3(
-                xyz_file2,
-                output_file7,
-                charge,
-                multiplicity,
-                solvent,
-                metals,
-                metal_basisset,
-                main_basisset,
-                config,
-                additions,
-            )
-            run_orca(output_file7, "red_step_2.out")
-            logger.info("Classic red_step_2 completed")
-
-        if _step_enabled(config.get('reduction_steps'), 3):
-            charge = _parse_int(config.get('charge')) - 3
-            total_electrons = total_electrons_txt - charge
-            multiplicity = 1 if total_electrons % 2 == 0 else 2
-
-            read_xyz_and_create_input3(
-                xyz_file3,
-                output_file8,
-                charge,
-                multiplicity,
-                solvent,
-                metals,
-                metal_basisset,
-                main_basisset,
-                config,
-                additions,
-            )
-            run_orca(output_file8, "red_step_3.out")
-            logger.info("Classic red_step_3 completed")
-
-        return True
-
-    except Exception as exc:  # noqa: BLE001
-        logger.error(f"Classic reduction steps failed: {exc}")
-        return False
-
-
-def execute_classic_parallel_legacy(config: Dict[str, Any], **kwargs) -> bool:
-    """Legacy thread-based parallel execution kept for backward compatibility."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    workflows = []
-    if _step_enabled(config.get('oxidation_steps'), 1) or _step_enabled(config.get('oxidation_steps'), 2) or _step_enabled(config.get('oxidation_steps'), 3):
-        workflows.append(("oxidation", execute_classic_oxidation_steps, {
-            'total_electrons_txt': kwargs['total_electrons_txt'],
-            'xyz_file': kwargs['xyz_file'],
-            'xyz_file4': kwargs['xyz_file4'],
-            'xyz_file8': kwargs['xyz_file8'],
-            'output_file5': kwargs['output_file5'],
-            'output_file9': kwargs['output_file9'],
-            'output_file10': kwargs['output_file10'],
-            'solvent': kwargs['solvent'],
-            'metals': kwargs['metals'],
-            'metal_basisset': kwargs['metal_basisset'],
-            'main_basisset': kwargs['main_basisset'],
-            'additions': kwargs['additions'],
-        }))
-
-    if _step_enabled(config.get('reduction_steps'), 1) or _step_enabled(config.get('reduction_steps'), 2) or _step_enabled(config.get('reduction_steps'), 3):
-        workflows.append(("reduction", execute_classic_reduction_steps, {
-            'total_electrons_txt': kwargs['total_electrons_txt'],
-            'xyz_initial': kwargs['xyz_file'],
-            'xyz_file2': kwargs['xyz_file2'],
-            'xyz_file3': kwargs['xyz_file3'],
-            'output_file6': kwargs['output_file6'],
-            'output_file7': kwargs['output_file7'],
-            'output_file8': kwargs['output_file8'],
-            'solvent': kwargs['solvent'],
-            'metals': kwargs['metals'],
-            'metal_basisset': kwargs['metal_basisset'],
-            'main_basisset': kwargs['main_basisset'],
-            'additions': kwargs['additions'],
-        }))
-
-    if not workflows:
-        return True
-
-    with ThreadPoolExecutor(max_workers=len(workflows)) as executor:
-        futures = {
-            executor.submit(func, config, **func_kwargs): name
-            for name, func, func_kwargs in workflows
-        }
-
-        results = True
-        for future in as_completed(futures):
-            name = futures[future]
-            try:
-                success = future.result()
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Classic %s workflow raised exception: %s", name, exc)
-                results = False
-            else:
-                if success:
-                    logger.info("Classic %s workflow completed successfully", name)
-                else:
-                    logger.error("Classic %s workflow failed", name)
-                    results = False
-
-    return results
-
-
-def execute_classic_sequential_workflows(config: Dict[str, Any], **kwargs) -> bool:
-    """Sequential fallback execution of classic workflows."""
-    success = True
-    if any(_step_enabled(config.get('oxidation_steps'), step) for step in (1, 2, 3)):
-        success &= execute_classic_oxidation_steps(
-            config,
-            kwargs['total_electrons_txt'],
-            kwargs['xyz_file'],
-            kwargs['xyz_file4'],
-            kwargs['xyz_file8'],
-            kwargs['output_file5'],
-            kwargs['output_file9'],
-            kwargs['output_file10'],
-            kwargs['solvent'],
-            kwargs['metals'],
-            kwargs['metal_basisset'],
-            kwargs['main_basisset'],
-            kwargs['additions'],
-        )
-
-    if any(_step_enabled(config.get('reduction_steps'), step) for step in (1, 2, 3)):
-        success &= execute_classic_reduction_steps(
-            config,
-            kwargs['total_electrons_txt'],
-            kwargs['xyz_file'],
-            kwargs['xyz_file2'],
-            kwargs['xyz_file3'],
-            kwargs['output_file6'],
-            kwargs['output_file7'],
-            kwargs['output_file8'],
-            kwargs['solvent'],
-            kwargs['metals'],
-            kwargs['metal_basisset'],
-            kwargs['main_basisset'],
-            kwargs['additions'],
-        )
-
-    return success
 
 
 def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwargs: Dict[str, Any]) -> None:

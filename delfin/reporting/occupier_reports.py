@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 import os, re
 
+from ..common.banners import build_occupier_banner
 from ..utils import (
     search_transition_metals,
     select_rel_and_aux,
@@ -495,39 +496,25 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
     lowest_str = f"{fmt_truncate(min_fspe_value, prec)} (H)" if min_fspe_value is not None else "No valid FSPE values found"
 
     # ----------------------- write report --------------------------------------
+    banner = build_occupier_banner(header_indent=6, info_indent=6)
+
     with open('OCCUPIER.txt', 'w', encoding='utf-8') as file:
-        file.write(f"""
-                     *******************
-                     *     OCCUPIER    *
-                     *******************
-
-      #####################################################
-      #                     -***-                         #
-      #                    ComPlat                        #
-      #     Karlsruhe Institute of Technology (KIT)       #
-      #         Automates ORCA 6.1.0 calculations         #
-      #                 Version 1.0.2                     #
-      #                     -***-                         #
-      #####################################################
-
-{method_str}
-        {', '.join(metals)} {metal_basis_print}
-
-Charge: {charge}
--------------
-{fspe_lines}
-
-TOTAL RUN TIME: {duration_format}
-
-{lowest_label} {lowest_str}
-
-(Selection: {method}, APmethod {ap_str}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})
-(Energy-bias: energy_bias_window_h={E_BIAS_H}, mismatch_bias_window={MIS_BIAS} -> prefer lower E only when qualities are similar)
-(Clean-bias: clean_bias_window_h={CLEAN_BIAS_H}, quality_bias_window={QUAL_BIAS_WIN} -> prefer cleaner when energies are close)
-(Clean-override: clean_override_window_h={CLEAN_OVERRIDE_H}, clean_quality_improvement={CLEAN_Q_IMPROVE}, clean_quality_good={CLEAN_Q_GOOD})
-(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})
-(Electron number: {parity})
-""")
+        file.write(
+            f"{banner}\n\n"
+            f"{method_str}\n"
+            f"        {', '.join(metals)} {metal_basis_print}\n\n"
+            f"Charge: {charge}\n"
+            f"-------------\n"
+            f"{fspe_lines}\n\n"
+            f"TOTAL RUN TIME: {duration_format}\n\n"
+            f"{lowest_label} {lowest_str}\n\n"
+            f"(Selection: {method}, APmethod {ap_str}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})\n"
+            f"(Energy-bias: energy_bias_window_h={E_BIAS_H}, mismatch_bias_window={MIS_BIAS} -> prefer lower E only when qualities are similar)\n"
+            f"(Clean-bias: clean_bias_window_h={CLEAN_BIAS_H}, quality_bias_window={QUAL_BIAS_WIN} -> prefer cleaner when energies are close)\n"
+            f"(Clean-override: clean_override_window_h={CLEAN_OVERRIDE_H}, clean_quality_improvement={CLEAN_Q_IMPROVE}, clean_quality_good={CLEAN_Q_GOOD})\n"
+            f"(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})\n"
+            f"(Electron number: {parity})\n"
+        )
 
 
 def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge, solvent, config, main_basisset, sequence):
@@ -951,34 +938,20 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
     lowest_str = f"{fmt_truncate(min_fspe_value, prec)} (H)" if min_fspe_value is not None else "No valid FSPE values found"
 
     # ----------------------- write report --------------------------------------
+    banner = build_occupier_banner(header_indent=6, info_indent=6)
+
     with open('OCCUPIER.txt', 'w', encoding='utf-8') as file:
-        file.write(f"""
-                     *******************
-                     *     OCCUPIER    *
-                     *******************
-
-      #####################################################
-      #                     -***-                         #
-      #                    ComPlat                        #
-      #     Karlsruhe Institute of Technology (KIT)       #
-      #         Automates ORCA 6.1.0 calculations         #
-      #                 Version 1.0.2                     #
-      #                     -***-                         #
-      #####################################################
-
-{method_str}
-        {', '.join(metals)} {metal_basis_print}
-
-Charge: {charge}
--------------
-{fspe_lines}
-
-TOTAL RUN TIME: {duration_format}
-
-{lowest_label} {lowest_str}
-
-(Selection: {method}, APmethod {ap_str}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})
-(Energy-bias: energy_bias_window_h={E_BIAS_H}, mismatch_bias_window={MIS_BIAS} -> prefer lower E when close)
-(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})
-(Electron number: {parity})
-""")
+        file.write(
+            f"{banner}\n\n"
+            f"{method_str}\n"
+            f"        {', '.join(metals)} {metal_basis_print}\n\n"
+            f"Charge: {charge}\n"
+            f"-------------\n"
+            f"{fspe_lines}\n\n"
+            f"TOTAL RUN TIME: {duration_format}\n\n"
+            f"{lowest_label} {lowest_str}\n\n"
+            f"(Selection: {method}, APmethod {ap_str}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})\n"
+            f"(Energy-bias: energy_bias_window_h={E_BIAS_H}, mismatch_bias_window={MIS_BIAS} -> prefer lower E when close)\n"
+            f"(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})\n"
+            f"(Electron number: {parity})\n"
+        )

@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Optional
 import os, re
 
+from ..common.banners import build_standard_banner
 from ..utils import (
     search_transition_metals,
     select_rel_and_aux,
@@ -174,36 +175,19 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
     middle = "\n\n".join(sections)
 
     # ---- write file ----------------------------------------------------------
+    banner = build_standard_banner(header_indent=4, info_indent=4)
+
     with open('DELFIN.txt', 'w', encoding='utf-8') as file:
-        file.write(f"""
-                          ******************
-                          *     DELFIN     *
-                          ******************
-
-    #############################################################
-    #                           -***-                           #
-    #                          ComPlat                          #
-    #                        M. Hartmann                        #
-    #           Karlsruhe Institute of Technology (KIT)         #
-    #   Automates ORCA 6.1.0, xTB 6.7.1 and CREST 3.0.2 runs    #
-    #                       Version 1.0.2                       #
-    #                           -***-                           #
-    #############################################################
-
-Compound name (NAME): {name_str}
-
-{method_freq_line}
-        {', '.join(metals)} {metal_basisset if metal_basisset else ''}
-{method_tddft_block}
-
-used Method: {config['method']}
-Charge:        {charge}
-Multiplicity:  {multiplicity}
-
-Coordinates:
-{xyz}
-
-{middle}
-
-TOTAL RUN TIME: {duration_format}
-""")
+        file.write(
+            f"{banner}\n\n"
+            f"Compound name (NAME): {name_str}\n\n"
+            f"{method_freq_line}\n"
+            f"        {', '.join(metals)} {metal_basisset if metal_basisset else ''}\n"
+            f"{method_tddft_block}\n\n"
+            f"used Method: {config['method']}\n"
+            f"Charge:        {charge}\n"
+            f"Multiplicity:  {multiplicity}\n\n"
+            f"Coordinates:\n{xyz}\n\n"
+            f"{middle}\n\n"
+            f"TOTAL RUN TIME: {duration_format}\n"
+        )

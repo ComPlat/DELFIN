@@ -1,3 +1,5 @@
+from delfin.common.banners import build_occupier_banner
+
 def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge, solvent, config, main_basisset, sequence):
     """
     Selection is driven by energy first; if tied, use spin-contamination only.
@@ -13,6 +15,10 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
         with similarly high contamination; then re-run the same tie-break logic.
     """
     # ----------------------- imports & tiny helpers ----------------------------
+    from decimal import Decimal, ROUND_DOWN
+    from pathlib import Path
+    from typing import Optional
+    import os, re
 
     def truncate(x: float, d: int) -> float:
         q = Decimal(10) ** -d
@@ -386,36 +392,22 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
     lowest_str = f"{fmt_truncate(min_fspe_value, prec)} (H)" if min_fspe_value is not None else "No valid FSPE values found"
 
     # ----------------------- write report --------------------------------------
+    banner = build_occupier_banner(header_indent=6, info_indent=6)
+
     with open('OCCUPIER.txt', 'w', encoding='utf-8') as file:
-        file.write(f"""
-                     *******************
-                     *     OCCUPIER    *
-                     *******************
-
-      #####################################################
-      #                     -***-                         #
-      #                    ComPlat                        #
-      #     Karlsruhe Institute of Technology (KIT)       #
-      #         Automates ORCA 6.1.0 calculations         #
-      #                 Version 1.0.2                     #
-      #                     -***-                         #
-      #####################################################
-
-{method_str}
-        {', '.join(metals)} {metal_basis_print}
-
-Charge: {charge}     
--------------  
-{fspe_lines}
-
-TOTAL RUN TIME: {duration_format}
-
-{lowest_label} {lowest_str}
-
-(Selection: {method}, APmethod {ap_str}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})
-(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})
-(Electron number: {parity})
-""")
+        file.write(
+            f"{banner}\n\n"
+            f"{method_str}\n"
+            f"        {', '.join(metals)} {metal_basis_print}\n\n"
+            f"Charge: {charge}     \n"
+            f"-------------  \n"
+            f"{fspe_lines}\n\n"
+            f"TOTAL RUN TIME: {duration_format}\n\n"
+            f"{lowest_label} {lowest_str}\n\n"
+            f"(Selection: {method}, APmethod {ap_str}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})\n"
+            f"(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})\n"
+            f"(Electron number: {parity})\n"
+        )
 
 def generate_summary_report_OCCUPIER_safe3(duration, fspe_values, is_even, charge, solvent, config, main_basisset, sequence):
     """
@@ -880,36 +872,22 @@ def generate_summary_report_OCCUPIER_safe3(duration, fspe_values, is_even, charg
     )
 
     # ---- write report ----------------------------------------------------------
+    banner = build_occupier_banner(header_indent=6, info_indent=6)
+
     with open('OCCUPIER.txt', 'w', encoding='utf-8') as file:
-        file.write(f"""
-                     *******************
-                     *     OCCUPIER    *
-                     *******************
-
-      #####################################################
-      #                     -***-                         #
-      #                    ComPlat                        #
-      #     Karlsruhe Institute of Technology (KIT)       #
-      #         Automates ORCA 6.1.0 calculations         #
-      #                 Version 1.0.2                     #
-      #                     -***-                         #
-      #####################################################
-
-{method_str}
-        {', '.join(metals)} {metal_basis_print}
-
-Charge: {charge}     
--------------  
-{fspe_lines}
-
-TOTAL RUN TIME: {duration_format}
-
-{lowest_label} {lowest_str}
-
-(Selection: {method}, APmethod {ap_str}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})
-(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})
-(Electron number: {parity})
-""")
+        file.write(
+            f"{banner}\n\n"
+            f"{method_str}\n"
+            f"        {', '.join(metals)} {metal_basis_print}\n\n"
+            f"Charge: {charge}     \n"
+            f"-------------  \n"
+            f"{fspe_lines}\n\n"
+            f"TOTAL RUN TIME: {duration_format}\n\n"
+            f"{lowest_label} {lowest_str}\n\n"
+            f"(Selection: {method}, APmethod {ap_str}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})\n"
+            f"(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})\n"
+            f"(Electron number: {parity})\n"
+        )
 
 
 #-------------------------------------------------------OCCUPIER Report---------------------------------------------------------------------------
@@ -1380,36 +1358,22 @@ def generate_summary_report_OCCUPIER_safe2(duration, fspe_values, is_even, charg
     )
 
     # ---- write report ----------------------------------------------------------
+    banner = build_occupier_banner(header_indent=6, info_indent=6)
+
     with open('OCCUPIER.txt', 'w', encoding='utf-8') as file:
-        file.write(f"""
-                     *******************
-                     *     OCCUPIER    *
-                     *******************
-
-      #####################################################
-      #                     -***-                         #
-      #                    ComPlat                        #
-      #     Karlsruhe Institute of Technology (KIT)       #
-      #         Automates ORCA 6.1.0 calculations         #
-      #                 Version 1.0.2                     #
-      #                     -***-                         #
-      #####################################################
-
-{method_str}
-        {', '.join(metals)} {metal_basis_print}
-
-Charge: {charge}     
--------------  
-{fspe_lines}
-
-TOTAL RUN TIME: {duration_format}
-
-{lowest_label} {lowest_str}
-
-(Selection: {method}, APmethod {ap_str}, dev_max {dev_max if dev_max is not None else 'none'}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})
-(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})
-(Electron number: {parity})
-""")
+        file.write(
+            f"{banner}\n\n"
+            f"{method_str}\n"
+            f"        {', '.join(metals)} {metal_basis_print}\n\n"
+            f"Charge: {charge}     \n"
+            f"-------------  \n"
+            f"{fspe_lines}\n\n"
+            f"TOTAL RUN TIME: {duration_format}\n\n"
+            f"{lowest_label} {lowest_str}\n\n"
+            f"(Selection: {method}, APmethod {ap_str}, dev_max {dev_max if dev_max is not None else 'none'}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})\n"
+            f"(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})\n"
+            f"(Electron number: {parity})\n"
+        )
 
 
 #-------------------------------------------------------OCCUPIER Report---------------------------------------------------------------------------
@@ -1856,33 +1820,19 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
     )
 
     # ---- write report ----------------------------------------------------------
+    banner = build_occupier_banner(header_indent=6, info_indent=6)
+
     with open('OCCUPIER.txt', 'w', encoding='utf-8') as file:
-        file.write(f"""
-                     *******************
-                     *     OCCUPIER    *
-                     *******************
-
-      #####################################################
-      #                     -***-                         #
-      #                    ComPlat                        #
-      #     Karlsruhe Institute of Technology (KIT)       #
-      #         Automates ORCA 6.1.0 calculations         #
-      #                 Version 1.0.2                     #
-      #                     -***-                         #
-      #####################################################
-
-{method_str}
-        {', '.join(metals)} {metal_basis_print}
-
-Charge: {charge}     
--------------  
-{fspe_lines}
-
-TOTAL RUN TIME: {duration_format}
-
-{lowest_label} {lowest_str}
-
-(Selection: {method}, APmethod {ap_str}, dev_max {dev_max if dev_max is not None else 'none'}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})
-(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})
-(Electron number: {parity})
-""")
+        file.write(
+            f"{banner}\n\n"
+            f"{method_str}\n"
+            f"        {', '.join(metals)} {metal_basis_print}\n\n"
+            f"Charge: {charge}     \n"
+            f"-------------  \n"
+            f"{fspe_lines}\n\n"
+            f"TOTAL RUN TIME: {duration_format}\n\n"
+            f"{lowest_label} {lowest_str}\n\n"
+            f"(Selection: {method}, APmethod {ap_str}, dev_max {dev_max if dev_max is not None else 'none'}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})\n"
+            f"(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})\n"
+            f"(Electron number: {parity})\n"
+        )

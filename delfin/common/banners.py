@@ -1,7 +1,9 @@
 # banner_utils.py
 # Common banner generation utilities
 
-from typing import Dict, List, Optional
+from typing import List, Optional
+
+from delfin import __version__
 
 
 class BannerGenerator:
@@ -43,7 +45,7 @@ class BannerGenerator:
                           author_name: str = "M. Hartmann",
                           institution: str = "Karlsruhe Institute of Technology (KIT)",
                           description: str = "Automates ORCA 6.1.0 calculations",
-                          version: str = "Version 1.0.2") -> str:
+                          version: Optional[str] = None) -> str:
         """Create a standard info banner with author and institution info.
 
         Args:
@@ -62,17 +64,11 @@ class BannerGenerator:
             padding = (BannerGenerator.INNER_WIDTH - len(text)) // 2
             return f"#{' ' * padding}{text}{' ' * (BannerGenerator.INNER_WIDTH - len(text) - padding)}#"
 
-        lines = [
-            border,
-            center_line("-***-"),
-            center_line(author),
-            center_line(author_name),
-            center_line(institution),
-            center_line(description),
-            center_line(version),
-            center_line("-***-"),
-            border
-        ]
+        version_text = version if version is not None else f"Version {__version__}"
+        content_parts = ["-***-", author, author_name, institution, description, version_text, "-***-"]
+        lines = [border]
+        lines.extend(center_line(part) for part in content_parts if part)
+        lines.append(border)
 
         return "\n".join(lines)
 
@@ -81,7 +77,7 @@ class BannerGenerator:
                             author_name: str = "M. Hartmann",
                             institution: str = "Karlsruhe Institute of Technology (KIT)",
                             description: str = "Automates ORCA 6.1.0 calculations",
-                            version: str = "Version 1.0.2",
+                            version: Optional[str] = None,
                             width: int = 49) -> str:
         """Create a compact banner for smaller spaces.
 
@@ -102,87 +98,74 @@ class BannerGenerator:
             padding = (inner_width - len(text)) // 2
             return f"#{' ' * padding}{text}{' ' * (inner_width - len(text) - padding)}#"
 
-        lines = [
-            border,
-            center_line("-***-"),
-            center_line(author),
-            center_line(author_name),
-            center_line(institution),
-            center_line(description),
-            center_line(version),
-            center_line("-***-"),
-            border
-        ]
-
-        return "\n".join(lines)
-
-    @staticmethod
-    def create_method_info_block(method_parts: List[str],
-                               metals: List[str] = None,
-                               metal_basis: str = "",
-                               charge: int = 0,
-                               multiplicity: int = 1) -> str:
-        """Create a formatted method information block.
-
-        Args:
-            method_parts: List of method components (functional, basis set, etc.)
-            metals: List of transition metals found
-            metal_basis: Metal basis set if different
-            charge: System charge
-            multiplicity: System multiplicity
-
-        Returns:
-            Formatted method info string
-        """
-        lines = []
-
-        # Method line
-        method_line = "Method: " + " ".join(part for part in method_parts if part)
-        lines.append(method_line)
-
-        # Metal basis if present
-        if metals and metal_basis:
-            metal_line = f"        {', '.join(metals)} {metal_basis}"
-            lines.append(metal_line)
-
-        lines.append("")
-        lines.append(f"Charge: {charge}")
-        lines.append("-" * 13)
-
-        if multiplicity > 1:
-            lines.append(f"Total spin: {(multiplicity - 1) / 2:.1f}")
-            lines.append(f"Multiplicity: {multiplicity}")
-        else:
-            lines.append("Total spin: 0.0")
-            lines.append("Multiplicity: 1 (Closed Shell)")
-
-        return "\n".join(lines)
-
-    @staticmethod
-    def wrap_in_banner(content: str, title: str = "", width: int = 80) -> str:
-        """Wrap content in a simple banner.
-
-        Args:
-            content: Content to wrap
-            title: Optional title
-            width: Banner width
-
-        Returns:
-            Content wrapped in banner
-        """
-        border = "=" * width
+        version_text = version if version is not None else f"Version {__version__}"
+        content_parts = ["-***-", author, author_name, institution, description, version_text, "-***-"]
         lines = [border]
-
-        if title:
-            lines.append(f" {title} ".center(width))
-            lines.append(border)
-
-        # Add content with proper indentation
-        for line in content.split('\n'):
-            if line.strip():
-                lines.append(f" {line}")
-            else:
-                lines.append("")
-
+        lines.extend(center_line(part) for part in content_parts if part)
         lines.append(border)
+
         return "\n".join(lines)
+
+
+def _indent_lines(lines: List[str], spaces: int) -> str:
+    if not spaces:
+        return "\n".join(lines)
+    padding = " " * spaces
+    return "\n".join(f"{padding}{line}" for line in lines)
+
+
+
+def build_banner(title: str,
+                 *,
+                 description: str,
+                 version: Optional[str] = None,
+                 header_indent: int = 0,
+                 info_indent: int = 0,
+                 author: str = "ComPlat",
+                 author_name: str = "M. Hartmann",
+                 institution: str = "Karlsruhe Institute of Technology (KIT)") -> str:
+    """Build a banner with a title and info block."""
+
+    version_text = version if version is not None else f"Version {__version__}"
+    header_lines = BannerGenerator.create_header_banner(title).splitlines()
+    info_lines = BannerGenerator.create_info_banner(
+        author=author,
+        author_name=author_name,
+        institution=institution,
+        description=description,
+        version=version_text,
+    ).splitlines()
+
+    header = _indent_lines(header_lines, header_indent)
+    info = _indent_lines(info_lines, info_indent)
+    return f"{header}\n\n{info}"
+
+
+
+def build_standard_banner(*,
+                          description: str = "Automates ORCA 6.1.0, xTB 6.7.1 and CREST 3.0.2 runs",
+                          header_indent: int = 0,
+                          info_indent: int = 0) -> str:
+    """Convenience wrapper for the default DELFIN banner."""
+
+    return build_banner(
+        "DELFIN",
+        description=description,
+        header_indent=header_indent,
+        info_indent=info_indent,
+    )
+
+
+
+def build_occupier_banner(*,
+                          description: str = "Automates ORCA 6.1.0 calculations",
+                          header_indent: int = 0,
+                          info_indent: int = 0) -> str:
+    """Convenience wrapper for OCCUPIER banner output."""
+
+    return build_banner(
+        "OCCUPIER",
+        description=description,
+        header_indent=header_indent,
+        info_indent=info_indent,
+    )

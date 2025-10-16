@@ -19,7 +19,7 @@ from delfin.xyz_io import (
     read_xyz_and_create_input3,
     read_xyz_and_create_input4,
 )
-from .parallel_classic import (
+from .parallel_classic_manually import (
     WorkflowJob,
     _WorkflowManager,
     _parse_int,
@@ -606,6 +606,9 @@ class OccupierExecutionContext:
     main_basisset: str
     metal_basisset: str
     config: Dict[str, Any]
+    completed_jobs: Set[str] = field(default_factory=set)
+    failed_jobs: Dict[str, str] = field(default_factory=dict)
+    skipped_jobs: Dict[str, List[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -638,6 +641,10 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
     if not jobs:
         logger.info("No OCCUPIER ORCA jobs detected for execution")
         return True
+
+    context.completed_jobs.clear()
+    context.failed_jobs.clear()
+    context.skipped_jobs.clear()
 
     pal_jobs_value = _resolve_pal_jobs(context.config)
     parallel_mode = normalize_parallel_token(context.config.get('parallel_workflows', 'auto'))
@@ -682,6 +689,11 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
                 manager.max_jobs = dynamic_slots
                 manager._sync_parallel_flag()
             manager.run()
+            context.completed_jobs.update(manager.completed_jobs)
+            context.failed_jobs.update(manager.failed_jobs)
+            context.skipped_jobs.update(manager.skipped_jobs)
+            if context.failed_jobs or context.skipped_jobs:
+                return False
             return True
         except Exception as exc:  # noqa: BLE001
             logger.error("Parallel OCCUPIER ORCA execution failed: %s", exc, exc_info=True)
@@ -694,8 +706,22 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
                     exc_info=True,
                 )
                 return False
+            pre_completed = set(getattr(manager, "completed_jobs", set()) or set())
+            if pre_completed:
+                context.completed_jobs.update(pre_completed)
+            failed_map = getattr(manager, "failed_jobs", {}) or {}
+            if failed_map:
+                context.failed_jobs.update(dict(failed_map))
+            skipped_map = getattr(manager, "skipped_jobs", {}) or {}
+            if skipped_map:
+                context.skipped_jobs.update({key: list(value) for key, value in skipped_map.items()})
             logger.info("Falling back to sequential OCCUPIER ORCA execution")
-            return _run_jobs_sequentially(fallback_jobs, context, pal_jobs_value)
+            return _run_jobs_sequentially(
+                fallback_jobs,
+                context,
+                pal_jobs_value,
+                pre_completed=pre_completed,
+            )
         finally:
             try:
                 manager.shutdown()
@@ -722,14 +748,28 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
     return _run_jobs_sequentially(jobs, context, pal_jobs_value)
 
 
-def _run_jobs_sequentially(jobs: List[WorkflowJob], context: OccupierExecutionContext,
-                           pal_jobs_value: int) -> bool:
+def _run_jobs_sequentially(
+    jobs: List[WorkflowJob],
+    context: OccupierExecutionContext,
+    pal_jobs_value: int,
+    *,
+    pre_completed: Optional[Set[str]] = None,
+) -> bool:
     """Execute OCCUPIER jobs sequentially while respecting PAL limits."""
 
     total_cores = max(1, _parse_int(context.config.get('PAL'), fallback=1))
     per_job_cores = total_cores
-    pending = {job.job_id: job for job in jobs}
-    completed: Set[str] = set()
+    initial_completed = set(pre_completed or ())
+    completed: Set[str] = set(initial_completed)
+    pending = {job.job_id: job for job in jobs if job.job_id not in completed}
+    failed: Dict[str, str] = {}
+    skipped: Dict[str, List[str]] = {}
+
+    context.completed_jobs.clear()
+    context.failed_jobs.clear()
+    context.skipped_jobs.clear()
+    if initial_completed:
+        context.completed_jobs.update(initial_completed)
 
     while pending:
         progressed = False
@@ -748,17 +788,48 @@ def _run_jobs_sequentially(jobs: List[WorkflowJob], context: OccupierExecutionCo
                 job.work(allocated)
             except Exception as exc:  # noqa: BLE001
                 logger.error("Sequential OCCUPIER job %s failed: %s", job_id, exc, exc_info=True)
-                return False
+                failed[job_id] = f"{exc.__class__.__name__}: {exc}"
+                pending.pop(job_id, None)
+                progressed = True
+                continue
 
             completed.add(job_id)
             pending.pop(job_id)
             progressed = True
 
         if not progressed:
-            logger.error("Unresolved OCCUPIER job dependencies: %s", ", ".join(sorted(pending)))
-            return False
+            unresolved_msgs: List[str] = []
+            for job_id, job in list(pending.items()):
+                missing = sorted(job.dependencies - completed)
+                skipped[job_id] = missing
+                if missing:
+                    unresolved_msgs.append(f"{job_id} (waiting for {', '.join(missing)})")
+                else:
+                    unresolved_msgs.append(job_id)
+            if unresolved_msgs:
+                logger.error("Unresolved OCCUPIER job dependencies: %s", ", ".join(unresolved_msgs))
+            pending.clear()
+            break
 
-    return True
+    context.completed_jobs.update(completed)
+    context.failed_jobs.update(failed)
+    context.skipped_jobs.update(skipped)
+
+    if failed:
+        logger.warning(
+            "Sequential OCCUPIER execution completed with failures: %s",
+            ", ".join(f"{job_id} ({reason})" for job_id, reason in failed.items()),
+        )
+    if skipped:
+        logger.warning(
+            "Sequential OCCUPIER execution skipped jobs due to unmet dependencies: %s",
+            ", ".join(
+                f"{job_id} (missing {', '.join(deps) if deps else 'unknown cause'})"
+                for job_id, deps in skipped.items()
+            ),
+        )
+
+    return not failed and not skipped
 
 
 def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]:
@@ -872,8 +943,23 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
                 stripped = value.strip()
                 if not stripped:
                     continue
-                if re.fullmatch(r"\d+,\d+", stripped):
-                    return f"%scf BrokenSym {stripped} end"
+                if stripped.startswith('%'):
+                    return stripped
+                digits = re.fullmatch(r"(\d+)\s*,\s*(\d+)", stripped)
+                if digits:
+                    first, second = digits.groups()
+                    return f"%scf BrokenSym {first},{second} end"
+                bs_match = re.fullmatch(r"brokensym\s+(\d+)\s*,\s*(\d+)(?:\s+end)?", stripped, re.IGNORECASE)
+                if bs_match:
+                    first, second = bs_match.groups()
+                    return f"%scf BrokenSym {first},{second} end"
+                if re.search(r"[A-Za-z]", stripped):
+                    logger.debug(
+                        "[occupier] Ignoring non-numeric OCCUPIER additions '%s' from CONTROL key %s.",
+                        stripped,
+                        key,
+                    )
+                    continue
                 return stripped
             if isinstance(value, (list, tuple)):
                 tokens = [str(item).strip() for item in value if str(item).strip()]
@@ -894,9 +980,11 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
                     folder,
                 )
                 multiplicity_int = _fallback_multiplicity(folder)
-            additions_str = additions or ""
-            if not str(additions_str).strip():
-                additions_str = _fallback_additions(folder)
+
+            if isinstance(additions, str):
+                additions_str = additions.strip()
+            else:
+                additions_str = ""
             return multiplicity_int, additions_str, min_fspe_index
 
         logger.warning(

@@ -3,24 +3,15 @@
 
 from pathlib import Path
 
+from delfin.common.banners import build_standard_banner
+
 
 def print_delfin_banner():
     """Print the DELFIN application banner."""
-    print("""
-                          ******************
-                          *     DELFIN     *
-                          ******************
-
-    #############################################################
-    #                           -***-                           #
-    #                          ComPlat                          #
-    #                        M. Hartmann                        #
-    #           Karlsruhe Institute of Technology (KIT)         #
-    #   Automates ORCA 6.1.0, xTB 6.7.1 and CREST 3.0.2 runs    #
-    #                       Version 1.0.2                       #
-    #                           -***-                           #
-    #############################################################
-
+    print(build_standard_banner(header_indent=4, info_indent=4))
+    print()
+    print(
+        """
 With DELFIN, it is possible to automatically identify preferred electron configurations of any hypothetical
 or known system, track the changes in orbital occupations upon reduction and oxidation, calculate
 redox potentials, and, for closed-shell species, calculate E_00 energies and excited-state redox potentials.
@@ -31,7 +22,8 @@ To use DELFIN, install ORCA 6.1.0 and add it to your PATH. CREST 3.0.2 is option
 
 ORCA 6.1.0 is available free of charge for academic use.
 CREST 3.0 is released under the GNU General Public License (GPL).
-""")
+""".strip()
+    )
 
 
 def validate_required_files(config, control_path):

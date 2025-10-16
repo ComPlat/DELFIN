@@ -128,11 +128,11 @@ def patch_modules_for_recalc(wrappers):
     from . import orca as _orca_mod
     from . import occupier as _occupier_mod
     from . import cli as _cli_mod
-    from . import parallel_classic as _parallel_classic_mod
-    from . import parallel_occupier_integration as _parallel_occupier_integration_mod
+    from . import parallel_classic_manually as _parallel_classic_mod
+    from . import parallel_occupier as _parallel_occupier_mod
 
     _orca_mod.run_orca = wrappers['run_orca']
     _occupier_mod.run_orca = wrappers['run_orca']
     _cli_mod.run_orca = wrappers['run_orca']
     _parallel_classic_mod.run_orca = wrappers['run_orca']
-    _parallel_occupier_integration_mod.run_orca = wrappers['run_orca']
+    _parallel_occupier_mod.run_orca = wrappers['run_orca']

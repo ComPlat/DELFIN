@@ -49,7 +49,7 @@ mcore_E00=10000
 ------------------------------------
 MANUALLY:
 multiplicity_0=
-additions_0=m,n
+additions_0=
 additions_TDDFT=
 additions_T1=
 additions_S1=

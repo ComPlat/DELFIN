@@ -4,6 +4,8 @@
 import argparse
 from typing import Optional, Dict, Any
 
+from delfin import __version__
+
 
 def _avg_or_none(a: Optional[float], b: Optional[float]) -> Optional[float]:
     """Calculate average of two values if both are not None."""
@@ -94,7 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "-V", "--version",
         action="version",
-        version="DELFIN 1.0.2",
+        version=f"DELFIN {__version__}",
         help="Show version and exit."
     )
     p.add_argument(

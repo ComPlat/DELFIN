@@ -2,7 +2,7 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17208145.svg)](https://doi.org/10.5281/zenodo.17208145)
 
-**Automated prediction of preferred spin states and associated redox potentials**
+**Automated DFT-based prediction of preferred spin states and associated redox potentials**
 
 This repository contains DELFIN, a comprehensive workflow tool for automated quantum chemistry calculations using ORCA, xTB, and CREST. DELFIN automates the identification of preferred electron configurations, tracks orbital occupation changes during redox processes, and calculates redox potentials.
 
@@ -67,34 +67,23 @@ alternatively
 python -m delfin
 ```
 
-**Convenience (`--define`)**
+**CLI shortcuts**
 
-create CONTROL.txt and an empty input.txt, then exit
-```bash
-delfin --define
-```
-convert an existing XYZ → input.txt (drops the first two header lines) and write CONTROL.txt, then exit
-```bash
-delfin --define=your.xyz
-```
-overwrite existing CONTROL.txt / input file when defining
-```bash
-delfin --define=mycoords.txt --overwrite
-```
-clean up intermediates from previous runs and exit
-```bash
-delfin --cleanup
-```
-show options and prerequisites
-```bash
-delfin --help
-```
-Re-parse existing outputs and (re)run only external jobs with missing/incomplete .out files
-```bash
-delfin --recalc
-```
-The tool writes results and reports into the current working directory,
-e.g. `DELFIN.txt`, `OCCUPIER.txt`, and step folders.
+- `delfin --define[=input.xyz] [--overwrite]`
+  creates/updates `CONTROL.txt` and optionally converts an XYZ into `input.txt`.
+- `delfin --control /path/to/CONTROL.txt`
+  runs the workflow from another directory while normalising all paths.
+- `delfin --no-cleanup`
+  keeps temporary files and scratch folders after the pipeline finishes.
+- `delfin --cleanup`
+  removes previously generated intermediates and exits immediately.
+- `delfin --recalc`
+  re-parses existing results and only restarts missing or incomplete jobs.
+- `delfin --help`
+  prints the full list of CLI flags, including the new pipeline/resource switches.
+
+Results and reports are written to the current working directory,
+e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 ---
 
 ## Project layout
@@ -109,6 +98,9 @@ delfin/
   cli_banner.py     # banner display and file validation utilities
   cli_calculations.py # redox potential calculation methods (M1, M2, M3)
   main.py           # optional small loader (may delegate to cli.main)
+  pipeline.py       # high-level orchestration across workflow phases (classic/manually/OCCUPIER)
+  config_manager.py # shared configuration utilities used by new pipeline helpers
+  safe.py           # lightweight sandbox helpers for robust filesystem ops
   define.py         # CONTROL template generator (+ .xyz → input.txt conversion, path normalisation + logging hooks)
   cleanup.py        # delete temporary files
   config.py         # CONTROL.txt parsing & helpers
@@ -124,8 +116,9 @@ delfin/
   thread_safe_helpers.py  # thread-safe workflow execution with PAL management
   global_manager.py       # singleton global job manager for resource coordination
   dynamic_pool.py         # dynamic core pool for job scheduling
-  parallel_classic.py     # parallel execution for classic/manually modes
-  parallel_occupier_integration.py  # parallel OCCUPIER workflow integration
+  parallel_classic_manually.py     # parallel execution for classic/manually modes
+  parallel_occupier.py  # parallel OCCUPIER workflow integration
+  verify_global_manager.py  # smoke tests for the global resource orchestration
   cluster_utils.py        # cluster resource detection (SLURM/PBS/LSF)
   api.py            # programmatic API (e.g. `delfin.api.run(...)` for notebooks/workflows)
   common/           # shared utilities
@@ -138,6 +131,7 @@ delfin/
     __init__.py     # reporting submodule exports
     occupier_reports.py  # OCCUPIER-specific report generation functions
     delfin_reports.py    # DELFIN-specific report generation functions
+    occupier_selection.py # OCCUPIER selection helpers used by reports
 ```
 ---
 ## Typical workflow switches (in CONTROL.txt)
@@ -278,14 +272,14 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 
 If you use DELFIN in a scientific publication, please cite:
 
-Hartmann, M. (2025). *DELFIN: Automated prediction of preferred spin states and associated redox potentials* (v1.0.2). Zenodo. https://doi.org/10.5281/zenodo.17208145
+Hartmann, M. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.0.3). Zenodo. https://doi.org/10.5281/zenodo.17208145
 
 ### BibTeX
 ```bibtex
 @software{hartmann2025delfin,
   author  = {Hartmann, Maximilian},
-  title   = {DELFIN: Automated prediction of preferred spin states and associated redox potentials},
-  version = {v1.0.2},
+  title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
+  version = {v1.0.3},
   year    = {2025},
   publisher = {Zenodo},
   doi     = {10.5281/zenodo.17208145},
