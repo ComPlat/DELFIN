@@ -737,7 +737,24 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
         from .define import convert_xyz_to_input_txt
 
         convert_xyz_to_input_txt(str(input_path), str(target))
-        config['input_file'] = str(target)
-        return str(target)
-    config['input_file'] = str(input_path)
-    return str(input_path)
+        result_path = target
+    else:
+        result_path = input_path
+
+    start_path = result_path.parent / 'start.txt'
+    try:
+        if result_path.resolve() != start_path.resolve():
+            shutil.copyfile(result_path, start_path)
+        elif not start_path.exists():
+            logger.warning("Working geometry '%s' missing; continuing with original '%s'.",
+                           start_path, result_path)
+            config['input_file'] = str(result_path)
+            return str(result_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to prepare working geometry copy '%s': %s", start_path, exc)
+        config['input_file'] = str(result_path)
+        return str(result_path)
+
+    config.setdefault('input_file_original', str(result_path))
+    config['input_file'] = str(start_path)
+    return str(start_path)
