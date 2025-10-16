@@ -134,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         'TDA': 'FALSE',
         'implicit_solvation_model': 'CPCM',
         'maxcore': 3800,
+        'maxiter': 50,
         'maxiter_occupier': 100,
         'mcore_E00': 10000,
         'multiplicity_0': None,
