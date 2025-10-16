@@ -1,7 +1,7 @@
 import os, re, sys, shutil, logging, subprocess, math
 from pathlib import Path
 
-from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks
+from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, resolve_maxiter
 
 from .utils import search_transition_metals, set_main_basisset, select_rel_and_aux
 from .orca import run_orca_IMAG
@@ -234,7 +234,7 @@ def read_and_modify_xyz_IMAG(input_file_path, output_file_path, charge, multipli
     # Assemble input
     output_blocks = collect_output_blocks(config)
     builder = OrcaInputBuilder(bang)
-    builder.add_resources(config['maxcore'], config['PAL'])
+    builder.add_resources(config['maxcore'], config['PAL'], resolve_maxiter(config))
     builder.add_additions(additions)
 
     # Add %freq block with temperature (IMAG always uses FREQ)

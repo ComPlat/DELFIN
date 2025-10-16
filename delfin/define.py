@@ -83,6 +83,7 @@ first_coordination_sphere_scale=
 geom_opt=OPT
 initial_guess=PModel
 temperature=298.15
+maxiter=50
 ------------------------------------
 Reference value:
 E_ref=
@@ -149,14 +150,13 @@ odd_seq = [
 INFOS:
 -------------------------------------------------
 Available METHODS: classic, manually, OCCUPIER
-Available ADDITIONS: %SCF BrokenSym m,n END
 Available OX_STEPS: 1 ; 1,2 ; 1,2,3 ; 2 ; 3 ; 2,3 ; 1,3
 Available RED_STEPS: 1 ; 1,2 ; 1,2,3 ; 2 ; 3 ; 2,3 ; 1,3
 Available IMPLICIT SOLVATION MODELS: CPCM ; CPCMC ; SMD
 Available dispersion corrections DISP_CORR: D4 ; D3 ; D3BJ ; D3ZERO ; NONE
 Available EXCITATIONS: s (singulet) ; t (triplet) (s is more difficult to converge, there may be no convergence).
 E_00 can only be calculated for closed shell systems (use classic or manually!)
-EXPLICIT SOLVATION MODEL IS VERY EXPENSIVE, especially in combination with OCCUPIER!!!!!
+EXPLICIT SOLVATION MODEL IS VERY EXPENSIVE!!!!!
 
 use yes/no not Yes/No !!!!!!
 """

@@ -1,7 +1,7 @@
 """Helpers for assembling ORCA input sections."""
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 
 def normalize_bang(bang: str) -> str:
@@ -19,14 +19,26 @@ def collect_output_blocks(config: Dict[str, Any]) -> List[str]:
     return blocks
 
 
+def resolve_maxiter(config: Dict[str, Any], key: str = 'maxiter') -> Optional[int]:
+    value = config.get(key)
+    if value in (None, ''):
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 class OrcaInputBuilder:
     """Utility for assembling ordered ORCA input sections without altering behaviour."""
 
     def __init__(self, bang: str) -> None:
         self._lines: List[str] = [normalize_bang(bang)]
 
-    def add_resources(self, maxcore: int, pal: int) -> None:
+    def add_resources(self, maxcore: int, pal: int, maxiter: Optional[int] = None) -> None:
         self._lines.append(f"%maxcore {maxcore}\n%pal nprocs {pal} end\n")
+        if maxiter is not None:
+            self._lines.append(f"%scf maxiter {maxiter} end\n")
 
     def add_additions(self, additions: str) -> None:
         if additions:

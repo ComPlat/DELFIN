@@ -1,7 +1,7 @@
 import logging, re, math
 from typing import List, Dict, Optional, Any
 
-from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks
+from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, resolve_maxiter
 
 # import canonical selection helpers from utils
 from .utils import set_main_basisset, select_rel_and_aux
@@ -290,7 +290,7 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
 
     output_blocks = collect_output_blocks(config)
     builder = OrcaInputBuilder(bang)
-    builder.add_resources(config['maxcore'], config['PAL'])
+    builder.add_resources(config['maxcore'], config['PAL'], resolve_maxiter(config))
     builder.add_additions(additions)
     if include_freq:
         builder.add_block(_build_freq_block(config))
@@ -352,7 +352,7 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
 
     output_blocks = collect_output_blocks(config)
     builder = OrcaInputBuilder(bang)
-    builder.add_resources(config['maxcore'], config['PAL'])
+    builder.add_resources(config['maxcore'], config['PAL'], resolve_maxiter(config))
     builder.add_additions(additions)
     if include_freq:
         builder.add_block(_build_freq_block(config))
@@ -529,7 +529,7 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
 
     output_blocks = collect_output_blocks(config)
     builder = OrcaInputBuilder(bang)
-    builder.add_resources(config['maxcore'], config['PAL'])
+    builder.add_resources(config['maxcore'], config['PAL'], resolve_maxiter(config))
     builder.add_additions(additions)
     if include_freq:
         builder.add_block(_build_freq_block(config))
