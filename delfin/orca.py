@@ -93,10 +93,8 @@ def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str, 
         try:
             subprocess.run([orca_path, input_file_path], check=True, stdout=output_file, stderr=output_file, timeout=timeout)
         except subprocess.TimeoutExpired:
-            logger.error(f"ORCA calculation timed out after {timeout} seconds for '{input_file_path}'")
             return False
         except subprocess.CalledProcessError as error:
-            logger.error(f"Error running ORCA: {error}")
             return False
     return True
 

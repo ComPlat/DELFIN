@@ -286,9 +286,6 @@ class _WorkflowManager:
             try:
                 job.work(cores)
             except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "[%s] Job %s failed: %s", self.label, job.job_id, exc,
-                )
                 self._mark_failed(job.job_id, exc)
                 raise
             else:
