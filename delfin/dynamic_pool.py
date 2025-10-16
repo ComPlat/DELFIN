@@ -259,8 +259,11 @@ class DynamicCorePool:
     def _try_rebalance_resources(self):
         """Attempt to rebalance resources and start new jobs."""
         self._schedule_pending_jobs()
-        # Consider reallocating cores to running jobs if we have spare capacity
-        self._consider_reallocation()
+        # NOTE: Core reallocation is disabled for ORCA jobs because ORCA cannot
+        # change core count during execution (it's fixed in the .inp file at start).
+        # Reallocating cores to running jobs would waste resources instead of
+        # allowing new jobs to start.
+        # self._consider_reallocation()
 
     def _consider_reallocation(self):
         """Consider reallocating cores to running jobs for better utilization."""

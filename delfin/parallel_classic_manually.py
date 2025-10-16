@@ -239,6 +239,13 @@ class _WorkflowManager:
                 self._submit(job)
                 pending.pop(job.job_id, None)
 
+            # After submitting ready jobs, wait briefly for state changes
+            # This allows the loop to react immediately when dependencies are fulfilled
+            # instead of only checking every 0.5s when blocked
+            if pending:
+                self._event.wait(timeout=0.1)
+                self._event.clear()
+
         self.pool.wait_for_completion()
 
         if self._failed:
