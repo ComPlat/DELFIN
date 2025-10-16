@@ -330,7 +330,7 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
         XTB_GOAT(multiplicity, charge, config)
 
     if config['CREST'] == "yes":
-        run_crest_workflow(ctx.PAL, ctx.solvent, charge, multiplicity)
+        run_crest_workflow(ctx.PAL, ctx.solvent, charge, multiplicity, ctx.config.get('input_file'))
 
     if config['XTB_SOLVATOR'] == "no":
         if "yes" in config.get("calc_initial", ""):
@@ -405,10 +405,10 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
         preferred_parent_xyz = Path("input_initial_OCCUPIER.xyz")
         if not preferred_parent_xyz.exists():
             logger.warning(
-                "Preferred OCCUPIER geometry %s missing; falling back to input.txt for solvator run.",
+                "Preferred OCCUPIER geometry %s missing; falling back to start.txt for solvator run.",
                 preferred_parent_xyz,
             )
-            solvator_source = Path("input.txt")
+            solvator_source = Path("start.txt")
         else:
             solvator_source = preferred_parent_xyz
 
@@ -491,11 +491,11 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
         XTB_GOAT(multiplicity, charge, config)
 
     if config['CREST'] == "yes":
-        run_crest_workflow(ctx.PAL, ctx.solvent, charge, multiplicity)
+        run_crest_workflow(ctx.PAL, ctx.solvent, charge, multiplicity, ctx.config.get('input_file'))
 
     if config['XTB_SOLVATOR'] == "yes":
         XTB_SOLVATOR(
-            str(Path("input.txt").resolve()),
+            ctx.config.get('input_file') or 'start.txt',
             multiplicity,
             charge,
             ctx.solvent,
@@ -564,11 +564,11 @@ def run_manual_phase(ctx: PipelineContext) -> Dict[str, Any]:
         XTB_GOAT(multiplicity, ctx.charge, config)
 
     if config['CREST'] == "yes":
-        run_crest_workflow(ctx.PAL, ctx.solvent, ctx.charge, multiplicity)
+        run_crest_workflow(ctx.PAL, ctx.solvent, ctx.charge, multiplicity, ctx.config.get('input_file'))
 
     if config['XTB_SOLVATOR'] == "yes":
         XTB_SOLVATOR(
-            str(Path("input.txt").resolve()),
+            ctx.config.get('input_file') or 'start.txt',
             multiplicity,
             ctx.charge,
             ctx.solvent,
@@ -746,15 +746,13 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
         if result_path.resolve() != start_path.resolve():
             shutil.copyfile(result_path, start_path)
         elif not start_path.exists():
-            logger.warning("Working geometry '%s' missing; continuing with original '%s'.",
-                           start_path, result_path)
-            config['input_file'] = str(result_path)
-            return str(result_path)
+            shutil.copyfile(result_path, start_path)
     except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to prepare working geometry copy '%s': %s", start_path, exc)
-        config['input_file'] = str(result_path)
-        return str(result_path)
+        logger.warning("Could not create geometry backup '%s': %s", start_path, exc)
+
+    work_path = start_path if start_path.exists() else result_path
 
     config.setdefault('input_file_original', str(result_path))
-    config['input_file'] = str(start_path)
-    return str(start_path)
+    config['input_file_backup'] = str(start_path)
+    config['input_file'] = str(work_path)
+    return str(work_path)

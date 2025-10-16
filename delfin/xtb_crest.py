@@ -3,6 +3,18 @@ from pathlib import Path
 from .orca import run_orca
 from .xyz_io import modify_file2
 
+
+def _resolve_work_input(config) -> Path:
+    raw = None
+    if isinstance(config, dict):
+        raw = config.get('input_file')
+    if not raw:
+        raw = 'start.txt'
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path
+
 OK_MARKER = "ORCA TERMINATED NORMALLY"
 
 _XYZ_COORD_LINE_RE = re.compile(
@@ -38,9 +50,10 @@ def XTB(multiplicity, charge, config):
     work = cwd / folder_name
     work.mkdir(parents=True, exist_ok=True)
 
-    src_input = cwd / "input.txt"
+    work_input = _resolve_work_input(config)
+    src_input = work_input
     if not src_input.exists():
-        print("input.txt not found!")
+        print(f"{src_input.name} not found!")
         return
 
     inp = work / "XTB.inp"
@@ -69,9 +82,9 @@ def XTB(multiplicity, charge, config):
     # Ergebnis nach oben spiegeln (Header entfernen)
     tmp_xyz = cwd / "_tmp_xtb.xyz"
     shutil.copyfile(xyz, tmp_xyz)
-    _strip_xyz_header(tmp_xyz, cwd / "input.txt")
+    _strip_xyz_header(tmp_xyz, work_input)
     tmp_xyz.unlink(missing_ok=True)
-    print("xTB geometry updated and copied back to input.txt.")
+    print(f"xTB geometry updated and copied back to {work_input.name}.")
 
 def XTB_GOAT(multiplicity, charge, config):
     print("\nstarting GOAT\n")
@@ -80,9 +93,10 @@ def XTB_GOAT(multiplicity, charge, config):
     work = cwd / folder_name
     work.mkdir(parents=True, exist_ok=True)
 
-    src_input = cwd / "input.txt"
+    work_input = _resolve_work_input(config)
+    src_input = work_input
     if not src_input.exists():
-        print("input.txt not found!")
+        print(f"{src_input.name} not found!")
         return
 
     inp = work / "XTB_GOAT.inp"
@@ -109,19 +123,23 @@ def XTB_GOAT(multiplicity, charge, config):
 
     tmp_xyz = cwd / "_tmp_goat.xyz"
     shutil.copyfile(xyz, tmp_xyz)
-    _strip_xyz_header(tmp_xyz, cwd / "input.txt")
+    _strip_xyz_header(tmp_xyz, work_input)
     tmp_xyz.unlink(missing_ok=True)
-    print("GOAT geometry updated and copied back to input.txt.")
+    print(f"GOAT geometry updated and copied back to {work_input.name}.")
 
-def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="input.txt", crest_dir="CREST"):
+def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="start.txt", crest_dir="CREST"):
     print("\nstarting CREST\n")
     cwd = Path.cwd()
     work = cwd / crest_dir
     work.mkdir(parents=True, exist_ok=True)
 
-    src_input = cwd / input_file
+    input_path = Path(input_file)
+    if not input_path.is_absolute():
+        input_path = cwd / input_path
+
+    src_input = input_path
     if not src_input.exists():
-        print(f"{input_file} not found!")
+        print(f"{src_input.name} not found!")
         return
 
     # schreibe initial_opt.xyz im CREST-Ordner (ohne input.txt zu verschieben)
@@ -160,7 +178,7 @@ def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="input.txt
     # Ergebnis nach oben spiegeln (Header entfernen)
     tmp_xyz = cwd / "_tmp_crest.xyz"
     shutil.copyfile(crest_best, tmp_xyz)
-    _strip_xyz_header(tmp_xyz, cwd / "input.txt")
+    _strip_xyz_header(tmp_xyz, input_path)
     tmp_xyz.unlink(missing_ok=True)
     print("CREST workflow completed.")
 
@@ -208,8 +226,9 @@ def XTB_SOLVATOR(source_file, multiplicity, charge, solvent, number_explicit_sol
         os.chdir(cwd)
 
     # Ergebnis nach oben spiegeln (Header entfernen)
+    work_input = _resolve_work_input(config)
     tmp_xyz = cwd / "_tmp_solvator.xyz"
     shutil.copyfile(xyz, tmp_xyz)
-    _strip_xyz_header(tmp_xyz, cwd / "input.txt")
+    _strip_xyz_header(tmp_xyz, work_input)
     tmp_xyz.unlink(missing_ok=True)
-    print("SOLVATOR geometry updated and copied back to input.txt.")
+    print(f"SOLVATOR geometry updated and copied back to {work_input.name}.")

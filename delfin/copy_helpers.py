@@ -83,15 +83,25 @@ def prepare_occ_folder(folder_name, charge_delta=0):
     folder = orig_folder if orig_folder.is_absolute() else cwd / orig_folder
     folder.mkdir(parents=True, exist_ok=True)
     os.chdir(folder)
-    files_to_copy = ["input.txt", "CONTROL.txt"]
-    for file in files_to_copy:
-        source = Path("..") / file
-        if source.exists():
-            shutil.copy(source, Path(file))
-            print(f"Copied {file}.")
-        else:
-            print(f"Missing file: {file}")
-            sys.exit(1)
+    start_source = Path("..") / "start.txt"
+    input_source = Path("..") / "input.txt"
+    if start_source.exists():
+        shutil.copy(start_source, Path("input.txt"))
+        print("Copied start.txt → input.txt.")
+    elif input_source.exists():
+        shutil.copy(input_source, Path("input.txt"))
+        print("Copied input.txt.")
+    else:
+        print("Missing geometry file: start.txt / input.txt")
+        sys.exit(1)
+
+    control_source = Path("..") / "CONTROL.txt"
+    if control_source.exists():
+        shutil.copy(control_source, Path("CONTROL.txt"))
+        print("Copied CONTROL.txt.")
+    else:
+        print("Missing file: CONTROL.txt")
+        sys.exit(1)
     input_txt = Path("input.txt")
     input_xyz = Path("input.xyz")
     if input_txt.exists():
