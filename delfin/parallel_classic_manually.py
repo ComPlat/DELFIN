@@ -17,7 +17,7 @@ from delfin.common.logging import get_logger
 from delfin.dynamic_pool import PoolJob, JobPriority
 from delfin.global_manager import get_global_manager
 from delfin.orca import run_orca
-from delfin.imag import run_IMAG, search_imaginary_mode2
+from delfin.imag import run_IMAG
 from delfin.xyz_io import (
     read_and_modify_file_1,
     read_xyz_and_create_input2,
@@ -275,13 +275,25 @@ class _WorkflowManager:
     def _submit(self, job: WorkflowJob) -> None:
         def runner(*_args, **kwargs):
             cores = kwargs.get('cores', job.cores_optimal)
+            pool_snapshot = kwargs.get('pool_snapshot')
             start_time = time.time()
+            usage_suffix = ""
+            if pool_snapshot:
+                used, total = pool_snapshot
+                try:
+                    used_int = int(used)
+                    total_int = int(total)
+                except (TypeError, ValueError):
+                    usage_suffix = ""
+                else:
+                    usage_suffix = f"; {used_int}/{total_int} cores used"
             logger.info(
-                "[%s] Starting %s with %d cores (%s)",
+                "[%s] Starting %s with %d cores (%s%s)",
                 self.label,
                 job.job_id,
                 cores,
                 job.description,
+                usage_suffix,
             )
             try:
                 job.work(cores)
@@ -306,6 +318,7 @@ class _WorkflowManager:
             kwargs={},
             estimated_duration=job.estimated_duration,
         )
+        pool_job.suppress_pool_logs = True
 
         self.pool.submit_job(pool_job)
 
@@ -401,6 +414,16 @@ class _WorkflowManager:
             job.cores_optimal = suggestion
         else:
             job.cores_optimal = max(job.cores_min, min(job.cores_optimal, suggestion))
+
+    def enforce_sequential_allocation(self) -> None:
+        """Force all jobs to use the full PAL when running sequentially."""
+        self._parallel_enabled = False
+        for job in self._jobs.values():
+            full = max(1, self.total_cores)
+            job.cores_min = full
+            job.cores_max = full
+            job.cores_optimal = full
+            job.memory_mb = job.cores_optimal * self.maxcore_mb
 
     def _suggest_optimal_from_hint(
         self,
@@ -619,6 +642,7 @@ def execute_classic_workflows(config: Dict[str, Any], *, allow_parallel: bool, *
             )
         else:
             effective = 1
+            manager.enforce_sequential_allocation()
 
         if effective <= 0:
             effective = 1
@@ -682,6 +706,7 @@ def execute_manually_workflows(config: Dict[str, Any], *, allow_parallel: bool, 
             )
         else:
             effective = 1
+            manager.enforce_sequential_allocation()
 
         if effective <= 0:
             effective = 1
@@ -759,39 +784,6 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
         def run_initial(cores: int) -> None:
             if not input_path:
                 raise RuntimeError("Input file path for classic initial job missing")
-            recalc_mode = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
-            existing_log = Path("initial.out")
-            geom_source = Path(input_path)
-            geometry_newer = False
-            if existing_log.exists() and geom_source.exists():
-                try:
-                    geometry_newer = geom_source.stat().st_mtime >= existing_log.stat().st_mtime
-                except Exception:  # noqa: BLE001
-                    geometry_newer = False
-            force_rerun = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
-            if (recalc_mode and not force_rerun
-                    and existing_log.exists() and _verify_orca_output('initial.out')):
-                allow_cfg = config.get('allow_imaginary_freq', 0)
-                try:
-                    allow_raw = float(str(allow_cfg).strip() or 0)
-                except Exception:  # noqa: BLE001
-                    allow_raw = 0.0
-                threshold = allow_raw if allow_raw <= 0 else -allow_raw
-                freq = search_imaginary_mode2('initial.out')
-                if not geometry_newer and (freq is None or freq >= threshold):
-                    freq_display = "n/a" if freq is None else f"{freq:.6f}"
-                    logger.info(
-                        "[classic] Reusing converged initial.out (freq=%s ≥ %s); skipping initial rerun.",
-                        freq_display,
-                        threshold,
-                    )
-                    if not Path('initial.xyz').exists():
-                        logger.warning("initial.xyz missing but initial.out indicates convergence; leaving as-is.")
-                    return
-                if geometry_newer or force_rerun:
-                    logger.info(
-                        "[classic] Input geometry updated after last initial.out → rerunning initial optimization.",
-                    )
             read_and_modify_file_1(
                 input_path,
                 output_initial,
@@ -1078,39 +1070,6 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
         def run_initial(cores: int) -> None:
             if not input_path:
                 raise RuntimeError('Input file path missing for manual initial job')
-            recalc_mode = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
-            existing_log = Path('initial.out')
-            geom_source = Path(input_path)
-            geometry_newer = False
-            if existing_log.exists() and geom_source.exists():
-                try:
-                    geometry_newer = geom_source.stat().st_mtime >= existing_log.stat().st_mtime
-                except Exception:  # noqa: BLE001
-                    geometry_newer = False
-            force_rerun = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
-            if (recalc_mode and not force_rerun
-                    and existing_log.exists() and _verify_orca_output('initial.out')):
-                allow_cfg = config.get('allow_imaginary_freq', 0)
-                try:
-                    allow_raw = float(str(allow_cfg).strip() or 0)
-                except Exception:  # noqa: BLE001
-                    allow_raw = 0.0
-                threshold = allow_raw if allow_raw <= 0 else -allow_raw
-                freq = search_imaginary_mode2('initial.out')
-                if not geometry_newer and (freq is None or freq >= threshold):
-                    freq_display = "n/a" if freq is None else f"{freq:.6f}"
-                    logger.info(
-                        "[manual] Reusing converged initial.out (freq=%s ≥ %s); skipping initial rerun.",
-                        freq_display,
-                        threshold,
-                    )
-                    if not Path('initial.xyz').exists():
-                        logger.warning("initial.xyz missing but initial.out indicates convergence; leaving as-is.")
-                    return
-                if geometry_newer or force_rerun:
-                    logger.info(
-                        "[manual] Input geometry updated after last initial.out → rerunning initial optimization.",
-                    )
             read_and_modify_file_1(
                 input_path,
                 output_initial,

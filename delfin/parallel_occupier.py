@@ -12,7 +12,7 @@ from delfin.common.logging import get_logger
 from delfin.dynamic_pool import JobPriority, create_orca_job
 from delfin.global_manager import get_global_manager
 from delfin.copy_helpers import read_occupier_file
-from delfin.imag import run_IMAG, search_imaginary_mode2
+from delfin.imag import run_IMAG
 from delfin.orca import run_orca
 from delfin.xyz_io import (
     read_xyz_and_create_input2,
@@ -778,11 +778,12 @@ def _run_jobs_sequentially(
                 continue
 
             allocated = max(job.cores_min, min(job.cores_max, per_job_cores))
+            usage_info = f"{job.description}; {allocated}/{total_cores} cores used"
             logger.info(
                 "[occupier] Running %s with %d cores (%s)",
                 job_id,
                 allocated,
-                job.description,
+                usage_info,
             )
             try:
                 job.work(allocated)
@@ -1021,44 +1022,6 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
         def run_initial(cores: int,
                         _mult=multiplicity_0,
                         _adds=additions_0) -> None:
-            recalc_mode = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
-            existing_log = Path("initial.out")
-            existing_xyz = Path("initial.xyz")
-            geom_source = Path("input_initial_OCCUPIER.xyz")
-            geometry_newer = False
-            if existing_log.exists() and geom_source.exists():
-                try:
-                    geometry_newer = geom_source.stat().st_mtime >= existing_log.stat().st_mtime
-                except Exception:  # noqa: BLE001
-                    geometry_newer = False
-            force_rerun = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
-            if (recalc_mode and not force_rerun and existing_log.exists()
-                    and _verify_orca_output(str(existing_log))):
-                allow_cfg = config.get('allow_imaginary_freq', 0)
-                try:
-                    allow_raw = float(str(allow_cfg).strip() or 0)
-                except Exception:  # noqa: BLE001
-                    allow_raw = 0.0
-                threshold = allow_raw if allow_raw <= 0 else -allow_raw
-                freq = search_imaginary_mode2(str(existing_log))
-                if not geometry_newer and (freq is None or freq >= threshold):
-                    freq_display = "n/a" if freq is None else f"{freq:.6f}"
-                    logger.info(
-                        "[occupier] Reusing converged initial.out (freq=%s ≥ %s); skipping initial rerun.",
-                        freq_display,
-                        threshold,
-                    )
-                    if not existing_xyz.exists():
-                        source_xyz = Path("input_initial_OCCUPIER.xyz")
-                        if source_xyz.exists():
-                            shutil.copy(source_xyz, existing_xyz)
-                        else:
-                            logger.warning("initial.xyz missing and no backup geometry found")
-                    return
-                if geometry_newer:
-                    logger.info(
-                        "[occupier] input_initial_OCCUPIER.xyz newer than initial.out → rerunning initial optimization.",
-                    )
             logger.info("[occupier] Preparing initial frequency job")
             read_xyz_and_create_input3(
                 "input_initial_OCCUPIER.xyz",

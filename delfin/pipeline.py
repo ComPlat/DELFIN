@@ -615,7 +615,7 @@ def run_manual_phase(ctx: PipelineContext) -> Dict[str, Any]:
             f"{job_id} (missing {', '.join(deps) if deps else 'unknown'})"
             for job_id, deps in result.skipped.items()
         ) or "none"
-        logger.warning(
+        logger.info(
             "Manual workflows completed with issues; continuing. Failed jobs: %s | Skipped jobs: %s",
             failed_desc,
             skipped_desc,

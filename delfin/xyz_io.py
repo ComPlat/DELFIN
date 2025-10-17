@@ -307,7 +307,6 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
 
     with open(output_file_path, 'w') as file:
         file.writelines(lines)
-    logging.info(f"Input file '{input_file_path}' modified and saved as '{output_file_path}'")
 
 def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplicity, solvent,
                          found_metals, metal_basisset, main_basisset, config, additions):
@@ -369,7 +368,6 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
 
     with open(output_file_path, 'w') as file:
         file.writelines(lines)
-    logging.info(f"Input file '{input_file_path}' modified and saved as '{output_file_path}'")
 
 
 def read_xyz_and_create_input2(xyz_file_path: str, output_file_path: str, charge: int, multiplicity: int, solvent: str,

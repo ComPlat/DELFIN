@@ -21,7 +21,7 @@ def _read_text(path: str) -> Optional[str]:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
     except FileNotFoundError:
-        logger.error(f"File {path} not found.")
+        logger.info(f"File {path} not found; skipping energy extraction.")
         return None
 
 def _search_last_float(path: str, patterns: Sequence[str]) -> Optional[float]:
@@ -129,7 +129,7 @@ def find_state1_ohne_SOC(filename3: str) -> Optional[float]:
                             logger.error(f"Could not convert '{parts[0]}' to a float.")
                             continue
     except FileNotFoundError:
-        logger.error(f"File {filename3} not found.")
+        logger.info(f"File {filename3} not found; skipping excited-state extraction.")
         return None
     return last_value
 
@@ -161,7 +161,7 @@ def find_state3_ohne_SOC(filename3: str) -> Optional[float]:
                             logger.error(f"Could not convert '{parts[0]}' to a float.")
                             continue
     except FileNotFoundError:
-        logger.error(f"File {filename3} not found.")
+        logger.info(f"File {filename3} not found; skipping excited-state extraction.")
         return None
     return last_value
 
@@ -193,7 +193,7 @@ def find_state1_mit_SOC(filename3: str) -> Optional[float]:
                             logger.error(f"Could not convert '{parts[0]}' to a float.")
                             return None
     except FileNotFoundError:
-        logger.error(f"File {filename3} not found.")
+        logger.info(f"File {filename3} not found; skipping excited-state extraction.")
     return None
 
 def find_state3_mit_SOC(filename3: str) -> Optional[float]:
@@ -223,7 +223,7 @@ def find_state3_mit_SOC(filename3: str) -> Optional[float]:
                             logger.error(f"Could not convert '{parts[0]}' to a float.")
                             return None
     except FileNotFoundError:
-        logger.error(f"File {filename3} not found.")
+        logger.info(f"File {filename3} not found; skipping excited-state extraction.")
     return None
 
 def check_and_execute_SOC(filename3: str, config: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:

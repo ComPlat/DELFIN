@@ -37,6 +37,7 @@ class PoolJob:
     allocated_cores: int = 0
     retry_count: int = 0
     next_retry_time: float = 0.0
+    suppress_pool_logs: bool = False
 
 
 class DynamicCorePool:
@@ -82,7 +83,10 @@ class DynamicCorePool:
         job.next_retry_time = time.time()
         priority_value = job.priority.value
         self._job_queue.put((priority_value, job.next_retry_time, next(self._job_counter), job))
-        logger.info(f"Job {job.job_id} queued (cores: {job.cores_min}-{job.cores_optimal}-{job.cores_max})")
+        if not job.suppress_pool_logs:
+            logger.info(
+                f"Job {job.job_id} queued (cores: {job.cores_min}-{job.cores_optimal}-{job.cores_max})"
+            )
         self._signal_state_change()
         return job.job_id
 
@@ -207,14 +211,21 @@ class DynamicCorePool:
             job.actual_start_time = time.time()
             self._running_jobs[job.job_id] = job
 
-            logger.info(f"Starting job {job.job_id} with {allocated_cores} cores "
-                       f"({self._allocated_cores}/{self.total_cores} cores used)")
+            if not job.suppress_pool_logs:
+                logger.info(
+                    f"Starting job {job.job_id} with {allocated_cores} cores "
+                    f"({self._allocated_cores}/{self.total_cores} cores used)"
+                )
 
             # Create modified execution function with allocated cores
             def execute_with_cores():
-                # Add allocated cores to kwargs for ORCA
+                # Add allocated cores and pool usage snapshot to kwargs
                 modified_kwargs = job.kwargs.copy()
                 modified_kwargs['cores'] = allocated_cores
+                modified_kwargs['pool_snapshot'] = (
+                    self._allocated_cores,
+                    self.total_cores,
+                )
 
                 return job.execute_func(*job.args, **modified_kwargs)
 
@@ -243,8 +254,11 @@ class DynamicCorePool:
             try:
                 result = future.result()
                 self._completed_jobs.append(job_id)
-                logger.info(f"Job {job_id} completed in {duration:.1f}s, "
-                           f"freed {job.allocated_cores} cores")
+                if not job.suppress_pool_logs:
+                    logger.info(
+                        f"Job {job_id} completed in {duration:.1f}s, "
+                        f"freed {job.allocated_cores} cores"
+                    )
             except Exception as e:
                 self._failed_jobs.append(job_id)
                 logger.error(f"Job {job_id} failed after {duration:.1f}s: {e}")
