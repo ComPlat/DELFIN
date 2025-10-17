@@ -237,15 +237,37 @@ def calculate_total_electrons_txt(control_file_path: str) -> Optional[Tuple[int,
     """Calculate total electron count and suggest spin multiplicity.
 
     Reads molecular geometry from CONTROL-referenced file and sums
-    atomic numbers to determine total electron count. Suggests
-    initial spin multiplicity based on even/odd electron number.
+    atomic numbers to determine total electron count. Reads charge from
+    CONTROL.txt and calculates actual electron count after charge correction.
+    Suggests initial spin multiplicity based on even/odd electron number
+    AFTER charge correction.
 
     Args:
         control_file_path: Path to CONTROL.txt file
 
     Returns:
-        Tuple of (total_electrons, suggested_multiplicity) or None on error
+        Tuple of (total_electrons_neutral, suggested_multiplicity) or None on error
+        Note: total_electrons_neutral is the electron count BEFORE charge correction
     """
+    # Read charge from CONTROL.txt
+    control_path = resolve_path(control_file_path)
+    charge = 0
+    try:
+        with control_path.open("r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.strip().lower().startswith("charge"):
+                    eq = line.split("=", 1)
+                    if len(eq) == 2:
+                        charge_str = eq[1].strip()
+                        try:
+                            charge = int(charge_str)
+                        except ValueError:
+                            logger.warning(f"Could not parse charge '{charge_str}', using 0")
+                            charge = 0
+                        break
+    except Exception as e:
+        logger.warning(f"Could not read charge from CONTROL.txt: {e}, using 0")
+
     input_file_path = _parse_control_for_input_file(control_file_path)
     if not input_file_path.exists():
         logger.error(f"Input file '{input_file_path}' not found.")
@@ -279,5 +301,13 @@ def calculate_total_electrons_txt(control_file_path: str) -> Optional[Tuple[int,
         else:
             logger.warning(f"Unknown element '{sym}' in line: {line.strip()}")
 
-    multiplicity_guess = 1 if (total_electrons_txt % 2 == 0) else 2
+    # Calculate actual electron count after charge correction
+    total_electrons_actual = total_electrons_txt - charge
+
+    # Determine multiplicity based on ACTUAL electron count (after charge correction)
+    multiplicity_guess = 1 if (total_electrons_actual % 2 == 0) else 2
+
+    logger.debug(f"Electron count: neutral={total_electrons_txt}, charge={charge}, "
+                 f"actual={total_electrons_actual}, multiplicity={multiplicity_guess}")
+
     return total_electrons_txt, multiplicity_guess

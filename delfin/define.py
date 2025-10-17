@@ -106,7 +106,7 @@ print_Loewdin_population_analysis=no
 ------------------------------------
 Resource Settings:
 PAL=12
-maxcore=3800
+maxcore=6000
 parallel_workflows=no
 pal_jobs=4
 ------------------------------------
