@@ -633,19 +633,34 @@ def run_manual_phase(ctx: PipelineContext) -> Dict[str, Any]:
 
 def collect_gibbs_energies(ctx: PipelineContext) -> Dict[str, Optional[float]]:
     bundle = ctx.file_bundle
-    energies = {
-        '0': find_gibbs_energy('initial.out'),
-        '+1': find_gibbs_energy('ox_step_1.out'),
-        '+2': find_gibbs_energy('ox_step_2.out'),
-        '+3': find_gibbs_energy('ox_step_3.out'),
-        '-1': find_gibbs_energy('red_step_1.out'),
-        '-2': find_gibbs_energy('red_step_2.out'),
-        '-3': find_gibbs_energy('red_step_3.out'),
+    file_map = {
+        '0': 'initial.out',
+        '+1': 'ox_step_1.out',
+        '+2': 'ox_step_2.out',
+        '+3': 'ox_step_3.out',
+        '-1': 'red_step_1.out',
+        '-2': 'red_step_2.out',
+        '-3': 'red_step_3.out',
     }
 
-    for key, value in energies.items():
+    energies: Dict[str, Optional[float]] = {}
+
+    for key, filename in file_map.items():
+        path = Path(filename)
+        if not path.exists():
+            energies[key] = None
+            continue
+
+        value = find_gibbs_energy(filename)
+        energies[key] = value
         if value is not None:
             logger.info("Free Gibbs Free Energy %s (H): %s", key, value)
+        else:
+            logger.info(
+                "Skipping Gibbs energy for state %s (data unavailable in %s)",
+                key,
+                filename,
+            )
     return energies
 
 
@@ -666,6 +681,25 @@ class SummaryResults:
 def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
     energies = collect_gibbs_energies(ctx)
 
+    missing_potential_inputs = {
+        '0': ('initial.out', ['E_ox', 'E_red', 'E_ox_2', 'E_red_2', 'E_ox_3', 'E_red_3']),
+        '+1': ('ox_step_1.out', ['E_ox', 'E_ox_2']),
+        '+2': ('ox_step_2.out', ['E_ox_2', 'E_ox_3']),
+        '+3': ('ox_step_3.out', ['E_ox_3']),
+        '-1': ('red_step_1.out', ['E_red', 'E_red_2']),
+        '-2': ('red_step_2.out', ['E_red_2', 'E_red_3']),
+        '-3': ('red_step_3.out', ['E_red_3']),
+    }
+
+    for key, (filename, potentials) in missing_potential_inputs.items():
+        value = energies.get(key)
+        if value is None and Path(filename).exists():
+            logger.info(
+                "Skipping potentials %s (Gibbs data unavailable in %s)",
+                ", ".join(potentials),
+                filename,
+            )
+
     m1_avg, m2_step, m3_mix, use_flags = calculate_redox_potentials(ctx.config, energies, E_ref)
     E_ox, E_ox_2, E_ox_3, E_red, E_red_2, E_red_3 = select_final_potentials(m1_avg, m2_step, m3_mix, use_flags)
 
@@ -678,20 +712,58 @@ def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
 
     E_00_t1 = None
     E_00_s1 = None
+    def _missing_components(components: dict[str, Optional[float]]) -> tuple[list[str], list[str]]:
+        missing = []
+        missing_files = []
+        for label, value in components.items():
+            if value is not None:
+                continue
+            if '(' in label and label.endswith(')'):
+                filename = label[label.find('(') + 1:-1]
+                if not Path(filename).exists():
+                    missing_files.append(filename)
+                    continue
+            missing.append(label)
+        return missing, missing_files
+
     if ctx.config['E_00'] == "yes":
-        if "t" in ctx.config.get("excitation", ""):
-            if ZPE_S0 is not None and ZPE_T1 is not None and E_0 is not None and E_T1 is not None:
+        excitation_flags = ctx.config.get("excitation", "")
+
+        if "t" in excitation_flags:
+            requirements = {
+                "ZPE(initial.out)": ZPE_S0,
+                "ZPE(t1_state_opt.out)": ZPE_T1,
+                "Energy(initial.out)": E_0,
+                "Energy(t1_state_opt.out)": E_T1,
+            }
+            missing, missing_files = _missing_components(requirements)
+            if not missing and not missing_files:
                 E_00_t1 = ((E_T1 - E_0) + (ZPE_T1 - ZPE_S0)) * 27.211386245988
                 logger.info("E_00_t (eV): %s", E_00_t1)
             else:
-                logger.error("E_00_t calculation cannot be performed due to missing data.")
+                if missing:
+                    logger.info(
+                        "Skipping E_00_t calculation (data unavailable: %s)",
+                        ", ".join(missing),
+                    )
 
-        if "s" in ctx.config.get("excitation", ""):
-            if ZPE_S0 is not None and ZPE_S1 is not None and E_0 is not None and E_S1 is not None:
+        if "s" in excitation_flags:
+            requirements = {
+                "ZPE(initial.out)": ZPE_S0,
+                "ZPE(s1_state_opt.out)": ZPE_S1,
+                "Energy(initial.out)": E_0,
+                "Energy(s1_state_opt.out)": E_S1,
+            }
+            missing, missing_files = _missing_components(requirements)
+            if not missing and not missing_files:
                 E_00_s1 = ((E_S1 - E_0) + (ZPE_S1 - ZPE_S0)) * 27.211386245988
                 logger.info("E_00_s (eV): %s", E_00_s1)
             else:
-                logger.error("E_00_s calculation cannot be performed due to missing data.")
+                if missing:
+                    logger.info(
+                        "Skipping E_00_s calculation (data unavailable: %s)",
+                        ", ".join(missing),
+                    )
 
     duration = time.time() - ctx.start_time
     return SummaryResults(
