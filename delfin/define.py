@@ -85,6 +85,12 @@ geom_opt=OPT
 initial_guess=PModel
 temperature=298.15
 maxiter=125
+----------------
+deltaSCF:
+deltaSCF_DOMOM=true
+deltaSCF_PMOM=true
+deltaSCF_keepinitialref=true
+deltaSCF_SOSCFHESSUP=LBFGS
 ------------------------------------
 Reference value:
 E_ref=

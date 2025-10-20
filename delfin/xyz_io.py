@@ -668,20 +668,40 @@ def _create_s1_deltascf_input(xyz_file_path: str, output_file_path: str, charge:
     lines = builder.lines
 
     maxiter_val = resolve_maxiter(config)
-    scf_lines = [
-        "%scf\n",
-    ]
+    scf_lines = ["%scf\n"]
     if maxiter_val is not None:
         scf_lines.append(f" maxiter {maxiter_val}\n")
-    scf_lines.extend([
-        " DOMOM false\n",
-        " pmom true\n",
-        " keepinitialref true\n",
-        " alphaconf 0,1\n",
-        " betaconf 0\n",
-        " SOSCFHESSUP LBFGS\n",
-        "end\n",
-    ])
+
+    def _maybe_value(key: str, default: str) -> Optional[str]:
+        raw = config.get(key, default)
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        return text or None
+
+    def _maybe_bool(key: str, default: str) -> Optional[str]:
+        value = _maybe_value(key, default)
+        if value is None:
+            return None
+        lowered = value.lower()
+        if lowered in {"true", "false"}:
+            return lowered
+        return value
+
+    scf_params = (
+        ("DOMOM", _maybe_bool('deltaSCF_DOMOM', 'true')),
+        ("pmom", _maybe_bool('deltaSCF_PMOM', 'true')),
+        ("keepinitialref", _maybe_bool('deltaSCF_keepinitialref', 'true')),
+        ("alphaconf", "0,1"),
+        ("betaconf", "0"),
+        ("SOSCFHESSUP", _maybe_value('deltaSCF_SOSCFHESSUP', 'LBFGS')),
+    )
+
+    for key, value in scf_params:
+        if value is not None:
+            scf_lines.append(f" {key} {value}\n")
+
+    scf_lines.append("end\n")
     lines.append("".join(scf_lines))
 
     builder.add_resources(config['maxcore'], config['PAL'], None)
