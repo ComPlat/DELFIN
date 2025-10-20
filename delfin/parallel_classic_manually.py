@@ -19,10 +19,10 @@ from delfin.global_manager import get_global_manager
 from delfin.orca import run_orca
 from delfin.imag import run_IMAG
 from delfin.xyz_io import (
+    create_s1_optimization_input,
     read_and_modify_file_1,
     read_xyz_and_create_input2,
     read_xyz_and_create_input3,
-    read_xyz_and_create_input4,
 )
 
 logger = get_logger(__name__)
@@ -892,7 +892,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
         if 's' in excitation:
 
             def run_s1_state(cores: int) -> None:
-                read_xyz_and_create_input4(
+                create_s1_optimization_input(
                     'initial.xyz',
                     's1_state_opt.inp',
                     base_charge,
@@ -1178,7 +1178,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 add_s1 = _extract_manual_additions(config.get('additions_S1', '')) or ground_additions
 
                 def run_s1_state(cores: int) -> None:
-                    read_xyz_and_create_input4(
+                    create_s1_optimization_input(
                         'initial.xyz',
                         's1_state_opt.inp',
                         base_charge,

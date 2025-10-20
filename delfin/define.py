@@ -35,6 +35,7 @@ calc_potential_method=2
 ------------------------------------
 E_00=no
 excitation=s|t
+S1_opt=TDDFT|deltaSCF
 triplet_flag=FALSE
 absorption_spec=no
 emission_spec=no

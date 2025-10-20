@@ -612,3 +612,126 @@ def read_xyz_and_create_input4(xyz_file_path: str, output_file_path: str, charge
     with open(output_file_path, 'w') as file:
         file.writelines(lines)
     logging.info(f"XYZ file '{xyz_file_path}' processed and saved as '{output_file_path}'")
+
+
+def _create_s1_deltascf_input(xyz_file_path: str, output_file_path: str, charge: int, multiplicity: int,
+                               solvent: str, found_metals: List[str], metal_basisset: Optional[str], main_basisset: str,
+                               config: Dict[str, Any], additions: str) -> None:
+    try:
+        with open(xyz_file_path, 'r') as file:
+            xyz_lines = file.readlines()[2:]
+    except FileNotFoundError:
+        logging.error(f"File not found: {xyz_file_path}")
+        return
+
+    enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
+    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
+
+    load_radii = enable_first and not sphere_scale_raw
+    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if load_radii else None
+
+    auto_main, auto_metal = set_main_basisset(found_metals, config)
+    main = main_basisset or auto_main
+    metal = metal_basisset or auto_metal
+
+    rel_token, aux_jk, _ = select_rel_and_aux(found_metals, config)
+    implicit = _implicit_token(config, solvent)
+
+    functional = str(config.get("functional", "PBE0")).strip()
+    disp = str(config.get("disp_corr", "")).strip()
+    ri_jkx = str(config.get("ri_jkx", "")).strip()
+    geom_token = str(config.get("geom_opt", "")).strip()
+    init_guess = (str(config.get("initial_guess", "")).split() or [""])[0]
+
+    tokens = ["!", functional, "UKS"]
+    if rel_token:
+        tokens.append(rel_token)
+    tokens.append(str(main).strip())
+    if disp:
+        tokens.append(disp)
+    if ri_jkx:
+        tokens.append(ri_jkx)
+    if aux_jk:
+        tokens.append(aux_jk)
+    if implicit:
+        tokens.append(implicit)
+    tokens.append("deltaSCF")
+    if geom_token:
+        tokens.append(geom_token)
+    tokens.append("FREQ")
+    if init_guess:
+        tokens.append(init_guess)
+
+    bang = " ".join(token for token in tokens if token)
+
+    builder = OrcaInputBuilder(bang)
+    lines = builder.lines
+
+    maxiter_val = resolve_maxiter(config)
+    scf_lines = [
+        "%scf\n",
+    ]
+    if maxiter_val is not None:
+        scf_lines.append(f" maxiter {maxiter_val}\n")
+    scf_lines.extend([
+        " DOMOM false\n",
+        " pmom true\n",
+        " keepinitialref true\n",
+        " alphaconf 0,1\n",
+        " betaconf 0\n",
+        " SOSCFHESSUP LBFGS\n",
+        "end\n",
+    ])
+    lines.append("".join(scf_lines))
+
+    builder.add_resources(config['maxcore'], config['PAL'], None)
+    builder.add_additions(additions)
+    builder.add_blocks(collect_output_blocks(config))
+
+    lines.append(f"* xyz {charge} {multiplicity}\n")
+    geom = [ln if ln.endswith("\n") else ln + "\n" for ln in xyz_lines]
+    geom = _apply_per_atom_newgto(geom, found_metals, metal, config, radii_all)
+    lines.extend(geom)
+    lines.append("*\n")
+
+    try:
+        with open(output_file_path, 'w') as file:
+            file.writelines(lines)
+        logging.info(f"XYZ file '{xyz_file_path}' processed and saved as '{output_file_path}'")
+    except Exception as exc:  # noqa: BLE001
+        logging.error(f"Error writing '{output_file_path}': {exc}")
+
+
+def create_s1_optimization_input(xyz_file_path: str, output_file_path: str, charge: int, multiplicity: int,
+                                 solvent: str, found_metals: List[str], metal_basisset: Optional[str],
+                                 main_basisset: str, config: Dict[str, Any], additions: str) -> None:
+    method_value = config.get('s1_opt', config.get('S1_opt', 'TDDFT'))
+    method_raw = str(method_value).strip().lower()
+    if method_raw in {'deltascf', 'delta scf', 'dscf'}:
+        _create_s1_deltascf_input(
+            xyz_file_path,
+            output_file_path,
+            charge,
+            multiplicity,
+            solvent,
+            found_metals,
+            metal_basisset,
+            main_basisset,
+            config,
+            additions,
+        )
+        return
+
+    # Fallback to existing TDDFT workflow
+    read_xyz_and_create_input4(
+        xyz_file_path,
+        output_file_path,
+        charge,
+        multiplicity,
+        solvent,
+        found_metals,
+        metal_basisset,
+        main_basisset,
+        config,
+        additions,
+    )

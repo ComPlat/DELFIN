@@ -15,9 +15,9 @@ from delfin.copy_helpers import read_occupier_file
 from delfin.imag import run_IMAG
 from delfin.orca import run_orca
 from delfin.xyz_io import (
+    create_s1_optimization_input,
     read_xyz_and_create_input2,
     read_xyz_and_create_input3,
-    read_xyz_and_create_input4,
 )
 from .parallel_classic_manually import (
     WorkflowJob,
@@ -1187,7 +1187,7 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
                     failed_flag.unlink()
                 except Exception:  # noqa: BLE001
                     pass
-            read_xyz_and_create_input4(
+            create_s1_optimization_input(
                 xyz_initial,
                 "s1_state_opt.inp",
                 base_charge,
