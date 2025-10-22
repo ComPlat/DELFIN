@@ -5,6 +5,15 @@ All notable changes to DELFIN will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2025-02-XX
+
+### Changed
+- Persist QMMM split detection (`$` separator) via shared cache so OCCUPIER/Classic/Manually runs keep the `QM/XTB` flag even if later geometries omit the marker.
+- All geometry writers now pass the geometry path to the splitter so cache lookups work across workflow steps.
+
+### Fixed
+- Ensured newly spawned OCCUPIER steps reuse the cached QM range, restoring the `%QMMM` block for oxidation/reduction inputs.
+
 ## [1.0.3] - 2025-01-XX
 
 ### Added

@@ -1,10 +1,158 @@
-import logging, re, math
-from typing import List, Dict, Optional, Any
+import json
+import logging
+import math
+import re
+import threading
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, resolve_maxiter
 
 # import canonical selection helpers from utils
 from .utils import set_main_basisset, select_rel_and_aux
+
+# Cache QMMM splits once detected so subsequent geometries (e.g. ORCA outputs without '$')
+# continue to receive the QM/XTB setup.
+_QMMM_CACHE: Dict[Tuple[str, ...], Tuple[int, int]] = {}
+_QMMM_CACHE_LOCK = threading.Lock()
+_QMMM_CACHE_BASENAME = ".qmmm_cache.json"
+
+
+def _cache_key(signature: Tuple[str, ...]) -> str:
+    """Convert a geometry signature into a stable string key."""
+    return "|".join(signature)
+
+
+def _normalise_source_path(source_path: Optional[Path]) -> Optional[Path]:
+    """Resolve the provided source path if possible."""
+    if source_path is None:
+        return None
+    try:
+        return source_path.resolve()
+    except Exception:
+        return source_path
+
+
+def _candidate_cache_paths(source_path: Optional[Path]) -> List[Path]:
+    """
+    Return cache file locations to probe, starting from the geometry directory
+    and walking up the parent chain.
+    """
+    if source_path is None:
+        return []
+    base = source_path if source_path.is_dir() else source_path.parent
+    base = _normalise_source_path(base)
+    if base is None:
+        return []
+    candidates: List[Path] = []
+    seen: Set[Path] = set()
+    current = base
+    for _ in range(8):  # guard against deep/recursive paths
+        if current in seen:
+            break
+        seen.add(current)
+        candidates.append(current / _QMMM_CACHE_BASENAME)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return candidates
+
+
+def _load_qmmm_signature_from_disk(signature: Tuple[str, ...], source_path: Optional[Path]) -> Optional[Tuple[int, int]]:
+    """Attempt to load a persisted QM/XTB split for the given signature."""
+    key = _cache_key(signature)
+    for cache_file in _candidate_cache_paths(source_path):
+        try:
+            with cache_file.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+        raw = data.get(key)
+        if isinstance(raw, dict):
+            start = raw.get("start")
+            end = raw.get("end")
+            if start is not None and end is not None:
+                try:
+                    return int(start), int(end)
+                except (TypeError, ValueError):
+                    continue
+        if isinstance(raw, list) and len(raw) == 2:
+            try:
+                return int(raw[0]), int(raw[1])
+            except (TypeError, ValueError):
+                continue
+        # fallback: use directory-level default mapping if present
+        default_raw = data.get("__default__")
+        if isinstance(default_raw, list) and len(default_raw) == 2:
+            try:
+                return int(default_raw[0]), int(default_raw[1])
+            except (TypeError, ValueError):
+                continue
+        if isinstance(default_raw, dict):
+            start = default_raw.get("start")
+            end = default_raw.get("end")
+            if start is not None and end is not None:
+                try:
+                    return int(start), int(end)
+                except (TypeError, ValueError):
+                    continue
+    return None
+
+
+def _persist_qmmm_signature(signature: Tuple[str, ...], qmmm_range: Tuple[int, int], source_path: Optional[Path]) -> None:
+    """Store the detected QM/XTB split alongside the geometry and its parent directory."""
+    if source_path is None:
+        return
+    key = _cache_key(signature)
+    payload = [int(qmmm_range[0]), int(qmmm_range[1])]
+    base = source_path if source_path.is_dir() else source_path.parent
+    base = _normalise_source_path(base)
+    if base is None:
+        return
+    targets = {base}
+    parent = base.parent
+    if parent != base:
+        targets.add(parent)
+    for target in targets:
+        cache_file = target / _QMMM_CACHE_BASENAME
+        try:
+            with _QMMM_CACHE_LOCK:
+                try:
+                    with cache_file.open("r", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                except FileNotFoundError:
+                    data = {}
+                except Exception:
+                    data = {}
+                data[key] = payload
+                data.setdefault("__default__", payload)
+                with cache_file.open("w", encoding="utf-8") as fh:
+                    json.dump(data, fh)
+        except Exception:
+            continue
+
+
+def _geometry_signature(lines: List[str]) -> Optional[Tuple[str, ...]]:
+    """
+    Build a signature for a geometry based solely on element ordering.
+    This stays constant across optimizations, allowing us to reuse cached
+    QM/XTB splits even if coordinates change.
+    """
+    elements: List[str] = []
+    for ln in lines:
+        stripped = ln.strip()
+        if not stripped or stripped in {"*", "$"}:
+            continue
+        parts = stripped.split()
+        if not parts:
+            continue
+        elements.append(_elem_from_label(parts[0]))
+    if not elements:
+        return None
+    return tuple(elements)
 
 # -------------------------------------------------------------------------
 # generic IO helpers (unchanged API)
@@ -143,6 +291,80 @@ def _parse_xyz_atoms(xyz_lines: List[str]):
         atoms.append({"line_idx": idx, "elem": elem, "x": x, "y": y, "z": z})
     return atoms
 
+
+def split_qmmm_sections(coord_lines: List[str], source_path: Optional[Path] = None) -> Tuple[List[str], Optional[Tuple[int, int]]]:
+    """
+    Split coordinate lines into QM/XTB sections using a line that contains only '$' as separator.
+
+    Returns a tuple of (all coordinate lines without separators, (start, end) tuple for QMAtoms).
+    If no separator is found, the second element is None.
+    """
+    qm_lines: List[str] = []
+    mm_lines: List[str] = []
+    separator_seen = False
+
+    for raw in coord_lines:
+        stripped = raw.strip()
+        if not stripped or stripped == "*":
+            continue
+        if stripped == "$":
+            if not separator_seen:
+                separator_seen = True
+            continue
+
+        line = raw if raw.endswith("\n") else raw + "\n"
+        if separator_seen:
+            mm_lines.append(line)
+        else:
+            qm_lines.append(line)
+
+    combined = qm_lines + mm_lines
+
+    if separator_seen and qm_lines:
+        qmmm_range = (0, len(qm_lines) - 1)
+        signature = _geometry_signature(combined)
+        if signature:
+            with _QMMM_CACHE_LOCK:
+                _QMMM_CACHE[signature] = qmmm_range
+            _persist_qmmm_signature(signature, qmmm_range, source_path)
+        return combined, qmmm_range
+
+    signature = _geometry_signature(combined)
+    cached: Optional[Tuple[int, int]] = None
+    if signature:
+        with _QMMM_CACHE_LOCK:
+            cached = _QMMM_CACHE.get(signature)
+    if cached:
+        return combined, cached
+
+    if signature:
+        disk_cached = _load_qmmm_signature_from_disk(signature, source_path)
+        if disk_cached:
+            with _QMMM_CACHE_LOCK:
+                _QMMM_CACHE[signature] = disk_cached
+            return combined, disk_cached
+
+    return combined, None
+
+
+def build_qmmm_block(qmmm_range: Optional[Tuple[int, int]]) -> List[str]:
+    """
+    Build the %QMMM block for ORCA when a QM/XTB split is present.
+    """
+    if not qmmm_range:
+        return []
+
+    start, end = qmmm_range
+    if end < start:
+        return []
+
+    return [
+        "%QMMM\n",
+        f"  QMATOMS {{{start}:{end}}}\n",
+        "END\n",
+        "END\n",
+    ]
+
 def _rcov(sym: str, radii_map: Optional[Dict[str, float]]) -> float:
     if radii_map and sym in radii_map:
         return float(radii_map[sym])
@@ -178,7 +400,8 @@ def _build_freq_block(config):
     temperature = config.get('temperature', '298.15')
     return f"%freq\n  Temp {temperature}\nend\n"
 
-def _build_bang_line(config, rel_token, main_basis, aux_jk, implicit, include_freq=False, geom_key="geom_opt"):
+def _build_bang_line(config, rel_token, main_basis, aux_jk, implicit,
+                     include_freq=False, geom_key="geom_opt", qmmm_method: Optional[str] = None):
     """
     Construct the ORCA '!' line according to new CONTROL keys.
     include_freq=True adds the 'FREQ' keyword.
@@ -189,7 +412,10 @@ def _build_bang_line(config, rel_token, main_basis, aux_jk, implicit, include_fr
     geom   = str(config.get(geom_key, "")).strip()
     initg = (str(config.get("initial_guess", "")).split() or [""])[0]
 
-    tokens = ["!", str(config["functional"]).strip()]
+    tokens = ["!"]
+    if qmmm_method:
+        tokens.append(qmmm_method)
+    tokens.append(str(config["functional"]).strip())
     if rel_token:
         tokens.append(rel_token)
     tokens.append(str(main_basis).strip())
@@ -265,8 +491,12 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
     Applies: new '!' line (with ri_jkx/aux_jk/relativity via utils), optional print blocks,
     and per-atom NewGTO for metals (+ optional first sphere).
     """
-    with open(input_file_path, 'r') as file:
+    input_path = Path(input_file_path)
+    with input_path.open('r') as file:
         coord_lines = [ln for ln in file.readlines() if ln.strip() and ln.strip() != "*"]
+
+    geom_lines, qmmm_range = split_qmmm_sections(coord_lines, input_path)
+    qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -285,8 +515,16 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
 
     # include FREQ only if frequency_calculation_OCCUPIER=yes
     include_freq = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
-    bang = _build_bang_line(config, rel_token, main, aux_jk, implicit,
-                            include_freq=include_freq, geom_key="geom_opt")
+    bang = _build_bang_line(
+        config,
+        rel_token,
+        main,
+        aux_jk,
+        implicit,
+        include_freq=include_freq,
+        geom_key="geom_opt",
+        qmmm_method=qmmm_token,
+    )
 
     output_blocks = collect_output_blocks(config)
     builder = OrcaInputBuilder(bang)
@@ -299,9 +537,9 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
     lines = builder.lines
 
     # geometry
+    lines.extend(build_qmmm_block(qmmm_range))
     lines.append(f"* xyz {charge} {multiplicity}\n")
-    geom = [ln if ln.endswith("\n") else ln + "\n" for ln in coord_lines]
-    geom = _apply_per_atom_newgto(geom, found_metals, metal, config, radii_all)
+    geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
     lines.extend(geom)
     lines.append("*\n")
 
@@ -317,8 +555,12 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
 
     NOTE: FREQ is always included on the '!' line.
     """
-    with open(input_file_path, 'r') as file:
+    input_path = Path(input_file_path)
+    with input_path.open('r') as file:
         coord_lines = [ln for ln in file.readlines() if ln.strip() and ln.strip() != "*"]
+
+    geom_lines, qmmm_range = split_qmmm_sections(coord_lines, input_path)
+    qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -338,8 +580,14 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
     # ALWAYS include FREQ
     include_freq = True
     bang = _build_bang_line(
-        config, rel_token, main, aux_jk, implicit,
-        include_freq=include_freq, geom_key="geom_opt"
+        config,
+        rel_token,
+        main,
+        aux_jk,
+        implicit,
+        include_freq=include_freq,
+        geom_key="geom_opt",
+        qmmm_method=qmmm_token,
     )
 
     # Fallback guard: ensure 'FREQ' really present (in case _build_bang_line ignores the flag)
@@ -360,9 +608,9 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
     lines = builder.lines
 
     # geometry
+    lines.extend(build_qmmm_block(qmmm_range))
     lines.append(f"* xyz {charge} {multiplicity}\n")
-    geom = [ln if ln.endswith("\n") else ln + "\n" for ln in coord_lines]
-    geom = _apply_per_atom_newgto(geom, found_metals, metal, config, radii_all)
+    geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
     lines.extend(geom)
     lines.append("*\n")
 
@@ -375,12 +623,16 @@ def read_xyz_and_create_input2(xyz_file_path: str, output_file_path: str, charge
     """
     TDDFT single-point builder (no freq). Uses new CONTROL keys and per-atom basis tagging.
     """
+    xyz_path = Path(xyz_file_path)
     try:
-        with open(xyz_file_path, 'r') as file:
+        with xyz_path.open('r') as file:
             xyz_lines = file.readlines()[2:]  # skip natoms + comment
     except FileNotFoundError:
         logging.error(f"File not found: {xyz_file_path}")
         return
+
+    geom_lines, qmmm_range = split_qmmm_sections(xyz_lines, xyz_path)
+    qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -409,8 +661,16 @@ def read_xyz_and_create_input2(xyz_file_path: str, output_file_path: str, charge
     implicit = _implicit_token(config, solvent)
 
     # method line (no freq)
-    bang = _build_bang_line(config, rel_token, main, aux_jk, implicit,
-                            include_freq=False, geom_key="")
+    bang = _build_bang_line(
+        config,
+        rel_token,
+        main,
+        aux_jk,
+        implicit,
+        include_freq=False,
+        geom_key="",
+        qmmm_method=qmmm_token,
+    )
 
     input_lines: List[str] = []
     input_lines.append(bang + "\n")
@@ -423,9 +683,9 @@ def read_xyz_and_create_input2(xyz_file_path: str, output_file_path: str, charge
         input_lines.append(f"{additions.strip()}\n")
 
     # geometry
+    input_lines.extend(build_qmmm_block(qmmm_range))
     input_lines.append(f"* xyz {charge} {multiplicity}\n")
-    geom = [ln if ln.endswith("\n") else ln + "\n" for ln in xyz_lines]
-    geom = _apply_per_atom_newgto(geom, found_metals, metal, config, radii_all)
+    geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
     input_lines.extend(geom)
     input_lines.append("*\n")
 
@@ -441,12 +701,16 @@ def read_xyz_and_create_input2_2(xyz_file_path, output_file_path, charge, multip
     """
     TDDFT + OPT builder (no freq). Uses new CONTROL keys and per-atom basis tagging.
     """
+    xyz_path = Path(xyz_file_path)
     try:
-        with open(xyz_file_path, 'r') as file:
+        with xyz_path.open('r') as file:
             xyz_lines = file.readlines()[2:]
     except FileNotFoundError:
         logging.error(f"File not found: {xyz_file_path}")
         return
+
+    geom_lines, qmmm_range = split_qmmm_sections(xyz_lines, xyz_path)
+    qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -472,8 +736,16 @@ def read_xyz_and_create_input2_2(xyz_file_path, output_file_path, charge, multip
     implicit = _implicit_token(config, solvent)
 
     # method line with OPT (no freq)
-    bang = _build_bang_line(config, rel_token, main, aux_jk, implicit,
-                            include_freq=False, geom_key="geom_opt")
+    bang = _build_bang_line(
+        config,
+        rel_token,
+        main,
+        aux_jk,
+        implicit,
+        include_freq=False,
+        geom_key="geom_opt",
+        qmmm_method=qmmm_token,
+    )
 
     input_lines: List[str] = []
     input_lines.append(bang + "\n")
@@ -486,9 +758,9 @@ def read_xyz_and_create_input2_2(xyz_file_path, output_file_path, charge, multip
         input_lines.append(f"{additions.strip()}\n")
 
     # geometry
+    input_lines.extend(build_qmmm_block(qmmm_range))
     input_lines.append(f"* xyz {charge} {multiplicity}\n")
-    geom = [ln if ln.endswith("\n") else ln + "\n" for ln in xyz_lines]
-    geom = _apply_per_atom_newgto(geom, found_metals, metal, config, radii_all)
+    geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
     input_lines.extend(geom)
     input_lines.append("*\n")
 
@@ -504,12 +776,16 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
     """
     Frequency job builder (adds FREQ). Uses new CONTROL keys and per-atom basis tagging.
     """
+    xyz_path = Path(xyz_file_path)
     try:
-        with open(xyz_file_path, 'r') as file:
+        with xyz_path.open('r') as file:
             xyz_lines = file.readlines()[2:]
     except FileNotFoundError:
         logging.error(f"File not found: {xyz_file_path}")
         return
+
+    geom_lines, qmmm_range = split_qmmm_sections(xyz_lines, xyz_path)
+    qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -528,8 +804,16 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
 
     # method line with FREQ
     include_freq = True
-    bang = _build_bang_line(config, rel_token, main, aux_jk, implicit,
-                            include_freq=include_freq, geom_key="geom_opt")
+    bang = _build_bang_line(
+        config,
+        rel_token,
+        main,
+        aux_jk,
+        implicit,
+        include_freq=include_freq,
+        geom_key="geom_opt",
+        qmmm_method=qmmm_token,
+    )
 
     output_blocks = collect_output_blocks(config)
     builder = OrcaInputBuilder(bang)
@@ -541,9 +825,9 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
 
     lines = builder.lines
 
+    lines.extend(build_qmmm_block(qmmm_range))
     lines.append(f"* xyz {charge} {multiplicity}\n")
-    geom = [ln if ln.endswith("\n") else ln + "\n" for ln in xyz_lines]
-    geom = _apply_per_atom_newgto(geom, found_metals, metal, config, radii_all)
+    geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
     lines.extend(geom)
     lines.append("*\n")
 
@@ -557,12 +841,16 @@ def read_xyz_and_create_input4(xyz_file_path: str, output_file_path: str, charge
     E00 / selected-root TDDFT builder (with %TDDFT IROOT/FOLLOWIROOT).
     Uses new CONTROL keys and per-atom basis tagging.
     """
+    xyz_path = Path(xyz_file_path)
     try:
-        with open(xyz_file_path, 'r') as file:
+        with xyz_path.open('r') as file:
             xyz_lines = file.readlines()[2:]
     except FileNotFoundError:
         logging.error(f"File not found: {xyz_file_path}")
         return
+
+    geom_lines, qmmm_range = split_qmmm_sections(xyz_lines, xyz_path)
+    qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -589,8 +877,16 @@ def read_xyz_and_create_input4(xyz_file_path: str, output_file_path: str, charge
     implicit = _implicit_token(config, solvent)
 
     # method line (with FREQ to mirror previous behavior)
-    bang = _build_bang_line(config, rel_token, main, aux_jk, implicit,
-                            include_freq=True, geom_key="geom_opt")
+    bang = _build_bang_line(
+        config,
+        rel_token,
+        main,
+        aux_jk,
+        implicit,
+        include_freq=True,
+        geom_key="geom_opt",
+        qmmm_method=qmmm_token,
+    )
 
     lines: List[str] = []
     lines.append(bang + "\n")
@@ -603,9 +899,9 @@ def read_xyz_and_create_input4(xyz_file_path: str, output_file_path: str, charge
     if additions and additions.strip():
         lines.append(f"{additions.strip()}\n")
 
+    lines.extend(build_qmmm_block(qmmm_range))
     lines.append(f"* xyz {charge} {multiplicity}\n")
-    geom = [ln if ln.endswith("\n") else ln + "\n" for ln in xyz_lines]
-    geom = _apply_per_atom_newgto(geom, found_metals, metal, config, radii_all)
+    geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
     lines.extend(geom)
     lines.append("*\n")
 
@@ -617,12 +913,16 @@ def read_xyz_and_create_input4(xyz_file_path: str, output_file_path: str, charge
 def _create_s1_deltascf_input(xyz_file_path: str, output_file_path: str, charge: int, multiplicity: int,
                                solvent: str, found_metals: List[str], metal_basisset: Optional[str], main_basisset: str,
                                config: Dict[str, Any], additions: str) -> None:
+    xyz_path = Path(xyz_file_path)
     try:
-        with open(xyz_file_path, 'r') as file:
+        with xyz_path.open('r') as file:
             xyz_lines = file.readlines()[2:]
     except FileNotFoundError:
         logging.error(f"File not found: {xyz_file_path}")
         return
+
+    geom_lines, qmmm_range = split_qmmm_sections(xyz_lines, xyz_path)
+    qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -643,7 +943,10 @@ def _create_s1_deltascf_input(xyz_file_path: str, output_file_path: str, charge:
     geom_token = str(config.get("geom_opt", "")).strip()
     init_guess = (str(config.get("initial_guess", "")).split() or [""])[0]
 
-    tokens = ["!", functional, "UKS"]
+    tokens = ["!"]
+    if qmmm_token:
+        tokens.append(qmmm_token)
+    tokens.extend([functional, "UKS"])
     if rel_token:
         tokens.append(rel_token)
     tokens.append(str(main).strip())
@@ -708,9 +1011,9 @@ def _create_s1_deltascf_input(xyz_file_path: str, output_file_path: str, charge:
     builder.add_additions(additions)
     builder.add_blocks(collect_output_blocks(config))
 
+    lines.extend(build_qmmm_block(qmmm_range))
     lines.append(f"* xyz {charge} {multiplicity}\n")
-    geom = [ln if ln.endswith("\n") else ln + "\n" for ln in xyz_lines]
-    geom = _apply_per_atom_newgto(geom, found_metals, metal, config, radii_all)
+    geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
     lines.extend(geom)
     lines.append("*\n")
 

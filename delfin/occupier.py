@@ -16,6 +16,7 @@ from .utils import (
 )
 from .reporting import generate_summary_report_OCCUPIER
 from .orca import run_orca
+from .xyz_io import build_qmmm_block, split_qmmm_sections
 from .parallel_classic_manually import (
     _WorkflowManager,
     WorkflowJob,
@@ -78,6 +79,8 @@ def run_OCCUPIER():
                     if not parts:
                         continue
                     element = parts[0]
+                    if element == "$":
+                        continue
                     if element in atom_electrons:
                         total_electrons += atom_electrons[element]
                     else:
@@ -226,6 +229,13 @@ def run_OCCUPIER():
         with xyz_path.open('r') as file:
             lines = file.readlines()
 
+        cleaned_xyz = clean_xyz_block(lines[2:])  # skip count/comment lines
+        geom_lines, qmmm_range = split_qmmm_sections(cleaned_xyz, xyz_path)
+        atoms = _parse_xyz_atoms_with_indices(geom_lines)
+        if not atoms:
+            logger.error("No atoms parsed from XYZ.")
+            return
+
         enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
         sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
 
@@ -257,8 +267,11 @@ def run_OCCUPIER():
         freq_flag = "FREQ" if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes' else ""
 
         # Build the '!' line
-        tokens = [
-            "!", str(config['functional']),
+        tokens = ["!"]
+        if qmmm_range:
+            tokens.append("QM/XTB")
+        tokens.extend([
+            str(config['functional']),
             rel_token,                       # '' or ZORA/X2C/DKH
             str(main_basisset),
             str(config.get('disp_corr', '')),
@@ -266,7 +279,7 @@ def run_OCCUPIER():
             aux_jk_token,                    # '' or def2/J | SARC/J
             implicit,
             str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
-        ]
+        ])
         if freq_flag:
             tokens.append(freq_flag)
         tokens.append(initial_guess)
@@ -293,13 +306,8 @@ def run_OCCUPIER():
             modified_lines.append(freq_block)
 
         # Start XYZ
+        modified_lines.extend(build_qmmm_block(qmmm_range))
         modified_lines.append(f"* xyz {charge} {multiplicity}\n")
-
-        cleaned_xyz = clean_xyz_block(lines[2:])  # skip count/comment lines
-        atoms = _parse_xyz_atoms_with_indices(cleaned_xyz)
-        if not atoms:
-            logger.error("No atoms parsed from XYZ.")
-            return
 
         # Metals found by symbol
         metal_syms = {m.strip().capitalize() for m in (found_metals or [])}
@@ -320,7 +328,7 @@ def run_OCCUPIER():
         sphere_line_set = {atoms[i]['line_idx'] for i in first_sphere}
 
         # Write coordinates, appending per-atom NewGTO where needed
-        for idx, line in enumerate(cleaned_xyz):
+        for idx, line in enumerate(geom_lines):
             ls = line.strip()
             if not ls:
                 continue
@@ -336,7 +344,7 @@ def run_OCCUPIER():
 
             modified_lines.append(line if line.endswith("\n") else line + "\n")
 
-        if not cleaned_xyz or cleaned_xyz[-1].strip() != '*':
+        if not geom_lines or geom_lines[-1].strip() != '*':
             modified_lines.append("*\n")
 
         with open(output_file_path, 'w') as file:

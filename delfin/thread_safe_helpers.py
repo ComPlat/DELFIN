@@ -270,6 +270,16 @@ def _run_occupier_in_directory(target_dir: Path, config: Dict[str, Any],
     _emit_block("stdout", result.stdout)
     _emit_block("stderr", result.stderr)
 
+    try:
+        stdout_log = target_dir / "occupier_stdout.log"
+        with stdout_log.open("w", encoding="utf-8") as handle:
+            handle.write(result.stdout or "")
+        stderr_log = target_dir / "occupier_stderr.log"
+        with stderr_log.open("w", encoding="utf-8") as handle:
+            handle.write(result.stderr or "")
+    except Exception as write_exc:  # noqa: BLE001
+        logger.warning("Failed to persist OCCUPIER stdout/stderr for %s: %s", target_dir, write_exc)
+
     if result.returncode != 0:
         logger.error(f"OCCUPIER process in {target_dir} exited with code {result.returncode}")
         print(f"{log_prefix} OCCUPIER failed (exit={result.returncode})")

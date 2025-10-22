@@ -23,6 +23,12 @@ from delfin.energies import find_gibbs_energy, find_ZPE, find_electronic_energy
 logger = get_logger(__name__)
 
 
+def _emit_occ_completion(folder_name: str) -> None:
+    """Emit a simple marker once an OCCUPIER folder has finished."""
+    print(f"[{folder_name}] OCCUPIER run finished.")
+    print()
+
+
 @dataclass
 class FileBundle:
     """Collection of frequently accessed file names for workflows."""
@@ -116,6 +122,7 @@ def _execute_oxidation_workflow(config: Dict[str, Any], pal_override: Optional[i
             if not success:
                 logger.error("Failed to prepare ox_step_1_OCCUPIER")
                 return False
+            _emit_occ_completion("ox_step_1_OCCUPIER")
 
         if "2" in config.get("oxidation_steps", ""):
             print("\nOCCUPIER for the second oxidation step:\n")
@@ -130,6 +137,7 @@ def _execute_oxidation_workflow(config: Dict[str, Any], pal_override: Optional[i
             if not success:
                 logger.error("Failed to prepare ox_step_2_OCCUPIER")
                 return False
+            _emit_occ_completion("ox_step_2_OCCUPIER")
 
         if "3" in config.get("oxidation_steps", ""):
             print("\nOCCUPIER for the third oxidation step:\n")
@@ -144,6 +152,7 @@ def _execute_oxidation_workflow(config: Dict[str, Any], pal_override: Optional[i
             if not success:
                 logger.error("Failed to prepare ox_step_3_OCCUPIER")
                 return False
+            _emit_occ_completion("ox_step_3_OCCUPIER")
 
         logger.info("Oxidation workflow completed")
         return True
@@ -173,6 +182,7 @@ def _execute_reduction_workflow(config: Dict[str, Any], pal_override: Optional[i
             if not success:
                 logger.error("Failed to prepare red_step_1_OCCUPIER")
                 return False
+            _emit_occ_completion("red_step_1_OCCUPIER")
 
         if "2" in config.get("reduction_steps", ""):
             print("\nOCCUPIER for the second reduction step:\n")
@@ -187,6 +197,7 @@ def _execute_reduction_workflow(config: Dict[str, Any], pal_override: Optional[i
             if not success:
                 logger.error("Failed to prepare red_step_2_OCCUPIER")
                 return False
+            _emit_occ_completion("red_step_2_OCCUPIER")
 
         if "3" in config.get("reduction_steps", ""):
             print("\nOCCUPIER for the third reduction step:\n")
@@ -201,6 +212,7 @@ def _execute_reduction_workflow(config: Dict[str, Any], pal_override: Optional[i
             if not success:
                 logger.error("Failed to prepare red_step_3_OCCUPIER")
                 return False
+            _emit_occ_completion("red_step_3_OCCUPIER")
 
         logger.info("Reduction workflow completed")
         return True
