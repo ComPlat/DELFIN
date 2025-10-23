@@ -7,6 +7,7 @@ from typing import Dict, Optional
 
 from delfin.common.logging import get_logger
 from delfin.common.paths import resolve_path
+from delfin.global_manager import get_global_manager
 
 from .config import OCCUPIER_parser, read_control_file
 from .utils import (
@@ -37,8 +38,11 @@ def run_OCCUPIER():
     """)
 
     # Bootstrap global manager if running with scheduler-driven core allocation
-    from delfin.global_manager import bootstrap_global_manager_from_env
-    bootstrap_global_manager_from_env()
+    # Skip if running as subprocess (DELFIN_SUBPROCESS=1) to save startup time
+    is_subprocess = str(os.environ.get("DELFIN_SUBPROCESS", "0")).lower() in ("1", "true", "yes", "on")
+    if not is_subprocess:
+        from delfin.global_manager import bootstrap_global_manager_from_env
+        bootstrap_global_manager_from_env()
 
     # --------------------------- helpers ---------------------------
 
@@ -561,6 +565,18 @@ def run_OCCUPIER():
             for entry in sequence
         }
 
+        # Always use the global job manager (even in subprocess mode)
+        global_mgr = get_global_manager()
+        manager_initialized = False
+        try:
+            manager_initialized = global_mgr.is_initialized()
+        except Exception:  # noqa: BLE001
+            manager_initialized = False
+
+        if not manager_initialized:
+            # Ensure a global pool exists so parallel scheduling can proceed
+            global_mgr.initialize(config)
+
         manager = _WorkflowManager(config, label="occupier_core", max_jobs_override=effective_pal_jobs)
 
         if effective_pal_jobs <= 1 and manager.pool.max_concurrent_jobs != 1:
@@ -700,7 +716,8 @@ def run_OCCUPIER():
 
             manager.run()
         finally:
-            manager.shutdown()
+            if manager is not None:
+                manager.shutdown()
 
         fspe_values = [fspe_results.get(int(entry["index"])) for entry in sequence]
 

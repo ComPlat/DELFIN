@@ -1428,6 +1428,51 @@ def _update_pal_block(input_path: str, cores: int) -> None:
         stream.writelines(lines)
 
 
+def _add_moinp_block(input_path: str, gbw_path: str) -> None:
+    """Add %moinp block and MOREAD keyword to reuse wavefunction from OCCUPIER GBW file."""
+    try:
+        with open(input_path, 'r', encoding='utf-8', errors='ignore') as stream:
+            lines = stream.readlines()
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Input file '{input_path}' missing") from exc
+
+    moinp_line = f'%moinp "{gbw_path}"\n'
+
+    # Check if %moinp already exists
+    has_moinp = False
+    for line in lines:
+        if line.strip().startswith('%moinp'):
+            has_moinp = True
+            break
+
+    if not has_moinp:
+        # Insert %moinp before %maxcore (or before first % block if no maxcore)
+        insert_idx = 0
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('%maxcore'):
+                insert_idx = idx
+                break
+            elif stripped.startswith('%') and insert_idx == 0:
+                insert_idx = idx
+
+        lines.insert(insert_idx, moinp_line)
+
+    # Replace PModel with MOREAD in the ! line
+    for idx, line in enumerate(lines):
+        if line.strip().startswith('!'):
+            # Replace PModel with MOREAD
+            if 'PModel' in line:
+                lines[idx] = line.replace('PModel', 'MOREAD')
+            elif 'MOREAD' not in line:
+                # Add MOREAD if neither PModel nor MOREAD exists
+                lines[idx] = line.rstrip() + ' MOREAD\n'
+            break
+
+    with open(input_path, 'w', encoding='utf-8') as stream:
+        stream.writelines(lines)
+
+
 def _verify_orca_output(path: str) -> bool:
     try:
         with open(path, 'r', encoding='utf-8', errors='ignore') as stream:

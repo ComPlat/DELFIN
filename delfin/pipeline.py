@@ -174,11 +174,12 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                     manager.shutdown()
 
         if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == "yes":
-            multiplicity_0, additions_0, _ = read_occupier_file(
+            multiplicity_0, additions_0, _, gbw_initial = read_occupier_file(
                 "initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config
             )
             ctx.extra['multiplicity_0'] = multiplicity_0
             ctx.extra['additions_0'] = additions_0
+            ctx.extra['gbw_initial'] = gbw_initial
 
             copy_if_exists("./initial_OCCUPIER", "initial.out", "initial.xyz")
             for step in (1, 2, 3):
@@ -249,11 +250,12 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             else:
                 logger.info("Reusing existing OCCUPIER oxidation/reduction workflows")
 
-        multiplicity_0, additions_0, _ = read_occupier_file(
+        multiplicity_0, additions_0, _, gbw_initial = read_occupier_file(
             "initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config
         )
         ctx.extra['multiplicity_0'] = multiplicity_0
         ctx.extra['additions_0'] = additions_0
+        ctx.extra['gbw_initial'] = gbw_initial
 
         preferred_parent_xyz = Path("input_initial_OCCUPIER.xyz")
         if not preferred_parent_xyz.exists():

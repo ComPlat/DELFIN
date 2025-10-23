@@ -87,7 +87,7 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
             logger.error(f"read_occupier_file failed for '{source_occ_folder}'")
             return None
 
-        multiplicity_src, additions_src, min_fspe_index = res
+        multiplicity_src, additions_src, min_fspe_index, _gbw_path = res
         should_print = (
             original_cwd == original_cwd_path
             and not getattr(_thread_local, "_printed_preferred", False)
@@ -118,6 +118,16 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
             print(f"Copied preferred geometry to {folder}/input.xyz")
         else:
             logger.warning(f"Preferred geometry file not found: {preferred_parent_xyz}")
+
+        # Copy preferred GBW file for wavefunction reuse
+        preferred_parent_gbw = original_cwd / f"input_{source_occ_folder}.gbw"
+        target_input_gbw = folder / "input.gbw"
+
+        if preferred_parent_gbw.exists():
+            shutil.copy(preferred_parent_gbw, target_input_gbw)
+            print(f"Copied preferred GBW to {folder}/input.gbw")
+        else:
+            logger.info(f"Preferred GBW file not found: {preferred_parent_gbw} (will use standard guess)")
 
         if not target_input_xyz.exists():
             logger.error(f"Missing required geometry file after preparation: {target_input_xyz}")
@@ -276,6 +286,7 @@ def _run_occupier_in_directory(target_dir: Path, config: Dict[str, Any],
 
     child_env = os.environ.copy()
     child_env['DELFIN_CHILD_GLOBAL_MANAGER'] = json.dumps(global_cfg)
+    child_env['DELFIN_SUBPROCESS'] = '1'  # Flag to indicate subprocess mode
 
     cmd = [
         sys.executable,

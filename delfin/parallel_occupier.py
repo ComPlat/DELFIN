@@ -25,6 +25,7 @@ from .parallel_classic_manually import (
     _WorkflowManager,
     _parse_int,
     _update_pal_block,
+    _add_moinp_block,
     _verify_orca_output,
     estimate_parallel_width,
     determine_effective_slots,
@@ -419,7 +420,7 @@ def build_occupier_jobs(
         else:
             result = None
         if result:
-            multiplicity, additions, min_fspe_index = result
+            multiplicity, additions, min_fspe_index, _gbw_path = result
             try:
                 multiplicity_int = int(multiplicity)  # type: ignore[arg-type]
             except (TypeError, ValueError):
@@ -472,6 +473,13 @@ def build_occupier_jobs(
                 _adds,
             )
             _update_pal_block("initial.inp", cores)
+
+            # Add %moinp block to reuse OCCUPIER wavefunction
+            gbw_initial = Path("input_initial_OCCUPIER.gbw")
+            if gbw_initial.exists():
+                _add_moinp_block("initial.inp", str(gbw_initial))
+                logger.info("[occupier_initial] Using GBW from OCCUPIER: %s", gbw_initial)
+
             run_orca("initial.inp", "initial.out")
             if not _verify_orca_output("initial.out"):
                 raise RuntimeError("ORCA terminated abnormally for initial.out")
@@ -721,7 +729,9 @@ def build_occupier_jobs(
         folder = f"ox_step_{step}_OCCUPIER"
         multiplicity_step, additions_step, _ = read_occ(folder, "ox", step)
         if step == 1:
-            requires = {"initial.out"}
+            requires: Set[str] = set()
+            if xtb_solvator_enabled:
+                requires.add("initial.xyz")
         else:
             requires = {f"ox_step_{step - 1}.out"}
 
@@ -775,6 +785,13 @@ def build_occupier_jobs(
                 if not inp_path.exists():
                     raise RuntimeError(f"Failed to create {inp}")
                 _update_pal_block(str(inp_path), cores)
+
+                # Add %moinp block to reuse OCCUPIER wavefunction
+                gbw_ox = Path(f"input_ox_step_{idx}_OCCUPIER.gbw")
+                if gbw_ox.exists():
+                    _add_moinp_block(str(inp_path), str(gbw_ox))
+                    logger.info("[occupier_ox%d] Using GBW from OCCUPIER: %s", idx, gbw_ox)
+
                 run_orca(inp, out)
                 if not _verify_orca_output(out):
                     raise RuntimeError(f"ORCA terminated abnormally for {out}")
@@ -800,7 +817,9 @@ def build_occupier_jobs(
         folder = f"red_step_{step}_OCCUPIER"
         multiplicity_step, additions_step, _ = read_occ(folder, "red", step)
         if step == 1:
-            requires = {"initial.out"}
+            requires: Set[str] = set()
+            if xtb_solvator_enabled:
+                requires.add("initial.xyz")
         else:
             requires = {f"red_step_{step - 1}.out"}
 
@@ -854,6 +873,13 @@ def build_occupier_jobs(
                 if not inp_path.exists():
                     raise RuntimeError(f"Failed to create {inp}")
                 _update_pal_block(str(inp_path), cores)
+
+                # Add %moinp block to reuse OCCUPIER wavefunction
+                gbw_red = Path(f"input_red_step_{idx}_OCCUPIER.gbw")
+                if gbw_red.exists():
+                    _add_moinp_block(str(inp_path), str(gbw_red))
+                    logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
+
                 run_orca(inp, out)
                 if not _verify_orca_output(out):
                     raise RuntimeError(f"ORCA terminated abnormally for {out}")
@@ -1127,6 +1153,7 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             # Each OCCUPIER runs in its own process with its own CWD
             child_env = os.environ.copy()
             child_env['DELFIN_CHILD_GLOBAL_MANAGER'] = json.dumps(global_cfg)
+            child_env['DELFIN_SUBPROCESS'] = '1'  # Flag to indicate subprocess mode
 
             cmd = [
                 sys.executable,

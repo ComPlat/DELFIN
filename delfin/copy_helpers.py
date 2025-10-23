@@ -76,6 +76,22 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
     else:
         if verbose:
             print(f"Source file {source_file} not found.")
+
+    # Also copy the corresponding GBW file for wavefunction reuse
+    gbw_filename = "input.gbw" if min_fspe_index == 1 else f"input{min_fspe_index}.gbw"
+    source_gbw = folder / gbw_filename
+    destination_gbw = parent_folder / f"input_{folder.name}.gbw"
+    if source_gbw.is_file():
+        shutil.copy(source_gbw, destination_gbw)
+        if verbose:
+            print(f"File {source_gbw} was successfully copied to {destination_gbw}.")
+    else:
+        if verbose:
+            print(f"GBW file {source_gbw} not found (will use standard guess).")
+
+    # Return GBW path as well (for wavefunction reuse in Classic/Manually)
+    gbw_path = destination_gbw if destination_gbw.exists() else None
+
     if verbose:
         print("Preferred OCCUPIER setting")
         print("--------------------------")
@@ -84,8 +100,10 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
         print(f"  parity:         {parity}")
         print(f"  additions:      {additions or '(none)'}")
         print(f"  multiplicity:   {multiplicity}")
+        if gbw_path:
+            print(f"  GBW file:       {gbw_path}")
         print()
-    return multiplicity, additions, min_fspe_index
+    return multiplicity, additions, min_fspe_index, gbw_path
 # -------------------------------------------------------------------------------------------------------
 def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optional[Path] = None):
     """Prepare OCCUPIER folder without running OCCUPIER (for scheduler-driven execution)."""
@@ -198,7 +216,7 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
         print(f"read_occupier_file failed for '{source_occ_folder}'. Abort.")
         sys.exit(1)
     os.chdir(folder)
-    multiplicity_src, additions_src, min_fspe_index = res
+    multiplicity_src, additions_src, min_fspe_index, _gbw_path = res
     preferred_parent_xyz = Path("..") / f"input_{source_occ_folder}.xyz"
     if not preferred_parent_xyz.exists():
         alt1 = Path("..") / f"geom{min_fspe_index}.xyz"
