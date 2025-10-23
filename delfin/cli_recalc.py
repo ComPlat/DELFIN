@@ -40,14 +40,14 @@ def setup_recalc_mode():
         # First check
         if _check_completion(out_path):
             logger.info("[recalc] skipping ORCA; %s appears complete.", out_file)
-            return None
+            return True  # Already complete = success
 
         logger.info("[recalc] (re)running ORCA for %s", out_file)
 
         # Second check right before execution (race condition protection)
         if _check_completion(out_path):
             logger.info("[recalc] skipping ORCA; %s completed by another process.", out_file)
-            return None
+            return True  # Already complete = success
 
         return _run_orca_real(inp_file, out_file)
 

@@ -479,8 +479,7 @@ def build_occupier_jobs(
                 _add_moinp_block("initial.inp", str(gbw_initial))
                 logger.info("[occupier_initial] Using GBW from OCCUPIER: %s", gbw_initial)
 
-            run_orca("initial.inp", "initial.out")
-            if not _verify_orca_output("initial.out"):
+            if not run_orca("initial.inp", "initial.out"):
                 raise RuntimeError("ORCA terminated abnormally for initial.out")
             run_IMAG(
                 "initial.out",
@@ -533,8 +532,7 @@ def build_occupier_jobs(
                 _adds,
             )
             _update_pal_block("absorption_td.inp", cores)
-            run_orca("absorption_td.inp", "absorption_spec.out")
-            if not _verify_orca_output("absorption_spec.out"):
+            if not run_orca("absorption_td.inp", "absorption_spec.out"):
                 raise RuntimeError("ORCA terminated abnormally for absorption_spec.out")
             logger.info("TD-DFT absorption spectra calculation complete!")
 
@@ -571,8 +569,7 @@ def build_occupier_jobs(
             if not inp_path.exists():
                 raise RuntimeError("Failed to create t1_state_opt.inp")
             _update_pal_block(str(inp_path), cores)
-            run_orca("t1_state_opt.inp", "t1_state_opt.out")
-            if not _verify_orca_output("t1_state_opt.out"):
+            if not run_orca("t1_state_opt.inp", "t1_state_opt.out"):
                 raise RuntimeError("ORCA terminated abnormally for t1_state_opt.out")
             logger.info(
                 "%s %s freq & geometry optimization of T_1 complete!",
@@ -607,8 +604,7 @@ def build_occupier_jobs(
                 if not inp_path.exists():
                     raise RuntimeError("Failed to create emission_t1.inp")
                 _update_pal_block(str(inp_path), cores)
-                run_orca("emission_t1.inp", "emission_t1.out")
-                if not _verify_orca_output("emission_t1.out"):
+                if not run_orca("emission_t1.inp", "emission_t1.out"):
                     raise RuntimeError("ORCA terminated abnormally for emission_t1.out")
                 logger.info("TD-DFT T1 emission spectra calculation complete!")
 
@@ -647,8 +643,7 @@ def build_occupier_jobs(
                 raise RuntimeError("Failed to create s1_state_opt.inp")
             _update_pal_block(str(inp_path), cores)
             try:
-                run_orca("s1_state_opt.inp", "s1_state_opt.out")
-                if not _verify_orca_output("s1_state_opt.out"):
+                if not run_orca("s1_state_opt.inp", "s1_state_opt.out"):
                     raise RuntimeError("ORCA terminated abnormally for s1_state_opt.out")
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -710,8 +705,7 @@ def build_occupier_jobs(
                 if not inp_path.exists():
                     raise RuntimeError("Failed to create emission_s1.inp")
                 _update_pal_block(str(inp_path), cores)
-                run_orca("emission_s1.inp", "emission_s1.out")
-                if not _verify_orca_output("emission_s1.out"):
+                if not run_orca("emission_s1.inp", "emission_s1.out"):
                     raise RuntimeError("ORCA terminated abnormally for emission_s1.out")
                 logger.info("TD-DFT S1 emission spectra calculation complete!")
 
@@ -791,8 +785,7 @@ def build_occupier_jobs(
                     _add_moinp_block(str(inp_path), str(gbw_ox))
                     logger.info("[occupier_ox%d] Using GBW from OCCUPIER: %s", idx, gbw_ox)
 
-                run_orca(inp, out)
-                if not _verify_orca_output(out):
+                if not run_orca(inp, out):
                     raise RuntimeError(f"ORCA terminated abnormally for {out}")
                 logger.info(
                     "%s %s freq & geometry optimization cation (step %d) complete!",
@@ -879,8 +872,7 @@ def build_occupier_jobs(
                     _add_moinp_block(str(inp_path), str(gbw_red))
                     logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
 
-                run_orca(inp, out)
-                if not _verify_orca_output(out):
+                if not run_orca(inp, out):
                     raise RuntimeError(f"ORCA terminated abnormally for {out}")
                 logger.info(
                     "%s %s freq & geometry optimization anion (step %d) complete!",

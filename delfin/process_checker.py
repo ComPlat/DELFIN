@@ -18,6 +18,10 @@ def find_competing_orca_processes(inp_file: str) -> List[Tuple[int, str]]:
     inp_path = Path(inp_file).resolve()
     base_name = inp_path.stem  # e.g., "input2" from "input2.inp"
     work_dir = inp_path.parent
+    try:
+        work_dir = work_dir.resolve()
+    except OSError:
+        work_dir = work_dir
 
     competing = []
 
@@ -42,6 +46,15 @@ def find_competing_orca_processes(inp_file: str) -> List[Tuple[int, str]]:
                     try:
                         pid = int(parts[1])
                         cmdline = ' '.join(parts[10:])
+
+                        # Skip processes that operate in a different directory
+                        try:
+                            proc_cwd = Path(os.readlink(f"/proc/{pid}/cwd")).resolve()
+                        except (OSError, RuntimeError):
+                            proc_cwd = None
+
+                        if proc_cwd is not None and proc_cwd != work_dir:
+                            continue
 
                         # Don't report our own process
                         if pid != os.getpid():

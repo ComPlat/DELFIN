@@ -840,8 +840,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 additions,
             )
             _update_pal_block(output_initial, cores)
-            run_orca(output_initial, 'initial.out')
-            if not _verify_orca_output('initial.out'):
+            if not run_orca(output_initial, 'initial.out'):
                 raise RuntimeError('ORCA terminated abnormally for initial.out')
             run_IMAG(
                 'initial.out',
@@ -876,8 +875,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 additions_tddft,
             )
             _update_pal_block('absorption_td.inp', cores)
-            run_orca('absorption_td.inp', 'absorption_spec.out')
-            if not _verify_orca_output('absorption_spec.out'):
+            if not run_orca('absorption_td.inp', 'absorption_spec.out'):
                 raise RuntimeError('ORCA terminated abnormally for absorption_spec.out')
 
         deps = {initial_job_id} if initial_job_id else set()
@@ -903,8 +901,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     additions,
                 )
                 _update_pal_block('t1_state_opt.inp', cores)
-                run_orca('t1_state_opt.inp', 't1_state_opt.out')
-                if not _verify_orca_output('t1_state_opt.out'):
+                if not run_orca('t1_state_opt.inp', 't1_state_opt.out'):
                     raise RuntimeError('ORCA terminated abnormally for t1_state_opt.out')
 
             deps = {initial_job_id} if initial_job_id else set()
@@ -926,8 +923,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                         additions_tddft,
                     )
                     _update_pal_block('emission_t1.inp', cores)
-                    run_orca('emission_t1.inp', 'emission_t1.out')
-                    if not _verify_orca_output('emission_t1.out'):
+                    if not run_orca('emission_t1.inp', 'emission_t1.out'):
                         raise RuntimeError('ORCA terminated abnormally for emission_t1.out')
 
                 _add_job('classic_t1_emission', 'T1 emission spectrum', run_t1_emission, {'classic_t1_state'}, preferred_opt=manager.total_cores // 2 or None)
@@ -948,8 +944,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     additions,
                 )
                 _update_pal_block('s1_state_opt.inp', cores)
-                run_orca('s1_state_opt.inp', 's1_state_opt.out')
-                if not _verify_orca_output('s1_state_opt.out'):
+                if not run_orca('s1_state_opt.inp', 's1_state_opt.out'):
                     raise RuntimeError('ORCA terminated abnormally for s1_state_opt.out')
 
             deps = {initial_job_id} if initial_job_id else set()
@@ -971,8 +966,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                         additions_tddft,
                     )
                     _update_pal_block('emission_s1.inp', cores)
-                    run_orca('emission_s1.inp', 'emission_s1.out')
-                    if not _verify_orca_output('emission_s1.out'):
+                    if not run_orca('emission_s1.inp', 'emission_s1.out'):
                         raise RuntimeError('ORCA terminated abnormally for emission_s1.out')
 
                 _add_job('classic_s1_emission', 'S1 emission spectrum', run_s1_emission, {'classic_s1_state'}, preferred_opt=manager.total_cores // 2 or None)
@@ -1013,8 +1007,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     additions,
                 )
                 _update_pal_block(ox_inputs[idx], cores)
-                run_orca(ox_inputs[idx], ox_outputs[idx])
-                if not _verify_orca_output(ox_outputs[idx]):
+                if not run_orca(ox_inputs[idx], ox_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
 
             return _work
@@ -1059,8 +1052,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     additions,
                 )
                 _update_pal_block(red_inputs[idx], cores)
-                run_orca(red_inputs[idx], red_outputs[idx])
-                if not _verify_orca_output(red_outputs[idx]):
+                if not run_orca(red_inputs[idx], red_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
 
             return _work
@@ -1126,8 +1118,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 ground_additions,
             )
             _update_pal_block(output_initial, cores)
-            run_orca(output_initial, 'initial.out')
-            if not _verify_orca_output('initial.out'):
+            if not run_orca(output_initial, 'initial.out'):
                 raise RuntimeError('ORCA terminated abnormally for initial.out')
             run_IMAG(
                 'initial.out',
@@ -1161,8 +1152,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 additions_td,
             )
             _update_pal_block('absorption_td.inp', cores)
-            run_orca('absorption_td.inp', 'absorption_spec.out')
-            if not _verify_orca_output('absorption_spec.out'):
+            if not run_orca('absorption_td.inp', 'absorption_spec.out'):
                 raise RuntimeError('ORCA terminated abnormally for absorption_spec.out')
 
         deps_abs = {initial_job_id} if initial_job_id else set()
@@ -1188,8 +1178,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                         add_t1,
                     )
                     _update_pal_block('t1_state_opt.inp', cores)
-                    run_orca('t1_state_opt.inp', 't1_state_opt.out')
-                    if not _verify_orca_output('t1_state_opt.out'):
+                    if not run_orca('t1_state_opt.inp', 't1_state_opt.out'):
                         raise RuntimeError('ORCA terminated abnormally for t1_state_opt.out')
 
                 deps_t1 = {initial_job_id} if initial_job_id else set()
@@ -1211,8 +1200,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                             additions_td,
                         )
                         _update_pal_block('emission_t1.inp', cores)
-                        run_orca('emission_t1.inp', 'emission_t1.out')
-                        if not _verify_orca_output('emission_t1.out'):
+                        if not run_orca('emission_t1.inp', 'emission_t1.out'):
                             raise RuntimeError('ORCA terminated abnormally for emission_t1.out')
 
                     _add_job('manual_t1_emission', 'manual T1 emission spectrum', run_t1_emission, {'manual_t1_state'}, preferred_opt=manager.total_cores // 2 or None)
@@ -1234,8 +1222,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                         add_s1,
                     )
                     _update_pal_block('s1_state_opt.inp', cores)
-                    run_orca('s1_state_opt.inp', 's1_state_opt.out')
-                    if not _verify_orca_output('s1_state_opt.out'):
+                    if not run_orca('s1_state_opt.inp', 's1_state_opt.out'):
                         raise RuntimeError('ORCA terminated abnormally for s1_state_opt.out')
 
                 deps_s1 = {initial_job_id} if initial_job_id else set()
@@ -1257,8 +1244,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                             additions_td,
                         )
                         _update_pal_block('emission_s1.inp', cores)
-                        run_orca('emission_s1.inp', 'emission_s1.out')
-                        if not _verify_orca_output('emission_s1.out'):
+                        if not run_orca('emission_s1.inp', 'emission_s1.out'):
                             raise RuntimeError('ORCA terminated abnormally for emission_s1.out')
 
                     _add_job('manual_s1_emission', 'manual S1 emission spectrum', run_s1_emission, {'manual_s1_state'}, preferred_opt=manager.total_cores // 2 or None)
@@ -1302,8 +1288,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                     additions,
                 )
                 _update_pal_block(ox_inputs[idx], cores)
-                run_orca(ox_inputs[idx], ox_outputs[idx])
-                if not _verify_orca_output(ox_outputs[idx]):
+                if not run_orca(ox_inputs[idx], ox_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
 
             return _work
@@ -1351,8 +1336,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                     additions,
                 )
                 _update_pal_block(red_inputs[idx], cores)
-                run_orca(red_inputs[idx], red_outputs[idx])
-                if not _verify_orca_output(red_outputs[idx]):
+                if not run_orca(red_inputs[idx], red_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
 
             return _work

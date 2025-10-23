@@ -2,6 +2,8 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from shutil import which
 from typing import Iterable, Optional
@@ -91,6 +93,9 @@ def find_orca_executable() -> Optional[str]:
 def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str, timeout: Optional[int] = None) -> bool:
     """Run ORCA subprocess and capture output. Returns True when successful."""
     process = None
+    monitor_thread = None
+    stop_event = threading.Event()
+
     try:
         with open(output_log, "w") as output_file:
             # Use Popen with process group to ensure all child processes can be killed
@@ -102,8 +107,22 @@ def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str, 
                 start_new_session=True  # Create new process group
             )
 
+            # Start progress monitoring thread
+            input_name = Path(input_file_path).stem
+            monitor_thread = threading.Thread(
+                target=_monitor_orca_progress,
+                args=(output_log, stop_event, input_name),
+                daemon=True
+            )
+            monitor_thread.start()
+
             # Wait for completion
             return_code = process.wait(timeout=timeout)
+
+            # Stop progress monitor
+            stop_event.set()
+            if monitor_thread:
+                monitor_thread.join(timeout=2)
 
             if return_code != 0:
                 logger.error(f"ORCA failed with return code {return_code} for {input_file_path}")
@@ -121,19 +140,27 @@ def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str, 
 
     except subprocess.TimeoutExpired:
         logger.error(f"ORCA timeout after {timeout}s")
+        stop_event.set()
         if process:
             _kill_process_group(process)
         return False
     except KeyboardInterrupt:
         logger.warning("ORCA interrupted by user (Ctrl+C)")
+        stop_event.set()
         if process:
             _kill_process_group(process)
         raise
     except Exception as e:
         logger.error(f"ORCA subprocess error: {e}")
+        stop_event.set()
         if process:
             _kill_process_group(process)
         return False
+    finally:
+        # Ensure monitor thread is stopped
+        stop_event.set()
+        if monitor_thread and monitor_thread.is_alive():
+            monitor_thread.join(timeout=1)
 
 
 def _check_orca_success(output_file: str) -> bool:
@@ -145,6 +172,75 @@ def _check_orca_success(output_file: str) -> bool:
     except Exception as e:
         logger.debug(f"Could not check ORCA success marker: {e}")
         return False
+
+
+def _monitor_orca_progress(output_file: str, stop_event: threading.Event, input_name: str):
+    """Monitor ORCA output file and log progress updates.
+
+    Runs in a background thread and logs interesting progress markers:
+    - SCF iterations
+    - Geometry optimization steps
+    - Numerical frequency displacements
+    """
+    last_size = 0
+    last_log_time = time.time()
+    log_interval = 60  # Log every 60 seconds
+
+    # Patterns to detect in output
+    patterns = {
+        'scf': r'ITER\s+Energy\s+Delta-E',
+        'opt': r'OPTIMIZATION\s+RUN',
+        'freq_disp': r'Calculating gradient on displaced geometry\s+(\d+)\s+\(of\s+(\d+)\)',
+        'terminating': r'ORCA TERMINATED',
+    }
+
+    while not stop_event.is_set():
+        try:
+            if not os.path.exists(output_file):
+                time.sleep(2)
+                continue
+
+            current_size = os.path.getsize(output_file)
+            current_time = time.time()
+
+            # Check if file is growing and enough time has passed
+            if current_size > last_size and (current_time - last_log_time) >= log_interval:
+                with open(output_file, 'r') as f:
+                    # Read last 50 lines for recent activity
+                    f.seek(max(0, current_size - 5000))
+                    recent_lines = f.read().split('\n')[-50:]
+
+                    for line in recent_lines:
+                        # Check for frequency displacement progress
+                        if 'displaced geometry' in line:
+                            import re
+                            match = re.search(r'(\d+)\s+\(of\s+(\d+)\)', line)
+                            if match:
+                                current, total = match.groups()
+                                percent = (int(current) / int(total)) * 100
+                                logger.info(f"[{input_name}] Frequency calculation: {current}/{total} ({percent:.1f}%)")
+                                last_log_time = current_time
+                                break
+
+                        # Check for geometry optimization
+                        elif 'GEOMETRY OPTIMIZATION CYCLE' in line:
+                            logger.info(f"[{input_name}] Geometry optimization running...")
+                            last_log_time = current_time
+                            break
+
+                        # Check for SCF convergence
+                        elif 'SCF CONVERGED' in line:
+                            logger.info(f"[{input_name}] SCF converged")
+                            last_log_time = current_time
+                            break
+
+                last_size = current_size
+
+            time.sleep(5)  # Check every 5 seconds
+
+        except Exception as e:
+            logger.debug(f"Progress monitor error: {e}")
+            time.sleep(5)
 
 
 def _kill_process_group(process: subprocess.Popen) -> None:
