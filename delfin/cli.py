@@ -2,7 +2,7 @@ from __future__ import annotations
 import os, time, sys, argparse
 from pathlib import Path
 
-from delfin.common.logging import configure_logging, get_logger
+from delfin.common.logging import configure_logging, get_logger, add_file_handler
 from delfin.common.paths import get_runtime_dir, resolve_path
 from delfin.cluster_utils import auto_configure_resources, detect_cluster_environment
 from delfin.global_manager import get_global_manager
@@ -78,13 +78,19 @@ def main(argv: list[str] | None = None) -> int:
         print("Cleanup done.")
         return 0
 
+    control_file_path = resolve_path(args.control)
+    run_log_path = control_file_path.parent / "delfin_run.log"
+    if "DELFIN_GLOBAL_LOG" not in os.environ:
+        os.environ["DELFIN_GLOBAL_LOG"] = str(run_log_path)
+    add_file_handler(os.environ["DELFIN_GLOBAL_LOG"])
+    logger.info("Global run log attached at %s", os.environ["DELFIN_GLOBAL_LOG"])
+
 
     # --------------------- From here: normal pipeline run with banner --------------------
     print_delfin_banner()
 
     # ---- Friendly checks for missing CONTROL.txt / input file ----
     # Read CONTROL.txt once and derive all settings from it
-    control_file_path = resolve_path(args.control)
     try:
         config = read_control_file(str(control_file_path))
     except ValueError as exc:

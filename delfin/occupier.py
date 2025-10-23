@@ -5,7 +5,7 @@ from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Dict, Optional
 
-from delfin.common.logging import get_logger
+from delfin.common.logging import get_logger, add_file_handler
 from delfin.common.paths import resolve_path
 from delfin.global_manager import get_global_manager
 
@@ -36,6 +36,13 @@ def run_OCCUPIER():
                       *     OCCUPIER    *
                       *******************
     """)
+
+    global_log = os.environ.get("DELFIN_GLOBAL_LOG")
+    if global_log:
+        add_file_handler(global_log)
+    occ_log_path = Path("occupier.log")
+    add_file_handler(occ_log_path)
+    logger.info("Occupier log attached at %s", occ_log_path.resolve())
 
     # Bootstrap global manager if running with scheduler-driven core allocation
     # Skip if running as subprocess (DELFIN_SUBPROCESS=1) to save startup time

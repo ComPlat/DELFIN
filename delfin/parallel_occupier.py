@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
 from delfin.common.logging import get_logger
-from delfin.dynamic_pool import JobPriority, create_orca_job
 from delfin.global_manager import get_global_manager
 from delfin.copy_helpers import read_occupier_file
 from delfin.imag import run_IMAG
