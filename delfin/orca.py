@@ -169,7 +169,7 @@ def _kill_process_group(process: subprocess.Popen) -> None:
         except Exception as e:
             logger.error(f"Error killing process group: {e}")
 
-def run_orca(input_file_path: str, output_log: str, timeout: Optional[int] = None) -> None:
+def run_orca(input_file_path: str, output_log: str, timeout: Optional[int] = None) -> bool:
     """Execute ORCA calculation with specified input file.
 
     Runs ORCA subprocess with input file and captures output to log file.
@@ -179,13 +179,18 @@ def run_orca(input_file_path: str, output_log: str, timeout: Optional[int] = Non
         input_file_path: Path to ORCA input file (.inp)
         output_log: Path for ORCA output file (.out)
         timeout: Optional timeout in seconds for ORCA calculation
+
+    Returns:
+        bool: True if ORCA completed successfully, False otherwise
     """
     orca_path = find_orca_executable()
     if not orca_path:
-        return
+        return False
 
     if _run_orca_subprocess(orca_path, input_file_path, output_log, timeout):
         logger.info(f"ORCA run successful for '{input_file_path}'")
+        return True
+    return False
 
 def run_orca_IMAG(input_file_path: str, iteration: int) -> None:
     """Execute ORCA calculation for imaginary frequency workflow.

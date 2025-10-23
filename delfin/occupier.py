@@ -687,7 +687,15 @@ def run_OCCUPIER():
                 # Check for competing ORCA processes that might block execution
                 check_and_warn_competing_processes(inp)
 
-                run_orca(inp, out)
+                # Run ORCA and check if it succeeded
+                orca_success = run_orca(inp, out)
+                if not orca_success:
+                    error_msg = f"ORCA failed for {inp}. Check {out} for errors."
+                    logger.error(error_msg)
+                    # Mark this FoB as failed by storing None
+                    with results_lock:
+                        fspe_results[idx] = None
+                    raise RuntimeError(error_msg)
 
                 parsed_val = finder(out)
                 with results_lock:
