@@ -25,6 +25,7 @@ from .parallel_classic_manually import (
     determine_effective_slots,
     normalize_parallel_token,
 )
+from .process_checker import check_and_warn_competing_processes
 
 logger = get_logger(__name__)
 
@@ -682,6 +683,9 @@ def run_OCCUPIER():
                     with results_lock:
                         fspe_results[idx] = parsed_val
                     return
+
+                # Check for competing ORCA processes that might block execution
+                check_and_warn_competing_processes(inp)
 
                 run_orca(inp, out)
 

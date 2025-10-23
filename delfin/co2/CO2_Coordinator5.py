@@ -27,7 +27,7 @@ def write_default_files(control_path="CONTROL.txt", co2_path="co2.xyz",
     # 'metal=auto' signals runtime detection from the xyz (see main()).
     control_template = """# Input / Output
 ------------------------------------
-xyz=input6.xyz
+xyz=[FILE]
 out=complex_aligned.xyz
 co2=co2.xyz
 
@@ -44,7 +44,7 @@ solvent=[SOLVENT]
 
 # Orientation Scan (single points)
 ------------------------------------
-orientation_distance=5.0
+orientation_distance=4.0
 rot_step_deg=10
 rot_range_deg=180
 
@@ -83,7 +83,7 @@ no_place_co2=false
 
 # Resources
 ------------------------------------
-PAL=32
+PAL=12
 maxcore=3800
 
 # Alternative keywords (commented examples)

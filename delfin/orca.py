@@ -1,4 +1,5 @@
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -89,14 +90,84 @@ def find_orca_executable() -> Optional[str]:
 
 def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str, timeout: Optional[int] = None) -> bool:
     """Run ORCA subprocess and capture output. Returns True when successful."""
-    with open(output_log, "w") as output_file:
+    process = None
+    try:
+        with open(output_log, "w") as output_file:
+            # Use Popen with process group to ensure all child processes can be killed
+            # start_new_session creates a new process group, making cleanup easier
+            process = subprocess.Popen(
+                [orca_path, input_file_path],
+                stdout=output_file,
+                stderr=output_file,
+                start_new_session=True  # Create new process group
+            )
+
+            # Wait for completion
+            return_code = process.wait(timeout=timeout)
+
+            if return_code != 0:
+                logger.error(f"ORCA failed with return code {return_code} for {input_file_path}")
+                logger.error(f"Check {output_log} for details")
+                return False
+
+            # Check if ORCA actually terminated normally
+            success_marker = _check_orca_success(output_log)
+            if not success_marker:
+                logger.error(f"ORCA did not terminate normally for {input_file_path}")
+                logger.error(f"Check {output_log} for error messages")
+                return False
+
+            return True
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"ORCA timeout after {timeout}s")
+        if process:
+            _kill_process_group(process)
+        return False
+    except KeyboardInterrupt:
+        logger.warning("ORCA interrupted by user (Ctrl+C)")
+        if process:
+            _kill_process_group(process)
+        raise
+    except Exception as e:
+        logger.error(f"ORCA subprocess error: {e}")
+        if process:
+            _kill_process_group(process)
+        return False
+
+
+def _check_orca_success(output_file: str) -> bool:
+    """Check if ORCA terminated normally by looking for success marker."""
+    try:
+        with open(output_file, 'r') as f:
+            content = f.read()
+            return 'ORCA TERMINATED NORMALLY' in content
+    except Exception as e:
+        logger.debug(f"Could not check ORCA success marker: {e}")
+        return False
+
+
+def _kill_process_group(process: subprocess.Popen) -> None:
+    """Kill entire process group including all child processes (like mpirun)."""
+    if process.poll() is None:  # Process still running
         try:
-            subprocess.run([orca_path, input_file_path], check=True, stdout=output_file, stderr=output_file, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            return False
-        except subprocess.CalledProcessError as error:
-            return False
-    return True
+            # Send SIGTERM to entire process group
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            logger.info(f"Sent SIGTERM to process group {os.getpgid(process.pid)}")
+
+            # Wait a bit for graceful shutdown
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # Force kill if still running
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                logger.warning(f"Sent SIGKILL to process group {os.getpgid(process.pid)}")
+                process.wait()
+        except ProcessLookupError:
+            # Process already terminated
+            pass
+        except Exception as e:
+            logger.error(f"Error killing process group: {e}")
 
 def run_orca(input_file_path: str, output_log: str, timeout: Optional[int] = None) -> None:
     """Execute ORCA calculation with specified input file.
