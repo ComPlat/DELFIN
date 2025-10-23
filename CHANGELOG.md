@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OCCUPIER FoB scheduling always uses the global job manager; sequential runs simply cap `max_jobs` to one, ensuring consistent PAL enforcement.
 - Global job manager initialization is now idempotent and refuses to tear down an active pool when jobs are still running; configuration differences are detected via resource signatures.
 - Improved banner and logging output for the global scheduler, including explicit parallel-mode reporting.
+- Added `orca_parallel_strategy` CONTROL option allowing OCCUPIER runs to force serial ORCA execution (`threads`/`serial`) when MPI backends are unstable.
 
 ### Fixed
 - Ensured newly spawned OCCUPIER steps reuse the cached QM range, restoring the `%QMMM` block for oxidation/reduction inputs.

@@ -550,11 +550,23 @@ def run_OCCUPIER():
 
         sequence_width = _sequence_parallel_width(sequence)
         parallel_setting = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+        orca_parallel_strategy = str(config.get('orca_parallel_strategy', 'auto')).strip().lower()
+
+        strategy_forces_serial = orca_parallel_strategy in {'threads', 'serial'}
         parallel_allowed = (
-            parallel_setting == 'enable'
-            or (parallel_setting == 'auto' and sequence_width > 1)
+            not strategy_forces_serial
+            and (
+                parallel_setting == 'enable'
+                or (parallel_setting == 'auto' and sequence_width > 1)
+            )
         )
         effective_pal_jobs = max(1, min(resolved_pal_jobs, sequence_width)) if parallel_allowed else 1
+
+        if strategy_forces_serial and parallel_setting != 'disable':
+            logger.info(
+                "[occupier] ORCA parallel strategy=%s → forcing sequential OCCUPIER scheduling",
+                orca_parallel_strategy,
+            )
 
         logger.info(
             "Scheduling %d OCCUPIER FoBs (parallel=%s, pal_jobs=%s → resolved=%d, width=%d)",

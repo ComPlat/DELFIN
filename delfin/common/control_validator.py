@@ -46,6 +46,14 @@ def _as_list(value: Any) -> list[Any]:
         return [item.strip() for item in value.split(',') if item.strip()]
     raise ValueError("must be a list or comma-separated string")
 
+def _as_parallel_strategy(value: Any) -> str:
+    """Coerce user value into a known ORCA parallel strategy token."""
+    text = str(value or "auto").strip().lower()
+    if text in {"threads", "serial", "auto"}:
+        return text
+    if text in {"mpi", "default"}:
+        return "auto"
+    raise ValueError("must be one of: auto, threads, serial")
 
 CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("NAME", _as_str, default=""),
@@ -64,6 +72,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("initial_guess", _as_str, default="PModel"),
     FieldSpec("relativity", _as_str, default="none"),
     FieldSpec("geom_opt", _as_str, default="OPT"),
+    FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
 )
 
 

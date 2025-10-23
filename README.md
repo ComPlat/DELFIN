@@ -144,6 +144,7 @@ delfin/
 * `absorption_spec = yes | no`
 * `parallel_workflows = yes | no | auto` (parallelization)
 * `pal_jobs = N` (number of parallel PAL processes; auto-detected from cluster if not set)
+* `orca_parallel_strategy = auto | threads | serial` (force OCCUPIER to run ORCA sequentially when set to `threads`/`serial`)
 * `XTB_OPT = yes | no`
 * `XTB_GOAT = yes | no`
 * `CREST = yes | no`
