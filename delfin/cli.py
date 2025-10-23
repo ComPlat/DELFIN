@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, time, sys, argparse
+import os, time, sys, argparse, shutil
 from pathlib import Path
 
 from delfin.common.logging import configure_logging, get_logger, add_file_handler
@@ -36,6 +36,48 @@ def _normalize_input_file(config, control_path: Path) -> str:
     return normalize_input_file(config, control_path)
 
 
+def _safe_keep_set(control_path: Path) -> set[str]:
+    """Determine filenames that must be preserved during purge."""
+    keep: set[str] = {control_path.name}
+    if control_path.exists():
+        try:
+            cfg = read_control_file(str(control_path))
+            input_entry = cfg.get('input_file')
+            if input_entry:
+                keep.add(Path(input_entry).name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not parse CONTROL.txt while preparing purge: %s", exc)
+    # Always keep fallback input.txt if CONTROL is missing or invalid
+    keep.add("input.txt")
+    return keep
+
+
+def _purge_workspace(root: Path, keep_names: set[str]) -> None:
+    """Remove all files/directories under root except those in keep_names."""
+    for entry in root.iterdir():
+        if entry.name in keep_names:
+            continue
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except FileNotFoundError:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to remove %s: %s", entry, exc)
+
+
+def _confirm_purge() -> bool:
+    prompt = "This will delete everything except CONTROL.txt and the main input file. Continue? [y/N]: "
+    try:
+        reply = input(prompt)
+    except EOFError:
+        return False
+    if reply is None:
+        return False
+    return reply.strip().lower() in {"y", "yes"}
+
 
 
 
@@ -70,6 +112,21 @@ def main(argv: list[str] | None = None) -> int:
         create_control_file(filename=str(resolve_path(args.control)),
                             input_file=args.define,
                             overwrite=args.overwrite)
+        return 0
+
+    if getattr(args, "purge", False):
+        control_path = resolve_path(args.control)
+        workspace_root = control_path.parent
+        keep = _safe_keep_set(control_path)
+        # Ensure CONTROL itself is preserved even if named differently
+        keep.add(control_path.name)
+
+        if not _confirm_purge():
+            print("Purge aborted.")
+            return 0
+
+        _purge_workspace(workspace_root, keep)
+        print(f"Workspace purged (kept: {', '.join(sorted(keep))}).")
         return 0
 
     # Only cleanup and exit

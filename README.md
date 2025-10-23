@@ -77,6 +77,8 @@ python -m delfin
   keeps temporary files and scratch folders after the pipeline finishes.
 - `delfin --cleanup`
   removes previously generated intermediates and exits immediately.
+- `delfin --purge`
+  clears the working directory (keeps CONTROL.txt and the configured input file only) after confirmation.
 - `delfin --recalc`
   re-parses existing results and only restarts missing or incomplete jobs.
 - `delfin --help`
