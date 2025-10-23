@@ -257,7 +257,8 @@ def _load_covalent_radii(source: str = "pyykko2009") -> Optional[Dict[str, float
             alt = "covalent_radius_cordero" if attr == "covalent_radius_pyykko" else "covalent_radius_pyykko"
             r = getattr(el, alt, None)
         if r is not None:
-            radii[el.symbol] = float(r)
+            # mendeleev radii are reported in picometers; convert to Å to stay consistent
+            radii[el.symbol] = float(r) / 100.0
     _RADII_CACHE[key] = radii
     return radii
 

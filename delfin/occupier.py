@@ -137,7 +137,8 @@ def run_OCCUPIER():
                 alt = "covalent_radius_cordero" if attr == "covalent_radius_pyykko" else "covalent_radius_pyykko"
                 r = getattr(el, alt, None)
             if r is not None:
-                radii[el.symbol] = float(r)
+                # mendeleev reports radii in pm → convert to Å for downstream distance checks
+                radii[el.symbol] = float(r) / 100.0
             else:
                 logger.warning("Missing covalent radius for %s (Z=%d); will use fallback.", el.symbol, Z)
         COVALENT_RADII_CACHE[key] = radii
