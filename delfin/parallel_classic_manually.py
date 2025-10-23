@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, Optional, Set, List
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, Set, List
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import PoolJob, JobPriority
@@ -26,6 +26,9 @@ from delfin.xyz_io import (
 )
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from .global_scheduler import GlobalOrcaScheduler
 
 
 JOB_DURATION_HISTORY: Dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=8))
@@ -619,7 +622,13 @@ def determine_effective_slots(
     return max(1, max(baseline, candidate))
 
 
-def execute_classic_workflows(config: Dict[str, Any], *, allow_parallel: bool, **kwargs) -> WorkflowRunResult:
+def execute_classic_workflows(
+    config: Dict[str, Any],
+    *,
+    allow_parallel: bool,
+    scheduler: Optional["GlobalOrcaScheduler"] = None,
+    **kwargs,
+) -> WorkflowRunResult:
     """Run classic oxidation/reduction steps via the shared workflow scheduler."""
 
     manager = _WorkflowManager(config, label="classic")
@@ -629,6 +638,8 @@ def execute_classic_workflows(config: Dict[str, Any], *, allow_parallel: bool, *
         if not manager.has_jobs():
             logger.info("[classic] No oxidation/reduction jobs queued for execution")
             return WorkflowRunResult()
+
+        jobs_snapshot = list(manager._jobs.values())
 
         width = estimate_parallel_width(manager._jobs.values())
         pal_jobs_cap = _parse_int(config.get('pal_jobs'), fallback=0)
@@ -643,6 +654,18 @@ def execute_classic_workflows(config: Dict[str, Any], *, allow_parallel: bool, *
         else:
             effective = 1
             manager.enforce_sequential_allocation()
+
+        if scheduler is not None:
+            # Apply sequential allocation to scheduler's manager if needed
+            if not allow_parallel:
+                scheduler.manager.enforce_sequential_allocation()
+                if scheduler.manager.pool.max_concurrent_jobs != 1:
+                    scheduler.manager.pool.max_concurrent_jobs = 1
+                    scheduler.manager.max_jobs = 1
+                    scheduler.manager._sync_parallel_flag()
+            for job in jobs_snapshot:
+                scheduler.add_job(job)
+            return scheduler.run()
 
         if effective <= 0:
             effective = 1
@@ -683,7 +706,13 @@ def execute_classic_workflows(config: Dict[str, Any], *, allow_parallel: bool, *
         manager.shutdown()
 
 
-def execute_manually_workflows(config: Dict[str, Any], *, allow_parallel: bool, **kwargs) -> WorkflowRunResult:
+def execute_manually_workflows(
+    config: Dict[str, Any],
+    *,
+    allow_parallel: bool,
+    scheduler: Optional["GlobalOrcaScheduler"] = None,
+    **kwargs,
+) -> WorkflowRunResult:
     """Run manual oxidation/reduction steps via the shared workflow scheduler."""
 
     manager = _WorkflowManager(config, label="manually")
@@ -693,6 +722,8 @@ def execute_manually_workflows(config: Dict[str, Any], *, allow_parallel: bool, 
         if not manager.has_jobs():
             logger.info("[manually] No oxidation/reduction jobs queued for execution")
             return WorkflowRunResult()
+
+        jobs_snapshot = list(manager._jobs.values())
 
         width = estimate_parallel_width(manager._jobs.values())
         pal_jobs_cap = _parse_int(config.get('pal_jobs'), fallback=0)
@@ -707,6 +738,18 @@ def execute_manually_workflows(config: Dict[str, Any], *, allow_parallel: bool, 
         else:
             effective = 1
             manager.enforce_sequential_allocation()
+
+        if scheduler is not None:
+            # Apply sequential allocation to scheduler's manager if needed
+            if not allow_parallel:
+                scheduler.manager.enforce_sequential_allocation()
+                if scheduler.manager.pool.max_concurrent_jobs != 1:
+                    scheduler.manager.pool.max_concurrent_jobs = 1
+                    scheduler.manager.max_jobs = 1
+                    scheduler.manager._sync_parallel_flag()
+            for job in jobs_snapshot:
+                scheduler.add_job(job)
+            return scheduler.run()
 
         if effective <= 0:
             effective = 1

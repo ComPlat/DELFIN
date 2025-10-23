@@ -13,20 +13,17 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from delfin.common.logging import get_logger
 from delfin.common.paths import resolve_path
 from delfin.copy_helpers import copy_if_exists, prepare_occ_folder, read_occupier_file
+from delfin.global_scheduler import GlobalOrcaScheduler
 from delfin.parallel_occupier import OccupierExecutionContext, run_occupier_orca_jobs
 from delfin.parallel_classic_manually import execute_classic_workflows, execute_manually_workflows, normalize_parallel_token
 from delfin.xtb_crest import XTB, XTB_GOAT, XTB_SOLVATOR, run_crest_workflow
 from delfin.cli_calculations import calculate_redox_potentials, select_final_potentials
-from delfin.thread_safe_helpers import prepare_occ_folder_2_threadsafe
+import delfin.thread_safe_helpers as thread_safe_helpers
 from delfin.energies import find_gibbs_energy, find_ZPE, find_electronic_energy
 
 logger = get_logger(__name__)
 
 
-def _emit_occ_completion(folder_name: str) -> None:
-    """Emit a simple marker once an OCCUPIER folder has finished."""
-    print(f"[{folder_name}] OCCUPIER run finished.")
-    print()
 
 
 @dataclass
@@ -102,230 +99,13 @@ class PipelineContext:
 # ---------------------------------------------------------------------------
 
 
-def _execute_oxidation_workflow(config: Dict[str, Any], pal_override: Optional[int] = None) -> bool:
-    """Execute oxidation steps workflow."""
-
-    logger.info("Starting oxidation workflow")
-    original_cwd = Path.cwd()
-
-    try:
-        if "1" in config.get("oxidation_steps", ""):
-            print("\nOCCUPIER for the first oxidation step:\n")
-            success = prepare_occ_folder_2_threadsafe(
-                "ox_step_1_OCCUPIER",
-                source_occ_folder="initial_OCCUPIER",
-                charge_delta=+1,
-                config=config,
-                original_cwd=original_cwd,
-                pal_override=pal_override,
-            )
-            if not success:
-                logger.error("Failed to prepare ox_step_1_OCCUPIER")
-                return False
-            _emit_occ_completion("ox_step_1_OCCUPIER")
-
-        if "2" in config.get("oxidation_steps", ""):
-            print("\nOCCUPIER for the second oxidation step:\n")
-            success = prepare_occ_folder_2_threadsafe(
-                "ox_step_2_OCCUPIER",
-                source_occ_folder="ox_step_1_OCCUPIER",
-                charge_delta=+2,
-                config=config,
-                original_cwd=original_cwd,
-                pal_override=pal_override,
-            )
-            if not success:
-                logger.error("Failed to prepare ox_step_2_OCCUPIER")
-                return False
-            _emit_occ_completion("ox_step_2_OCCUPIER")
-
-        if "3" in config.get("oxidation_steps", ""):
-            print("\nOCCUPIER for the third oxidation step:\n")
-            success = prepare_occ_folder_2_threadsafe(
-                "ox_step_3_OCCUPIER",
-                source_occ_folder="ox_step_2_OCCUPIER",
-                charge_delta=+3,
-                config=config,
-                original_cwd=original_cwd,
-                pal_override=pal_override,
-            )
-            if not success:
-                logger.error("Failed to prepare ox_step_3_OCCUPIER")
-                return False
-            _emit_occ_completion("ox_step_3_OCCUPIER")
-
-        logger.info("Oxidation workflow completed")
-        return True
-
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Oxidation workflow failed: %s", exc)
-        return False
-
-
-def _execute_reduction_workflow(config: Dict[str, Any], pal_override: Optional[int] = None) -> bool:
-    """Execute reduction steps workflow."""
-
-    logger.info("Starting reduction workflow")
-    original_cwd = Path.cwd()
-
-    try:
-        if "1" in config.get("reduction_steps", ""):
-            print("\nOCCUPIER for the first reduction step:\n")
-            success = prepare_occ_folder_2_threadsafe(
-                "red_step_1_OCCUPIER",
-                source_occ_folder="initial_OCCUPIER",
-                charge_delta=-1,
-                config=config,
-                original_cwd=original_cwd,
-                pal_override=pal_override,
-            )
-            if not success:
-                logger.error("Failed to prepare red_step_1_OCCUPIER")
-                return False
-            _emit_occ_completion("red_step_1_OCCUPIER")
-
-        if "2" in config.get("reduction_steps", ""):
-            print("\nOCCUPIER for the second reduction step:\n")
-            success = prepare_occ_folder_2_threadsafe(
-                "red_step_2_OCCUPIER",
-                source_occ_folder="red_step_1_OCCUPIER",
-                charge_delta=-2,
-                config=config,
-                original_cwd=original_cwd,
-                pal_override=pal_override,
-            )
-            if not success:
-                logger.error("Failed to prepare red_step_2_OCCUPIER")
-                return False
-            _emit_occ_completion("red_step_2_OCCUPIER")
-
-        if "3" in config.get("reduction_steps", ""):
-            print("\nOCCUPIER for the third reduction step:\n")
-            success = prepare_occ_folder_2_threadsafe(
-                "red_step_3_OCCUPIER",
-                source_occ_folder="red_step_2_OCCUPIER",
-                charge_delta=-3,
-                config=config,
-                original_cwd=original_cwd,
-                pal_override=pal_override,
-            )
-            if not success:
-                logger.error("Failed to prepare red_step_3_OCCUPIER")
-                return False
-            _emit_occ_completion("red_step_3_OCCUPIER")
-
-        logger.info("Reduction workflow completed")
-        return True
-
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Reduction workflow failed: %s", exc)
-        return False
-
-
-def _should_parallelize(config: Dict[str, Any]) -> Tuple[bool, bool, bool]:
-    parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
-    has_ox = bool(config.get("oxidation_steps", "").strip())
-    has_red = bool(config.get("reduction_steps", "").strip())
-    can_parallel = has_ox and has_red
-    enable_parallel = (
-        parallel_mode == 'enable'
-        or (parallel_mode == 'auto' and can_parallel)
-    )
-    return enable_parallel, has_ox, has_red
-
-
-def _execute_parallel_workflows(config: Dict[str, Any]) -> bool:
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    total_pal = max(1, int(config.get('PAL', 12)))
-    _, has_ox, has_red = _should_parallelize(config)
-    reduced_pal = max(2, total_pal // 2) if has_ox and has_red else None
-
-    if reduced_pal:
-        def _format_banner(orig_pal: int, split_pal: int) -> str:
-            box_width = 65
-            inner_width = box_width - 2
-
-            def _box_line(text: str = "") -> str:
-                return f"║{text.ljust(inner_width)}║"
-
-            def _label(label: str, value: str) -> str:
-                return f"{label:<29}: {value}".ljust(inner_width)
-
-            header = "PARALLEL WORKFLOW EXECUTION".center(inner_width)
-            body_lines = [
-                header,
-                _label("Original PAL", str(orig_pal)),
-                _label("Reduced PAL per workflow", str(split_pal)),
-                _label("Reason", "ox and red running in parallel"),
-            ]
-
-            top = "╔" + "═" * (box_width - 2) + "╗"
-            bottom = "╚" + "═" * (box_width - 2) + "╝"
-            return "\n".join([top, *[_box_line(line) for line in body_lines], bottom])
-
-        print(_format_banner(total_pal, reduced_pal))
-    else:
-        logger.info("Single workflow execution - using full PAL=%s", total_pal)
-
-    tasks: List[Tuple[str, Any]] = []
-    if config.get("oxidation_steps", ""):
-        tasks.append(("oxidation", (_execute_oxidation_workflow, reduced_pal)))
-    if config.get("reduction_steps", ""):
-        tasks.append(("reduction", (_execute_reduction_workflow, reduced_pal)))
-
-    all_success = True
-    with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
-        futures = {
-            executor.submit(func, config, pal_override): name
-            for name, (func, pal_override) in tasks
-        }
-        for future in as_completed(futures):
-            name = futures[future]
-            try:
-                success = future.result()
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Parallel OCCUPIER %s workflow raised exception: %s", name, exc)
-                all_success = False
-            else:
-                if success:
-                    logger.info("OCCUPIER %s workflow completed successfully", name)
-                else:
-                    logger.error("OCCUPIER %s workflow failed", name)
-                    all_success = False
-
-    if all_success:
-        logger.info("All parallel workflows completed successfully")
-    else:
-        logger.error("Some parallel workflows failed")
-
-    return all_success
-
-
-def _execute_sequential_workflows(config: Dict[str, Any]) -> bool:
-    all_success = True
-    total_pal = max(1, int(config.get('PAL', 12)))
-    logger.info("Sequential workflow execution - each workflow uses full PAL=%s", total_pal)
-
-    if config.get("oxidation_steps", ""):
-        all_success &= _execute_oxidation_workflow(config, pal_override=None)
-    if config.get("reduction_steps", ""):
-        all_success &= _execute_reduction_workflow(config, pal_override=None)
-
-    return all_success
-
-
-def _run_occ_workflows(config: Dict[str, Any]) -> None:
-    needs_ox_red = config.get("oxidation_steps", "").strip() or config.get("reduction_steps", "").strip()
-    if not needs_ox_red:
-        logger.info("No oxidation or reduction steps configured")
-        return
-
-    should_parallel, has_ox, has_red = _should_parallelize(config)
-    if should_parallel and has_ox and has_red:
-        _execute_parallel_workflows(config)
-    else:
-        _execute_sequential_workflows(config)
+# DEPRECATED FUNCTIONS REMOVED:
+# - _execute_oxidation_workflow (replaced by build_occupier_process_jobs)
+# - _execute_reduction_workflow (replaced by build_occupier_process_jobs)
+# - _should_parallelize (no longer needed with scheduler-based execution)
+# - _execute_parallel_workflows (replaced by inline scheduler calls)
+# - _execute_sequential_workflows (replaced by inline scheduler calls)
+# - _run_occ_workflows (replaced by inline scheduler calls with proper dependency handling)
 
 
 def run_occuper_phase(ctx: PipelineContext) -> bool:
@@ -344,13 +124,54 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
     if config['CREST'] == "yes":
         run_crest_workflow(ctx.PAL, ctx.solvent, charge, multiplicity, ctx.config.get('input_file'))
 
+    metals_list = list(ctx.metals) if isinstance(ctx.metals, (list, tuple, set)) else ([ctx.metals] if ctx.metals else [])
+
     if config['XTB_SOLVATOR'] == "no":
+        # Run ALL OCCUPIER jobs (initial + ox/red) in ONE scheduler run
         if "yes" in config.get("calc_initial", ""):
             print("\nOCCUPIER for the initial system:\n")
-            prepare_occ_folder("initial_OCCUPIER", charge_delta=0)
-            logger.info("Initial OCCUPIER completed successfully")
 
-        _run_occ_workflows(config)
+            from delfin.parallel_occupier import build_occupier_process_jobs
+            from delfin.parallel_classic_manually import _WorkflowManager
+
+            # Build ALL jobs (initial + ox + red) in one go
+            all_jobs = build_occupier_process_jobs(config)
+
+            if all_jobs:
+                manager = _WorkflowManager(config, label="occupier_all")
+                try:
+                    for job in all_jobs:
+                        manager.add_job(job)
+
+                    manager.run()
+
+                    if manager.failed_jobs:
+                        logger.error("OCCUPIER workflows failed: %s", list(manager.failed_jobs.keys()))
+                        return False
+                finally:
+                    manager.shutdown()
+
+            logger.info("All OCCUPIER workflows completed successfully")
+        else:
+            # No initial calculation, but still run ox/red if configured
+            from delfin.parallel_occupier import build_occupier_process_jobs
+            from delfin.parallel_classic_manually import _WorkflowManager
+
+            # Build all jobs (initial will be skipped if it exists and recalc=no)
+            jobs = build_occupier_process_jobs(config)
+
+            if jobs:
+                manager = _WorkflowManager(config, label="occupier_workflows")
+                try:
+                    for job in jobs:
+                        manager.add_job(job)
+
+                    manager.run()
+
+                    if manager.failed_jobs:
+                        logger.error("OCCUPIER workflows failed: %s", list(manager.failed_jobs.keys()))
+                finally:
+                    manager.shutdown()
 
         if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == "yes":
             multiplicity_0, additions_0, _ = read_occupier_file(
@@ -371,10 +192,12 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
         initial_report = initial_folder / "OCCUPIER.txt"
 
         initial_rerun = False
+        need_occ_workflows = False
+
         if initial_requested or not initial_report.exists():
             print("\nOCCUPIER for the initial system:\n")
-            prepare_occ_folder("initial_OCCUPIER", charge_delta=0)
             initial_rerun = True
+            need_occ_workflows = True
         else:
             logger.info(
                 "Reusing existing OCCUPIER results in %s (calc_initial=%s)",
@@ -388,8 +211,7 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                     return []
                 return [int(token) for token in re.findall(r"\d+", str(raw)) if token.strip()]
 
-            need_occ_workflows = initial_rerun
-
+            # Check if we need to run ox/red workflows
             if not need_occ_workflows:
                 for step in _extract_steps(config.get("oxidation_steps", "")):
                     if not (Path(f"ox_step_{step}_OCCUPIER") / "OCCUPIER.txt").exists():
@@ -403,8 +225,27 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                         break
 
             if need_occ_workflows:
-                logger.info("Preparing OCCUPIER oxidation/reduction workflows prior to solvation")
-                _run_occ_workflows(config)
+                logger.info("Running OCCUPIER workflows (initial + ox/red) prior to solvation")
+
+                from delfin.parallel_occupier import build_occupier_process_jobs
+                from delfin.parallel_classic_manually import _WorkflowManager
+
+                # Build ALL jobs (initial + ox + red) in one scheduler run
+                all_jobs = build_occupier_process_jobs(config)
+
+                if all_jobs:
+                    manager = _WorkflowManager(config, label="occupier_all")
+                    try:
+                        for job in all_jobs:
+                            manager.add_job(job)
+
+                        manager.run()
+
+                        if manager.failed_jobs:
+                            logger.error("OCCUPIER workflows failed: %s", list(manager.failed_jobs.keys()))
+                            return False
+                    finally:
+                        manager.shutdown()
             else:
                 logger.info("Reusing existing OCCUPIER oxidation/reduction workflows")
 
@@ -464,7 +305,16 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             metal_basisset=ctx.metal_basisset,
             config=config,
         )
-        occ_success = run_occupier_orca_jobs(occ_context, parallel_enabled)
+
+        scheduler = GlobalOrcaScheduler(config, label="occupier")
+        try:
+            occ_success = run_occupier_orca_jobs(
+                occ_context,
+                parallel_enabled,
+                scheduler=scheduler,
+            )
+        finally:
+            scheduler.shutdown()
         if not occ_success:
             if occ_context.failed_jobs or occ_context.skipped_jobs:
                 failed_desc = ", ".join(
@@ -544,7 +394,16 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
     allow_parallel = parallel_mode != 'disable'
     mode_label = "parallel" if allow_parallel else "sequential"
     logger.info("[classic] Dispatching workflows to scheduler (%s mode)", mode_label)
-    result = execute_classic_workflows(config, allow_parallel=allow_parallel, **classic_kwargs)
+    scheduler = GlobalOrcaScheduler(config, label="classic")
+    try:
+        result = execute_classic_workflows(
+            config,
+            allow_parallel=allow_parallel,
+            scheduler=scheduler,
+            **classic_kwargs,
+        )
+    finally:
+        scheduler.shutdown()
 
     if not result.success:
         failed_desc = ", ".join(
@@ -617,7 +476,16 @@ def run_manual_phase(ctx: PipelineContext) -> Dict[str, Any]:
     allow_parallel = parallel_mode != 'disable'
     mode_label = "parallel" if allow_parallel else "sequential"
     logger.info("[manually] Dispatching workflows to scheduler (%s mode)", mode_label)
-    result = execute_manually_workflows(config, allow_parallel=allow_parallel, **manual_kwargs)
+    scheduler = GlobalOrcaScheduler(config, label="manually")
+    try:
+        result = execute_manually_workflows(
+            config,
+            allow_parallel=allow_parallel,
+            scheduler=scheduler,
+            **manual_kwargs,
+        )
+    finally:
+        scheduler.shutdown()
 
     if not result.success:
         failed_desc = ", ".join(

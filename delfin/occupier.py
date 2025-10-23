@@ -36,6 +36,10 @@ def run_OCCUPIER():
                       *******************
     """)
 
+    # Bootstrap global manager if running with scheduler-driven core allocation
+    from delfin.global_manager import bootstrap_global_manager_from_env
+    bootstrap_global_manager_from_env()
+
     # --------------------------- helpers ---------------------------
 
     def calculate_total_electrons(control_file_path):

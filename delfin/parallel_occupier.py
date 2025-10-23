@@ -4,9 +4,10 @@ import os
 import re
 import time
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import JobPriority, create_orca_job
@@ -30,570 +31,10 @@ from .parallel_classic_manually import (
     normalize_parallel_token,
 )
 
+if TYPE_CHECKING:
+    from .global_scheduler import GlobalOrcaScheduler
+
 logger = get_logger(__name__)
-
-
-class ParallelOccupierManager:
-    """Manages parallel execution of OCCUPIER with dynamic resource allocation."""
-
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        global_mgr = get_global_manager()
-        if not global_mgr.is_initialized():
-            raise RuntimeError(
-                "ParallelOccupierManager requires the global job manager to be initialized."
-            )
-
-        self.pool = global_mgr.get_pool()
-        self.total_cores = max(1, global_mgr.total_cores)
-        configured_max_jobs = max(1, _resolve_pal_jobs(config))
-        self.max_jobs = max(1, min(configured_max_jobs, self.pool.max_concurrent_jobs))
-        self.per_job_share = max(
-            1 if self.total_cores == 1 else 2,
-            max(1, self.total_cores // max(1, self.max_jobs)),
-        )
-
-        # Track if we're running unified (ox+red parallel) to adjust PAL allocation
-        self.unified_mode = False
-        self.unified_workflow_count = 1
-
-        logger.info(
-            "Parallel OCCUPIER manager using GLOBAL SHARED pool (pool_id=%d, %d cores)",
-            id(self.pool),
-            self.total_cores,
-        )
-
-    def execute_parallel_workflows(self, ox_sequence: List[Dict], red_sequence: List[Dict]) -> bool:
-        """Execute ox and red workflows in parallel with dynamic resource management."""
-
-        logger.info("Starting parallel OCCUPIER execution: ox_steps + red_steps")
-
-        # Merge both sequences into a unified job list with proper identification
-        unified_sequence = []
-
-        if ox_sequence:
-            for entry in ox_sequence:
-                unified_entry = entry.copy()
-                unified_entry['_workflow'] = 'ox'
-                unified_entry['_original_index'] = entry['index']
-                unified_sequence.append(unified_entry)
-
-        if red_sequence:
-            for entry in red_sequence:
-                unified_entry = entry.copy()
-                unified_entry['_workflow'] = 'red'
-                unified_entry['_original_index'] = entry['index']
-                unified_sequence.append(unified_entry)
-
-        if not unified_sequence:
-            logger.warning("No ox or red sequences to execute")
-            return True
-
-        logger.info(
-            f"Unified execution: {len(ox_sequence or [])} ox jobs + "
-            f"{len(red_sequence or [])} red jobs = {len(unified_sequence)} total jobs"
-        )
-
-        # Enable unified mode to split cores between workflows
-        self.unified_mode = True
-        workflow_count = sum(1 for seq in [ox_sequence, red_sequence] if seq)
-        self.unified_workflow_count = workflow_count
-
-        logger.info(
-            f"Unified mode enabled: {workflow_count} workflows sharing {self.total_cores} cores"
-        )
-
-        # Execute all jobs in a single unified workflow with shared resource pool
-        try:
-            return self._execute_unified_sequence(unified_sequence)
-        finally:
-            self.unified_mode = False
-            self.unified_workflow_count = 1
-
-    def _execute_unified_sequence(self, unified_sequence: List[Dict]) -> bool:
-        """Execute unified ox+red sequence with proper resource sharing."""
-
-        logger.info(f"Starting unified execution with {len(unified_sequence)} jobs")
-
-        # Analyze cross-workflow dependencies
-        dependencies = self._analyze_unified_dependencies(unified_sequence)
-
-        # Submit jobs to pool based on dependencies
-        submitted_jobs = {}
-        completed_jobs = set()
-        job_submit_times = {}
-
-        start_time = time.time()
-        max_wait_cycles = 1800  # 1 hour timeout
-        wait_cycles = 0
-        last_progress_time = start_time
-
-        while len(completed_jobs) < len(unified_sequence):
-            # Find jobs ready to run
-            ready_jobs = []
-            for entry in unified_sequence:
-                job_key = (entry['_workflow'], entry['_original_index'])
-                if (job_key not in submitted_jobs and
-                    job_key not in completed_jobs and
-                    dependencies[job_key].issubset(completed_jobs)):
-                    ready_jobs.append(entry)
-
-            # Submit ready jobs to pool
-            for entry in ready_jobs:
-                workflow = entry['_workflow']
-                idx = entry['_original_index']
-                job_key = (workflow, idx)
-                job_id = f"{workflow}_steps_job_{idx}"
-
-                inp_file = self._get_workflow_input_filename(workflow, idx)
-                out_file = self._get_workflow_output_filename(workflow, idx)
-
-                # Estimate job complexity for resource allocation
-                cores_min, cores_opt, cores_max = self._estimate_job_requirements(entry)
-
-                # Create and submit job
-                pool_job = create_orca_job(
-                    job_id=job_id,
-                    inp_file=inp_file,
-                    out_file=out_file,
-                    cores_min=cores_min,
-                    cores_optimal=cores_opt,
-                    cores_max=cores_max,
-                    priority=JobPriority.NORMAL,
-                    estimated_duration=self._estimate_duration(entry)
-                )
-
-                self.pool.submit_job(pool_job)
-                submitted_jobs[job_key] = job_id
-                job_submit_times[job_key] = time.time()
-
-                logger.info(f"Submitted {job_id} to unified pool")
-
-            # Brief pause only on first submission to let jobs start
-            if ready_jobs and len(submitted_jobs) == len(ready_jobs):
-                time.sleep(0.1)
-
-            # Check for completed jobs
-            newly_completed = self._check_completed_unified_jobs(submitted_jobs, completed_jobs)
-            completed_jobs.update(newly_completed)
-
-            # Track progress
-            if newly_completed or ready_jobs:
-                last_progress_time = time.time()
-                wait_cycles = 0
-            else:
-                wait_cycles += 1
-
-            # Deadlock detection
-            if not ready_jobs and not newly_completed:
-                elapsed_since_progress = time.time() - last_progress_time
-
-                if len(submitted_jobs) > len(completed_jobs):
-                    # We have running jobs, just wait
-                    if wait_cycles % 30 == 0:
-                        running = len(submitted_jobs) - len(completed_jobs)
-                        logger.info(
-                            f"[unified] Waiting for {running} running jobs to complete "
-                            f"({elapsed_since_progress:.0f}s since last progress)"
-                        )
-                    time.sleep(2)
-                elif len(submitted_jobs) < len(unified_sequence):
-                    # Deadlock detected
-                    pending_keys = set((e['_workflow'], e['_original_index']) for e in unified_sequence) - set(submitted_jobs.keys())
-                    logger.error(
-                        f"[unified] Deadlock detected: {len(pending_keys)} jobs waiting. "
-                        f"Pending: {sorted(pending_keys)}"
-                    )
-                    for job_key in sorted(pending_keys):
-                        deps = dependencies.get(job_key, set())
-                        missing_deps = deps - completed_jobs
-                        logger.error(f"  Job {job_key} waiting for: {sorted(missing_deps)}")
-                    return False
-                else:
-                    logger.warning("[unified] Unexpected state: breaking loop")
-                    break
-
-                if wait_cycles >= max_wait_cycles:
-                    logger.error(
-                        f"[unified] Timeout after {wait_cycles * 2}s. "
-                        f"Completed: {len(completed_jobs)}/{len(unified_sequence)}"
-                    )
-                    return False
-
-        duration = time.time() - start_time
-        logger.info(f"Unified execution completed in {duration:.1f}s")
-
-        return True
-
-    def _analyze_unified_dependencies(self, unified_sequence: List[Dict]) -> Dict[tuple, Set[tuple]]:
-        """Analyze dependencies across ox and red workflows."""
-        dependencies = {}
-
-        for entry in unified_sequence:
-            workflow = entry['_workflow']
-            idx = entry['_original_index']
-            job_key = (workflow, idx)
-
-            raw_from = entry.get("from", idx - 1)
-            dep_indices = self._parse_dependency_field(raw_from)
-            dep_indices.discard(idx)
-
-            # Dependencies are within the same workflow
-            dep_keys = set((workflow, dep_idx) for dep_idx in dep_indices)
-            dependencies[job_key] = dep_keys
-
-        return dependencies
-
-    def _check_completed_unified_jobs(self, submitted_jobs: Dict[tuple, str],
-                                     completed_jobs: Set[tuple]) -> Set[tuple]:
-        """Check for newly completed jobs in unified execution."""
-        newly_completed = set()
-
-        # Use pool feedback first
-        finished_ids = set(self.pool.drain_completed_jobs())
-        inverse_map = {job_id: key for key, job_id in submitted_jobs.items()}
-
-        for job_id in finished_ids:
-            key = inverse_map.get(job_id)
-            if key is not None and key not in completed_jobs:
-                newly_completed.add(key)
-                logger.info(f"Job {job_id} completed (pool notification)")
-
-        # Fallback to file-based detection
-        for key, job_id in submitted_jobs.items():
-            if key in completed_jobs or key in newly_completed:
-                continue
-            workflow, idx = key
-            out_file = self._get_workflow_output_filename(workflow, idx)
-            if self._verify_job_completion(out_file):
-                newly_completed.add(key)
-                logger.info(f"Job {job_id} completed (output check)")
-
-        return newly_completed
-
-    def _get_workflow_input_filename(self, workflow: str, idx: int) -> str:
-        """Get input filename for workflow job."""
-        return f"input{'' if idx == 1 else idx}.inp"
-
-    def _get_workflow_output_filename(self, workflow: str, idx: int) -> str:
-        """Get output filename for workflow job."""
-        return f"output{'' if idx == 1 else idx}.out"
-
-    def _execute_sequence_with_pool(self, workflow_name: str, sequence: List[Dict],
-                                   priority: JobPriority) -> bool:
-        """Execute a single OCCUPIER sequence using the dynamic pool."""
-
-        logger.info(f"Starting {workflow_name} with {len(sequence)} jobs")
-
-        # Analyze dependencies
-        dependencies = self._analyze_dependencies(sequence)
-
-        # Submit jobs to pool based on dependencies
-        submitted_jobs = {}
-        completed_jobs = set()
-        job_submit_times = {}
-
-        start_time = time.time()
-        max_wait_cycles = 1800  # 1 hour timeout (1800 * 2s)
-        wait_cycles = 0
-        last_progress_time = start_time
-
-        while len(completed_jobs) < len(sequence):
-            # Find jobs ready to run
-            ready_jobs = []
-            for entry in sequence:
-                idx = entry["index"]
-                if (idx not in submitted_jobs and
-                    idx not in completed_jobs and
-                    dependencies[idx].issubset(completed_jobs)):
-                    ready_jobs.append(entry)
-
-            # Submit ready jobs to pool
-            for entry in ready_jobs:
-                job_id = f"{workflow_name}_job_{entry['index']}"
-                inp_file = self._get_input_filename(entry['index'])
-                out_file = self._get_output_filename(entry['index'])
-
-                # Estimate job complexity for resource allocation
-                cores_min, cores_opt, cores_max = self._estimate_job_requirements(entry)
-
-                # Create and submit job
-                pool_job = create_orca_job(
-                    job_id=job_id,
-                    inp_file=inp_file,
-                    out_file=out_file,
-                    cores_min=cores_min,
-                    cores_optimal=cores_opt,
-                    cores_max=cores_max,
-                    priority=priority,
-                    estimated_duration=self._estimate_duration(entry)
-                )
-
-                self.pool.submit_job(pool_job)
-                submitted_jobs[entry['index']] = job_id
-                job_submit_times[entry['index']] = time.time()
-
-                logger.info(f"Submitted {job_id} to pool")
-
-            # Brief pause only on first submission to let jobs start
-            if ready_jobs and len(submitted_jobs) == len(ready_jobs):
-                time.sleep(0.1)
-
-            # Check for completed jobs
-            newly_completed = self._check_completed_jobs(submitted_jobs, completed_jobs)
-            completed_jobs.update(newly_completed)
-
-            # Track progress
-            if newly_completed or ready_jobs:
-                last_progress_time = time.time()
-                wait_cycles = 0
-            else:
-                wait_cycles += 1
-
-            # Deadlock detection
-            if not ready_jobs and not newly_completed:
-                elapsed_since_progress = time.time() - last_progress_time
-
-                # Check if we're truly stuck
-                if len(submitted_jobs) > len(completed_jobs):
-                    # We have running jobs, just wait
-                    if wait_cycles % 30 == 0:  # Log every minute
-                        running = len(submitted_jobs) - len(completed_jobs)
-                        logger.info(
-                            f"[{workflow_name}] Waiting for {running} running jobs to complete "
-                            f"({elapsed_since_progress:.0f}s since last progress)"
-                        )
-                    time.sleep(2)
-                elif len(submitted_jobs) < len(sequence):
-                    # We have unsubmitted jobs but can't submit them (dependency deadlock)
-                    pending_indices = set(entry["index"] for entry in sequence) - set(submitted_jobs.keys())
-                    logger.error(
-                        f"[{workflow_name}] Deadlock detected: {len(pending_indices)} jobs waiting "
-                        f"but dependencies not satisfied. Pending: {sorted(pending_indices)}"
-                    )
-                    # Log dependency info for debugging
-                    for idx in sorted(pending_indices):
-                        deps = dependencies.get(idx, set())
-                        missing_deps = deps - completed_jobs
-                        logger.error(
-                            f"  Job {idx} waiting for dependencies: {sorted(missing_deps)}"
-                        )
-                    return False
-                else:
-                    # All jobs submitted and completed - this shouldn't happen but break anyway
-                    logger.warning(f"[{workflow_name}] Unexpected state: breaking loop")
-                    break
-
-                # Global timeout
-                if wait_cycles >= max_wait_cycles:
-                    logger.error(
-                        f"[{workflow_name}] Timeout after {wait_cycles * 2}s with no progress. "
-                        f"Completed: {len(completed_jobs)}/{len(sequence)}"
-                    )
-                    return False
-
-        duration = time.time() - start_time
-        logger.info(f"{workflow_name} completed in {duration:.1f}s")
-
-        return True
-
-    def _analyze_dependencies(self, sequence: List[Dict]) -> Dict[int, Set[int]]:
-        """Analyze dependencies in OCCUPIER sequence."""
-        dependencies = {}
-
-        for entry in sequence:
-            idx = entry["index"]
-            raw_from = entry.get("from", idx - 1)
-
-            dep_indices = self._parse_dependency_field(raw_from)
-            dep_indices.discard(idx)
-            dependencies[idx] = dep_indices
-
-        return dependencies
-
-    @staticmethod
-    def _parse_dependency_field(raw_from: Any) -> Set[int]:
-        deps: Set[int] = set()
-        if raw_from in (None, "", 0):
-            return deps
-
-        def add_value(value: Any) -> None:
-            try:
-                candidate = int(str(value).strip())
-            except (TypeError, ValueError):
-                return
-            if candidate > 0:
-                deps.add(candidate)
-
-        if isinstance(raw_from, (list, tuple, set)):
-            for item in raw_from:
-                add_value(item)
-            return deps
-
-        text = str(raw_from)
-        for token in text.replace(";", ",").replace("|", ",").split(","):
-            if not token.strip():
-                continue
-            add_value(token)
-
-        if not deps:
-            add_value(raw_from)
-        return deps
-
-    def _estimate_job_requirements(self, entry: Dict) -> tuple[int, int, int]:
-        """Estimate core requirements for a job."""
-        # Adjust total cores if in unified mode (ox+red parallel)
-        effective_total_cores = self.total_cores
-        if self.unified_mode and self.unified_workflow_count > 1:
-            # Split cores between parallel workflows
-            effective_total_cores = max(2, self.total_cores // self.unified_workflow_count)
-            logger.debug(
-                f"Unified mode: reducing effective cores from {self.total_cores} "
-                f"to {effective_total_cores} ({self.unified_workflow_count} workflows)"
-            )
-
-        # Base requirements
-        cores_min = 1 if effective_total_cores == 1 else 2
-        burst_capacity = max(cores_min, min(effective_total_cores, self.per_job_share * 2))
-        cores_max = burst_capacity
-
-        # Adjust based on multiplicity and job characteristics
-        multiplicity = entry.get("m", 1)
-
-        if multiplicity > 3:
-            # High-spin jobs might benefit from more cores
-            cores_opt = burst_capacity
-        else:
-            # Standard DFT jobs
-            cores_opt = burst_capacity
-
-        # Ensure constraints
-        cores_opt = max(cores_min, min(cores_opt, cores_max))
-
-        return cores_min, cores_opt, cores_max
-
-    def _estimate_duration(self, entry: Dict) -> float:
-        """Estimate job duration in seconds."""
-        base_time = 1800  # 30 minutes base
-
-        # Adjust based on multiplicity
-        multiplicity = entry.get("m", 1)
-        if multiplicity > 3:
-            base_time *= 1.5  # High-spin calculations take longer
-
-        # Adjust based on broken symmetry
-        if entry.get("BS"):
-            base_time *= 1.3  # BS calculations are more expensive
-
-        return base_time
-
-    def _get_input_filename(self, idx: int) -> str:
-        """Get input filename for job index."""
-        return f"input{'' if idx == 1 else idx}.inp"
-
-    def _get_output_filename(self, idx: int) -> str:
-        """Get output filename for job index."""
-        return f"output{'' if idx == 1 else idx}.out"
-
-    def _check_completed_jobs(self, submitted_jobs: Dict[int, str],
-                            completed_jobs: Set[int]) -> Set[int]:
-        """Check for newly completed jobs."""
-        newly_completed = set()
-
-        # Use pool feedback first
-        finished_ids = set(self.pool.drain_completed_jobs())
-        inverse_map = {job_id: idx for idx, job_id in submitted_jobs.items()}
-
-        for job_id in finished_ids:
-            idx = inverse_map.get(job_id)
-            if idx is not None and idx not in completed_jobs:
-                newly_completed.add(idx)
-                logger.info(f"Job {job_id} completed (pool notification)")
-
-        # Fallback to file-based detection for any remaining jobs
-        for idx, job_id in submitted_jobs.items():
-            if idx in completed_jobs or idx in newly_completed:
-                continue
-            out_file = self._get_output_filename(idx)
-            if self._verify_job_completion(out_file):
-                newly_completed.add(idx)
-                logger.info(f"Job {job_id} completed (output check)")
-
-        return newly_completed
-
-    def _verify_job_completion(self, out_file: str) -> bool:
-        """Verify that an ORCA job completed successfully."""
-        try:
-            with open(out_file, 'r', errors='ignore') as f:
-                content = f.read()
-                return "ORCA TERMINATED NORMALLY" in content
-        except Exception:
-            return False
-
-    def execute_single_sequence(self, sequence: List[Dict], workflow_name: str = "occupier") -> bool:
-        """Execute a single OCCUPIER sequence with intelligent parallelization."""
-
-        if len(sequence) <= 1:
-            # Single job - run sequentially
-            logger.info(f"Running {workflow_name} sequentially (single job)")
-            return self._execute_sequential(sequence)
-
-        # Check if parallelization makes sense
-        dependencies = self._analyze_dependencies(sequence)
-        independent_jobs = sum(1 for deps in dependencies.values() if len(deps) <= 1)  # from=0 or from=1 count as independent
-        parallel_potential = sum(1 for level_jobs in self._get_parallel_levels(dependencies).values() if len(level_jobs) >= 2)
-
-        if (independent_jobs >= 2 or parallel_potential >= 1) and self.total_cores >= 4:
-            logger.info(f"Running {workflow_name} with dynamic pool parallelization "
-                       f"({independent_jobs} independent jobs, {parallel_potential} parallel levels)")
-            return self._execute_sequence_with_pool(workflow_name, sequence, JobPriority.NORMAL)
-        else:
-            logger.info(f"Running {workflow_name} sequentially (insufficient parallelism: "
-                       f"{independent_jobs} independent, {parallel_potential} parallel levels, {self.total_cores} cores)")
-            return self._execute_sequential(sequence)
-
-    def _get_parallel_levels(self, dependencies: Dict[int, Set[int]]) -> Dict[int, List[int]]:
-        """Analyze how many jobs can run in parallel at each dependency level."""
-        levels = {}
-
-        def get_level(job_idx: int) -> int:
-            if not dependencies[job_idx]:
-                return 0
-            return max(get_level(dep) for dep in dependencies[job_idx]) + 1
-
-        for job_idx in dependencies:
-            level = get_level(job_idx)
-            if level not in levels:
-                levels[level] = []
-            levels[level].append(job_idx)
-
-        return levels
-
-    def _execute_sequential(self, sequence: List[Dict]) -> bool:
-        """Fallback sequential execution."""
-        from delfin.orca import run_orca
-
-        for entry in sequence:
-            idx = entry["index"]
-            inp_file = self._get_input_filename(idx)
-            out_file = self._get_output_filename(idx)
-
-            logger.info(f"Running sequential job {idx}")
-            run_orca(inp_file, out_file)
-
-            if not self._verify_job_completion(out_file):
-                logger.error(f"Sequential job {idx} failed")
-                return False
-
-        return True
-
-    def get_pool_status(self) -> Dict[str, Any]:
-        """Get current status of the dynamic pool."""
-        return self.pool.get_status()
-
-    def shutdown(self):
-        """Shutdown the parallel manager."""
-        logger.debug("Parallel OCCUPIER manager relies on global pool; nothing to shutdown")
 
 
 @dataclass
@@ -624,7 +65,13 @@ class JobDescriptor:
     preferred_cores: Optional[int] = None
 
 
-def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: bool) -> bool:
+def run_occupier_orca_jobs(
+    context: OccupierExecutionContext,
+    parallel_enabled: bool,
+    *,
+    scheduler: Optional["GlobalOrcaScheduler"] = None,
+    jobs: Optional[List[WorkflowJob]] = None,
+) -> bool:
     """Execute OCCUPIER post-processing ORCA jobs with optional parallelization."""
 
     frequency_mode = str(context.config.get('frequency_calculation_OCCUPIER', 'no')).lower()
@@ -632,11 +79,12 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
         logger.info("frequency_calculation_OCCUPIER=yes → skipping ORCA job scheduling")
         return True
 
-    try:
-        jobs = _build_occupier_jobs(context)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to prepare OCCUPIER ORCA jobs: %s", exc, exc_info=True)
-        return False
+    if jobs is None:
+        try:
+            jobs = build_occupier_jobs(context)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to prepare OCCUPIER ORCA jobs: %s", exc, exc_info=True)
+            return False
 
     if not jobs:
         logger.info("No OCCUPIER ORCA jobs detected for execution")
@@ -645,6 +93,14 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
     context.completed_jobs.clear()
     context.failed_jobs.clear()
     context.skipped_jobs.clear()
+
+    if scheduler is not None:
+        scheduler.add_jobs(jobs)
+        result = scheduler.run()
+        context.completed_jobs.update(result.completed)
+        context.failed_jobs.update(result.failed)
+        context.skipped_jobs.update(result.skipped)
+        return result.success
 
     pal_jobs_value = _resolve_pal_jobs(context.config)
     parallel_mode = normalize_parallel_token(context.config.get('parallel_workflows', 'auto'))
@@ -698,7 +154,7 @@ def run_occupier_orca_jobs(context: OccupierExecutionContext, parallel_enabled: 
         except Exception as exc:  # noqa: BLE001
             logger.error("Parallel OCCUPIER ORCA execution failed: %s", exc, exc_info=True)
             try:
-                fallback_jobs = _build_occupier_jobs(context)
+                fallback_jobs = jobs if jobs is not None else build_occupier_jobs(context)
             except Exception as rebuild_exc:  # noqa: BLE001
                 logger.error(
                     "Sequential fallback cannot be prepared after parallel failure: %s",
@@ -832,7 +288,12 @@ def _run_jobs_sequentially(
     return not failed and not skipped
 
 
-def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]:
+def build_occupier_jobs(
+    context: OccupierExecutionContext,
+    *,
+    planning_only: bool = False,
+    include_auxiliary: bool = True,
+) -> List[WorkflowJob]:
     """Create workflow job definitions for OCCUPIER ORCA runs."""
 
     config = context.config
@@ -842,7 +303,7 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
     total_cores = max(1, _parse_int(config.get('PAL'), fallback=1))
     pal_jobs_value = _resolve_pal_jobs(config)
 
-    # Check if ox and red will run in parallel - if so, split cores
+    # Determine whether oxidation and reduction flows may run side-by-side
     oxidation_steps = _parse_step_list(config.get('oxidation_steps'))
     reduction_steps = _parse_step_list(config.get('reduction_steps'))
     has_ox = len(oxidation_steps) > 0
@@ -854,88 +315,72 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
     if parallel_mode == 'disable':
         pal_jobs_value = 1
 
-    # If ox and red will run in parallel, split cores between them
-    effective_total_cores = total_cores
+    max_allocatable = total_cores
+    cores_min = 1 if max_allocatable == 1 else 2
+
+    # Suggested share if both workflows run concurrently
+    workflow_parallel_share = max_allocatable
     if ox_red_parallel:
-        effective_total_cores = max(2, total_cores // 2)
+        workflow_parallel_share = max(cores_min, max_allocatable // 2)
         logger.info(
-            f"[occupier] Ox and red workflows will run in parallel: "
-            f"splitting {total_cores} cores → {effective_total_cores} cores per workflow"
+            f"[occupier] Oxidation and reduction may run in parallel – "
+            f"target share ≈ {workflow_parallel_share}/{max_allocatable} cores per workflow"
         )
 
-    cores_min = 1 if effective_total_cores == 1 else 2
-    cores_max = effective_total_cores
+    def _preferred_share(job_count: Optional[int]) -> int:
+        """Heuristic for an optimal core share per job."""
+        share = workflow_parallel_share
 
-    def core_bounds(preferred_opt: Optional[int] = None, job_count_at_level: Optional[int] = None) -> tuple[int, int, int]:
+        if job_count and job_count > 1:
+            divisor = max(1, job_count)
+            share = min(share, max_allocatable // divisor if max_allocatable >= divisor else cores_min)
+            if pal_jobs_value > 0:
+                pal_div = max(1, pal_jobs_value)
+                share = min(share, max_allocatable // pal_div if max_allocatable >= pal_div else cores_min)
+        else:
+            # Single job → allow full PAL
+            share = max_allocatable
+
+        return max(cores_min, min(max_allocatable, share))
+
+    def core_bounds(preferred_opt: Optional[int] = None,
+                    job_count_at_level: Optional[int] = None) -> tuple[int, int, int]:
         """Calculate core bounds with awareness of parallel job potential."""
-        if pal_jobs_value > 0:
-            default_opt = max(cores_min, effective_total_cores // pal_jobs_value)
+        default_opt = _preferred_share(job_count_at_level)
+        if preferred_opt is not None:
+            preferred = max(cores_min, min(preferred_opt, max_allocatable))
         else:
-            default_opt = max(cores_min, effective_total_cores)
-
-        # If we know multiple jobs will run in parallel, reduce optimal cores for better sharing
-        if job_count_at_level and job_count_at_level > 1:
-            # Allow more jobs to run simultaneously by reducing per-job cores
-            adjusted_opt = max(cores_min, effective_total_cores // min(job_count_at_level, pal_jobs_value))
-            default_opt = min(default_opt, adjusted_opt)
-
-        if preferred_opt is None:
-            preferred = max(cores_min, min(cores_max, default_opt))
-        else:
-            preferred = max(cores_min, min(preferred_opt, cores_max))
-        return cores_min, preferred, cores_max
+            preferred = default_opt
+        return cores_min, preferred, max_allocatable
 
     def register_descriptor(descriptor: JobDescriptor) -> None:
         descriptors.append(descriptor)
 
-    def _fallback_multiplicity(folder: str) -> int:
-        folder_lower = folder.lower()
-        candidates: List[str] = []
-        if folder_lower.startswith('initial_'):
-            candidates.extend(['multiplicity_0', 'multiplicity'])
-        elif folder_lower.startswith('ox_step_'):
-            step_match = re.search(r"ox_step_(\d+)_occupier", folder_lower)
-            if step_match:
-                step = step_match.group(1)
-                candidates.append(f'multiplicity_ox{step}')
-        elif folder_lower.startswith('red_step_'):
-            step_match = re.search(r"red_step_(\d+)_occupier", folder_lower)
-            if step_match:
-                step = step_match.group(1)
-                candidates.append(f'multiplicity_red{step}')
-
-        for key in candidates:
+    def _control_multiplicity(step_type: str, step: Optional[int] = None) -> int:
+        if step_type == "initial":
+            keys = ["multiplicity_0", "multiplicity"]
+        elif step_type == "ox":
+            keys = [f"multiplicity_ox{step}"] if step else []
+        else:
+            keys = [f"multiplicity_red{step}"] if step else []
+        for key in keys:
             value = config.get(key)
             if value is None:
                 continue
             try:
                 return int(str(value).strip())
             except (TypeError, ValueError):
-                logger.warning("[occupier] Cannot parse %s='%s' from CONTROL.txt; ignoring.", key, value)
-
-        logger.warning(
-            "[occupier] Missing OCCUPIER multiplicity for %s; defaulting to 1.",
-            folder,
-        )
+                logger.debug("[occupier] Cannot parse %s='%s' from CONTROL.txt.", key, value)
         return 1
 
-    def _fallback_additions(folder: str) -> str:
-        folder_lower = folder.lower()
-        candidates: List[str] = []
-        if folder_lower.startswith('initial_'):
-            candidates.append('additions_0')
-        elif folder_lower.startswith('ox_step_'):
-            step_match = re.search(r"ox_step_(\d+)_occupier", folder_lower)
-            if step_match:
-                step = step_match.group(1)
-                candidates.append(f'additions_ox{step}')
-        elif folder_lower.startswith('red_step_'):
-            step_match = re.search(r"red_step_(\d+)_occupier", folder_lower)
-            if step_match:
-                step = step_match.group(1)
-                candidates.append(f'additions_red{step}')
-
-        for key in candidates:
+    def _control_additions(step_type: str, step: Optional[int] = None) -> str:
+        if step_type == "initial":
+            keys = ["additions_0"]
+        elif step_type == "ox":
+            keys = [f"additions_ox{step}"] if step else []
+        else:
+            keys = [f"additions_red{step}"] if step else []
+        for key in keys:
             value = config.get(key)
             if value is None:
                 continue
@@ -943,7 +388,7 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
                 stripped = value.strip()
                 if not stripped:
                     continue
-                if stripped.startswith('%'):
+                if stripped.startswith("%"):
                     return stripped
                 digits = re.fullmatch(r"(\d+)\s*,\s*(\d+)", stripped)
                 if digits:
@@ -954,44 +399,35 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
                     first, second = bs_match.groups()
                     return f"%scf BrokenSym {first},{second} end"
                 if re.search(r"[A-Za-z]", stripped):
-                    logger.debug(
-                        "[occupier] Ignoring non-numeric OCCUPIER additions '%s' from CONTROL key %s.",
-                        stripped,
-                        key,
-                    )
+                    logger.debug("[occupier] Ignoring non-numeric OCCUPIER additions '%s' from CONTROL key %s.", stripped, key)
                     continue
                 return stripped
             if isinstance(value, (list, tuple)):
                 tokens = [str(item).strip() for item in value if str(item).strip()]
                 if tokens:
                     return f"%scf BrokenSym {','.join(tokens)} end"
-
         return ""
 
-    def read_occ(folder: str) -> tuple[int, str, Optional[int]]:
-        result = read_occupier_file(folder, "OCCUPIER.txt", None, None, None, config)
+    def read_occ_from_control(step_type: str, step: Optional[int] = None) -> tuple[int, str, Optional[int]]:
+        return _control_multiplicity(step_type, step), _control_additions(step_type, step), None
+
+    def read_occ(folder: str, step_type: str, step: Optional[int]) -> tuple[int, str, Optional[int]]:
+        folder_path = Path(folder)
+        report_path = folder_path / "OCCUPIER.txt"
+        if folder_path.is_dir() and report_path.is_file():
+            result = read_occupier_file(folder, "OCCUPIER.txt", None, None, None, config)
+        else:
+            result = None
         if result:
             multiplicity, additions, min_fspe_index = result
             try:
                 multiplicity_int = int(multiplicity)  # type: ignore[arg-type]
             except (TypeError, ValueError):
-                logger.warning(
-                    "[occupier] OCCUPIER multiplicity invalid for %s; falling back to CONTROL settings.",
-                    folder,
-                )
-                multiplicity_int = _fallback_multiplicity(folder)
-
-            if isinstance(additions, str):
-                additions_str = additions.strip()
-            else:
-                additions_str = ""
+                logger.debug("[occupier] OCCUPIER multiplicity invalid for %s; using CONTROL fallback.", folder)
+                return read_occ_from_control(step_type, step)
+            additions_str = additions.strip() if isinstance(additions, str) else ""
             return multiplicity_int, additions_str, min_fspe_index
-
-        logger.warning(
-            "[occupier] OCCUPIER.txt missing in %s; using CONTROL multiplicity/additions fallback.",
-            folder,
-        )
-        return _fallback_multiplicity(folder), _fallback_additions(folder), None
+        return read_occ_from_control(step_type, step)
 
     solvent = context.solvent
     metals = context.metals
@@ -1003,7 +439,7 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
     calc_initial_flag = str(config.get('calc_initial', 'yes')).strip().lower()
     xtb_solvator_enabled = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
     if calc_initial_flag == 'yes' or xtb_solvator_enabled:
-        multiplicity_0, additions_0, _ = read_occ("initial_OCCUPIER")
+        multiplicity_0, additions_0, _ = read_occ("initial_OCCUPIER", "initial", None)
 
         if xtb_solvator_enabled:
             solvated_xyz = Path("XTB_SOLVATOR") / "XTB_SOLVATOR.solvator.xyz"
@@ -1072,7 +508,7 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
             preferred_cores=None,
         ))
 
-    if str(config.get('absorption_spec', 'no')).strip().lower() == 'yes':
+    if include_auxiliary and str(config.get('absorption_spec', 'no')).strip().lower() == 'yes':
         additions_tddft = config.get('additions_TDDFT', '')
 
         def run_absorption(cores: int, _adds=additions_tddft) -> None:
@@ -1108,7 +544,7 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
     additions_tddft = config.get('additions_TDDFT', '')
     xyz_initial = "initial.xyz"
 
-    if 't' in excitation_flags and str(config.get('E_00', 'no')).strip().lower() == 'yes':
+    if include_auxiliary and 't' in excitation_flags and str(config.get('E_00', 'no')).strip().lower() == 'yes':
         def run_t1_state(cores: int, _adds=additions_tddft) -> None:
             if not Path(xyz_initial).exists():
                 raise RuntimeError(f"Required geometry '{xyz_initial}' not found")
@@ -1177,7 +613,7 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
                 requires={"t1_state_opt.xyz"},
             ))
 
-    if 's' in excitation_flags and str(config.get('E_00', 'no')).strip().lower() == 'yes':
+    if include_auxiliary and 's' in excitation_flags and str(config.get('E_00', 'no')).strip().lower() == 'yes':
         def run_s1_state(cores: int, _adds=additions_tddft) -> None:
             if not Path(xyz_initial).exists():
                 raise RuntimeError(f"Required geometry '{xyz_initial}' not found")
@@ -1283,24 +719,23 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
     oxidation_steps = _parse_step_list(config.get('oxidation_steps'))
     for step in oxidation_steps:
         folder = f"ox_step_{step}_OCCUPIER"
-        multiplicity_step, additions_step, _ = read_occ(folder)
+        multiplicity_step, additions_step, _ = read_occ(folder, "ox", step)
+        if step == 1:
+            requires = {"initial.out"}
+        else:
+            requires = {f"ox_step_{step - 1}.out"}
+
         if xtb_solvator_enabled:
-            if step == 1:
-                primary_geom = Path("initial.xyz")
-                requires = {"initial.out"}
-            else:
-                primary_geom = Path(f"ox_step_{step - 1}.xyz")
-                requires = {f"ox_step_{step - 1}.out"}
+            primary_geom = Path("initial.xyz") if step == 1 else Path(f"ox_step_{step - 1}.xyz")
         else:
             primary_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
-            requires = set()
 
         if primary_geom.exists() or xtb_solvator_enabled:
             xyz_source_path = primary_geom
         else:
             fallback_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
             if fallback_geom.exists():
-                if primary_geom != fallback_geom:
+                if primary_geom != fallback_geom and not planning_only:
                     logger.warning(
                         "[occupier] Primary oxidation geometry %s missing; using OCCUPIER fallback %s",
                         primary_geom,
@@ -1308,11 +743,12 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
                     )
                 xyz_source_path = fallback_geom
             else:
-                logger.warning(
-                    "[occupier] No geometry found for oxidation step %d; proceeding with %s",
-                    step,
-                    primary_geom,
-                )
+                if not planning_only:
+                    logger.warning(
+                        "[occupier] No geometry found for oxidation step %d; proceeding with %s",
+                        step,
+                        primary_geom,
+                    )
                 xyz_source_path = primary_geom
         xyz_source = str(xyz_source_path)
         inp_path = f"ox_step_{step}.inp"
@@ -1362,24 +798,23 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
     reduction_steps = _parse_step_list(config.get('reduction_steps'))
     for step in reduction_steps:
         folder = f"red_step_{step}_OCCUPIER"
-        multiplicity_step, additions_step, _ = read_occ(folder)
+        multiplicity_step, additions_step, _ = read_occ(folder, "red", step)
+        if step == 1:
+            requires = {"initial.out"}
+        else:
+            requires = {f"red_step_{step - 1}.out"}
+
         if xtb_solvator_enabled:
-            if step == 1:
-                primary_geom = Path("initial.xyz")
-                requires = {"initial.out"}
-            else:
-                primary_geom = Path(f"red_step_{step - 1}.xyz")
-                requires = {f"red_step_{step - 1}.out"}
+            primary_geom = Path("initial.xyz") if step == 1 else Path(f"red_step_{step - 1}.xyz")
         else:
             primary_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
-            requires = set()
 
         if primary_geom.exists() or xtb_solvator_enabled:
             xyz_source_path = primary_geom
         else:
             fallback_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
             if fallback_geom.exists():
-                if primary_geom != fallback_geom:
+                if primary_geom != fallback_geom and not planning_only:
                     logger.warning(
                         "[occupier] Primary reduction geometry %s missing; using OCCUPIER fallback %s",
                         primary_geom,
@@ -1387,11 +822,12 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
                     )
                 xyz_source_path = fallback_geom
             else:
-                logger.warning(
-                    "[occupier] No geometry found for reduction step %d; proceeding with %s",
-                    step,
-                    primary_geom,
-                )
+                if not planning_only:
+                    logger.warning(
+                        "[occupier] No geometry found for reduction step %d; proceeding with %s",
+                        step,
+                        primary_geom,
+                    )
                 xyz_source_path = primary_geom
         xyz_source = str(xyz_source_path)
         inp_path = f"red_step_{step}.inp"
@@ -1505,6 +941,48 @@ def _build_occupier_jobs(context: OccupierExecutionContext) -> List[WorkflowJob]
     return jobs
 
 
+def log_orca_job_plan(label: str, jobs: List[WorkflowJob]) -> None:
+    header = f"[{label}] ORCA job plan ({len(jobs)} jobs):"
+    logger.info(header)
+    print(header)
+
+    # Build adjacency for levels and dependents
+    job_map = {job.job_id: job for job in jobs}
+    dependents: Dict[str, Set[str]] = {job.job_id: set() for job in jobs}
+    for job in jobs:
+        for dep in job.dependencies:
+            if dep in dependents:
+                dependents[dep].add(job.job_id)
+
+    # topological levels
+    levels: Dict[str, int] = {}
+
+    def _level(job_id: str) -> int:
+        if job_id not in job_map:
+            return 0
+        if job_id in levels:
+            return levels[job_id]
+        job = job_map[job_id]
+        if not job.dependencies:
+            levels[job_id] = 0
+            return 0
+        lvl = 1 + max((_level(dep) for dep in job.dependencies if dep in job_map), default=0)
+        levels[job_id] = lvl
+        return lvl
+
+    for jid in job_map:
+        _level(jid)
+
+    for job in jobs:
+        deps = ", ".join(sorted(job.dependencies)) if job.dependencies else "none"
+        desc = job.description or "no description"
+        level = levels.get(job.job_id, 0)
+        outs = ", ".join(sorted(dependents.get(job.job_id, ()))) or "none"
+        line = f"  - {job.job_id} → {desc} | level: {level} | deps: {deps} | unlocks: {outs}"
+        logger.info(line)
+        print(line)
+
+
 def _resolve_pal_jobs(config: Dict[str, Any]) -> int:
     value = config.get('pal_jobs')
     parsed = _parse_int(value, fallback=0)
@@ -1585,3 +1063,186 @@ def should_use_parallel_occupier(config: Dict[str, Any]) -> bool:
     # Enable parallel execution if we have sufficient resources
     # Lowered threshold - even 4 cores can benefit from parallelization
     return total_cores >= 4
+
+
+def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
+    """Build scheduler jobs for OCCUPIER process execution (initial, ox_*, red_*).
+
+    These jobs prepare folders and run run_OCCUPIER() as scheduler-managed tasks,
+    enabling dynamic core allocation across all OCCUPIER steps.
+
+    NOTE: Initial job is ALWAYS included to ensure dependencies work correctly.
+    The recalc logic inside OCCUPIER determines if it actually runs or skips.
+
+    Args:
+        config: DELFIN configuration dict
+
+    Returns:
+        List of WorkflowJob objects for scheduler execution (always includes initial)
+    """
+    from delfin.copy_helpers import prepare_occ_folder_only_setup
+    from delfin.thread_safe_helpers import prepare_occ_folder_2_only_setup
+    from delfin.occupier import run_OCCUPIER
+    import os
+
+    jobs: List[WorkflowJob] = []
+    original_cwd = Path.cwd()
+
+    def make_occupier_job(job_id: str, folder_name: str, charge_delta: int,
+                         source_folder: Optional[str] = None,
+                         dependencies: Optional[Set[str]] = None) -> WorkflowJob:
+        """Create a WorkflowJob that prepares folder and runs OCCUPIER."""
+
+        def work(cores: int) -> None:
+            # Prepare folder (without running OCCUPIER)
+            if source_folder is None:
+                # Initial OCCUPIER
+                folder_path = prepare_occ_folder_only_setup(folder_name, charge_delta, parent_dir=original_cwd)
+            else:
+                # ox/red step
+                folder_path = prepare_occ_folder_2_only_setup(
+                    folder_name, source_folder, charge_delta, config, original_cwd
+                )
+
+            if folder_path is None:
+                raise RuntimeError(f"Failed to prepare folder {folder_name}")
+
+            # Set environment variables for global core management
+            global_cfg = {
+                'PAL': cores,
+                'maxcore': int(config.get('maxcore', 1000) or 1000),
+            }
+            pal_jobs_raw = config.get('pal_jobs')
+            if pal_jobs_raw not in (None, ''):
+                try:
+                    global_cfg['pal_jobs'] = int(pal_jobs_raw)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            import json
+            import sys
+            import subprocess
+
+            # Run OCCUPIER as subprocess to avoid CWD race conditions
+            # Each OCCUPIER runs in its own process with its own CWD
+            child_env = os.environ.copy()
+            child_env['DELFIN_CHILD_GLOBAL_MANAGER'] = json.dumps(global_cfg)
+
+            cmd = [
+                sys.executable,
+                "-c",
+                (
+                    "from delfin.common.logging import configure_logging; "
+                    "configure_logging(); "
+                    "from delfin.global_manager import bootstrap_global_manager_from_env; "
+                    "bootstrap_global_manager_from_env(); "
+                    "import delfin.occupier as _occ; _occ.run_OCCUPIER()"
+                ),
+            ]
+
+            log_prefix = f"[{folder_name}]"
+            separator = "-" * (len(log_prefix) + 18)
+            print(separator)
+            print(f"{log_prefix} OCCUPIER start")
+            print(separator)
+
+            try:
+                result = subprocess.run(
+                    cmd,
+                    cwd=folder_path,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=child_env,
+                )
+            except Exception as e:
+                raise RuntimeError(f"Failed to launch OCCUPIER in {folder_path}: {e}")
+
+            # Print output
+            if result.stdout:
+                for line in result.stdout.splitlines():
+                    print(f"{log_prefix} {line}")
+            if result.stderr:
+                for line in result.stderr.splitlines():
+                    print(f"{log_prefix} [stderr] {line}")
+
+            # Save logs
+            try:
+                (folder_path / "occupier_stdout.log").write_text(result.stdout or "")
+                (folder_path / "occupier_stderr.log").write_text(result.stderr or "")
+            except Exception:
+                pass
+
+            if result.returncode != 0:
+                print(f"{log_prefix} OCCUPIER failed (exit={result.returncode})")
+                print(separator)
+                raise RuntimeError(f"OCCUPIER process in {folder_path} exited with code {result.returncode}")
+
+            print(f"{log_prefix} OCCUPIER completed")
+            print(separator)
+            print()
+
+        # Core bounds
+        total_cores = max(1, _parse_int(config.get('PAL'), fallback=1))
+        cores_min = 1 if total_cores == 1 else 2
+        cores_optimal = total_cores  # Start with full allocation
+        cores_max = total_cores
+
+        return WorkflowJob(
+            job_id=job_id,
+            work=work,
+            description=f"OCCUPIER process for {folder_name}",
+            dependencies=dependencies or set(),
+            cores_min=cores_min,
+            cores_optimal=cores_optimal,
+            cores_max=cores_max,
+        )
+
+    # Always include initial OCCUPIER job (recalc logic in OCCUPIER decides if it runs)
+    # This ensures dependencies work correctly even when initial already exists
+    jobs.append(make_occupier_job(
+        job_id="occ_proc_initial",
+        folder_name="initial_OCCUPIER",
+        charge_delta=0,
+        source_folder=None,
+        dependencies=set(),
+    ))
+
+    # Oxidation steps
+    oxidation_steps = _parse_step_list(config.get('oxidation_steps'))
+    for step in oxidation_steps:
+        folder_name = f"ox_step_{step}_OCCUPIER"
+        source_folder = "initial_OCCUPIER" if step == 1 else f"ox_step_{step-1}_OCCUPIER"
+        deps = {"occ_proc_initial"} if step == 1 else {f"occ_proc_ox_{step-1}"}
+
+        jobs.append(make_occupier_job(
+            job_id=f"occ_proc_ox_{step}",
+            folder_name=folder_name,
+            charge_delta=step,
+            source_folder=source_folder,
+            dependencies=deps,
+        ))
+
+    # Reduction steps
+    reduction_steps = _parse_step_list(config.get('reduction_steps'))
+    for step in reduction_steps:
+        folder_name = f"red_step_{step}_OCCUPIER"
+        source_folder = "initial_OCCUPIER" if step == 1 else f"red_step_{step-1}_OCCUPIER"
+        deps = {"occ_proc_initial"} if step == 1 else {f"occ_proc_red_{step-1}"}
+
+        jobs.append(make_occupier_job(
+            job_id=f"occ_proc_red_{step}",
+            folder_name=folder_name,
+            charge_delta=-step,
+            source_folder=source_folder,
+            dependencies=deps,
+        ))
+
+    logger.info(
+        "Built %d OCCUPIER process jobs (initial + ox=%d + red=%d)",
+        len(jobs),
+        len(oxidation_steps),
+        len(reduction_steps),
+    )
+
+    return jobs
