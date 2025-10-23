@@ -7,12 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.4] - 2025-02-XX
 
+### Added
+- Automatic per-run logging: the CLI attaches a global `delfin_run.log` and OCCUPIER subprocesses emit an `occupier.log` alongside ORCA outputs.
+- CLI help now documents QM/XTB splitting via `$` markers and clarifies how `parallel_workflows` toggles between parallel and sequential scheduling modes.
+
 ### Changed
 - Persist QMMM split detection (`$` separator) via shared cache so OCCUPIER/Classic/Manually runs keep the `QM/XTB` flag even if later geometries omit the marker.
 - All geometry writers now pass the geometry path to the splitter so cache lookups work across workflow steps.
+- OCCUPIER FoB scheduling always uses the global job manager; sequential runs simply cap `max_jobs` to one, ensuring consistent PAL enforcement.
+- Global job manager initialization is now idempotent and refuses to tear down an active pool when jobs are still running; configuration differences are detected via resource signatures.
+- Improved banner and logging output for the global scheduler, including explicit parallel-mode reporting.
 
 ### Fixed
 - Ensured newly spawned OCCUPIER steps reuse the cached QM range, restoring the `%QMMM` block for oxidation/reduction inputs.
+- Sanitized PAL/maxcore/pal_jobs parsing so subprocesses inherit consistent limits from CONTROL.txt and `parallel_workflows`.
 
 ## [1.0.3] - 2025-01-XX
 
