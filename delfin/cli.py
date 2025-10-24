@@ -68,7 +68,58 @@ def _purge_workspace(root: Path, keep_names: set[str]) -> None:
             logger.warning("Failed to remove %s: %s", entry, exc)
 
 
-def _confirm_purge() -> bool:
+def _is_delfin_workspace(root: Path) -> bool:
+    """Check if the directory looks like a DELFIN workspace.
+
+    Returns True if we find typical DELFIN artifacts (OCCUPIER folders,
+    .inp/.out files, delfin_run.log, etc.), indicating this is a workspace
+    where a DELFIN run has been executed.
+    """
+    # Check for typical DELFIN artifacts
+    delfin_indicators = [
+        "delfin_run.log",           # Main run log
+        "initial_OCCUPIER",         # OCCUPIER folders
+        "red_step_1_OCCUPIER",
+        "red_step_2_OCCUPIER",
+        "red_step_3_OCCUPIER",
+        "ox_step_1_OCCUPIER",
+        "ox_step_2_OCCUPIER",
+        "ox_step_3_OCCUPIER",
+        "XTB_OPT",                  # XTB folders
+        "XTB_GOAT",
+        "XTB_SOLVATOR",
+        "CREST",
+    ]
+
+    # Check if any indicator exists
+    for indicator in delfin_indicators:
+        if (root / indicator).exists():
+            return True
+
+    # Check for .inp/.out files (typical ORCA outputs)
+    has_inp = any(root.glob("*.inp"))
+    has_out = any(root.glob("*.out"))
+
+    if has_inp and has_out:
+        return True
+
+    return False
+
+
+def _confirm_purge(root: Path) -> bool:
+    """Confirm purge operation with safety checks."""
+    # Safety check: Is this a DELFIN workspace?
+    if not _is_delfin_workspace(root):
+        print("⚠️  WARNING: This directory does NOT appear to be a DELFIN workspace!")
+        print("   No typical DELFIN artifacts found (OCCUPIER folders, .inp/.out files, etc.)")
+        print(f"   Current directory: {root.absolute()}")
+        print()
+        confirm = input("Are you ABSOLUTELY SURE you want to purge this directory? [yes/NO]: ")
+        if confirm.strip().lower() != "yes":
+            return False
+        print()
+
+    # Standard confirmation
     prompt = "This will delete everything except CONTROL.txt and the main input file. Continue? [y/N]: "
     try:
         reply = input(prompt)
@@ -121,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         # Ensure CONTROL itself is preserved even if named differently
         keep.add(control_path.name)
 
-        if not _confirm_purge():
+        if not _confirm_purge(workspace_root):
             print("Purge aborted.")
             return 0
 
