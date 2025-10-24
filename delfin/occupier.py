@@ -17,7 +17,7 @@ from .utils import (
 )
 from .reporting import generate_summary_report_OCCUPIER
 from .orca import run_orca
-from .xyz_io import build_qmmm_block, split_qmmm_sections
+from .xyz_io import build_qmmm_block, split_qmmm_sections, _ensure_qmmm_implicit_model
 from .parallel_classic_manually import (
     _WorkflowManager,
     WorkflowJob,
@@ -248,6 +248,7 @@ def run_OCCUPIER():
 
         cleaned_xyz = clean_xyz_block(lines[2:])  # skip count/comment lines
         geom_lines, qmmm_range = split_qmmm_sections(cleaned_xyz, xyz_path)
+        _ensure_qmmm_implicit_model(config, qmmm_range)
         atoms = _parse_xyz_atoms_with_indices(geom_lines)
         if not atoms:
             logger.error("No atoms parsed from XYZ.")
