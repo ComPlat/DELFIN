@@ -1105,6 +1105,50 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
     jobs: List[WorkflowJob] = []
     original_cwd = Path.cwd()
 
+    # Pre-calculate total number of parallel jobs to optimize core allocation
+    total_cores = max(1, _parse_int(config.get('PAL'), fallback=1))
+    oxidation_steps = _parse_step_list(config.get('oxidation_steps'))
+    reduction_steps = _parse_step_list(config.get('reduction_steps'))
+
+    # Calculate how many jobs might run in parallel
+    # Level 0: initial (1 job)
+    # Level 1: ox_step_1 and red_step_1 (up to 2 jobs in parallel)
+    # Level 2: ox_step_2 and red_step_2 (up to 2 jobs in parallel)
+    # etc.
+    max_parallel_at_any_level = 1
+    if oxidation_steps and reduction_steps:
+        # Both ox and red can run in parallel at each level
+        max_parallel_at_any_level = 2
+
+    # Smart core allocation strategy:
+    # The key insight is that OCCUPIER processes don't need ALL cores because:
+    # 1. They often run sequentially due to dependencies (red_1 → red_2 → red_3)
+    # 2. Post-processing ORCA jobs (initial.inp, red_step_1.inp, etc.) could run
+    #    in parallel while later OCCUPIER processes are still running
+    # 3. With 64 cores, we can allocate e.g. 48 cores to OCCUPIER and reserve
+    #    16 cores for post-processing, achieving better overall throughput
+
+    # Strategy: Reserve ~25-30% of cores for potential parallel post-processing
+    # unless we have very few cores (< 16) or parallel ox/red workflows
+    if max_parallel_at_any_level > 1 and total_cores >= 8:
+        # Both ox and red: split cores between them
+        cores_optimal_per_job = max(4, total_cores // max_parallel_at_any_level)
+    elif total_cores >= 32:
+        # Sequential OCCUPIER but enough cores to enable parallel post-processing
+        # Use ~70-75% of cores for OCCUPIER, reserve rest for post-processing
+        cores_optimal_per_job = max(16, int(total_cores * 0.75))
+    else:
+        # Too few cores to benefit from reservation - use all cores
+        cores_optimal_per_job = total_cores
+
+    logger.info(
+        "[occupier_all] Core allocation strategy: %d cores total, "
+        "%d cores optimal per OCCUPIER process (max_parallel=%d)",
+        total_cores,
+        cores_optimal_per_job,
+        max_parallel_at_any_level,
+    )
+
     def make_occupier_job(job_id: str, folder_name: str, charge_delta: int,
                          source_folder: Optional[str] = None,
                          dependencies: Optional[Set[str]] = None) -> WorkflowJob:
@@ -1200,10 +1244,8 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             print(separator)
             print()
 
-        # Core bounds
-        total_cores = max(1, _parse_int(config.get('PAL'), fallback=1))
+        # Core bounds - use the pre-calculated cores_optimal_per_job
         cores_min = 1 if total_cores == 1 else 2
-        cores_optimal = total_cores  # Start with full allocation
         cores_max = total_cores
 
         return WorkflowJob(
@@ -1212,7 +1254,7 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             description=f"OCCUPIER process for {folder_name}",
             dependencies=dependencies or set(),
             cores_min=cores_min,
-            cores_optimal=cores_optimal,
+            cores_optimal=cores_optimal_per_job,
             cores_max=cores_max,
         )
 
@@ -1264,3 +1306,160 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
     )
 
     return jobs
+
+
+def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
+    """Build BOTH OCCUPIER process jobs AND post-processing ORCA jobs in one scheduler.
+
+    This enables true parallelization: while red_step_3_OCCUPIER runs, initial.inp
+    post-processing can run in parallel, maximizing core utilization.
+
+    The dependency structure:
+    - occ_proc_initial → occupier_initial (post-processing)
+    - occ_proc_red_1 (depends on occ_proc_initial) → occupier_red_1
+    - occ_proc_red_2 (depends on occ_proc_red_1) → occupier_red_2
+    - etc.
+
+    This way, while occ_proc_red_2 runs, occupier_initial can run in parallel.
+
+    Args:
+        config: DELFIN configuration dict
+
+    Returns:
+        Combined list of OCCUPIER process + post-processing jobs
+    """
+    # First, build OCCUPIER process jobs
+    occupier_process_jobs = build_occupier_process_jobs(config)
+
+    # Check if frequency calculation is done within OCCUPIER
+    # If yes, skip post-processing ORCA jobs (they're already done inside OCCUPIER)
+    frequency_mode = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower()
+    if frequency_mode == 'yes':
+        logger.info(
+            "[combined] frequency_calculation_OCCUPIER=yes → post-processing is done "
+            "within OCCUPIER processes; returning OCCUPIER jobs only"
+        )
+        return occupier_process_jobs
+
+    # Build post-processing ORCA jobs with dependencies on OCCUPIER processes
+    # We need to create an OccupierExecutionContext (will be filled during execution)
+    solvent = config.get('solvent', '')
+    metals = config.get('metals', [])
+    main_basisset = config.get('main_basisset', 'def2-SVP')
+    metal_basisset = config.get('metal_basisset', 'def2-TZVP')
+    charge = int(config.get('charge', 0))
+
+    context = OccupierExecutionContext(
+        charge=charge,
+        solvent=solvent,
+        metals=metals,
+        main_basisset=main_basisset,
+        metal_basisset=metal_basisset,
+        config=config,
+    )
+
+    # Build post-processing jobs (but don't execute them yet)
+    try:
+        postprocessing_jobs = build_occupier_jobs(context, planning_only=True, include_auxiliary=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[combined] Could not build post-processing jobs: %s; "
+            "falling back to OCCUPIER-only execution",
+            exc,
+            exc_info=True,
+        )
+        return occupier_process_jobs
+
+    # Build a mapping of what each OCCUPIER process "produces" (in terms of files)
+    # This allows post-processing jobs to find their dependencies
+    occupier_produces = {
+        "occ_proc_initial": {"input_initial_OCCUPIER.xyz", "input_initial_OCCUPIER.gbw", "initial.xyz"},
+        "occupier_initial": {"initial.out", "initial.xyz"},  # Post-processing outputs
+        "occupier_absorption": {"absorption_spec.out"},
+        "occupier_t1_state": {"t1_state_opt.xyz", "t1_state_opt.out"},
+        "occupier_t1_emission": {"emission_t1.out"},
+        "occupier_s1_state": {"s1_state_opt.xyz", "s1_state_opt.out"},
+        "occupier_s1_emission": {"emission_s1.out"},
+    }
+
+    oxidation_steps = _parse_step_list(config.get('oxidation_steps'))
+    reduction_steps = _parse_step_list(config.get('reduction_steps'))
+
+    for step in oxidation_steps:
+        occupier_produces[f"occ_proc_ox_{step}"] = {
+            f"input_ox_step_{step}_OCCUPIER.xyz",
+            f"input_ox_step_{step}_OCCUPIER.gbw",
+            f"ox_step_{step}.xyz",
+        }
+        occupier_produces[f"occupier_ox_{step}"] = {f"ox_step_{step}.out", f"ox_step_{step}.xyz"}
+
+    for step in reduction_steps:
+        occupier_produces[f"occ_proc_red_{step}"] = {
+            f"input_red_step_{step}_OCCUPIER.xyz",
+            f"input_red_step_{step}_OCCUPIER.gbw",
+            f"red_step_{step}.xyz",
+        }
+        occupier_produces[f"occupier_red_{step}"] = {f"red_step_{step}.out", f"red_step_{step}.xyz"}
+
+    # Build reverse mapping: file → job that produces it
+    produced_by: Dict[str, str] = {}
+    for job_id, files in occupier_produces.items():
+        for file in files:
+            produced_by.setdefault(file, job_id)
+
+    # Also add post-processing job products to the mapping
+    for job in postprocessing_jobs:
+        # Post-processing jobs already have their produces set
+        # We need to extract them from the job description
+        # Since WorkflowJob doesn't have a produces field, we'll infer from job_id
+        pass
+
+    # Update dependencies for post-processing jobs based on file requirements
+    for job in postprocessing_jobs:
+        # The job already has dependencies based on file requirements
+        # We need to map those file requirements to OCCUPIER process dependencies
+
+        # Create a new set of dependencies
+        new_deps = set(job.dependencies)
+
+        # Check if this is a post-processing job that needs its OCCUPIER counterpart
+        if job.job_id.startswith("occupier_"):
+            # Map to corresponding OCCUPIER process
+            if job.job_id == "occupier_initial":
+                new_deps.add("occ_proc_initial")
+            elif job.job_id == "occupier_absorption":
+                new_deps.add("occ_proc_initial")
+            elif job.job_id == "occupier_t1_state":
+                new_deps.add("occ_proc_initial")
+            elif job.job_id == "occupier_t1_emission":
+                new_deps.add("occ_proc_initial")
+            elif job.job_id == "occupier_s1_state":
+                new_deps.add("occ_proc_initial")
+            elif job.job_id == "occupier_s1_emission":
+                new_deps.add("occ_proc_initial")
+            elif job.job_id.startswith("occupier_ox_"):
+                step = job.job_id.replace("occupier_ox_", "")
+                new_deps.add(f"occ_proc_ox_{step}")
+            elif job.job_id.startswith("occupier_red_"):
+                step = job.job_id.replace("occupier_red_", "")
+                new_deps.add(f"occ_proc_red_{step}")
+
+        # Update the job's dependencies
+        job.dependencies = new_deps
+        logger.debug(
+            "[combined] Updated dependencies for %s: %s",
+            job.job_id,
+            sorted(new_deps),
+        )
+
+    # Combine both lists
+    combined_jobs = occupier_process_jobs + postprocessing_jobs
+
+    logger.info(
+        "[combined] Built %d total jobs (%d OCCUPIER processes + %d post-processing)",
+        len(combined_jobs),
+        len(occupier_process_jobs),
+        len(postprocessing_jobs),
+    )
+
+    return combined_jobs

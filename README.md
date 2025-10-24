@@ -146,7 +146,10 @@ delfin/
 * `absorption_spec = yes | no`
 * `parallel_workflows = yes | no | auto` (parallelization)
 * `pal_jobs = N` (number of parallel PAL processes; auto-detected from cluster if not set)
-* `orca_parallel_strategy = auto | threads | serial` (force OCCUPIER to run ORCA sequentially when set to `threads`/`serial`)
+* `orca_parallel_strategy = auto | threads | serial` (ORCA parallelization mode)
+  - `auto` (default): Use MPI + OpenMP; FoBs run in parallel
+  - `threads`: Use only OpenMP (no MPI); FoBs still run in parallel, useful if MPI is unstable
+  - `serial`: Force sequential execution; only 1 FoB at a time
 * `XTB_OPT = yes | no`
 * `XTB_GOAT = yes | no`
 * `CREST = yes | no`

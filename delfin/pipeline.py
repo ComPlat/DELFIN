@@ -127,15 +127,17 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
     metals_list = list(ctx.metals) if isinstance(ctx.metals, (list, tuple, set)) else ([ctx.metals] if ctx.metals else [])
 
     if config['XTB_SOLVATOR'] == "no":
-        # Run ALL OCCUPIER jobs (initial + ox/red) in ONE scheduler run
+        # Run ALL OCCUPIER jobs (initial + ox/red) + post-processing in ONE scheduler run
         if "yes" in config.get("calc_initial", ""):
             print("\nOCCUPIER for the initial system:\n")
 
-            from delfin.parallel_occupier import build_occupier_process_jobs
+            from delfin.parallel_occupier import build_combined_occupier_and_postprocessing_jobs
             from delfin.parallel_classic_manually import _WorkflowManager
 
-            # Build ALL jobs (initial + ox + red) in one go
-            all_jobs = build_occupier_process_jobs(config)
+            # Build ALL jobs (OCCUPIER processes + post-processing) in one go
+            # This enables parallel execution: while red_step_3 OCCUPIER runs,
+            # initial.inp post-processing can run in parallel!
+            all_jobs = build_combined_occupier_and_postprocessing_jobs(config)
 
             if all_jobs:
                 manager = _WorkflowManager(config, label="occupier_all")
@@ -152,13 +154,16 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                     manager.shutdown()
 
             logger.info("All OCCUPIER workflows completed successfully")
+
+            # Mark that we used combined execution (to skip separate post-processing later)
+            config['_used_combined_occupier'] = True
         else:
             # No initial calculation, but still run ox/red if configured
-            from delfin.parallel_occupier import build_occupier_process_jobs
+            from delfin.parallel_occupier import build_combined_occupier_and_postprocessing_jobs
             from delfin.parallel_classic_manually import _WorkflowManager
 
-            # Build all jobs (initial will be skipped if it exists and recalc=no)
-            jobs = build_occupier_process_jobs(config)
+            # Build all jobs (OCCUPIER + post-processing combined)
+            jobs = build_combined_occupier_and_postprocessing_jobs(config)
 
             if jobs:
                 manager = _WorkflowManager(config, label="occupier_workflows")
@@ -172,6 +177,9 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                         logger.error("OCCUPIER workflows failed: %s", list(manager.failed_jobs.keys()))
                 finally:
                     manager.shutdown()
+
+            # Mark that we used combined execution
+            config['_used_combined_occupier'] = True
 
         if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == "yes":
             multiplicity_0, additions_0, _, gbw_initial = read_occupier_file(
@@ -228,11 +236,11 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             if need_occ_workflows:
                 logger.info("Running OCCUPIER workflows (initial + ox/red) prior to solvation")
 
-                from delfin.parallel_occupier import build_occupier_process_jobs
+                from delfin.parallel_occupier import build_combined_occupier_and_postprocessing_jobs
                 from delfin.parallel_classic_manually import _WorkflowManager
 
-                # Build ALL jobs (initial + ox + red) in one scheduler run
-                all_jobs = build_occupier_process_jobs(config)
+                # Build ALL jobs (OCCUPIER + post-processing combined)
+                all_jobs = build_combined_occupier_and_postprocessing_jobs(config)
 
                 if all_jobs:
                     manager = _WorkflowManager(config, label="occupier_all")
@@ -247,6 +255,9 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                             return False
                     finally:
                         manager.shutdown()
+
+                # Mark that we used combined execution
+                config['_used_combined_occupier'] = True
             else:
                 logger.info("Reusing existing OCCUPIER oxidation/reduction workflows")
 
@@ -298,7 +309,13 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
     parallel_enabled = parallel_mode != 'disable'
     metals_list = list(ctx.metals) if isinstance(ctx.metals, (list, tuple, set)) else ([ctx.metals] if ctx.metals else [])
 
-    if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() != "yes":
+    # Check if we already ran post-processing in combined mode
+    used_combined = config.get('_used_combined_occupier', False)
+
+    if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() != "yes" and not used_combined:
+        # Only run separate post-processing if we didn't use combined execution
+        logger.info("[pipeline] Running separate post-processing ORCA jobs")
+
         occ_context = OccupierExecutionContext(
             charge=charge,
             solvent=ctx.solvent,
@@ -334,6 +351,8 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             else:
                 logger.error("OCCUPIER post-processing failed; aborting run")
                 return False
+    elif used_combined:
+        logger.info("[pipeline] Skipping separate post-processing (already done in combined mode)")
 
     return True
 

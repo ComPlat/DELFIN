@@ -552,7 +552,12 @@ def run_OCCUPIER():
         parallel_setting = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
         orca_parallel_strategy = str(config.get('orca_parallel_strategy', 'auto')).strip().lower()
 
-        strategy_forces_serial = orca_parallel_strategy in {'threads', 'serial'}
+        # Interpret parallel strategy:
+        # - 'auto': Use MPI if available → FoBs can run in parallel
+        # - 'threads': Force OpenMP-only (no MPI) → FoBs can STILL run in parallel!
+        # - 'serial': Force truly sequential execution → only 1 FoB at a time
+        strategy_forces_serial = orca_parallel_strategy == 'serial'
+
         parallel_allowed = (
             not strategy_forces_serial
             and (
@@ -566,6 +571,11 @@ def run_OCCUPIER():
             logger.info(
                 "[occupier] ORCA parallel strategy=%s → forcing sequential OCCUPIER scheduling",
                 orca_parallel_strategy,
+            )
+        elif orca_parallel_strategy == 'threads':
+            logger.info(
+                "[occupier] ORCA parallel strategy=threads → using OpenMP (no MPI), "
+                "but FoBs can still run in parallel"
             )
 
         logger.info(
