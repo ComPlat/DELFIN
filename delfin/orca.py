@@ -8,6 +8,8 @@ from pathlib import Path
 from shutil import which
 from typing import Iterable, Optional
 
+from delfin.common.paths import get_runtime_dir
+
 from delfin.common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -24,6 +26,54 @@ ORCA_PLOT_INPUT_TEMPLATE = (
     "10\n"
     "11\n"
 )
+
+_RUN_SCRATCH_DIR: Optional[Path] = None
+
+
+def _ensure_orca_scratch_dir() -> Path:
+    """Create (once) and return a run-specific scratch directory for ORCA."""
+    global _RUN_SCRATCH_DIR
+    if _RUN_SCRATCH_DIR is not None:
+        return _RUN_SCRATCH_DIR
+
+    base_candidates = [
+        os.environ.get("ORCA_SCRDIR"),
+        os.environ.get("ORCA_TMPDIR"),
+        os.environ.get("DELFIN_SCRATCH"),
+    ]
+
+    for candidate in base_candidates:
+        if candidate:
+            base_path = Path(candidate).expanduser()
+            break
+    else:
+        # Fall back to a hidden scratch directory within the current run folder
+        base_path = get_runtime_dir().joinpath(".orca_scratch")
+
+    base_path.mkdir(parents=True, exist_ok=True)
+
+    run_label = os.environ.get("DELFIN_RUN_TOKEN")
+    if not run_label:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        cwd_name = Path.cwd().name or "delfin"
+        run_label = f"{cwd_name}_{os.getpid()}_{timestamp}"
+
+    scratch_dir = base_path / run_label
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    _RUN_SCRATCH_DIR = scratch_dir
+    return scratch_dir
+
+
+def _prepare_orca_environment() -> dict[str, str]:
+    """Return a subprocess environment with isolated ORCA scratch settings."""
+    env = os.environ.copy()
+    scratch_dir = _ensure_orca_scratch_dir()
+    scratch_str = str(scratch_dir)
+    env["ORCA_SCRDIR"] = scratch_str
+    env["ORCA_TMPDIR"] = scratch_str
+    env.setdefault("TMPDIR", scratch_str)
+    env.setdefault("DELFIN_RUN_TOKEN", scratch_dir.name)
+    return env
 
 def _validate_candidate(candidate: str) -> Optional[str]:
     """Return a usable executable path when candidate points to a file."""
@@ -104,6 +154,7 @@ def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str, 
                 [orca_path, input_file_path],
                 stdout=output_file,
                 stderr=output_file,
+                env=_prepare_orca_environment(),
                 start_new_session=True  # Create new process group
             )
 
