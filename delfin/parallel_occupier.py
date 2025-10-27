@@ -1250,14 +1250,18 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
                         logger.info(f"[{folder_name}] Using preferred OCCUPIER index: {preferred_index}")
 
                 # Copy the preferred XYZ file (e.g., input1.xyz, input2.xyz)
-                source_xyz = folder_path / f"input{preferred_index}.xyz"
+                if preferred_index == 1:
+                    source_xyz = folder_path / "input.xyz"
+                    source_gbw = folder_path / "input.gbw"
+                else:
+                    source_xyz = folder_path / f"input{preferred_index}.xyz"
+                    source_gbw = folder_path / f"input{preferred_index}.gbw"
                 if source_xyz.exists():
                     target_xyz = original_cwd / f"{target_base}.xyz"
                     shutil.copy(source_xyz, target_xyz)
                     logger.info(f"[{folder_name}] Copied final geometry {source_xyz.name} → {target_xyz}")
 
                     # Copy the corresponding GBW file if it exists
-                    source_gbw = folder_path / f"input{preferred_index}.gbw"
                     if source_gbw.exists():
                         target_gbw = original_cwd / f"{target_base}.gbw"
                         shutil.copy(source_gbw, target_gbw)
