@@ -20,6 +20,7 @@ from delfin.xtb_crest import XTB, XTB_GOAT, XTB_SOLVATOR, run_crest_workflow
 from delfin.cli_calculations import calculate_redox_potentials, select_final_potentials
 import delfin.thread_safe_helpers as thread_safe_helpers
 from delfin.energies import find_gibbs_energy, find_ZPE, find_electronic_energy
+from delfin.esd_module import run_esd_phase as execute_esd_module
 
 logger = get_logger(__name__)
 
@@ -525,6 +526,45 @@ def run_manual_phase(ctx: PipelineContext) -> Dict[str, Any]:
     ctx.extra['manual_result'] = result
     ctx.multiplicity = int(config.get('multiplicity_0', ctx.multiplicity))
     return {'result': result}
+
+
+# ---------------------------------------------------------------------------
+# ESD (Excited State Dynamics) Module
+# ---------------------------------------------------------------------------
+
+
+def run_esd_phase(ctx: PipelineContext) -> bool:
+    """Execute ESD calculations and store the outcome in the context."""
+    config = ctx.config
+
+    result = execute_esd_module(
+        config=config,
+        charge=ctx.charge,
+        solvent=ctx.solvent,
+        metals=ctx.metals if isinstance(ctx.metals, list) else [ctx.metals] if ctx.metals else [],
+        main_basisset=ctx.main_basisset,
+        metal_basisset=ctx.metal_basisset,
+    )
+
+    ctx.extra['esd_result'] = result
+
+    if not result.success:
+        failed_desc = ", ".join(
+            f"{job_id} ({reason})" for job_id, reason in result.failed.items()
+        ) or "none"
+        skipped_desc = ", ".join(
+            f"{job_id} (missing {', '.join(deps) if deps else 'unknown'})"
+            for job_id, deps in result.skipped.items()
+        ) or "none"
+        logger.warning(
+            "ESD module completed with issues; continuing. Failed jobs: %s | Skipped jobs: %s",
+            failed_desc,
+            skipped_desc,
+        )
+        return True
+
+    logger.info("ESD module completed successfully")
+    return True
 
 
 # ---------------------------------------------------------------------------

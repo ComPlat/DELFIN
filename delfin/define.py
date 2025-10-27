@@ -91,6 +91,11 @@ deltaSCF_DOMOM=true
 deltaSCF_PMOM=true
 deltaSCF_keepinitialref=true
 deltaSCF_SOSCFHESSUP=LBFGS
+----------------
+ESD_modul=no
+states=S0,S1,T1,T2
+ISCs=S1>T1,T1>S1,S1>T2,T2>S1,S0>T1,T1>S0
+ICs=S1>S0,S0>S1,T1>T2,T2>T1
 ------------------------------------
 Reference value:
 E_ref=
@@ -164,7 +169,14 @@ Available dispersion corrections DISP_CORR: D4 ; D3 ; D3BJ ; D3ZERO ; NONE
 Available EXCITATIONS: s (singulet) ; t (triplet) (s is more difficult to converge, there may be no convergence).
 E_00 can only be calculated for closed shell systems (use classic or manually!)
 EXPLICIT SOLVATION MODEL IS VERY EXPENSIVE!!!!!
-
+-------------------------------------------------
+ESD MODULE (Excited State Dynamics):
+ESD_modul: yes/no - Enable ESD calculations in separate ESD/ directory
+states: Comma-separated list of states to calculate (S0, S1, T1, T2)
+ISCs: Comma-separated list of intersystem crossings (e.g., S1>T1, T1>S1)
+ICs: Comma-separated list of internal conversions (e.g., S1>S0, T1>T2)
+All states use multiplicity M=1 and charge from CONTROL
+-------------------------------------------------
 use yes/no not Yes/No !!!!!!
 """
 # -------------------------------------------------------------------------------------------------------

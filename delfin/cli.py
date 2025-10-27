@@ -2,6 +2,7 @@ from __future__ import annotations
 import os, time, sys, argparse, shutil
 from pathlib import Path
 
+from typing import Optional
 from delfin.common.logging import configure_logging, get_logger, add_file_handler
 from delfin.common.paths import get_runtime_dir, resolve_path
 from delfin.cluster_utils import auto_configure_resources, detect_cluster_environment
@@ -27,6 +28,7 @@ from .pipeline import (
     run_classic_phase,
     run_manual_phase,
     run_occuper_phase,
+    run_esd_phase,
 )
 
 logger = get_logger(__name__)
@@ -401,58 +403,80 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     raw_method = str(config.get('method', '')).strip()
-    canonical_method, suggestion = interpret_method_alias(raw_method)
+    method_lower = raw_method.lower()
+    esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
 
-    if canonical_method not in {"classic", "manually", "OCCUPIER"}:
-        if suggestion is not None:
+    method_token: Optional[str]
+    if method_lower in {'', 'none', 'esd'}:
+        if not esd_enabled:
             logger.error(
-                "Unknown method '%s'. Did you mean '%s'?",
-                raw_method,
-                suggestion,
+                "No method specified in CONTROL.txt and ESD_modul is not enabled. Supported methods: classic, manually, OCCUPIER"
             )
+            return 2
+        if method_lower == 'esd':
+            logger.info("CONTROL.txt method 'ESD' interpreted as ESD-only mode.")
         else:
-            logger.error("Unknown method '%s'. Supported methods: classic, manually, OCCUPIER", raw_method)
-        return 2
+            logger.info("No redox method requested; proceeding with ESD module only.")
+        config['method'] = None
+        method_token = None
+    else:
+        canonical_method, suggestion = interpret_method_alias(raw_method)
 
-    if canonical_method != raw_method and canonical_method.lower() != raw_method.lower():
-        logger.warning("CONTROL.txt method '%s' interpreted as '%s'.", raw_method, canonical_method)
+        if canonical_method not in {'classic', 'manually', 'OCCUPIER'}:
+            if suggestion is not None:
+                logger.error(
+                    "Unknown method '%s'. Did you mean '%s'?",
+                    raw_method,
+                    suggestion,
+                )
+            else:
+                logger.error("Unknown method '%s'. Supported methods: classic, manually, OCCUPIER", raw_method)
+            return 2
 
-    config['method'] = canonical_method
+        if canonical_method != raw_method and canonical_method.lower() != raw_method.lower():
+            logger.warning("CONTROL.txt method '%s' interpreted as '%s'.", raw_method, canonical_method)
 
+        config['method'] = canonical_method
+        method_token = canonical_method
 
 
 
 
 
     # ------------------- OCCUPIER --------------------
-    if config['method'] == "OCCUPIER":
+    if method_token == "OCCUPIER":
         if not run_occuper_phase(pipeline_ctx):
             return _finalize(1)
 
     # ------------------- classic --------------------
-    if config['method'] == "classic":
+    if method_token == "classic":
         run_classic_phase(pipeline_ctx)
 
 
     # ------------------- manually --------------------
-    if config['method'] == "manually":
+    if method_token == "manually":
         run_manual_phase(pipeline_ctx)
 
+    # ------------------- ESD (Excited State Dynamics) --------------------
+    if esd_enabled:
+        logger.info("Running ESD module...")
+        if not run_esd_phase(pipeline_ctx):
+            logger.warning("ESD module encountered issues, continuing...")
 
     # Finalize redox and emission summary
-    if config['method'] == "OCCUPIER":
+    if method_token == "OCCUPIER":
         mul0 = pipeline_ctx.extra.get('multiplicity_0')
         if mul0 is not None:
             try:
                 pipeline_ctx.multiplicity = int(mul0)
             except Exception:
                 pipeline_ctx.multiplicity = mul0  # fallback to raw value
-    elif config['method'] == "manually":
+    elif method_token == "manually":
         try:
             pipeline_ctx.multiplicity = int(config.get('multiplicity_0', pipeline_ctx.multiplicity))
         except Exception:
             pass
-    elif config['method'] == "classic":
+    elif method_token == "classic":
         try:
             total_electrons_txt, mult_guess = calculate_total_electrons_txt(str(control_file_path))
             total_electrons_txt = int(total_electrons_txt)

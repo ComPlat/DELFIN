@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.4] - 2025-02-XX
 
 ### Added
+- Optional excited-state dynamics (ESD) module with standalone or post-redox execution, including S0/S1/T1/T2 optimisations plus ISC/IC scheduling in a dedicated `ESD/` directory.
+- ORCA input builders for ESD workflows (`esd_module.py`, `esd_input_generator.py`) and CLI/pipeline switches (`ESD_modul`, `states`, `ISCs`, `ICs`) with documentation.
 - Automatic per-run logging: the CLI attaches a global `delfin_run.log` and OCCUPIER subprocesses emit an `occupier.log` alongside ORCA outputs.
 - CLI help now documents QM/XTB splitting via `$` markers and clarifies how `parallel_workflows` toggles between parallel and sequential scheduling modes.
 - `delfin --purge` command to wipe all intermediates (keeps CONTROL.txt + main input) with interactive confirmation.

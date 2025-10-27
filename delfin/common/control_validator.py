@@ -62,7 +62,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("multiplicity_global_opt", _as_int, allow_none=True),
     FieldSpec("PAL", _as_int, default=6),
     FieldSpec("number_explicit_solv_molecules", _as_int, default=0),
-    FieldSpec("method", _as_str, default="classic"),
+    FieldSpec("method", _as_str, default="", allow_none=True),
     FieldSpec("frequency_calculation", _as_yes_no, default="no"),
     FieldSpec("frequency_calculation_OCCUPIER", _as_yes_no, default="no"),
     FieldSpec("xTB_method", _as_str, default="GFN2xTB"),

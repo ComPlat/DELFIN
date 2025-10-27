@@ -88,6 +88,42 @@ Results and reports are written to the current working directory,
 e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 ---
 
+## Excited-State Dynamics (ESD) Module
+
+The optional ESD pipeline optimises S0/S1/T1/T2 states and launches intersystem
+crossing (ISC) / internal conversion (IC) calculations inside a dedicated `ESD/`
+folder. Enable it via `ESD_modul=yes` in `CONTROL.txt`. It runs after the normal
+redox workflows when `method` is set, or on its own when `method` is left empty.
+
+Minimal CONTROL settings:
+
+```ini
+ESD_modul=yes
+states=S0,S1,T1,T2
+ISCs=S1>T1,T1>S1
+ICs=S1>S0
+```
+
+Geometries, GBW and Hessian files are staged under `ESD/` and reused automatically.
+All states inherit the system charge and use multiplicity 1 (triplets employ UKS internally).
+
+> Note: the %ESD `DELE` entry is currently omitted; ORCA falls back to its internal defaults.
+> Temperature is still taken from `temperature` (defaults to 298.15 K).
+
+Directory snapshot:
+
+```
+ESD/
+  S0.inp/.out/.xyz/.gbw/.hess
+  S1.inp/.out/.xyz/.gbw/.hess
+  T1.inp/.out/.xyz/.gbw/.hess
+  T2.inp/.out/.xyz/.gbw/.hess
+  S1_T1_ISC.inp/.out
+  ...
+```
+
+---
+
 ## Project layout
 
 ```
@@ -101,6 +137,8 @@ delfin/
   cli_calculations.py # redox potential calculation methods (M1, M2, M3)
   main.py           # optional small loader (may delegate to cli.main)
   pipeline.py       # high-level orchestration across workflow phases (classic/manually/OCCUPIER)
+  esd_module.py     # optional excited-state dynamics workflow (states, ISC/IC scheduling)
+  esd_input_generator.py # ORCA input builders for ESD states/ISC/IC jobs
   config_manager.py # shared configuration utilities used by new pipeline helpers
   safe.py           # lightweight sandbox helpers for robust filesystem ops
   define.py         # CONTROL template generator (+ .xyz → input.txt conversion, path normalisation + logging hooks)
@@ -138,7 +176,7 @@ delfin/
 ---
 ## Typical workflow switches (in CONTROL.txt)
 
-* `method = OCCUPIER | classic | manually`
+* `method = OCCUPIER | classic | manually` (leave empty for ESD-only runs)
 * `calc_initial = yes | no`
 * `oxidation_steps = 1,2,3` (string; steps to compute)
 * `reduction_steps = 1,2,3` (string; steps to compute)
@@ -154,6 +192,10 @@ delfin/
 * `XTB_GOAT = yes | no`
 * `CREST = yes | no`
 * `XTB_SOLVATOR = yes | no`
+* `ESD_modul = yes | no`
+  * `states = S0,S1,T1,T2` (comma-separated subset)
+  * `ISCs = S1>T1,...` (optional)
+  * `ICs = S1>S0,...` (optional)
 
 ---
 
