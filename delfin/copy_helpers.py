@@ -76,22 +76,6 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
     else:
         if verbose:
             print(f"Source file {source_file} not found.")
-
-    # Also copy the corresponding GBW file for wavefunction reuse
-    gbw_filename = "input.gbw" if min_fspe_index == 1 else f"input{min_fspe_index}.gbw"
-    source_gbw = folder / gbw_filename
-    destination_gbw = parent_folder / f"input_{folder.name}.gbw"
-    if source_gbw.is_file():
-        shutil.copy(source_gbw, destination_gbw)
-        if verbose:
-            print(f"File {source_gbw} was successfully copied to {destination_gbw}.")
-    else:
-        if verbose:
-            print(f"GBW file {source_gbw} not found (will use standard guess).")
-
-    # Return GBW path as well (for wavefunction reuse in Classic/Manually)
-    gbw_path = destination_gbw if destination_gbw.exists() else None
-
     if verbose:
         print("Preferred OCCUPIER setting")
         print("--------------------------")
@@ -100,89 +84,69 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
         print(f"  parity:         {parity}")
         print(f"  additions:      {additions or '(none)'}")
         print(f"  multiplicity:   {multiplicity}")
-        if gbw_path:
-            print(f"  GBW file:       {gbw_path}")
         print()
-    return multiplicity, additions, min_fspe_index, gbw_path
+    return multiplicity, additions, min_fspe_index
 # -------------------------------------------------------------------------------------------------------
-def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optional[Path] = None):
-    """Prepare OCCUPIER folder without running OCCUPIER (for scheduler-driven execution)."""
-    if parent_dir is None:
-        parent_dir = Path.cwd()
-
-    orig_folder = Path(folder_name)
-    folder = orig_folder if orig_folder.is_absolute() else parent_dir / orig_folder
-    folder.mkdir(parents=True, exist_ok=True)
-
-    # Copy geometry file
-    start_source = parent_dir / "start.txt"
-    input_source = parent_dir / "input.txt"
-
-    if start_source.exists():
-        shutil.copy(start_source, folder / "input.txt")
-        print(f"[{folder_name}] Copied start.txt → input.txt.")
-    elif input_source.exists():
-        shutil.copy(input_source, folder / "input.txt")
-        print(f"[{folder_name}] Copied input.txt.")
-    else:
-        raise FileNotFoundError(f"Missing geometry file: start.txt / input.txt in {parent_dir}")
-
-    # Copy CONTROL.txt
-    control_source = parent_dir / "CONTROL.txt"
-    if not control_source.exists():
-        raise FileNotFoundError(f"Missing file: CONTROL.txt in {parent_dir}")
-
-    shutil.copy(control_source, folder / "CONTROL.txt")
-    print(f"[{folder_name}] Copied CONTROL.txt.")
-
-    # Rename to .xyz and add header
-    input_txt = folder / "input.txt"
-    input_xyz = folder / "input.xyz"
-
-    if not input_txt.exists():
-        raise FileNotFoundError(f"input.txt not found in {folder}")
-
-    input_txt.rename(input_xyz)
-    with input_xyz.open("r", encoding="utf-8") as f:
-        lines = f.readlines()
-    coord_count = _count_xyz_coord_lines(lines)
-    with input_xyz.open("w", encoding="utf-8") as f:
-        f.write(f"{coord_count}\n\n")
-        f.writelines(lines)
-    shutil.copy(input_xyz, folder / "input0.xyz")
-    print(f"[{folder_name}] Renamed to input.xyz and added header lines.")
-
-    # Update CONTROL.txt
-    control_txt = folder / "CONTROL.txt"
-    with control_txt.open("r", encoding="utf-8") as f:
-        control_lines = f.readlines()
-
-    if control_lines and "input_file=input.txt" in control_lines[0]:
-        control_lines[0] = "input_file=input.xyz\n"
-
-    for i, line in enumerate(control_lines):
-        if "charge=" in line:
-            match = re.search(r"charge=([+-]?\d+)", line)
-            if match:
-                current_charge = int(match.group(1))
-                new_charge = current_charge + charge_delta
-                control_lines[i] = re.sub(r"charge=[+-]?\d+", f"charge={new_charge}", line)
-            break
-
-    with control_txt.open("w", encoding="utf-8") as f:
-        f.writelines(control_lines)
-    print(f"[{folder_name}] Updated CONTROL.txt.")
-
-    return folder
-
-
 def prepare_occ_folder(folder_name, charge_delta=0):
-    """Original function - prepares folder and runs OCCUPIER immediately (legacy mode)."""
     cwd = Path.cwd()
-    folder = prepare_occ_folder_only_setup(folder_name, charge_delta, parent_dir=cwd)
-
-    # Change to folder and run OCCUPIER
+    orig_folder = Path(folder_name)
+    folder = orig_folder if orig_folder.is_absolute() else cwd / orig_folder
+    folder.mkdir(parents=True, exist_ok=True)
     os.chdir(folder)
+    start_source = Path("..") / "start.txt"
+    input_source = Path("..") / "input.txt"
+    if start_source.exists():
+        shutil.copy(start_source, Path("input.txt"))
+        print("Copied start.txt → input.txt.")
+    elif input_source.exists():
+        shutil.copy(input_source, Path("input.txt"))
+        print("Copied input.txt.")
+    else:
+        print("Missing geometry file: start.txt / input.txt")
+        sys.exit(1)
+
+    control_source = Path("..") / "CONTROL.txt"
+    if control_source.exists():
+        shutil.copy(control_source, Path("CONTROL.txt"))
+        print("Copied CONTROL.txt.")
+    else:
+        print("Missing file: CONTROL.txt")
+        sys.exit(1)
+    input_txt = Path("input.txt")
+    input_xyz = Path("input.xyz")
+    if input_txt.exists():
+        input_txt.rename(input_xyz)
+        with input_xyz.open("r", encoding="utf-8") as f:
+            lines = f.readlines()
+        coord_count = _count_xyz_coord_lines(lines)
+        with input_xyz.open("w", encoding="utf-8") as f:
+            f.write(f"{coord_count}\n\n")
+            f.writelines(lines)
+        shutil.copy(input_xyz, Path("input0.xyz"))
+        print("Renamed to input.xyz and added header lines.")
+    else:
+        print("input.txt not found.")
+        sys.exit(1)
+    control_txt = Path("CONTROL.txt")
+    if control_txt.exists():
+        with control_txt.open("r", encoding="utf-8") as f:
+            control_lines = f.readlines()
+        if control_lines and "input_file=input.txt" in control_lines[0]:
+            control_lines[0] = "input_file=input.xyz\n"
+        for i, line in enumerate(control_lines):
+            if "charge=" in line:
+                match = re.search(r"charge=([+-]?\d+)", line)
+                if match:
+                    current_charge = int(match.group(1))
+                    new_charge = current_charge + charge_delta
+                    control_lines[i] = re.sub(r"charge=[+-]?\d+", f"charge={new_charge}", line)
+                break
+        with control_txt.open("w", encoding="utf-8") as f:
+            f.writelines(control_lines)
+        print("Updated CONTROL.txt.")
+    else:
+        print("CONTROL.txt not found.")
+        sys.exit(1)
     run_OCCUPIER()
     print(f"{folder_name} finished!")
     print(f"")
@@ -216,7 +180,7 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
         print(f"read_occupier_file failed for '{source_occ_folder}'. Abort.")
         sys.exit(1)
     os.chdir(folder)
-    multiplicity_src, additions_src, min_fspe_index, _gbw_path = res
+    multiplicity_src, additions_src, min_fspe_index = res
     preferred_parent_xyz = Path("..") / f"input_{source_occ_folder}.xyz"
     if not preferred_parent_xyz.exists():
         alt1 = Path("..") / f"geom{min_fspe_index}.xyz"

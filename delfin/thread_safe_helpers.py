@@ -18,9 +18,6 @@ logger = get_logger(__name__)
 # Thread-local storage for working directories
 _thread_local = threading.local()
 
-# Global print lock to keep OCCUPIER logs tidy
-_PRINT_LOCK = threading.Lock()
-
 _XYZ_COORD_LINE_RE = re.compile(
     r"^\s*[A-Za-z]{1,2}[A-Za-z0-9()]*\s+"      # Atom label, optional index
     r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?\s+"  # X coordinate
@@ -34,10 +31,10 @@ def _count_xyz_coord_lines(lines) -> int:
     return sum(1 for line in lines if _XYZ_COORD_LINE_RE.match(line))
 
 
-def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
+def prepare_occ_folder_2_threadsafe(folder_name: str, source_occ_folder: str,
                                    charge_delta: int = 0, config: Optional[Dict[str, Any]] = None,
-                                   original_cwd: Optional[Path] = None) -> Optional[Path]:
-    """Thread-safe folder preparation WITHOUT running OCCUPIER (for scheduler-driven execution)."""
+                                   original_cwd: Optional[Path] = None, pal_override: Optional[int] = None) -> bool:
+    """Thread-safe version of prepare_occ_folder_2."""
 
     if original_cwd is None:
         original_cwd = Path.cwd()
@@ -54,7 +51,7 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
 
         if not parent_control.exists():
             logger.error(f"Missing CONTROL.txt at {parent_control}")
-            return None
+            return False
 
         shutil.copy(parent_control, target_control)
         print("Copied CONTROL.txt.")
@@ -85,9 +82,9 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
         )
         if not res:
             logger.error(f"read_occupier_file failed for '{source_occ_folder}'")
-            return None
+            return False
 
-        multiplicity_src, additions_src, min_fspe_index, _gbw_path = res
+        multiplicity_src, additions_src, min_fspe_index = res
         should_print = (
             original_cwd == original_cwd_path
             and not getattr(_thread_local, "_printed_preferred", False)
@@ -101,6 +98,12 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
                 config,
             )
             _thread_local._printed_preferred = True
+            try:
+                print_lock = _thread_local._print_lock
+            except AttributeError:
+                print_lock = _thread_local._print_lock = threading.Lock()
+            with print_lock:
+                pass
 
         # Copy preferred geometry using absolute paths
         preferred_parent_xyz = original_cwd / f"input_{source_occ_folder}.xyz"
@@ -119,44 +122,22 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
         else:
             logger.warning(f"Preferred geometry file not found: {preferred_parent_xyz}")
 
-        # Copy preferred GBW file for wavefunction reuse
-        preferred_parent_gbw = original_cwd / f"input_{source_occ_folder}.gbw"
-        target_input_gbw = folder / "input.gbw"
-
-        if preferred_parent_gbw.exists():
-            shutil.copy(preferred_parent_gbw, target_input_gbw)
-            print(f"Copied preferred GBW to {folder}/input.gbw")
-        else:
-            logger.info(f"Preferred GBW file not found: {preferred_parent_gbw} (will use standard guess)")
-
         if not target_input_xyz.exists():
             logger.error(f"Missing required geometry file after preparation: {target_input_xyz}")
-            return None
+            return False
         if not target_input0_xyz.exists():
             logger.error(f"Missing required backup geometry file after preparation: {target_input0_xyz}")
-            return None
+            return False
 
-        # Update CONTROL.txt with input_file and charge adjustment (NO PAL override)
-        _update_control_file_threadsafe(target_control, charge_delta, pal_override=None)
+        # Update CONTROL.txt with input_file, charge adjustment, and PAL override
+        _update_control_file_threadsafe(target_control, charge_delta, pal_override)
 
-        return folder
+        # Run OCCUPIER in the target directory
+        return _run_occupier_in_directory(folder, config, pal_override)
 
     except Exception as e:
-        logger.error(f"prepare_occ_folder_2_only_setup failed: {e}")
-        return None
-
-
-def prepare_occ_folder_2_threadsafe(folder_name: str, source_occ_folder: str,
-                                   charge_delta: int = 0, config: Optional[Dict[str, Any]] = None,
-                                   original_cwd: Optional[Path] = None, pal_override: Optional[int] = None) -> bool:
-    """Thread-safe version of prepare_occ_folder_2 (legacy: setup + run in one call)."""
-
-    folder = prepare_occ_folder_2_only_setup(folder_name, source_occ_folder, charge_delta, config, original_cwd)
-    if folder is None:
+        logger.error(f"prepare_occ_folder_2_threadsafe failed: {e}")
         return False
-
-    # Run OCCUPIER in the target directory
-    return _run_occupier_in_directory(folder, config or {}, pal_override)
 
 
 def read_occupier_file_threadsafe(folder_path: Path, file_name: str,
@@ -183,18 +164,17 @@ def _print_preferred_settings(folder: Path, multiplicity, additions, min_fspe_in
         elif any(entry.get("index") == min_fspe_index for entry in odd_seq):
             parity = "odd_seq"
 
-    with _PRINT_LOCK:
-        print("Preferred OCCUPIER setting")
-        print("--------------------------")
-        print(f"  Folder:         {folder}")
-        if min_fspe_index is not None:
-            print(f"  min_fspe_index: {min_fspe_index}")
-        if parity:
-            print(f"  parity:         {parity}")
-        print(f"  additions:      {additions or '(none)'}")
-        if multiplicity is not None:
-            print(f"  multiplicity:   {multiplicity}")
-        print()
+    print("Preferred OCCUPIER setting")
+    print("--------------------------")
+    print(f"  Folder:         {folder}")
+    if min_fspe_index is not None:
+        print(f"  min_fspe_index: {min_fspe_index}")
+    if parity:
+        print(f"  parity:         {parity}")
+    print(f"  additions:      {additions or '(none)'}")
+    if multiplicity is not None:
+        print(f"  multiplicity:   {multiplicity}")
+    print()
 
 
 def _ensure_xyz_header_threadsafe(xyz_path: Path, source_path: Path):
@@ -250,12 +230,26 @@ def _update_control_file_threadsafe(control_path: Path, charge_delta: int, pal_o
                         control_lines[i] = re.sub(r"charge=[+-]?\d+", f"charge={new_charge}", line)
                         break
 
+        # Update PAL setting if override provided
+        if pal_override is not None:
+            found_pal = False
+            for i, line in enumerate(control_lines):
+                if line.strip().startswith("PAL="):
+                    control_lines[i] = f"PAL={pal_override}\n"
+                    found_pal = True
+                    break
+            if not found_pal:
+                # Insert PAL setting after input_file if not found
+                control_lines.insert(1, f"PAL={pal_override}\n")
+
         with control_path.open("w", encoding="utf-8") as f:
             f.writelines(control_lines)
 
         msg_parts = ["input_file=input.xyz"]
         if charge_delta != 0:
             msg_parts.append("charge adjusted")
+        if pal_override is not None:
+            msg_parts.append(f"PAL={pal_override}")
         print(f"Updated CONTROL.txt ({', '.join(msg_parts)}).")
 
     except Exception as e:
@@ -286,7 +280,6 @@ def _run_occupier_in_directory(target_dir: Path, config: Dict[str, Any],
 
     child_env = os.environ.copy()
     child_env['DELFIN_CHILD_GLOBAL_MANAGER'] = json.dumps(global_cfg)
-    child_env['DELFIN_SUBPROCESS'] = '1'  # Flag to indicate subprocess mode
 
     cmd = [
         sys.executable,

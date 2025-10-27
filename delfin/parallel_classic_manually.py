@@ -641,6 +641,11 @@ def execute_classic_workflows(
 
         jobs_snapshot = list(manager._jobs.values())
 
+        if scheduler is not None:
+            for job in jobs_snapshot:
+                scheduler.add_job(job)
+            return scheduler.run()
+
         width = estimate_parallel_width(manager._jobs.values())
         pal_jobs_cap = _parse_int(config.get('pal_jobs'), fallback=0)
 
@@ -654,18 +659,6 @@ def execute_classic_workflows(
         else:
             effective = 1
             manager.enforce_sequential_allocation()
-
-        if scheduler is not None:
-            # Apply sequential allocation to scheduler's manager if needed
-            if not allow_parallel:
-                scheduler.manager.enforce_sequential_allocation()
-                if scheduler.manager.pool.max_concurrent_jobs != 1:
-                    scheduler.manager.pool.max_concurrent_jobs = 1
-                    scheduler.manager.max_jobs = 1
-                    scheduler.manager._sync_parallel_flag()
-            for job in jobs_snapshot:
-                scheduler.add_job(job)
-            return scheduler.run()
 
         if effective <= 0:
             effective = 1
@@ -725,6 +718,11 @@ def execute_manually_workflows(
 
         jobs_snapshot = list(manager._jobs.values())
 
+        if scheduler is not None:
+            for job in jobs_snapshot:
+                scheduler.add_job(job)
+            return scheduler.run()
+
         width = estimate_parallel_width(manager._jobs.values())
         pal_jobs_cap = _parse_int(config.get('pal_jobs'), fallback=0)
 
@@ -738,18 +736,6 @@ def execute_manually_workflows(
         else:
             effective = 1
             manager.enforce_sequential_allocation()
-
-        if scheduler is not None:
-            # Apply sequential allocation to scheduler's manager if needed
-            if not allow_parallel:
-                scheduler.manager.enforce_sequential_allocation()
-                if scheduler.manager.pool.max_concurrent_jobs != 1:
-                    scheduler.manager.pool.max_concurrent_jobs = 1
-                    scheduler.manager.max_jobs = 1
-                    scheduler.manager._sync_parallel_flag()
-            for job in jobs_snapshot:
-                scheduler.add_job(job)
-            return scheduler.run()
 
         if effective <= 0:
             effective = 1
@@ -840,7 +826,8 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 additions,
             )
             _update_pal_block(output_initial, cores)
-            if not run_orca(output_initial, 'initial.out'):
+            run_orca(output_initial, 'initial.out')
+            if not _verify_orca_output('initial.out'):
                 raise RuntimeError('ORCA terminated abnormally for initial.out')
             run_IMAG(
                 'initial.out',
@@ -875,7 +862,8 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 additions_tddft,
             )
             _update_pal_block('absorption_td.inp', cores)
-            if not run_orca('absorption_td.inp', 'absorption_spec.out'):
+            run_orca('absorption_td.inp', 'absorption_spec.out')
+            if not _verify_orca_output('absorption_spec.out'):
                 raise RuntimeError('ORCA terminated abnormally for absorption_spec.out')
 
         deps = {initial_job_id} if initial_job_id else set()
@@ -901,7 +889,8 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     additions,
                 )
                 _update_pal_block('t1_state_opt.inp', cores)
-                if not run_orca('t1_state_opt.inp', 't1_state_opt.out'):
+                run_orca('t1_state_opt.inp', 't1_state_opt.out')
+                if not _verify_orca_output('t1_state_opt.out'):
                     raise RuntimeError('ORCA terminated abnormally for t1_state_opt.out')
 
             deps = {initial_job_id} if initial_job_id else set()
@@ -923,7 +912,8 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                         additions_tddft,
                     )
                     _update_pal_block('emission_t1.inp', cores)
-                    if not run_orca('emission_t1.inp', 'emission_t1.out'):
+                    run_orca('emission_t1.inp', 'emission_t1.out')
+                    if not _verify_orca_output('emission_t1.out'):
                         raise RuntimeError('ORCA terminated abnormally for emission_t1.out')
 
                 _add_job('classic_t1_emission', 'T1 emission spectrum', run_t1_emission, {'classic_t1_state'}, preferred_opt=manager.total_cores // 2 or None)
@@ -944,7 +934,8 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     additions,
                 )
                 _update_pal_block('s1_state_opt.inp', cores)
-                if not run_orca('s1_state_opt.inp', 's1_state_opt.out'):
+                run_orca('s1_state_opt.inp', 's1_state_opt.out')
+                if not _verify_orca_output('s1_state_opt.out'):
                     raise RuntimeError('ORCA terminated abnormally for s1_state_opt.out')
 
             deps = {initial_job_id} if initial_job_id else set()
@@ -966,7 +957,8 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                         additions_tddft,
                     )
                     _update_pal_block('emission_s1.inp', cores)
-                    if not run_orca('emission_s1.inp', 'emission_s1.out'):
+                    run_orca('emission_s1.inp', 'emission_s1.out')
+                    if not _verify_orca_output('emission_s1.out'):
                         raise RuntimeError('ORCA terminated abnormally for emission_s1.out')
 
                 _add_job('classic_s1_emission', 'S1 emission spectrum', run_s1_emission, {'classic_s1_state'}, preferred_opt=manager.total_cores // 2 or None)
@@ -1007,7 +999,8 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     additions,
                 )
                 _update_pal_block(ox_inputs[idx], cores)
-                if not run_orca(ox_inputs[idx], ox_outputs[idx]):
+                run_orca(ox_inputs[idx], ox_outputs[idx])
+                if not _verify_orca_output(ox_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
 
             return _work
@@ -1052,7 +1045,8 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     additions,
                 )
                 _update_pal_block(red_inputs[idx], cores)
-                if not run_orca(red_inputs[idx], red_outputs[idx]):
+                run_orca(red_inputs[idx], red_outputs[idx])
+                if not _verify_orca_output(red_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
 
             return _work
@@ -1118,7 +1112,8 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 ground_additions,
             )
             _update_pal_block(output_initial, cores)
-            if not run_orca(output_initial, 'initial.out'):
+            run_orca(output_initial, 'initial.out')
+            if not _verify_orca_output('initial.out'):
                 raise RuntimeError('ORCA terminated abnormally for initial.out')
             run_IMAG(
                 'initial.out',
@@ -1152,7 +1147,8 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 additions_td,
             )
             _update_pal_block('absorption_td.inp', cores)
-            if not run_orca('absorption_td.inp', 'absorption_spec.out'):
+            run_orca('absorption_td.inp', 'absorption_spec.out')
+            if not _verify_orca_output('absorption_spec.out'):
                 raise RuntimeError('ORCA terminated abnormally for absorption_spec.out')
 
         deps_abs = {initial_job_id} if initial_job_id else set()
@@ -1178,7 +1174,8 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                         add_t1,
                     )
                     _update_pal_block('t1_state_opt.inp', cores)
-                    if not run_orca('t1_state_opt.inp', 't1_state_opt.out'):
+                    run_orca('t1_state_opt.inp', 't1_state_opt.out')
+                    if not _verify_orca_output('t1_state_opt.out'):
                         raise RuntimeError('ORCA terminated abnormally for t1_state_opt.out')
 
                 deps_t1 = {initial_job_id} if initial_job_id else set()
@@ -1200,7 +1197,8 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                             additions_td,
                         )
                         _update_pal_block('emission_t1.inp', cores)
-                        if not run_orca('emission_t1.inp', 'emission_t1.out'):
+                        run_orca('emission_t1.inp', 'emission_t1.out')
+                        if not _verify_orca_output('emission_t1.out'):
                             raise RuntimeError('ORCA terminated abnormally for emission_t1.out')
 
                     _add_job('manual_t1_emission', 'manual T1 emission spectrum', run_t1_emission, {'manual_t1_state'}, preferred_opt=manager.total_cores // 2 or None)
@@ -1222,7 +1220,8 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                         add_s1,
                     )
                     _update_pal_block('s1_state_opt.inp', cores)
-                    if not run_orca('s1_state_opt.inp', 's1_state_opt.out'):
+                    run_orca('s1_state_opt.inp', 's1_state_opt.out')
+                    if not _verify_orca_output('s1_state_opt.out'):
                         raise RuntimeError('ORCA terminated abnormally for s1_state_opt.out')
 
                 deps_s1 = {initial_job_id} if initial_job_id else set()
@@ -1244,7 +1243,8 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                             additions_td,
                         )
                         _update_pal_block('emission_s1.inp', cores)
-                        if not run_orca('emission_s1.inp', 'emission_s1.out'):
+                        run_orca('emission_s1.inp', 'emission_s1.out')
+                        if not _verify_orca_output('emission_s1.out'):
                             raise RuntimeError('ORCA terminated abnormally for emission_s1.out')
 
                     _add_job('manual_s1_emission', 'manual S1 emission spectrum', run_s1_emission, {'manual_s1_state'}, preferred_opt=manager.total_cores // 2 or None)
@@ -1288,7 +1288,8 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                     additions,
                 )
                 _update_pal_block(ox_inputs[idx], cores)
-                if not run_orca(ox_inputs[idx], ox_outputs[idx]):
+                run_orca(ox_inputs[idx], ox_outputs[idx])
+                if not _verify_orca_output(ox_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
 
             return _work
@@ -1336,7 +1337,8 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                     additions,
                 )
                 _update_pal_block(red_inputs[idx], cores)
-                if not run_orca(red_inputs[idx], red_outputs[idx]):
+                run_orca(red_inputs[idx], red_outputs[idx])
+                if not _verify_orca_output(red_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
 
             return _work
@@ -1407,51 +1409,6 @@ def _update_pal_block(input_path: str, cores: int) -> None:
             elif stripped and not stripped.startswith('%'):
                 break
         lines.insert(insert_idx, pal_line)
-
-    with open(input_path, 'w', encoding='utf-8') as stream:
-        stream.writelines(lines)
-
-
-def _add_moinp_block(input_path: str, gbw_path: str) -> None:
-    """Add %moinp block and MOREAD keyword to reuse wavefunction from OCCUPIER GBW file."""
-    try:
-        with open(input_path, 'r', encoding='utf-8', errors='ignore') as stream:
-            lines = stream.readlines()
-    except FileNotFoundError as exc:
-        raise RuntimeError(f"Input file '{input_path}' missing") from exc
-
-    moinp_line = f'%moinp "{gbw_path}"\n'
-
-    # Check if %moinp already exists
-    has_moinp = False
-    for line in lines:
-        if line.strip().startswith('%moinp'):
-            has_moinp = True
-            break
-
-    if not has_moinp:
-        # Insert %moinp before %maxcore (or before first % block if no maxcore)
-        insert_idx = 0
-        for idx, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith('%maxcore'):
-                insert_idx = idx
-                break
-            elif stripped.startswith('%') and insert_idx == 0:
-                insert_idx = idx
-
-        lines.insert(insert_idx, moinp_line)
-
-    # Replace PModel with MOREAD in the ! line
-    for idx, line in enumerate(lines):
-        if line.strip().startswith('!'):
-            # Replace PModel with MOREAD
-            if 'PModel' in line:
-                lines[idx] = line.replace('PModel', 'MOREAD')
-            elif 'MOREAD' not in line:
-                # Add MOREAD if neither PModel nor MOREAD exists
-                lines[idx] = line.rstrip() + ' MOREAD\n'
-            break
 
     with open(input_path, 'w', encoding='utf-8') as stream:
         stream.writelines(lines)

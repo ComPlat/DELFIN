@@ -4,12 +4,12 @@ import os
 import re
 import time
 import shutil
-import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
 from delfin.common.logging import get_logger
+from delfin.dynamic_pool import JobPriority, create_orca_job
 from delfin.global_manager import get_global_manager
 from delfin.copy_helpers import read_occupier_file
 from delfin.imag import run_IMAG
@@ -24,7 +24,6 @@ from .parallel_classic_manually import (
     _WorkflowManager,
     _parse_int,
     _update_pal_block,
-    _add_moinp_block,
     _verify_orca_output,
     estimate_parallel_width,
     determine_effective_slots,
@@ -37,7 +36,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-@dataclass
 class OccupierExecutionContext:
     """Container for OCCUPIER ORCA execution parameters."""
 
@@ -419,7 +417,7 @@ def build_occupier_jobs(
         else:
             result = None
         if result:
-            multiplicity, additions, min_fspe_index, _gbw_path = result
+            multiplicity, additions, min_fspe_index = result
             try:
                 multiplicity_int = int(multiplicity)  # type: ignore[arg-type]
             except (TypeError, ValueError):
@@ -472,14 +470,8 @@ def build_occupier_jobs(
                 _adds,
             )
             _update_pal_block("initial.inp", cores)
-
-            # Add %moinp block to reuse OCCUPIER wavefunction
-            gbw_initial = Path("input_initial_OCCUPIER.gbw")
-            if gbw_initial.exists():
-                _add_moinp_block("initial.inp", str(gbw_initial))
-                logger.info("[occupier_initial] Using GBW from OCCUPIER: %s", gbw_initial)
-
-            if not run_orca("initial.inp", "initial.out"):
+            run_orca("initial.inp", "initial.out")
+            if not _verify_orca_output("initial.out"):
                 raise RuntimeError("ORCA terminated abnormally for initial.out")
             run_IMAG(
                 "initial.out",
@@ -532,7 +524,8 @@ def build_occupier_jobs(
                 _adds,
             )
             _update_pal_block("absorption_td.inp", cores)
-            if not run_orca("absorption_td.inp", "absorption_spec.out"):
+            run_orca("absorption_td.inp", "absorption_spec.out")
+            if not _verify_orca_output("absorption_spec.out"):
                 raise RuntimeError("ORCA terminated abnormally for absorption_spec.out")
             logger.info("TD-DFT absorption spectra calculation complete!")
 
@@ -569,7 +562,8 @@ def build_occupier_jobs(
             if not inp_path.exists():
                 raise RuntimeError("Failed to create t1_state_opt.inp")
             _update_pal_block(str(inp_path), cores)
-            if not run_orca("t1_state_opt.inp", "t1_state_opt.out"):
+            run_orca("t1_state_opt.inp", "t1_state_opt.out")
+            if not _verify_orca_output("t1_state_opt.out"):
                 raise RuntimeError("ORCA terminated abnormally for t1_state_opt.out")
             logger.info(
                 "%s %s freq & geometry optimization of T_1 complete!",
@@ -604,7 +598,8 @@ def build_occupier_jobs(
                 if not inp_path.exists():
                     raise RuntimeError("Failed to create emission_t1.inp")
                 _update_pal_block(str(inp_path), cores)
-                if not run_orca("emission_t1.inp", "emission_t1.out"):
+                run_orca("emission_t1.inp", "emission_t1.out")
+                if not _verify_orca_output("emission_t1.out"):
                     raise RuntimeError("ORCA terminated abnormally for emission_t1.out")
                 logger.info("TD-DFT T1 emission spectra calculation complete!")
 
@@ -643,7 +638,8 @@ def build_occupier_jobs(
                 raise RuntimeError("Failed to create s1_state_opt.inp")
             _update_pal_block(str(inp_path), cores)
             try:
-                if not run_orca("s1_state_opt.inp", "s1_state_opt.out"):
+                run_orca("s1_state_opt.inp", "s1_state_opt.out")
+                if not _verify_orca_output("s1_state_opt.out"):
                     raise RuntimeError("ORCA terminated abnormally for s1_state_opt.out")
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -705,7 +701,8 @@ def build_occupier_jobs(
                 if not inp_path.exists():
                     raise RuntimeError("Failed to create emission_s1.inp")
                 _update_pal_block(str(inp_path), cores)
-                if not run_orca("emission_s1.inp", "emission_s1.out"):
+                run_orca("emission_s1.inp", "emission_s1.out")
+                if not _verify_orca_output("emission_s1.out"):
                     raise RuntimeError("ORCA terminated abnormally for emission_s1.out")
                 logger.info("TD-DFT S1 emission spectra calculation complete!")
 
@@ -722,9 +719,7 @@ def build_occupier_jobs(
         folder = f"ox_step_{step}_OCCUPIER"
         multiplicity_step, additions_step, _ = read_occ(folder, "ox", step)
         if step == 1:
-            requires: Set[str] = set()
-            if xtb_solvator_enabled:
-                requires.add("initial.xyz")
+            requires = {"initial.out"}
         else:
             requires = {f"ox_step_{step - 1}.out"}
 
@@ -778,14 +773,8 @@ def build_occupier_jobs(
                 if not inp_path.exists():
                     raise RuntimeError(f"Failed to create {inp}")
                 _update_pal_block(str(inp_path), cores)
-
-                # Add %moinp block to reuse OCCUPIER wavefunction
-                gbw_ox = Path(f"input_ox_step_{idx}_OCCUPIER.gbw")
-                if gbw_ox.exists():
-                    _add_moinp_block(str(inp_path), str(gbw_ox))
-                    logger.info("[occupier_ox%d] Using GBW from OCCUPIER: %s", idx, gbw_ox)
-
-                if not run_orca(inp, out):
+                run_orca(inp, out)
+                if not _verify_orca_output(out):
                     raise RuntimeError(f"ORCA terminated abnormally for {out}")
                 logger.info(
                     "%s %s freq & geometry optimization cation (step %d) complete!",
@@ -809,9 +798,7 @@ def build_occupier_jobs(
         folder = f"red_step_{step}_OCCUPIER"
         multiplicity_step, additions_step, _ = read_occ(folder, "red", step)
         if step == 1:
-            requires: Set[str] = set()
-            if xtb_solvator_enabled:
-                requires.add("initial.xyz")
+            requires = {"initial.out"}
         else:
             requires = {f"red_step_{step - 1}.out"}
 
@@ -865,14 +852,8 @@ def build_occupier_jobs(
                 if not inp_path.exists():
                     raise RuntimeError(f"Failed to create {inp}")
                 _update_pal_block(str(inp_path), cores)
-
-                # Add %moinp block to reuse OCCUPIER wavefunction
-                gbw_red = Path(f"input_red_step_{idx}_OCCUPIER.gbw")
-                if gbw_red.exists():
-                    _add_moinp_block(str(inp_path), str(gbw_red))
-                    logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
-
-                if not run_orca(inp, out):
+                run_orca(inp, out)
+                if not _verify_orca_output(out):
                     raise RuntimeError(f"ORCA terminated abnormally for {out}")
                 logger.info(
                     "%s %s freq & geometry optimization anion (step %d) complete!",
