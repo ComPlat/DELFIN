@@ -293,12 +293,17 @@ def _parse_xyz_atoms(xyz_lines: List[str]):
     return atoms
 
 
-def split_qmmm_sections(coord_lines: List[str], source_path: Optional[Path] = None) -> Tuple[List[str], Optional[Tuple[int, int]]]:
+def split_qmmm_sections(
+    coord_lines: List[str],
+    source_path: Optional[Path] = None,
+) -> Tuple[List[str], Optional[Tuple[int, int]], bool]:
     """
     Split coordinate lines into QM/XTB sections using a line that contains only '$' as separator.
 
-    Returns a tuple of (all coordinate lines without separators, (start, end) tuple for QMAtoms).
-    If no separator is found, the second element is None.
+    Returns a tuple ``(all coordinate lines without separators, qmmm_range, explicit)``, where
+    ``qmmm_range`` is the ``(start, end)`` tuple for QMAtoms (or ``None`` if no split exists) and
+    ``explicit`` is ``True`` when the separator was present in the current file (``False`` when the
+    split is restored from cache).
     """
     qm_lines: List[str] = []
     mm_lines: List[str] = []
@@ -321,31 +326,30 @@ def split_qmmm_sections(coord_lines: List[str], source_path: Optional[Path] = No
 
     combined = qm_lines + mm_lines
 
+    signature = _geometry_signature(combined)
+
     if separator_seen and qm_lines:
         qmmm_range = (0, len(qm_lines) - 1)
-        signature = _geometry_signature(combined)
         if signature:
             with _QMMM_CACHE_LOCK:
                 _QMMM_CACHE[signature] = qmmm_range
             _persist_qmmm_signature(signature, qmmm_range, source_path)
-        return combined, qmmm_range
+        return combined, qmmm_range, True
 
-    signature = _geometry_signature(combined)
-    cached: Optional[Tuple[int, int]] = None
     if signature:
+        cached: Optional[Tuple[int, int]] = None
         with _QMMM_CACHE_LOCK:
             cached = _QMMM_CACHE.get(signature)
-    if cached:
-        return combined, cached
+        if cached:
+            return combined, cached, False
 
-    if signature:
         disk_cached = _load_qmmm_signature_from_disk(signature, source_path)
         if disk_cached:
             with _QMMM_CACHE_LOCK:
                 _QMMM_CACHE[signature] = disk_cached
-            return combined, disk_cached
+            return combined, disk_cached, False
 
-    return combined, None
+    return combined, None, False
 
 
 def build_qmmm_block(qmmm_range: Optional[Tuple[int, int]]) -> List[str]:
@@ -394,7 +398,11 @@ def _implicit_token(config, solvent):
     return f"{mdl}({solvent})" if solvent else mdl
 
 
-def _ensure_qmmm_implicit_model(config: Dict[str, Any], qmmm_range: Optional[Tuple[int, int]]) -> None:
+def _ensure_qmmm_implicit_model(
+    config: Dict[str, Any],
+    qmmm_range: Optional[Tuple[int, int]],
+    qmmm_explicit: bool = False,
+) -> None:
     """
     Ensure the implicit solvation model is compatible with QM/MM separators ('$').
     If CPCM is requested while QM/MM is active, automatically switch to ALPB
@@ -407,6 +415,13 @@ def _ensure_qmmm_implicit_model(config: Dict[str, Any], qmmm_range: Optional[Tup
         return
     model = str(raw_model).strip()
     if not model:
+        return
+    if not qmmm_explicit:
+        # Split restored from cache – respect the user-provided model.
+        logging.debug(
+            "QM/MM split inferred from cache; keeping implicit solvation model '%s'.",
+            model,
+        )
         return
     if model.upper() == "CPCM":
         logging.warning('Detected "$" separator: CPCM is incompatible with QM/MM. Switching implicit_solvation_model to ALPB.')
@@ -515,8 +530,8 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
     with input_path.open('r') as file:
         coord_lines = [ln for ln in file.readlines() if ln.strip() and ln.strip() != "*"]
 
-    geom_lines, qmmm_range = split_qmmm_sections(coord_lines, input_path)
-    _ensure_qmmm_implicit_model(config, qmmm_range)
+    geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(coord_lines, input_path)
+    _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
     qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
@@ -580,8 +595,8 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
     with input_path.open('r') as file:
         coord_lines = [ln for ln in file.readlines() if ln.strip() and ln.strip() != "*"]
 
-    geom_lines, qmmm_range = split_qmmm_sections(coord_lines, input_path)
-    _ensure_qmmm_implicit_model(config, qmmm_range)
+    geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(coord_lines, input_path)
+    _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
     qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
@@ -653,8 +668,8 @@ def read_xyz_and_create_input2(xyz_file_path: str, output_file_path: str, charge
         logging.error(f"File not found: {xyz_file_path}")
         return
 
-    geom_lines, qmmm_range = split_qmmm_sections(xyz_lines, xyz_path)
-    _ensure_qmmm_implicit_model(config, qmmm_range)
+    geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(xyz_lines, xyz_path)
+    _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
     qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
@@ -732,8 +747,8 @@ def read_xyz_and_create_input2_2(xyz_file_path, output_file_path, charge, multip
         logging.error(f"File not found: {xyz_file_path}")
         return
 
-    geom_lines, qmmm_range = split_qmmm_sections(xyz_lines, xyz_path)
-    _ensure_qmmm_implicit_model(config, qmmm_range)
+    geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(xyz_lines, xyz_path)
+    _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
     qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
@@ -808,8 +823,8 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
         logging.error(f"File not found: {xyz_file_path}")
         return
 
-    geom_lines, qmmm_range = split_qmmm_sections(xyz_lines, xyz_path)
-    _ensure_qmmm_implicit_model(config, qmmm_range)
+    geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(xyz_lines, xyz_path)
+    _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
     qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
@@ -874,8 +889,8 @@ def read_xyz_and_create_input4(xyz_file_path: str, output_file_path: str, charge
         logging.error(f"File not found: {xyz_file_path}")
         return
 
-    geom_lines, qmmm_range = split_qmmm_sections(xyz_lines, xyz_path)
-    _ensure_qmmm_implicit_model(config, qmmm_range)
+    geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(xyz_lines, xyz_path)
+    _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
     qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
@@ -947,8 +962,8 @@ def _create_s1_deltascf_input(xyz_file_path: str, output_file_path: str, charge:
         logging.error(f"File not found: {xyz_file_path}")
         return
 
-    geom_lines, qmmm_range = split_qmmm_sections(xyz_lines, xyz_path)
-    _ensure_qmmm_implicit_model(config, qmmm_range)
+    geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(xyz_lines, xyz_path)
+    _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
     qmmm_token = "QM/XTB" if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')

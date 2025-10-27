@@ -247,8 +247,8 @@ def run_OCCUPIER():
             lines = file.readlines()
 
         cleaned_xyz = clean_xyz_block(lines[2:])  # skip count/comment lines
-        geom_lines, qmmm_range = split_qmmm_sections(cleaned_xyz, xyz_path)
-        _ensure_qmmm_implicit_model(config, qmmm_range)
+        geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(cleaned_xyz, xyz_path)
+        _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
         atoms = _parse_xyz_atoms_with_indices(geom_lines)
         if not atoms:
             logger.error("No atoms parsed from XYZ.")
