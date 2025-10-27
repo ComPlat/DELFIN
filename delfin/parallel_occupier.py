@@ -1251,25 +1251,38 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
                 #       "red_step_1_OCCUPIER" → "input_red_step_1_OCCUPIER.xyz"
                 target_base = f"input_{folder_name}"
 
-                # Find the final XYZ file in the OCCUPIER folder (highest numbered inputN.xyz)
-                xyz_files = sorted(folder_path.glob("input*.xyz"),
-                                 key=lambda p: int(''.join(filter(str.isdigit, p.stem)) or '0'))
-                if xyz_files:
-                    final_xyz = xyz_files[-1]  # Take the highest numbered one
-                    target_xyz = original_cwd / f"{target_base}.xyz"
-                    shutil.copy(final_xyz, target_xyz)
-                    logger.info(f"[{folder_name}] Copied final geometry {final_xyz.name} → {target_xyz}")
-                else:
-                    logger.warning(f"[{folder_name}] No input*.xyz files found to copy back")
+                # Read OCCUPIER.txt to get the preferred index
+                from delfin.copy_helpers import read_occupier_file
+                occupier_result = read_occupier_file(
+                    str(folder_path),
+                    "OCCUPIER.txt",
+                    None, None, None,
+                    config,
+                    verbose=False
+                )
 
-                # Copy the corresponding GBW file if it exists
-                if xyz_files:
-                    gbw_name = final_xyz.stem + ".gbw"
-                    source_gbw = folder_path / gbw_name
+                preferred_index = 1  # Default fallback
+                if occupier_result:
+                    _, _, min_fspe_index, _ = occupier_result
+                    if min_fspe_index is not None:
+                        preferred_index = min_fspe_index
+                        logger.info(f"[{folder_name}] Using preferred OCCUPIER index: {preferred_index}")
+
+                # Copy the preferred XYZ file (e.g., input1.xyz, input2.xyz)
+                source_xyz = folder_path / f"input{preferred_index}.xyz"
+                if source_xyz.exists():
+                    target_xyz = original_cwd / f"{target_base}.xyz"
+                    shutil.copy(source_xyz, target_xyz)
+                    logger.info(f"[{folder_name}] Copied final geometry {source_xyz.name} → {target_xyz}")
+
+                    # Copy the corresponding GBW file if it exists
+                    source_gbw = folder_path / f"input{preferred_index}.gbw"
                     if source_gbw.exists():
                         target_gbw = original_cwd / f"{target_base}.gbw"
                         shutil.copy(source_gbw, target_gbw)
-                        logger.info(f"[{folder_name}] Copied GBW {gbw_name} → {target_gbw}")
+                        logger.info(f"[{folder_name}] Copied GBW {source_gbw.name} → {target_gbw}")
+                else:
+                    logger.warning(f"[{folder_name}] Preferred geometry file not found: {source_xyz}")
 
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
