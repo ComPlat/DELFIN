@@ -1452,6 +1452,10 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
     Returns:
         Combined list of OCCUPIER process + post-processing jobs
     """
+    # Reset staged scheduling helpers each run
+    config['_occ_post_planned'] = set()
+    config.pop('_post_attach_callback', None)
+
     # First, build OCCUPIER process jobs
     occupier_process_jobs = build_occupier_process_jobs(config)
 
@@ -1503,44 +1507,124 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
     if postprocessing_jobs is None:
         logger.info("[combined] Deferring post-processing job generation until occ_proc_initial completes.")
 
+        planned_stages: Set[str] = config.setdefault('_occ_post_planned', set())
+
+        def _schedule_subset(manager: _WorkflowManager, stage: str, *, step: Optional[int] = None) -> None:
+            key = f"{stage}:{step}" if step is not None else stage
+            if key in planned_stages:
+                return
+
+            logger.info("[combined] Scheduling post-processing stage %s", key)
+
+            staged_config = dict(config)
+
+            if stage == "initial":
+                staged_config['oxidation_steps'] = ''
+                staged_config['reduction_steps'] = ''
+            elif stage == "ox":
+                staged_config['oxidation_steps'] = str(step)
+                staged_config['reduction_steps'] = ''
+                staged_config['calc_initial'] = 'no'
+            elif stage == "red":
+                staged_config['oxidation_steps'] = ''
+                staged_config['reduction_steps'] = str(step)
+                staged_config['calc_initial'] = 'no'
+            else:
+                return
+
+            staged_context = OccupierExecutionContext(
+                charge=context.charge,
+                solvent=context.solvent,
+                metals=context.metals,
+                main_basisset=context.main_basisset,
+                metal_basisset=context.metal_basisset,
+                config=staged_config,
+            )
+
+            try:
+                new_jobs = build_occupier_jobs(
+                    staged_context,
+                    planning_only=True,
+                    include_auxiliary=True,
+                )
+            except Exception as build_exc:  # noqa: BLE001
+                logger.warning(
+                    "[combined] Could not build post-processing jobs for stage %s: %s",
+                    key,
+                    build_exc,
+                    exc_info=True,
+                )
+                return
+
+            candidate_jobs = [job.job_id for job in new_jobs if job.job_id.startswith("occupier_")]
+            logger.info("[combined] Candidate jobs for stage %s: %s", key, candidate_jobs or "<none>")
+            added_any = False
+            for job in new_jobs:
+                if not job.job_id.startswith("occupier_"):
+                    continue
+                try:
+                    logger.info(
+                        "[combined] Attempting to register job %s (deps=%s)",
+                        job.job_id,
+                        sorted(job.dependencies),
+                    )
+                    manager.add_job(job)
+                    logger.info(
+                        "[combined] Registered post-processing job %s for stage %s",
+                        job.job_id,
+                        key,
+                    )
+                    added_any = True
+                except ValueError:
+                    logger.info("[combined] Skip duplicate job %s for stage %s", job.job_id, key)
+                    continue
+                except Exception as register_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[combined] Failed to register job %s for stage %s: %s",
+                        job.job_id,
+                        key,
+                        register_exc,
+                        exc_info=True,
+                    )
+                    continue
+            if added_any:
+                logger.info("[combined] Enqueued post-processing jobs for stage %s", key)
+                manager.reschedule_pending()
+                planned_stages.add(key)
+            else:
+                logger.warning("[combined] No post-processing jobs enqueued for stage %s", key)
+
         def _attach_postprocessing(manager: _WorkflowManager) -> None:
             if not manager:
-                return
-            if "occ_proc_initial" not in manager._jobs:
                 return
 
             def on_occ_initial_complete(job_id: str) -> None:
                 if job_id != "occ_proc_initial":
                     return
                 manager.unregister_completion_listener(on_occ_initial_complete)
-                refreshed_context = OccupierExecutionContext(
-                    charge=context.charge,
-                    solvent=context.solvent,
-                    metals=context.metals,
-                    main_basisset=context.main_basisset,
-                    metal_basisset=context.metal_basisset,
-                    config=config,
-                )
-                try:
-                    fresh_jobs = build_occupier_jobs(
-                        refreshed_context,
-                        planning_only=True,
-                        include_auxiliary=True,
-                    )
-                except Exception as later_exc:  # noqa: BLE001
-                    logger.warning(
-                        "[combined] Could not build post-processing jobs after occ_proc_initial: %s",
-                        later_exc,
-                        exc_info=True,
-                    )
-                    return
-                for job in fresh_jobs:
-                    manager.add_job(job)
-                manager.reschedule_pending()
+                _schedule_subset(manager, "initial")
+
+                def on_followup_complete(dep_job_id: str) -> None:
+                    if dep_job_id == "occ_proc_initial":
+                        return
+                    if dep_job_id.startswith("occ_proc_ox_"):
+                        try:
+                            step_val = int(dep_job_id.rsplit('_', 1)[-1])
+                        except ValueError:
+                            return
+                        _schedule_subset(manager, "ox", step=step_val)
+                    elif dep_job_id.startswith("occ_proc_red_"):
+                        try:
+                            step_val = int(dep_job_id.rsplit('_', 1)[-1])
+                        except ValueError:
+                            return
+                        _schedule_subset(manager, "red", step=step_val)
+
+                manager.register_completion_listener(on_followup_complete)
 
             manager.register_completion_listener(on_occ_initial_complete)
 
-        config.setdefault("_post_attach_callback", _attach_postprocessing)
+        config['_post_attach_callback'] = _attach_postprocessing
         return occupier_process_jobs
 
     # Build a mapping of what each OCCUPIER process "produces" (in terms of files)
