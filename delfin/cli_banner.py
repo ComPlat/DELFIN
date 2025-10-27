@@ -12,14 +12,29 @@ def print_delfin_banner():
     info = """
 With DELFIN, it is possible to automatically identify preferred electron configurations of any hypothetical
 or known system, track the changes in orbital occupations upon reduction and oxidation, calculate
-redox potentials, and, for closed-shell species, calculate E_00 energies and excited-state redox potentials.
+redox potentials, and, for closed-shell species, determine S0, S1, T1, and T2 states including automated
+intersystem crossings (ISC) and internal conversions (IC), alongside E_00 energies and excited-state redox potentials.
 DELFIN does not address the fundamental question of whether a hypothetical system is chemically viable or
 synthetically accessible.
 
 To use DELFIN, install ORCA 6.1.0 and add it to your PATH. CREST 3.0.2 is optional.
 
-ORCA 6.1.0 is available free of charge for academic use.
-CREST 3.0 is released under the GNU General Public License (GPL).
+ORCA 6.1.0 is available free of charge for academic use under the ORCA License Agreement.
+It is developed and copyrighted by the Max Planck Society; all non-academic use
+requires a separate commercial license from the ORCA team. The full licensing terms
+and registration steps are provided via the official ORCA portal:
+https://orcaforum.kofo.mpg.de/app.php/dlext/?cat=3. Users are responsible for
+ensuring compliance with the ORCA license and applicable export regulations.
+
+xTB 6.7.1+ is distributed under the GNU Lesser General Public License (LGPL v3)
+by the Grimme group. Source code and binaries are available from
+https://github.com/grimme-lab/xtb. Please observe the LGPL requirements if you
+modify or redistribute xTB.
+
+CREST 3.0.2 is released under the GNU General Public License (GPL v3) and
+maintained by the Grimme group. See https://crest-lab.github.io/ for downloads
+and license details. DELFIN does not bundle CREST or xTB; users must obtain them
+separately and comply with their licenses.
 """.strip()
     print(f"\n{banner}\n\n{info}\n")
 

@@ -1244,6 +1244,38 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             print(separator)
             print()
 
+            # Copy final geometry and GBW files back to parent directory
+            try:
+                # Determine the target filename based on folder_name
+                # e.g., "initial_OCCUPIER" → "input_initial_OCCUPIER.xyz"
+                #       "red_step_1_OCCUPIER" → "input_red_step_1_OCCUPIER.xyz"
+                target_base = f"input_{folder_name}"
+
+                # Find the final XYZ file in the OCCUPIER folder (highest numbered inputN.xyz)
+                xyz_files = sorted(folder_path.glob("input*.xyz"),
+                                 key=lambda p: int(''.join(filter(str.isdigit, p.stem)) or '0'))
+                if xyz_files:
+                    final_xyz = xyz_files[-1]  # Take the highest numbered one
+                    target_xyz = original_cwd / f"{target_base}.xyz"
+                    shutil.copy(final_xyz, target_xyz)
+                    logger.info(f"[{folder_name}] Copied final geometry {final_xyz.name} → {target_xyz}")
+                else:
+                    logger.warning(f"[{folder_name}] No input*.xyz files found to copy back")
+
+                # Copy the corresponding GBW file if it exists
+                if xyz_files:
+                    gbw_name = final_xyz.stem + ".gbw"
+                    source_gbw = folder_path / gbw_name
+                    if source_gbw.exists():
+                        target_gbw = original_cwd / f"{target_base}.gbw"
+                        shutil.copy(source_gbw, target_gbw)
+                        logger.info(f"[{folder_name}] Copied GBW {gbw_name} → {target_gbw}")
+
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"[{folder_name}] Failed to copy final geometry/GBW back to parent: {exc}"
+                )
+
         # Core bounds - use the pre-calculated cores_optimal_per_job
         cores_min = 1 if total_cores == 1 else 2
         cores_max = total_cores
