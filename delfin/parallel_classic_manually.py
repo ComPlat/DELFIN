@@ -218,6 +218,9 @@ class _WorkflowManager:
                     self._event.wait(timeout=0.1)
                     self._event.clear()
                     continue
+                if self._event.wait(timeout=0.05):
+                    self._event.clear()
+                    continue
                 break
 
             ready = [job for job in pending.values() if job.dependencies <= self._completed]
