@@ -84,21 +84,6 @@ def _load_qmmm_signature_from_disk(signature: Tuple[str, ...], source_path: Opti
                 return int(raw[0]), int(raw[1])
             except (TypeError, ValueError):
                 continue
-        # fallback: use directory-level default mapping if present
-        default_raw = data.get("__default__")
-        if isinstance(default_raw, list) and len(default_raw) == 2:
-            try:
-                return int(default_raw[0]), int(default_raw[1])
-            except (TypeError, ValueError):
-                continue
-        if isinstance(default_raw, dict):
-            start = default_raw.get("start")
-            end = default_raw.get("end")
-            if start is not None and end is not None:
-                try:
-                    return int(start), int(end)
-                except (TypeError, ValueError):
-                    continue
     return None
 
 
@@ -128,7 +113,6 @@ def _persist_qmmm_signature(signature: Tuple[str, ...], qmmm_range: Tuple[int, i
                 except Exception:
                     data = {}
                 data[key] = payload
-                data.setdefault("__default__", payload)
                 with cache_file.open("w", encoding="utf-8") as fh:
                     json.dump(data, fh)
         except Exception:

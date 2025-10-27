@@ -459,17 +459,28 @@ def build_occupier_jobs(
                         _mult=multiplicity_0,
                         _adds=additions_0) -> None:
             logger.info("[occupier] Preparing initial frequency job")
+            mult_val = _mult
+            adds_val = _adds
+            try:
+                dyn_mult, dyn_adds, _ = read_occ("initial_OCCUPIER", "initial", None)
+                if dyn_mult:
+                    mult_val = dyn_mult
+                if isinstance(dyn_adds, str):
+                    adds_val = dyn_adds
+            except Exception:  # noqa: BLE001
+                logger.debug("[occupier] Using fallback multiplicity/additions for initial job", exc_info=True)
+
             read_xyz_and_create_input3(
                 "input_initial_OCCUPIER.xyz",
                 "initial.inp",
                 base_charge,
-                _mult,
+                mult_val,
                 solvent,
                 metals,
                 metal_basis,
                 main_basis,
                 config,
-                _adds,
+                adds_val,
             )
             _update_pal_block("initial.inp", cores)
 
@@ -485,13 +496,13 @@ def build_occupier_jobs(
                 "initial.out",
                 "initial",
                 base_charge,
-                _mult,
+                mult_val,
                 solvent,
                 metals,
                 config,
                 main_basis,
                 metal_basis,
-                _adds,
+                adds_val,
             )
             logger.info(
                 "%s %s freq & geometry optimization of the initial system complete!",
@@ -536,12 +547,18 @@ def build_occupier_jobs(
                 raise RuntimeError("ORCA terminated abnormally for absorption_spec.out")
             logger.info("TD-DFT absorption spectra calculation complete!")
 
+        absorption_requires: Set[str] = {"initial.out"}
+        if xtb_solvator_enabled:
+            absorption_requires.add("initial.xyz")
+
+        absorption_explicit: Set[str] = {"occupier_initial"}
         register_descriptor(JobDescriptor(
             job_id="occupier_absorption",
             description="absorption spectrum",
             work=run_absorption,
             produces={"absorption_spec.out"},
-            requires={"initial.xyz"} if xtb_solvator_enabled else set(),
+            requires=absorption_requires,
+            explicit_dependencies=absorption_explicit,
         ))
 
     excitation_flags = str(config.get('excitation', '')).lower()
@@ -583,7 +600,8 @@ def build_occupier_jobs(
             description="triplet state optimization",
             work=run_t1_state,
             produces={"t1_state_opt.xyz", "t1_state_opt.out"},
-            requires={"initial.xyz"},
+            requires={"initial.xyz", "initial.out"},
+            explicit_dependencies={"occupier_initial"},
         ))
 
         if emission_enabled:
@@ -613,7 +631,8 @@ def build_occupier_jobs(
                 description="triplet emission spectrum",
                 work=run_t1_emission,
                 produces={"emission_t1.out"},
-                requires={"t1_state_opt.xyz"},
+                requires={"t1_state_opt.xyz", "t1_state_opt.out"},
+                explicit_dependencies={t1_job_id},
             ))
 
     if include_auxiliary and 's' in excitation_flags and str(config.get('E_00', 'no')).strip().lower() == 'yes':
@@ -672,7 +691,8 @@ def build_occupier_jobs(
             description="singlet state optimization",
             work=run_s1_state,
             produces={"s1_state_opt.xyz", "s1_state_opt.out"},
-            requires={"initial.xyz"},
+            requires={"initial.xyz", "initial.out"},
+            explicit_dependencies={"occupier_initial"},
         ))
 
         if emission_enabled:
@@ -714,19 +734,26 @@ def build_occupier_jobs(
                 description="singlet emission spectrum",
                 work=run_s1_emission,
                 produces={"emission_s1.out"},
-                requires={"s1_state_opt.xyz"},
+                requires={"s1_state_opt.xyz", "s1_state_opt.out"},
+                explicit_dependencies={s1_job_id},
             ))
 
+    initial_job_enabled = calc_initial_flag == 'yes'
     oxidation_steps = _parse_step_list(config.get('oxidation_steps'))
     for step in oxidation_steps:
         folder = f"ox_step_{step}_OCCUPIER"
         multiplicity_step, additions_step, _ = read_occ(folder, "ox", step)
         if step == 1:
             requires: Set[str] = set()
+            explicit_deps: Set[str] = set()
+            if initial_job_enabled:
+                requires.add("initial.out")
+                explicit_deps.add("occupier_initial")
             if xtb_solvator_enabled:
                 requires.add("initial.xyz")
         else:
             requires = {f"ox_step_{step - 1}.out"}
+            explicit_deps = {f"occupier_ox_{step - 1}"}
 
         if xtb_solvator_enabled:
             primary_geom = Path("initial.xyz") if step == 1 else Path(f"ox_step_{step - 1}.xyz")
@@ -762,17 +789,28 @@ def build_occupier_jobs(
                                 xyz_path: str, inp: str, out: str,
                                 charge_value: int) -> Callable[[int], None]:
             def _work(cores: int) -> None:
+                dyn_mult = mult
+                dyn_adds = adds
+                try:
+                    refreshed_mult, refreshed_adds, _ = read_occ(f"ox_step_{idx}_OCCUPIER", "ox", idx)
+                    if refreshed_mult:
+                        dyn_mult = refreshed_mult
+                    if isinstance(refreshed_adds, str):
+                        dyn_adds = refreshed_adds
+                except Exception:  # noqa: BLE001
+                    logger.debug("[occupier] Using fallback multiplicity/additions for ox_step_%d", idx, exc_info=True)
+
                 read_xyz_and_create_input3(
                     xyz_path,
                     inp,
                     charge_value,
-                    mult,
+                    dyn_mult,
                     solvent,
                     metals,
                     metal_basis,
                     main_basis,
                     config,
-                    adds,
+                    dyn_adds,
                 )
                 inp_path = Path(inp)
                 if not inp_path.exists():
@@ -802,6 +840,7 @@ def build_occupier_jobs(
             work=make_oxidation_work(step, multiplicity_step, additions_step, xyz_source, inp_path, out_path, step_charge),
             produces={out_path, f"ox_step_{step}.xyz"},
             requires=requires,
+            explicit_dependencies=explicit_deps,
         ))
 
     reduction_steps = _parse_step_list(config.get('reduction_steps'))
@@ -810,10 +849,15 @@ def build_occupier_jobs(
         multiplicity_step, additions_step, _ = read_occ(folder, "red", step)
         if step == 1:
             requires: Set[str] = set()
+            explicit_deps: Set[str] = set()
+            if initial_job_enabled:
+                requires.add("initial.out")
+                explicit_deps.add("occupier_initial")
             if xtb_solvator_enabled:
                 requires.add("initial.xyz")
         else:
             requires = {f"red_step_{step - 1}.out"}
+            explicit_deps = {f"occupier_red_{step - 1}"}
 
         if xtb_solvator_enabled:
             primary_geom = Path("initial.xyz") if step == 1 else Path(f"red_step_{step - 1}.xyz")
@@ -846,20 +890,31 @@ def build_occupier_jobs(
         step_charge = base_charge - step
 
         def make_reduction_work(idx: int, mult: int, adds: str,
-                                xyz_path: str, inp: str, out: str,
-                                charge_value: int) -> Callable[[int], None]:
+                                 xyz_path: str, inp: str, out: str,
+                                 charge_value: int) -> Callable[[int], None]:
             def _work(cores: int) -> None:
+                dyn_mult = mult
+                dyn_adds = adds
+                try:
+                    refreshed_mult, refreshed_adds, _ = read_occ(f"red_step_{idx}_OCCUPIER", "red", idx)
+                    if refreshed_mult:
+                        dyn_mult = refreshed_mult
+                    if isinstance(refreshed_adds, str):
+                        dyn_adds = refreshed_adds
+                except Exception:  # noqa: BLE001
+                    logger.debug("[occupier] Using fallback multiplicity/additions for red_step_%d", idx, exc_info=True)
+
                 read_xyz_and_create_input3(
                     xyz_path,
                     inp,
                     charge_value,
-                    mult,
+                    dyn_mult,
                     solvent,
                     metals,
                     metal_basis,
                     main_basis,
                     config,
-                    adds,
+                    dyn_adds,
                 )
                 inp_path = Path(inp)
                 if not inp_path.exists():
@@ -889,6 +944,7 @@ def build_occupier_jobs(
             work=make_reduction_work(step, multiplicity_step, additions_step, xyz_source, inp_path, out_path, step_charge),
             produces={out_path, f"red_step_{step}.xyz"},
             requires=requires,
+            explicit_dependencies=explicit_deps,
         ))
 
     # Resolve implicit dependencies based on produced artifacts
@@ -1243,6 +1299,37 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             print(f"{log_prefix} OCCUPIER completed")
             print(separator)
             print()
+
+            # Propagate preferred OCCUPIER outputs back to parent directory
+            try:
+                occ_result = read_occupier_file(
+                    folder_path,
+                    "OCCUPIER.txt",
+                    None,
+                    None,
+                    None,
+                    config,
+                    verbose=False,
+                )
+                if occ_result and len(occ_result) == 4:
+                    _, _, preferred_index, gbw_path = occ_result
+                    logger.info(
+                        "[%s] Propagated preferred OCCUPIER geometry (index=%s%s)",
+                        folder_name,
+                        preferred_index,
+                        f", gbw={gbw_path}" if gbw_path else "",
+                    )
+                else:
+                    logger.warning(
+                        "[%s] Could not determine preferred OCCUPIER geometry for propagation",
+                        folder_name,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[%s] Failed to propagate OCCUPIER outputs: %s",
+                    folder_name,
+                    exc,
+                )
 
         # Core bounds - use the pre-calculated cores_optimal_per_job
         cores_min = 1 if total_cores == 1 else 2
