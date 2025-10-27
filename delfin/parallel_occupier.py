@@ -299,6 +299,7 @@ def build_occupier_jobs(
     config = context.config
     jobs: List[WorkflowJob] = []
     descriptors: List[JobDescriptor] = []
+    occ_results: Dict[str, Dict[str, Any]] = config.setdefault('_occ_results_runtime', {})
 
     total_cores = max(1, _parse_int(config.get('PAL'), fallback=1))
     pal_jobs_value = _resolve_pal_jobs(config)
@@ -414,20 +415,39 @@ def build_occupier_jobs(
     def read_occ(folder: str, step_type: str, step: Optional[int]) -> tuple[int, str, Optional[int]]:
         folder_path = Path(folder)
         report_path = folder_path / "OCCUPIER.txt"
-        if folder_path.is_dir() and report_path.is_file():
-            result = read_occupier_file(folder, "OCCUPIER.txt", None, None, None, config)
-        else:
-            result = None
-        if result:
-            multiplicity, additions, min_fspe_index, _gbw_path = result
-            try:
-                multiplicity_int = int(multiplicity)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                logger.debug("[occupier] OCCUPIER multiplicity invalid for %s; using CONTROL fallback.", folder)
-                return read_occ_from_control(step_type, step)
-            additions_str = additions.strip() if isinstance(additions, str) else ""
-            return multiplicity_int, additions_str, min_fspe_index
-        return read_occ_from_control(step_type, step)
+        cached = occ_results.get(folder)
+        if cached:
+            cached_mult = cached.get("multiplicity")
+            cached_adds = cached.get("additions", "")
+            cached_index = cached.get("preferred_index")
+            if cached_mult is not None:
+                return cached_mult, cached_adds, cached_index
+        if not folder_path.is_dir() or not report_path.is_file():
+            raise RuntimeError(
+                f"Required OCCUPIER results for '{folder}' not available (missing OCCUPIER.txt)."
+            )
+
+        result = read_occupier_file(folder, "OCCUPIER.txt", None, None, None, config, verbose=False)
+        if not result:
+            raise RuntimeError(
+                f"Unable to read OCCUPIER results for '{folder}'."
+            )
+
+        multiplicity, additions, min_fspe_index, _gbw_path = result
+        try:
+            multiplicity_int = int(multiplicity)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise RuntimeError(
+                f"Preferred multiplicity missing or invalid in OCCUPIER results for '{folder}'."
+            ) from None
+
+        additions_str = additions.strip() if isinstance(additions, str) else ""
+        occ_results[folder] = {
+            "multiplicity": multiplicity_int,
+            "additions": additions_str,
+            "preferred_index": min_fspe_index,
+        }
+        return multiplicity_int, additions_str, min_fspe_index
 
     solvent = context.solvent
     metals = context.metals
@@ -435,6 +455,10 @@ def build_occupier_jobs(
     main_basis = context.main_basisset
     base_charge = context.charge
     functional = config.get('functional', 'ORCA')
+
+    # Cache OCCUPIER outcomes (multiplicity/additions/index) for reuse by post-jobs
+    occ_results: Dict[str, Dict[str, Any]] = {}
+    config['_occ_results_runtime'] = occ_results
 
     calc_initial_flag = str(config.get('calc_initial', 'yes')).strip().lower()
     xtb_solvator_enabled = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
@@ -1160,6 +1184,7 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
 
     jobs: List[WorkflowJob] = []
     original_cwd = Path.cwd()
+    occ_results: Dict[str, Dict[str, Any]] = config.setdefault('_occ_results_runtime', {})
 
     # Pre-calculate total number of parallel jobs to optimize core allocation
     total_cores = max(1, _parse_int(config.get('PAL'), fallback=1))
@@ -1204,6 +1229,47 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         cores_optimal_per_job,
         max_parallel_at_any_level,
     )
+
+    def _record_occ_result(folder_name: str, folder_path: Path) -> None:
+        try:
+            result = read_occupier_file(
+                str(folder_path),
+                "OCCUPIER.txt",
+                None,
+                None,
+                None,
+                config,
+                verbose=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[%s] Failed to process OCCUPIER output: %s", folder_name, exc)
+            return
+
+        if not result:
+            logger.warning("[%s] OCCUPIER.txt missing or invalid; keeping fallback settings", folder_name)
+            return
+
+        raw_mult, raw_adds, preferred_index, gbw_path = result
+        try:
+            mult_int = int(raw_mult) if raw_mult is not None else None
+        except (TypeError, ValueError):
+            mult_int = None
+
+        additions_str = raw_adds.strip() if isinstance(raw_adds, str) else ""
+        occ_results[folder_name] = {
+            "multiplicity": mult_int,
+            "additions": additions_str,
+            "preferred_index": preferred_index,
+            "gbw_path": str(gbw_path) if gbw_path else None,
+        }
+
+        log_suffix = f", gbw={gbw_path}" if gbw_path else ""
+        logger.info(
+            "[%s] Propagated preferred OCCUPIER geometry (index=%s%s)",
+            folder_name,
+            preferred_index,
+            log_suffix,
+        )
 
     def make_occupier_job(job_id: str, folder_name: str, charge_delta: int,
                          source_folder: Optional[str] = None,
@@ -1300,36 +1366,7 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             print(separator)
             print()
 
-            # Propagate preferred OCCUPIER outputs back to parent directory
-            try:
-                occ_result = read_occupier_file(
-                    folder_path,
-                    "OCCUPIER.txt",
-                    None,
-                    None,
-                    None,
-                    config,
-                    verbose=False,
-                )
-                if occ_result and len(occ_result) == 4:
-                    _, _, preferred_index, gbw_path = occ_result
-                    logger.info(
-                        "[%s] Propagated preferred OCCUPIER geometry (index=%s%s)",
-                        folder_name,
-                        preferred_index,
-                        f", gbw={gbw_path}" if gbw_path else "",
-                    )
-                else:
-                    logger.warning(
-                        "[%s] Could not determine preferred OCCUPIER geometry for propagation",
-                        folder_name,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[%s] Failed to propagate OCCUPIER outputs: %s",
-                    folder_name,
-                    exc,
-                )
+            _record_occ_result(folder_name, folder_path)
 
         # Core bounds - use the pre-calculated cores_optimal_per_job
         cores_min = 1 if total_cores == 1 else 2
@@ -1446,15 +1483,64 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
     )
 
     # Build post-processing jobs (but don't execute them yet)
+    postprocessing_jobs = None
     try:
         postprocessing_jobs = build_occupier_jobs(context, planning_only=True, include_auxiliary=True)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[combined] Could not build post-processing jobs: %s; "
-            "falling back to OCCUPIER-only execution",
-            exc,
-            exc_info=True,
-        )
+    except RuntimeError as exc:
+        exc_text = str(exc)
+        missing_initial = "initial_OCCUPIER" in exc_text and "missing OCCUPIER.txt" in exc_text
+        if not missing_initial:
+            logger.warning(
+                "[combined] Could not build post-processing jobs: %s; "
+                "falling back to OCCUPIER-only execution",
+                exc,
+                exc_info=True,
+            )
+            return occupier_process_jobs
+
+    # If planning failed because initial OCCUPIER hasn't produced results yet,
+    # we'll attach a callback to build the post-processing jobs after occ_proc_initial completes.
+    if postprocessing_jobs is None:
+        logger.info("[combined] Deferring post-processing job generation until occ_proc_initial completes.")
+
+        def _attach_postprocessing(manager: _WorkflowManager) -> None:
+            if not manager:
+                return
+            if "occ_proc_initial" not in manager._jobs:
+                return
+
+            def on_occ_initial_complete(job_id: str) -> None:
+                if job_id != "occ_proc_initial":
+                    return
+                manager.unregister_completion_listener(on_occ_initial_complete)
+                # Rebuild post-processing jobs now that OCCUPIER.txt exists
+                refreshed_context = OccupierExecutionContext(
+                    charge=context.charge,
+                    solvent=context.solvent,
+                    metals=context.metals,
+                    main_basisset=context.main_basisset,
+                    metal_basisset=context.metal_basisset,
+                    config=config,
+                )
+                try:
+                    fresh_jobs = build_occupier_jobs(
+                        refreshed_context,
+                        planning_only=True,
+                        include_auxiliary=True,
+                    )
+                except Exception as later_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[combined] Could not build post-processing jobs after occ_proc_initial: %s",
+                        later_exc,
+                        exc_info=True,
+                    )
+                    return
+                for job in fresh_jobs:
+                    manager.add_job(job)
+                manager.reschedule_pending()
+
+        # Register the listener when manager is available
+        config.setdefault("_post_attach_callback", _attach_postprocessing)
         return occupier_process_jobs
 
     # Build a mapping of what each OCCUPIER process "produces" (in terms of files)

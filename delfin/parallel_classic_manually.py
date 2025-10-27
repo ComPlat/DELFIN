@@ -104,6 +104,7 @@ class _WorkflowManager:
         self._skipped: Dict[str, List[str]] = {}
         self._lock = threading.RLock()
         self._event = threading.Event()
+        self._completion_listeners: List[Callable[[str], None]] = []
 
     def derive_core_bounds(self, preferred_opt: Optional[int] = None, *, hint: Optional[str] = None) -> tuple[int, int, int]:
         cores_min = 1 if self.total_cores == 1 else 2
@@ -152,6 +153,25 @@ class _WorkflowManager:
             job.description,
             ",".join(sorted(job.dependencies)) or "none",
         )
+
+    def register_completion_listener(self, listener: Callable[[str], None]) -> None:
+        with self._lock:
+            self._completion_listeners.append(listener)
+
+    def unregister_completion_listener(self, listener: Callable[[str], None]) -> None:
+        with self._lock:
+            try:
+                self._completion_listeners.remove(listener)
+            except ValueError:
+                pass
+
+    def _notify_completion(self, job_id: str) -> None:
+        listeners = list(self._completion_listeners)
+        for listener in listeners:
+            try:
+                listener(job_id)
+            except Exception:  # noqa: BLE001
+                logger.debug("[%s] Completion listener raised", self.label, exc_info=True)
 
     def has_jobs(self) -> bool:
         return bool(self._jobs)
