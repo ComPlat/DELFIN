@@ -1556,12 +1556,26 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
                 )
                 return
 
-            candidate_jobs = [job.job_id for job in new_jobs if job.job_id.startswith("occupier_")]
+            def _is_stage_job(job_id: str) -> bool:
+                if not job_id.startswith("occupier_"):
+                    return False
+                if stage == "initial":
+                    return not (
+                        job_id.startswith("occupier_ox_")
+                        or job_id.startswith("occupier_red_")
+                    )
+                if stage == "ox" and step is not None:
+                    return job_id == f"occupier_ox_{step}"
+                if stage == "red" and step is not None:
+                    return job_id == f"occupier_red_{step}"
+                return False
+
+            filtered_jobs = [job for job in new_jobs if _is_stage_job(job.job_id)]
+
+            candidate_jobs = [job.job_id for job in filtered_jobs]
             logger.info("[combined] Candidate jobs for stage %s: %s", key, candidate_jobs or "<none>")
             added_any = False
-            for job in new_jobs:
-                if not job.job_id.startswith("occupier_"):
-                    continue
+            for job in filtered_jobs:
                 try:
                     logger.info(
                         "[combined] Attempting to register job %s (deps=%s)",

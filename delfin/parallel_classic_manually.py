@@ -102,6 +102,7 @@ class _WorkflowManager:
         self._completed: Set[str] = set()
         self._failed: Dict[str, str] = {}
         self._skipped: Dict[str, List[str]] = {}
+        self._inflight: Set[str] = set()
         self._lock = threading.RLock()
         self._event = threading.Event()
         self._completion_listeners: List[Callable[[str], None]] = []
@@ -192,17 +193,33 @@ class _WorkflowManager:
             logger.info("[%s] No jobs to schedule", self.label)
             return
 
-        pending: Dict[str, WorkflowJob] = dict(self._jobs)
+        pending: Dict[str, WorkflowJob] = {}
         self._sync_parallel_flag()
         logger.info(
             "[%s] Scheduling %d jobs across %d cores using GLOBAL SHARED pool (pool_id=%d)",
             self.label,
-            len(pending),
+            len(self._jobs),
             self.total_cores,
             id(self.pool),
         )
 
-        while pending:
+        while True:
+            for job_id, job in list(self._jobs.items()):
+                if job_id in pending:
+                    continue
+                if job_id in self._completed or job_id in self._failed or job_id in self._skipped:
+                    continue
+                if job_id in self._inflight:
+                    continue
+                pending[job_id] = job
+
+            if not pending:
+                if self._inflight:
+                    self._event.wait(timeout=0.1)
+                    self._event.clear()
+                    continue
+                break
+
             ready = [job for job in pending.values() if job.dependencies <= self._completed]
 
             if not ready:
@@ -245,10 +262,15 @@ class _WorkflowManager:
                     self._event.clear()
                     continue
 
+                if self._inflight:
+                    self._event.wait(timeout=0.1)
+                    self._event.clear()
+                    continue
+
                 for job_id, missing in blocked.items():
                     self._mark_skipped(job_id, missing or ['unresolved dependency'])
                     pending.pop(job_id, None)
-                break
+                continue
 
             ready.sort(key=self._job_order_key)
 
@@ -355,6 +377,8 @@ class _WorkflowManager:
         pool_job.suppress_pool_logs = True
 
         self.pool.submit_job(pool_job)
+        with self._lock:
+            self._inflight.add(job.job_id)
 
     @staticmethod
     def _job_order_key(job: WorkflowJob):
@@ -367,6 +391,7 @@ class _WorkflowManager:
     def _mark_completed(self, job_id: str) -> None:
         with self._lock:
             self._completed.add(job_id)
+            self._inflight.discard(job_id)
             self._event.set()
         self._notify_completion(job_id)
 
@@ -374,11 +399,13 @@ class _WorkflowManager:
         message = f"{exc.__class__.__name__}: {exc}"
         with self._lock:
             self._failed[job_id] = message
+            self._inflight.discard(job_id)
             self._event.set()
 
     def _mark_skipped(self, job_id: str, missing: Iterable[str]) -> None:
         with self._lock:
             self._skipped[job_id] = list(missing)
+            self._inflight.discard(job_id)
             self._event.set()
 
     def _format_failure(self) -> str:
