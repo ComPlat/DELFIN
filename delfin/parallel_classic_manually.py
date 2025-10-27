@@ -214,11 +214,19 @@ class _WorkflowManager:
                 pending[job_id] = job
 
             if not pending:
-                if self._inflight:
+                any_running = bool(self._inflight)
+                if not any_running:
+                    try:
+                        status = self.pool.get_status()
+                    except Exception:
+                        status = None
+                    if status:
+                        any_running = (
+                            status.get('running_jobs', 0) > 0
+                            or status.get('queued_jobs', 0) > 0
+                        )
+                if any_running:
                     self._event.wait(timeout=0.1)
-                    self._event.clear()
-                    continue
-                if self._event.wait(timeout=0.05):
                     self._event.clear()
                     continue
                 break
