@@ -106,6 +106,13 @@ class _WorkflowManager:
         self._event = threading.Event()
         self._completion_listeners: List[Callable[[str], None]] = []
 
+        callback = self.config.pop('_post_attach_callback', None)
+        if callable(callback):
+            try:
+                callback(self)
+            except Exception:  # noqa: BLE001
+                logger.debug("[%s] Post-attach callback raised", self.label, exc_info=True)
+
     def derive_core_bounds(self, preferred_opt: Optional[int] = None, *, hint: Optional[str] = None) -> tuple[int, int, int]:
         cores_min = 1 if self.total_cores == 1 else 2
         cores_max = self.total_cores
@@ -172,6 +179,10 @@ class _WorkflowManager:
                 listener(job_id)
             except Exception:  # noqa: BLE001
                 logger.debug("[%s] Completion listener raised", self.label, exc_info=True)
+
+    def reschedule_pending(self) -> None:
+        with self._lock:
+            self._event.set()
 
     def has_jobs(self) -> bool:
         return bool(self._jobs)
@@ -357,6 +368,7 @@ class _WorkflowManager:
         with self._lock:
             self._completed.add(job_id)
             self._event.set()
+        self._notify_completion(job_id)
 
     def _mark_failed(self, job_id: str, exc: Exception) -> None:
         message = f"{exc.__class__.__name__}: {exc}"

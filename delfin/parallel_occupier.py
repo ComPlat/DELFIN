@@ -1513,7 +1513,6 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
                 if job_id != "occ_proc_initial":
                     return
                 manager.unregister_completion_listener(on_occ_initial_complete)
-                # Rebuild post-processing jobs now that OCCUPIER.txt exists
                 refreshed_context = OccupierExecutionContext(
                     charge=context.charge,
                     solvent=context.solvent,
@@ -1539,7 +1538,8 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
                     manager.add_job(job)
                 manager.reschedule_pending()
 
-        # Register the listener when manager is available
+            manager.register_completion_listener(on_occ_initial_complete)
+
         config.setdefault("_post_attach_callback", _attach_postprocessing)
         return occupier_process_jobs
 
