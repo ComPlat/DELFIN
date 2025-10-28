@@ -25,8 +25,10 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
             xyz_lines = xyz_file.readlines()
             xyz = "".join(xyz_lines[2:])
     except FileNotFoundError:
-        logging.error("File 'initial.xyz' not found.")
-        return
+        logging.warning(
+            "File 'initial.xyz' not found; DELFIN.txt will omit coordinates."
+        )
+        xyz = "[initial.xyz missing]\n"
 
     # --- helpers for pretty printing of numbers --------------------------------
     def fmt_num(x):
