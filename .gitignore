@@ -4,3 +4,4 @@ docs/*.pdf
 # Ignore build artifacts
 dist/
 *.egg-info/
+delfin/co2/CO2_Coordinator6.py

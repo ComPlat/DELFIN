@@ -494,8 +494,21 @@ def build_occupier_jobs(
             except Exception:  # noqa: BLE001
                 logger.debug("[occupier] Using fallback multiplicity/additions for initial job", exc_info=True)
 
+            geom_source = Path("input_initial_OCCUPIER.xyz")
+            if xtb_solvator_enabled:
+                solv_geom = Path("XTB_SOLVATOR") / "XTB_SOLVATOR.solvator.xyz"
+                if solv_geom.exists():
+                    geom_source = solv_geom
+                    logger.info("[occupier_initial] Using solvator geometry from %s", geom_source)
+                else:
+                    logger.warning(
+                        "[occupier_initial] Expected solvator geometry %s missing; falling back to %s",
+                        solv_geom,
+                        geom_source,
+                    )
+
             read_xyz_and_create_input3(
-                "input_initial_OCCUPIER.xyz",
+                str(geom_source),
                 "initial.inp",
                 base_charge,
                 mult_val,
@@ -510,9 +523,11 @@ def build_occupier_jobs(
 
             # Add %moinp block to reuse OCCUPIER wavefunction
             gbw_initial = Path("input_initial_OCCUPIER.gbw")
-            if gbw_initial.exists():
+            if not xtb_solvator_enabled and gbw_initial.exists():
                 _add_moinp_block("initial.inp", str(gbw_initial))
                 logger.info("[occupier_initial] Using GBW from OCCUPIER: %s", gbw_initial)
+            elif xtb_solvator_enabled:
+                logger.debug("[occupier_initial] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled")
 
             if not run_orca("initial.inp", "initial.out"):
                 raise RuntimeError("ORCA terminated abnormally for initial.out")
@@ -535,7 +550,7 @@ def build_occupier_jobs(
             )
             initial_xyz = Path("initial.xyz")
             if not initial_xyz.exists():
-                source_xyz = Path("input_initial_OCCUPIER.xyz")
+                source_xyz = Path(str(geom_source))
                 if source_xyz.exists():
                     shutil.copy(source_xyz, initial_xyz)
                 else:
@@ -781,13 +796,14 @@ def build_occupier_jobs(
 
         if xtb_solvator_enabled:
             primary_geom = Path("initial.xyz") if step == 1 else Path(f"ox_step_{step - 1}.xyz")
+            fallback_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
         else:
             primary_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
+            fallback_geom = primary_geom
 
-        if primary_geom.exists() or xtb_solvator_enabled:
+        if primary_geom.exists():
             xyz_source_path = primary_geom
         else:
-            fallback_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
             if fallback_geom.exists():
                 if primary_geom != fallback_geom and not planning_only:
                     logger.warning(
@@ -843,9 +859,11 @@ def build_occupier_jobs(
 
                 # Add %moinp block to reuse OCCUPIER wavefunction
                 gbw_ox = Path(f"input_ox_step_{idx}_OCCUPIER.gbw")
-                if gbw_ox.exists():
+                if not xtb_solvator_enabled and gbw_ox.exists():
                     _add_moinp_block(str(inp_path), str(gbw_ox))
                     logger.info("[occupier_ox%d] Using GBW from OCCUPIER: %s", idx, gbw_ox)
+                elif xtb_solvator_enabled and gbw_ox.exists():
+                    logger.debug("[occupier_ox%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
 
                 if not run_orca(inp, out):
                     raise RuntimeError(f"ORCA terminated abnormally for {out}")
@@ -885,13 +903,14 @@ def build_occupier_jobs(
 
         if xtb_solvator_enabled:
             primary_geom = Path("initial.xyz") if step == 1 else Path(f"red_step_{step - 1}.xyz")
+            fallback_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
         else:
             primary_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
+            fallback_geom = primary_geom
 
-        if primary_geom.exists() or xtb_solvator_enabled:
+        if primary_geom.exists():
             xyz_source_path = primary_geom
         else:
-            fallback_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
             if fallback_geom.exists():
                 if primary_geom != fallback_geom and not planning_only:
                     logger.warning(
@@ -947,9 +966,11 @@ def build_occupier_jobs(
 
                 # Add %moinp block to reuse OCCUPIER wavefunction
                 gbw_red = Path(f"input_red_step_{idx}_OCCUPIER.gbw")
-                if gbw_red.exists():
+                if not xtb_solvator_enabled and gbw_red.exists():
                     _add_moinp_block(str(inp_path), str(gbw_red))
                     logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
+                elif xtb_solvator_enabled and gbw_red.exists():
+                    logger.debug("[occupier_red%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
 
                 if not run_orca(inp, out):
                     raise RuntimeError(f"ORCA terminated abnormally for {out}")
