@@ -191,13 +191,42 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
     if smiles_info:
         sections.append(f"Informations:\nSMILES: {smiles_info}")
     if esd_summary and esd_summary.has_data:
-        esd_lines = []
-        for state, value in sorted(esd_summary.states_fspe.items()):
-            esd_lines.append(f"FSPE_{state} = {fmt_hartree(value)}")
-        for transition, value in sorted(esd_summary.isc_rates.items()):
-            esd_lines.append(f"ISC({transition}) = {fmt_rate(value)}")
-        for transition, value in sorted(esd_summary.ic_rates.items()):
-            esd_lines.append(f"IC({transition}) = {fmt_rate(value)}")
+        esd_lines: list[str] = []
+        if esd_summary.states:
+            esd_lines.append("Final single point energies (Hartree):")
+            for state, record in sorted(esd_summary.states.items()):
+                esd_lines.append(f"  {state} = {fmt_hartree(record.fspe)}")
+        if esd_summary.isc:
+            esd_lines.append("ISC rate constants (s^-1):")
+            for transition, record in sorted(esd_summary.isc.items()):
+                extras: list[str] = []
+                if record.temperature is not None:
+                    extras.append(f"T={record.temperature:.2f} K")
+                if record.delta_cm1 is not None:
+                    extras.append(f"Δ0-0={record.delta_cm1:.2f} cm^-1")
+                if record.soc is not None:
+                    re_part, im_part = record.soc
+                    if re_part is not None or im_part is not None:
+                        soc_str = f"SOC={re_part:.6e}" if re_part is not None else "SOC=n/a"
+                        if im_part is not None:
+                            soc_str += f"+i{im_part:.6e}"
+                        extras.append(soc_str)
+                if record.fc_percent is not None:
+                    extras.append(f"FC={record.fc_percent:.2f}%")
+                if record.ht_percent is not None:
+                    extras.append(f"HT={record.ht_percent:.2f}%")
+                detail = f" ({', '.join(extras)})" if extras else ""
+                esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}")
+        if esd_summary.ic:
+            esd_lines.append("IC rate constants (s^-1):")
+            for transition, record in sorted(esd_summary.ic.items()):
+                extras: list[str] = []
+                if record.temperature is not None:
+                    extras.append(f"T={record.temperature:.2f} K")
+                if record.delta_cm1 is not None:
+                    extras.append(f"Δ0-0={record.delta_cm1:.2f} cm^-1")
+                detail = f" ({', '.join(extras)})" if extras else ""
+                esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}")
         if esd_lines:
             sections.append("ESD:\n" + "\n".join(esd_lines))
     middle = "\n\n".join(sections)

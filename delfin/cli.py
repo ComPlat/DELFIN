@@ -15,7 +15,10 @@ from .orca import run_orca
 from .imag import run_IMAG
 from .xtb_crest import XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
 from .energies import find_gibbs_energy, find_ZPE, find_electronic_energy
-from .reporting import generate_summary_report_DELFIN as generate_summary_report
+from .reporting import (
+    generate_summary_report_DELFIN as generate_summary_report,
+    generate_esd_report,
+)
 from .cli_helpers import _avg_or_none, _build_parser
 from .cli_recalc import setup_recalc_mode, patch_modules_for_recalc
 from .cli_banner import print_delfin_banner, validate_required_files, get_file_paths
@@ -516,6 +519,14 @@ def main(argv: list[str] | None = None) -> int:
         E_ref,
         summary.esd_summary,
     )
+
+    if summary.esd_summary and summary.esd_summary.has_data:
+        try:
+            esd_report_path = control_file_path.parent / "ESD.txt"
+            generate_esd_report(summary.esd_summary, esd_report_path)
+            logger.info("ESD report written to %s", esd_report_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to generate ESD.txt: %s", exc, exc_info=True)
 
     return _finalize(0)
 
