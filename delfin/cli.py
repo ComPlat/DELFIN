@@ -243,11 +243,14 @@ def main(argv: list[str] | None = None) -> int:
         'E_00': 'no',
         'additions_TDDFT': '',
         'DONTO': 'FALSE',
-        'DOSOC': 'FALSE',
+        'DOSOC': 'TRUE',
         'FOLLOWIROOT': 'TRUE',
         'IROOT': '1',
         'NROOTS': '15',
         'TDA': 'FALSE',
+        'NACME': 'TRUE',
+        'ETF': 'TRUE',
+        'ESD_PAL': '',
         'implicit_solvation_model': 'CPCM',
         'maxcore': 3800,
         'maxiter': 125,
@@ -512,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         config,
         summary.duration,
         E_ref,
+        summary.esd_summary,
     )
 
     return _finalize(0)

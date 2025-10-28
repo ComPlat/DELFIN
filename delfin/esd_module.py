@@ -30,6 +30,23 @@ logger = get_logger(__name__)
 _input_generation_lock = threading.Lock()
 
 
+def _resolve_esd_pal(config: Dict[str, Any], total_cores: int) -> int:
+    """Resolve PAL (core count) for ESD transition jobs."""
+    raw = config.get('ESD_PAL')
+    try:
+        pal_val = int(str(raw).strip()) if raw is not None else None
+    except (TypeError, ValueError):
+        pal_val = None
+    if pal_val is None or pal_val <= 0:
+        base = config.get('PAL', total_cores)
+        try:
+            pal_val = int(str(base).strip())
+        except (TypeError, ValueError):
+            pal_val = total_cores
+    pal_val = max(1, min(pal_val, total_cores))
+    return pal_val
+
+
 def parse_esd_config(config: Dict[str, Any]) -> tuple[bool, List[str], List[str], List[str]]:
     """Parse ESD module configuration from control file.
 
@@ -130,11 +147,12 @@ def _populate_state_jobs(
         state_upper = state.upper()
 
         # Check if this state should be calculated
-        # S0 is special: if initial.out exists in ESD/, skip calculation
+        # S0 is special: only skip if both .out and .hess already exist
         if state_upper == "S0":
             s0_out = esd_dir / "S0.out"
-            if s0_out.exists():
-                logger.info(f"S0 calculation skipped (S0.out exists in {esd_dir})")
+            s0_hess = esd_dir / "S0.hess"
+            if s0_out.exists() and s0_hess.exists():
+                logger.info(f"S0 calculation skipped (S0.out/.hess exist in {esd_dir})")
                 # Mark as completed so dependencies can proceed
                 manager._completed.add("esd_S0")
                 continue
@@ -167,11 +185,19 @@ def _populate_state_jobs(
 
                 # Run ORCA in ESD directory
                 output_file = esd_dir / f"{st_upper}.out"
+                hess_file = esd_dir / f"{st_upper}.hess"
 
                 logger.info(f"Running ORCA for state {st_upper} in {esd_dir}")
 
                 # Run ORCA with absolute paths (no chdir needed)
                 abs_output = output_file.resolve()
+
+                # If Hessian missing but old output exists (e.g., recalc mode), force rerun
+                if not hess_file.exists() and abs_output.exists():
+                    try:
+                        abs_output.unlink()
+                    except Exception:  # noqa: BLE001
+                        logger.debug("[esd] Could not remove stale output %s", abs_output, exc_info=True)
 
                 # Change to ESD directory for calculation (esd_dir is already absolute)
                 import os
@@ -271,7 +297,12 @@ def _populate_isc_jobs(
                 original_dir = os.getcwd()
                 try:
                     os.chdir(esd_dir)
-                    if not run_orca(abs_input.name, Path(output_file).name):
+                    scratch_token = Path("scratch") / f"ISC_{init_st}_{fin_st}"
+                    if not run_orca(
+                        abs_input.name,
+                        Path(output_file).name,
+                        scratch_subdir=scratch_token,
+                    ):
                         raise RuntimeError(
                             f"ORCA terminated abnormally for ISC {isc_pair}"
                         )
@@ -282,10 +313,8 @@ def _populate_isc_jobs(
 
             return work
 
-        # ISC/IC calculations are typically less demanding, use half cores as hint
-        cores_min, cores_opt, cores_max = manager.derive_core_bounds(
-            preferred_opt=manager.total_cores // 2 or None
-        )
+        pal_value = _resolve_esd_pal(config, manager.total_cores)
+        cores_min = cores_opt = cores_max = pal_value
 
         manager.add_job(
             WorkflowJob(
@@ -368,7 +397,12 @@ def _populate_ic_jobs(
                 original_dir = os.getcwd()
                 try:
                     os.chdir(esd_dir)
-                    if not run_orca(abs_input.name, Path(output_file).name):
+                    scratch_token = Path("scratch") / f"IC_{init_st}_{fin_st}"
+                    if not run_orca(
+                        abs_input.name,
+                        Path(output_file).name,
+                        scratch_subdir=scratch_token,
+                    ):
                         raise RuntimeError(
                             f"ORCA terminated abnormally for IC {ic_pair}"
                         )
@@ -379,10 +413,8 @@ def _populate_ic_jobs(
 
             return work
 
-        # IC calculations are typically less demanding, use half cores as hint
-        cores_min, cores_opt, cores_max = manager.derive_core_bounds(
-            preferred_opt=manager.total_cores // 2 or None
-        )
+        pal_value = _resolve_esd_pal(config, manager.total_cores)
+        cores_min = cores_opt = cores_max = pal_value
 
         manager.add_job(
             WorkflowJob(

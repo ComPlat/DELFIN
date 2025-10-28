@@ -20,7 +20,8 @@ from delfin.xtb_crest import XTB, XTB_GOAT, XTB_SOLVATOR, run_crest_workflow
 from delfin.cli_calculations import calculate_redox_potentials, select_final_potentials
 import delfin.thread_safe_helpers as thread_safe_helpers
 from delfin.energies import find_gibbs_energy, find_ZPE, find_electronic_energy
-from delfin.esd_module import run_esd_phase as execute_esd_module
+from delfin.esd_module import run_esd_phase as execute_esd_module, parse_esd_config
+from delfin.esd_results import collect_esd_results, ESDSummary
 
 logger = get_logger(__name__)
 
@@ -617,6 +618,7 @@ class SummaryResults:
     E_00_s1: Optional[float]
     multiplicity: int
     duration: float
+    esd_summary: Optional[ESDSummary]
 
 
 def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
@@ -706,6 +708,12 @@ def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
                         ", ".join(missing),
                     )
 
+    esd_summary: Optional[ESDSummary] = None
+    esd_enabled, esd_states, esd_iscs, esd_ics = parse_esd_config(ctx.config)
+    if esd_enabled:
+        esd_dir = ctx.control_file_path.parent / "ESD"
+        esd_summary = collect_esd_results(esd_dir, esd_states, esd_iscs, esd_ics)
+
     duration = time.time() - ctx.start_time
     return SummaryResults(
         E_ox=E_ox,
@@ -718,6 +726,7 @@ def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
         E_00_s1=E_00_s1,
         multiplicity=ctx.multiplicity,
         duration=duration,
+        esd_summary=esd_summary,
     )
 
 

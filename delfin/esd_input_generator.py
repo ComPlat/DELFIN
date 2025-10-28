@@ -261,27 +261,29 @@ def create_isc_input(
     # Base
     blocks.append(f'%base "{job_name}"')
 
-    # TDDFT block
+    # TDDFT block (aligned with reference layout)
     nroots = config.get('NROOTS', 5)
+    trootssl = str(config.get('TROOTSSL', '0')).strip()
+    dosoc_flag = "TRUE"
     tddft_block = [
-        "%TDDFT",
-        f"  NROOTS  {nroots}",
-        "  SROOT   1",
-        "  TROOT   1",
-        "  TROOTSSL 0",
-        "  DOSOC   TRUE",
+        f"%TDDFT  NROOTS  {int(nroots):>2}",
+        "        SROOT   1",
+        "        TROOT   1",
+        f"        TROOTSSL {trootssl}",
+        f"        DOSOC   {dosoc_flag}",
         "END",
     ]
     blocks.append("\n".join(tddft_block))
 
     # ESD block
     temperature = config.get('temperature', 298.15)
+    doht_flag = str(config.get('DOHT', 'TRUE')).upper()
     esd_block = [
         "%ESD",
         f'  ISCISHESS       "{initial_state}.hess"',
         f'  ISCFSHESS       "{final_state}.hess"',
         "  USEJ            TRUE",
-        "  DOHT            TRUE",
+        f"  DOHT            {doht_flag}",
         f"  TEMP            {temperature}",
     ]
     if dele is not None:
@@ -355,12 +357,6 @@ def create_ic_input(
     # Determine source geometry (use optimized geometry of initial state)
     xyz_file = f"{initial_state}.xyz"
 
-    # DELE calculation is currently disabled; ORCA defaults will be used.
-    dele = calculate_dele_cm1(
-        str(esd_dir / f"{initial_state}.out"),
-        str(esd_dir / f"{final_state}.out"),
-    )
-
     # Build input (same as ISC but labeled as IC)
     functional = config.get('functional', 'PBE0')
     disp_corr = config.get('disp_corr', 'D4')
@@ -377,7 +373,7 @@ def create_ic_input(
         ri_jkx,
         aux_jk,
         f"{implicit_solvation}({solvent})",
-        "ESD(ISC)",  # Note: ORCA uses same keyword for IC
+        "ESD(IC)",
     ]
 
     simple_line = "! " + " ".join(keywords)
@@ -388,15 +384,19 @@ def create_ic_input(
     # Base
     blocks.append(f'%base "{job_name}"')
 
-    # TDDFT block
+    # TDDFT block tailored for IC calculations
     nroots = config.get('NROOTS', 5)
+    iroot = config.get('IROOT', 1)
+    tda_flag = str(config.get('TDA', 'FALSE')).upper()
+    nacme_flag = str(config.get('NACME', 'TRUE')).upper()
+    etf_flag = str(config.get('ETF', 'TRUE')).upper()
     tddft_block = [
         "%TDDFT",
-        f"  NROOTS  {nroots}",
-        "  SROOT   1",
-        "  TROOT   1",
-        "  TROOTSSL 0",
-        "  DOSOC   TRUE",
+        f"  TDA      {tda_flag}",
+        f"  NROOTS   {nroots}",
+        f"  IROOT    {iroot}",
+        f"  NACME    {nacme_flag}",
+        f"  ETF      {etf_flag}",
         "END",
     ]
     blocks.append("\n".join(tddft_block))
@@ -405,14 +405,11 @@ def create_ic_input(
     temperature = config.get('temperature', 298.15)
     esd_block = [
         "%ESD",
-        f'  ISCISHESS       "{initial_state}.hess"',
-        f'  ISCFSHESS       "{final_state}.hess"',
+        f'  GSHESSIAN       "{initial_state}.hess"',
+        f'  ESHESSIAN       "{final_state}.hess"',
         "  USEJ            TRUE",
-        "  DOHT            TRUE",
         f"  TEMP            {temperature}",
     ]
-    if dele is not None:
-        esd_block.append(f"  DELE            {int(dele)}")
     esd_block.append("END")
     blocks.append("\n".join(esd_block))
 

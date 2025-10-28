@@ -19,7 +19,7 @@ def setup_recalc_mode():
 
     OK_MARKER = "ORCA TERMINATED NORMALLY"
 
-    def _run_orca_wrapper(inp_file, out_file):
+    def _run_orca_wrapper(inp_file, out_file, *args, **kwargs):
         def _check_completion(path):
             """Check if output file is complete with proper error handling."""
             if not path.exists():
@@ -49,7 +49,7 @@ def setup_recalc_mode():
             logger.info("[recalc] skipping ORCA; %s completed by another process.", out_file)
             return True  # Already complete = success
 
-        return _run_orca_real(inp_file, out_file)
+        return _run_orca_real(inp_file, out_file, *args, **kwargs)
 
     def _xtb_wrapper(multiplicity, charge, config):
         # Skip if typical XTB artifacts or a marker exist
@@ -130,9 +130,11 @@ def patch_modules_for_recalc(wrappers):
     from . import cli as _cli_mod
     from . import parallel_classic_manually as _parallel_classic_mod
     from . import parallel_occupier as _parallel_occupier_mod
+    from . import esd_module as _esd_module
 
     _orca_mod.run_orca = wrappers['run_orca']
     _occupier_mod.run_orca = wrappers['run_orca']
     _cli_mod.run_orca = wrappers['run_orca']
     _parallel_classic_mod.run_orca = wrappers['run_orca']
     _parallel_occupier_mod.run_orca = wrappers['run_orca']
+    _esd_module.run_orca = wrappers['run_orca']

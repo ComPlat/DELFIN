@@ -62,10 +62,18 @@ def _ensure_orca_scratch_dir() -> Path:
     return scratch_dir
 
 
-def _prepare_orca_environment() -> Dict[str, str]:
-    """Return a subprocess environment with isolated ORCA scratch settings."""
+def _prepare_orca_environment(extra_scratch: Optional[Path] = None) -> Dict[str, str]:
+    """Return a subprocess environment with isolated ORCA scratch settings.
+
+    Args:
+        extra_scratch: Optional subdirectory appended to the run scratch path.
+    """
     env = os.environ.copy()
     scratch_dir = _ensure_orca_scratch_dir()
+    if extra_scratch is not None:
+        scratch_dir = scratch_dir / extra_scratch
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+
     scratch_str = str(scratch_dir)
     env["ORCA_SCRDIR"] = scratch_str
     env["ORCA_TMPDIR"] = scratch_str
@@ -138,7 +146,13 @@ def find_orca_executable() -> Optional[str]:
     return None
 
 
-def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str, timeout: Optional[int] = None) -> bool:
+def _run_orca_subprocess(
+    orca_path: str,
+    input_file_path: str,
+    output_log: str,
+    timeout: Optional[int] = None,
+    scratch_subdir: Optional[Path] = None,
+) -> bool:
     """Run ORCA subprocess and capture output. Returns True when successful."""
     process = None
     monitor_thread = None
@@ -152,7 +166,7 @@ def _run_orca_subprocess(orca_path: str, input_file_path: str, output_log: str, 
                 [orca_path, input_file_path],
                 stdout=output_file,
                 stderr=output_file,
-                env=_prepare_orca_environment(),
+                env=_prepare_orca_environment(scratch_subdir),
                 start_new_session=True  # Create new process group
             )
 
@@ -314,7 +328,13 @@ def _kill_process_group(process: subprocess.Popen) -> None:
         except Exception as e:
             logger.error(f"Error killing process group: {e}")
 
-def run_orca(input_file_path: str, output_log: str, timeout: Optional[int] = None) -> bool:
+def run_orca(
+    input_file_path: str,
+    output_log: str,
+    timeout: Optional[int] = None,
+    *,
+    scratch_subdir: Optional[Path] = None,
+) -> bool:
     """Execute ORCA calculation with specified input file.
 
     Runs ORCA subprocess with input file and captures output to log file.
@@ -332,7 +352,13 @@ def run_orca(input_file_path: str, output_log: str, timeout: Optional[int] = Non
     if not orca_path:
         return False
 
-    if _run_orca_subprocess(orca_path, input_file_path, output_log, timeout):
+    if _run_orca_subprocess(
+        orca_path,
+        input_file_path,
+        output_log,
+        timeout,
+        scratch_subdir=scratch_subdir,
+    ):
         logger.info(f"ORCA run successful for '{input_file_path}'")
         return True
     return False

@@ -11,12 +11,13 @@ from ..utils import (
     select_rel_and_aux,
 )
 from ..parser import extract_last_uhf_deviation, extract_last_J3
+from ..esd_results import ESDSummary
 
 
 def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, E_ox_3,
                                    E_red, E_red_2, E_red_3, E_00_t1, E_00_s1,
                                    metals, metal_basisset, NAME, main_basisset,
-                                   config, duration, E_ref):
+                                   config, duration, E_ref, esd_summary: Optional[ESDSummary] = None):
     import logging
     xyz = ""
     try:
@@ -47,6 +48,23 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
         except Exception:
             s = str(x).strip()
             return f" {s} eV" if s and not s.startswith("-") else f"{s} eV"
+
+    def fmt_hartree(x):
+        if x is None:
+            return "n/a"
+        try:
+            return f"{float(x):.6f} Eh"
+        except Exception:
+            s = str(x).strip()
+            return s or "n/a"
+
+    def fmt_rate(rate):
+        if rate is None:
+            return "n/a"
+        try:
+            return f"{float(rate):.6e} s^-1"
+        except Exception:
+            return f"{rate} s^-1"
 
     # --- timing ----------------------------------------------------------------
     hours, remainder = divmod(duration, 3600)
@@ -172,6 +190,16 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
         sections.append(f"Literature References:\n(1): {literature_reference}")
     if smiles_info:
         sections.append(f"Informations:\nSMILES: {smiles_info}")
+    if esd_summary and esd_summary.has_data:
+        esd_lines = []
+        for state, value in sorted(esd_summary.states_fspe.items()):
+            esd_lines.append(f"FSPE_{state} = {fmt_hartree(value)}")
+        for transition, value in sorted(esd_summary.isc_rates.items()):
+            esd_lines.append(f"ISC({transition}) = {fmt_rate(value)}")
+        for transition, value in sorted(esd_summary.ic_rates.items()):
+            esd_lines.append(f"IC({transition}) = {fmt_rate(value)}")
+        if esd_lines:
+            sections.append("ESD:\n" + "\n".join(esd_lines))
     middle = "\n\n".join(sections)
 
     # ---- write file ----------------------------------------------------------
