@@ -363,7 +363,7 @@ def run_orca(
         return True
     return False
 
-def run_orca_IMAG(input_file_path: str, iteration: int) -> None:
+def run_orca_IMAG(input_file_path: str, iteration: int) -> bool:
     """Execute ORCA calculation for imaginary frequency workflow.
 
     Specialized ORCA runner for IMAG workflow with iteration-specific
@@ -381,8 +381,10 @@ def run_orca_IMAG(input_file_path: str, iteration: int) -> None:
     output_log = f"output_{iteration}.out"
     if _run_orca_subprocess(orca_path, input_file_path, output_log):
         logger.info(f"ORCA run successful for '{input_file_path}', output saved to '{output_log}'")
-    else:
-        sys.exit(1)
+        return True
+
+    logger.error(f"ORCA IMAG calculation failed for '{input_file_path}'. See '{output_log}' for details.")
+    return False
 
 def run_orca_plot(homo_index: int) -> None:
     """Generate molecular orbital plots around HOMO using orca_plot.

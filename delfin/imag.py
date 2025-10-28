@@ -5,6 +5,13 @@ from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, r
 
 from .utils import search_transition_metals, set_main_basisset, select_rel_and_aux
 from .orca import run_orca_IMAG
+from .xyz_io import (
+    split_qmmm_sections,
+    _ensure_qmmm_implicit_model,
+    build_qmmm_block,
+    _apply_per_atom_newgto,
+    _load_covalent_radii,
+)
 
 OK_MARKER = "ORCA TERMINATED NORMALLY"
 
@@ -65,7 +72,7 @@ def _first_sphere_indices(atoms, metal_indices, scale):
                 first.add(i)
     return first
 
-def _build_bang_line_IMAG(config, rel_token, main_basisset, aux_jk, implicit):
+def _build_bang_line_IMAG(config, rel_token, main_basisset, aux_jk, implicit, qmmm_method=None):
     """
     Construct the '!' line for IMAG iterations:
       functional [REL] main_basis [disp] [ri_jkx] [aux_jk] [implicit] [geom_opt] FREQ initial_guess
@@ -76,7 +83,10 @@ def _build_bang_line_IMAG(config, rel_token, main_basisset, aux_jk, implicit):
     init_tokens = str(config.get("initial_guess", "PModel")).split()
     initg  = init_tokens[0] if init_tokens else "PModel"
 
-    tokens = ["!", str(config["functional"])]
+    tokens = ["!"]
+    if qmmm_method:
+        tokens.append(qmmm_method)
+    tokens.append(str(config["functional"]))
     if rel_token:
         tokens.append(rel_token)           # ZORA / X2C / DKH or ''
     tokens.append(str(main_basisset))
@@ -172,19 +182,27 @@ def run_plotvib0(input_file):
 
 # ----------------------- main writer (updated) -----------------------
 
-def read_and_modify_xyz_IMAG(input_file_path, output_file_path, charge, multiplicity,
-                             solvent, metals, config, main_basisset, metal_basisset, additions):
-    """
-    Build IMAG iteration input:
-      - policy-based "!" line with ri_jkx / aux_jk and ZORA/X2C/DKH enabled for 4d/5d metals
-      - main/metal basis sets via ``utils.set_main_basisset`` (arguments act as overrides)
-      - per-atom ``NewGTO`` tags for metals plus optional first coordination sphere entries
-      - FREQ job configuration and optional %output blocks just like the original workflow
+def read_and_modify_xyz_IMAG(
+    input_file_path,
+    output_file_path,
+    charge,
+    multiplicity,
+    solvent,
+    metals,
+    config,
+    main_basisset,
+    metal_basisset,
+    additions,
+):
+    """Construct an ORCA input for an IMAG iteration.
+
+    The builder now mirrors the generic OCCUPIER writers, including support for
+    QM/XTB splits and cached %QMMM blocks, while still allowing per-iteration
+    overrides supplied via ``additions``.
     """
     try:
-        with open(input_file_path, 'r') as file:
-            xyz_lines = file.readlines()
-        coord_block = [ln for ln in xyz_lines if ln.strip()]  # keep raw non-empty lines
+        with open(input_file_path, "r") as file:
+            coord_lines = [ln for ln in file.readlines() if ln.strip()]
     except Exception as e:
         logging.error(f"Error reading '{input_file_path}': {e}")
         sys.exit(1)
@@ -192,9 +210,9 @@ def read_and_modify_xyz_IMAG(input_file_path, output_file_path, charge, multipli
     # Determine metals from the current structure
     found_metals_local = search_transition_metals(input_file_path)
 
-    # Select base rates according to 3d/4d5 policy (arguments serve only as fallback)
+    # Resolve basis settings
     main_sel, metal_sel = set_main_basisset(found_metals_local, config)
-    main_eff  = main_basisset  or main_sel
+    main_eff = main_basisset or main_sel
     metal_eff = metal_basisset or metal_sel
 
     # Relativity/AUX policy (3d → non-rel + aux_jk; 4d/5d → rel + aux_jk_rel)
@@ -202,67 +220,54 @@ def read_and_modify_xyz_IMAG(input_file_path, output_file_path, charge, multipli
 
     # implicit solvation
     implicit = ""
-    model = str(config.get('implicit_solvation_model', '')).strip()
+    model = str(config.get("implicit_solvation_model", "")).strip()
     if model:
         implicit = f"{model}({solvent})" if solvent else model
 
+    # QM/XTB partition handling
+    geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(coord_lines, Path(input_file_path))
+    _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
+    qmmm_token = "QM/XTB" if qmmm_range else None
+
+    # Load radii for optional first coordination sphere tagging when needed
+    enable_first = str(config.get("first_coordination_sphere_metal_basisset", "no")).lower() in (
+        "yes",
+        "true",
+        "1",
+        "on",
+    )
+    sphere_scale_raw = str(config.get("first_coordination_sphere_scale", "")).strip()
+    radii_map = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if (enable_first and not sphere_scale_raw) else None
+
     # '!' line for IMAG (always FREQ)
-    bang = _build_bang_line_IMAG(config, rel_token, main_eff, aux_jk_token, implicit)
+    bang = _build_bang_line_IMAG(config, rel_token, main_eff, aux_jk_token, implicit, qmmm_token)
     if additions and "moinp" in additions.lower():
         bang += " MORead"
 
-    # 1. Coordination sphere
-    enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
-    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
-    scale = float(sphere_scale_raw) if sphere_scale_raw else 1.20
-
-    # only output the first contiguous coordinate block
-    coord_only = []
-    for ln in coord_block:
-        ls = ln.strip()
-        if not ls or ls == '*':
-            break
-        coord_only.append(ln)
-
-    atoms = _parse_xyz_atoms(coord_only)
-    metal_syms = {m.strip().capitalize() for m in (found_metals_local or [])}
-    metal_indices = [i for i, a in enumerate(atoms) if a["elem"].capitalize() in metal_syms]
-    first_indices = _first_sphere_indices(atoms, metal_indices, scale) if (enable_first and metal_indices and metal_eff) else set()
-    metal_line_set = {atoms[i]['line_idx'] for i in metal_indices}
-    first_line_set = {atoms[i]['line_idx'] for i in first_indices}
-
-    # Assemble input
     output_blocks = collect_output_blocks(config)
     builder = OrcaInputBuilder(bang)
-    builder.add_resources(config['maxcore'], config['PAL'], resolve_maxiter(config))
+    builder.add_resources(config["maxcore"], config["PAL"], resolve_maxiter(config))
     builder.add_additions(additions)
 
     # Add %freq block with temperature (IMAG always uses FREQ)
     from .xyz_io import _build_freq_block
+
     freq_block = _build_freq_block(config)
     builder.add_block(freq_block)
     builder.add_blocks(output_blocks)
 
-    out = builder.lines
-    out.append(f"* xyz {charge} {multiplicity}\n")
+    lines = builder.lines
+    lines.extend(build_qmmm_block(qmmm_range))
+    lines.append(f"* xyz {charge} {multiplicity}\n")
 
-    # Write coordinates + optional NewGTO tags
-    for idx, ln in enumerate(coord_only):
-        parts = ln.split()
-        if len(parts) < 4:
-            continue
-        elem, x, y, z = parts[0], parts[1], parts[2], parts[3]
-        line = f"{elem} {x} {y} {z}"
-        apply_basis = metal_eff and (idx in metal_line_set or idx in first_line_set)
-        if apply_basis:
-            line += f'   NewGTO "{metal_eff}" end'
-        out.append(line + "\n")
-
-    out.append("*\n")
+    geom = _apply_per_atom_newgto(geom_lines, found_metals_local, metal_eff, config, radii_map)
+    lines.extend(geom)
+    if not lines or not lines[-1].strip() == "*":
+        lines.append("*\n")
 
     try:
-        with open(output_file_path, 'w') as f:
-            f.writelines(out)
+        with open(output_file_path, "w") as f:
+            f.writelines(lines)
         logging.info(f"Input file '{output_file_path}' created successfully.")
     except Exception as e:
         logging.error(f"Error writing '{output_file_path}': {e}")
@@ -379,11 +384,57 @@ def run_IMAG(input_file, hess_file, charge, multiplicity, solvent, metals, confi
             if additions and additions.strip(): parts.append(additions.strip())
             additions_eff = "\n".join(parts)
 
-            read_and_modify_xyz_IMAG(current_input_file, output_file, charge, multiplicity,
-                                     solvent, metals, config, main_basisset, metal_basisset, additions_eff)
-            run_orca_IMAG(output_file, iteration)
+            read_and_modify_xyz_IMAG(
+                current_input_file,
+                output_file,
+                charge,
+                multiplicity,
+                solvent,
+                metals,
+                config,
+                main_basisset,
+                metal_basisset,
+                additions_eff,
+            )
+            success = run_orca_IMAG(output_file, iteration)
 
             log_file = f"output_{iteration}.out"
+            if not success:
+                geometry_mismatch = False
+                if Path(log_file).exists():
+                    try:
+                        with open(log_file, "r", errors="ignore") as fh:
+                            if "Input geometry does not match current geometry" in fh.read():
+                                geometry_mismatch = True
+                    except Exception as exc:
+                        logging.debug(f"Iteration {iteration}: failed to inspect IMAG log: {exc}")
+
+                if geometry_mismatch and additions_eff and "%moinp" in additions_eff.lower():
+                    logging.warning(
+                        f"Iteration {iteration}: MORead geometry mismatch detected; retrying without orbital guess."
+                    )
+                    fallback_additions = "\n".join(
+                        ln for ln in additions_eff.splitlines() if "%moinp" not in ln.lower()
+                    )
+                    read_and_modify_xyz_IMAG(
+                        current_input_file,
+                        output_file,
+                        charge,
+                        multiplicity,
+                        solvent,
+                        metals,
+                        config,
+                        main_basisset,
+                        metal_basisset,
+                        fallback_additions,
+                    )
+                    success = run_orca_IMAG(output_file, iteration)
+                    additions_eff = fallback_additions
+
+                if not success:
+                    logging.warning(f"Iteration {iteration}: ORCA failed; aborting IMAG workflow.")
+                    break
+
             if not _has_ok_marker(log_file):
                 logging.warning(f"Iteration {iteration}: ORCA not normal; stop.")
                 break
