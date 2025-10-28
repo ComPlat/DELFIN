@@ -43,9 +43,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "  • Set `parallel_workflows=yes` (default) to let oxidation/reduction steps share PAL dynamically.\n"
         "  • Set `parallel_workflows=no` to force sequential execution; the scheduler still enforces PAL\n"
         "    globally but runs one FoB/job at a time.\n\n"
-    "Notes on --no-cleanup:\n"
-    "  • Skips removal of intermediate files at the end of a run (they reside in DELFIN_SCRATCH when set).\n"
-    "  • Handy when debugging or inspecting intermediates after automated runs.\n\n"
+        "Notes on cleanup:\n"
+        "  • `--cleanup` removes intermediate files from the runtime directory and exits.\n"
+        "  • `delfin cleanup --orca` additionally terminates hanging ORCA jobs and purges OCCUPIER folders.\n\n"
+        "Notes on --no-cleanup:\n"
+        "  • Skips removal of intermediate files at the end of a run (they reside in DELFIN_SCRATCH when set).\n"
+        "  • Handy when debugging or inspecting intermediates after automated runs.\n\n"
     "Notes on --purge:\n"
     "  • Removes everything in the working directory except CONTROL.txt and the primary input file.\n"
     "  • Always asks for confirmation before deleting files.\n\n"
@@ -66,6 +69,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "      input_file=input.txt, then exit.\n\n"
         "  delfin --cleanup\n"
         "      Remove intermediate files/folders from previous runs and exit.\n\n"
+        "  delfin cleanup --orca\n"
+        "      Terminate running ORCA jobs, purge OCCUPIER folders, and clean up temporary files.\n\n"
         "  delfin --purge\n"
         "      Delete everything in the working directory except CONTROL.txt and the configured input file.\n\n"
         "  delfin --recalc\n"
@@ -99,7 +104,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "-C", "--cleanup",
         action="store_true",
-        help="Clean up intermediate files/folders and exit."
+        help="Clean up intermediate files/folders and exit (same as `delfin cleanup`)."
     )
     p.add_argument(
         "--purge",

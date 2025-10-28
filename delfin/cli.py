@@ -8,7 +8,7 @@ from delfin.common.paths import get_runtime_dir, resolve_path
 from delfin.cluster_utils import auto_configure_resources, detect_cluster_environment
 from delfin.global_manager import get_global_manager
 from .define import create_control_file
-from .cleanup import cleanup_all
+from .cleanup import cleanup_all, cleanup_orca
 from .config import read_control_file, get_E_ref
 from .utils import search_transition_metals, set_main_basisset, calculate_total_electrons_txt
 from .orca import run_orca
@@ -35,6 +35,69 @@ from .pipeline import (
 )
 
 logger = get_logger(__name__)
+
+
+def _run_cleanup_subcommand(argv: list[str]) -> int:
+    """Handle `delfin cleanup` invocations."""
+    parser = argparse.ArgumentParser(
+        prog="delfin cleanup",
+        description="Remove DELFIN scratch artifacts and optionally stop ORCA jobs.",
+    )
+    parser.add_argument(
+        "--orca",
+        action="store_true",
+        help="Terminate ORCA subprocesses and remove OCCUPIER scratch folders.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be removed without deleting files or stopping processes.",
+    )
+    parser.add_argument(
+        "--workspace",
+        default=".",
+        help="Workspace directory (default: current directory).",
+    )
+    parser.add_argument(
+        "--scratch",
+        default=None,
+        help="Override scratch directory (defaults to runtime dir or workspace).",
+    )
+    args = parser.parse_args(argv)
+
+    workspace = resolve_path(args.workspace)
+    if args.scratch:
+        scratch = resolve_path(args.scratch)
+    else:
+        scratch = get_runtime_dir() if args.workspace == "." else workspace
+
+    if args.orca:
+        report = cleanup_orca(workspace, scratch_root=scratch, dry_run=args.dry_run)
+        print(f"Workspace: {report['workspace']}")
+        print(f"Scratch:   {report['scratch_root']}")
+        print(f"ORCA processes detected: {report['processes_found']}")
+        for entry in report["terminated_groups"]:
+            print(f"  pgid {entry['pgid']}: {entry['status']} (pids={entry['pids']})")
+        if report["occuper_dirs_removed"]:
+            print("Removed OCCUPIER folders:")
+            for path in report["occuper_dirs_removed"]:
+                print(f"  {path}")
+        if report["scratch_dirs_removed"]:
+            print("Removed ORCA scratch directories:")
+            for path in report["scratch_dirs_removed"]:
+                print(f"  {path}")
+        if not args.dry_run:
+            print(f"Deleted {report['files_removed']} temporary file(s).")
+        else:
+            print("Dry run completed — no files deleted.")
+        return 0
+
+    removed = cleanup_all(str(scratch), dry_run=args.dry_run)
+    if args.dry_run:
+        print(f"Dry run: cleanup would affect files under {scratch}")
+    else:
+        print(f"Removed {removed} temporary file(s) under {scratch}")
+    return 0
 
 
 def _normalize_input_file(config, control_path: Path) -> str:
@@ -140,9 +203,12 @@ def _confirm_purge(root: Path) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
+    arg_list = list(argv if argv is not None else sys.argv[1:])
+    if arg_list and arg_list[0] == "cleanup":
+        return _run_cleanup_subcommand(arg_list[1:])
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
-    args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
+    args, _ = parser.parse_known_args(arg_list)
     RECALC_MODE = bool(getattr(args, "recalc", False))
     os.environ["DELFIN_RECALC"] = "1" if RECALC_MODE else "0"
 

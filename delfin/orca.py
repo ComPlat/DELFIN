@@ -10,6 +10,7 @@ from typing import Dict, Iterable, Optional
 
 from delfin.common.logging import get_logger
 from delfin.common.paths import get_runtime_dir
+from delfin.global_manager import get_global_manager
 
 logger = get_logger(__name__)
 
@@ -157,6 +158,8 @@ def _run_orca_subprocess(
     process = None
     monitor_thread = None
     stop_event = threading.Event()
+    manager = None
+    registration_token: Optional[str] = None
 
     try:
         with open(output_log, "w") as output_file:
@@ -169,6 +172,20 @@ def _run_orca_subprocess(
                 env=_prepare_orca_environment(scratch_subdir),
                 start_new_session=True  # Create new process group
             )
+
+            try:
+                manager = get_global_manager()
+                try:
+                    cwd_hint = Path(input_file_path).resolve().parent
+                except Exception:
+                    cwd_hint = Path.cwd()
+                registration_token = manager.register_subprocess(
+                    process,
+                    label=input_file_path,
+                    cwd=str(cwd_hint),
+                )
+            except Exception:
+                logger.debug("Failed to register ORCA subprocess for tracking", exc_info=True)
 
             # Start progress monitoring thread
             input_name = Path(input_file_path).stem
@@ -224,6 +241,11 @@ def _run_orca_subprocess(
         stop_event.set()
         if monitor_thread and monitor_thread.is_alive():
             monitor_thread.join(timeout=1)
+        if manager and registration_token:
+            try:
+                manager.unregister_subprocess(registration_token)
+            except Exception:
+                logger.debug("Failed to unregister ORCA subprocess %s", registration_token, exc_info=True)
 
 
 def _check_orca_success(output_file: str) -> bool:

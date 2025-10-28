@@ -7,16 +7,31 @@ This module provides a centralized job manager that ensures:
 """
 
 from __future__ import annotations
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Callable, List
 import atexit
 import threading
 import os
 import json
+import signal
+import time
+from dataclasses import dataclass
+import subprocess
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import DynamicCorePool
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class _TrackedProcess:
+    token: str
+    pid: int
+    pgid: Optional[int]
+    label: str
+    process: Any
+    start_time: float
+    cwd: Optional[str]
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -75,11 +90,18 @@ class GlobalJobManager:
         self.maxcore_per_job: int = 1000
         self._config_signature: Optional[Tuple[int, int, int, str]] = None
         self._atexit_registered: bool = False
+        self._signal_handler_installed: bool = False
+        self._previous_sigint_handler: Optional[Callable] = None
+        self._shutdown_requested = threading.Event()
+        self._tracked_lock = threading.RLock()
+        self._tracked_processes: Dict[str, "_TrackedProcess"] = {}
+        self._tracked_counter = 0
 
         if not self._atexit_registered:
             atexit.register(self.shutdown)
             self._atexit_registered = True
 
+        self._install_signal_handler()
         logger.info("Global job manager singleton created")
 
     def initialize(self, config: Dict[str, Any]) -> None:
@@ -201,6 +223,7 @@ class GlobalJobManager:
 
     def shutdown(self) -> None:
         """Shutdown the global manager and clean up resources."""
+        self._terminate_all_processes(reason="shutdown")
         if self.pool is not None:
             logger.info("Shutting down global job manager")
             self.pool.shutdown()
@@ -308,6 +331,159 @@ class GlobalJobManager:
             return "PAL=?, maxcore=?, pal_jobs=?, parallel=?"
         pal, maxcore, pal_jobs, parallel = signature
         return f"PAL={pal}, maxcore={maxcore}, pal_jobs={pal_jobs}, parallel={parallel}"
+
+    # ------------------------------------------------------------------
+    # Signal handling and subprocess tracking
+    # ------------------------------------------------------------------
+
+    def _install_signal_handler(self) -> None:
+        if self._signal_handler_installed:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            logger.debug("Skipping SIGINT handler installation (not main thread)")
+            return
+        try:
+            self._previous_sigint_handler = signal.getsignal(signal.SIGINT)
+            signal.signal(signal.SIGINT, self._handle_sigint)
+            self._signal_handler_installed = True
+            logger.debug("Registered GlobalJobManager SIGINT handler")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to install SIGINT handler: %s", exc)
+
+    def _handle_sigint(self, signum, frame) -> None:  # noqa: ANN001
+        if self._shutdown_requested.is_set():
+            logger.warning("SIGINT received again – cleanup already in progress")
+            return
+        self._shutdown_requested.set()
+        logger.warning("SIGINT received – aborting active DELFIN jobs and ORCA processes.")
+        try:
+            self._perform_interrupt_shutdown(signum)
+        finally:
+            previous = self._previous_sigint_handler
+            if previous in (None, signal.SIG_IGN):
+                raise KeyboardInterrupt
+            if previous is signal.SIG_DFL:
+                raise KeyboardInterrupt
+            try:
+                previous(signum, frame)
+            except KeyboardInterrupt:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.debug("Previous SIGINT handler raised", exc_info=True)
+                raise KeyboardInterrupt
+            else:
+                raise KeyboardInterrupt
+
+    def _perform_interrupt_shutdown(self, signum: int) -> None:
+        reason = f"signal {signum}"
+        self._terminate_all_processes(reason=reason)
+        if self.pool is not None:
+            try:
+                self.pool.shutdown()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error while shutting down core pool after SIGINT: %s", exc)
+
+    def register_subprocess(self, process: Any, *, label: str = "", cwd: Optional[str] = None) -> Optional[str]:
+        """Register a subprocess for signal-triggered cleanup."""
+        if process is None:
+            return None
+        try:
+            pid = process.pid
+        except Exception:  # noqa: BLE001
+            return None
+
+        try:
+            pgid = os.getpgid(pid) if hasattr(os, "getpgid") else None
+        except Exception:  # noqa: BLE001
+            pgid = None
+
+        with self._tracked_lock:
+            self._tracked_counter += 1
+            token = f"{pid}:{self._tracked_counter}"
+            record = _TrackedProcess(
+                token=token,
+                pid=pid,
+                pgid=pgid,
+                label=label or f"pid {pid}",
+                process=process,
+                start_time=time.time(),
+                cwd=str(cwd) if cwd else None,
+            )
+            self._tracked_processes[token] = record
+
+        logger.debug(
+            "Registered subprocess %s (pid=%s, pgid=%s, label=%s)",
+            token,
+            pid,
+            pgid,
+            label or "<unnamed>",
+        )
+        return token
+
+    def unregister_subprocess(self, token: Optional[str]) -> None:
+        if not token:
+            return
+        with self._tracked_lock:
+            record = self._tracked_processes.pop(token, None)
+        if record:
+            logger.debug("Unregistered subprocess %s (pid=%s)", token, record.pid)
+
+    def _terminate_all_processes(self, *, reason: str) -> None:
+        with self._tracked_lock:
+            records: List[_TrackedProcess] = list(self._tracked_processes.values())
+        if not records:
+            return
+
+        logger.warning("Terminating %d tracked ORCA process group(s) (%s)", len(records), reason)
+        for record in records:
+            self._terminate_tracked_process(record)
+
+    def _terminate_tracked_process(self, record: _TrackedProcess) -> None:
+        process = record.process
+        if process.poll() is not None:
+            self.unregister_subprocess(record.token)
+            return
+
+        pgid = record.pgid
+        label = record.label or f"pid {record.pid}"
+        try:
+            if pgid is not None and hasattr(os, "killpg"):
+                os.killpg(pgid, signal.SIGTERM)
+                logger.info("Sent SIGTERM to process group %s (%s)", pgid, label)
+            else:
+                process.terminate()
+                logger.info("Sent terminate signal to %s", label)
+        except ProcessLookupError:
+            logger.debug("Process %s already exited before termination", label)
+            self.unregister_subprocess(record.token)
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to send SIGTERM to %s: %s", label, exc)
+
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            if pgid is not None and hasattr(os, "killpg"):
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                    logger.warning("Sent SIGKILL to process group %s (%s)", pgid, label)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Failed to SIGKILL %s: %s", label, exc)
+            else:
+                try:
+                    process.kill()
+                    logger.warning("Force-killed %s", label)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Failed to force-kill %s: %s", label, exc)
+
+            try:
+                process.wait(timeout=2)
+            except Exception:  # noqa: BLE001
+                logger.debug("Process %s did not exit after SIGKILL", label, exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Error while waiting for %s termination: %s", label, exc)
+
+        self.unregister_subprocess(record.token)
 
 
 # Convenience function for getting the global manager
