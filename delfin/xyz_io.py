@@ -349,9 +349,10 @@ def build_qmmm_block(qmmm_range: Optional[Tuple[int, int]]) -> List[str]:
 
     return [
         "%QMMM\n",
-        f"  QMATOMS {{{start}:{end}}}\n",
-        "END\n",
-        "END\n",
+        f"  QMAtoms {{{start}:{end}}} end\n",
+        "  Charge_Medium 0\n",
+        "  Mult_Medium   1\n",
+        "end\n",
     ]
 
 def _rcov(sym: str, radii_map: Optional[Dict[str, float]]) -> float:
