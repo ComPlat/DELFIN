@@ -250,7 +250,6 @@ def main(argv: list[str] | None = None) -> int:
         'TDA': 'FALSE',
         'NACME': 'TRUE',
         'ETF': 'TRUE',
-        'ESD_PAL': '',
         'implicit_solvation_model': 'CPCM',
         'maxcore': 3800,
         'maxiter': 125,

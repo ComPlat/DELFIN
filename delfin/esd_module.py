@@ -30,23 +30,6 @@ logger = get_logger(__name__)
 _input_generation_lock = threading.Lock()
 
 
-def _resolve_esd_pal(config: Dict[str, Any], total_cores: int) -> int:
-    """Resolve PAL (core count) for ESD transition jobs."""
-    raw = config.get('ESD_PAL')
-    try:
-        pal_val = int(str(raw).strip()) if raw is not None else None
-    except (TypeError, ValueError):
-        pal_val = None
-    if pal_val is None or pal_val <= 0:
-        base = config.get('PAL', total_cores)
-        try:
-            pal_val = int(str(base).strip())
-        except (TypeError, ValueError):
-            pal_val = total_cores
-    pal_val = max(1, min(pal_val, total_cores))
-    return pal_val
-
-
 def parse_esd_config(config: Dict[str, Any]) -> tuple[bool, List[str], List[str], List[str]]:
     """Parse ESD module configuration from control file.
 
@@ -313,8 +296,11 @@ def _populate_isc_jobs(
 
             return work
 
-        pal_value = _resolve_esd_pal(config, manager.total_cores)
-        cores_min = cores_opt = cores_max = pal_value
+        preferred = max(1, manager.total_cores // 2) if manager.total_cores > 1 else 1
+        cores_min, cores_opt, cores_max = manager.derive_core_bounds(
+            preferred_opt=preferred,
+            hint="esd_transition",
+        )
 
         manager.add_job(
             WorkflowJob(
@@ -413,8 +399,11 @@ def _populate_ic_jobs(
 
             return work
 
-        pal_value = _resolve_esd_pal(config, manager.total_cores)
-        cores_min = cores_opt = cores_max = pal_value
+        preferred = max(1, manager.total_cores // 2) if manager.total_cores > 1 else 1
+        cores_min, cores_opt, cores_max = manager.derive_core_bounds(
+            preferred_opt=preferred,
+            hint="esd_transition",
+        )
 
         manager.add_job(
             WorkflowJob(
