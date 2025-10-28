@@ -89,6 +89,9 @@ def create_state_input(
     # Solvation
     implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
 
+    # Geometry optimization token from CONTROL (fall back to OPT)
+    geom_token = str(config.get('geom_opt', 'OPT')).strip()
+
     # Build simple keyword line
     keywords = [
         functional,
@@ -98,9 +101,11 @@ def create_state_input(
         ri_jkx,
         aux_jk,
         f"{implicit_solvation}({solvent})",
-        "OPT",
-        "FREQ",
     ]
+
+    if geom_token:
+        keywords.append(geom_token)
+    keywords.append("FREQ")
 
     if use_deltascf:
         keywords.append("deltaSCF")
