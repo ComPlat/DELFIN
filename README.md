@@ -92,6 +92,8 @@ e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 
 ## Excited-State Dynamics (ESD) Module
 
+> **Status:** The ESD module is under construction and not yet production-ready.
+
 The optional ESD pipeline optimises S0/S1/T1/T2 states and launches intersystem
 crossing (ISC) / internal conversion (IC) calculations inside a dedicated `ESD/`
 folder. Enable it via `ESD_modul=yes` in `CONTROL.txt`. It runs after the normal
@@ -322,7 +324,8 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 
 If you use DELFIN in a scientific publication, please cite:
 
-Hartmann, M. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.0.4). Zenodo. https://doi.org/10.5281/zenodo.17208145
+- Hartmann, M. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.0.4). Zenodo. https://doi.org/10.5281/zenodo.17208145
+- Hartmann, M. (2025). *DELFIN: Automated prediction of preferred spin states and redox potentials*. ChemRxiv. https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
 
 ### BibTeX
 ```bibtex
@@ -334,6 +337,14 @@ Hartmann, M. (2025). *DELFIN: Automated DFT-based prediction of preferred spin s
   publisher = {Zenodo},
   doi     = {10.5281/zenodo.17208145},
   url     = {https://doi.org/10.5281/zenodo.17208145}
+}
+
+@article{hartmann2025chemrxiv,
+  author  = {Hartmann, Maximilian},
+  title   = {DELFIN: Automated prediction of preferred spin states and redox potentials},
+  journal = {ChemRxiv},
+  year    = {2025},
+  url     = {https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a}
 }
 ```
 ## License

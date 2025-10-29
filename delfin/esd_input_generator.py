@@ -93,9 +93,12 @@ def create_state_input(
     geom_token = str(config.get('geom_opt', 'OPT')).strip()
 
     # Build simple keyword line
+    # S0 is closed-shell (RKS), all other states need UKS
+    scf_type = "RKS" if state_upper == "S0" else "UKS"
+
     keywords = [
         functional,
-        "UKS",  # Always unrestricted
+        scf_type,
         main_basisset,
         disp_corr,
         ri_jkx,
@@ -193,6 +196,49 @@ def create_state_input(
         for line in coord_lines:
             f.write(line)
         f.write("*\n")
+
+        # Add TDDFT check job for S0 to identify excited states
+        if state_upper == "S0":
+            f.write("\n")
+            f.write("#==========================================\n")
+            f.write("# TDDFT Check: Identify excited states\n")
+            f.write("#==========================================\n")
+            f.write("\n")
+            f.write("$new_job\n")
+
+            # TDDFT keyword line (RKS for vertical excitations from S0)
+            tddft_keywords = [
+                functional,
+                "RKS",
+                main_basisset,
+                disp_corr,
+                ri_jkx,
+                aux_jk,
+                f"{implicit_solvation}({solvent})",
+            ]
+            f.write("! " + " ".join(tddft_keywords) + "\n")
+
+            # Base block for TDDFT check
+            f.write(f'%base "S0_TDDFT_check"\n')
+
+            # PAL and maxcore
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+
+            # TDDFT block for both singlets and triplets
+            nroots = config.get('NROOTS', 15)
+            tda_flag = str(config.get('TDA', 'FALSE')).upper()
+            f.write("\n%tddft\n")
+            f.write(f"  nroots {nroots}\n")
+            f.write(f"  tda {tda_flag}\n")
+            f.write("  triplets true\n")
+            f.write("end\n")
+
+            # Geometry reference
+            f.write("\n")
+            f.write(f"* xyzfile {charge} 1 S0.xyz\n")
+
+            logger.info(f"Added TDDFT check job to S0 input for state identification")
 
     logger.info(f"Created ESD state input: {input_file}")
     return str(input_file)
