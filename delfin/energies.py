@@ -86,6 +86,7 @@ def find_electronic_energy(filename: str) -> Optional[float]:
     """Extract final single point electronic energy from ORCA output file.
 
     Searches for 'FINAL SINGLE POINT ENERGY' or equivalent patterns.
+    For S0.out files with multiple jobs, extracts the last energy from Job 1.
 
     Args:
         filename: Path to ORCA output file
@@ -93,6 +94,28 @@ def find_electronic_energy(filename: str) -> Optional[float]:
     Returns:
         Electronic energy in Hartree, or None if not found
     """
+    text = _read_text(filename)
+    if text is None:
+        return None
+
+    # Check if this is S0.out with multiple jobs
+    if "S0.out" in filename and "JOB NUMBER  2" in text:
+        # Find position of Job 2 marker
+        job2_match = re.search(r'\$+\s+JOB\s+NUMBER\s+2\s+\$+', text, flags=re.IGNORECASE)
+        if job2_match:
+            # Search only in text before Job 2
+            text_job1 = text[:job2_match.start()]
+            # Find last FINAL SINGLE POINT ENERGY in Job 1
+            pattern = rf"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+{FLOAT_RE}"
+            matches = re.findall(pattern, text_job1, flags=re.IGNORECASE)
+            if matches:
+                try:
+                    return float(matches[-1])
+                except ValueError:
+                    logger.error(f"Could not convert '{matches[-1]}' to float from {filename}.")
+                    return None
+
+    # Default behavior for other files or S0.out without Job 2
     patterns = [
         rf"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+{FLOAT_RE}",
         rf"Total\s+Energy\s*:\s*{FLOAT_RE}",

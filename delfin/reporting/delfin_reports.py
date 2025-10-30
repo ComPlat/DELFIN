@@ -3,6 +3,7 @@
 
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional
+from pathlib import Path
 import os, re
 
 from ..common.banners import build_standard_banner
@@ -17,11 +18,20 @@ from ..esd_results import ESDSummary
 def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, E_ox_3,
                                    E_red, E_red_2, E_red_3, E_00_t1, E_00_s1,
                                    metals, metal_basisset, NAME, main_basisset,
-                                   config, duration, E_ref, esd_summary: Optional[ESDSummary] = None):
+                                   config, duration, E_ref, esd_summary: Optional[ESDSummary] = None,
+                                   output_dir: Optional[Path] = None):
     import logging
+
+    # If output_dir is provided, use it; otherwise use current directory
+    if output_dir is None:
+        output_dir = Path.cwd()
+    else:
+        output_dir = Path(output_dir)
+
     xyz = ""
     try:
-        with open('initial.xyz', 'r', encoding='utf-8') as xyz_file:
+        xyz_path = output_dir / 'initial.xyz'
+        with open(xyz_path, 'r', encoding='utf-8') as xyz_file:
             xyz_lines = xyz_file.readlines()
             xyz = "".join(xyz_lines[2:])
     except FileNotFoundError:
@@ -236,7 +246,8 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
     # ---- write file ----------------------------------------------------------
     banner = build_standard_banner(header_indent=4, info_indent=4)
 
-    with open('DELFIN.txt', 'w', encoding='utf-8') as file:
+    delfin_output_path = output_dir / 'DELFIN.txt'
+    with open(delfin_output_path, 'w', encoding='utf-8') as file:
         file.write(
             f"{banner}\n\n"
             f"Compound name (NAME): {name_str}\n\n"

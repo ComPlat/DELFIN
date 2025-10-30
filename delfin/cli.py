@@ -584,6 +584,7 @@ def main(argv: list[str] | None = None) -> int:
         summary.duration,
         E_ref,
         summary.esd_summary,
+        output_dir=control_file_path.parent,
     )
 
     if summary.esd_summary and summary.esd_summary.has_data:
