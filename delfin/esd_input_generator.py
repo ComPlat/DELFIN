@@ -19,9 +19,42 @@ logger = get_logger(__name__)
 HARTREE_TO_CM1 = 219474.63
 
 
-# NOTE: DELE evaluation is temporarily disabled while the workflow is validated.
 def calculate_dele_cm1(state1_file: str, state2_file: str) -> Optional[float]:
-    return None
+    """Calculate adiabatic energy difference (DELE) between two states.
+
+    DELE = E(initial_state) - E(final_state)
+    Both energies evaluated at their respective optimized geometries.
+
+    Args:
+        state1_file: Path to initial state .out file
+        state2_file: Path to final state .out file
+
+    Returns:
+        DELE in cm^-1, or None if energies cannot be extracted
+    """
+    from delfin.energies import find_electronic_energy
+    from pathlib import Path
+
+    # Check if files exist
+    if not Path(state1_file).exists() or not Path(state2_file).exists():
+        logger.warning(f"Cannot calculate DELE: missing {state1_file} or {state2_file}")
+        return None
+
+    # Extract electronic energies
+    e1 = find_electronic_energy(state1_file)
+    e2 = find_electronic_energy(state2_file)
+
+    if e1 is None or e2 is None:
+        logger.warning(f"Cannot calculate DELE: failed to extract energies from outputs")
+        return None
+
+    # Calculate DELE in cm^-1
+    dele_hartree = e1 - e2
+    dele_cm1 = dele_hartree * HARTREE_TO_CM1
+
+    logger.info(f"Calculated DELE: {dele_cm1:.2f} cm⁻¹ ({e1:.6f} - {e2:.6f} Eh)")
+
+    return dele_cm1
 
 
 def create_state_input(
@@ -139,10 +172,10 @@ def create_state_input(
 
     # SCF settings for deltaSCF
     if use_deltascf:
-        domom = str(config.get('deltaSCF_DOMOM', 'false')).lower()
+        domom = str(config.get('deltaSCF_DOMOM', 'true')).lower()  # Changed default to true
         pmom = str(config.get('deltaSCF_PMOM', 'true')).lower()
         keepinitialref = str(config.get('deltaSCF_keepinitialref', 'true')).lower()
-        soscfhessup = config.get('deltaSCF_SOSCFHESSUP', 'LBFGS')
+        soscfhessup = config.get('deltaSCF_SOSCFHESSUP', 'LSR1')  # Changed to LSR1 (better for excited states)
 
         scf_block = [
             "%scf",
@@ -228,8 +261,10 @@ def create_state_input(
             # TDDFT block for both singlets and triplets
             nroots = config.get('NROOTS', 15)
             tda_flag = str(config.get('TDA', 'FALSE')).upper()
+            maxdim = max(5, int(nroots / 2))  # Davidson subspace dimension
             f.write("\n%tddft\n")
             f.write(f"  nroots {nroots}\n")
+            f.write(f"  maxdim {maxdim}\n")
             f.write(f"  tda {tda_flag}\n")
             f.write("  triplets true\n")
             f.write("end\n")
@@ -279,7 +314,8 @@ def create_isc_input(
     # Determine source geometry (use optimized geometry of initial state)
     xyz_file = f"{initial_state}.xyz"
 
-    # DELE calculation is currently disabled; ORCA defaults will be used.
+    # Calculate adiabatic energy difference (DELE) for ISC
+    # DELE = E(initial) - E(final) in cm^-1
     dele = calculate_dele_cm1(
         str(esd_dir / f"{initial_state}.out"),
         str(esd_dir / f"{final_state}.out"),
@@ -292,10 +328,9 @@ def create_isc_input(
     aux_jk = config.get('aux_jk', 'def2/J')
     implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
 
-    # Simple keyword line
+    # Simple keyword line (no RKS/UKS flag - let ORCA decide based on multiplicity)
     keywords = [
         functional,
-        "RKS",  # Restricted for ISC
         main_basisset,
         disp_corr,
         ri_jkx,
@@ -313,7 +348,7 @@ def create_isc_input(
     blocks.append(f'%base "{job_name}"')
 
     # TDDFT block (aligned with reference layout)
-    nroots = config.get('NROOTS', 5)
+    nroots = config.get('ESD_ISC_NROOTS', config.get('NROOTS', 10))  # Increased default to 10
     trootssl = str(config.get('TROOTSSL', '0')).strip()
     dosoc_flag = "TRUE"
     tddft_block = [
@@ -415,10 +450,9 @@ def create_ic_input(
     aux_jk = config.get('aux_jk', 'def2/J')
     implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
 
-    # Simple keyword line
+    # Simple keyword line (no RKS/UKS flag - let ORCA decide based on multiplicity)
     keywords = [
         functional,
-        "RKS",
         main_basisset,
         disp_corr,
         ri_jkx,
@@ -436,7 +470,7 @@ def create_ic_input(
     blocks.append(f'%base "{job_name}"')
 
     # TDDFT block tailored for IC calculations
-    nroots = config.get('NROOTS', 5)
+    nroots = config.get('ESD_IC_NROOTS', config.get('NROOTS', 10))  # Increased default to 10
     iroot = config.get('IROOT', 1)
     tda_flag = str(config.get('TDA', 'FALSE')).upper()
     nacme_flag = str(config.get('NACME', 'TRUE')).upper()
