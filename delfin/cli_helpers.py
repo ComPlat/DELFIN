@@ -127,4 +127,9 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only (re)run external jobs whose .out files are missing or incomplete."
     )
+    p.add_argument(
+        "--report",
+        action="store_true",
+        help="Recompute redox potentials from existing output files without running calculations."
+    )
     return p

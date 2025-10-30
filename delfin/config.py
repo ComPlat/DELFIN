@@ -183,11 +183,63 @@ def _coerce_float(val: Any) -> Optional[float]:
     return None
 
 
+def _is_oniom_calculation(config: Dict[str, Any]) -> bool:
+    """Check if this is an ONIOM (QM/QM2) calculation.
+
+    Detects ONIOM by checking:
+    1. If input_file exists and contains ONIOM markers
+    2. If any generated ORCA input files contain QM/QM2 keywords
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        True if ONIOM calculation is detected, False otherwise
+    """
+    import os
+    from pathlib import Path
+
+    # Check input_file specified in config
+    input_file = config.get('input_file', 'input.txt')
+    if os.path.exists(input_file):
+        try:
+            with open(input_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read(2000)  # Read first 2000 chars
+                # Check for ONIOM markers
+                if 'QM/XTB' in content or 'QM/MM' in content or 'QM/QM2' in content:
+                    return True
+        except Exception:
+            pass
+
+    # Check generated ORCA input files (initial.inp, etc.)
+    input_files_to_check = [
+        'initial.inp',
+        'ox_step_1.inp',
+        'red_step_1.inp',
+    ]
+
+    for fname in input_files_to_check:
+        if os.path.exists(fname):
+            try:
+                with open(fname, 'r', encoding='utf-8', errors='ignore') as f:
+                    first_line = f.readline()
+                    # ORCA input files start with "! keywords"
+                    if 'QM/XTB' in first_line or 'QM/MM' in first_line or 'QM/QM2' in first_line:
+                        return True
+            except Exception:
+                pass
+
+    return False
+
+
 def get_E_ref(config: Dict[str, Any]) -> float:
     """Get reference electrode potential for redox calculations.
 
     Returns user-specified E_ref if available, otherwise looks up
     solvent-specific reference potentials vs. SHE.
+
+    For ONIOM calculations (QM/QM2), automatically uses adjusted E_ref values
+    to account for systematic DFT errors in electrostatic interactions.
 
     Args:
         config: Configuration dictionary containing 'E_ref' and 'solvent'
@@ -202,16 +254,41 @@ def get_E_ref(config: Dict[str, Any]) -> float:
     solvent_raw = config.get('solvent', '')
     solvent_key = solvent_raw.strip().lower() if isinstance(solvent_raw, str) else ''
 
-    solvent_E_ref = {
-        "dmf": 4.795, "n,n-dimethylformamide": 4.795,
-        "dcm": 4.805, "ch2cl2": 4.805, "dichloromethane": 4.805,
-        "acetonitrile": 4.745, "mecn": 4.745,
-        "thf": 4.905, "tetrahydrofuran": 4.905,
-        "dmso": 4.780, "dimethylsulfoxide": 4.780,
-        "dme": 4.855, "dimethoxyethane": 4.855,
-        "acetone": 4.825, "propanone": 4.825,
-    }
+    # Check if this is an ONIOM calculation
+    is_oniom = _is_oniom_calculation(config)
 
-    return solvent_E_ref.get(solvent_key, 4.345)
+    if is_oniom:
+        # ONIOM-specific E_ref values (can be customized per solvent)
+        solvent_E_ref_oniom = {
+            "dmf": -3.31, "n,n-dimethylformamide": -3.31,
+            "dcm": -3.31, "ch2cl2": -3.31, "dichloromethane": -3.31,
+            "acetonitrile": -3.31, "mecn": -3.31,
+            "thf": -3.31, "tetrahydrofuran": -3.31,
+            "dmso": -3.31, "dimethylsulfoxide": -3.31,
+            "dme": -3.31, "dimethoxyethane": -3.31,
+            "acetone": -3.31, "propanone": -3.31,
+        }
+
+        e_ref_value = solvent_E_ref_oniom.get(solvent_key, -3.31)
+
+        # Log the automatic adjustment
+        logger.info(f"ONIOM calculation detected: Using E_ref = {e_ref_value:.3f} V for {solvent_raw or 'default solvent'}")
+        logger.info(f"  → This accounts for systematic DFT errors in QM/QM2 electrostatic interactions")
+        logger.info(f"  → To override, set E_ref manually in CONTROL.txt")
+
+        return e_ref_value
+    else:
+        # Standard E_ref values for non-ONIOM calculations
+        solvent_E_ref = {
+            "dmf": 4.795, "n,n-dimethylformamide": 4.795,
+            "dcm": 4.805, "ch2cl2": 4.805, "dichloromethane": 4.805,
+            "acetonitrile": 4.745, "mecn": 4.745,
+            "thf": 4.905, "tetrahydrofuran": 4.905,
+            "dmso": 4.780, "dimethylsulfoxide": 4.780,
+            "dme": 4.855, "dimethoxyethane": 4.855,
+            "acetone": 4.825, "propanone": 4.825,
+        }
+
+        return solvent_E_ref.get(solvent_key, 4.345)
 
 
