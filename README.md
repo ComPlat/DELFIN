@@ -70,19 +70,27 @@ python -m delfin
 **CLI shortcuts**
 
 - `delfin --define[=input.xyz] [--overwrite]`
-  creates/updates `CONTROL.txt` and optionally converts an XYZ into `input.txt`.
+  creates/updates `CONTROL.txt` and optionally converts an XYZ into `input.txt`; include `--overwrite` to replace existing files.
 - `delfin --control /path/to/CONTROL.txt`
   runs the workflow from another directory while normalising all paths.
 - `delfin --no-cleanup`
   keeps temporary files and scratch folders after the pipeline finishes.
 - `delfin --cleanup`
   removes previously generated intermediates and exits immediately.
+- `delfin cleanup [--dry-run] [--workspace PATH] [--scratch PATH]`
+  offers finer control over workspace/scratch cleanup; combine with `--dry-run` to preview deletions.
 - `delfin cleanup --orca`
   stops running ORCA jobs in the current workspace, purges OCCUPIER scratch folders, and cleans leftover temporary files.
 - `delfin --purge`
   clears the working directory (keeps CONTROL.txt and the configured input file only) after confirmation.
 - `delfin --recalc`
   re-parses existing results and only restarts missing or incomplete jobs.
+- `delfin --report`
+  re-calculates redox potentials from the existing output files without launching new calculations.
+- `delfin --imag`
+  reruns the IMAG frequency-elimination workflow (requires `IMAG=yes` in CONTROL.txt) and regenerates `DELFIN.txt` with the updated results.
+- `delfin --version`
+  prints the installed DELFIN version (`-V` shortcut).
 - `delfin --help`
   prints the full list of CLI flags, including the new pipeline/resource switches.
 
@@ -192,6 +200,10 @@ delfin/
   - `auto` (default): Use MPI + OpenMP; FoBs run in parallel
   - `threads`: Use only OpenMP (no MPI); FoBs still run in parallel, useful if MPI is unstable
   - `serial`: Force sequential execution; only 1 FoB at a time
+* `IMAG = yes | no`
+  - set to `yes` to enable imaginary-frequency elimination for pipeline runs and to unlock `delfin --imag`
 * `IMAG_scope = initial | all`
   - `initial` (default): only the initial geometry will run IMAG elimination.
   - `all`: the IMAG workflow is executed for all configured redox steps.
+* `allow_imaginary_freq = N`
+  - number of imaginary modes tolerated before IMAG reruns the step (default: 0)
