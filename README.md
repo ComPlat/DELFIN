@@ -93,8 +93,8 @@ e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 
 ### Only eliminate imaginary modes
 
-Wenn Geometrien bereits vorliegen und lediglich imaginäre Frequenzen entfernt
-werden sollen, genügt ein Aufruf von
+When geometries are already available and only imaginary frequencies need to be
+removed, run:
 
 ```bash
 delfin --imag
