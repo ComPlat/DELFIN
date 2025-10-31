@@ -83,11 +83,26 @@ python -m delfin
   clears the working directory (keeps CONTROL.txt and the configured input file only) after confirmation.
 - `delfin --recalc`
   re-parses existing results and only restarts missing or incomplete jobs.
+- `delfin --imag`
+  eliminates imaginary modes from existing ORCA results (`*.out`/`*.hess`) and regenerates the summary report.
 - `delfin --help`
   prints the full list of CLI flags, including the new pipeline/resource switches.
 
 Results and reports are written to the current working directory,
 e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
+
+### Only eliminate imaginary modes
+
+Wenn Geometrien bereits vorliegen und lediglich imaginäre Frequenzen entfernt
+werden sollen, genügt ein Aufruf von
+
+```bash
+delfin --imag
+```
+
+The command reads the existing `*.out`/`*.hess` files, launches the IMAG loop
+for every configured step (while keeping the original ORCA settings), and then
+updates `DELFIN.txt` with the new redox potentials.
 ---
 
 ## Excited-State Dynamics (ESD) Module
@@ -192,6 +207,9 @@ delfin/
   - `auto` (default): Use MPI + OpenMP; FoBs run in parallel
   - `threads`: Use only OpenMP (no MPI); FoBs still run in parallel, useful if MPI is unstable
   - `serial`: Force sequential execution; only 1 FoB at a time
+* `IMAG_scope = initial | all`
+  - `initial` (default): nur die Initialgeometrie erhält IMAG-Elimination
+  - `all`: IMAG-Elimination auch für alle konfigurierten Redox-Schritte
 * `XTB_OPT = yes | no`
 * `XTB_GOAT = yes | no`
 * `CREST = yes | no`

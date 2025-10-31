@@ -24,6 +24,7 @@ CREST=no
 multiplicity_global_opt=
 ------------------------------------
 IMAG=yes
+IMAG_scope=initial
 allow_imaginary_freq=0
 ------------------------------------
 Redox steps:

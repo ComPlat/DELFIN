@@ -519,8 +519,7 @@ class _WorkflowManager:
         elif any(token in hint_lc for token in light_tokens):
             suggestion = max(1, base_share // 2)
         elif any(token in hint_lc for token in heavy_tokens):
-            extra = max(1, self.total_cores // max(2, self.max_jobs))
-            suggestion = base_share + extra
+            suggestion = base_share
 
         suggestion = self._apply_duration_bias(
             suggestion,
@@ -923,6 +922,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 main_basis,
                 metal_basis,
                 additions,
+                source_input='initial.inp',
             )
 
         initial_job_id = 'classic_initial'
@@ -1079,6 +1079,20 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 _update_pal_block(ox_inputs[idx], cores)
                 if not run_orca(ox_inputs[idx], ox_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
+                run_IMAG(
+                    ox_outputs[idx],
+                    f"ox_step_{idx}",
+                    charge,
+                    multiplicity,
+                    solvents,
+                    metals,
+                    config,
+                    main_basis,
+                    metal_basis,
+                    additions,
+                    step_name=f"ox_step_{idx}",
+                    source_input=ox_inputs[idx],
+                )
 
             return _work
 
@@ -1124,6 +1138,20 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 _update_pal_block(red_inputs[idx], cores)
                 if not run_orca(red_inputs[idx], red_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
+                run_IMAG(
+                    red_outputs[idx],
+                    f"red_step_{idx}",
+                    charge,
+                    multiplicity,
+                    solvents,
+                    metals,
+                    config,
+                    main_basis,
+                    metal_basis,
+                    additions,
+                    step_name=f"red_step_{idx}",
+                    source_input=red_inputs[idx],
+                )
 
             return _work
 
@@ -1201,6 +1229,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 main_basis,
                 metal_basis,
                 ground_additions,
+                source_input=output_initial,
             )
 
         initial_job_id = 'manual_initial'
@@ -1360,6 +1389,20 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 _update_pal_block(ox_inputs[idx], cores)
                 if not run_orca(ox_inputs[idx], ox_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
+                run_IMAG(
+                    ox_outputs[idx],
+                    f"ox_step_{idx}",
+                    charge,
+                    multiplicity,
+                    solvents,
+                    metals,
+                    config,
+                    main_basis,
+                    metal_basis,
+                    additions,
+                    step_name=f"ox_step_{idx}",
+                    source_input=ox_inputs[idx],
+                )
 
             return _work
 
@@ -1408,6 +1451,20 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 _update_pal_block(red_inputs[idx], cores)
                 if not run_orca(red_inputs[idx], red_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
+                run_IMAG(
+                    red_outputs[idx],
+                    f"red_step_{idx}",
+                    charge,
+                    multiplicity,
+                    solvents,
+                    metals,
+                    config,
+                    main_basis,
+                    metal_basis,
+                    additions,
+                    step_name=f"red_step_{idx}",
+                    source_input=red_inputs[idx],
+                )
 
             return _work
 

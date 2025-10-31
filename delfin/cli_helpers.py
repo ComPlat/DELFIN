@@ -56,7 +56,12 @@ def _build_parser() -> argparse.ArgumentParser:
     "  • Only (re)runs external jobs whose output (.out) files are missing or appear incomplete.\n"
     "  • Existing results are preserved; parsing/aggregation is redone from what is on disk.\n"
     "  • A job is considered complete if its .out contains typical ORCA end markers such as\n"
-    "    'ORCA TERMINATED NORMALLY'.\n"
+    "    'ORCA TERMINATED NORMALLY'.\n\n"
+    "Notes on --imag:\n"
+    "  • Only runs IMAG elimination on existing .out/.hess files (skips OCCUPIER/classic/manually workflows).\n"
+    "  • Respects IMAG_scope setting in CONTROL.txt (initial or all).\n"
+    "  • After IMAG elimination completes, automatically generates a report with updated potentials.\n"
+    "  • Useful when you already have converged structures but need to eliminate imaginary frequencies.\n"
     )
     epilog = (
         "Examples:\n"
@@ -74,7 +79,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "  delfin --purge\n"
         "      Delete everything in the working directory except CONTROL.txt and the configured input file.\n\n"
         "  delfin --recalc\n"
-        "      Re-parse existing outputs and (re)run only external jobs with missing/incomplete .out files.\n"
+        "      Re-parse existing outputs and (re)run only external jobs with missing/incomplete .out files.\n\n"
+        "  delfin --imag\n"
+        "      Run IMAG elimination on existing .out/.hess files, then generate report with updated potentials.\n"
     )
     p = argparse.ArgumentParser(
         prog="delfin",
@@ -131,5 +138,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--report",
         action="store_true",
         help="Recompute redox potentials from existing output files without running calculations."
+    )
+    p.add_argument(
+        "--imag",
+        action="store_true",
+        help="Only run IMAG elimination on existing .out/.hess files, then generate report."
     )
     return p

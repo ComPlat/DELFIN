@@ -271,6 +271,20 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         return run_report_mode(config)
+
+    # Handle --imag mode: run IMAG elimination then report
+    if getattr(args, "imag", False):
+        from .cli_imag import run_imag_mode
+
+        # Read CONTROL.txt
+        try:
+            config = read_control_file(str(control_file_path))
+        except ValueError as exc:
+            logger.error("Invalid CONTROL configuration: %s", exc)
+            return 2
+
+        return run_imag_mode(config, control_file_path)
+
     run_log_path = control_file_path.parent / "delfin_run.log"
     if "DELFIN_GLOBAL_LOG" not in os.environ:
         os.environ["DELFIN_GLOBAL_LOG"] = str(run_log_path)

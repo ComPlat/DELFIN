@@ -55,6 +55,13 @@ def _as_parallel_strategy(value: Any) -> str:
         return "auto"
     raise ValueError("must be one of: auto, threads, serial")
 
+def _as_imag_scope(value: Any) -> str:
+    """Coerce user value into a known IMAG scope."""
+    text = str(value or "initial").strip().lower()
+    if text in {"initial", "all"}:
+        return text
+    raise ValueError("must be one of: initial, all")
+
 CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("NAME", _as_str, default=""),
     FieldSpec("SMILES", _as_str, default=""),
@@ -73,6 +80,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("relativity", _as_str, default="none"),
     FieldSpec("geom_opt", _as_str, default="OPT"),
     FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
+    FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
 )
 
 

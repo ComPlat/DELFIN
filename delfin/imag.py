@@ -54,6 +54,312 @@ def _parse_xyz_atoms(xyz_lines):
         atoms.append({"line_idx": idx, "elem": elem, "x": x, "y": y, "z": z})
     return atoms
 
+def _strip_xyz_header(lines):
+    """Remove leading atom-count/comment lines from XYZ-like fragments."""
+    if not lines:
+        return lines
+    working = list(lines)
+    first = working[0].strip()
+    try:
+        int(first)
+        working = working[1:]
+        if working:
+            head = working[0].strip().split()
+            if (len(head) < 4) or (not head[0]) or (not head[0][0].isalpha()):
+                working = working[1:]
+        return working
+    except ValueError:
+        return lines
+
+def _trim_xyz_columns(lines):
+    """Keep only element + XYZ coordinates (preserve separators and QMMM markers)."""
+    out = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.isdigit():
+            break
+        if stripped in {"*", "$"}:
+            out.append(stripped + "\n")
+            continue
+        parts = stripped.split()
+        if len(parts) >= 4 and parts[0] and parts[0][0].isalpha():
+            tail = []
+            if "NewGTO" in parts:
+                idx = parts.index("NewGTO")
+                tail = parts[idx:]
+            base = parts[:4]
+            rebuilt = " ".join(base + tail)
+            out.append(rebuilt + "\n")
+        else:
+            out.append(stripped + "\n")
+    return out
+
+_COORD_LINE_RE = re.compile(
+    r"^(?P<lead>\s*)(?P<elem>\S+)(?P<sp1>\s+)(?P<x>\S+)(?P<sp2>\s+)"
+    r"(?P<y>\S+)(?P<sp3>\s+)(?P<z>\S+)(?P<rest>.*)$"
+)
+
+
+def _load_inp_template(template_path: Path | str):
+    path = Path(template_path)
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        logging.warning(f"IMAG template input '{path}' not found; falling back to generated input.")
+        return None
+    except Exception as exc:
+        logging.warning(f"Failed to read IMAG template '{path}': {exc}; falling back to generated input.")
+        return None
+
+    geom_start = None
+    for idx, line in enumerate(lines):
+        if line.strip().lower().startswith("* xyz"):
+            geom_start = idx + 1
+            break
+    if geom_start is None:
+        logging.warning(f"Template '{path}' missing '* xyz' section; fallback to generated input.")
+        return None
+
+    geom_end = geom_start
+    while geom_end < len(lines) and lines[geom_end].strip() != "*":
+        geom_end += 1
+    if geom_end >= len(lines):
+        logging.warning(f"Template '{path}' missing terminating '*' for geometry; fallback to generated input.")
+        return None
+
+    coord_count = sum(
+        1
+        for idx in range(geom_start, geom_end)
+        if _COORD_LINE_RE.match(lines[idx].rstrip("\n"))
+    )
+    return {
+        "path": path,
+        "lines": lines,
+        "geom_start": geom_start,
+        "geom_end": geom_end,
+        "coord_count": coord_count,
+    }
+
+
+def _extract_resources_from_input(input_path: Path | str) -> tuple[int | None, int | None]:
+    path = Path(input_path)
+    if not path.exists():
+        return None, None
+    pal_val = None
+    maxcore_val = None
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                stripped = line.strip().lower()
+                if stripped.startswith("%pal") and "nprocs" in stripped:
+                    parts = stripped.replace("=", " ").split()
+                    for idx, token in enumerate(parts):
+                        if token == "nprocs" and idx + 1 < len(parts):
+                            try:
+                                pal_val = int(parts[idx + 1])
+                            except ValueError:
+                                pal_val = None
+                            break
+                elif stripped.startswith("%maxcore"):
+                    parts = stripped.split()
+                    if len(parts) >= 2:
+                        try:
+                            maxcore_val = int(parts[1])
+                        except ValueError:
+                            maxcore_val = None
+                if pal_val is not None and maxcore_val is not None:
+                    break
+    except Exception:
+        pal_val = pal_val
+        maxcore_val = maxcore_val
+    return pal_val, maxcore_val
+
+
+def _extract_xyz_coordinates(xyz_path: Path | str) -> list[tuple[str, str, str, str]]:
+    path = Path(xyz_path)
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            raw_lines = [ln for ln in fh.readlines() if ln.strip()]
+    except Exception as exc:
+        logging.error(f"Error reading geometry '{path}': {exc}")
+        return []
+
+    lines = _strip_xyz_header(raw_lines)
+    coords: list[tuple[str, str, str, str]] = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped == "*" or stripped.startswith("*"):
+            break
+        parts = stripped.split()
+        if len(parts) < 4:
+            continue
+        coords.append((parts[0], parts[1], parts[2], parts[3]))
+    return coords
+
+
+def _sanitize_template_lines(lines: list[str]) -> list[str]:
+    sanitized: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith("%moinp"):
+            continue
+        if stripped.startswith("!"):
+            tokens = stripped.split()
+            filtered = [tok for tok in tokens if tok.lower() != "moread"]
+            if not filtered:
+                continue
+            rebuilt = " ".join(filtered)
+            sanitized.append(rebuilt + ("\n" if not rebuilt.endswith("\n") else ""))
+        else:
+            sanitized.append(line if line.endswith("\n") else line + "\n")
+    return sanitized
+
+
+def _write_input_from_template(
+    template_ctx,
+    coords,
+    output_path: Path | str,
+    additions_text: str,
+    geom_source_path: Path | str,
+    config,
+    main_basisset,
+    metal_basisset,
+    pal_override,
+    maxcore_override,
+) -> bool:
+    if not template_ctx:
+        return False
+    expected = template_ctx["coord_count"]
+    if expected and len(coords) != expected:
+        logging.warning(
+            "Template coordinate count mismatch (expected %d, got %d); falling back to generated input.",
+            expected,
+            len(coords),
+        )
+        return False
+
+    lines = _sanitize_template_lines(list(template_ctx["lines"]))
+
+    pal_val = int(pal_override) if pal_override is not None else int(config["PAL"])
+    maxcore_val = int(maxcore_override) if maxcore_override is not None else int(config["maxcore"])
+
+    for idx, line in enumerate(lines):
+        lower = line.strip().lower()
+        if lower.startswith("%pal"):
+            lines[idx] = f"%pal nprocs {pal_val} end\n"
+        elif lower.startswith("%maxcore"):
+            lines[idx] = f"%maxcore {maxcore_val}\n"
+
+    geom_start = None
+    for idx, line in enumerate(lines):
+        if line.strip().lower().startswith("* xyz"):
+            geom_start = idx + 1
+            break
+    if geom_start is None:
+        logging.warning("Sanitized template lost '* xyz' marker; fallback to generated input.")
+        return False
+
+    geom_end = geom_start
+    while geom_end < len(lines) and lines[geom_end].strip() != "*":
+        geom_end += 1
+    if geom_end >= len(lines):
+        logging.warning("Sanitized template missing terminal '*' marker; fallback to generated input.")
+        return False
+    coord_idx = 0
+
+    raw_geom_lines = []
+    for elem, x, y, z in coords:
+        raw_geom_lines.append(f"{elem} {x} {y} {z}\n")
+
+    found_metals_local = search_transition_metals(str(geom_source_path))
+    main_sel, metal_sel = set_main_basisset(found_metals_local, config)
+    metal_eff = metal_basisset or metal_sel
+    enable_first = str(config.get("first_coordination_sphere_metal_basisset", "no")).lower() in (
+        "yes",
+        "true",
+        "1",
+        "on",
+    )
+    sphere_scale_raw = str(config.get("first_coordination_sphere_scale", "")).strip()
+    radii_map = (
+        _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009"))
+        if (enable_first and not sphere_scale_raw)
+        else None
+    )
+
+    geom_with_basis = _apply_per_atom_newgto(
+        raw_geom_lines,
+        found_metals_local,
+        metal_eff,
+        config,
+        radii_map,
+    )
+
+    for idx in range(geom_start, geom_end):
+        match = _COORD_LINE_RE.match(lines[idx].rstrip("\n"))
+        if not match:
+            continue
+        if coord_idx >= len(geom_with_basis):
+            logging.warning("Insufficient coordinates to populate IMAG template; fallback required.")
+            return False
+        lines[idx] = geom_with_basis[coord_idx]
+        coord_idx += 1
+
+    if coord_idx != len(geom_with_basis):
+        logging.warning(
+            "Template consumed %d coordinates but geometry list contained %d; falling back to generated input.",
+            coord_idx,
+            len(geom_with_basis),
+        )
+        return False
+
+    additions_text = additions_text.strip()
+    if additions_text:
+        additions_lines = [ln if ln.endswith("\n") else ln + "\n" for ln in additions_text.splitlines()]
+        insertion_index = geom_end
+        lines = lines[:insertion_index] + additions_lines + lines[insertion_index:]
+
+    try:
+        with Path(output_path).open("w", encoding="utf-8") as fh:
+            fh.writelines(lines)
+        return True
+    except Exception as exc:
+        logging.error(f"Failed to write IMAG input '{output_path}' from template: {exc}")
+        return False
+
+
+def _normalize_additions_payload(additions) -> str:
+    if not additions:
+        return ""
+    if isinstance(additions, str):
+        candidate = additions.strip()
+    if isinstance(additions, dict):
+        chunks = []
+        for key, value in additions.items():
+            key_str = str(key).strip()
+            val_str = str(value).strip()
+            if key_str and val_str:
+                chunks.append(f"{key_str}={val_str}")
+        candidate = "\n".join(chunks)
+    else:
+        candidate = str(additions).strip()
+
+    if not candidate:
+        return ""
+
+    filtered_lines = []
+    for line in candidate.splitlines():
+        if "%moinp" in line.lower():
+            continue
+        clean = line.strip()
+        if clean:
+            filtered_lines.append(clean)
+    return "\n".join(filtered_lines)
+
 def _rcov(sym: str):
     return float(_COVALENT_RADII_FALLBACK.get(sym, 1.20))
 
@@ -152,12 +458,16 @@ def _find_last_ok_iteration(folder: str | Path):
             best_i, best_path = i, entry
     return best_i, best_path
 
-def run_plotvib(iteration):
+def run_plotvib(iteration, workdir: str | Path | None = None):
     try:
         plotvib_cmd = f"orca_pltvib input_{iteration}.hess 6"
-        subprocess.run(plotvib_cmd, shell=True, check=True)
+        kwargs = {"shell": True, "check": True}
+        if workdir is not None:
+            kwargs["cwd"] = str(workdir)
+        subprocess.run(plotvib_cmd, **kwargs)
+        base_dir = Path(workdir) if workdir is not None else Path.cwd()
         logging.info(f"plotvib run successful for 'input_{iteration}.hess'")
-        new_structure_file = Path(f"input_{iteration}.hess.v006.xyz")
+        new_structure_file = base_dir / f"input_{iteration}.hess.v006.xyz"
         if not new_structure_file.exists():
             logging.error(f"Expected structure file '{new_structure_file}' not found after plotvib.")
             sys.exit(1)
@@ -166,12 +476,16 @@ def run_plotvib(iteration):
         logging.error(f"Error running plotvib: {e}")
         sys.exit(1)
 
-def run_plotvib0(input_file):
+def run_plotvib0(input_file, workdir: str | Path | None = None):
     try:
         plotvib_cmd = f"orca_pltvib {input_file}.hess 6"
-        subprocess.run(plotvib_cmd, shell=True, check=True)
+        kwargs = {"shell": True, "check": True}
+        if workdir is not None:
+            kwargs["cwd"] = str(workdir)
+        subprocess.run(plotvib_cmd, **kwargs)
+        base_dir = Path(workdir) if workdir is not None else Path.cwd()
         logging.info(f"plotvib run successful for '{input_file}.hess'")
-        new_structure_file = Path(f"{input_file}.hess.v006.xyz")
+        new_structure_file = base_dir / f"{input_file}.hess.v006.xyz"
         if not new_structure_file.exists():
             logging.error(f"Expected structure file '{new_structure_file}' not found after plotvib.")
             sys.exit(1)
@@ -193,6 +507,8 @@ def read_and_modify_xyz_IMAG(
     main_basisset,
     metal_basisset,
     additions,
+    pal_override=None,
+    maxcore_override=None,
 ):
     """Construct an ORCA input for an IMAG iteration.
 
@@ -203,6 +519,8 @@ def read_and_modify_xyz_IMAG(
     try:
         with open(input_file_path, "r") as file:
             coord_lines = [ln for ln in file.readlines() if ln.strip()]
+        coord_lines = _strip_xyz_header(coord_lines)
+        coord_lines = _trim_xyz_columns(coord_lines)
     except Exception as e:
         logging.error(f"Error reading '{input_file_path}': {e}")
         sys.exit(1)
@@ -241,12 +559,12 @@ def read_and_modify_xyz_IMAG(
 
     # '!' line for IMAG (always FREQ)
     bang = _build_bang_line_IMAG(config, rel_token, main_eff, aux_jk_token, implicit, qmmm_token)
-    if additions and "moinp" in additions.lower():
-        bang += " MORead"
 
     output_blocks = collect_output_blocks(config)
     builder = OrcaInputBuilder(bang)
-    builder.add_resources(config["maxcore"], config["PAL"], resolve_maxiter(config))
+    pal_val = int(pal_override) if pal_override is not None else int(config["PAL"])
+    maxcore_val = int(maxcore_override) if maxcore_override is not None else int(config["maxcore"])
+    builder.add_resources(maxcore_val, pal_val, resolve_maxiter(config))
     builder.add_additions(additions)
 
     # Add %freq block with temperature (IMAG always uses FREQ)
@@ -277,7 +595,8 @@ def read_and_modify_xyz_IMAG(
 
 def extract_structure(input_file, iteration):
     try:
-        with open(input_file, 'r', encoding='utf-8') as file:
+        source_path = Path(input_file).resolve()
+        with source_path.open('r', encoding='utf-8') as file:
             lines = file.readlines()
         logging.info(f"Process file: {input_file}")
         star_indices = [i for i, line in enumerate(lines) if '*' in line]
@@ -287,10 +606,10 @@ def extract_structure(input_file, iteration):
         start_index = star_indices[4] - 1
         end_index = star_indices[5]
         extracted_lines = lines[start_index:end_index]
-        output_file = f"input_{iteration}_structure_5.xyz"
-        with open(output_file, 'w', encoding='utf-8') as file:
+        output_path = source_path.parent / f"input_{iteration}_structure_5.xyz"
+        with output_path.open('w', encoding='utf-8') as file:
             file.writelines(extracted_lines)
-        logging.info(f"Structure extracted to '{output_file}'")
+        logging.info(f"Structure extracted to '{output_path}'")
     except Exception as e:
         logging.error(f"Error extracting structure: {e}")
         sys.exit(1)
@@ -316,10 +635,36 @@ def extract_structure0(input_file):
         logging.error(f"Error extracting structure: {e}")
         sys.exit(1)
 
-def run_IMAG(input_file, hess_file, charge, multiplicity, solvent, metals, config,
-             main_basisset, metal_basisset, additions):
+def run_IMAG(
+    input_file,
+    hess_file,
+    charge,
+    multiplicity,
+    solvent,
+    metals,
+    config,
+    main_basisset,
+    metal_basisset,
+    additions,
+    step_name="initial",
+    source_input=None,
+    pal_override=None,
+    maxcore_override=None,
+):
+    """Run IMAG elimination for a given calculation step.
+
+    Args:
+        step_name: Name of the calculation step (e.g., "initial", "red_step_1", "ox_step_2")
+    """
     if str(config.get("IMAG", "no")).lower() != "yes":
         return
+
+    # Check IMAG_scope setting
+    imag_scope = str(config.get("IMAG_scope", "initial")).lower()
+    if imag_scope == "initial" and step_name != "initial":
+        logging.info(f"Skipping IMAG for '{step_name}' (IMAG_scope=initial)")
+        return
+
     print("""
                       *******************
                       *       IMAG      *
@@ -335,6 +680,16 @@ def run_IMAG(input_file, hess_file, charge, multiplicity, solvent, metals, confi
         return
 
     imag_folder = Path(f"{hess_file}_IMAG")
+    original_out = Path(input_file)
+    template_ctx = _load_inp_template(source_input) if source_input else None
+
+    if source_input:
+        src_pal, src_maxcore = _extract_resources_from_input(source_input)
+        if src_pal is not None:
+            pal_override = src_pal
+        if src_maxcore is not None:
+            maxcore_override = src_maxcore
+
     if recalc and imag_folder.is_dir():
         last_i, last_out = _find_last_ok_iteration(imag_folder)
         if last_i is not None and last_out and _imag_resolved(last_out, threshold):
@@ -357,36 +712,70 @@ def run_IMAG(input_file, hess_file, charge, multiplicity, solvent, metals, confi
 
     run_plotvib0(hess_file)
     extract_structure0(hess_file)
-    seed_xyz = f"{hess_file}_structure_5.xyz"
+    seed_xyz_path = Path(f"{hess_file}_structure_5.xyz")
+    if not seed_xyz_path.exists():
+        logging.error(f"Seed structure '{seed_xyz_path}' not found.")
+        return
+    seed_xyz_name = seed_xyz_path.name
     imag_folder.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.copy2(seed_xyz, imag_folder / seed_xyz)
-        logging.info(f"Seed structure copied to {imag_folder / seed_xyz}")
+        dest_seed = imag_folder / seed_xyz_name
+        if seed_xyz_path.resolve() == dest_seed.resolve():
+            logging.info("Seed structure already located in IMAG folder; skipping copy.")
+        else:
+            shutil.copy2(seed_xyz_path, dest_seed)
+            logging.info(f"Seed structure copied to {dest_seed}")
     except Exception as e:
         logging.error(f"Seed copy failed: {e}")
         return
 
-    cwd = Path.cwd()
-    os.chdir(imag_folder)
-    iteration = 1
-    try:
-        while True:
-            current_input_file = seed_xyz if iteration == 1 else f"input_{iteration - 1}_structure_5.xyz"
-            output_file = f"input_{iteration}.inp"
-            if iteration == 1:
-                candidates = [Path("..") / f"{hess_file}.gbw", Path("..") / "input.gbw"]
-                gbw_path = next((c for c in candidates if c.exists()), None)
-            else:
-                gbw_prev = f"input_{iteration - 1}.gbw"
-                gbw_path = Path(gbw_prev) if Path(gbw_prev).exists() else None
-            parts = []
-            if gbw_path: parts.append(f'%moinp "{gbw_path}"')
-            if additions and additions.strip(): parts.append(additions.strip())
-            additions_eff = "\n".join(parts)
+    if original_out.exists():
+        try:
+            shutil.copy2(original_out, imag_folder / f"{step_name}_0.out")
+        except Exception as exc:
+            logging.warning(f"Could not archive original output '{original_out}': {exc}")
+    if template_ctx and template_ctx.get("path") and template_ctx["path"].exists():
+        try:
+            shutil.copy2(template_ctx["path"], imag_folder / f"{step_name}_0.inp")
+        except Exception as exc:
+            logging.debug(f"Failed to archive original input '{template_ctx['path']}': {exc}")
 
+    additions_base = _normalize_additions_payload(additions)
+
+    iteration = 1
+    while True:
+        if iteration == 1:
+            current_input_path = imag_folder / seed_xyz_name
+        else:
+            current_input_path = imag_folder / f"input_{iteration - 1}_structure_5.xyz"
+
+        if not current_input_path.exists():
+            logging.warning(f"Iteration {iteration}: expected input geometry '{current_input_path}' not found; aborting.")
+            break
+
+        output_path = imag_folder / f"input_{iteration}.inp"
+        additions_eff = additions_base
+
+        coords = _extract_xyz_coordinates(current_input_path)
+        used_template = False
+        if template_ctx and coords:
+            used_template = _write_input_from_template(
+                template_ctx,
+                coords,
+                output_path,
+                additions_eff,
+                current_input_path,
+                config,
+                main_basisset,
+                metal_basisset,
+                pal_override,
+                maxcore_override,
+            )
+
+        if not used_template:
             read_and_modify_xyz_IMAG(
-                current_input_file,
-                output_file,
+                str(current_input_path),
+                str(output_path),
                 charge,
                 multiplicity,
                 solvent,
@@ -395,65 +784,63 @@ def run_IMAG(input_file, hess_file, charge, multiplicity, solvent, metals, confi
                 main_basisset,
                 metal_basisset,
                 additions_eff,
+                pal_override=pal_override,
+                maxcore_override=maxcore_override,
             )
-            success = run_orca_IMAG(output_file, iteration)
+        success = run_orca_IMAG(str(output_path), iteration, working_dir=imag_folder)
 
-            log_file = f"output_{iteration}.out"
+        log_file = imag_folder / f"output_{iteration}.out"
+        if not success:
+            geometry_mismatch = False
+            if log_file.exists():
+                try:
+                    with log_file.open("r", errors="ignore") as fh:
+                        if "Input geometry does not match current geometry" in fh.read():
+                            geometry_mismatch = True
+                except Exception as exc:
+                    logging.debug(f"Iteration {iteration}: failed to inspect IMAG log: {exc}")
+
+            if geometry_mismatch and additions_eff:
+                logging.warning(
+                    f"Iteration {iteration}: geometry mismatch detected; retrying without supplemental additions."
+                )
+                read_and_modify_xyz_IMAG(
+                    str(current_input_path),
+                    str(output_path),
+                    charge,
+                    multiplicity,
+                    solvent,
+                    metals,
+                    config,
+                    main_basisset,
+                    metal_basisset,
+                    "",
+                )
+                success = run_orca_IMAG(str(output_path), iteration, working_dir=imag_folder)
+                additions_eff = ""
+                additions_base = ""
+
             if not success:
-                geometry_mismatch = False
-                if Path(log_file).exists():
-                    try:
-                        with open(log_file, "r", errors="ignore") as fh:
-                            if "Input geometry does not match current geometry" in fh.read():
-                                geometry_mismatch = True
-                    except Exception as exc:
-                        logging.debug(f"Iteration {iteration}: failed to inspect IMAG log: {exc}")
-
-                if geometry_mismatch and additions_eff and "%moinp" in additions_eff.lower():
-                    logging.warning(
-                        f"Iteration {iteration}: MORead geometry mismatch detected; retrying without orbital guess."
-                    )
-                    fallback_additions = "\n".join(
-                        ln for ln in additions_eff.splitlines() if "%moinp" not in ln.lower()
-                    )
-                    read_and_modify_xyz_IMAG(
-                        current_input_file,
-                        output_file,
-                        charge,
-                        multiplicity,
-                        solvent,
-                        metals,
-                        config,
-                        main_basisset,
-                        metal_basisset,
-                        fallback_additions,
-                    )
-                    success = run_orca_IMAG(output_file, iteration)
-                    additions_eff = fallback_additions
-
-                if not success:
-                    logging.warning(f"Iteration {iteration}: ORCA failed; aborting IMAG workflow.")
-                    break
-
-            if not _has_ok_marker(log_file):
-                logging.warning(f"Iteration {iteration}: ORCA not normal; stop.")
+                logging.warning(f"Iteration {iteration}: ORCA failed; aborting IMAG workflow.")
                 break
 
-            freq = search_imaginary_mode2(log_file)
-            if (freq is None) or (freq >= threshold):
-                logging.info(f"Iteration {iteration}: Imag resolved (freq={freq}, thr={threshold}).")
-                break
+        if not _has_ok_marker(log_file):
+            logging.warning(f"Iteration {iteration}: ORCA not normal; stop.")
+            break
 
-            new_structure_file = run_plotvib(iteration)
-            extract_structure(new_structure_file, iteration)
-            iteration += 1
-    finally:
-        os.chdir(cwd)
+        freq = search_imaginary_mode2(str(log_file))
+        if (freq is None) or (freq >= threshold):
+            logging.info(f"Iteration {iteration}: Imag resolved (freq={freq}, thr={threshold}).")
+            break
+
+        new_structure_file = run_plotvib(iteration, workdir=imag_folder)
+        extract_structure(new_structure_file, iteration)
+        iteration += 1
 
     final_log_file = imag_folder / f"output_{iteration}.out"
     final_xyz_file = imag_folder / f"input_{iteration}.xyz"
-    destination_folder = Path.cwd()
     input_path = Path(input_file)
+    destination_folder = input_path.parent if input_path.is_absolute() else Path.cwd()
     destination_log = input_path if input_path.is_absolute() else destination_folder / input_path
     destination_structure = destination_folder / f"{hess_file}.xyz"
     if final_log_file.exists():

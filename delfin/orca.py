@@ -153,6 +153,7 @@ def _run_orca_subprocess(
     output_log: str,
     timeout: Optional[int] = None,
     scratch_subdir: Optional[Path] = None,
+    working_dir: Optional[Path] = None,
 ) -> bool:
     """Run ORCA subprocess and capture output. Returns True when successful."""
     process = None
@@ -170,7 +171,8 @@ def _run_orca_subprocess(
                 stdout=output_file,
                 stderr=output_file,
                 env=_prepare_orca_environment(scratch_subdir),
-                start_new_session=True  # Create new process group
+                start_new_session=True,  # Create new process group
+                cwd=str(working_dir) if working_dir is not None else None,
             )
 
             try:
@@ -385,7 +387,7 @@ def run_orca(
         return True
     return False
 
-def run_orca_IMAG(input_file_path: str, iteration: int) -> bool:
+def run_orca_IMAG(input_file_path: str, iteration: int, *, working_dir: Optional[Path] = None) -> bool:
     """Execute ORCA calculation for imaginary frequency workflow.
 
     Specialized ORCA runner for IMAG workflow with iteration-specific
@@ -394,18 +396,29 @@ def run_orca_IMAG(input_file_path: str, iteration: int) -> bool:
     Args:
         input_file_path: Path to ORCA input file
         iteration: Iteration number for output file naming
+        working_dir: Directory in which ORCA should be executed
     """
     orca_path = find_orca_executable()
     if not orca_path:
         logger.error("Cannot run ORCA IMAG calculation because the ORCA executable was not found in PATH.")
         sys.exit(1)
 
-    output_log = f"output_{iteration}.out"
-    if _run_orca_subprocess(orca_path, input_file_path, output_log):
-        logger.info(f"ORCA run successful for '{input_file_path}', output saved to '{output_log}'")
+    if working_dir is not None:
+        working_dir = Path(working_dir)
+        output_log_path = working_dir / f"output_{iteration}.out"
+    else:
+        output_log_path = Path(f"output_{iteration}.out")
+
+    if _run_orca_subprocess(
+        orca_path,
+        input_file_path,
+        str(output_log_path),
+        working_dir=working_dir,
+    ):
+        logger.info(f"ORCA run successful for '{input_file_path}', output saved to '{output_log_path}'")
         return True
 
-    logger.error(f"ORCA IMAG calculation failed for '{input_file_path}'. See '{output_log}' for details.")
+    logger.error(f"ORCA IMAG calculation failed for '{input_file_path}'. See '{output_log_path}' for details.")
     return False
 
 def run_orca_plot(homo_index: int) -> None:

@@ -542,6 +542,7 @@ def build_occupier_jobs(
                 main_basis,
                 metal_basis,
                 adds_val,
+                source_input="initial.inp",
             )
             logger.info(
                 "%s %s freq & geometry optimization of the initial system complete!",
@@ -867,6 +868,20 @@ def build_occupier_jobs(
 
                 if not run_orca(inp, out):
                     raise RuntimeError(f"ORCA terminated abnormally for {out}")
+                run_IMAG(
+                    out,
+                    f"ox_step_{idx}",
+                    step_charge,
+                    multiplicity_step,
+                    solvent,
+                    metals,
+                    config,
+                    main_basis,
+                    metal_basis,
+                    additions_step,
+                    step_name=f"ox_step_{idx}",
+                    source_input=inp,
+                )
                 logger.info(
                     "%s %s freq & geometry optimization cation (step %d) complete!",
                     functional,
@@ -974,6 +989,20 @@ def build_occupier_jobs(
 
                 if not run_orca(inp, out):
                     raise RuntimeError(f"ORCA terminated abnormally for {out}")
+                run_IMAG(
+                    out,
+                    f"red_step_{idx}",
+                    step_charge,
+                    multiplicity_step,
+                    solvent,
+                    metals,
+                    config,
+                    main_basis,
+                    metal_basis,
+                    additions_step,
+                    step_name=f"red_step_{idx}",
+                    source_input=inp,
+                )
                 logger.info(
                     "%s %s freq & geometry optimization anion (step %d) complete!",
                     functional,
