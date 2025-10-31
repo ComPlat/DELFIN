@@ -86,24 +86,8 @@ python -m delfin
 - `delfin --help`
   prints the full list of CLI flags, including the new pipeline/resource switches.
 
-<<<<<<< HEAD
 Results and reports are written to the current working directory,
 e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
-
-### Only eliminate imaginary modes
-
-When geometries are already available and only imaginary frequencies need to be
-removed, run:
-
-```bash
-delfin --imag
-```
-
-The command reads the existing `*.out`/`*.hess` files, launches the IMAG loop
-for every configured step (while keeping the original ORCA settings), and then
-updates `DELFIN.txt` with the new redox potentials.
-=======
->>>>>>> 3105af2 (Add scheduler-integrated IMAG runner and preserve original ORCA inputs)
 ---
 
 ## Excited-State Dynamics (ESD) Module
@@ -211,4 +195,3 @@ delfin/
 * `IMAG_scope = initial | all`
   - `initial` (default): only the initial geometry will run IMAG elimination.
   - `all`: the IMAG workflow is executed for all configured redox steps.
-
