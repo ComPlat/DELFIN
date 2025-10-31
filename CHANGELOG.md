@@ -5,7 +5,15 @@ All notable changes to DELFIN will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.4] - 2025-02-XX
+## [1.0.4]
+
+### IMAG improvements
+- CLI: add `delfin --imag` entry point to rerun the IMAG workflow on existing results and regenerate DELFIN.txt.
+- IMAG inputs now reuse the original ORCA template (incl. `%QMMM`, per-atom `NewGTO`) while stripping `MORead` / `%moinp` hints to force fresh guesses.
+- `%pal` and `%maxcore` are inherited from the source frequency job so IMAG iterations use the same resource allocation.
+- Classic, manually, and OCCUPIER pipelines call the refactored IMAG routine for initial and redox steps, copying original inputs/outputs for traceability.
+- README updated with `--imag` documentation and CONTROL option `IMAG_scope` (initial/all).
+ - 2025-02-XX
 
 ### Added
 - Optional excited-state dynamics (ESD) module with standalone or post-redox execution, including S0/S1/T1/T2 optimisations plus ISC/IC scheduling in a dedicated `ESD/` directory.
