@@ -1,10 +1,13 @@
 import os, re, sys, shutil, logging, subprocess, math
+from dataclasses import dataclass
 from pathlib import Path
+from typing import List, Tuple
 
 from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, resolve_maxiter
 
 from .utils import search_transition_metals, set_main_basisset, select_rel_and_aux
-from .orca import run_orca_IMAG
+from .energies import find_electronic_energy
+from .orca import run_orca_IMAG, run_orca
 from .xyz_io import (
     split_qmmm_sections,
     _ensure_qmmm_implicit_model,
@@ -14,6 +17,7 @@ from .xyz_io import (
 )
 
 OK_MARKER = "ORCA TERMINATED NORMALLY"
+ENERGY_IMPROVEMENT_TOL = 1e-6
 
 # ------------------------ small helpers ------------------------
 
@@ -378,14 +382,24 @@ def _first_sphere_indices(atoms, metal_indices, scale):
                 first.add(i)
     return first
 
-def _build_bang_line_IMAG(config, rel_token, main_basisset, aux_jk, implicit, qmmm_method=None):
+def _build_bang_line_IMAG(
+    config,
+    rel_token,
+    main_basisset,
+    aux_jk,
+    implicit,
+    qmmm_method=None,
+    *,
+    include_freq: bool = True,
+    geom_override: str | None = None,
+):
     """
     Construct the '!' line for IMAG iterations:
       functional [REL] main_basis [disp] [ri_jkx] [aux_jk] [implicit] [geom_opt] FREQ initial_guess
     """
     ri_jkx = str(config.get("ri_jkx", "")).strip()
     disp   = str(config.get("disp_corr", "")).strip()
-    geom   = str(config.get("geom_opt", "OPT")).strip()
+    geom   = geom_override if geom_override is not None else str(config.get("geom_opt", "OPT")).strip()
     init_tokens = str(config.get("initial_guess", "PModel")).split()
     initg  = init_tokens[0] if init_tokens else "PModel"
 
@@ -406,7 +420,8 @@ def _build_bang_line_IMAG(config, rel_token, main_basisset, aux_jk, implicit, qm
         tokens.append(implicit)
     if geom:
         tokens.append(geom)
-    tokens.append("FREQ")
+    if include_freq:
+        tokens.append("FREQ")
     tokens.append(initg)
     return " ".join(t for t in tokens if t).replace("  ", " ").strip()
 
@@ -437,6 +452,68 @@ def search_imaginary_mode2(log_file):
         logging.error(f"Log file '{log_file}' not found.")
         sys.exit(1)
 
+def collect_imaginary_modes(log_file: str) -> List[Tuple[int, float]]:
+    """Return list of (mode_index, frequency) for imaginary modes sorted by frequency."""
+    modes: List[Tuple[int, float]] = []
+    try:
+        with open(log_file, "r", errors="ignore") as fh:
+            for line in fh:
+                if "***imaginary mode***" not in line:
+                    continue
+                m = re.search(r"^\s*(\d+):\s*([-+]?\d+(?:\.\d+)?)\s+cm\*\*-1", line)
+                if m:
+                    try:
+                        idx = int(m.group(1))
+                        freq = float(m.group(2))
+                        modes.append((idx, freq))
+                    except ValueError:
+                        continue
+    except FileNotFoundError:
+        logging.error(f"Log file '{log_file}' not found when collecting imaginary modes.")
+        return []
+    return sorted(modes, key=lambda item: item[1])
+
+@dataclass
+class ImagModeCandidate:
+    mode_index: int
+    frequency: float
+    energy: float
+    geometry_path: Path
+    sp_output: Path
+
+def run_plotvib_mode(
+    hess_file: Path,
+    mode_index: int,
+    *,
+    workdir: Path,
+    amplitude: float | None = None,
+) -> Path:
+    """Run orca_pltvib for a specific mode and return generated XYZ path."""
+    hess_file = Path(hess_file).resolve()
+    if not hess_file.exists():
+        logging.error(f"Hessian file '{hess_file}' not found for mode {mode_index}.")
+        raise FileNotFoundError(hess_file)
+
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    cmd = ["orca_pltvib", str(hess_file), str(mode_index)]
+    if amplitude is not None and not math.isclose(amplitude, 1.0):
+        cmd.append(f"{amplitude:.6f}")
+
+    try:
+        subprocess.run(cmd, cwd=str(workdir), check=True)
+    except subprocess.CalledProcessError as exc:
+        logging.error(f"orca_pltvib failed for '{hess_file}' mode {mode_index}: {exc}")
+        raise
+
+    xyz_name = f"{hess_file.name}.v{mode_index:03d}.xyz"
+    xyz_path = workdir / xyz_name
+    if not xyz_path.exists():
+        logging.error(f"Expected vib geometry '{xyz_path}' not created by orca_pltvib.")
+        raise FileNotFoundError(xyz_path)
+    return xyz_path
+
 def _imag_resolved(out_path: str | Path, threshold: float) -> bool:
     candidate = Path(out_path)
     if not candidate.exists():
@@ -460,36 +537,24 @@ def _find_last_ok_iteration(folder: str | Path):
 
 def run_plotvib(iteration, workdir: str | Path | None = None):
     try:
-        plotvib_cmd = f"orca_pltvib input_{iteration}.hess 6"
-        kwargs = {"shell": True, "check": True}
-        if workdir is not None:
-            kwargs["cwd"] = str(workdir)
-        subprocess.run(plotvib_cmd, **kwargs)
         base_dir = Path(workdir) if workdir is not None else Path.cwd()
+        hess_path = base_dir / f"input_{iteration}.hess"
+        new_structure = run_plotvib_mode(hess_path, 6, workdir=base_dir)
         logging.info(f"plotvib run successful for 'input_{iteration}.hess'")
-        new_structure_file = base_dir / f"input_{iteration}.hess.v006.xyz"
-        if not new_structure_file.exists():
-            logging.error(f"Expected structure file '{new_structure_file}' not found after plotvib.")
-            sys.exit(1)
-        return str(new_structure_file)
+        return str(new_structure)
     except subprocess.CalledProcessError as e:
         logging.error(f"Error running plotvib: {e}")
         sys.exit(1)
 
 def run_plotvib0(input_file, workdir: str | Path | None = None):
     try:
-        plotvib_cmd = f"orca_pltvib {input_file}.hess 6"
-        kwargs = {"shell": True, "check": True}
-        if workdir is not None:
-            kwargs["cwd"] = str(workdir)
-        subprocess.run(plotvib_cmd, **kwargs)
         base_dir = Path(workdir) if workdir is not None else Path.cwd()
+        hess_path = Path(input_file).with_suffix(".hess")
+        if not hess_path.is_absolute():
+            hess_path = (Path.cwd() / hess_path).resolve()
+        new_structure = run_plotvib_mode(hess_path, 6, workdir=base_dir)
         logging.info(f"plotvib run successful for '{input_file}.hess'")
-        new_structure_file = base_dir / f"{input_file}.hess.v006.xyz"
-        if not new_structure_file.exists():
-            logging.error(f"Expected structure file '{new_structure_file}' not found after plotvib.")
-            sys.exit(1)
-        return str(new_structure_file)
+        return str(new_structure)
     except subprocess.CalledProcessError as e:
         logging.error(f"Error running plotvib: {e}")
         sys.exit(1)
@@ -509,6 +574,7 @@ def read_and_modify_xyz_IMAG(
     additions,
     pal_override=None,
     maxcore_override=None,
+    include_freq: bool = True,
 ):
     """Construct an ORCA input for an IMAG iteration.
 
@@ -558,7 +624,17 @@ def read_and_modify_xyz_IMAG(
     radii_map = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if (enable_first and not sphere_scale_raw) else None
 
     # '!' line for IMAG (always FREQ)
-    bang = _build_bang_line_IMAG(config, rel_token, main_eff, aux_jk_token, implicit, qmmm_token)
+    geom_override = "SP" if not include_freq else None
+    bang = _build_bang_line_IMAG(
+        config,
+        rel_token,
+        main_eff,
+        aux_jk_token,
+        implicit,
+        qmmm_token,
+        include_freq=include_freq,
+        geom_override=geom_override,
+    )
 
     output_blocks = collect_output_blocks(config)
     builder = OrcaInputBuilder(bang)
@@ -567,11 +643,12 @@ def read_and_modify_xyz_IMAG(
     builder.add_resources(maxcore_val, pal_val, resolve_maxiter(config))
     builder.add_additions(additions)
 
-    # Add %freq block with temperature (IMAG always uses FREQ)
-    from .xyz_io import _build_freq_block
+    if include_freq:
+        # Add %freq block with temperature (IMAG always uses FREQ)
+        from .xyz_io import _build_freq_block
 
-    freq_block = _build_freq_block(config)
-    builder.add_block(freq_block)
+        freq_block = _build_freq_block(config)
+        builder.add_block(freq_block)
     builder.add_blocks(output_blocks)
 
     lines = builder.lines
@@ -710,24 +787,47 @@ def run_IMAG(
             try: shutil.rmtree(imag_folder)
             except Exception: pass
 
-    run_plotvib0(hess_file)
-    extract_structure0(hess_file)
-    seed_xyz_path = Path(f"{hess_file}_structure_5.xyz")
-    if not seed_xyz_path.exists():
-        logging.error(f"Seed structure '{seed_xyz_path}' not found.")
-        return
-    seed_xyz_name = seed_xyz_path.name
     imag_folder.mkdir(parents=True, exist_ok=True)
-    try:
-        dest_seed = imag_folder / seed_xyz_name
-        if seed_xyz_path.resolve() == dest_seed.resolve():
-            logging.info("Seed structure already located in IMAG folder; skipping copy.")
-        else:
-            shutil.copy2(seed_xyz_path, dest_seed)
-            logging.info(f"Seed structure copied to {dest_seed}")
-    except Exception as e:
-        logging.error(f"Seed copy failed: {e}")
-        return
+    def _write_imag_input(
+        geometry_source: Path,
+        destination_path: Path,
+        include_freq: bool,
+        additions_payload: str,
+    ) -> str:
+        """Create ORCA input from geometry, using template when available."""
+        coords = _extract_xyz_coordinates(str(geometry_source))
+        used_template = False
+        if include_freq and template_ctx and coords:
+            used_template = _write_input_from_template(
+                template_ctx,
+                coords,
+                destination_path,
+                additions_payload,
+                geometry_source,
+                config,
+                main_basisset,
+                metal_basisset,
+                pal_override,
+                maxcore_override,
+            )
+
+        if not used_template:
+            read_and_modify_xyz_IMAG(
+                str(geometry_source),
+                str(destination_path),
+                charge,
+                multiplicity,
+                solvent,
+                metals,
+                config,
+                main_basisset,
+                metal_basisset,
+                additions_payload,
+                pal_override=pal_override,
+                maxcore_override=maxcore_override,
+                include_freq=include_freq,
+            )
+        return additions_payload
 
     if original_out.exists():
         try:
@@ -742,56 +842,126 @@ def run_IMAG(
 
     additions_base = _normalize_additions_payload(additions)
 
-    iteration = 1
-    while True:
-        if iteration == 1:
-            current_input_path = imag_folder / seed_xyz_name
-        else:
-            current_input_path = imag_folder / f"input_{iteration - 1}_structure_5.xyz"
+    best_energy = find_electronic_energy(str(original_out))
+    if best_energy is None:
+        logging.warning("Could not extract FINAL SINGLE POINT ENERGY from original output; aborting IMAG.")
+        return
 
-        if not current_input_path.exists():
-            logging.warning(f"Iteration {iteration}: expected input geometry '{current_input_path}' not found; aborting.")
+    displacement_scale_raw = config.get("IMAG_displacement_scale", 1.0)
+    try:
+        displacement_scale = float(displacement_scale_raw)
+        if displacement_scale <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        logging.warning("IMAG_displacement_scale must be a positive number; defaulting to 1.0.")
+        displacement_scale = 1.0
+
+    energy_tol_raw = config.get("IMAG_energy_tol", ENERGY_IMPROVEMENT_TOL)
+    try:
+        energy_tol = float(energy_tol_raw)
+        if energy_tol <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        logging.warning("IMAG_energy_tol must be a positive number; defaulting to %.1e.", ENERGY_IMPROVEMENT_TOL)
+        energy_tol = ENERGY_IMPROVEMENT_TOL
+
+    current_log_path = original_out
+    current_hess_path = Path(hess_file).with_suffix(".hess")
+    if not current_hess_path.is_absolute():
+        current_hess_path = (Path.cwd() / current_hess_path).resolve()
+    if not current_hess_path.exists():
+        logging.error(f"Hessian file '{current_hess_path}' not found; cannot run IMAG.")
+        return
+
+    iteration = 0
+    last_success_iteration = 0
+    additions_eff = additions_base
+
+    while True:
+        modes = [
+            (idx, freq)
+            for idx, freq in collect_imaginary_modes(str(current_log_path))
+            if freq < threshold
+        ]
+        if not modes:
+            logging.info("All imaginary frequencies within threshold; stopping IMAG loop.")
             break
 
-        output_path = imag_folder / f"input_{iteration}.inp"
-        additions_eff = additions_base
+        best_candidate: ImagModeCandidate | None = None
 
-        coords = _extract_xyz_coordinates(current_input_path)
-        used_template = False
-        if template_ctx and coords:
-            used_template = _write_input_from_template(
-                template_ctx,
-                coords,
-                output_path,
-                additions_eff,
-                current_input_path,
-                config,
-                main_basisset,
-                metal_basisset,
-                pal_override,
-                maxcore_override,
+        for mode_index, freq in modes:
+            try:
+                vib_xyz_path = run_plotvib_mode(
+                    current_hess_path,
+                    mode_index,
+                    workdir=imag_folder,
+                    amplitude=displacement_scale,
+                )
+            except Exception:
+                logging.debug(f"Mode {mode_index}: failed to generate displacement geometry.", exc_info=True)
+                continue
+
+            sp_label = f"iter{iteration}_mode{mode_index:03d}"
+            sp_input_path = imag_folder / f"{sp_label}_sp.inp"
+            sp_output_path = imag_folder / f"{sp_label}_sp.out"
+
+            for tmp in (sp_input_path, sp_output_path):
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+
+            _write_imag_input(vib_xyz_path, sp_input_path, include_freq=False, additions_payload=additions_eff)
+            sp_success = run_orca(
+                str(sp_input_path),
+                str(sp_output_path),
+                working_dir=imag_folder,
             )
+            if not sp_success:
+                logging.warning(f"Mode {mode_index}: single-point calculation failed; skipping.")
+                continue
 
-        if not used_template:
-            read_and_modify_xyz_IMAG(
-                str(current_input_path),
-                str(output_path),
-                charge,
-                multiplicity,
-                solvent,
-                metals,
-                config,
-                main_basisset,
-                metal_basisset,
-                additions_eff,
-                pal_override=pal_override,
-                maxcore_override=maxcore_override,
-            )
-        success = run_orca_IMAG(str(output_path), iteration, working_dir=imag_folder)
+            trial_energy = find_electronic_energy(str(sp_output_path))
+            if trial_energy is None:
+                logging.warning(f"Mode {mode_index}: could not extract single-point energy; skipping.")
+                continue
 
-        log_file = imag_folder / f"output_{iteration}.out"
+            if trial_energy < best_energy - energy_tol:
+                if best_candidate is None or trial_energy < best_candidate.energy - energy_tol:
+                    best_candidate = ImagModeCandidate(
+                        mode_index=mode_index,
+                        frequency=freq,
+                        energy=trial_energy,
+                        geometry_path=vib_xyz_path,
+                        sp_output=sp_output_path,
+                    )
+
+        if best_candidate is None:
+            logging.info("No imaginary-mode displacement lowered the energy; stopping IMAG.")
+            break
+
+        iteration += 1
+        freq_input_path = imag_folder / f"input_{iteration}.inp"
+        freq_output_path = imag_folder / f"output_{iteration}.out"
+        for tmp in (freq_input_path, freq_output_path):
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+        additions_current = additions_eff
+        _write_imag_input(
+            best_candidate.geometry_path,
+            freq_input_path,
+            include_freq=True,
+            additions_payload=additions_current,
+        )
+        success = run_orca_IMAG(str(freq_input_path), iteration, working_dir=imag_folder)
         if not success:
             geometry_mismatch = False
+            log_file = imag_folder / f"output_{iteration}.out"
             if log_file.exists():
                 try:
                     with log_file.open("r", errors="ignore") as fh:
@@ -800,56 +970,67 @@ def run_IMAG(
                 except Exception as exc:
                     logging.debug(f"Iteration {iteration}: failed to inspect IMAG log: {exc}")
 
-            if geometry_mismatch and additions_eff:
+            if geometry_mismatch and additions_current:
                 logging.warning(
                     f"Iteration {iteration}: geometry mismatch detected; retrying without supplemental additions."
                 )
-                read_and_modify_xyz_IMAG(
-                    str(current_input_path),
-                    str(output_path),
-                    charge,
-                    multiplicity,
-                    solvent,
-                    metals,
-                    config,
-                    main_basisset,
-                    metal_basisset,
-                    "",
-                )
-                success = run_orca_IMAG(str(output_path), iteration, working_dir=imag_folder)
+                additions_current = ""
                 additions_eff = ""
                 additions_base = ""
+                _write_imag_input(
+                    best_candidate.geometry_path,
+                    freq_input_path,
+                    include_freq=True,
+                    additions_payload=additions_current,
+                )
+                success = run_orca_IMAG(str(freq_input_path), iteration, working_dir=imag_folder)
 
             if not success:
-                logging.warning(f"Iteration {iteration}: ORCA failed; aborting IMAG workflow.")
+                logging.warning(f"Iteration {iteration}: frequency calculation failed; stopping IMAG loop.")
                 break
 
-        if not _has_ok_marker(log_file):
-            logging.warning(f"Iteration {iteration}: ORCA not normal; stop.")
+        current_log_path = imag_folder / f"output_{iteration}.out"
+        new_energy = find_electronic_energy(str(current_log_path))
+        if new_energy is None:
+            logging.warning(
+                f"Iteration {iteration}: no FINAL SINGLE POINT ENERGY found; keeping single-point estimate."
+            )
+            new_energy = best_candidate.energy
+        best_energy = new_energy
+        last_success_iteration = iteration
+
+        current_hess_path = (imag_folder / f"input_{iteration}.hess").resolve()
+        if not current_hess_path.exists():
+            logging.warning(f"Iteration {iteration}: Hessian file missing; terminating IMAG loop.")
             break
 
-        freq = search_imaginary_mode2(str(log_file))
-        if (freq is None) or (freq >= threshold):
-            logging.info(f"Iteration {iteration}: Imag resolved (freq={freq}, thr={threshold}).")
-            break
+    if last_success_iteration == 0:
+        logging.info("IMAG finished without improvements; original files remain unchanged.")
+        return
 
-        new_structure_file = run_plotvib(iteration, workdir=imag_folder)
-        extract_structure(new_structure_file, iteration)
-        iteration += 1
-
-    final_log_file = imag_folder / f"output_{iteration}.out"
-    final_xyz_file = imag_folder / f"input_{iteration}.xyz"
+    final_log_file = imag_folder / f"output_{last_success_iteration}.out"
+    final_xyz_file = imag_folder / f"input_{last_success_iteration}.xyz"
     input_path = Path(input_file)
     destination_folder = input_path.parent if input_path.is_absolute() else Path.cwd()
     destination_log = input_path if input_path.is_absolute() else destination_folder / input_path
     destination_structure = destination_folder / f"{hess_file}.xyz"
     if final_log_file.exists():
-        try: shutil.copy2(final_log_file, destination_log); print(f"Log file 'output_{iteration}.out' copied back as '{destination_log.name}'.")
-        except Exception as e: logging.warning(f"copy back log: {e}")
+        try:
+            shutil.copy2(final_log_file, destination_log)
+            print(
+                f"Log file 'output_{last_success_iteration}.out' copied back as '{destination_log.name}'."
+            )
+        except Exception as e:
+            logging.warning(f"copy back log: {e}")
     else:
-        print(f"ERROR: Log file 'output_{iteration}.out' not found.")
+        print(f"ERROR: Log file 'output_{last_success_iteration}.out' not found.")
     if final_xyz_file.exists():
-        try: shutil.copy2(final_xyz_file, destination_structure); print(f"Structure file 'input_{iteration}.xyz' copied back as '{hess_file}.xyz'.")
-        except Exception as e: logging.warning(f"copy back xyz: {e}")
+        try:
+            shutil.copy2(final_xyz_file, destination_structure)
+            print(
+                f"Structure file 'input_{last_success_iteration}.xyz' copied back as '{hess_file}.xyz'."
+            )
+        except Exception as e:
+            logging.warning(f"copy back xyz: {e}")
     else:
-        print(f"ERROR: Structure file 'input_{iteration}.xyz' not found.")
+        print(f"ERROR: Structure file 'input_{last_success_iteration}.xyz' not found.")

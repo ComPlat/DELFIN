@@ -207,3 +207,7 @@ delfin/
   - `all`: the IMAG workflow is executed for all configured redox steps.
 * `allow_imaginary_freq = N`
   - number of imaginary modes tolerated before IMAG reruns the step (default: 0)
+* `IMAG_displacement_scale = float`
+  - optional scaling factor for the `orca_pltvib` displacement amplitude (default: 1.0)
+* `IMAG_energy_tol = float`
+  - minimum energy improvement (Hartree) required to accept a displaced geometry (default: 1e-6)

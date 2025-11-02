@@ -358,6 +358,7 @@ def run_orca(
     timeout: Optional[int] = None,
     *,
     scratch_subdir: Optional[Path] = None,
+    working_dir: Optional[Path] = None,
 ) -> bool:
     """Execute ORCA calculation with specified input file.
 
@@ -382,6 +383,7 @@ def run_orca(
         output_log,
         timeout,
         scratch_subdir=scratch_subdir,
+        working_dir=working_dir,
     ):
         logger.info(f"ORCA run successful for '{input_file_path}'")
         return True
