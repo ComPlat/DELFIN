@@ -403,15 +403,21 @@ def run_orca_IMAG(input_file_path: str, iteration: int, *, working_dir: Optional
         logger.error("Cannot run ORCA IMAG calculation because the ORCA executable was not found in PATH.")
         sys.exit(1)
 
+    input_path = Path(input_file_path)
     if working_dir is not None:
         working_dir = Path(working_dir)
         output_log_path = working_dir / f"output_{iteration}.out"
+        if not input_path.is_absolute():
+            # Provide ORCA with an absolute path when running inside working_dir
+            input_path = (Path.cwd() / input_path).resolve()
     else:
         output_log_path = Path(f"output_{iteration}.out")
+        if not input_path.is_absolute():
+            input_path = input_path.resolve()
 
     if _run_orca_subprocess(
         orca_path,
-        input_file_path,
+        str(input_path),
         str(output_log_path),
         working_dir=working_dir,
     ):

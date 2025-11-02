@@ -1,9 +1,8 @@
 """Process conflict detection for ORCA jobs."""
 
 import os
-import subprocess
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from delfin.common.logging import get_logger
 
@@ -23,44 +22,53 @@ def find_competing_orca_processes(inp_file: str) -> List[Tuple[int, str]]:
     except OSError:
         work_dir = work_dir
 
-    competing = []
+    competing: List[Tuple[int, str]] = []
 
     try:
         # Find all ORCA-related processes
-        result = subprocess.run(
-            ["ps", "aux"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-
-        for line in result.stdout.splitlines():
-            # Look for orca, orca_leanscf_mpi, mpirun processes
-            if not any(keyword in line for keyword in ['orca', 'mpirun']):
+        for pid_dir in Path("/proc").iterdir():
+            if not pid_dir.name.isdigit():
                 continue
 
-            # Check if this process is working on our files
-            if base_name in line:
-                parts = line.split()
-                if len(parts) >= 2:
-                    try:
-                        pid = int(parts[1])
-                        cmdline = ' '.join(parts[10:])
+            try:
+                pid = int(pid_dir.name)
+                if pid == os.getpid():
+                    continue  # skip our own process
 
-                        # Skip processes that operate in a different directory
-                        try:
-                            proc_cwd = Path(os.readlink(f"/proc/{pid}/cwd")).resolve()
-                        except (OSError, RuntimeError):
-                            proc_cwd = None
+                exe_path = pid_dir / "exe"
+                try:
+                    target = os.readlink(exe_path)
+                except (OSError, RuntimeError):
+                    continue
 
-                        if proc_cwd is not None and proc_cwd != work_dir:
-                            continue
+                if not any(keyword in target for keyword in ["orca", "mpirun"]):
+                    continue
 
-                        # Don't report our own process
-                        if pid != os.getpid():
-                            competing.append((pid, cmdline))
-                    except (ValueError, IndexError):
+                try:
+                    raw_cmd = (pid_dir / "cmdline").read_bytes()
+                    if not raw_cmd:
                         continue
+                    tokens = [tok for tok in raw_cmd.split(b"\0") if tok]
+                    cmdline = " ".join(tok.decode(errors="ignore") for tok in tokens)
+                except (OSError, RuntimeError, UnicodeDecodeError):
+                    tokens = []
+                    cmdline = target
+
+                # Require exact match of both basename and working directory
+                if not any(Path(tok.decode(errors="ignore")).stem == base_name for tok in tokens if tok):
+                    continue
+
+                try:
+                    proc_cwd = Path(os.readlink(pid_dir / "cwd")).resolve()
+                except (OSError, RuntimeError):
+                    continue
+
+                if proc_cwd != work_dir:
+                    continue
+
+                competing.append((pid, cmdline))
+            except ValueError:
+                continue
 
     except Exception as e:
         logger.debug(f"Error checking for competing processes: {e}")
