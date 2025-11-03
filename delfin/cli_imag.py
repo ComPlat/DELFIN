@@ -194,7 +194,8 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
             job_id = f"imag_{step['name']}"
             additions_payload = additions
 
-            cores_min, cores_opt, cores_max = manager.derive_core_bounds(hint=job_id)
+            # Keep orchestration lightweight; heavy ORCA runs are dispatched separately.
+            cores_min, cores_opt, cores_max = 1, 1, 1
 
             def make_work(step_name: str,
                           out_path: Path,
@@ -204,9 +205,7 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
                           additions_val,
                           metals_val: list[str]):
                 def _work(cores: int) -> None:
-                    pal_override = max(1, cores)
-                    maxcore_override = max(1, int(config.get("maxcore", 1000)))
-                    logger.info("[IMAG] %s → start (cores=%d)", step_name, pal_override)
+                    logger.info("[IMAG] %s → start (cores=%d)", step_name, cores)
                     run_IMAG(
                         str(out_path),
                         hess,
@@ -220,8 +219,8 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
                         additions_val,
                         step_name=step_name,
                         source_input=str(inp_file),
-                        pal_override=pal_override,
-                        maxcore_override=maxcore_override,
+                        pal_override=None,
+                        maxcore_override=None,
                     )
                     logger.info("✅ %s completed successfully", step_name)
 

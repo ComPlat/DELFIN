@@ -580,7 +580,7 @@ def _run_sp_candidates_parallel(
     jobs: List[_IMAGCandidateJob],
     pool,
     *,
-    pal_value: int,
+    core_allocation: int,
     maxcore_value: int,
 ) -> List[_ImagSinglePointResult]:
     handles: List[tuple[_ImagSinglePointResult, threading.Event]] = []
@@ -621,12 +621,13 @@ def _run_sp_candidates_parallel(
                 cur_event.set()
 
         job_id = f"IMAG_SP::{job.label}"
-        mem_mb = max(256, maxcore_value) * max(1, pal_value)
+        cores_requested = max(1, core_allocation)
+        mem_mb = max(256, maxcore_value) * cores_requested
         pool_job = PoolJob(
             job_id=job_id,
-            cores_min=max(1, pal_value),
-            cores_optimal=max(1, pal_value),
-            cores_max=max(1, pal_value),
+            cores_min=cores_requested,
+            cores_optimal=cores_requested,
+            cores_max=cores_requested,
             memory_mb=mem_mb,
             priority=JobPriority.NORMAL,
             execute_func=runner,
@@ -653,7 +654,7 @@ def _execute_sp_candidates(
     jobs: List[_IMAGCandidateJob],
     *,
     pool,
-    pal_value: int,
+    core_allocation: int,
     maxcore_value: int,
 ) -> List[_ImagSinglePointResult]:
     if not jobs:
@@ -678,7 +679,7 @@ def _execute_sp_candidates(
     return _run_sp_candidates_parallel(
         jobs,
         pool,
-        pal_value=pal_value,
+        core_allocation=core_allocation,
         maxcore_value=maxcore_value,
     )
 
@@ -1081,6 +1082,8 @@ def run_IMAG(
         additions_payload: str,
         *,
         geom_override: str | None = None,
+        pal_override_local: int | None = None,
+        maxcore_override_local: int | None = None,
     ) -> str:
         """Create ORCA input from geometry, using template when available."""
         coords = _extract_xyz_coordinates(str(geometry_source))
@@ -1095,8 +1098,8 @@ def run_IMAG(
                 config,
                 main_basisset,
                 metal_basisset,
-                pal_override,
-                maxcore_override,
+                pal_override_local if pal_override_local is not None else pal_override,
+                maxcore_override_local if maxcore_override_local is not None else maxcore_override,
                 geom_override=geom_override,
             )
 
@@ -1112,8 +1115,8 @@ def run_IMAG(
                 main_basisset,
                 metal_basisset,
                 additions_payload,
-                pal_override=pal_override,
-                maxcore_override=maxcore_override,
+                pal_override=pal_override_local if pal_override_local is not None else pal_override,
+                maxcore_override=maxcore_override_local if maxcore_override_local is not None else maxcore_override,
                 geom_override=geom_override,
                 include_freq=include_freq,
             )
@@ -1169,10 +1172,6 @@ def run_IMAG(
         logging.error(f"Hessian file '{current_hess_path}' not found; cannot run IMAG.")
         return
 
-    pal_effective = _coerce_int(
-        pal_override,
-        _coerce_int(config.get("PAL"), 1),
-    )
     maxcore_effective = _coerce_int(
         maxcore_override,
         _coerce_int(config.get("maxcore"), 1000),
@@ -1186,6 +1185,22 @@ def run_IMAG(
     except Exception:
         logging.debug("Global job manager unavailable for IMAG single-point pool runs; falling back to sequential.", exc_info=True)
         shared_pool = None
+
+    core_share = _coerce_int(config.get("PAL"), 1)
+    if shared_pool is not None:
+        try:
+            total_cores = max(1, getattr(shared_pool, "total_cores", core_share))
+            concurrent = max(1, getattr(shared_pool, "max_concurrent_jobs", 1))
+            base_share = max(1, total_cores // concurrent)
+            status = shared_pool.get_status()
+            available = status.get("total_cores", total_cores) - status.get("allocated_cores", 0)
+            if available > 0:
+                base_share = min(base_share, available)
+            core_share = max(1, min(base_share, total_cores))
+        except Exception:
+            logging.debug("Failed to derive core share from global pool; falling back to CONTROL PAL.", exc_info=True)
+
+    pal_override = core_share
 
     iteration = 0
     last_success_iteration = 0
@@ -1238,6 +1253,8 @@ def run_IMAG(
                     sp_input_path,
                     include_freq=False,
                     additions_payload=additions_eff,
+                    pal_override_local=pal_override,
+                    maxcore_override_local=maxcore_effective,
                 )
 
                 candidate_jobs.append(
@@ -1259,7 +1276,7 @@ def run_IMAG(
         sp_results = _execute_sp_candidates(
             candidate_jobs,
             pool=shared_pool,
-            pal_value=pal_effective,
+            core_allocation=pal_override,
             maxcore_value=maxcore_effective,
         )
 
@@ -1305,6 +1322,8 @@ def run_IMAG(
             include_freq=True,
             additions_payload=additions_current,
             geom_override="",
+            pal_override_local=pal_override,
+            maxcore_override_local=maxcore_effective,
         )
         gbw_candidate = best_candidate.sp_output.with_suffix(".gbw")
         if gbw_candidate.exists():
@@ -1337,6 +1356,8 @@ def run_IMAG(
                     freq_input_path,
                     include_freq=True,
                     additions_payload=additions_current,
+                    pal_override_local=pal_override,
+                    maxcore_override_local=maxcore_effective,
                 )
                 if gbw_candidate.exists():
                     _inject_moinp_block(freq_input_path, gbw_candidate)
