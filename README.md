@@ -70,51 +70,39 @@ python -m delfin
 **CLI shortcuts**
 
 - `delfin --define[=input.xyz] [--overwrite]`
-  creates/updates `CONTROL.txt` and optionally converts an XYZ into `input.txt`; include `--overwrite` to replace existing files.
+  creates/updates `CONTROL.txt` and optionally converts an XYZ into `input.txt`.
 - `delfin --control /path/to/CONTROL.txt`
   runs the workflow from another directory while normalising all paths.
 - `delfin --no-cleanup`
   keeps temporary files and scratch folders after the pipeline finishes.
 - `delfin --cleanup`
   removes previously generated intermediates and exits immediately.
-- `delfin cleanup [--dry-run] [--workspace PATH] [--scratch PATH]`
-  offers finer control over workspace/scratch cleanup; combine with `--dry-run` to preview deletions.
 - `delfin cleanup --orca`
   stops running ORCA jobs in the current workspace, purges OCCUPIER scratch folders, and cleans leftover temporary files.
 - `delfin --purge`
   clears the working directory (keeps CONTROL.txt and the configured input file only) after confirmation.
 - `delfin --recalc`
   re-parses existing results and only restarts missing or incomplete jobs.
-- `delfin --report`
-  re-calculates redox potentials from the existing output files without launching new calculations.
 - `delfin --imag`
-  reruns the IMAG frequency-elimination workflow (requires `IMAG=yes` in CONTROL.txt) and regenerates `DELFIN.txt` with the updated results.
-- `delfin --version`
-  prints the installed DELFIN version (`-V` shortcut).
+  eliminates imaginary modes from existing ORCA results (`*.out`/`*.hess`) and regenerates the summary report.
 - `delfin --help`
   prints the full list of CLI flags, including the new pipeline/resource switches.
 
 Results and reports are written to the current working directory,
 e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
----
 
-## How to cite
+### Only eliminate imaginary modes
 
-If DELFIN supports your research, please cite the Zenodo release (the DOI badge at the top always points to the latest version). Most reference managers can import the repository’s `CITATION.cff` directly; for BibTeX you can use:
+Wenn Geometrien bereits vorliegen und lediglich imaginäre Frequenzen entfernt
+werden sollen, genügt ein Aufruf von
 
-```bibtex
-@software{Hartmann_DELFIN_2025,
-  author  = {Hartmann, Maximilian},
-  title   = {DELFIN: Automated prediction of preferred spin states and associated redox potentials},
-  year    = {2025},
-  version = {v1.0.4},
-  doi     = {10.5281/zenodo.17208145},
-  url     = {https://github.com/ComPlat/DELFIN}
-}
+```bash
+delfin --imag
 ```
 
-The DOI is also embedded in the README badge for quick copy & paste.
-
+The command reads the existing `*.out`/`*.hess` files, launches the IMAG loop
+for every configured step (while keeping the original ORCA settings), and then
+updates `DELFIN.txt` with the new redox potentials.
 ---
 
 ## Excited-State Dynamics (ESD) Module
@@ -230,3 +218,22 @@ delfin/
   - optional scaling factor for the `orca_pltvib` displacement amplitude (default: 1.0)
 * `IMAG_sp_energy_window = float`
   - minimum single-point energy improvement (Hartree) required to accept a displaced geometry (default: 1e-6). Legacy key `IMAG_energy_tol` remains supported as an alias.
+
+---
+
+## How to cite
+
+If DELFIN supports your research, please cite the Zenodo release (the DOI badge at the top always points to the latest version). Most reference managers can import the repository’s `CITATION.cff` directly; for BibTeX you can use:
+
+```bibtex
+@software{Hartmann_DELFIN_2025,
+  author  = {Hartmann, Maximilian},
+  title   = {DELFIN: Automated prediction of preferred spin states and associated redox potentials},
+  year    = {2025},
+  version = {v1.0.4},
+  doi     = {10.5281/zenodo.17208145},
+  url     = {https://github.com/ComPlat/DELFIN}
+}
+```
+
+The DOI is also embedded in the README badge for quick copy & paste.
