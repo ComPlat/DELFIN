@@ -77,32 +77,25 @@ python -m delfin
   keeps temporary files and scratch folders after the pipeline finishes.
 - `delfin --cleanup`
   removes previously generated intermediates and exits immediately.
+- `delfin cleanup [--dry-run] [--workspace PATH] [--scratch PATH]`
+  offers finer control over workspace/scratch cleanup; combine with `--dry-run` to preview deletions.
 - `delfin cleanup --orca`
   stops running ORCA jobs in the current workspace, purges OCCUPIER scratch folders, and cleans leftover temporary files.
 - `delfin --purge`
   clears the working directory (keeps CONTROL.txt and the configured input file only) after confirmation.
 - `delfin --recalc`
   re-parses existing results and only restarts missing or incomplete jobs.
+- `delfin --report`
+  re-calculates redox potentials from existing output files without launching new calculations.
 - `delfin --imag`
   eliminates imaginary modes from existing ORCA results (`*.out`/`*.hess`) and regenerates the summary report.
+- `delfin --version`
+  prints the installed DELFIN version (`-V` shortcut).
 - `delfin --help`
   prints the full list of CLI flags, including the new pipeline/resource switches.
 
 Results and reports are written to the current working directory,
 e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
-
-### Only eliminate imaginary modes
-
-Wenn Geometrien bereits vorliegen und lediglich imaginäre Frequenzen entfernt
-werden sollen, genügt ein Aufruf von
-
-```bash
-delfin --imag
-```
-
-The command reads the existing `*.out`/`*.hess` files, launches the IMAG loop
-for every configured step (while keeping the original ORCA settings), and then
-updates `DELFIN.txt` with the new redox potentials.
 ---
 
 ## Excited-State Dynamics (ESD) Module
@@ -207,33 +200,180 @@ delfin/
   - `auto` (default): Use MPI + OpenMP; FoBs run in parallel
   - `threads`: Use only OpenMP (no MPI); FoBs still run in parallel, useful if MPI is unstable
   - `serial`: Force sequential execution; only 1 FoB at a time
+* `XTB_OPT = yes | no`
+* `XTB_GOAT = yes | no`
+* `CREST = yes | no`
+* `XTB_SOLVATOR = yes | no`
+* `ESD_modul = yes | no`
+  * `states = S0,S1,T1,T2` (comma-separated subset)
+  * `ISCs = S1>T1,...` (optional)
+  * `ICs = S1>S0,...` (optional)
 * `IMAG = yes | no`
-  - set to `yes` to enable imaginary-frequency elimination for pipeline runs and to unlock `delfin --imag`
+  - enable imaginary-frequency elimination for pipeline runs and unlock `delfin --imag`
 * `IMAG_scope = initial | all`
-  - `initial` (default): only the initial geometry will run IMAG elimination.
-  - `all`: the IMAG workflow is executed for all configured redox steps.
+  - `initial` (default): only the starting geometry runs the IMAG loop; `all` processes every redox step
 * `allow_imaginary_freq = N`
-  - number of imaginary modes tolerated before IMAG reruns the step (default: 0)
+  - number of imaginary modes tolerated before IMAG restarts the step (default: 0)
 * `IMAG_displacement_scale = float`
   - optional scaling factor for the `orca_pltvib` displacement amplitude (default: 1.0)
 * `IMAG_sp_energy_window = float`
-  - minimum single-point energy improvement (Hartree) required to accept a displaced geometry (default: 1e-6). Legacy key `IMAG_energy_tol` remains supported as an alias.
+  - minimum single-point energy improvement (Hartree) required to accept a displaced geometry (default: 1e-6)
 
 ---
 
-## How to cite
+## Cluster & Workflow Integration
 
-If DELFIN supports your research, please cite the Zenodo release (the DOI badge at the top always points to the latest version). Most reference managers can import the repository’s `CITATION.cff` directly; for BibTeX you can use:
+* **Scratch directory:** set `DELFIN_SCRATCH=/path/to/scratch` before launching jobs. Temporary files, markers, and runtime artefacts are written there (directories are created automatically).
+* **Schema validation:** `delfin` validates `CONTROL.txt` on load (missing required keys, wrong types, inconsistent sequences) and aborts with a clear error message if something is off.
+* **Logging:** the CLI now writes a timestamped `delfin_run.log` in every working directory and OCCUPIER subprocesses produce an additional `occupier.log` inside their folders. Custom drivers can still call `delfin.common.logging.configure_logging(level, fmt, stream)` to adjust handlers or formats.
+* **Programmatic API:** use `delfin.api.run(control_file="CONTROL.txt")` for notebooks, workflow engines, or SLURM batch scripts. Add `cleanup=False` to preserve intermediates (`--no-cleanup`). Additional CLI flags can be provided through the `extra_args` parameter.
+* **Alternate CONTROL locations:** supply `--control path/to/CONTROL.txt` (or the `control_file` argument in `delfin.api.run`) to stage input files outside the working directory.
+* **XYZ geometry support:** if `input_file` in CONTROL (or the CLI/API) points to an `.xyz`, DELFIN converts it automatically to a matching `.txt` (header dropped) before the run.
+* **Cluster templates:** see `examples/` for submit scripts:
+  - `slurm_submit_example.sh` (SLURM)
+  - `pbs_submit_example.sh` (PBS/Torque)
+  - `lsf_submit_example.sh` (LSF)
+* **Auto-resource detection:** DELFIN automatically detects available CPUs and memory on SLURM/PBS/LSF clusters and configures PAL/maxcore accordingly if not explicitly set in CONTROL.txt.
 
+### Global Resource Management
+
+DELFIN uses a **global job manager singleton** to coordinate all computational workflows and ensure that CPU resources (PAL) are never over-allocated:
+
+* **Single source of truth:** PAL is read once from `CONTROL.txt` at startup and managed centrally throughout execution
+* **Automatic PAL splitting:** When oxidation and reduction workflows run in parallel, DELFIN automatically splits available cores between them (e.g., PAL=12 → 6 cores per workflow)
+* **Thread-safe execution:** All parallel workflows coordinate through a shared resource pool, preventing race conditions
+* **Subprocess coordination:** OCCUPIER subprocesses receive their allocated PAL via environment variables and respect global limits
+* **Sequential mode:** When workflows run sequentially (`parallel_workflows=no`), each workflow uses the full PAL
+
+This architecture ensures:
+- No double allocation of cores when ox/red workflows run simultaneously
+- Consistent resource limits across all ORCA jobs spawned by DELFIN
+- Proper coordination between main process and OCCUPIER subprocesses
+- Efficient utilization of cluster resources without exceeding allocation
+
+## Troubleshooting
+
+* **`CONTROL.txt` not found**
+  DELFIN exits gracefully and tells you what to do. Create it via `delfin --define` (or copy your own).
+
+* **Input file not found**
+  DELFIN exits gracefully and explains how to create/convert it.
+  If you have a full `.xyz`, run: `delfin --define=your.xyz` → creates `input.txt` (drops the first two header lines) and sets `input_file=input.txt` in CONTROL.
+
+* **ORCA not found**
+  Ensure `orca` is callable in your shell: `which orca` (Linux/macOS) or `where orca` (Windows).
+  Add the ORCA bin directory to your `PATH`.
+
+* **`ModuleNotFoundError` for internal modules**
+  Reinstall the package after copying files:
+
+
+* **CREST/xTB tools missing**
+  Disable the corresponding flags in `CONTROL.txt` or install the tools and put them in `PATH`.
+
+---
+
+## Dev notes
+
+* Update CLI entry point via `pyproject.toml`
+  `"[project.scripts] delfin = \"delfin.cli:main\""`
+* Build a wheel: `pip wheel .` (inside `delfin/`).
+* Run tests/workflow locally using a fresh virtual environment to catch missing deps.
+
+---
+## References
+
+The generic references for ORCA, xTB and CREST are:
+
+- Frank Neese. The ORCA program system. *Wiley Interdiscip. Rev. Comput. Mol. Sci.*, 2(1):73–78, 2012. doi:<https://doi.wiley.com/10.1002/wcms.81>.
+- Frank Neese. Software update: the ORCA program system, version 4.0. *Wiley Interdiscip. Rev. Comput. Mol. Sci.*, 8(1):e1327, 2018. doi:<https://doi.wiley.com/10.1002/wcms.1327>.
+- Frank Neese, Frank Wennmohs, Ute Becker, and Christoph Riplinger. The ORCA quantum chemistry program package. *J. Chem. Phys.*, 152(22):224108, 2020. doi:<https://aip.scitation.org/doi/10.1063/5.0004608>.
+- Christoph Bannwarth, Erik Caldeweyher, Sebastian Ehlert, Andreas Hansen, Philipp Pracht, Jan Seibert, Sebastian Spicher, and Stefan Grimme. Extended tight-binding quantum chemistry methods. *WIREs Comput. Mol. Sci.*, 11:e1493, 2021. doi:<https://doi.org/10.1002/wcms.1493>. *(xTB & GFN methods)*
+- Philipp Pracht, Stefan Grimme, Christoph Bannwarth, Florian Bohle, Sebastian Ehlert, Gunnar Feldmann, Jan Gorges, Max Müller, Timo Neudecker, Christoph Plett, Sebastian Spicher, Pascal Steinbach, Piotr A. Wesołowski, and Fabian Zeller. CREST — A program for the exploration of low-energy molecular chemical space. *J. Chem. Phys.*, 160:114110, 2024. doi:<https://doi.org/10.1063/5.0197592>. *(CREST)*
+
+Please always check the output files—at the end, you will find a list of relevant papers for the calculations. Kindly cite them. Please do not only cite the above generic references, but also cite in addition the
+[original papers](https://www.faccts.de/docs/orca/6.0/manual/contents/public.html) that report the development and ORCA implementation of the methods DELFIN has used! The publications that describe the functionality implemented in ORCA are
+given in the manual.
+
+
+
+# Dependencies and Legal Notice
+
+**DISCLAIMER: DELFIN is a workflow tool that interfaces with external quantum chemistry software. Users are responsible for obtaining proper licenses for all required software.**
+
+## ORCA Requirements
+To use DELFIN, you must be authorized to use ORCA 6.1.0. You can download the latest version of ORCA here:
+https://orcaforum.kofo.mpg.de/app.php/portal
+
+***IMPORTANT: ORCA 6.1.0 requires a valid license and registration. Academic users can obtain free access, but commercial use requires a commercial license. Please carefully review and comply with ORCA's license terms before use.***
+https://www.faccts.de/
+
+**ORCA License Requirements:**
+- Academic use: Free after registration and license agreement
+- Commercial use: Requires commercial license
+- Users must register and agree to license terms before downloading
+- Redistribution of ORCA is prohibited
+- Each user must obtain their own license
+- DELFIN does not include or distribute ORCA
+- ORCA is proprietary software owned by the Max Planck Institute for Coal Research
+- End users must comply with ORCA's terms of service and usage restrictions
+- DELFIN authors are not affiliated with or endorsed by the ORCA development team
+
+## xTB Requirements
+***xTB is free for academic use under the GNU General Public License (GPLv3).***
+The code and license information are available here: https://github.com/grimme-lab/xtb
+- Commercial use may require different licensing terms
+- DELFIN does not include or distribute xTB
+
+## CREST Requirements
+***CREST is free for academic use under the GNU General Public License (GPLv3).***
+The code and license information are available here: https://github.com/crest-lab/crest
+- Commercial use may require different licensing terms
+- DELFIN does not include or distribute CREST
+
+**Legal Notice:** DELFIN itself is licensed under LGPL-3.0-or-later, but this does not grant any rights to use ORCA, xTB, or CREST. Users must comply with the individual license terms of each external software package.
+
+## Warranty and Liability
+DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim all warranties, express or implied, including but not limited to implied warranties of merchantability and fitness for a particular purpose. In no event shall the authors be liable for any damages arising from the use of this software.
+
+---
+
+## Please cite
+
+If you use DELFIN in a scientific publication, please cite:
+
+- Hartmann, M. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.0.4). Zenodo. https://doi.org/10.5281/zenodo.17208145
+- Hartmann, M. (2025). *DELFIN: Automated prediction of preferred spin states and redox potentials*. ChemRxiv. https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
+
+### BibTeX
 ```bibtex
-@software{Hartmann_DELFIN_2025,
+@software{hartmann2025delfin,
   author  = {Hartmann, Maximilian},
-  title   = {DELFIN: Automated prediction of preferred spin states and associated redox potentials},
-  year    = {2025},
+  title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
   version = {v1.0.4},
+  year    = {2025},
+  publisher = {Zenodo},
   doi     = {10.5281/zenodo.17208145},
-  url     = {https://github.com/ComPlat/DELFIN}
+  url     = {https://doi.org/10.5281/zenodo.17208145}
+}
+
+@article{hartmann2025chemrxiv,
+  author  = {Hartmann, Maximilian},
+  title   = {DELFIN: Automated prediction of preferred spin states and redox potentials},
+  journal = {ChemRxiv},
+  year    = {2025},
+  url     = {https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a}
 }
 ```
+## License
 
-The DOI is also embedded in the README badge for quick copy & paste.
+This project is licensed under the GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later).
+
+You should have received a copy of the GNU Lesser General Public License along with this repository in the files `COPYING` and `COPYING.LESSER`.  
+If not, see <https://www.gnu.org/licenses/>.
+
+Non-binding citation request:  
+If you use this software in research, please cite the associated paper (see [CITATION.cff](./CITATION.cff)).
+
+
+  
