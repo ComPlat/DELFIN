@@ -27,6 +27,7 @@ IMAG=yes
 IMAG_scope=initial
 allow_imaginary_freq=0
 IMAG_sp_energy_window=1e-6
+IMAG_optimize_candidates=no
 ------------------------------------
 Redox steps:
 calc_initial=yes

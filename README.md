@@ -218,6 +218,8 @@ delfin/
   - optional scaling factor for the `orca_pltvib` displacement amplitude (default: 1.0)
 * `IMAG_sp_energy_window = float`
   - minimum single-point energy improvement (Hartree) required to accept a displaced geometry (default: 1e-6)
+* `IMAG_optimize_candidates = yes | no`
+  - when `yes`, each displaced structure is geometry-optimised before evaluating the single-point energy (default: `no`)
 
 ---
 

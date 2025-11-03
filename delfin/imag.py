@@ -1191,6 +1191,13 @@ def run_IMAG(
         )
         sp_energy_window = ENERGY_IMPROVEMENT_TOL
 
+    optimize_candidates = str(config.get("IMAG_optimize_candidates", "no")).strip().lower() in (
+        "yes",
+        "true",
+        "1",
+        "on",
+    )
+
     current_log_path = original_out
     current_hess_path = Path(hess_file).with_suffix(".hess")
     if not current_hess_path.is_absolute():
@@ -1244,6 +1251,7 @@ def run_IMAG(
             break
 
         candidate_jobs: List[_IMAGCandidateJob] = []
+        candidate_geom_override = None if optimize_candidates else ""
 
         for mode_index, freq in modes:
             try:
@@ -1280,7 +1288,7 @@ def run_IMAG(
                     sp_input_path,
                     include_freq=False,
                     additions_payload=additions_eff,
-                    geom_override="",
+                    geom_override=candidate_geom_override,
                     pal_override_local=pal_override,
                     maxcore_override_local=maxcore_effective,
                 )
