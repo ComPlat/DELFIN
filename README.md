@@ -98,6 +98,25 @@ Results and reports are written to the current working directory,
 e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 ---
 
+## How to cite
+
+If DELFIN supports your research, please cite the Zenodo release (the DOI badge at the top always points to the latest version). Most reference managers can import the repository’s `CITATION.cff` directly; for BibTeX you can use:
+
+```bibtex
+@software{Hartmann_DELFIN_2025,
+  author  = {Hartmann, Maximilian},
+  title   = {DELFIN: Automated prediction of preferred spin states and associated redox potentials},
+  year    = {2025},
+  version = {v1.0.4},
+  doi     = {10.5281/zenodo.17208145},
+  url     = {https://github.com/ComPlat/DELFIN}
+}
+```
+
+The DOI is also embedded in the README badge for quick copy & paste.
+
+---
+
 ## Excited-State Dynamics (ESD) Module
 
 > **Status:** The ESD module is under construction and not yet production-ready.
