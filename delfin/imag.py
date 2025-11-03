@@ -284,24 +284,20 @@ def _write_input_from_template(
             lines[idx] = f"%pal nprocs {pal_val} end\n"
         elif lower.startswith("%maxcore"):
             lines[idx] = f"%maxcore {maxcore_val}\n"
-        elif line.strip().startswith("!") and geom_override is not None:
+        elif line.strip().startswith("!"):
             geom_tokens = str(config.get("geom_opt", "")).split()
-            override_tokens = geom_override.split() if geom_override else []
+            override_tokens = [tok for tok in (geom_override.split() if geom_override else []) if tok]
             existing_tokens = line.strip().split()
-            filtered_tokens = [tok for tok in existing_tokens if tok not in geom_tokens]
-            if include_freq and "FREQ" not in filtered_tokens:
-                filtered_tokens.append("FREQ")
-            if override_tokens:
-                if "FREQ" in filtered_tokens:
-                    freq_idx = filtered_tokens.index("FREQ")
-                    filtered_tokens = (
-                        filtered_tokens[:freq_idx] + override_tokens + filtered_tokens[freq_idx:]
-                    )
-                else:
-                    filtered_tokens.extend(override_tokens)
+            tokens = list(existing_tokens)
+            if geom_override is not None:
+                tokens = [tok for tok in tokens if tok not in geom_tokens]
+                if override_tokens:
+                    tokens.extend(override_tokens)
+            if include_freq and "FREQ" not in {tok.upper() for tok in tokens}:
+                tokens.append("FREQ")
             if not include_freq:
-                filtered_tokens = [tok for tok in filtered_tokens if tok.upper() != "FREQ"]
-            lines[idx] = " ".join(filtered_tokens)
+                tokens = [tok for tok in tokens if tok.upper() != "FREQ"]
+            lines[idx] = " ".join(tokens)
             if not lines[idx].endswith("\n"):
                 lines[idx] += "\n"
 
@@ -1353,7 +1349,7 @@ def run_IMAG(
             freq_input_path,
             include_freq=True,
             additions_payload=additions_current,
-            geom_override="",
+            geom_override=None,
             pal_override_local=pal_override,
             maxcore_override_local=maxcore_effective,
         )
@@ -1388,6 +1384,7 @@ def run_IMAG(
                     freq_input_path,
                     include_freq=True,
                     additions_payload=additions_current,
+                    geom_override=None,
                     pal_override_local=pal_override,
                     maxcore_override_local=maxcore_effective,
                 )
