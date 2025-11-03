@@ -1,9 +1,11 @@
-import os, re, sys, shutil, logging, subprocess, math
+import os, re, sys, shutil, logging, subprocess, math, threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, resolve_maxiter
+from delfin.dynamic_pool import PoolJob, JobPriority
+from delfin.global_manager import get_global_manager
 
 from .utils import search_transition_metals, set_main_basisset, select_rel_and_aux
 from .energies import find_electronic_energy
@@ -39,6 +41,16 @@ def _elem_from_label(label: str) -> str:
 
 def _dist(a, b):
     return math.sqrt((a['x']-b['x'])**2 + (a['y']-b['y'])**2 + (a['z']-b['z'])**2)
+
+
+def _coerce_int(value, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return fallback
 
 def _parse_xyz_atoms(xyz_lines):
     """Parse atom lines (stop at '*' or blank). Returns list with coords and original line index."""
@@ -234,6 +246,8 @@ def _write_input_from_template(
     metal_basisset,
     pal_override,
     maxcore_override,
+    *,
+    geom_override: str | None = None,
 ) -> bool:
     if not template_ctx:
         return False
@@ -257,6 +271,24 @@ def _write_input_from_template(
             lines[idx] = f"%pal nprocs {pal_val} end\n"
         elif lower.startswith("%maxcore"):
             lines[idx] = f"%maxcore {maxcore_val}\n"
+        elif line.strip().startswith("!") and geom_override is not None:
+            geom_tokens = str(config.get("geom_opt", "")).split()
+            override_tokens = geom_override.split() if geom_override else []
+            existing_tokens = line.strip().split()
+            filtered_tokens = [tok for tok in existing_tokens if tok not in geom_tokens]
+            if "FREQ" not in filtered_tokens:
+                filtered_tokens.append("FREQ")
+            if override_tokens:
+                if "FREQ" in filtered_tokens:
+                    freq_idx = filtered_tokens.index("FREQ")
+                    filtered_tokens = (
+                        filtered_tokens[:freq_idx] + override_tokens + filtered_tokens[freq_idx:]
+                    )
+                else:
+                    filtered_tokens.extend(override_tokens)
+            lines[idx] = " ".join(filtered_tokens)
+            if not lines[idx].endswith("\n"):
+                lines[idx] += "\n"
 
     geom_start = None
     for idx, line in enumerate(lines):
@@ -480,6 +512,246 @@ class ImagModeCandidate:
     energy: float
     geometry_path: Path
     sp_output: Path
+    direction: str
+    optimized_geometry: Path | None = None
+
+
+@dataclass
+class _IMAGCandidateJob:
+    label: str
+    mode_index: int
+    frequency: float
+    geometry_path: Path
+    sp_input_path: Path
+    sp_output_path: Path
+    direction: str
+
+
+@dataclass
+class _ImagSinglePointResult:
+    job: _IMAGCandidateJob
+    success: bool = False
+    energy: Optional[float] = None
+    optimized_geometry: Optional[Path] = None
+    message: Optional[str] = None
+
+
+def _locate_relaxed_xyz(sp_input_path: Path, sp_output_path: Path) -> Optional[Path]:
+    candidates = [
+        Path(sp_input_path).with_suffix(".xyz"),
+        Path(sp_output_path).with_suffix(".xyz"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _run_sp_candidates_sequential(
+    jobs: List[_IMAGCandidateJob],
+) -> List[_ImagSinglePointResult]:
+    results: List[_ImagSinglePointResult] = []
+    for job in jobs:
+        result = _ImagSinglePointResult(job=job)
+        sp_success = run_orca(
+            str(job.sp_input_path),
+            str(job.sp_output_path),
+            working_dir=job.sp_output_path.parent,
+        )
+        if not sp_success:
+            msg = f"Mode {job.mode_index}: single-point calculation failed; skipping."
+            logging.warning(msg)
+            result.message = msg
+        else:
+            energy = find_electronic_energy(str(job.sp_output_path))
+            if energy is None:
+                msg = f"Mode {job.mode_index}: could not extract single-point energy; skipping."
+                logging.warning(msg)
+                result.message = msg
+            else:
+                result.success = True
+                result.energy = energy
+        result.optimized_geometry = _locate_relaxed_xyz(job.sp_input_path, job.sp_output_path)
+        results.append(result)
+    return results
+
+
+def _run_sp_candidates_parallel(
+    jobs: List[_IMAGCandidateJob],
+    pool,
+    *,
+    pal_value: int,
+    maxcore_value: int,
+) -> List[_ImagSinglePointResult]:
+    handles: List[tuple[_ImagSinglePointResult, threading.Event]] = []
+
+    for job in jobs:
+        result = _ImagSinglePointResult(job=job)
+        event = threading.Event()
+        handles.append((result, event))
+
+        def runner(*_args, cur_job=job, cur_result=result, cur_event=event, **kwargs) -> None:
+            try:
+                sp_success = run_orca(
+                    str(cur_job.sp_input_path),
+                    str(cur_job.sp_output_path),
+                    working_dir=cur_job.sp_output_path.parent,
+                )
+                if not sp_success:
+                    msg = f"Mode {cur_job.mode_index}: single-point calculation failed; skipping."
+                    logging.warning(msg)
+                    cur_result.message = msg
+                    return
+
+                energy = find_electronic_energy(str(cur_job.sp_output_path))
+                if energy is None:
+                    msg = f"Mode {cur_job.mode_index}: could not extract single-point energy; skipping."
+                    logging.warning(msg)
+                    cur_result.message = msg
+                    return
+
+                cur_result.success = True
+                cur_result.energy = energy
+            except Exception as exc:  # noqa: BLE001
+                logging.error("Mode %s: parallel single-point run crashed: %s", cur_job.mode_index, exc, exc_info=True)
+                cur_result.message = str(exc)
+            finally:
+                if cur_result.optimized_geometry is None:
+                    cur_result.optimized_geometry = _locate_relaxed_xyz(cur_job.sp_input_path, cur_job.sp_output_path)
+                cur_event.set()
+
+        job_id = f"IMAG_SP::{job.label}"
+        mem_mb = max(256, maxcore_value) * max(1, pal_value)
+        pool_job = PoolJob(
+            job_id=job_id,
+            cores_min=max(1, pal_value),
+            cores_optimal=max(1, pal_value),
+            cores_max=max(1, pal_value),
+            memory_mb=mem_mb,
+            priority=JobPriority.NORMAL,
+            execute_func=runner,
+            args=(),
+            kwargs={},
+            estimated_duration=1800.0,
+        )
+        pool_job.suppress_pool_logs = True
+        pool.submit_job(pool_job)
+
+    results: List[_ImagSinglePointResult] = []
+    for result, event in handles:
+        event.wait()
+        if result.optimized_geometry is None:
+            result.optimized_geometry = _locate_relaxed_xyz(
+                result.job.sp_input_path,
+                result.job.sp_output_path,
+            )
+        results.append(result)
+    return results
+
+
+def _execute_sp_candidates(
+    jobs: List[_IMAGCandidateJob],
+    *,
+    pool,
+    pal_value: int,
+    maxcore_value: int,
+) -> List[_ImagSinglePointResult]:
+    if not jobs:
+        return []
+    use_pool = False
+    if pool is not None:
+        try:
+            status = pool.get_status()
+        except Exception:
+            status = None
+        if status:
+            total = status.get("total_cores", 0)
+            allocated = status.get("allocated_cores", 0)
+            queued = status.get("queued_jobs", 0)
+            running = status.get("running_jobs", 0)
+            if total and (total - allocated) > 0 and queued == 0 and running < pool.max_concurrent_jobs:
+                use_pool = True
+        else:
+            use_pool = True
+    if not use_pool:
+        return _run_sp_candidates_sequential(jobs)
+    return _run_sp_candidates_parallel(
+        jobs,
+        pool,
+        pal_value=pal_value,
+        maxcore_value=maxcore_value,
+    )
+
+
+def _inject_moinp_block(input_path: Path, gbw_path: Path) -> None:
+    """Inject %moinp block and ensure MOREAD keyword for the supplied GBW file."""
+    input_path = Path(input_path)
+    gbw_path = Path(gbw_path)
+    try:
+        lines = input_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except FileNotFoundError:
+        logging.error(f"Input file '{input_path}' missing when adding %moinp.")
+        return
+
+    rel_gbw = os.path.relpath(gbw_path, start=input_path.parent).replace("\\", "/")
+    moinp_line = f'%moinp "{rel_gbw}"'
+
+    if not any(line.strip().startswith("%moinp") for line in lines):
+        insert_idx = 0
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("%maxcore"):
+                insert_idx = idx
+                break
+            if stripped.startswith("%") and insert_idx == 0:
+                insert_idx = idx
+        lines.insert(insert_idx, moinp_line)
+    else:
+        lines = [moinp_line if line.strip().startswith("%moinp") else line for line in lines]
+
+    for idx, line in enumerate(lines):
+        if line.strip().startswith("!"):
+            if "MOREAD" in line:
+                break
+            if "PModel" in line:
+                line = line.replace("PModel", "MOREAD")
+            else:
+                line = line.rstrip() + " MOREAD"
+            lines[idx] = line
+            break
+
+    input_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _extract_structure_section(lines: list[str], structure_number: int) -> list[str]:
+    """Return the coordinate block for the requested structure index (1-based)."""
+    star_indices = [i for i, line in enumerate(lines) if "*" in line]
+    if len(star_indices) < structure_number + 1:
+        raise ValueError(
+            f"Displaced geometry contains only {len(star_indices) - 1} structures; requested {structure_number}."
+        )
+    start_index = star_indices[structure_number - 1] - 1
+    end_index = star_indices[structure_number]
+    return lines[start_index:end_index]
+
+
+def _extract_structure_xyz(source_xyz: Path, destination: Path, structure_number: int) -> Path:
+    """Extract the specified structure fragment into destination."""
+    source_xyz = Path(source_xyz)
+    try:
+        with source_xyz.open("r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except FileNotFoundError as exc:
+        logging.error(f"Unable to read displaced geometry '{source_xyz}': {exc}")
+        raise
+
+    extracted = _extract_structure_section(lines, structure_number)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", encoding="utf-8") as out:
+        out.writelines(extracted)
+    return destination
+
 
 def run_plotvib_mode(
     hess_file: Path,
@@ -487,32 +759,44 @@ def run_plotvib_mode(
     *,
     workdir: Path,
     amplitude: float | None = None,
-) -> Path:
-    """Run orca_pltvib for a specific mode and return generated XYZ path."""
+) -> dict[str, Path]:
+    """Run orca_pltvib for a specific mode and return {pos, neg} structure_5/15 geometries."""
     hess_file = Path(hess_file).resolve()
     if not hess_file.exists():
         logging.error(f"Hessian file '{hess_file}' not found for mode {mode_index}.")
         raise FileNotFoundError(hess_file)
 
-    workdir = Path(workdir)
-    workdir.mkdir(parents=True, exist_ok=True)
+    workdir_path = Path(workdir)
+    workdir_path.mkdir(parents=True, exist_ok=True)
 
     cmd = ["orca_pltvib", str(hess_file), str(mode_index)]
     if amplitude is not None and not math.isclose(amplitude, 1.0):
         cmd.append(f"{amplitude:.6f}")
 
     try:
-        subprocess.run(cmd, cwd=str(workdir), check=True)
+        subprocess.run(cmd, cwd=str(workdir_path), check=True)
     except subprocess.CalledProcessError as exc:
         logging.error(f"orca_pltvib failed for '{hess_file}' mode {mode_index}: {exc}")
         raise
 
     xyz_name = f"{hess_file.name}.v{mode_index:03d}.xyz"
-    xyz_path = workdir / xyz_name
-    if not xyz_path.exists():
-        logging.error(f"Expected vib geometry '{xyz_path}' not created by orca_pltvib.")
-        raise FileNotFoundError(xyz_path)
-    return xyz_path
+    displaced_xyz = workdir_path / xyz_name
+
+    if not displaced_xyz.exists():
+        alt_path = hess_file.parent / xyz_name
+        if alt_path.exists():
+            displaced_xyz = alt_path
+        else:
+            logging.error(f"Expected vib geometry '{xyz_name}' not created by orca_pltvib.")
+            raise FileNotFoundError(displaced_xyz)
+
+    try:
+        pos_path = _extract_structure_xyz(displaced_xyz, workdir_path / f"{xyz_name}.structure_5.xyz", 5)
+        neg_path = _extract_structure_xyz(displaced_xyz, workdir_path / f"{xyz_name}.structure_15.xyz", 15)
+    except Exception as exc:
+        logging.error(f"Failed to extract displaced structures from '{displaced_xyz}': {exc}")
+        raise
+    return {"pos": pos_path, "neg": neg_path}
 
 def _imag_resolved(out_path: str | Path, threshold: float) -> bool:
     candidate = Path(out_path)
@@ -539,7 +823,8 @@ def run_plotvib(iteration, workdir: str | Path | None = None):
     try:
         base_dir = Path(workdir) if workdir is not None else Path.cwd()
         hess_path = base_dir / f"input_{iteration}.hess"
-        new_structure = run_plotvib_mode(hess_path, 6, workdir=base_dir)
+        structures = run_plotvib_mode(hess_path, 6, workdir=base_dir)
+        new_structure = structures["pos"]
         logging.info(f"plotvib run successful for 'input_{iteration}.hess'")
         return str(new_structure)
     except subprocess.CalledProcessError as e:
@@ -552,7 +837,8 @@ def run_plotvib0(input_file, workdir: str | Path | None = None):
         hess_path = Path(input_file).with_suffix(".hess")
         if not hess_path.is_absolute():
             hess_path = (Path.cwd() / hess_path).resolve()
-        new_structure = run_plotvib_mode(hess_path, 6, workdir=base_dir)
+        structures = run_plotvib_mode(hess_path, 6, workdir=base_dir)
+        new_structure = structures["pos"]
         logging.info(f"plotvib run successful for '{input_file}.hess'")
         return str(new_structure)
     except subprocess.CalledProcessError as e:
@@ -575,6 +861,7 @@ def read_and_modify_xyz_IMAG(
     pal_override=None,
     maxcore_override=None,
     include_freq: bool = True,
+    geom_override: str | None = None,
 ):
     """Construct an ORCA input for an IMAG iteration.
 
@@ -624,7 +911,6 @@ def read_and_modify_xyz_IMAG(
     radii_map = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if (enable_first and not sphere_scale_raw) else None
 
     # '!' line for IMAG (always FREQ)
-    geom_override = "SP" if not include_freq else None
     bang = _build_bang_line_IMAG(
         config,
         rel_token,
@@ -793,6 +1079,8 @@ def run_IMAG(
         destination_path: Path,
         include_freq: bool,
         additions_payload: str,
+        *,
+        geom_override: str | None = None,
     ) -> str:
         """Create ORCA input from geometry, using template when available."""
         coords = _extract_xyz_coordinates(str(geometry_source))
@@ -809,6 +1097,7 @@ def run_IMAG(
                 metal_basisset,
                 pal_override,
                 maxcore_override,
+                geom_override=geom_override,
             )
 
         if not used_template:
@@ -825,6 +1114,7 @@ def run_IMAG(
                 additions_payload,
                 pal_override=pal_override,
                 maxcore_override=maxcore_override,
+                geom_override=geom_override,
                 include_freq=include_freq,
             )
         return additions_payload
@@ -856,14 +1146,20 @@ def run_IMAG(
         logging.warning("IMAG_displacement_scale must be a positive number; defaulting to 1.0.")
         displacement_scale = 1.0
 
-    energy_tol_raw = config.get("IMAG_energy_tol", ENERGY_IMPROVEMENT_TOL)
+    sp_window_raw = config.get(
+        "IMAG_sp_energy_window",
+        config.get("IMAG_energy_tol", ENERGY_IMPROVEMENT_TOL),
+    )
     try:
-        energy_tol = float(energy_tol_raw)
-        if energy_tol <= 0:
+        sp_energy_window = float(sp_window_raw)
+        if sp_energy_window <= 0:
             raise ValueError
     except (TypeError, ValueError):
-        logging.warning("IMAG_energy_tol must be a positive number; defaulting to %.1e.", ENERGY_IMPROVEMENT_TOL)
-        energy_tol = ENERGY_IMPROVEMENT_TOL
+        logging.warning(
+            "IMAG_sp_energy_window must be a positive number; defaulting to %.1e.",
+            ENERGY_IMPROVEMENT_TOL,
+        )
+        sp_energy_window = ENERGY_IMPROVEMENT_TOL
 
     current_log_path = original_out
     current_hess_path = Path(hess_file).with_suffix(".hess")
@@ -872,6 +1168,24 @@ def run_IMAG(
     if not current_hess_path.exists():
         logging.error(f"Hessian file '{current_hess_path}' not found; cannot run IMAG.")
         return
+
+    pal_effective = _coerce_int(
+        pal_override,
+        _coerce_int(config.get("PAL"), 1),
+    )
+    maxcore_effective = _coerce_int(
+        maxcore_override,
+        _coerce_int(config.get("maxcore"), 1000),
+    )
+    shared_pool = None
+    try:
+        manager = get_global_manager()
+        manager.ensure_initialized(config)
+        if manager.is_initialized():
+            shared_pool = manager.get_pool()
+    except Exception:
+        logging.debug("Global job manager unavailable for IMAG single-point pool runs; falling back to sequential.", exc_info=True)
+        shared_pool = None
 
     iteration = 0
     last_success_iteration = 0
@@ -887,54 +1201,82 @@ def run_IMAG(
             logging.info("All imaginary frequencies within threshold; stopping IMAG loop.")
             break
 
-        best_candidate: ImagModeCandidate | None = None
+        candidate_jobs: List[_IMAGCandidateJob] = []
 
         for mode_index, freq in modes:
             try:
-                vib_xyz_path = run_plotvib_mode(
+                structures = run_plotvib_mode(
                     current_hess_path,
                     mode_index,
                     workdir=imag_folder,
-                    amplitude=displacement_scale,
+                    amplitude=abs(displacement_scale),
                 )
             except Exception:
-                logging.debug(f"Mode {mode_index}: failed to generate displacement geometry.", exc_info=True)
+                logging.debug(f"Mode {mode_index}: failed to generate displacement geometries.", exc_info=True)
                 continue
 
-            sp_label = f"iter{iteration}_mode{mode_index:03d}"
-            sp_input_path = imag_folder / f"{sp_label}_sp.inp"
-            sp_output_path = imag_folder / f"{sp_label}_sp.out"
+            for direction_label, vib_xyz_path in structures.items():
+                candidate_geom = imag_folder / f"iter{iteration}_mode{mode_index:03d}_{direction_label}.xyz"
+                try:
+                    shutil.copy2(vib_xyz_path, candidate_geom)
+                except OSError:
+                    candidate_geom = vib_xyz_path
 
-            for tmp in (sp_input_path, sp_output_path):
-                if tmp.exists():
-                    try:
-                        tmp.unlink()
-                    except OSError:
-                        pass
+                sp_label = f"iter{iteration}_mode{mode_index:03d}_{direction_label}"
+                sp_input_path = imag_folder / f"{sp_label}_sp.inp"
+                sp_output_path = imag_folder / f"{sp_label}_sp.out"
 
-            _write_imag_input(vib_xyz_path, sp_input_path, include_freq=False, additions_payload=additions_eff)
-            sp_success = run_orca(
-                str(sp_input_path),
-                str(sp_output_path),
-                working_dir=imag_folder,
-            )
-            if not sp_success:
-                logging.warning(f"Mode {mode_index}: single-point calculation failed; skipping.")
-                continue
+                for tmp in (sp_input_path, sp_output_path):
+                    if tmp.exists():
+                        try:
+                            tmp.unlink()
+                        except OSError:
+                            pass
 
-            trial_energy = find_electronic_energy(str(sp_output_path))
-            if trial_energy is None:
-                logging.warning(f"Mode {mode_index}: could not extract single-point energy; skipping.")
-                continue
+                _write_imag_input(
+                    candidate_geom,
+                    sp_input_path,
+                    include_freq=False,
+                    additions_payload=additions_eff,
+                )
 
-            if trial_energy < best_energy - energy_tol:
-                if best_candidate is None or trial_energy < best_candidate.energy - energy_tol:
-                    best_candidate = ImagModeCandidate(
+                candidate_jobs.append(
+                    _IMAGCandidateJob(
+                        label=sp_label,
                         mode_index=mode_index,
                         frequency=freq,
-                        energy=trial_energy,
-                        geometry_path=vib_xyz_path,
-                        sp_output=sp_output_path,
+                        geometry_path=candidate_geom,
+                        sp_input_path=sp_input_path,
+                        sp_output_path=sp_output_path,
+                        direction=direction_label,
+                    )
+                )
+
+        if not candidate_jobs:
+            logging.info("No imaginary-mode displacements available; stopping IMAG.")
+            break
+
+        sp_results = _execute_sp_candidates(
+            candidate_jobs,
+            pool=shared_pool,
+            pal_value=pal_effective,
+            maxcore_value=maxcore_effective,
+        )
+
+        best_candidate: ImagModeCandidate | None = None
+        for result in sp_results:
+            if not result.success or result.energy is None:
+                continue
+            if result.energy < best_energy - sp_energy_window:
+                if best_candidate is None or result.energy < best_candidate.energy - sp_energy_window:
+                    best_candidate = ImagModeCandidate(
+                        mode_index=result.job.mode_index,
+                        frequency=result.job.frequency,
+                        energy=result.energy,
+                        geometry_path=result.job.geometry_path,
+                        sp_output=result.job.sp_output_path,
+                        direction=result.job.direction,
+                        optimized_geometry=result.optimized_geometry,
                     )
 
         if best_candidate is None:
@@ -952,12 +1294,25 @@ def run_IMAG(
                     pass
 
         additions_current = additions_eff
+        freq_geometry_source = (
+            best_candidate.optimized_geometry
+            if best_candidate.optimized_geometry and Path(best_candidate.optimized_geometry).exists()
+            else best_candidate.geometry_path
+        )
         _write_imag_input(
-            best_candidate.geometry_path,
+            freq_geometry_source,
             freq_input_path,
             include_freq=True,
             additions_payload=additions_current,
+            geom_override="",
         )
+        gbw_candidate = best_candidate.sp_output.with_suffix(".gbw")
+        if gbw_candidate.exists():
+            _inject_moinp_block(freq_input_path, gbw_candidate)
+        else:
+            logging.warning(
+                f"Iteration {iteration}: Expected GBW '{gbw_candidate}' missing; proceeding without MOREAD."
+            )
         success = run_orca_IMAG(str(freq_input_path), iteration, working_dir=imag_folder)
         if not success:
             geometry_mismatch = False
@@ -983,6 +1338,8 @@ def run_IMAG(
                     include_freq=True,
                     additions_payload=additions_current,
                 )
+                if gbw_candidate.exists():
+                    _inject_moinp_block(freq_input_path, gbw_candidate)
                 success = run_orca_IMAG(str(freq_input_path), iteration, working_dir=imag_folder)
 
             if not success:

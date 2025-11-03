@@ -297,9 +297,13 @@ class _WorkflowManager:
                 sorted(self._completed),
             )
 
-            if (status and len(ready) == 1 and
-                    status.get('running_jobs', 0) == 0 and
-                    status.get('queued_jobs', 0) == 0):
+            if (
+                status
+                and len(ready) == 1
+                and status.get('running_jobs', 0) == 0
+                and status.get('queued_jobs', 0) == 0
+                and not ready[0].job_id.lower().startswith("imag_")
+            ):
                 self._apply_exclusive_allocation(ready[0])
 
             for job in ready:
