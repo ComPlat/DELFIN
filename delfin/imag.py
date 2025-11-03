@@ -85,6 +85,9 @@ def _strip_xyz_header(lines):
                 working = working[1:]
         return working
     except ValueError:
+        lower = first.lower()
+        if lower.startswith("coordinates from orca-job") or lower.startswith("coordinates from orca job"):
+            return working[1:]
         return lines
 
 def _trim_xyz_columns(lines):
@@ -248,17 +251,27 @@ def _write_input_from_template(
     maxcore_override,
     *,
     geom_override: str | None = None,
+    include_freq: bool = True,
 ) -> bool:
     if not template_ctx:
         return False
     expected = template_ctx["coord_count"]
-    if expected and len(coords) != expected:
-        logging.warning(
-            "Template coordinate count mismatch (expected %d, got %d); falling back to generated input.",
-            expected,
-            len(coords),
-        )
-        return False
+    if expected:
+        actual_len = len(coords)
+        if actual_len < expected:
+            logging.warning(
+                "Template coordinate count mismatch (expected %d, got %d); falling back to generated input.",
+                expected,
+                actual_len,
+            )
+            return False
+        if actual_len > expected:
+            logging.warning(
+                "Template coordinate count mismatch (expected %d, got %d); trimming coordinates for IMAG template.",
+                expected,
+                actual_len,
+            )
+            coords = coords[:expected]
 
     lines = _sanitize_template_lines(list(template_ctx["lines"]))
 
@@ -276,7 +289,7 @@ def _write_input_from_template(
             override_tokens = geom_override.split() if geom_override else []
             existing_tokens = line.strip().split()
             filtered_tokens = [tok for tok in existing_tokens if tok not in geom_tokens]
-            if "FREQ" not in filtered_tokens:
+            if include_freq and "FREQ" not in filtered_tokens:
                 filtered_tokens.append("FREQ")
             if override_tokens:
                 if "FREQ" in filtered_tokens:
@@ -286,9 +299,26 @@ def _write_input_from_template(
                     )
                 else:
                     filtered_tokens.extend(override_tokens)
+            if not include_freq:
+                filtered_tokens = [tok for tok in filtered_tokens if tok.upper() != "FREQ"]
             lines[idx] = " ".join(filtered_tokens)
             if not lines[idx].endswith("\n"):
                 lines[idx] += "\n"
+
+    if not include_freq:
+        cleaned: list[str] = []
+        skipping_freq = False
+        for line in lines:
+            stripped = line.strip().lower()
+            if stripped.startswith("%freq"):
+                skipping_freq = True
+                continue
+            if skipping_freq:
+                if stripped == "end":
+                    skipping_freq = False
+                continue
+            cleaned.append(line)
+        lines = cleaned
 
     geom_start = None
     for idx, line in enumerate(lines):
@@ -1088,7 +1118,7 @@ def run_IMAG(
         """Create ORCA input from geometry, using template when available."""
         coords = _extract_xyz_coordinates(str(geometry_source))
         used_template = False
-        if include_freq and template_ctx and coords:
+        if template_ctx and coords:
             used_template = _write_input_from_template(
                 template_ctx,
                 coords,
@@ -1101,6 +1131,7 @@ def run_IMAG(
                 pal_override_local if pal_override_local is not None else pal_override,
                 maxcore_override_local if maxcore_override_local is not None else maxcore_override,
                 geom_override=geom_override,
+                include_freq=include_freq,
             )
 
         if not used_template:
@@ -1253,6 +1284,7 @@ def run_IMAG(
                     sp_input_path,
                     include_freq=False,
                     additions_payload=additions_eff,
+                    geom_override="",
                     pal_override_local=pal_override,
                     maxcore_override_local=maxcore_effective,
                 )
