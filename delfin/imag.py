@@ -1456,6 +1456,22 @@ def run_IMAG(
             print(
                 f"Structure file 'input_{last_success_iteration}.xyz' copied back as '{hess_file}.xyz'."
             )
+            # Also propagate the IMAG-refined geometry back to OCCUPIER-propagated files
+            propagated_name = f"input_{step_name}_OCCUPIER.xyz"
+            propagated_path = destination_folder / propagated_name
+            if propagated_path.exists():
+                try:
+                    shutil.copy2(destination_structure, propagated_path)
+                    logging.info(
+                        "[IMAG] Propagated refined geometry to %s",
+                        propagated_path,
+                    )
+                except Exception as copy_exc:  # noqa: BLE001
+                    logging.warning(
+                        "[IMAG] Failed to propagate refined geometry to %s: %s",
+                        propagated_path,
+                        copy_exc,
+                    )
         except Exception as e:
             logging.warning(f"copy back xyz: {e}")
     else:

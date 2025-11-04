@@ -1436,8 +1436,8 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             cores_max=cores_max,
         )
 
-    # Always include initial OCCUPIER job (recalc logic in OCCUPIER decides if it runs)
-    # This ensures dependencies work correctly even when initial already exists
+    imag_enabled = str(config.get('IMAG', 'no')).strip().lower() == 'yes'
+
     jobs.append(make_occupier_job(
         job_id="occ_proc_initial",
         folder_name="initial_OCCUPIER",
