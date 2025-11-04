@@ -103,12 +103,7 @@ class DynamicCorePool:
                 return None
 
             # Calculate allocation based on current load and job requirements
-            reserve = 0
-            if self.total_cores > 1:
-                reserve = self._min_waiting_cores_locked(job.cores_min)
-                reserve = min(reserve, max(0, available_cores - job.cores_min))
-
-            effective_available = max(job.cores_min, available_cores - reserve)
+            effective_available = max(job.cores_min, available_cores)
 
             if len(self._running_jobs) == 0:
                 # No other jobs running, give optimal cores while keeping reserved capacity if required
@@ -123,32 +118,11 @@ class DynamicCorePool:
             return cores
 
     def _calculate_balanced_allocation(self, new_job: PoolJob, available_cores: int) -> int:
-        """Calculate balanced allocation considering running jobs."""
-        running_count = len(self._running_jobs)
-
-        # Strategy 1: Fair sharing
-        fair_share = available_cores // (running_count + 1)
-
-        # Strategy 2: Priority-based allocation
-        if new_job.priority == JobPriority.HIGH:
-            priority_allocation = min(new_job.cores_optimal, available_cores // 2)
-        elif new_job.priority == JobPriority.LOW:
-            priority_allocation = max(new_job.cores_min, available_cores // 4)
-        else:
-            priority_allocation = fair_share
-
-        # Strategy 3: Performance-based allocation
-        # Give more cores to jobs that can use them efficiently
-        efficiency_factor = min(new_job.cores_optimal / new_job.cores_min, 2.0)
-        performance_allocation = int(fair_share * efficiency_factor)
-
-        # Choose the best strategy
-        allocation = max(
+        """Allocate all currently available cores (bounded by job limits)."""
+        return max(
             new_job.cores_min,
-            min(fair_share, priority_allocation, performance_allocation)
+            min(new_job.cores_optimal, new_job.cores_max, available_cores)
         )
-
-        return min(allocation, available_cores)
 
     def _min_waiting_cores_locked(self, default: int = 0) -> int:
         """Return minimum cores_min among queued jobs (expects caller holds lock)."""

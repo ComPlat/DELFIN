@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import time
@@ -512,6 +513,9 @@ class _WorkflowManager:
             # Guard against pathological snapshots where allocated exceeds total.
             available = min(total, available)
 
+        if not self._parallel_enabled:
+            return {job.job_id: total for job in ready_jobs}
+
         if ready_count == 1:
             target = max(1, available)
             logger.debug(
@@ -529,16 +533,38 @@ class _WorkflowManager:
             available = max(ready_count, self._base_share() * ready_count)
             available = min(total, available)
 
+        # Derive relative weights from past runtimes (longer jobs → höhere Priorität)
+        weights: Dict[str, float] = {}
+        weight_sum = 0.0
+        for job in ready_jobs:
+            duration = self._get_duration_hint(job)
+            weight = max(1.0, math.sqrt(duration / 300.0)) if duration else 1.0
+            weights[job.job_id] = weight
+            weight_sum += weight
+
         per_job = max(1, available // ready_count)
         remainder = max(0, available - per_job * ready_count)
+        allocation_pool = available
 
         allocations: Dict[str, int] = {}
         for idx, job in enumerate(ready_jobs):
-            extra = 1 if remainder > 0 else 0
+            base = per_job
             if remainder > 0:
+                base += 1
                 remainder -= 1
-            target = per_job + extra
-            allocations[job.job_id] = max(1, min(target, total))
+
+            share = base
+            if weight_sum > 0:
+                proportional = int(round(available * (weights[job.job_id] / weight_sum)))
+                share = max(base, proportional)
+
+            share = max(1, min(share, total))
+            allocations[job.job_id] = share
+            allocation_pool -= share
+
+        if allocation_pool > 0 and allocations:
+            last_job = ready_jobs[-1].job_id
+            allocations[last_job] = min(total, allocations[last_job] + allocation_pool)
 
         return allocations
 

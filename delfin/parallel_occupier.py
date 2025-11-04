@@ -1261,7 +1261,11 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
 
     # Strategy: Reserve ~25-30% of cores for potential parallel post-processing
     # unless we have very few cores (< 16) or parallel ox/red workflows
-    if max_parallel_at_any_level > 1 and total_cores >= 8:
+    parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+
+    if parallel_mode == 'disable':
+        cores_optimal_per_job = total_cores
+    elif max_parallel_at_any_level > 1 and total_cores >= 8:
         # Both ox and red: split cores between them
         cores_optimal_per_job = max(4, total_cores // max_parallel_at_any_level)
     elif total_cores >= 32:
@@ -1428,7 +1432,7 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             description=f"OCCUPIER process for {folder_name}",
             dependencies=dependencies or set(),
             cores_min=cores_min,
-            cores_optimal=cores_optimal_per_job,
+            cores_optimal=total_cores,
             cores_max=cores_max,
         )
 
