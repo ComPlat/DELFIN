@@ -62,6 +62,18 @@ def _as_imag_scope(value: Any) -> str:
         return text
     raise ValueError("must be one of: initial, all")
 
+def _as_imag_option(value: Any) -> int:
+    """Coerce IMAG scheduler behaviour selector."""
+    if value is None or value == "":
+        return 2
+    try:
+        option = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("must be 1 or 2") from exc
+    if option not in (1, 2):
+        raise ValueError("must be 1 or 2")
+    return option
+
 CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("NAME", _as_str, default=""),
     FieldSpec("SMILES", _as_str, default=""),
@@ -81,6 +93,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("geom_opt", _as_str, default="OPT"),
     FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
+    FieldSpec("IMAG_option", _as_imag_option, default=2),
 )
 
 

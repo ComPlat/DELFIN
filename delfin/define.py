@@ -25,6 +25,7 @@ multiplicity_global_opt=
 ------------------------------------
 IMAG=yes
 IMAG_scope=initial
+IMAG_option=2
 allow_imaginary_freq=0
 IMAG_sp_energy_window=1e-3
 IMAG_optimize_candidates=no
@@ -174,6 +175,9 @@ Available dispersion corrections DISP_CORR: D4 ; D3 ; D3BJ ; D3ZERO ; NONE
 Available EXCITATIONS: s (singulet) ; t (triplet) (s is more difficult to converge, there may be no convergence).
 E_00 can only be calculated for closed shell systems (use classic or manually!)
 EXPLICIT SOLVATION MODEL IS VERY EXPENSIVE!!!!!
+IMAG_option:
+  1 -> red/ox OCCUPIER continues immediately (IMAG and OCCUPIER run in parallel)
+  2 -> red/ox OCCUPIER waits for IMAG to finish and uses the refined geometry
 -------------------------------------------------
 ESD MODULE (Excited State Dynamics):
 ESD_modul: yes/no - Enable ESD calculations in separate ESD/ directory

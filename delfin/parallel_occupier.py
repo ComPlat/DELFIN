@@ -1780,6 +1780,55 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
     # Combine both lists
     combined_jobs = occupier_process_jobs + postprocessing_jobs
 
+    # Guard OCCUPIER processes until the IMAG refinement they rely on has finished,
+    # if requested via CONTROL settings.
+    imag_enabled = str(config.get('IMAG', 'no')).strip().lower() == 'yes'
+    if imag_enabled:
+        try:
+            imag_option = int(config.get('IMAG_option', 2) or 2)
+        except (TypeError, ValueError):
+            imag_option = 2
+        if imag_option != 2:
+            logger.debug(
+                "[combined] IMAG_option=%s → skipping additional OCCUPIER dependencies",
+                imag_option,
+            )
+        else:
+            imag_scope = str(config.get('IMAG_scope', 'initial')).strip().lower()
+            job_lookup = {job.job_id: job for job in combined_jobs}
+
+            def _attach_imag_dependency(target_id: str, dependency_id: str) -> None:
+                target_job = job_lookup.get(target_id)
+                dependency_job = job_lookup.get(dependency_id)
+                if not target_job or not dependency_job:
+                    return
+                if dependency_id in target_job.dependencies:
+                    return
+                target_job.dependencies.add(dependency_id)
+                logger.debug(
+                    "[combined] Added IMAG dependency: %s waits for %s",
+                    target_id,
+                    dependency_id,
+                )
+
+            if imag_scope in {"initial", "all"}:
+                _attach_imag_dependency("occ_proc_red_1", "occupier_initial")
+                _attach_imag_dependency("occ_proc_ox_1", "occupier_initial")
+
+            if imag_scope == "all":
+                for step in oxidation_steps:
+                    if step <= 1:
+                        continue
+                    prev_job = f"occupier_ox_{step - 1}"
+                    current_proc = f"occ_proc_ox_{step}"
+                    _attach_imag_dependency(current_proc, prev_job)
+                for step in reduction_steps:
+                    if step <= 1:
+                        continue
+                    prev_job = f"occupier_red_{step - 1}"
+                    current_proc = f"occ_proc_red_{step}"
+                    _attach_imag_dependency(current_proc, prev_job)
+
     logger.info(
         "[combined] Built %d total jobs (%d OCCUPIER processes + %d post-processing)",
         len(combined_jobs),
