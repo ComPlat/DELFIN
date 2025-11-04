@@ -115,6 +115,27 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
             _ensure_xyz_header_threadsafe(target_input_xyz, preferred_parent_xyz)
             _ensure_xyz_header_threadsafe(target_input0_xyz, preferred_parent_xyz)
 
+            # Validate that the backup geometry actually contains atoms; if not,
+            # refresh it from the primary copy to avoid empty 'input0.xyz'.
+            try:
+                with target_input0_xyz.open("r", encoding="utf-8", errors="ignore") as fh:
+                    backup_lines = fh.readlines()
+                if _count_xyz_coord_lines(backup_lines) == 0 and target_input_xyz.exists():
+                    shutil.copy(target_input_xyz, target_input0_xyz)
+                    _ensure_xyz_header_threadsafe(target_input0_xyz, target_input_xyz)
+                    logger.warning(
+                        "Detected empty backup geometry %s; refreshed from %s.",
+                        target_input0_xyz,
+                        target_input_xyz,
+                    )
+            except Exception as coord_exc:  # noqa: BLE001
+                logger.error(
+                    "Failed to validate backup geometry %s: %s",
+                    target_input0_xyz,
+                    coord_exc,
+                )
+                return None
+
             print(f"Copied preferred geometry to {folder}/input.xyz")
         else:
             logger.warning(f"Preferred geometry file not found: {preferred_parent_xyz}")

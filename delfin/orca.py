@@ -377,10 +377,32 @@ def run_orca(
     if not orca_path:
         return False
 
+    input_path = Path(input_file_path)
+    output_path = Path(output_log)
+
+    if working_dir is not None:
+        working_dir = Path(working_dir)
+        if not input_path.is_absolute():
+            input_path = (Path.cwd() / input_path).resolve()
+        if not output_path.is_absolute():
+            output_path = (Path.cwd() / output_path).resolve()
+    else:
+        if not input_path.is_absolute():
+            input_path = input_path.resolve()
+        if not output_path.is_absolute():
+            output_path = output_path.resolve()
+
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # Directory might already exist or creation could fail due to permissions;
+        # defer handling to the subprocess call / open().
+        pass
+
     if _run_orca_subprocess(
         orca_path,
-        input_file_path,
-        output_log,
+        str(input_path),
+        str(output_path),
         timeout,
         scratch_subdir=scratch_subdir,
         working_dir=working_dir,
