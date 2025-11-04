@@ -1075,9 +1075,9 @@ def run_IMAG(
 
     if source_input:
         src_pal, src_maxcore = _extract_resources_from_input(source_input)
-        if src_pal is not None:
+        if pal_override is None and src_pal is not None:
             pal_override = src_pal
-        if src_maxcore is not None:
+        if maxcore_override is None and src_maxcore is not None:
             maxcore_override = src_maxcore
 
     if recalc and imag_folder.is_dir():
@@ -1220,21 +1220,32 @@ def run_IMAG(
         logging.debug("Global job manager unavailable for IMAG single-point pool runs; falling back to sequential.", exc_info=True)
         shared_pool = None
 
-    core_share = _coerce_int(config.get("PAL"), 1)
-    if shared_pool is not None:
+    resolved_pal: Optional[int]
+    if pal_override is not None:
         try:
-            total_cores = max(1, getattr(shared_pool, "total_cores", core_share))
-            concurrent = max(1, getattr(shared_pool, "max_concurrent_jobs", 1))
-            base_share = max(1, total_cores // concurrent)
-            status = shared_pool.get_status()
-            available = status.get("total_cores", total_cores) - status.get("allocated_cores", 0)
-            if available > 0:
-                base_share = min(base_share, available)
-            core_share = max(1, min(base_share, total_cores))
-        except Exception:
-            logging.debug("Failed to derive core share from global pool; falling back to CONTROL PAL.", exc_info=True)
+            resolved_pal = max(1, int(pal_override))
+        except (TypeError, ValueError):
+            resolved_pal = max(1, _coerce_int(config.get("PAL"), 1))
+    else:
+        core_share = _coerce_int(config.get("PAL"), 1)
+        if shared_pool is not None:
+            try:
+                total_cores = max(1, getattr(shared_pool, "total_cores", core_share))
+                concurrent = max(1, getattr(shared_pool, "max_concurrent_jobs", 1))
+                base_share = max(1, total_cores // concurrent)
+                status = shared_pool.get_status()
+                available = status.get("total_cores", total_cores) - status.get("allocated_cores", 0)
+                if available > 0:
+                    base_share = min(base_share, available)
+                core_share = max(1, min(base_share, total_cores))
+            except Exception:
+                logging.debug(
+                    "Failed to derive core share from global pool; falling back to CONTROL PAL.",
+                    exc_info=True,
+                )
+        resolved_pal = max(1, core_share)
 
-    pal_override = core_share
+    pal_override = resolved_pal
 
     iteration = 0
     last_success_iteration = 0

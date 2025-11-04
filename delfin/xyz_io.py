@@ -4,7 +4,7 @@ import math
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, resolve_maxiter
 
@@ -117,6 +117,19 @@ def _persist_qmmm_signature(signature: Tuple[str, ...], qmmm_range: Tuple[int, i
                     json.dump(data, fh)
         except Exception:
             continue
+
+
+def normalize_xyz_body(lines: Iterable[str]) -> List[str]:
+    """Normalize XYZ coordinate lines by stripping blanks and trailing markers."""
+    normalized: List[str] = []
+    for raw in lines:
+        if raw is None:
+            continue
+        stripped = str(raw).strip()
+        if not stripped or stripped == "*":
+            continue
+        normalized.append(stripped + ("\n" if not stripped.endswith("\n") else ""))
+    return normalized
 
 
 def _geometry_signature(lines: List[str]) -> Optional[Tuple[str, ...]]:
@@ -289,14 +302,14 @@ def split_qmmm_sections(
     ``explicit`` is ``True`` when the separator was present in the current file (``False`` when the
     split is restored from cache).
     """
+    normalized = list(normalize_xyz_body(coord_lines))
+
     qm_lines: List[str] = []
     mm_lines: List[str] = []
     separator_seen = False
 
-    for raw in coord_lines:
+    for raw in normalized:
         stripped = raw.strip()
-        if not stripped or stripped == "*":
-            continue
         if stripped == "$":
             if not separator_seen:
                 separator_seen = True

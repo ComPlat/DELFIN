@@ -194,8 +194,9 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
             job_id = f"imag_{step['name']}"
             additions_payload = additions
 
-            # Keep orchestration lightweight; heavy ORCA runs are dispatched separately.
-            cores_min, cores_opt, cores_max = 1, 1, 1
+            cores_min, cores_opt, cores_max = scheduler.manager.derive_core_bounds(
+                hint=f"IMAG {step['name']}"
+            )
 
             def make_work(step_name: str,
                           out_path: Path,
@@ -219,7 +220,7 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
                         additions_val,
                         step_name=step_name,
                         source_input=str(inp_file),
-                        pal_override=None,
+                        pal_override=cores,
                         maxcore_override=None,
                     )
                     logger.info("✅ %s completed successfully", step_name)

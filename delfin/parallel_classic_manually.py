@@ -49,6 +49,17 @@ class WorkflowJob:
     memory_mb: Optional[int] = None
     estimated_duration: float = 3600.0
 
+    # Cache original core preferences so dynamic scheduling can adjust per run.
+    base_cores_min: int = field(init=False, repr=False)
+    base_cores_optimal: int = field(init=False, repr=False)
+    base_cores_max: int = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # The actual values will be set by _WorkflowManager.add_job once PAL is known.
+        self.base_cores_min = self.cores_min
+        self.base_cores_optimal = self.cores_optimal
+        self.base_cores_max = self.cores_max
+
 
 @dataclass
 class WorkflowRunResult:
@@ -147,6 +158,11 @@ class _WorkflowManager:
         job.cores_min = max(1, min(job.cores_min, self.total_cores))
         job.cores_max = max(job.cores_min, min(job.cores_max, self.total_cores))
         job.cores_optimal = max(job.cores_min, min(job.cores_optimal, job.cores_max))
+
+        # Remember the original preferences so we can recompute dynamic allocations per dispatch.
+        job.base_cores_min = job.cores_min
+        job.base_cores_optimal = job.cores_optimal
+        job.base_cores_max = job.cores_max
 
         self._auto_tune_job(job)
 
@@ -297,17 +313,10 @@ class _WorkflowManager:
                 sorted(self._completed),
             )
 
-            if (
-                status
-                and len(ready) == 1
-                and status.get('running_jobs', 0) == 0
-                and status.get('queued_jobs', 0) == 0
-                and not ready[0].job_id.lower().startswith("imag_")
-            ):
-                self._apply_exclusive_allocation(ready[0])
+            allocations = self._plan_core_allocations(ready, status)
 
             for job in ready:
-                self._submit(job)
+                self._submit(job, allocations.get(job.job_id))
                 pending.pop(job.job_id, None)
 
             # After submitting ready jobs, wait briefly for state changes
@@ -343,7 +352,7 @@ class _WorkflowManager:
             self.pool.max_concurrent_jobs > 1 and self.total_cores > 1
         )
 
-    def _submit(self, job: WorkflowJob) -> None:
+    def _submit(self, job: WorkflowJob, forced_cores: Optional[int] = None) -> None:
         def runner(*_args, **kwargs):
             cores = kwargs.get('cores', job.cores_optimal)
             pool_snapshot = kwargs.get('pool_snapshot')
@@ -379,10 +388,10 @@ class _WorkflowManager:
 
         pool_job = PoolJob(
             job_id=job.job_id,
-            cores_min=job.cores_min,
-            cores_optimal=job.cores_optimal,
-            cores_max=job.cores_max,
-            memory_mb=job.memory_mb,
+            cores_min=self._resolve_min_cores(job, forced_cores),
+            cores_optimal=self._resolve_opt_cores(job, forced_cores),
+            cores_max=self._resolve_max_cores(job, forced_cores),
+            memory_mb=self._resolve_memory(job, forced_cores),
             priority=job.priority,
             execute_func=runner,
             args=(),
@@ -450,23 +459,6 @@ class _WorkflowManager:
             share = max(2, share)
         return min(self.total_cores, share)
 
-    def _apply_exclusive_allocation(self, job: WorkflowJob) -> None:
-        target = max(1, self.total_cores)
-        if job.cores_optimal >= target and job.cores_max >= target:
-            return
-
-        job.cores_max = target
-        job.cores_optimal = target
-        job.memory_mb = target * self.maxcore_mb
-
-        logger.info(
-            "[%s] Exclusive allocation for %s (%s) → %d cores",
-            self.label,
-            job.job_id,
-            job.description,
-            target,
-        )
-
     def _auto_tune_job(self, job: WorkflowJob) -> None:
         if not self._parallel_enabled:
             job.cores_min = job.cores_max = job.cores_optimal = self.total_cores
@@ -492,6 +484,88 @@ class _WorkflowManager:
         else:
             job.cores_optimal = max(job.cores_min, min(job.cores_optimal, suggestion))
 
+    def _plan_core_allocations(
+        self,
+        ready_jobs: List[WorkflowJob],
+        status_snapshot: Optional[Dict[str, Any]],
+    ) -> Dict[str, int]:
+        """
+        Determine per-job core targets so the last runnable job obtains full PAL and
+        otherwise share available cores evenly across ready jobs.
+        """
+        if not ready_jobs:
+            return {}
+
+        status_snapshot = status_snapshot or {}
+        running_jobs = max(0, int(status_snapshot.get('running_jobs', 0)))
+        queued_jobs = max(0, int(status_snapshot.get('queued_jobs', 0)))
+        allocated_cores = max(0, int(status_snapshot.get('allocated_cores', 0)))
+        total = self.total_cores
+
+        ready_count = len(ready_jobs)
+
+        # If nothing else is running, the ready jobs may use the full PAL.
+        if running_jobs == 0:
+            available = total
+        else:
+            available = max(1, total - allocated_cores)
+            # Guard against pathological snapshots where allocated exceeds total.
+            available = min(total, available)
+
+        if ready_count == 1:
+            target = max(1, available)
+            logger.debug(
+                "[%s] Exclusive allocation for %s (%s) → %d cores",
+                self.label,
+                ready_jobs[0].job_id,
+                ready_jobs[0].description,
+                target,
+            )
+            return {ready_jobs[0].job_id: target}
+
+        # Multiple jobs ready: distribute available capacity as evenly as possible.
+        # Fall back to base share if available cores are insufficient.
+        if available < ready_count:
+            available = max(ready_count, self._base_share() * ready_count)
+            available = min(total, available)
+
+        per_job = max(1, available // ready_count)
+        remainder = max(0, available - per_job * ready_count)
+
+        allocations: Dict[str, int] = {}
+        for idx, job in enumerate(ready_jobs):
+            extra = 1 if remainder > 0 else 0
+            if remainder > 0:
+                remainder -= 1
+            target = per_job + extra
+            allocations[job.job_id] = max(1, min(target, total))
+
+        return allocations
+
+    def _resolve_min_cores(self, job: WorkflowJob, forced: Optional[int]) -> int:
+        # Minimum requirement stays at the job's baseline to ensure schedulability.
+        return max(1, job.base_cores_min)
+
+    def _resolve_opt_cores(self, job: WorkflowJob, forced: Optional[int]) -> int:
+        if forced is None:
+            return job.cores_optimal
+        forced = max(1, min(forced, self.total_cores))
+        return max(job.base_cores_min, forced)
+
+    def _resolve_max_cores(self, job: WorkflowJob, forced: Optional[int]) -> int:
+        base_max = job.base_cores_max
+        if forced is None:
+            return job.cores_max
+        forced = max(1, min(forced, self.total_cores))
+        return max(base_max, job.cores_max, forced)
+
+    def _resolve_memory(self, job: WorkflowJob, forced: Optional[int]) -> int:
+        if forced is None:
+            return job.memory_mb
+        resolved = max(job.base_cores_min, min(forced, self.total_cores))
+        return resolved * self.maxcore_mb
+
+
     def enforce_sequential_allocation(self) -> None:
         """Force all jobs to use the full PAL when running sequentially."""
         self._parallel_enabled = False
@@ -501,6 +575,9 @@ class _WorkflowManager:
             job.cores_max = full
             job.cores_optimal = full
             job.memory_mb = job.cores_optimal * self.maxcore_mb
+            job.base_cores_min = full
+            job.base_cores_optimal = full
+            job.base_cores_max = full
 
     def _suggest_optimal_from_hint(
         self,

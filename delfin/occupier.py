@@ -17,7 +17,12 @@ from .utils import (
 )
 from .reporting import generate_summary_report_OCCUPIER
 from .orca import run_orca
-from .xyz_io import build_qmmm_block, split_qmmm_sections, _ensure_qmmm_implicit_model
+from .xyz_io import (
+    build_qmmm_block,
+    split_qmmm_sections,
+    _ensure_qmmm_implicit_model,
+    normalize_xyz_body,
+)
 from .parallel_classic_manually import (
     _WorkflowManager,
     WorkflowJob,
@@ -106,8 +111,8 @@ def run_OCCUPIER():
             logger.error(f"Error reading file '{input_file_path}': {e}")
 
     def clean_xyz_block(lines):
-        """Return coordinate lines without stray '*' end markers."""
-        return [line for line in lines if line.strip() != '*']
+        """Return coordinate lines without stray markers or empty rows."""
+        return normalize_xyz_body(lines)
 
     # --------- covalent radii (all elements via mendeleev, with fallback) ---------
 
