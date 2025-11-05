@@ -382,8 +382,11 @@ def _write_input_from_template(
     additions_text = additions_text.strip()
     if additions_text:
         additions_lines = [ln if ln.endswith("\n") else ln + "\n" for ln in additions_text.splitlines()]
-        insertion_index = geom_end
-        lines = lines[:insertion_index] + additions_lines + lines[insertion_index:]
+        existing_normalized = {line.strip().lower() for line in lines}
+        additions_lines = [ln for ln in additions_lines if ln.strip().lower() not in existing_normalized]
+        if additions_lines:
+            insertion_index = geom_start - 1 if geom_start > 0 else 0
+            lines = lines[:insertion_index] + additions_lines + lines[insertion_index:]
 
     try:
         with Path(output_path).open("w", encoding="utf-8") as fh:
