@@ -1546,8 +1546,19 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
         postprocessing_jobs = build_occupier_jobs(context, planning_only=True, include_auxiliary=True)
     except RuntimeError as exc:
         exc_text = str(exc)
-        missing_initial = "initial_OCCUPIER" in exc_text and "missing OCCUPIER.txt" in exc_text
-        if not missing_initial:
+        missing_folder = None
+        if "missing OCCUPIER.txt" in exc_text:
+            match = re.search(r"'([^']+_OCCUPIER)'", exc_text)
+            if match:
+                missing_folder = match.group(1)
+        if missing_folder:
+            deferred_set = config.setdefault('_occ_post_missing', set())
+            deferred_set.add(missing_folder)
+            logger.info(
+                "[combined] Post-processing for %s deferred until OCCUPIER results are regenerated.",
+                missing_folder,
+            )
+        else:
             logger.warning(
                 "[combined] Could not build post-processing jobs: %s; "
                 "falling back to OCCUPIER-only execution",
@@ -1559,7 +1570,14 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
     # If planning failed because initial OCCUPIER hasn't produced results yet,
     # we'll attach a callback to build the post-processing jobs after occ_proc_initial completes.
     if postprocessing_jobs is None:
-        logger.info("[combined] Deferring post-processing job generation until occ_proc_initial completes.")
+        missing_targets = sorted(config.get('_occ_post_missing', set()))
+        if missing_targets:
+            logger.info(
+                "[combined] Deferring post-processing job generation; pending OCCUPIER results for: %s",
+                ", ".join(missing_targets),
+            )
+        else:
+            logger.info("[combined] Deferring post-processing job generation until occ_proc_initial completes.")
 
         planned_stages: Set[str] = config.setdefault('_occ_post_planned', set())
 
