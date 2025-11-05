@@ -150,34 +150,38 @@ class _WorkflowManager:
         return cores_min, preferred, cores_max
 
     def add_job(self, job: WorkflowJob) -> None:
-        if job.job_id in self._jobs:
-            raise ValueError(f"Duplicate workflow job id '{job.job_id}'")
+        with self._lock:
+            if job.job_id in self._jobs:
+                raise ValueError(f"Duplicate workflow job id '{job.job_id}'")
 
-        deps = set(job.dependencies)
-        job.dependencies = deps
+            deps = set(job.dependencies)
+            job.dependencies = deps
 
-        job.cores_min = max(1, min(job.cores_min, self.total_cores))
-        job.cores_max = max(job.cores_min, min(job.cores_max, self.total_cores))
-        job.cores_optimal = max(job.cores_min, min(job.cores_optimal, job.cores_max))
+            job.cores_min = max(1, min(job.cores_min, self.total_cores))
+            job.cores_max = max(job.cores_min, min(job.cores_max, self.total_cores))
+            job.cores_optimal = max(job.cores_min, min(job.cores_optimal, job.cores_max))
 
-        # Remember the original preferences so we can recompute dynamic allocations per dispatch.
-        job.base_cores_min = job.cores_min
-        job.base_cores_optimal = job.cores_optimal
-        job.base_cores_max = job.cores_max
+            # Remember the original preferences so we can recompute dynamic allocations per dispatch.
+            job.base_cores_min = job.cores_min
+            job.base_cores_optimal = job.cores_optimal
+            job.base_cores_max = job.cores_max
 
-        self._auto_tune_job(job)
+            self._auto_tune_job(job)
 
-        if job.memory_mb is None:
-            job.memory_mb = job.cores_optimal * self.maxcore_mb
+            if job.memory_mb is None:
+                job.memory_mb = job.cores_optimal * self.maxcore_mb
 
-        self._jobs[job.job_id] = job
-        logger.info(
-            "[%s] Registered job %s (%s); deps=%s",
-            self.label,
-            job.job_id,
-            job.description,
-            ",".join(sorted(job.dependencies)) or "none",
-        )
+            self._jobs[job.job_id] = job
+            logger.info(
+                "[%s] Registered job %s (%s); deps=%s",
+                self.label,
+                job.job_id,
+                job.description,
+                ",".join(sorted(job.dependencies)) or "none",
+            )
+
+            # Wake up scheduler to process new job
+            self._event.set()
 
     def register_completion_listener(self, listener: Callable[[str], None]) -> None:
         with self._lock:
@@ -517,15 +521,19 @@ class _WorkflowManager:
             return {job.job_id: total for job in ready_jobs}
 
         if ready_count == 1:
-            target = max(1, available)
+            # Single ready job: give it all available cores (up to its max)
+            job = ready_jobs[0]
+            target = max(job.cores_min, min(available, job.cores_max))
             logger.debug(
-                "[%s] Exclusive allocation for %s (%s) → %d cores",
+                "[%s] Exclusive allocation for %s (%s) → %d cores (available=%d, max=%d)",
                 self.label,
-                ready_jobs[0].job_id,
-                ready_jobs[0].description,
+                job.job_id,
+                job.description,
                 target,
+                available,
+                job.cores_max,
             )
-            return {ready_jobs[0].job_id: target}
+            return {job.job_id: target}
 
         # Multiple jobs ready: distribute available capacity as evenly as possible.
         # Fall back to base share if available cores are insufficient.
@@ -558,13 +566,29 @@ class _WorkflowManager:
                 proportional = int(round(available * (weights[job.job_id] / weight_sum)))
                 share = max(base, proportional)
 
-            share = max(1, min(share, total))
+            # Respect job's core limits: min <= share <= max
+            share = max(job.cores_min, min(share, job.cores_max, total))
             allocations[job.job_id] = share
             allocation_pool -= share
 
+        # Distribute remaining cores to jobs that can use more (up to their max)
         if allocation_pool > 0 and allocations:
-            last_job = ready_jobs[-1].job_id
-            allocations[last_job] = min(total, allocations[last_job] + allocation_pool)
+            for job in ready_jobs:
+                if allocation_pool <= 0:
+                    break
+                current = allocations[job.job_id]
+                can_add = min(allocation_pool, job.cores_max - current)
+                if can_add > 0:
+                    allocations[job.job_id] = current + can_add
+                    allocation_pool -= can_add
+                    logger.debug(
+                        "[%s] Allocated +%d cores to %s (now %d/%d cores)",
+                        self.label,
+                        can_add,
+                        job.job_id,
+                        allocations[job.job_id],
+                        job.cores_max,
+                    )
 
         return allocations
 
@@ -621,8 +645,9 @@ class _WorkflowManager:
         suggestion = base_share
 
         if "fob" in hint_lc or "occ_" in hint_lc:
+            suggestion = base_share
             cap = self._foB_cap()
-            suggestion = min(cap, base_share)
+            suggestion = min(cap, suggestion)
         elif any(token in hint_lc for token in light_tokens):
             suggestion = max(1, base_share // 2)
         elif any(token in hint_lc for token in heavy_tokens):
@@ -690,7 +715,7 @@ class _WorkflowManager:
         min_required = 2
 
         if "fob" in hint_lc or "occ_" in hint_lc:
-            min_required = max(4, min(self._foB_cap(), base_share))
+            min_required = max(4, base_share)
         elif any(token in hint_lc for token in heavy_tokens):
             min_required = max(4, base_share)
         elif any(token in hint_lc for token in light_tokens):

@@ -35,6 +35,304 @@ from .process_checker import check_and_warn_competing_processes
 logger = get_logger(__name__)
 
 
+# ======================== Helper functions (extracted for flat architecture) ========================
+
+def _stem(i: int, base: str = "input") -> str:
+    """Generate filename stem for FoB index i."""
+    return base if i == 1 else f"{base}{i}"
+
+
+def _resolve_primary_source(raw_from, fallback: int) -> int:
+    """Resolve the primary source index from raw_from (can be list/tuple/int)."""
+    if isinstance(raw_from, (list, tuple, set)):
+        for candidate in raw_from:
+            try:
+                parsed = int(str(candidate).strip())
+            except (TypeError, ValueError):
+                continue
+            else:
+                if parsed >= 0:
+                    return parsed
+        return fallback if fallback >= 0 else 0
+    try:
+        parsed = int(str(raw_from).strip())
+    except (TypeError, ValueError):
+        return fallback if fallback >= 0 else 0
+    return parsed if parsed >= 0 else (fallback if fallback >= 0 else 0)
+
+
+def _parse_dependency_indices(raw_from):
+    """Parse dependency indices from various formats (list, string, int)."""
+    deps: set[int] = set()
+    if raw_from in (None, "", 0):
+        return deps
+
+    tokens = []
+    if isinstance(raw_from, (list, tuple, set)):
+        tokens = list(raw_from)
+    else:
+        text = str(raw_from)
+        tokens = [tok for tok in re.split(r"[;,|]", text) if tok.strip()]
+
+    if not tokens:
+        tokens = [raw_from]
+
+    for token in tokens:
+        try:
+            parsed = int(str(token).strip())
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            deps.add(parsed)
+    return deps
+
+
+# Covalent radii cache
+COVALENT_RADII_CACHE: Dict[str, Optional[Dict[str, float]]] = {}
+
+COVALENT_RADII_FALLBACK = {
+    "H": 0.31, "He": 0.28,
+    "Li": 1.28, "Be": 0.96, "B": 0.84, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57, "Ne": 0.58,
+    "Na": 1.66, "Mg": 1.41, "Al": 1.21, "Si": 1.11, "P": 1.07, "S": 1.05, "Cl": 1.02, "Ar": 1.06,
+    "K": 2.03, "Ca": 1.76, "Sc": 1.70, "Ti": 1.60, "V": 1.53, "Cr": 1.39, "Mn": 1.39,
+    "Fe": 1.25, "Co": 1.26, "Ni": 1.21, "Cu": 1.38, "Zn": 1.31,
+    "Ga": 1.22, "Ge": 1.20, "As": 1.19, "Se": 1.20, "Br": 1.20, "Kr": 1.16,
+    "Rb": 2.20, "Sr": 1.95, "Y": 1.90, "Zr": 1.75, "Nb": 1.64, "Mo": 1.54, "Ru": 1.46, "Rh": 1.42, "Pd": 1.39,
+    "Ag": 1.45, "Cd": 1.44, "In": 1.42, "Sn": 1.39, "Sb": 1.39, "Te": 1.38, "I": 1.39, "Xe": 1.40,
+}
+
+
+def load_covalent_radii(source="pyykko2009"):
+    """Load single-bond covalent radii (Å) for H–Og using 'mendeleev'."""
+    key = str(source).lower()
+    if key in COVALENT_RADII_CACHE:
+        return COVALENT_RADII_CACHE[key]
+    try:
+        from mendeleev import element
+    except Exception:
+        COVALENT_RADII_CACHE[key] = None
+        return None
+
+    attr = {"pyykko2009": "covalent_radius_pyykko", "cordero2008": "covalent_radius_cordero"}.get(
+        key, "covalent_radius_pyykko"
+    )
+    radii = {}
+    for Z in range(1, 119):
+        el = element(Z)
+        r = getattr(el, attr, None)
+        if r is None:
+            alt = "covalent_radius_cordero" if attr == "covalent_radius_pyykko" else "covalent_radius_pyykko"
+            r = getattr(el, alt, None)
+        if r is not None:
+            radii[el.symbol] = float(r) / 100.0
+        else:
+            logger.warning("Missing covalent radius for %s (Z=%d); will use fallback.", el.symbol, Z)
+    COVALENT_RADII_CACHE[key] = radii
+    return radii
+
+
+def _elem_from_label(label: str) -> str:
+    """Extract the chemical symbol from 'Fe(1)' or 'Fe'."""
+    m = re.match(r"([A-Za-z]{1,2})", label.strip())
+    return m.group(1) if m else label.strip()
+
+
+def _dist(a, b):
+    """Euclidean distance for atom dicts with x,y,z."""
+    return math.sqrt((a['x'] - b['x']) ** 2 + (a['y'] - b['y']) ** 2 + (a['z'] - b['z']) ** 2)
+
+
+def _parse_xyz_atoms_with_indices(xyz_lines):
+    """Parse atoms from a cleaned XYZ block (no count/comment lines)."""
+    atoms = []
+    for idx, line in enumerate(xyz_lines):
+        ls = line.strip()
+        if not ls or ls == '*':
+            break
+        parts = ls.split()
+        if len(parts) < 4:
+            continue
+        raw_label = parts[0]
+        elem = _elem_from_label(raw_label)
+        try:
+            x, y, z = map(float, parts[1:4])
+        except ValueError:
+            continue
+        atoms.append({"line_idx": idx, "raw": raw_label, "elem": elem, "x": x, "y": y, "z": z})
+    return atoms
+
+
+def _first_coordination_sphere_indices(atoms, metal_indices, scale, radii_map):
+    """Return a set of indices (in 'atoms') belonging to the first sphere of any metal."""
+    def _rcov(sym: str) -> float:
+        if radii_map and sym in radii_map:
+            return float(radii_map[sym])
+        return float(COVALENT_RADII_FALLBACK.get(sym, 1.20))
+
+    first = set()
+    for im in metal_indices:
+        m = atoms[im]
+        r_m = _rcov(m['elem'])
+        for i, a in enumerate(atoms):
+            if i == im:
+                continue
+            r_a = _rcov(a['elem'])
+            cutoff = scale * (r_m + r_a)
+            if _dist(m, a) <= cutoff:
+                first.add(i)
+    return first
+
+
+def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multiplicity,
+                                  solvent, found_metals, metal_basisset, main_basisset,
+                                  config, additions):
+    """Build the ORCA input with per-atom NewGTO for metals and first coordination sphere."""
+    xyz_file = "input.xyz" if from_index == 1 else f"input{from_index}.xyz"
+    xyz_path = resolve_path(xyz_file)
+    if not xyz_path.exists():
+        if from_index == 1:
+            alt_path = resolve_path("input0.xyz")
+            if alt_path.exists():
+                logger.warning("Primary geometry '%s' missing; falling back to '%s'.", xyz_path, alt_path)
+                xyz_path = alt_path
+            else:
+                logger.error(f"XYZ input file '{xyz_path}' not found.")
+                return
+        else:
+            logger.error(f"XYZ input file '{xyz_path}' not found.")
+            return
+
+    with xyz_path.open('r') as file:
+        lines = file.readlines()
+
+    cleaned_xyz = normalize_xyz_body(lines[2:])  # skip count/comment lines
+    geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(cleaned_xyz, xyz_path)
+    _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
+    atoms = _parse_xyz_atoms_with_indices(geom_lines)
+    if not atoms:
+        logger.error("No atoms parsed from XYZ.")
+        return
+
+    enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
+    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
+
+    if enable_first:
+        if sphere_scale_raw:
+            sphere_scale = float(sphere_scale_raw)
+            radii_all = None
+        else:
+            radii_all = load_covalent_radii(source=str(config.get('covalent_radii_source', 'pyykko2009')))
+            sphere_scale = 1.20
+    else:
+        radii_all = None
+        sphere_scale = float(sphere_scale_raw or 1.20)
+
+    # Relativity token + AUX-JK token follow 3d/4d5 policy
+    rel_token, aux_jk_token, _use_rel = select_rel_and_aux(found_metals or [], config)
+
+    # Optional implicit solvent token
+    implicit = ""
+    if config.get('implicit_solvation_model') and solvent:
+        implicit = f"{config['implicit_solvation_model']}({solvent})"
+    elif config.get('implicit_solvation_model'):
+        implicit = config['implicit_solvation_model']
+
+    # Initial guess (trim accidental trailing text)
+    initial_guess = (str(config.get('initial_guess', '')).split() or [''])[0]
+
+    # Whether to add FREQ
+    freq_flag = "FREQ" if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes' else ""
+
+    # Build the '!' line
+    tokens = ["!"]
+    if qmmm_range:
+        tokens.append("QM/XTB")
+    tokens.extend([
+        str(config['functional']),
+        rel_token,
+        str(main_basisset),
+        str(config.get('disp_corr', '')),
+        str(config.get('ri_jkx', '')),
+        aux_jk_token,
+        implicit,
+        str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
+    ])
+    if freq_flag:
+        tokens.append(freq_flag)
+    tokens.append(initial_guess)
+    bang = " ".join(t for t in tokens if t).replace("  ", " ").strip()
+
+    modified_lines = []
+    if additions and "moinp" in additions.lower():
+        bang += " MORead"
+    modified_lines.append(bang + "\n")
+
+    # Parallel / SCF controls
+    modified_lines.append(f"%pal nprocs {config['PAL']} end\n")
+    modified_lines.append(f"%scf maxiter {config['maxiter_occupier']} end\n")
+    modified_lines.append(f"%maxcore {config['maxcore']}\n")
+
+    # Extra blocks (e.g., %moinp, %scf BrokenSym, etc.)
+    if additions and additions.strip():
+        modified_lines.append(f"{additions.strip()}\n")
+
+    # Add %freq block with temperature if FREQ is enabled
+    if freq_flag:
+        from .xyz_io import _build_freq_block
+        freq_block = _build_freq_block(config)
+        modified_lines.append(freq_block)
+
+    # Start XYZ
+    modified_lines.extend(build_qmmm_block(qmmm_range))
+    modified_lines.append(f"* xyz {charge} {multiplicity}\n")
+
+    # Metals found by symbol
+    metal_syms = {m.strip().capitalize() for m in (found_metals or [])}
+    metal_indices = [i for i, a in enumerate(atoms) if a['elem'].capitalize() in metal_syms]
+
+    # First sphere indices (optional)
+    first_sphere = set()
+    if enable_first and metal_indices and metal_basisset:
+        first_sphere = _first_coordination_sphere_indices(atoms, metal_indices, sphere_scale, radii_all)
+
+    # Logging
+    def _fmt_idx(i): return f"{i}({atoms[i]['elem']})"
+    logger.info("Metals: %s | 1st sphere: %s",
+                 ", ".join(map(_fmt_idx, metal_indices)) if metal_indices else "-",
+                 ", ".join(map(_fmt_idx, sorted(first_sphere))) if first_sphere else "-")
+
+    metal_line_set = {atoms[i]['line_idx'] for i in metal_indices}
+    sphere_line_set = {atoms[i]['line_idx'] for i in first_sphere}
+
+    # Write coordinates, appending per-atom NewGTO where needed
+    for idx, line in enumerate(geom_lines):
+        ls = line.strip()
+        if not ls:
+            continue
+        apply_metal_basis = False
+        if metal_basisset:
+            if idx in metal_line_set:
+                apply_metal_basis = True
+            elif enable_first and idx in sphere_line_set:
+                apply_metal_basis = True
+
+        if apply_metal_basis:
+            line = line.rstrip() + f'   NewGTO "{metal_basisset}" end'
+
+        modified_lines.append(line if line.endswith("\n") else line + "\n")
+
+    if not geom_lines or geom_lines[-1].strip() != '*':
+        modified_lines.append("*\n")
+
+    with open(output_file_path, 'w') as file:
+        file.writelines(modified_lines)
+
+    logger.info(f"Input file from '{xyz_file}' modified and saved as '{output_file_path}'")
+
+
+# ======================== End of extracted helper functions ========================
+
+
 def run_OCCUPIER():
 
     print("""

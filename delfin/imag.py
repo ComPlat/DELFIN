@@ -1043,11 +1043,14 @@ def run_IMAG(
     source_input=None,
     pal_override=None,
     maxcore_override=None,
+    *,
+    manager=None,
 ):
     """Run IMAG elimination for a given calculation step.
 
     Args:
         step_name: Name of the calculation step (e.g., "initial", "red_step_1", "ox_step_2")
+        manager: Optional _WorkflowManager to submit IMAG jobs to for parallel execution
     """
     if str(config.get("IMAG", "no")).lower() != "yes":
         return

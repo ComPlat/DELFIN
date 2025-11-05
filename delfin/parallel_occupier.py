@@ -457,13 +457,15 @@ def build_occupier_jobs(
     functional = config.get('functional', 'ORCA')
 
     # Cache OCCUPIER outcomes (multiplicity/additions/index) for reuse by post-jobs
-    occ_results: Dict[str, Dict[str, Any]] = {}
-    config['_occ_results_runtime'] = occ_results
+    occ_results: Dict[str, Dict[str, Any]] = config.setdefault('_occ_results_runtime', {})
 
     calc_initial_flag = str(config.get('calc_initial', 'yes')).strip().lower()
     xtb_solvator_enabled = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
     if calc_initial_flag == 'yes' or xtb_solvator_enabled:
-        multiplicity_0, additions_0, _ = read_occ("initial_OCCUPIER", "initial", None)
+        try:
+            multiplicity_0, additions_0, _ = read_occ("initial_OCCUPIER", "initial", None)
+        except RuntimeError:
+            multiplicity_0, additions_0, _ = read_occ_from_control("initial", None)
 
         if xtb_solvator_enabled:
             solvated_xyz = Path("XTB_SOLVATOR") / "XTB_SOLVATOR.solvator.xyz"
@@ -782,7 +784,10 @@ def build_occupier_jobs(
     oxidation_steps = _parse_step_list(config.get('oxidation_steps'))
     for step in oxidation_steps:
         folder = f"ox_step_{step}_OCCUPIER"
-        multiplicity_step, additions_step, _ = read_occ(folder, "ox", step)
+        try:
+            multiplicity_step, additions_step, _ = read_occ(folder, "ox", step)
+        except RuntimeError:
+            multiplicity_step, additions_step, _ = read_occ_from_control("ox", step)
         if step == 1:
             requires: Set[str] = set()
             explicit_deps: Set[str] = set()
@@ -799,35 +804,18 @@ def build_occupier_jobs(
             primary_geom = Path("initial.xyz") if step == 1 else Path(f"ox_step_{step - 1}.xyz")
             fallback_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
         else:
-            primary_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
-            fallback_geom = primary_geom
+            occ_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
+            run_geom = Path(f"ox_step_{step}.xyz")
+            primary_geom = run_geom if run_geom.exists() else occ_geom
+            fallback_geom = occ_geom
 
-        if primary_geom.exists():
-            xyz_source_path = primary_geom
-        else:
-            if fallback_geom.exists():
-                if primary_geom != fallback_geom and not planning_only:
-                    logger.warning(
-                        "[occupier] Primary oxidation geometry %s missing; using OCCUPIER fallback %s",
-                        primary_geom,
-                        fallback_geom,
-                    )
-                xyz_source_path = fallback_geom
-            else:
-                if not planning_only:
-                    logger.warning(
-                        "[occupier] No geometry found for oxidation step %d; proceeding with %s",
-                        step,
-                        primary_geom,
-                    )
-                xyz_source_path = primary_geom
-        xyz_source = str(xyz_source_path)
         inp_path = f"ox_step_{step}.inp"
         out_path = f"ox_step_{step}.out"
         step_charge = base_charge + step
 
         def make_oxidation_work(idx: int, mult: int, adds: str,
-                                xyz_path: str, inp: str, out: str,
+                                primary: Path, fallback: Path,
+                                inp: str, out: str,
                                 charge_value: int) -> Callable[[int], None]:
             def _work(cores: int) -> None:
                 dyn_mult = mult
@@ -841,8 +829,22 @@ def build_occupier_jobs(
                 except Exception:  # noqa: BLE001
                     logger.debug("[occupier] Using fallback multiplicity/additions for ox_step_%d", idx, exc_info=True)
 
+                geom_path = primary if primary.exists() else fallback
+                if not geom_path.exists():
+                    raise FileNotFoundError(
+                        f"Geometry for oxidation step {idx} not found "
+                        f"(checked {primary} and {fallback})"
+                    )
+
+                if primary != fallback and primary != geom_path:
+                    logger.warning(
+                        "[occupier] Primary oxidation geometry %s missing; using fallback %s",
+                        primary,
+                        geom_path,
+                    )
+
                 read_xyz_and_create_input3(
-                    xyz_path,
+                    str(geom_path),
                     inp,
                     charge_value,
                     dyn_mult,
@@ -894,7 +896,7 @@ def build_occupier_jobs(
         register_descriptor(JobDescriptor(
             job_id=f"occupier_ox_{step}",
             description=f"oxidation step {step}",
-            work=make_oxidation_work(step, multiplicity_step, additions_step, xyz_source, inp_path, out_path, step_charge),
+            work=make_oxidation_work(step, multiplicity_step, additions_step, primary_geom, fallback_geom, inp_path, out_path, step_charge),
             produces={out_path, f"ox_step_{step}.xyz"},
             requires=requires,
             explicit_dependencies=explicit_deps,
@@ -903,7 +905,10 @@ def build_occupier_jobs(
     reduction_steps = _parse_step_list(config.get('reduction_steps'))
     for step in reduction_steps:
         folder = f"red_step_{step}_OCCUPIER"
-        multiplicity_step, additions_step, _ = read_occ(folder, "red", step)
+        try:
+            multiplicity_step, additions_step, _ = read_occ(folder, "red", step)
+        except RuntimeError:
+            multiplicity_step, additions_step, _ = read_occ_from_control("red", step)
         if step == 1:
             requires: Set[str] = set()
             explicit_deps: Set[str] = set()
@@ -920,35 +925,18 @@ def build_occupier_jobs(
             primary_geom = Path("initial.xyz") if step == 1 else Path(f"red_step_{step - 1}.xyz")
             fallback_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
         else:
-            primary_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
-            fallback_geom = primary_geom
+            occ_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
+            run_geom = Path(f"red_step_{step}.xyz")
+            primary_geom = run_geom if run_geom.exists() else occ_geom
+            fallback_geom = occ_geom
 
-        if primary_geom.exists():
-            xyz_source_path = primary_geom
-        else:
-            if fallback_geom.exists():
-                if primary_geom != fallback_geom and not planning_only:
-                    logger.warning(
-                        "[occupier] Primary reduction geometry %s missing; using OCCUPIER fallback %s",
-                        primary_geom,
-                        fallback_geom,
-                    )
-                xyz_source_path = fallback_geom
-            else:
-                if not planning_only:
-                    logger.warning(
-                        "[occupier] No geometry found for reduction step %d; proceeding with %s",
-                        step,
-                        primary_geom,
-                    )
-                xyz_source_path = primary_geom
-        xyz_source = str(xyz_source_path)
         inp_path = f"red_step_{step}.inp"
         out_path = f"red_step_{step}.out"
         step_charge = base_charge - step
 
         def make_reduction_work(idx: int, mult: int, adds: str,
-                                 xyz_path: str, inp: str, out: str,
+                                 primary: Path, fallback: Path,
+                                 inp: str, out: str,
                                  charge_value: int) -> Callable[[int], None]:
             def _work(cores: int) -> None:
                 dyn_mult = mult
@@ -962,8 +950,22 @@ def build_occupier_jobs(
                 except Exception:  # noqa: BLE001
                     logger.debug("[occupier] Using fallback multiplicity/additions for red_step_%d", idx, exc_info=True)
 
+                geom_path = primary if primary.exists() else fallback
+                if not geom_path.exists():
+                    raise FileNotFoundError(
+                        f"Geometry for reduction step {idx} not found "
+                        f"(checked {primary} and {fallback})"
+                    )
+
+                if primary != fallback and primary != geom_path:
+                    logger.warning(
+                        "[occupier] Primary reduction geometry %s missing; using fallback %s",
+                        primary,
+                        geom_path,
+                    )
+
                 read_xyz_and_create_input3(
-                    xyz_path,
+                    str(geom_path),
                     inp,
                     charge_value,
                     dyn_mult,
@@ -1015,7 +1017,7 @@ def build_occupier_jobs(
         register_descriptor(JobDescriptor(
             job_id=f"occupier_red_{step}",
             description=f"reduction step {step}",
-            work=make_reduction_work(step, multiplicity_step, additions_step, xyz_source, inp_path, out_path, step_charge),
+            work=make_reduction_work(step, multiplicity_step, additions_step, primary_geom, fallback_geom, inp_path, out_path, step_charge),
             produces={out_path, f"red_step_{step}.xyz"},
             requires=requires,
             explicit_dependencies=explicit_deps,
@@ -1182,6 +1184,8 @@ def _log_job_plan_with_levels(
 def _parse_step_list(raw_steps: Any) -> List[int]:
     if not raw_steps:
         return []
+    if isinstance(raw_steps, int):
+        return [raw_steps] if raw_steps > 0 else []
     tokens: List[str]
     if isinstance(raw_steps, str):
         cleaned = raw_steps.replace(';', ',')
@@ -1212,11 +1216,293 @@ def should_use_parallel_occupier(config: Dict[str, Any]) -> bool:
     return total_cores >= 4
 
 
+def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
+    """Build OCCUPIER FoB jobs for initial and red/ox stages without nested managers."""
+
+    import copy
+
+    from delfin.copy_helpers import prepare_occ_folder_only_setup
+    from delfin.thread_safe_helpers import prepare_occ_folder_2_only_setup
+    from delfin.occupier_flat_extraction import _create_occupier_fob_jobs, _update_runtime_cache
+    from delfin.occupier import run_OCCUPIER
+    from delfin.utils import calculate_total_electrons_txt, search_transition_metals, set_main_basisset
+
+    jobs: List[WorkflowJob] = []
+    stage_completion: Dict[str, str] = {}
+    original_cwd = Path.cwd()
+    total_cores = max(1, _parse_int(config.get("PAL"), fallback=1))
+    oxidation_steps = _parse_step_list(config.get("oxidation_steps"))
+    reduction_steps = _parse_step_list(config.get("reduction_steps"))
+    occ_results: Dict[str, Dict[str, Any]] = config.setdefault("_occ_results_runtime", {})
+
+    control_path = original_cwd / "CONTROL.txt"
+    electron_info = calculate_total_electrons_txt(str(control_path))
+    neutral_electrons = electron_info[0] if electron_info else None
+    multiplicity_guess = electron_info[1] if electron_info else None
+    base_charge = _parse_int(config.get("charge"), fallback=0)
+
+    input_entry = str(config.get("input_file", "input.txt"))
+    input_path = (original_cwd / input_entry).resolve()
+    try:
+        metals = search_transition_metals(str(input_path))
+    except Exception:
+        metals = []
+    main_basisset, metal_basisset = set_main_basisset(metals, config)
+    solvent = str(config.get("solvent", ""))
+
+    def compute_is_even(delta: int) -> Optional[bool]:
+        if neutral_electrons is not None:
+            actual = neutral_electrons - (base_charge + delta)
+            return (actual % 2) == 0
+        if multiplicity_guess is not None:
+            base_even = (multiplicity_guess % 2 == 1)
+            return base_even if (delta % 2 == 0) else not base_even
+        return None
+
+    def select_sequence(delta: int) -> tuple[str, List[Dict[str, Any]]]:
+        parity = compute_is_even(delta)
+        candidate_keys: List[str] = []
+        if parity is True:
+            candidate_keys.extend(["initial_sequence", "even_seq"])
+        elif parity is False:
+            candidate_keys.extend(["initial_sequence", "odd_seq"])
+        else:
+            candidate_keys.append("initial_sequence")
+        candidate_keys.extend(["even_seq", "odd_seq"])
+        seen: Set[str] = set()
+        for key in candidate_keys:
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            seq = config.get(key) or []
+            if seq:
+                try:
+                    return key, copy.deepcopy(seq)
+                except Exception:
+                    return key, list(seq)
+        return "even_seq", []
+
+    fallback_cwd_lock = threading.RLock()
+
+    def make_setup(folder_name: str, charge_delta: int, source_folder: Optional[str]) -> Callable[[], Path]:
+        setup_lock = threading.Lock()
+        state: Dict[str, Any] = {"done": False, "path": None, "error": None}
+
+        def _ensure() -> Path:
+            if state["done"]:
+                if state["error"]:
+                    raise state["error"]
+                return state["path"]
+
+            with setup_lock:
+                if state["done"]:
+                    if state["error"]:
+                        raise state["error"]
+                    return state["path"]
+                try:
+                    if source_folder is None:
+                        path = prepare_occ_folder_only_setup(folder_name, charge_delta, parent_dir=original_cwd)
+                    else:
+                        path = prepare_occ_folder_2_only_setup(
+                            folder_name,
+                            source_folder,
+                            charge_delta,
+                            config,
+                            original_cwd,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    error = exc if isinstance(exc, RuntimeError) else RuntimeError(str(exc))
+                    state["error"] = error
+                    state["done"] = True
+                    raise error
+
+                if path is None:
+                    error = RuntimeError(f"Failed to prepare folder {folder_name}")
+                    state["error"] = error
+                    state["done"] = True
+                    raise error
+
+                state["path"] = path
+                state["done"] = True
+                return path
+
+        return _ensure
+
+    stage_specs: List[tuple[str, int, Optional[str], str]] = [
+        ("initial_OCCUPIER", 0, None, "initial"),
+    ]
+    stage_specs.extend(
+        (
+            f"red_step_{step}_OCCUPIER",
+            -step,
+            "initial_OCCUPIER" if step == 1 else f"red_step_{step-1}_OCCUPIER",
+            f"red_{step}",
+        )
+        for step in reduction_steps
+    )
+    stage_specs.extend(
+        (
+            f"ox_step_{step}_OCCUPIER",
+            step,
+            "initial_OCCUPIER" if step == 1 else f"ox_step_{step-1}_OCCUPIER",
+            f"ox_{step}",
+        )
+        for step in oxidation_steps
+    )
+
+    def make_fallback_job(
+        folder_name: str,
+        stage_prefix: str,
+        ensure: Callable[[], Path],
+        dependencies: Set[str],
+    ) -> WorkflowJob:
+        def _work(cores: int) -> None:
+            folder_dir = ensure()
+            with fallback_cwd_lock:
+                prev_cwd = os.getcwd()
+                try:
+                    os.chdir(folder_dir)
+                    logger.info("[%s] Fallback OCCUPIER execution with %d cores", folder_name, cores)
+                    run_OCCUPIER()
+                finally:
+                    os.chdir(prev_cwd)
+            _update_runtime_cache(folder_name, folder_dir, config, occ_results)
+
+        return WorkflowJob(
+            job_id=f"{stage_prefix}_fallback",
+            work=_work,
+            description=f"{folder_name} (fallback OCCUPIER run)",
+            dependencies=dependencies,
+            cores_min=max(1, min(total_cores, 2)),
+            cores_optimal=max(2, min(total_cores, total_cores // 2 or 2)),
+            cores_max=total_cores,
+        )
+
+    for folder_name, charge_delta, source_folder, stage_prefix in stage_specs:
+        sequence_key, sequence = select_sequence(charge_delta)
+        ensure_setup = make_setup(folder_name, charge_delta, source_folder)
+        folder_path = original_cwd / folder_name
+
+        dependencies: Set[str] = set()
+        if source_folder:
+            source_prefix = source_folder.replace("_OCCUPIER", "").replace("_step_", "_")
+            dependencies.add(f"{source_prefix}_fob_best")
+
+        if not sequence:
+            logger.warning(
+                "[occupier_flat] No sequence entries for %s – running OCCUPIER sequentially",
+                folder_name,
+            )
+            fallback_job = make_fallback_job(folder_name, stage_prefix, ensure_setup, dependencies)
+            jobs.append(fallback_job)
+            stage_completion[stage_prefix] = fallback_job.job_id
+            if stage_prefix == "initial":
+                stage_completion["initial"] = fallback_job.job_id
+            continue
+
+        stage_charge = base_charge + charge_delta
+
+        fob_jobs, best_job_id = _create_occupier_fob_jobs(
+            folder_name=folder_name,
+            folder_path=folder_path,
+            stage_prefix=stage_prefix,
+            sequence=sequence,
+            sequence_label=sequence_key,
+            total_cores=total_cores,
+            global_config=config,
+            ensure_setup=ensure_setup,
+            source_folder=source_folder,
+            metals=metals,
+            metal_basisset=metal_basisset,
+            main_basisset=main_basisset,
+            solvent=solvent,
+            occ_results=occ_results,
+            stage_charge=stage_charge,
+        ) 
+        jobs.extend(fob_jobs)
+        stage_completion[stage_prefix] = best_job_id
+        if stage_prefix == "initial":
+            stage_completion["initial"] = best_job_id
+
+    context = OccupierExecutionContext(
+        charge=base_charge,
+        solvent=solvent,
+        metals=metals,
+        main_basisset=main_basisset,
+        metal_basisset=metal_basisset,
+        config=config,
+    )
+
+    post_jobs = build_occupier_jobs(context, planning_only=True, include_auxiliary=True)
+
+    def _map_occ_dependency(dep: str) -> Optional[str]:
+        if dep == "occ_proc_initial":
+            return stage_completion.get("initial")
+        match = re.match(r"occ_proc_(ox|red)_(\d+)", dep)
+        if match:
+            stage_type, step = match.groups()
+            return stage_completion.get(f"{stage_type}_{step}")
+        return dep
+
+    filtered_post_jobs: List[WorkflowJob] = []
+    for job in post_jobs:
+        remapped: Set[str] = set()
+        skip = False
+        for dep in job.dependencies:
+            if dep.startswith("occ_proc_"):
+                mapped = _map_occ_dependency(dep)
+                if not mapped or mapped.startswith("occ_proc_"):
+                    logger.debug(
+                        "[occupier_flat] Skipping post-processing job %s due to missing dependency %s",
+                        job.job_id,
+                        dep,
+                    )
+                    skip = True
+                    break
+                remapped.add(mapped)
+            else:
+                remapped.add(dep)
+        if skip:
+            continue
+        if job.job_id == "occupier_initial":
+            initial_token = stage_completion.get("initial")
+            if initial_token:
+                remapped.add(initial_token)
+        elif job.job_id.startswith("occupier_ox_"):
+            step_id = job.job_id.split("_")[2]
+            token = stage_completion.get(f"ox_{step_id}")
+            if token:
+                remapped.add(token)
+        elif job.job_id.startswith("occupier_red_"):
+            step_id = job.job_id.split("_")[2]
+            token = stage_completion.get(f"red_{step_id}")
+            if token:
+                remapped.add(token)
+        job.dependencies = remapped
+        filtered_post_jobs.append(job)
+
+    if filtered_post_jobs:
+        logger.info(
+            "[occupier_flat] Appending %d post-processing jobs to OCCUPIER plan",
+            len(filtered_post_jobs),
+        )
+        jobs.extend(filtered_post_jobs)
+
+    logger.info(
+        "[occupier_flat] Built %d OCCUPIER jobs (FoBs + post-processing) across %d stages (ox=%d, red=%d)",
+        len(jobs),
+        len(stage_specs),
+        len(oxidation_steps),
+        len(reduction_steps),
+    )
+    return jobs
+
+
 def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
     """Build scheduler jobs for OCCUPIER process execution (initial, ox_*, red_*).
 
-    These jobs prepare folders and run run_OCCUPIER() as scheduler-managed tasks,
-    enabling dynamic core allocation across all OCCUPIER steps.
+    DEPRECATED: This creates nested managers which causes deadlocks.
+    Use build_flat_occupier_fob_jobs() instead!
 
     NOTE: Initial job is ALWAYS included to ensure dependencies work correctly.
     The recalc logic inside OCCUPIER determines if it actually runs or skips.
@@ -1259,18 +1545,21 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
     # 3. With 64 cores, we can allocate e.g. 48 cores to OCCUPIER and reserve
     #    16 cores for post-processing, achieving better overall throughput
 
-    # Strategy: Reserve ~25-30% of cores for potential parallel post-processing
-    # unless we have very few cores (< 16) or parallel ox/red workflows
+    # Strategy: Use cores_optimal as a target, but allow scheduler to allocate
+    # more cores (up to cores_max) when fewer jobs are running.
+    # This ensures ORCA processes can use all available cores when possible,
+    # while still allowing parallelism when multiple workflows are ready.
     parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
 
     if parallel_mode == 'disable':
         cores_optimal_per_job = total_cores
     elif max_parallel_at_any_level > 1 and total_cores >= 8:
-        # Both ox and red: split cores between them
-        cores_optimal_per_job = max(4, total_cores // max_parallel_at_any_level)
+        # Both ox and red can run in parallel: target 50% split as optimal
+        # but cores_max=total_cores allows scheduler to give all cores when only 1 runs
+        cores_optimal_per_job = max(6, total_cores // max_parallel_at_any_level)
     elif total_cores >= 32:
         # Sequential OCCUPIER but enough cores to enable parallel post-processing
-        # Use ~70-75% of cores for OCCUPIER, reserve rest for post-processing
+        # Use ~70-75% of cores for OCCUPIER as optimal, reserve rest for post-processing
         cores_optimal_per_job = max(16, int(total_cores * 0.75))
     else:
         # Too few cores to benefit from reservation - use all cores
@@ -1356,69 +1645,49 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
                 except Exception:  # noqa: BLE001
                     pass
 
-            import json
-            import sys
-            import subprocess
-
-            # Run OCCUPIER as subprocess to avoid CWD race conditions
-            # Each OCCUPIER runs in its own process with its own CWD
-            child_env = os.environ.copy()
-            child_env['DELFIN_CHILD_GLOBAL_MANAGER'] = json.dumps(global_cfg)
-            child_env['DELFIN_SUBPROCESS'] = '1'  # Flag to indicate subprocess mode
-
-            cmd = [
-                sys.executable,
-                "-c",
-                (
-                    "from delfin.common.logging import configure_logging; "
-                    "configure_logging(); "
-                    "from delfin.global_manager import bootstrap_global_manager_from_env; "
-                    "bootstrap_global_manager_from_env(); "
-                    "import delfin.occupier as _occ; _occ.run_OCCUPIER()"
-                ),
-            ]
-
+            # Run OCCUPIER in-process with temporary CWD change
+            # This allows all OCCUPIER folders to share the same global pool!
+            # Thread-safe CWD changes are handled by a lock.
             log_prefix = f"[{folder_name}]"
             separator = "-" * (len(log_prefix) + 18)
-            print(separator)
-            print(f"{log_prefix} OCCUPIER start")
-            print(separator)
+            logger.info("%s", separator)
+            logger.info("%s OCCUPIER start", log_prefix)
+            logger.info("%s", separator)
 
+            # Thread-safe CWD change
+            import threading
+            _cwd_lock = getattr(build_occupier_process_jobs, '_cwd_lock', None)
+            if _cwd_lock is None:
+                _cwd_lock = threading.RLock()
+                build_occupier_process_jobs._cwd_lock = _cwd_lock
+
+            old_cwd = os.getcwd()
             try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=folder_path,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    env=child_env,
-                )
+                with _cwd_lock:
+                    os.chdir(folder_path)
+
+                    # run_OCCUPIER() reads CONTROL.txt from current directory
+                    # It expects no parameters!
+                    # The global manager is already initialized and will handle core allocation
+                    from delfin.occupier import run_OCCUPIER
+                    run_OCCUPIER()
+
+                with _cwd_lock:
+                    os.chdir(old_cwd)
+
+                logger.info("%s OCCUPIER completed", log_prefix)
+                logger.info("%s", separator)
+                logger.info("")
+
             except Exception as e:
-                raise RuntimeError(f"Failed to launch OCCUPIER in {folder_path}: {e}")
-
-            # Print output
-            if result.stdout:
-                for line in result.stdout.splitlines():
-                    print(f"{log_prefix} {line}")
-            if result.stderr:
-                for line in result.stderr.splitlines():
-                    print(f"{log_prefix} [stderr] {line}")
-
-            # Save logs
-            try:
-                (folder_path / "occupier_stdout.log").write_text(result.stdout or "")
-                (folder_path / "occupier_stderr.log").write_text(result.stderr or "")
-            except Exception:
-                pass
-
-            if result.returncode != 0:
-                print(f"{log_prefix} OCCUPIER failed (exit={result.returncode})")
-                print(separator)
-                raise RuntimeError(f"OCCUPIER process in {folder_path} exited with code {result.returncode}")
-
-            print(f"{log_prefix} OCCUPIER completed")
-            print(separator)
-            print()
+                with _cwd_lock:
+                    try:
+                        os.chdir(old_cwd)
+                    except:
+                        pass
+                logger.error("%s OCCUPIER failed: %s", log_prefix, e)
+                logger.info("%s", separator)
+                raise RuntimeError(f"OCCUPIER failed in {folder_path}: {e}")
 
             _record_occ_result(folder_name, folder_path)
 
@@ -1432,7 +1701,7 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             description=f"OCCUPIER process for {folder_name}",
             dependencies=dependencies or set(),
             cores_min=cores_min,
-            cores_optimal=total_cores,
+            cores_optimal=cores_optimal_per_job,
             cores_max=cores_max,
         )
 

@@ -133,17 +133,26 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
         if "yes" in config.get("calc_initial", ""):
             print("\nOCCUPIER for the initial system:\n")
 
-            from delfin.parallel_occupier import build_combined_occupier_and_postprocessing_jobs
+            from delfin.parallel_occupier import build_flat_occupier_fob_jobs
             from delfin.parallel_classic_manually import _WorkflowManager
 
-            # Build ALL jobs (OCCUPIER processes + post-processing) in one go
-            # This enables parallel execution: while red_step_3 OCCUPIER runs,
-            # initial.inp post-processing can run in parallel!
-            all_jobs = build_combined_occupier_and_postprocessing_jobs(config)
+            # Build ALL OCCUPIER FoBs as flat top-level jobs
+            # This avoids nested managers and deadlocks!
+            all_jobs = build_flat_occupier_fob_jobs(config)
 
             if all_jobs:
                 manager = _WorkflowManager(config, label="occupier_all")
                 try:
+                    # Check if sequential execution is requested
+                    parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+                    if parallel_mode == 'disable':
+                        logger.info("[occupier_all] parallel_workflows=no → enforcing sequential execution")
+                        manager.enforce_sequential_allocation()
+                        if manager.pool.max_concurrent_jobs != 1:
+                            manager.pool.max_concurrent_jobs = 1
+                            manager.max_jobs = 1
+                            manager._sync_parallel_flag()
+
                     for job in all_jobs:
                         manager.add_job(job)
 
@@ -157,19 +166,29 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
 
             logger.info("All OCCUPIER workflows completed successfully")
 
-            # Mark that we used combined execution (to skip separate post-processing later)
+            # Post-processing jobs are scheduled within the combined OCCUPIER run
             config['_used_combined_occupier'] = True
         else:
             # No initial calculation, but still run ox/red if configured
-            from delfin.parallel_occupier import build_combined_occupier_and_postprocessing_jobs
+            from delfin.parallel_occupier import build_flat_occupier_fob_jobs
             from delfin.parallel_classic_manually import _WorkflowManager
 
-            # Build all jobs (OCCUPIER + post-processing combined)
-            jobs = build_combined_occupier_and_postprocessing_jobs(config)
+            # Build all jobs (OCCUPIER FoBs + post-processing) with flat architecture
+            jobs = build_flat_occupier_fob_jobs(config)
 
             if jobs:
                 manager = _WorkflowManager(config, label="occupier_workflows")
                 try:
+                    # Check if sequential execution is requested
+                    parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+                    if parallel_mode == 'disable':
+                        logger.info("[occupier_workflows] parallel_workflows=no → enforcing sequential execution")
+                        manager.enforce_sequential_allocation()
+                        if manager.pool.max_concurrent_jobs != 1:
+                            manager.pool.max_concurrent_jobs = 1
+                            manager.max_jobs = 1
+                            manager._sync_parallel_flag()
+
                     for job in jobs:
                         manager.add_job(job)
 
@@ -238,15 +257,26 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             if need_occ_workflows:
                 logger.info("Running OCCUPIER workflows (initial + ox/red) prior to solvation")
 
-                from delfin.parallel_occupier import build_combined_occupier_and_postprocessing_jobs
+                from delfin.parallel_occupier import build_flat_occupier_fob_jobs
                 from delfin.parallel_classic_manually import _WorkflowManager
 
-                # Build ALL jobs (OCCUPIER + post-processing combined)
-                all_jobs = build_combined_occupier_and_postprocessing_jobs(config)
+                # Build ALL OCCUPIER FoBs as flat top-level jobs
+                # This avoids nested managers and deadlocks!
+                all_jobs = build_flat_occupier_fob_jobs(config)
 
                 if all_jobs:
                     manager = _WorkflowManager(config, label="occupier_all")
                     try:
+                        # Check if sequential execution is requested
+                        parallel_mode = normalize_parallel_token(config.get('parallel_workflows', 'auto'))
+                        if parallel_mode == 'disable':
+                            logger.info("[occupier_all] parallel_workflows=no → enforcing sequential execution")
+                            manager.enforce_sequential_allocation()
+                            if manager.pool.max_concurrent_jobs != 1:
+                                manager.pool.max_concurrent_jobs = 1
+                                manager.max_jobs = 1
+                                manager._sync_parallel_flag()
+
                         for job in all_jobs:
                             manager.add_job(job)
 

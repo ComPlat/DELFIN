@@ -87,7 +87,15 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
             logger.error(f"read_occupier_file failed for '{source_occ_folder}'")
             return None
 
-        multiplicity_src, additions_src, min_fspe_index, _gbw_path = res
+        try:
+            multiplicity_src, additions_src, min_fspe_index, _gbw_path = res
+        except (ValueError, TypeError):
+            logger.error(
+                "OCCUPIER results for '%s' are incomplete (expected 4 values, got %s)",
+                source_occ_folder,
+                len(res) if isinstance(res, (list, tuple)) else "unknown",
+            )
+            return None
         should_print = (
             original_cwd == original_cwd_path
             and not getattr(_thread_local, "_printed_preferred", False)
