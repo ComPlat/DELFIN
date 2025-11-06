@@ -800,23 +800,14 @@ def build_occupier_jobs(
             requires = {f"ox_step_{step - 1}.out"}
             explicit_deps = {f"occupier_ox_{step - 1}"}
 
-        if xtb_solvator_enabled:
-            primary_geom = Path("initial.xyz") if step == 1 else Path(f"ox_step_{step - 1}.xyz")
-            fallback_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
-        else:
-            occ_geom = Path(f"input_ox_step_{step}_OCCUPIER.xyz")
-            run_geom = Path(f"ox_step_{step}.xyz")
-            primary_geom = run_geom if run_geom.exists() else occ_geom
-            fallback_geom = occ_geom
-
         inp_path = f"ox_step_{step}.inp"
         out_path = f"ox_step_{step}.out"
         step_charge = base_charge + step
 
         def make_oxidation_work(idx: int, mult: int, adds: str,
-                                primary: Path, fallback: Path,
                                 inp: str, out: str,
-                                charge_value: int) -> Callable[[int], None]:
+                                charge_value: int,
+                                use_solvator: bool) -> Callable[[int], None]:
             def _work(cores: int) -> None:
                 dyn_mult = mult
                 dyn_adds = adds
@@ -829,17 +820,27 @@ def build_occupier_jobs(
                 except Exception:  # noqa: BLE001
                     logger.debug("[occupier] Using fallback multiplicity/additions for ox_step_%d", idx, exc_info=True)
 
-                geom_path = primary if primary.exists() else fallback
+                # Determine geometry paths at RUNTIME, not at job creation time
+                if use_solvator:
+                    primary_geom = Path("initial.xyz") if idx == 1 else Path(f"ox_step_{idx - 1}.xyz")
+                    fallback_geom = Path(f"input_ox_step_{idx}_OCCUPIER.xyz")
+                else:
+                    occ_geom = Path(f"input_ox_step_{idx}_OCCUPIER.xyz")
+                    run_geom = Path(f"ox_step_{idx}.xyz")
+                    primary_geom = run_geom if run_geom.exists() else occ_geom
+                    fallback_geom = occ_geom
+
+                geom_path = primary_geom if primary_geom.exists() else fallback_geom
                 if not geom_path.exists():
                     raise FileNotFoundError(
                         f"Geometry for oxidation step {idx} not found "
-                        f"(checked {primary} and {fallback})"
+                        f"(checked {primary_geom} and {fallback_geom})"
                     )
 
-                if primary != fallback and primary != geom_path:
+                if primary_geom != fallback_geom and primary_geom != geom_path:
                     logger.warning(
                         "[occupier] Primary oxidation geometry %s missing; using fallback %s",
-                        primary,
+                        primary_geom,
                         geom_path,
                     )
 
@@ -896,7 +897,7 @@ def build_occupier_jobs(
         register_descriptor(JobDescriptor(
             job_id=f"occupier_ox_{step}",
             description=f"oxidation step {step}",
-            work=make_oxidation_work(step, multiplicity_step, additions_step, primary_geom, fallback_geom, inp_path, out_path, step_charge),
+            work=make_oxidation_work(step, multiplicity_step, additions_step, inp_path, out_path, step_charge, xtb_solvator_enabled),
             produces={out_path, f"ox_step_{step}.xyz"},
             requires=requires,
             explicit_dependencies=explicit_deps,
@@ -921,23 +922,14 @@ def build_occupier_jobs(
             requires = {f"red_step_{step - 1}.out"}
             explicit_deps = {f"occupier_red_{step - 1}"}
 
-        if xtb_solvator_enabled:
-            primary_geom = Path("initial.xyz") if step == 1 else Path(f"red_step_{step - 1}.xyz")
-            fallback_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
-        else:
-            occ_geom = Path(f"input_red_step_{step}_OCCUPIER.xyz")
-            run_geom = Path(f"red_step_{step}.xyz")
-            primary_geom = run_geom if run_geom.exists() else occ_geom
-            fallback_geom = occ_geom
-
         inp_path = f"red_step_{step}.inp"
         out_path = f"red_step_{step}.out"
         step_charge = base_charge - step
 
         def make_reduction_work(idx: int, mult: int, adds: str,
-                                 primary: Path, fallback: Path,
                                  inp: str, out: str,
-                                 charge_value: int) -> Callable[[int], None]:
+                                 charge_value: int,
+                                 use_solvator: bool) -> Callable[[int], None]:
             def _work(cores: int) -> None:
                 dyn_mult = mult
                 dyn_adds = adds
@@ -950,17 +942,27 @@ def build_occupier_jobs(
                 except Exception:  # noqa: BLE001
                     logger.debug("[occupier] Using fallback multiplicity/additions for red_step_%d", idx, exc_info=True)
 
-                geom_path = primary if primary.exists() else fallback
+                # Determine geometry paths at RUNTIME, not at job creation time
+                if use_solvator:
+                    primary_geom = Path("initial.xyz") if idx == 1 else Path(f"red_step_{idx - 1}.xyz")
+                    fallback_geom = Path(f"input_red_step_{idx}_OCCUPIER.xyz")
+                else:
+                    occ_geom = Path(f"input_red_step_{idx}_OCCUPIER.xyz")
+                    run_geom = Path(f"red_step_{idx}.xyz")
+                    primary_geom = run_geom if run_geom.exists() else occ_geom
+                    fallback_geom = occ_geom
+
+                geom_path = primary_geom if primary_geom.exists() else fallback_geom
                 if not geom_path.exists():
                     raise FileNotFoundError(
                         f"Geometry for reduction step {idx} not found "
-                        f"(checked {primary} and {fallback})"
+                        f"(checked {primary_geom} and {fallback_geom})"
                     )
 
-                if primary != fallback and primary != geom_path:
+                if primary_geom != fallback_geom and primary_geom != geom_path:
                     logger.warning(
                         "[occupier] Primary reduction geometry %s missing; using fallback %s",
-                        primary,
+                        primary_geom,
                         geom_path,
                     )
 
@@ -1017,7 +1019,7 @@ def build_occupier_jobs(
         register_descriptor(JobDescriptor(
             job_id=f"occupier_red_{step}",
             description=f"reduction step {step}",
-            work=make_reduction_work(step, multiplicity_step, additions_step, primary_geom, fallback_geom, inp_path, out_path, step_charge),
+            work=make_reduction_work(step, multiplicity_step, additions_step, inp_path, out_path, step_charge, xtb_solvator_enabled),
             produces={out_path, f"red_step_{step}.xyz"},
             requires=requires,
             explicit_dependencies=explicit_deps,
@@ -1073,6 +1075,31 @@ def build_occupier_jobs(
             descriptor.preferred_cores,
             job_count_at_level=parallel_jobs_at_level if parallel_jobs_at_level > 1 else None
         )
+
+        # Progressive core scaling for long-running jobs (>5 minutes estimated)
+        # Jobs that historically take longer get boosted core allocation
+        is_long_job = False
+        long_job_patterns = [
+            "s1_state",      # Singlet state optimizations are typically slow
+            "t1_state",      # Triplet state optimizations
+            "red_1_fob",     # Reduction step 1 FoBs (especially m=4)
+            "red_2_fob",     # Reduction step 2 FoBs
+        ]
+
+        for pattern in long_job_patterns:
+            if pattern in descriptor.job_id:
+                is_long_job = True
+                break
+
+        if is_long_job and parallel_jobs_at_level <= 1:
+            # If this long job runs alone, give it more cores
+            cores_opt_boosted = min(cores_max_v, int(cores_opt_v * 1.5))
+            if cores_opt_boosted > cores_opt_v:
+                logger.info(
+                    "[occupier] Progressive scaling: %s boosted from %d to %d cores (long-running job)",
+                    descriptor.job_id, cores_opt_v, cores_opt_boosted
+                )
+                cores_opt_v = cores_opt_boosted
 
         jobs.append(
             WorkflowJob(

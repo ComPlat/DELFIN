@@ -100,8 +100,8 @@ deltaSCF_SOSCFHESSUP=LBFGS
 ----------------
 ESD_modul=no
 states=S0,S1,T1,T2
-ISCs=S1>T1,T1>S1,S1>T2,T2>S1,S0>T1,T1>S0
-ICs=S1>S0,S0>S1,T1>T2,T2>T1
+ISCs=S1>T1,T1>S1,S1>T2,T2>S1
+ICs=S1>S0,T2>T1
 ------------------------------------
 Reference value:
 E_ref=

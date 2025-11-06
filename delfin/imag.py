@@ -580,8 +580,29 @@ def _run_sp_candidates_sequential(
     jobs: List[_IMAGCandidateJob],
 ) -> List[_ImagSinglePointResult]:
     results: List[_ImagSinglePointResult] = []
+    recalc = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+
     for job in jobs:
         result = _ImagSinglePointResult(job=job)
+
+        # RECALC mode: Check if output already exists and is valid
+        if recalc and job.sp_output_path.exists():
+            try:
+                if job.sp_output_path.stat().st_size >= 100:
+                    with job.sp_output_path.open("r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                        if OK_MARKER in content:
+                            energy = find_electronic_energy(str(job.sp_output_path))
+                            if energy is not None:
+                                logging.info(f"[recalc] IMAG SP mode {job.mode_index} ({job.direction}): skip (energy={energy})")
+                                result.success = True
+                                result.energy = energy
+                                result.optimized_geometry = _locate_relaxed_xyz(job.sp_input_path, job.sp_output_path)
+                                results.append(result)
+                                continue
+            except Exception as e:
+                logging.debug(f"[recalc] Failed to check existing IMAG SP output for mode {job.mode_index}: {e}")
+
         sp_success = run_orca(
             str(job.sp_input_path),
             str(job.sp_output_path),
@@ -613,10 +634,31 @@ def _run_sp_candidates_parallel(
     maxcore_value: int,
 ) -> List[_ImagSinglePointResult]:
     handles: List[tuple[_ImagSinglePointResult, threading.Event]] = []
+    recalc = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
 
     for job in jobs:
         result = _ImagSinglePointResult(job=job)
         event = threading.Event()
+
+        # RECALC mode: Check if output already exists and is valid before submitting to pool
+        if recalc and job.sp_output_path.exists():
+            try:
+                if job.sp_output_path.stat().st_size >= 100:
+                    with job.sp_output_path.open("r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                        if OK_MARKER in content:
+                            energy = find_electronic_energy(str(job.sp_output_path))
+                            if energy is not None:
+                                logging.info(f"[recalc] IMAG SP mode {job.mode_index} ({job.direction}): skip (energy={energy})")
+                                result.success = True
+                                result.energy = energy
+                                result.optimized_geometry = _locate_relaxed_xyz(job.sp_input_path, job.sp_output_path)
+                                event.set()
+                                handles.append((result, event))
+                                continue
+            except Exception as e:
+                logging.debug(f"[recalc] Failed to check existing IMAG SP output for mode {job.mode_index}: {e}")
+
         handles.append((result, event))
 
         def runner(*_args, cur_job=job, cur_result=result, cur_event=event, **kwargs) -> None:
@@ -1086,6 +1128,7 @@ def run_IMAG(
         if maxcore_override is None and src_maxcore is not None:
             maxcore_override = src_maxcore
 
+    # RECALC mode: Check if IMAG was already successfully completed
     if recalc and imag_folder.is_dir():
         last_i, last_out = _find_last_ok_iteration(imag_folder)
         if last_i is not None and last_out and _imag_resolved(last_out, threshold):
@@ -1102,9 +1145,27 @@ def run_IMAG(
                 try: shutil.copy2(final_xyz, dest_xyz)
                 except Exception as e: logging.warning(f"copy xyz: {e}")
             return
+        # If IMAG folder exists but wasn't successful, check if we have partial work
+        # (don't delete it like before - this allows proper resume functionality)
+        if last_i is not None:
+            logging.info(f"[recalc] IMAG incomplete at iter {last_i}; resuming from existing work.")
         else:
-            try: shutil.rmtree(imag_folder)
-            except Exception: pass
+            # Check if any single-point calculations exist (iter0_mode*_sp.out)
+            has_sp_jobs = False
+            try:
+                for entry in imag_folder.iterdir():
+                    if entry.is_file() and entry.name.startswith("iter") and "_sp.out" in entry.name:
+                        has_sp_jobs = True
+                        break
+            except Exception:
+                pass
+
+            if has_sp_jobs:
+                logging.info(f"[recalc] IMAG folder contains existing single-point calculations; resuming.")
+            else:
+                logging.info(f"[recalc] IMAG folder exists but no work found; cleaning and restarting.")
+                try: shutil.rmtree(imag_folder)
+                except Exception: pass
 
     imag_folder.mkdir(parents=True, exist_ok=True)
     def _write_imag_input(
@@ -1293,22 +1354,40 @@ def run_IMAG(
                 sp_input_path = imag_folder / f"{sp_label}_sp.inp"
                 sp_output_path = imag_folder / f"{sp_label}_sp.out"
 
-                for tmp in (sp_input_path, sp_output_path):
-                    if tmp.exists():
-                        try:
-                            tmp.unlink()
-                        except OSError:
-                            pass
+                # RECALC mode: Check if this single-point calculation already exists and is valid
+                # Do this BEFORE deleting files!
+                sp_exists_and_valid = False
+                if recalc and sp_output_path.exists():
+                    try:
+                        if sp_output_path.stat().st_size >= 100:
+                            with sp_output_path.open("r", encoding="utf-8", errors="replace") as f:
+                                content = f.read()
+                                if OK_MARKER in content:
+                                    energy = find_electronic_energy(str(sp_output_path))
+                                    if energy is not None:
+                                        sp_exists_and_valid = True
+                                        logging.info(f"[recalc] IMAG SP mode {mode_index} ({direction_label}): reusing existing result (energy={energy})")
+                    except Exception as e:
+                        logging.debug(f"[recalc] Failed to check existing IMAG SP output for mode {mode_index}: {e}")
 
-                _write_imag_input(
-                    candidate_geom,
-                    sp_input_path,
-                    include_freq=False,
-                    additions_payload=additions_eff,
-                    geom_override=candidate_geom_override,
-                    pal_override_local=pal_override,
-                    maxcore_override_local=maxcore_effective,
-                )
+                # Only delete and recreate if job doesn't exist or is invalid
+                if not sp_exists_and_valid:
+                    for tmp in (sp_input_path, sp_output_path):
+                        if tmp.exists():
+                            try:
+                                tmp.unlink()
+                            except OSError:
+                                pass
+
+                    _write_imag_input(
+                        candidate_geom,
+                        sp_input_path,
+                        include_freq=False,
+                        additions_payload=additions_eff,
+                        geom_override=candidate_geom_override,
+                        pal_override_local=pal_override,
+                        maxcore_override_local=maxcore_effective,
+                    )
 
                 candidate_jobs.append(
                     _IMAGCandidateJob(
@@ -1356,36 +1435,65 @@ def run_IMAG(
         iteration += 1
         freq_input_path = imag_folder / f"input_{iteration}.inp"
         freq_output_path = imag_folder / f"output_{iteration}.out"
-        for tmp in (freq_input_path, freq_output_path):
-            if tmp.exists():
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
 
+        # RECALC mode: Check if frequency calculation was already completed successfully
+        freq_calc_needed = True
         additions_current = additions_eff
-        freq_geometry_source = (
-            best_candidate.optimized_geometry
-            if best_candidate.optimized_geometry and Path(best_candidate.optimized_geometry).exists()
-            else best_candidate.geometry_path
-        )
-        _write_imag_input(
-            freq_geometry_source,
-            freq_input_path,
-            include_freq=True,
-            additions_payload=additions_current,
-            geom_override=None,
-            pal_override_local=pal_override,
-            maxcore_override_local=maxcore_effective,
-        )
         gbw_candidate = best_candidate.sp_output.with_suffix(".gbw")
-        if gbw_candidate.exists():
-            _inject_moinp_block(freq_input_path, gbw_candidate)
-        else:
-            logging.warning(
-                f"Iteration {iteration}: Expected GBW '{gbw_candidate}' missing; proceeding without MOREAD."
+
+        if recalc and freq_output_path.exists():
+            try:
+                if freq_output_path.stat().st_size >= 100:
+                    with freq_output_path.open("r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                        if OK_MARKER in content:
+                            # Check if this iteration resolved the imaginary frequency
+                            check_freq = search_imaginary_mode2(str(freq_output_path))
+                            if check_freq is None or check_freq >= threshold:
+                                logging.info(f"[recalc] IMAG iteration {iteration} already complete and successful; using existing result.")
+                                freq_calc_needed = False
+                                current_log_path = freq_output_path
+                                current_hess_path = freq_output_path.with_suffix(".hess")
+                                if not current_hess_path.exists():
+                                    current_hess_path = imag_folder / f"input_{iteration}.hess"
+                                best_energy = find_electronic_energy(str(freq_output_path)) or best_energy
+                                last_success_iteration = iteration
+            except Exception as e:
+                logging.debug(f"[recalc] Failed to check existing IMAG freq output for iteration {iteration}: {e}")
+
+        if freq_calc_needed:
+            # Clean up old files before creating new input
+            for tmp in (freq_input_path, freq_output_path):
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+
+            freq_geometry_source = (
+                best_candidate.optimized_geometry
+                if best_candidate.optimized_geometry and Path(best_candidate.optimized_geometry).exists()
+                else best_candidate.geometry_path
             )
-        success = run_orca_IMAG(str(freq_input_path), iteration, working_dir=imag_folder)
+            _write_imag_input(
+                freq_geometry_source,
+                freq_input_path,
+                include_freq=True,
+                additions_payload=additions_current,
+                geom_override=None,
+                pal_override_local=pal_override,
+                maxcore_override_local=maxcore_effective,
+            )
+            if gbw_candidate.exists():
+                _inject_moinp_block(freq_input_path, gbw_candidate)
+            else:
+                logging.warning(
+                    f"Iteration {iteration}: Expected GBW '{gbw_candidate}' missing; proceeding without MOREAD."
+                )
+            success = run_orca_IMAG(str(freq_input_path), iteration, working_dir=imag_folder)
+        else:
+            # Skip running ORCA but mark as success since result already exists
+            success = True
         if not success:
             geometry_mismatch = False
             log_file = imag_folder / f"output_{iteration}.out"
@@ -1397,15 +1505,20 @@ def run_IMAG(
                 except Exception as exc:
                     logging.debug(f"Iteration {iteration}: failed to inspect IMAG log: {exc}")
 
-            if geometry_mismatch and additions_current:
+            if geometry_mismatch and additions_current and freq_calc_needed:
                 logging.warning(
                     f"Iteration {iteration}: geometry mismatch detected; retrying without supplemental additions."
                 )
                 additions_current = ""
                 additions_eff = ""
                 additions_base = ""
+                freq_geometry_source = (
+                    best_candidate.optimized_geometry
+                    if best_candidate.optimized_geometry and Path(best_candidate.optimized_geometry).exists()
+                    else best_candidate.geometry_path
+                )
                 _write_imag_input(
-                    best_candidate.geometry_path,
+                    freq_geometry_source,
                     freq_input_path,
                     include_freq=True,
                     additions_payload=additions_current,
@@ -1421,20 +1534,25 @@ def run_IMAG(
                 logging.warning(f"Iteration {iteration}: frequency calculation failed; stopping IMAG loop.")
                 break
 
-        current_log_path = imag_folder / f"output_{iteration}.out"
-        new_energy = find_electronic_energy(str(current_log_path))
-        if new_energy is None:
-            logging.warning(
-                f"Iteration {iteration}: no FINAL SINGLE POINT ENERGY found; keeping single-point estimate."
-            )
-            new_energy = best_candidate.energy
-        best_energy = new_energy
-        last_success_iteration = iteration
+        # Update paths and energies based on completed (or skipped) calculation
+        if not freq_calc_needed:
+            # Already set in the recalc check above
+            pass
+        else:
+            current_log_path = imag_folder / f"output_{iteration}.out"
+            new_energy = find_electronic_energy(str(current_log_path))
+            if new_energy is None:
+                logging.warning(
+                    f"Iteration {iteration}: no FINAL SINGLE POINT ENERGY found; keeping single-point estimate."
+                )
+                new_energy = best_candidate.energy
+            best_energy = new_energy
+            last_success_iteration = iteration
 
-        current_hess_path = (imag_folder / f"input_{iteration}.hess").resolve()
-        if not current_hess_path.exists():
-            logging.warning(f"Iteration {iteration}: Hessian file missing; terminating IMAG loop.")
-            break
+            current_hess_path = (imag_folder / f"input_{iteration}.hess").resolve()
+            if not current_hess_path.exists():
+                logging.warning(f"Iteration {iteration}: Hessian file missing; terminating IMAG loop.")
+                break
 
     if last_success_iteration == 0:
         logging.info("IMAG finished without improvements; original files remain unchanged.")

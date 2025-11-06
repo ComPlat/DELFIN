@@ -242,6 +242,18 @@ def _create_occupier_fob_jobs(
     cores_optimal = max(cores_min, min(total_cores, max(4, total_cores // 3)))
     cores_max = max(cores_optimal, total_cores)
 
+    # Asymmetric core allocation for FoB pairs based on multiplicity
+    # Higher multiplicities typically take longer, so allocate more cores
+    multiplicity_weights = {}
+    total_weight = 0
+    for entry in sequence:
+        mult = entry["m"]
+        # Weight scales with multiplicity (higher m = more cores)
+        # m=1: weight 1, m=2: weight 1.2, m=3: weight 1.5, m=4: weight 2.0
+        weight = 1.0 + (mult - 1) * 0.3
+        multiplicity_weights[int(entry["index"])] = weight
+        total_weight += weight
+
     fspe_results: Dict[int, Optional[float]] = {}
     results_lock = threading.Lock()
     start_lock = threading.Lock()
@@ -371,13 +383,29 @@ def _create_occupier_fob_jobs(
 
             return _work
 
+        # Calculate asymmetric core allocation based on multiplicity weight
+        my_weight = multiplicity_weights.get(idx, 1.0)
+        weight_fraction = my_weight / total_weight if total_weight > 0 else (1.0 / len(sequence))
+
+        # Distribute cores proportionally, ensuring minimums
+        # For 2 FoBs with weights [1.0, 2.0] and 16 total cores: [5, 11]
+        # For 3 FoBs with weights [1.0, 1.2, 1.5] and 16 total cores: [4, 5, 7]
+        available_cores = cores_max
+        job_cores_optimal = max(cores_min, int(available_cores * weight_fraction))
+        job_cores_optimal = min(job_cores_optimal, cores_max)
+
+        logger.info(
+            "[occupier_flat] FoB %d (m=%d, weight=%.1f): allocated %d cores (%.0f%% of %d)",
+            idx, multiplicity, my_weight, job_cores_optimal, weight_fraction * 100, available_cores
+        )
+
         job = WorkflowJob(
             job_id=job_id,
             work=make_work(),
             description=f"{folder_name} FoB {idx}",
             dependencies=local_dependencies.get(idx, set()),
             cores_min=cores_min,
-            cores_optimal=cores_optimal,
+            cores_optimal=job_cores_optimal,
             cores_max=cores_max,
         )
         jobs.append(job)
