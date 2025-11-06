@@ -967,10 +967,10 @@ def read_and_modify_xyz_IMAG(
     if model:
         implicit = f"{model}({solvent})" if solvent else model
 
-    # QM/XTB partition handling
+    # QM/MM partition handling
     geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(coord_lines, Path(input_file_path))
     _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
-    qmmm_token = "QM/XTB" if qmmm_range else None
+    qmmm_token = str(config.get('qmmm_option', 'QM/XTB')).strip() if qmmm_range else None
 
     # Load radii for optional first coordination sphere tagging when needed
     enable_first = str(config.get("first_coordination_sphere_metal_basisset", "no")).lower() in (

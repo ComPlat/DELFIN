@@ -246,7 +246,8 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     # Build the '!' line
     tokens = ["!"]
     if qmmm_range:
-        tokens.append("QM/XTB")
+        qmmm_method = str(config.get('qmmm_option', 'QM/XTB')).strip()
+        tokens.append(qmmm_method)
     tokens.extend([
         str(config['functional']),
         rel_token,
@@ -590,7 +591,8 @@ def run_OCCUPIER():
         # Build the '!' line
         tokens = ["!"]
         if qmmm_range:
-            tokens.append("QM/XTB")
+            qmmm_method = str(config.get('qmmm_option', 'QM/XTB')).strip()
+            tokens.append(qmmm_method)
         tokens.extend([
             str(config['functional']),
             rel_token,                       # '' or ZORA/X2C/DKH

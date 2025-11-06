@@ -91,6 +91,7 @@ geom_opt=OPT
 initial_guess=PModel
 temperature=298.15
 maxiter=125
+qmmm_option=QM/PBEH-3c
 ----------------
 deltaSCF:
 deltaSCF_DOMOM=true
@@ -173,6 +174,7 @@ Available RED_STEPS: 1 ; 1,2 ; 1,2,3 ; 2 ; 3 ; 2,3 ; 1,3
 Available IMPLICIT SOLVATION MODELS: CPCM ; CPCMC ; SMD
 Available dispersion corrections DISP_CORR: D4 ; D3 ; D3BJ ; D3ZERO ; NONE
 Available EXCITATIONS: s (singulet) ; t (triplet) (s is more difficult to converge, there may be no convergence).
+Available qmmm_option: QM/XTB ; QM/PBEH-3C ; QM/HF-3C ; QM/r2SCAN-3C (for QM/MM calculations)
 E_00 can only be calculated for closed shell systems (use classic or manually!)
 EXPLICIT SOLVATION MODEL IS VERY EXPENSIVE!!!!!
 IMAG_option:

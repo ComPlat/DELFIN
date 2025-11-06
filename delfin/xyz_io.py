@@ -403,8 +403,9 @@ def _ensure_qmmm_implicit_model(
 ) -> None:
     """
     Ensure the implicit solvation model is compatible with QM/MM separators ('$').
-    If CPCM is requested while QM/MM is active, automatically switch to ALPB
+    If CPCM is requested while QM/XTB is active, automatically switch to ALPB
     and emit a warning; other models are left untouched.
+    For other QM/MM methods (QM/PBEH-3C, etc.), CPCM is kept as-is.
     """
     if not qmmm_range:
         return
@@ -421,8 +422,12 @@ def _ensure_qmmm_implicit_model(
             model,
         )
         return
-    if model.upper() == "CPCM":
-        logging.warning('Detected "$" separator: CPCM is incompatible with QM/MM. Switching implicit_solvation_model to ALPB.')
+
+    # Only switch to ALPB for QM/XTB (xTB requires ALPB for implicit solvation)
+    # Other methods like QM/PBEH-3C support CPCM directly
+    qmmm_method = str(config.get('qmmm_option', 'QM/XTB')).strip().upper()
+    if model.upper() == "CPCM" and qmmm_method == "QM/XTB":
+        logging.warning('Detected "$" separator with QM/XTB: CPCM is incompatible with xTB. Switching implicit_solvation_model to ALPB.')
         config["implicit_solvation_model"] = "ALPB"
 
 def _build_freq_block(config):
@@ -530,7 +535,7 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
 
     geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(coord_lines, input_path)
     _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
-    qmmm_token = "QM/XTB" if qmmm_range else None
+    qmmm_token = str(config.get('qmmm_option', 'QM/XTB')).strip() if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -595,7 +600,7 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
 
     geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(coord_lines, input_path)
     _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
-    qmmm_token = "QM/XTB" if qmmm_range else None
+    qmmm_token = str(config.get('qmmm_option', 'QM/XTB')).strip() if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -668,7 +673,7 @@ def read_xyz_and_create_input2(xyz_file_path: str, output_file_path: str, charge
 
     geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(xyz_lines, xyz_path)
     _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
-    qmmm_token = "QM/XTB" if qmmm_range else None
+    qmmm_token = str(config.get('qmmm_option', 'QM/XTB')).strip() if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -747,7 +752,7 @@ def read_xyz_and_create_input2_2(xyz_file_path, output_file_path, charge, multip
 
     geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(xyz_lines, xyz_path)
     _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
-    qmmm_token = "QM/XTB" if qmmm_range else None
+    qmmm_token = str(config.get('qmmm_option', 'QM/XTB')).strip() if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -823,7 +828,7 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
 
     geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(xyz_lines, xyz_path)
     _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
-    qmmm_token = "QM/XTB" if qmmm_range else None
+    qmmm_token = str(config.get('qmmm_option', 'QM/XTB')).strip() if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -889,7 +894,7 @@ def read_xyz_and_create_input4(xyz_file_path: str, output_file_path: str, charge
 
     geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(xyz_lines, xyz_path)
     _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
-    qmmm_token = "QM/XTB" if qmmm_range else None
+    qmmm_token = str(config.get('qmmm_option', 'QM/XTB')).strip() if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -962,7 +967,7 @@ def _create_s1_deltascf_input(xyz_file_path: str, output_file_path: str, charge:
 
     geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(xyz_lines, xyz_path)
     _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
-    qmmm_token = "QM/XTB" if qmmm_range else None
+    qmmm_token = str(config.get('qmmm_option', 'QM/XTB')).strip() if qmmm_range else None
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()

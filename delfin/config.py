@@ -199,6 +199,9 @@ def _is_oniom_calculation(config: Dict[str, Any]) -> bool:
     import os
     from pathlib import Path
 
+    # QM/MM method patterns to detect
+    qmmm_patterns = ['QM/XTB', 'QM/MM', 'QM/QM2', 'QM/PBEH-3C', 'QM/HF-3C', 'QM/r2SCAN-3C']
+
     # Check input_file specified in config
     input_file = config.get('input_file', 'input.txt')
     if os.path.exists(input_file):
@@ -206,7 +209,7 @@ def _is_oniom_calculation(config: Dict[str, Any]) -> bool:
             with open(input_file, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read(2000)  # Read first 2000 chars
                 # Check for ONIOM markers
-                if 'QM/XTB' in content or 'QM/MM' in content or 'QM/QM2' in content:
+                if any(pattern in content for pattern in qmmm_patterns):
                     return True
         except Exception:
             pass
@@ -224,7 +227,7 @@ def _is_oniom_calculation(config: Dict[str, Any]) -> bool:
                 with open(fname, 'r', encoding='utf-8', errors='ignore') as f:
                     first_line = f.readline()
                     # ORCA input files start with "! keywords"
-                    if 'QM/XTB' in first_line or 'QM/MM' in first_line or 'QM/QM2' in first_line:
+                    if any(pattern in first_line for pattern in qmmm_patterns):
                         return True
             except Exception:
                 pass
