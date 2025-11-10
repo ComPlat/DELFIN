@@ -92,22 +92,25 @@ def _resolve_manual_sequences(config: Dict[str, Any], delta: int) -> Dict[str, L
 
 def resolve_sequences_for_delta(config: Dict[str, Any], delta: int) -> Dict[str, List[Dict[str, Any]]]:
     """Return copies of even/odd sequences for a specific charge delta."""
+    manual_bundle = _resolve_manual_sequences(config, delta)
     method = str(config.get("OCCUPIER_method", "manually") or "manually").strip().lower()
     if method == "auto":
         auto_bundle = resolve_auto_sequence_bundle(delta)
         if auto_bundle:
             missing_even = "even_seq" not in auto_bundle
             missing_odd = "odd_seq" not in auto_bundle
-            if missing_even or missing_odd:
-                manual_bundle = _resolve_manual_sequences(config, delta)
-                if missing_even and "even_seq" in manual_bundle:
-                    auto_bundle["even_seq"] = manual_bundle["even_seq"]
-                if missing_odd and "odd_seq" in manual_bundle:
-                    auto_bundle["odd_seq"] = manual_bundle["odd_seq"]
+            if missing_even and "even_seq" in manual_bundle:
+                auto_bundle["even_seq"] = manual_bundle["even_seq"]
+            if missing_odd and "odd_seq" in manual_bundle:
+                auto_bundle["odd_seq"] = manual_bundle["odd_seq"]
             return auto_bundle
-        logger.debug("[occupier_sequences] No auto sequence rule for delta=%s; falling back to CONTROL definitions.", delta)
 
-    return _resolve_manual_sequences(config, delta)
+        logger.debug(
+            "[occupier_sequences] No auto sequence rule for delta=%s; falling back to CONTROL definitions.",
+            delta,
+        )
+
+    return manual_bundle
 
 
 def parse_species_delta(value: Any) -> int:

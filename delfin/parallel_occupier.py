@@ -1247,8 +1247,6 @@ def should_use_parallel_occupier(config: Dict[str, Any]) -> bool:
 def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
     """Build OCCUPIER FoB jobs for initial and red/ox stages without nested managers."""
 
-    import copy
-
     from delfin.copy_helpers import prepare_occ_folder_only_setup
     from delfin.thread_safe_helpers import prepare_occ_folder_2_only_setup
     from delfin.occupier_flat_extraction import _create_occupier_fob_jobs, _update_runtime_cache
@@ -1413,37 +1411,48 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         )
 
     for folder_name, charge_delta, source_folder, stage_prefix in stage_specs:
-        sequence_key, sequence = select_sequence(charge_delta)
         ensure_setup = make_setup(folder_name, charge_delta, source_folder)
-        folder_path = original_cwd / folder_name
-
         dependencies: Set[str] = set()
         if source_folder:
             source_prefix = source_folder.replace("_OCCUPIER", "").replace("_step_", "_")
-            dependencies.add(f"{source_prefix}_fob_best")
+            source_token = stage_completion.get(source_prefix)
+            if source_token:
+                dependencies.add(source_token)
+            else:
+                logger.debug(
+                    "[occupier_flat] Missing completion token for %s while preparing %s; "
+                    "stage dependencies may be incomplete",
+                    source_prefix,
+                    stage_prefix,
+                )
+
+        folder_path = original_cwd / folder_name
+        stage_charge = base_charge + charge_delta
+        sequence_key, sequence = select_sequence(charge_delta)
 
         if not sequence:
             logger.warning(
                 "[occupier_flat] No sequence entries for %s – running OCCUPIER sequentially",
                 folder_name,
             )
-            fallback_job = make_fallback_job(folder_name, stage_prefix, ensure_setup, dependencies)
+            fallback_job = make_fallback_job(folder_name, stage_prefix, ensure_setup, dependencies=set(dependencies))
             jobs.append(fallback_job)
             stage_completion[stage_prefix] = fallback_job.job_id
             if stage_prefix == "initial":
                 stage_completion["initial"] = fallback_job.job_id
             continue
 
-        stage_charge = base_charge + charge_delta
+        inner_config = dict(config)
+        inner_config['PAL'] = total_cores
 
-        fob_jobs, best_job_id = _create_occupier_fob_jobs(
+        inner_jobs, best_job_id = _create_occupier_fob_jobs(
             folder_name=folder_name,
             folder_path=folder_path,
             stage_prefix=stage_prefix,
             sequence=sequence,
             sequence_label=sequence_key,
             total_cores=total_cores,
-            global_config=config,
+            global_config=inner_config,
             ensure_setup=ensure_setup,
             source_folder=source_folder,
             metals=metals,
@@ -1452,8 +1461,13 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             solvent=solvent,
             occ_results=occ_results,
             stage_charge=stage_charge,
-        ) 
-        jobs.extend(fob_jobs)
+        )
+
+        if dependencies:
+            for job in inner_jobs:
+                job.dependencies = set(job.dependencies) | set(dependencies)
+
+        jobs.extend(inner_jobs)
         stage_completion[stage_prefix] = best_job_id
         if stage_prefix == "initial":
             stage_completion["initial"] = best_job_id

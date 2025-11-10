@@ -86,8 +86,9 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
             config,
             verbose=False,
         )
+        method_token = str(config.get("OCCUPIER_method", "auto")).strip().lower()
         auto_seq_bundle: Dict[str, List[Dict[str, Any]]] = {}
-        if str(config.get("OCCUPIER_method", "auto")).strip().lower() == "auto":
+        if method_token == "auto":
             auto_seq_bundle = resolve_sequences_for_delta(config, charge_delta)
 
         if not res:
@@ -174,7 +175,7 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
 
         # Update CONTROL.txt with input_file and charge adjustment (NO PAL override)
         _update_control_file_threadsafe(target_control, charge_delta, pal_override=None)
-        if auto_seq_bundle:
+        if auto_seq_bundle and method_token == "auto":
             append_sequence_overrides(target_control, auto_seq_bundle)
 
         return folder

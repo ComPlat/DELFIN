@@ -211,7 +211,8 @@ def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optio
     method_token = str(parent_config.get("OCCUPIER_method", "auto")).strip().lower()
     if method_token == "auto":
         seq_bundle = resolve_sequences_for_delta(parent_config, charge_delta)
-        append_sequence_overrides(control_txt, seq_bundle)
+        if seq_bundle:
+            append_sequence_overrides(control_txt, seq_bundle)
 
     msg_parts = ["input_file=input.xyz"]
     if charge_delta != 0:
@@ -315,7 +316,8 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
     write_species_delta_marker(Path.cwd(), charge_delta)
     if str(config.get("OCCUPIER_method", "auto")).strip().lower() == "auto":
         seq_bundle = resolve_sequences_for_delta(config, charge_delta)
-        append_sequence_overrides(control_path, seq_bundle)
+        if seq_bundle:
+            append_sequence_overrides(control_path, seq_bundle)
     msg_parts = ["input_file=input.xyz"]
     if charge_delta != 0:
         msg_parts.append("charge adjusted")

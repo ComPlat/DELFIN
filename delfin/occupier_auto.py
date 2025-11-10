@@ -308,6 +308,14 @@ def _parity_token(parity: str) -> str:
     return "even" if parity.lower().startswith("even") else "odd"
 
 
+def infer_parity_from_m(value: Any, fallback: Optional[str] = None) -> Optional[str]:
+    try:
+        m_val = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return "even" if m_val % 2 == 1 else "odd"
+
+
 def record_auto_preference(parity: str, preferred_index: Optional[int], delta: int,
                            *, root: Optional[Path] = None) -> None:
     """Remember which FoB index won for a baseline (anchor) delta."""
@@ -345,6 +353,19 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None) -> 
     root_path = _resolve_root(root)
     bundle: Dict[str, List[Dict[str, Any]]] = {}
 
+    def _storage_key(seq: List[Dict[str, Any]], fallback_parity: str) -> str:
+        m_candidate = None
+        for entry in seq:
+            if isinstance(entry, dict) and entry.get("m") is not None:
+                m_candidate = entry.get("m")
+                break
+        parity = infer_parity_from_m(m_candidate, fallback_parity)
+        parity = parity if parity in ("even", "odd") else fallback_parity
+        return f"{parity}_seq"
+
+    def _copy_sequence(seq: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return copy.deepcopy(seq)
+
     for anchor, settings in AUTO_SETTINGS.items():
         offset = delta - anchor
         baseline = settings.get("baseline", {})
@@ -354,7 +375,8 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None) -> 
             for parity in ("even", "odd"):
                 seq = baseline.get(parity)
                 if seq:
-                    bundle[f"{parity}_seq"] = copy.deepcopy(seq)
+                    key = _storage_key(seq, parity)
+                    bundle[key] = _copy_sequence(seq)
             if bundle:
                 return bundle
             continue
@@ -367,7 +389,8 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None) -> 
             pref_map = parity_branches.get(pref_index, {})
             seq = pref_map.get(offset)
             if seq:
-                bundle[f"{parity}_seq"] = copy.deepcopy(seq)
+                key = _storage_key(seq, parity)
+                bundle[key] = _copy_sequence(seq)
 
         if bundle:
             return bundle

@@ -13,7 +13,7 @@ from ..utils import (
     select_rel_and_aux,
 )
 from ..parser import extract_last_uhf_deviation, extract_last_J3
-from ..occupier_auto import record_auto_preference
+from ..occupier_auto import infer_parity_from_m, record_auto_preference
 from ..occupier_sequences import infer_species_delta
 
 logger = get_logger(__name__)
@@ -457,7 +457,19 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
     if occ_method == "auto" and min_fspe_index is not None:
         try:
             delta_value = infer_species_delta()
-            record_auto_preference("even" if is_even else "odd", min_fspe_index, delta_value)
+            preferred_entry = next(
+                (
+                    entry
+                    for entry in sequence
+                    if str(entry.get("index")) == str(min_fspe_index)
+                ),
+                None,
+            )
+            parity_hint = infer_parity_from_m(
+                preferred_entry.get("m") if preferred_entry else None,
+                "even" if is_even else "odd",
+            )
+            record_auto_preference(parity_hint or ("even" if is_even else "odd"), min_fspe_index, delta_value)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[occupier_auto] Failed to record preference: %s", exc)
 
@@ -906,7 +918,19 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
     if occ_method == "auto" and min_fspe_index is not None:
         try:
             delta_value = infer_species_delta()
-            record_auto_preference("even" if is_even else "odd", min_fspe_index, delta_value)
+            preferred_entry = next(
+                (
+                    entry
+                    for entry in sequence
+                    if str(entry.get("index")) == str(min_fspe_index)
+                ),
+                None,
+            )
+            parity_hint = infer_parity_from_m(
+                preferred_entry.get("m") if preferred_entry else None,
+                "even" if is_even else "odd",
+            )
+            record_auto_preference(parity_hint or ("even" if is_even else "odd"), min_fspe_index, delta_value)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[occupier_auto] Failed to record preference (safe): %s", exc)
 

@@ -4,6 +4,7 @@ import subprocess
 import sys
 import threading
 import time
+import socket
 from pathlib import Path
 from shutil import which
 from typing import Dict, Iterable, Optional
@@ -28,6 +29,31 @@ ORCA_PLOT_INPUT_TEMPLATE = (
 )
 
 _RUN_SCRATCH_DIR: Optional[Path] = None
+
+
+def _ensure_openmpi_subdir(base_path: Path) -> None:
+    """Create the OpenMPI-specific scratch subdirectory expected by ORCA."""
+    if base_path is None:
+        return
+    try:
+        hostname = os.environ.get("ORCA_MPI_HOST") or socket.gethostname()
+    except Exception:
+        hostname = "localhost"
+    uid = None
+    if hasattr(os, "getuid"):
+        try:
+            uid = os.getuid()
+        except Exception:
+            uid = None
+    if uid is None:
+        uid = os.environ.get("ORCA_MPI_UID") or os.environ.get("UID")
+    if uid is None:
+        uid = os.getpid()
+    subdir = base_path / f"ompi.{hostname}.{uid}"
+    try:
+        subdir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        logger.debug("Could not create OpenMPI scratch subdir %s", subdir, exc_info=True)
 
 
 def _ensure_orca_scratch_dir() -> Path:
@@ -59,6 +85,7 @@ def _ensure_orca_scratch_dir() -> Path:
 
     scratch_dir = base_path / run_label
     scratch_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_openmpi_subdir(scratch_dir)
     _RUN_SCRATCH_DIR = scratch_dir
     return scratch_dir
 
@@ -74,6 +101,7 @@ def _prepare_orca_environment(extra_scratch: Optional[Path] = None) -> Dict[str,
     if extra_scratch is not None:
         scratch_dir = scratch_dir / extra_scratch
         scratch_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_openmpi_subdir(scratch_dir)
 
     scratch_str = str(scratch_dir)
     env["ORCA_SCRDIR"] = scratch_str
