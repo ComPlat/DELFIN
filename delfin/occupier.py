@@ -10,7 +10,7 @@ from delfin.common.paths import resolve_path
 from delfin.global_manager import get_global_manager
 
 from .config import OCCUPIER_parser, read_control_file
-from .occupier_sequences import parse_species_delta, resolve_sequences_for_delta
+from .occupier_sequences import infer_species_delta, resolve_sequences_for_delta
 from .utils import (
     set_main_basisset,
     search_transition_metals,
@@ -751,7 +751,7 @@ def run_OCCUPIER():
         if not metals:
             metal_basisset = None
 
-        species_delta = parse_species_delta(config.get("OCCUPIER_species_delta", 0))
+        species_delta = infer_species_delta(Path.cwd())
         seq_bundle = resolve_sequences_for_delta(config, species_delta)
 
         # Choose which sequence to run

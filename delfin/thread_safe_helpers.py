@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any
 from delfin.common.logging import get_logger
 from delfin.config import OCCUPIER_parser
 from delfin.copy_helpers import read_occupier_file
-from delfin.occupier_sequences import parse_species_delta, resolve_sequences_for_delta
+from delfin.occupier_sequences import infer_species_delta, resolve_sequences_for_delta, write_species_delta_marker
 
 logger = get_logger(__name__)
 
@@ -187,7 +187,7 @@ def prepare_occ_folder_2_threadsafe(folder_name: str, source_occ_folder: str,
         return False
 
     # Run OCCUPIER in the target directory
-    return _run_occupier_in_directory(folder, config or {}, pal_override)
+    return _run_occupier_in_directory(folder, config or {}, pal_override, charge_delta)
 
 
 def read_occupier_file_threadsafe(folder_path: Path, file_name: str,
@@ -213,7 +213,7 @@ def _print_preferred_settings(folder: Path, multiplicity, additions, min_fspe_in
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not parse %s for preferred settings: %s", control_path, exc)
 
-    species_delta = parse_species_delta(stage_config.get("OCCUPIER_species_delta", 0))
+    species_delta = infer_species_delta(folder)
     seq_bundle = resolve_sequences_for_delta(stage_config, species_delta)
     parity = None
     if min_fspe_index is not None:
@@ -270,27 +270,15 @@ def _update_control_file_threadsafe(control_path: Path, charge_delta: int, pal_o
             control_lines = f.readlines()
 
         # Update input_file setting
-        input_idx = None
+        input_written = False
         for i, line in enumerate(control_lines):
             if line.strip().startswith("input_file="):
                 control_lines[i] = "input_file=input.xyz\n"
-                input_idx = i
+                input_written = True
                 break
 
-        if input_idx is None:
+        if not input_written:
             control_lines.insert(0, "input_file=input.xyz\n")
-            input_idx = 0
-
-        delta_line = f"OCCUPIER_species_delta={charge_delta}\n"
-        delta_written = False
-        for i, line in enumerate(control_lines):
-            if line.strip().startswith("OCCUPIER_species_delta="):
-                control_lines[i] = delta_line
-                delta_written = True
-                break
-        if not delta_written:
-            insert_at = (input_idx + 1) if input_idx is not None else len(control_lines)
-            control_lines.insert(insert_at, delta_line)
 
         # Update charge setting
         if charge_delta != 0:
@@ -306,7 +294,9 @@ def _update_control_file_threadsafe(control_path: Path, charge_delta: int, pal_o
         with control_path.open("w", encoding="utf-8") as f:
             f.writelines(control_lines)
 
-        msg_parts = ["input_file=input.xyz", f"OCCUPIER_species_delta={charge_delta}"]
+        write_species_delta_marker(control_path.parent, charge_delta)
+
+        msg_parts = ["input_file=input.xyz"]
         if charge_delta != 0:
             msg_parts.append("charge adjusted")
         print(f"Updated CONTROL.txt ({', '.join(msg_parts)}).")
@@ -316,7 +306,8 @@ def _update_control_file_threadsafe(control_path: Path, charge_delta: int, pal_o
 
 
 def _run_occupier_in_directory(target_dir: Path, config: Dict[str, Any],
-                               pal_override: Optional[int]) -> bool:
+                               pal_override: Optional[int],
+                               charge_delta: int = 0) -> bool:
     """Run OCCUPIER in specified directory using a separate process."""
 
     effective_pal = pal_override if pal_override is not None else int(config.get('PAL', 1) or 1)
@@ -340,6 +331,7 @@ def _run_occupier_in_directory(target_dir: Path, config: Dict[str, Any],
     child_env = os.environ.copy()
     child_env['DELFIN_CHILD_GLOBAL_MANAGER'] = json.dumps(global_cfg)
     child_env['DELFIN_SUBPROCESS'] = '1'  # Flag to indicate subprocess mode
+    child_env['DELFIN_OCCUPIER_DELTA'] = str(charge_delta)
 
     cmd = [
         sys.executable,

@@ -139,7 +139,6 @@ maxiter_occupier=125
 geom_opt_OCCUPIER=OPT
 pass_wavefunction=no
 approximate_spin_projection_APMethod=2
-OCCUPIER_species_delta=0
 --------------------
 OCCUPIER_sequence_profiles:
 -3,-2,-1,0,+1,+2,+3=[

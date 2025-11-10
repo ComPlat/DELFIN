@@ -94,7 +94,6 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
     FieldSpec("IMAG_option", _as_imag_option, default=2),
-    FieldSpec("OCCUPIER_species_delta", _as_int, default=0),
 )
 
 

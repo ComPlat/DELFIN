@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import copy
+import os
+import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_DELTA_MARKER = ".delfin_occ_delta"
+_FOLDER_PATTERN = re.compile(r"(ox|red)(?:_step)?_(\d+)", re.IGNORECASE)
 
 
 def _coerce_int(value: Any, fallback: int = 0) -> int:
@@ -78,5 +84,65 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int) -> Dict[str,
 
 
 def parse_species_delta(value: Any) -> int:
-    """Convert OCCUPIER_species_delta field to int with default 0."""
+    """Convert value to int with default 0."""
     return _coerce_int(value, fallback=0)
+
+
+def write_species_delta_marker(folder: Path, delta: int) -> None:
+    """Persist the species delta inside a stage folder (for later reuse)."""
+    try:
+        marker = folder / _DELTA_MARKER
+        marker.write_text(f"{delta}\n", encoding="utf-8")
+    except Exception:
+        # Non-fatal best-effort write
+        pass
+
+
+def read_species_delta_marker(folder: Path) -> Optional[int]:
+    """Read the stored species delta if available."""
+    marker = folder / _DELTA_MARKER
+    if not marker.exists():
+        return None
+    try:
+        value = marker.read_text(encoding="utf-8").strip()
+        if not value:
+            return None
+        return _coerce_int(value)
+    except Exception:
+        return None
+
+
+def _infer_delta_from_name(name: str) -> Optional[int]:
+    lowered = name.lower()
+    if lowered.startswith("initial"):
+        return 0
+    match = _FOLDER_PATTERN.search(lowered)
+    if match:
+        kind = match.group(1).lower()
+        magnitude = _coerce_int(match.group(2), fallback=0)
+        if magnitude == 0:
+            return 0
+        sign = 1 if kind.startswith("ox") else -1
+        return sign * magnitude
+    return None
+
+
+def infer_species_delta(folder: Optional[Path] = None, default: int = 0) -> int:
+    """Infer the species delta from env markers, files, or folder names."""
+    env_value = os.environ.get("DELFIN_OCCUPIER_DELTA")
+    if env_value not in (None, ""):
+        try:
+            return _coerce_int(env_value, fallback=default)
+        except Exception:
+            pass
+
+    target_folder = folder or Path.cwd()
+    marker_value = read_species_delta_marker(target_folder)
+    if marker_value is not None:
+        return marker_value
+
+    guessed = _infer_delta_from_name(target_folder.name)
+    if guessed is not None:
+        return guessed
+
+    return default
