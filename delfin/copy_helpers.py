@@ -9,7 +9,12 @@ from typing import Optional, Tuple
 
 from .config import OCCUPIER_parser
 from .occupier import run_OCCUPIER
-from .occupier_sequences import infer_species_delta, resolve_sequences_for_delta, write_species_delta_marker
+from .occupier_sequences import (
+    infer_species_delta,
+    resolve_sequences_for_delta,
+    write_species_delta_marker,
+    append_sequence_overrides,
+)
 
 
 _XYZ_COORD_LINE_RE = re.compile(
@@ -149,6 +154,12 @@ def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optio
     if not control_source.exists():
         raise FileNotFoundError(f"Missing file: CONTROL.txt in {parent_dir}")
 
+    try:
+        parent_config = OCCUPIER_parser(str(control_source))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[{folder_name}] Warning: could not parse CONTROL.txt ({exc}); auto sequences may fall back.")
+        parent_config = {}
+
     shutil.copy(control_source, folder / "CONTROL.txt")
     print(f"[{folder_name}] Copied CONTROL.txt.")
 
@@ -197,6 +208,11 @@ def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optio
         f.writelines(control_lines)
     write_species_delta_marker(folder, charge_delta)
 
+    method_token = str(parent_config.get("OCCUPIER_method", "auto")).strip().lower()
+    if method_token == "auto":
+        seq_bundle = resolve_sequences_for_delta(parent_config, charge_delta)
+        append_sequence_overrides(control_txt, seq_bundle)
+
     msg_parts = ["input_file=input.xyz"]
     if charge_delta != 0:
         msg_parts.append("charge adjusted")
@@ -233,15 +249,11 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
     shutil.copy(parent_control, Path("CONTROL.txt"))
     print("Copied CONTROL.txt.")
     if config is None:
-        cfg = {}
-        with parent_control.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                cfg[k.strip()] = v.strip()
-        config = cfg
+        try:
+            config = OCCUPIER_parser(str(parent_control))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[{folder_name}] Warning: could not parse parent CONTROL.txt ({exc})")
+            config = {}
     os.chdir(cwd)
     res = read_occupier_file(source_occ_folder, "OCCUPIER.txt", None, None, None, config)
     if not res:
@@ -301,6 +313,9 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
     with control_path.open("w", encoding="utf-8") as f:
         f.writelines(control_lines)
     write_species_delta_marker(Path.cwd(), charge_delta)
+    if str(config.get("OCCUPIER_method", "auto")).strip().lower() == "auto":
+        seq_bundle = resolve_sequences_for_delta(config, charge_delta)
+        append_sequence_overrides(control_path, seq_bundle)
     msg_parts = ["input_file=input.xyz"]
     if charge_delta != 0:
         msg_parts.append("charge adjusted")
