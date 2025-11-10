@@ -1,11 +1,186 @@
 import ast
-from typing import Dict, Any, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from delfin.common.control_validator import validate_control_config
 
 from delfin.common.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+_SEQUENCE_BLOCK_HEADER = re.compile(r"^\s*([+\-0-9,\s]+)=\[\s*$")
+
+
+def _collect_literal_list(lines: List[str], start_idx: int, initial_value: str) -> Tuple[List[Any], int]:
+    """Collect a multi-line Python literal (list/dict) starting at start_idx."""
+    buffer = initial_value + "\n"
+    depth = initial_value.count('[') - initial_value.count(']')
+    idx = start_idx + 1
+
+    while idx < len(lines) and depth > 0:
+        line = lines[idx]
+        buffer += line
+        depth += line.count('[') - line.count(']')
+        idx += 1
+
+    try:
+        parsed = ast.literal_eval(buffer)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"Failed to parse list literal near line {start_idx + 1}: {exc}")
+        parsed = []
+
+    return parsed if isinstance(parsed, list) else [], idx
+
+
+def _parse_delta_tokens(raw: str) -> List[int]:
+    deltas: List[int] = []
+    seen: set[int] = set()
+    for token in raw.split(','):
+        text = token.strip()
+        if not text:
+            continue
+        try:
+            value = int(text)
+        except ValueError:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        deltas.append(value)
+    return deltas
+
+
+def _parse_sequence_block(lines: List[str], start_idx: int) -> Tuple[Dict[str, Any], int]:
+    block: Dict[str, Any] = {"even_seq": [], "odd_seq": []}
+    idx = start_idx
+
+    while idx < len(lines):
+        line = lines[idx]
+        stripped = line.strip()
+
+        if not stripped or stripped.startswith("#") or stripped.startswith("---") or stripped.startswith("***"):
+            idx += 1
+            continue
+        if stripped.endswith(":"):
+            idx += 1
+            continue
+        if stripped == "]":
+            return block, idx + 1
+
+        if stripped.startswith("even_seq"):
+            parts = line.split("=", 1)
+            if len(parts) != 2:
+                idx += 1
+                continue
+            value = parts[1].strip()
+            if value.startswith('[') and not value.endswith(']'):
+                parsed, idx = _collect_literal_list(lines, idx, value)
+            else:
+                try:
+                    parsed = ast.literal_eval(value)
+                    idx += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(f"Failed to parse even_seq block near line {idx + 1}: {exc}")
+                    parsed = []
+                    idx += 1
+            block["even_seq"] = parsed if isinstance(parsed, list) else []
+            continue
+
+        if stripped.startswith("odd_seq"):
+            parts = line.split("=", 1)
+            if len(parts) != 2:
+                idx += 1
+                continue
+            value = parts[1].strip()
+            if value.startswith('[') and not value.endswith(']'):
+                parsed, idx = _collect_literal_list(lines, idx, value)
+            else:
+                try:
+                    parsed = ast.literal_eval(value)
+                    idx += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(f"Failed to parse odd_seq block near line {idx + 1}: {exc}")
+                    parsed = []
+                    idx += 1
+            block["odd_seq"] = parsed if isinstance(parsed, list) else []
+            continue
+
+        idx += 1
+
+    logger.warning("Unterminated OCCUPIER sequence block; reached EOF without closing ']'.")
+    return block, idx
+
+
+def _parse_control_file(file_path: str, *, keep_steps_literal: bool) -> Dict[str, Any]:
+    config: Dict[str, Any] = {}
+    sequence_blocks: List[Dict[str, Any]] = []
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    idx = 0
+    total_lines = len(lines)
+
+    while idx < total_lines:
+        line = lines[idx]
+        stripped = line.strip()
+
+        # Skip comments / separators / blanks
+        if not stripped or stripped.startswith('#') or stripped.startswith('---') or stripped.startswith('***'):
+            idx += 1
+            continue
+
+        # Sequence block definition (e.g. "-1,0,+1=[")
+        block_match = _SEQUENCE_BLOCK_HEADER.match(stripped)
+        if block_match:
+            deltas = _parse_delta_tokens(block_match.group(1))
+            block, next_idx = _parse_sequence_block(lines, idx + 1)
+            if deltas and (block.get("even_seq") or block.get("odd_seq")):
+                block["deltas"] = deltas
+                sequence_blocks.append(block)
+            idx = next_idx
+            continue
+
+        # Ignore headings like "odd electron number:"
+        if ':' in stripped and not '=' in stripped:
+            idx += 1
+            continue
+
+        if '=' not in line:
+            idx += 1
+            continue
+
+        key_raw, value_raw = line.split('=', 1)
+        key = key_raw.strip()
+        value = value_raw.strip()
+
+        if keep_steps_literal and key in ('oxidation_steps', 'reduction_steps'):
+            config[key] = value
+            idx += 1
+            continue
+
+        if value.startswith('[') and not value.endswith(']'):
+            parsed, next_idx = _collect_literal_list(lines, idx, value)
+            config[key] = parsed
+            idx = next_idx
+            continue
+
+        if ',' in value and not value.startswith('{') and not value.startswith('['):
+            config[key] = [v.strip() for v in value.split(',') if v.strip()]
+            idx += 1
+            continue
+
+        try:
+            config[key] = ast.literal_eval(value)
+        except Exception:
+            config[key] = value
+        idx += 1
+
+    if sequence_blocks:
+        config["_occupier_sequence_blocks"] = sequence_blocks
+    return config
+
 
 def read_control_file(file_path: str) -> Dict[str, Any]:
     """Parse CONTROL.txt file and return configuration dictionary.
@@ -22,61 +197,10 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     Returns:
         Dictionary containing parsed configuration parameters
     """
-    config = {}
-    multi_key = None
-    multi_val = ""
-
-    with open(file_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-
-            # Skip comments / blank lines
-            if not line or line.startswith('#') or line.startswith('---') or line.startswith('***'):
-                continue
-
-            # Continuation of multi-line list
-            if multi_key:
-                multi_val += line + '\n'
-                if line.endswith(']'):
-                    try:
-                        config[multi_key] = ast.literal_eval(multi_val)
-                    except Exception:
-                        config[multi_key] = []
-                    multi_key, multi_val = None, ""
-                continue
-
-            # Normal key=value lines
-            if '=' in line:
-                key, value = [x.strip() for x in line.split('=', 1)]
-
-                # ---------- NEW: Ox/Red‑Steps always as string -----------------
-                if key in ('oxidation_steps', 'reduction_steps'):
-                    config[key] = value                # no type conversion
-                    continue
-                # ----------------------------------------------------------------
-
-                # Start of a multi-line list
-                if value.startswith('[') and not value.endswith(']'):
-                    multi_key, multi_val = key, value + '\n'
-                    continue
-
-                # Comma separated values → List of strings
-                if ',' in value and not value.startswith('{') and not value.startswith('['):
-                    config[key] = [v.strip() for v in value.split(',') if v.strip()]
-                    continue
-
-                # Everything else: try to parse (int, float, dict …)
-                try:
-                    config[key] = ast.literal_eval(value)
-                except Exception:
-                    config[key] = value
-                continue
-
-            # Ignore section headings (with colon)
-            elif ':' in line:
-                continue
-
+    config = _parse_control_file(file_path, keep_steps_literal=True)
     validated = validate_control_config(config)
+    if "_occupier_sequence_blocks" in config:
+        validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
     return validated
 
 def OCCUPIER_parser(path: str) -> Dict[str, Any]:
@@ -90,58 +214,10 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     Returns:
         Dictionary containing parsed OCCUPIER configuration
     """
-    config = {}
-    multi_key = None
-    multi_val = ""
-
-    with open(path, 'r') as f:
-        for line in f:
-            line = line.strip()
-
-            # Skip comments, separators, or empty lines
-            if not line or line.startswith('#') or line.startswith('---') or line.startswith('***'):
-                continue
-
-            # Handle continuation of a multi-line list
-            if multi_key:
-                multi_val += line + '\n'
-                if line.endswith(']'):
-                    try:
-                        parsed = ast.literal_eval(multi_val)
-                        config[multi_key] = parsed
-                    except Exception as e:
-                        logger.error(f"Could not parse list for {multi_key}: {e}")
-                        config[multi_key] = []
-                    multi_key = None
-                    multi_val = ""
-                continue
-
-            # Normal key=value line
-            if '=' in line:
-                key, value = line.split('=', 1)
-                key: str = key.strip()
-                value: str = value.strip()
-
-                # Start of a multiline list
-                if value.startswith('[') and not value.endswith(']'):
-                    multi_key = key
-                    multi_val = value + '\n'
-                    continue
-
-                # Convert comma-separated values to list of strings
-                if ',' in value and not value.startswith('{') and not value.startswith('['):
-                    config[key] = [v.strip() for v in value.split(',') if v.strip()]
-                else:
-                    try:
-                        config[key] = ast.literal_eval(value)
-                    except Exception:
-                        config[key] = value
-
-            # Optional: Skip section headers like "odd electron number:"
-            elif ':' in line:
-                continue
-
+    config = _parse_control_file(path, keep_steps_literal=False)
     validated = validate_control_config(config)
+    if "_occupier_sequence_blocks" in config:
+        validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
     return validated
 
 
@@ -293,5 +369,4 @@ def get_E_ref(config: Dict[str, Any]) -> float:
         }
 
         return solvent_E_ref.get(solvent_key, 4.345)
-
 

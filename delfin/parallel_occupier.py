@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 from delfin.common.logging import get_logger
 from delfin.global_manager import get_global_manager
 from delfin.copy_helpers import read_occupier_file
+from delfin.occupier_sequences import resolve_sequences_for_delta
 from delfin.imag import run_IMAG
 from delfin.orca import run_orca
 from delfin.xyz_io import (
@@ -1288,6 +1289,7 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
 
     def select_sequence(delta: int) -> tuple[str, List[Dict[str, Any]]]:
         parity = compute_is_even(delta)
+        seq_bundle = resolve_sequences_for_delta(config, delta)
         candidate_keys: List[str] = []
         if parity is True:
             candidate_keys.extend(["initial_sequence", "even_seq"])
@@ -1301,13 +1303,18 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             if not key or key in seen:
                 continue
             seen.add(key)
+            if key in ("even_seq", "odd_seq"):
+                seq = seq_bundle.get(key, [])
+                if seq:
+                    return key, seq
+                continue
             seq = config.get(key) or []
             if seq:
                 try:
                     return key, copy.deepcopy(seq)
                 except Exception:
                     return key, list(seq)
-        return "even_seq", []
+        return "even_seq", seq_bundle.get("even_seq", [])
 
     fallback_cwd_lock = threading.RLock()
 

@@ -5,7 +5,10 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
+
+from .config import OCCUPIER_parser
 from .occupier import run_OCCUPIER
+from .occupier_sequences import parse_species_delta, resolve_sequences_for_delta
 
 
 _XYZ_COORD_LINE_RE = re.compile(
@@ -56,7 +59,20 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
         if verbose:
             print("Missing values for min_fspe_index or parity.")
         return None, None, None
-    sequence = config.get(parity, [])
+    stage_config = None
+    control_path = folder / "CONTROL.txt"
+    if control_path.exists():
+        try:
+            stage_config = OCCUPIER_parser(str(control_path))
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(f"Warning: could not parse {control_path}: {exc}")
+    if stage_config is None:
+        stage_config = config or {}
+
+    species_delta = parse_species_delta(stage_config.get("OCCUPIER_species_delta", 0))
+    seq_bundle = resolve_sequences_for_delta(stage_config, species_delta)
+    sequence = seq_bundle.get(parity) or stage_config.get(parity, [])
     entry = next((item for item in sequence if item["index"] == min_fspe_index), None)
     if not entry:
         if verbose:
@@ -157,8 +173,26 @@ def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optio
     with control_txt.open("r", encoding="utf-8") as f:
         control_lines = f.readlines()
 
-    if control_lines and "input_file=input.txt" in control_lines[0]:
-        control_lines[0] = "input_file=input.xyz\n"
+    input_idx = None
+    for i, line in enumerate(control_lines):
+        if line.strip().startswith("input_file="):
+            control_lines[i] = "input_file=input.xyz\n"
+            input_idx = i
+            break
+
+    if input_idx is None:
+        control_lines.insert(0, "input_file=input.xyz\n")
+        input_idx = 0
+
+    delta_line = f"OCCUPIER_species_delta={charge_delta}\n"
+    delta_written = False
+    for i, line in enumerate(control_lines):
+        if line.strip().startswith("OCCUPIER_species_delta="):
+            control_lines[i] = delta_line
+            delta_written = True
+            break
+    if not delta_written:
+        control_lines.insert(input_idx + 1, delta_line)
 
     for i, line in enumerate(control_lines):
         if "charge=" in line:
@@ -171,7 +205,10 @@ def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optio
 
     with control_txt.open("w", encoding="utf-8") as f:
         f.writelines(control_lines)
-    print(f"[{folder_name}] Updated CONTROL.txt.")
+    msg_parts = ["input_file=input.xyz", f"OCCUPIER_species_delta={charge_delta}"]
+    if charge_delta != 0:
+        msg_parts.append("charge adjusted")
+    print(f"[{folder_name}] Updated CONTROL.txt ({', '.join(msg_parts)}).")
 
     return folder
 
@@ -248,13 +285,25 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
     with Path("CONTROL.txt").open("r", encoding="utf-8") as f:
         control_lines = f.readlines()
     found_input = False
+    input_idx = None
     for i, line in enumerate(control_lines):
         if line.strip().startswith("input_file="):
             control_lines[i] = "input_file=input.xyz\n"
-            found_input = True
+            input_idx = i
             break
-    if not found_input:
+    if input_idx is None:
         control_lines.insert(0, "input_file=input.xyz\n")
+        input_idx = 0
+
+    delta_line = f"OCCUPIER_species_delta={charge_delta}\n"
+    delta_written = False
+    for i, line in enumerate(control_lines):
+        if line.strip().startswith("OCCUPIER_species_delta="):
+            control_lines[i] = delta_line
+            delta_written = True
+            break
+    if not delta_written:
+        control_lines.insert(input_idx + 1, delta_line)
     for i, line in enumerate(control_lines):
         if "charge=" in line:
             m = re.search(r"charge=([+-]?\d+)", line)
@@ -265,7 +314,10 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
             break
     with Path("CONTROL.txt").open("w", encoding="utf-8") as f:
         f.writelines(control_lines)
-    print("Updated CONTROL.txt (input_file=input.xyz, charge adjusted).")
+    msg_parts = ["input_file=input.xyz", f"OCCUPIER_species_delta={charge_delta}"]
+    if charge_delta != 0:
+        msg_parts.append("charge adjusted")
+    print(f"Updated CONTROL.txt ({', '.join(msg_parts)}).")
     run_OCCUPIER()
     print(f"{folder_name} finished!\n")
     os.chdir(folder.parent)

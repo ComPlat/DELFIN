@@ -94,6 +94,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
     FieldSpec("IMAG_option", _as_imag_option, default=2),
+    FieldSpec("OCCUPIER_species_delta", _as_int, default=0),
 )
 
 
@@ -119,25 +120,44 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             errors.append(f"Invalid value for {spec.name}: {exc}")
 
+    def _validate_sequence_list(seq_value: Any, label: str) -> None:
+        if not isinstance(seq_value, list):
+            errors.append(f"{label} must be a list of mappings")
+            return
+        for idx, item in enumerate(seq_value, start=1):
+            if not isinstance(item, Mapping):
+                errors.append(f"{label}[{idx}] must be a mapping")
+                continue
+            if "index" not in item or "m" not in item:
+                errors.append(f"{label}[{idx}] must define 'index' and 'm'")
+                continue
+            try:
+                int(item["index"])
+                int(item["m"])
+            except Exception:  # noqa: BLE001
+                errors.append(f"{label}[{idx}] has non-integer 'index' or 'm'")
+
     # ensure electron sequences have expected structure if present
     for seq_key in ("even_seq", "odd_seq"):
         if seq_key in config:
-            seq_value = config[seq_key]
-            if not isinstance(seq_value, list):
-                errors.append(f"{seq_key} must be a list of mappings")
-                continue
-            for idx, item in enumerate(seq_value, start=1):
-                if not isinstance(item, Mapping):
-                    errors.append(f"{seq_key}[{idx}] must be a mapping")
+            _validate_sequence_list(config[seq_key], seq_key)
+
+    blocks = config.get("_occupier_sequence_blocks")
+    if blocks is not None:
+        if not isinstance(blocks, list):
+            errors.append("_occupier_sequence_blocks must be a list")
+        else:
+            for block_idx, block in enumerate(blocks, start=1):
+                if not isinstance(block, Mapping):
+                    errors.append(f"sequence block #{block_idx} must be a mapping")
                     continue
-                if "index" not in item or "m" not in item:
-                    errors.append(f"{seq_key}[{idx}] must define 'index' and 'm'")
-                    continue
-                try:
-                    int(item["index"])
-                    int(item["m"])
-                except Exception:  # noqa: BLE001
-                    errors.append(f"{seq_key}[{idx}] has non-integer 'index' or 'm'")
+                deltas = block.get("deltas")
+                if not isinstance(deltas, list) or not all(isinstance(d, int) for d in deltas):
+                    errors.append(f"sequence block #{block_idx} has invalid 'deltas'")
+                if "even_seq" in block:
+                    _validate_sequence_list(block["even_seq"], f"sequence block #{block_idx} even_seq")
+                if "odd_seq" in block:
+                    _validate_sequence_list(block["odd_seq"], f"sequence block #{block_idx} odd_seq")
 
     if errors:
         raise ValueError("; ".join(errors))

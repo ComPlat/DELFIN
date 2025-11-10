@@ -139,7 +139,10 @@ maxiter_occupier=125
 geom_opt_OCCUPIER=OPT
 pass_wavefunction=no
 approximate_spin_projection_APMethod=2
+OCCUPIER_species_delta=0
 --------------------
+OCCUPIER_sequence_profiles:
+-3,-2,-1,0,+1,+2,+3=[
 even electron number:
 even_seq = [
   {"index": 1, "m": 1, "BS": "",    "from": 0},
@@ -164,6 +167,7 @@ odd_seq = [
   {"index": 7, "m": 6, "BS": "",    "from": 4},
   {"index": 8, "m": 6, "BS": "6,1", "from": 7},
   {"index": 9, "m": 6, "BS": "7,2", "from": 8}
+]
 ]
 
 INFOS:

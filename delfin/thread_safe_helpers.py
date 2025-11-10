@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from delfin.common.logging import get_logger
+from delfin.config import OCCUPIER_parser
 from delfin.copy_helpers import read_occupier_file
+from delfin.occupier_sequences import parse_species_delta, resolve_sequences_for_delta
 
 logger = get_logger(__name__)
 
@@ -203,10 +205,20 @@ def _print_preferred_settings(folder: Path, multiplicity, additions, min_fspe_in
     if multiplicity is None and min_fspe_index is None:
         return
 
+    stage_config: Dict[str, Any] = config or {}
+    control_path = folder / "CONTROL.txt"
+    if control_path.exists():
+        try:
+            stage_config = OCCUPIER_parser(str(control_path))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not parse %s for preferred settings: %s", control_path, exc)
+
+    species_delta = parse_species_delta(stage_config.get("OCCUPIER_species_delta", 0))
+    seq_bundle = resolve_sequences_for_delta(stage_config, species_delta)
     parity = None
     if min_fspe_index is not None:
-        even_seq = config.get("even_seq", [])
-        odd_seq = config.get("odd_seq", [])
+        even_seq = seq_bundle.get("even_seq", stage_config.get("even_seq", []))
+        odd_seq = seq_bundle.get("odd_seq", stage_config.get("odd_seq", []))
         if any(entry.get("index") == min_fspe_index for entry in even_seq):
             parity = "even_seq"
         elif any(entry.get("index") == min_fspe_index for entry in odd_seq):
@@ -258,15 +270,27 @@ def _update_control_file_threadsafe(control_path: Path, charge_delta: int, pal_o
             control_lines = f.readlines()
 
         # Update input_file setting
-        found_input = False
+        input_idx = None
         for i, line in enumerate(control_lines):
             if line.strip().startswith("input_file="):
                 control_lines[i] = "input_file=input.xyz\n"
-                found_input = True
+                input_idx = i
                 break
 
-        if not found_input:
+        if input_idx is None:
             control_lines.insert(0, "input_file=input.xyz\n")
+            input_idx = 0
+
+        delta_line = f"OCCUPIER_species_delta={charge_delta}\n"
+        delta_written = False
+        for i, line in enumerate(control_lines):
+            if line.strip().startswith("OCCUPIER_species_delta="):
+                control_lines[i] = delta_line
+                delta_written = True
+                break
+        if not delta_written:
+            insert_at = (input_idx + 1) if input_idx is not None else len(control_lines)
+            control_lines.insert(insert_at, delta_line)
 
         # Update charge setting
         if charge_delta != 0:
@@ -282,7 +306,7 @@ def _update_control_file_threadsafe(control_path: Path, charge_delta: int, pal_o
         with control_path.open("w", encoding="utf-8") as f:
             f.writelines(control_lines)
 
-        msg_parts = ["input_file=input.xyz"]
+        msg_parts = ["input_file=input.xyz", f"OCCUPIER_species_delta={charge_delta}"]
         if charge_delta != 0:
             msg_parts.append("charge adjusted")
         print(f"Updated CONTROL.txt ({', '.join(msg_parts)}).")
