@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 import sys
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -212,7 +212,9 @@ def prepare_occ_folder(folder_name, charge_delta=0):
 
     # Change to folder and run OCCUPIER
     os.chdir(folder)
-    with _temporary_env_var("DELFIN_OCCUPIER_DELTA", str(charge_delta)):
+    with ExitStack() as stack:
+        stack.enter_context(_temporary_env_var("DELFIN_OCCUPIER_DELTA", str(charge_delta)))
+        stack.enter_context(_temporary_env_var("DELFIN_OCC_ROOT", str(cwd)))
         run_OCCUPIER()
     print(f"{folder_name} finished!")
     print(f"")
@@ -303,7 +305,9 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
     if charge_delta != 0:
         msg_parts.append("charge adjusted")
     print(f"Updated CONTROL.txt ({', '.join(msg_parts)}).")
-    with _temporary_env_var("DELFIN_OCCUPIER_DELTA", str(charge_delta)):
+    with ExitStack() as stack:
+        stack.enter_context(_temporary_env_var("DELFIN_OCCUPIER_DELTA", str(charge_delta)))
+        stack.enter_context(_temporary_env_var("DELFIN_OCC_ROOT", str(cwd)))
         run_OCCUPIER()
     print(f"{folder_name} finished!\n")
     os.chdir(folder.parent)

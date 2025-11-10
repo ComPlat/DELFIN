@@ -7,12 +7,16 @@ from typing import Optional
 import os, re
 
 from ..common.banners import build_occupier_banner
+from ..common.logging import get_logger
 from ..utils import (
     search_transition_metals,
     select_rel_and_aux,
 )
 from ..parser import extract_last_uhf_deviation, extract_last_J3
+from ..occupier_auto import record_auto_preference
+from ..occupier_sequences import infer_species_delta
 
+logger = get_logger(__name__)
 
 # This file will contain the OCCUPIER report generation functions
 # Functions will be moved here from report.py
@@ -191,6 +195,8 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
     lowest_label = f"LOWEST {energy_label}:"
 
     # selection mode
+    occ_method = str(config.get("OCCUPIER_method", "manually") or "manually").strip().lower()
+    occ_method = str(config.get("OCCUPIER_method", "manually") or "manually").strip().lower()
     raw_sel = str(config.get('occupier_selection', 'tolerance')).lower()
     sel = raw_sel.split('|')[0].strip()
     ap = config.get('approximate_spin_projection_APMethod')
@@ -447,6 +453,13 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
 
         min_fspe_index = pick_i
         min_fspe_value = pick_E
+
+    if occ_method == "auto" and min_fspe_index is not None:
+        try:
+            delta_value = infer_species_delta()
+            record_auto_preference("even" if is_even else "odd", min_fspe_index, delta_value)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[occupier_auto] Failed to record preference: %s", exc)
 
     # ----------------------- printing helpers ----------------------------------
     def fmt_display(x: Optional[float]) -> str:
@@ -889,6 +902,13 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
         # apply potential energy-biased pick
         min_fspe_index = pick_i
         min_fspe_value = pick_E
+
+    if occ_method == "auto" and min_fspe_index is not None:
+        try:
+            delta_value = infer_species_delta()
+            record_auto_preference("even" if is_even else "odd", min_fspe_index, delta_value)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[occupier_auto] Failed to record preference (safe): %s", exc)
 
     # ----------------------- printing helpers ----------------------------------
     def fmt_display(x: Optional[float]) -> str:

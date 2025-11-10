@@ -332,6 +332,7 @@ def _run_occupier_in_directory(target_dir: Path, config: Dict[str, Any],
     child_env['DELFIN_CHILD_GLOBAL_MANAGER'] = json.dumps(global_cfg)
     child_env['DELFIN_SUBPROCESS'] = '1'  # Flag to indicate subprocess mode
     child_env['DELFIN_OCCUPIER_DELTA'] = str(charge_delta)
+    child_env['DELFIN_OCC_ROOT'] = str(target_dir.parent.resolve())
 
     cmd = [
         sys.executable,

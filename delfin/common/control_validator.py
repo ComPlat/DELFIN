@@ -74,6 +74,15 @@ def _as_imag_option(value: Any) -> int:
         raise ValueError("must be 1 or 2")
     return option
 
+
+def _as_occupier_method(value: Any) -> str:
+    text = str(value or "auto").strip().lower()
+    if text in {"manual", "manually"}:
+        return "manually"
+    if text == "auto":
+        return "auto"
+    raise ValueError("must be one of: manually, auto")
+
 CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("NAME", _as_str, default=""),
     FieldSpec("SMILES", _as_str, default=""),
@@ -94,6 +103,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
     FieldSpec("IMAG_option", _as_imag_option, default=2),
+    FieldSpec("OCCUPIER_method", _as_occupier_method, default="manually"),
 )
 
 

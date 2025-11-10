@@ -7,8 +7,13 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from delfin.common.logging import get_logger
+
+from .occupier_auto import resolve_auto_sequence_bundle
+
 _DELTA_MARKER = ".delfin_occ_delta"
 _FOLDER_PATTERN = re.compile(r"(ox|red)(?:_step)?_(\d+)", re.IGNORECASE)
+logger = get_logger(__name__)
 
 
 def _coerce_int(value: Any, fallback: int = 0) -> int:
@@ -46,7 +51,9 @@ def _build_sequence_cache(blocks: Optional[List[Dict[str, Any]]]) -> Dict[int, D
         if not entry:
             continue
         for delta in deltas:
-            cache[_coerce_int(delta)] = entry
+            parsed = _coerce_int(delta)
+            if parsed not in cache:
+                cache[parsed] = entry
     return cache
 
 
@@ -60,8 +67,7 @@ def _ensure_sequence_cache(config: Dict[str, Any]) -> Dict[int, Dict[str, List[D
     return cache
 
 
-def resolve_sequences_for_delta(config: Dict[str, Any], delta: int) -> Dict[str, List[Dict[str, Any]]]:
-    """Return copies of even/odd sequences for a specific charge delta."""
+def _resolve_manual_sequences(config: Dict[str, Any], delta: int) -> Dict[str, List[Dict[str, Any]]]:
     cache = _ensure_sequence_cache(config)
     bundle: Dict[str, List[Dict[str, Any]]] = {}
     entry = cache.get(delta)
@@ -81,6 +87,26 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int) -> Dict[str,
     if isinstance(global_odd, list):
         bundle["odd_seq"] = copy.deepcopy(global_odd)
     return bundle
+
+
+def resolve_sequences_for_delta(config: Dict[str, Any], delta: int) -> Dict[str, List[Dict[str, Any]]]:
+    """Return copies of even/odd sequences for a specific charge delta."""
+    method = str(config.get("OCCUPIER_method", "manually") or "manually").strip().lower()
+    if method == "auto":
+        auto_bundle = resolve_auto_sequence_bundle(delta)
+        if auto_bundle:
+            missing_even = "even_seq" not in auto_bundle
+            missing_odd = "odd_seq" not in auto_bundle
+            if missing_even or missing_odd:
+                manual_bundle = _resolve_manual_sequences(config, delta)
+                if missing_even and "even_seq" in manual_bundle:
+                    auto_bundle["even_seq"] = manual_bundle["even_seq"]
+                if missing_odd and "odd_seq" in manual_bundle:
+                    auto_bundle["odd_seq"] = manual_bundle["odd_seq"]
+            return auto_bundle
+        logger.debug("[occupier_sequences] No auto sequence rule for delta=%s; falling back to CONTROL definitions.", delta)
+
+    return _resolve_manual_sequences(config, delta)
 
 
 def parse_species_delta(value: Any) -> int:
