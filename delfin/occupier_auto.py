@@ -382,15 +382,35 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None) -> 
             continue
 
         for parity in ("even", "odd"):
-            pref_index = _preferred_index_for_anchor(anchor, parity, root_path)
-            if pref_index is None:
-                continue
             parity_branches = branches.get(parity, {})
-            pref_map = parity_branches.get(pref_index, {})
-            seq = pref_map.get(offset)
-            if seq:
+            if not parity_branches:
+                continue
+
+            pref_index = _preferred_index_for_anchor(anchor, parity, root_path)
+            ordered_indices: list[int] = []
+            if pref_index is not None and pref_index in parity_branches:
+                ordered_indices.append(pref_index)
+            # Append remaining candidates in ascending order for determinism
+            for candidate in sorted(parity_branches.keys()):
+                if candidate not in ordered_indices:
+                    ordered_indices.append(candidate)
+
+            for branch_index in ordered_indices:
+                pref_map = parity_branches.get(branch_index, {})
+                seq = pref_map.get(offset)
+                if not seq:
+                    continue
                 key = _storage_key(seq, parity)
                 bundle[key] = _copy_sequence(seq)
+                if pref_index is None:
+                    logger.debug(
+                        "[occupier_auto] Using fallback branch %s for parity=%s, anchor=%s, offset=%s",
+                        branch_index,
+                        parity,
+                        anchor,
+                        offset,
+                    )
+                break
 
         if bundle:
             return bundle

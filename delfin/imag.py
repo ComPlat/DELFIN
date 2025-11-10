@@ -1112,17 +1112,60 @@ def run_IMAG(
     threshold = allow_raw if allow_raw <= 0 else -allow_raw
     recalc = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
 
-    first_freq = search_imaginary_mode2(input_file)
+    cwd_snapshot = Path.cwd().resolve(strict=False)
+
+    def _resolve_path(candidate: str | os.PathLike[str],
+                      *,
+                      preferred_dir: Path | None = None,
+                      require_exists: bool = False) -> Path:
+        path_obj = Path(candidate)
+        if path_obj.is_absolute():
+            return path_obj
+
+        search_dirs: list[Path] = []
+        if preferred_dir is not None:
+            preferred_dir = Path(preferred_dir).resolve(strict=False)
+            search_dirs.append(preferred_dir)
+            for parent in preferred_dir.parents:
+                if parent not in search_dirs:
+                    search_dirs.append(parent)
+
+        if cwd_snapshot not in search_dirs:
+            search_dirs.append(cwd_snapshot)
+        for parent in cwd_snapshot.parents:
+            if parent not in search_dirs:
+                search_dirs.append(parent)
+
+        fallback_candidate: Path | None = None
+        for base in search_dirs:
+            candidate_abs = (base / path_obj).resolve(strict=False)
+            if candidate_abs.exists():
+                return candidate_abs
+            if fallback_candidate is None:
+                fallback_candidate = candidate_abs
+
+        if not require_exists and fallback_candidate is not None:
+            return fallback_candidate
+        return fallback_candidate if fallback_candidate is not None else (cwd_snapshot / path_obj).resolve(strict=False)
+
+    source_input_path: Path | None = None
+    preferred_dir: Path | None = None
+    if source_input:
+        source_input_path = _resolve_path(source_input, require_exists=False)
+        preferred_dir = source_input_path.parent
+
+    input_path = _resolve_path(input_file, preferred_dir=preferred_dir, require_exists=True)
+    first_freq = search_imaginary_mode2(str(input_path))
     if first_freq is None or first_freq >= threshold:
         logging.info(f"Imag within tolerance (freq={first_freq}, thr={threshold}) -> no IMAG.")
         return
 
-    imag_folder = Path(f"{hess_file}_IMAG")
-    original_out = Path(input_file)
-    template_ctx = _load_inp_template(source_input) if source_input else None
+    imag_folder = input_path.parent / f"{hess_file}_IMAG"
+    original_out = input_path
+    template_ctx = _load_inp_template(source_input_path) if source_input_path else None
 
-    if source_input:
-        src_pal, src_maxcore = _extract_resources_from_input(source_input)
+    if source_input_path:
+        src_pal, src_maxcore = _extract_resources_from_input(source_input_path)
         if pal_override is None and src_pal is not None:
             pal_override = src_pal
         if maxcore_override is None and src_maxcore is not None:
@@ -1136,8 +1179,7 @@ def run_IMAG(
             final_log = Path(last_out)
             final_xyz = imag_folder / f"input_{last_i}.xyz"
             parent = imag_folder.resolve().parent
-            input_path = Path(input_file)
-            dest_log = input_path if input_path.is_absolute() else parent / input_path
+            dest_log = input_path
             dest_xyz = parent / f"{hess_file}.xyz"
             try: shutil.copy2(final_log, dest_log)
             except Exception as e: logging.warning(f"copy log: {e}")
@@ -1560,9 +1602,8 @@ def run_IMAG(
 
     final_log_file = imag_folder / f"output_{last_success_iteration}.out"
     final_xyz_file = imag_folder / f"input_{last_success_iteration}.xyz"
-    input_path = Path(input_file)
-    destination_folder = input_path.parent if input_path.is_absolute() else Path.cwd()
-    destination_log = input_path if input_path.is_absolute() else destination_folder / input_path
+    destination_folder = input_path.parent
+    destination_log = input_path
     destination_structure = destination_folder / f"{hess_file}.xyz"
     if final_log_file.exists():
         try:
