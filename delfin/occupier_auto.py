@@ -18,7 +18,7 @@ def _seq(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [dict(item) for item in entries]
 
 
-AUTO_SETTINGS: Dict[int, Dict[str, Any]] = {
+AUTO_SETTINGS_FLAT: Dict[int, Dict[str, Any]] = {
     0: {
         "baseline": {
             "even": _seq([
@@ -265,6 +265,6947 @@ AUTO_SETTINGS: Dict[int, Dict[str, Any]] = {
 }
 
 
+
+# Tree-based AUTO_SETTINGS with per-branch customization capability
+AUTO_SETTINGS: Dict[int, Dict[str, Any]] = {
+    0: {
+        "baseline": {
+            "even": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 1}, {'index': 3, 'm': 5, 'BS': '', 'from': 2}]),
+            "odd": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 6, 'BS': '', 'from': 2}]),
+        },
+        "branches": {
+            "even": {
+                1: {
+                    +1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                },
+                2: {
+                    +1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                },
+                3: {
+                    +1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 3}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                },
+            },
+            "odd": {
+                1: {
+                    +1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                            "branches": {
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 3, 'BS': '4,2', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}, {'index': 6, 'm': 6, 'BS': '6,1', 'from': 5}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}, {'index': 4, 'm': 4, 'BS': '4,1', 'from': 3}, {'index': 5, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 3, 'BS': '', 'from': 0}, {'index': 4, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                },
+                2: {
+                    +1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 2}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,1', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '3,1', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 4, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                },
+                3: {
+                    +1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    +3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -1: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -2: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    -3: {
+                        1: {
+                            "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                            "branches": {
+                                -2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                -1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +1: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +2: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                                +3: {
+                                    1: {
+                                        "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                        "branches": {
+                                            -3: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 2, 'BS': '2,1', 'from': 1}, {'index': 3, 'm': 2, 'BS': '3,2', 'from': 1}, {'index': 4, 'm': 4, 'BS': '', 'from': 0}, {'index': 5, 'm': 4, 'BS': '4,3', 'from': 4}, {'index': 6, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 1, 'BS': '1,1', 'from': 1}, {'index': 3, 'm': 1, 'BS': '2,2', 'from': 1}, {'index': 4, 'm': 3, 'BS': '', 'from': 0}, {'index': 5, 'm': 3, 'BS': '4,2', 'from': 4}, {'index': 6, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            -1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 1}, {'index': 3, 'm': 4, 'BS': '4,1', 'from': 1}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +1: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 1, 'BS': '', 'from': 0}, {'index': 2, 'm': 3, 'BS': '', 'from': 0}, {'index': 3, 'm': 5, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                            +2: {
+                                                1: {
+                                                    "seq": _seq([{'index': 1, 'm': 2, 'BS': '', 'from': 0}, {'index': 2, 'm': 4, 'BS': '', 'from': 0}, {'index': 3, 'm': 6, 'BS': '', 'from': 0}]),
+                                                    "branches": {}
+                                                },
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        },
+                    },
+                },
+            },
+        }
+    }
+}
+
 def _resolve_root(base_dir: Optional[Path] = None) -> Path:
     if base_dir is not None:
         return Path(base_dir)
@@ -348,6 +7289,30 @@ def _preferred_index_for_anchor(anchor: int, parity: str, root: Path) -> Optiona
         return None
 
 
+def _extract_sequence_from_tree_node(tree_node: Dict[str, Any], preferred_sub_index: int = 1) -> Optional[List[Dict[str, Any]]]:
+    """Extract sequence from tree node structure.
+
+    Tree nodes have structure: {sub_index: {"seq": [...], "branches": {...}}}
+    We prefer the given sub_index, or take the first available.
+    """
+    if not isinstance(tree_node, dict):
+        return None
+
+    # Try preferred sub-index first
+    if preferred_sub_index in tree_node:
+        node_data = tree_node[preferred_sub_index]
+        if isinstance(node_data, dict) and "seq" in node_data:
+            return node_data["seq"]
+
+    # Fallback: take first available sub-index
+    for sub_idx in sorted(tree_node.keys()):
+        node_data = tree_node.get(sub_idx)
+        if isinstance(node_data, dict) and "seq" in node_data:
+            return node_data["seq"]
+
+    return None
+
+
 def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None) -> Dict[str, List[Dict[str, Any]]]:
     """Return auto-managed sequences for the requested delta (if available)."""
     root_path = _resolve_root(root)
@@ -396,10 +7361,15 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None) -> 
                     ordered_indices.append(candidate)
 
             for branch_index in ordered_indices:
-                pref_map = parity_branches.get(branch_index, {})
-                seq = pref_map.get(offset)
+                delta_node = parity_branches.get(branch_index, {}).get(offset)
+                if not delta_node:
+                    continue
+
+                # Extract sequence from tree node structure
+                seq = _extract_sequence_from_tree_node(delta_node, preferred_sub_index=1)
                 if not seq:
                     continue
+
                 key = _storage_key(seq, parity)
                 bundle[key] = _copy_sequence(seq)
                 if pref_index is None:
