@@ -1,4 +1,4 @@
-"""Generate complete AUTO_SETTINGS_TREE from flat AUTO_SETTINGS.
+"""Generate the tree-structured AUTO_SETTINGS constant from AUTO_SETTINGS_FLAT.
 
 This script generates the hierarchical tree structure used in occupier_auto.py.
 The tree structure allows for per-branch customization of sequences while
@@ -34,117 +34,6 @@ AUTO_SETTINGS_FLAT = {
         },
         "branches": {
             "even": {
-                1: {
-                    +1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    +2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 1, "BS": "1,1", "from": 1},
-                        {"index": 3, "m": 3, "BS": "", "from": 0},
-                        {"index": 4, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    +3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
-                        {"index": 3, "m": 4, "BS": "", "from": 0},
-                    ]),
-                },
-                2: {
-                    +1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
-                        {"index": 3, "m": 4, "BS": "", "from": 0},
-                    ]),
-                    +2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 1, "BS": "1,1", "from": 1},
-                        {"index": 3, "m": 1, "BS": "2,2", "from": 1},
-                        {"index": 4, "m": 3, "BS": "", "from": 0},
-                        {"index": 5, "m": 3, "BS": "3,1", "from": 4},
-                        {"index": 6, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    +3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
-                        {"index": 3, "m": 2, "BS": "3,2", "from": 2},
-                        {"index": 4, "m": 4, "BS": "", "from": 0},
-                        {"index": 5, "m": 4, "BS": "4,1", "from": 4},
-                        {"index": 6, "m": 6, "BS": "", "from": 0},
-                    ]),
-                },
-                3: {
-                    +1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 4, "BS": "4,1", "from": 3},
-                    ]),
-                    +2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 1, "BS": "1,1", "from": 1},
-                        {"index": 3, "m": 1, "BS": "2,2", "from": 1},
-                        {"index": 4, "m": 3, "BS": "", "from": 0},
-                        {"index": 5, "m": 3, "BS": "4,2", "from": 4},
-                        {"index": 6, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    +3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
-                        {"index": 3, "m": 2, "BS": "3,2", "from": 2},
-                        {"index": 4, "m": 4, "BS": "", "from": 0},
-                        {"index": 5, "m": 4, "BS": "4,3", "from": 4},
-                        {"index": 6, "m": 6, "BS": "", "from": 0},
-                    ]),
-                },
-            },
-            "odd": {
                 1: {
                     +1: _seq([
                         {"index": 1, "m": 1, "BS": "", "from": 0},
@@ -229,8 +118,8 @@ AUTO_SETTINGS_FLAT = {
                     ]),
                     -1: _seq([
                         {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 1},
-                        {"index": 3, "m": 4, "BS": "4,1", "from": 1},
+                        {"index": 2, "m": 4, "BS": "", "from": 0},
+                        {"index": 3, "m": 4, "BS": "4,1", "from": 3},
                     ]),
                     +2: _seq([
                         {"index": 1, "m": 2, "BS": "", "from": 0},
@@ -249,6 +138,117 @@ AUTO_SETTINGS_FLAT = {
                         {"index": 1, "m": 1, "BS": "", "from": 0},
                         {"index": 2, "m": 3, "BS": "", "from": 0},
                         {"index": 3, "m": 5, "BS": "", "from": 0},
+                    ]),
+                    -3: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                        {"index": 3, "m": 2, "BS": "3,2", "from": 2},
+                        {"index": 4, "m": 4, "BS": "", "from": 0},
+                        {"index": 5, "m": 4, "BS": "4,3", "from": 4},
+                        {"index": 6, "m": 6, "BS": "", "from": 0},
+                    ]),
+                },
+            },
+            "odd": {
+                1: {
+                    +1: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 4, "BS": "", "from": 0},
+                        {"index": 3, "m": 6, "BS": "", "from": 0},
+                    ]),
+                    -1: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 4, "BS": "", "from": 0},
+                        {"index": 3, "m": 6, "BS": "", "from": 0},
+                    ]),
+                    +2: _seq([
+                        {"index": 1, "m": 1, "BS": "", "from": 0},
+                        {"index": 2, "m": 3, "BS": "", "from": 0},
+                        {"index": 3, "m": 5, "BS": "", "from": 0},
+                    ]),
+                    -2: _seq([
+                        {"index": 1, "m": 1, "BS": "", "from": 0},
+                        {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                        {"index": 3, "m": 3, "BS": "", "from": 0},
+                        {"index": 4, "m": 5, "BS": "", "from": 0},
+                    ]),
+                    +3: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 4, "BS": "", "from": 0},
+                        {"index": 3, "m": 6, "BS": "", "from": 0},
+                    ]),
+                    -3: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                        {"index": 3, "m": 4, "BS": "", "from": 0},
+                    ]),
+                },
+                2: {
+                    +1: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 4, "BS": "", "from": 0},
+                        {"index": 3, "m": 6, "BS": "", "from": 0},
+                    ]),
+                    -1: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                        {"index": 3, "m": 4, "BS": "", "from": 0},
+                    ]),
+                    +2: _seq([
+                        {"index": 1, "m": 1, "BS": "", "from": 0},
+                        {"index": 2, "m": 3, "BS": "", "from": 0},
+                        {"index": 3, "m": 5, "BS": "", "from": 0},
+                    ]),
+                    -2: _seq([
+                        {"index": 1, "m": 1, "BS": "", "from": 0},
+                        {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                        {"index": 3, "m": 1, "BS": "2,2", "from": 1},
+                        {"index": 4, "m": 3, "BS": "", "from": 0},
+                        {"index": 5, "m": 3, "BS": "3,1", "from": 4},
+                        {"index": 6, "m": 5, "BS": "", "from": 0},
+                    ]),
+                    +3: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 4, "BS": "", "from": 0},
+                        {"index": 3, "m": 6, "BS": "", "from": 0},
+                    ]),
+                    -3: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                        {"index": 3, "m": 2, "BS": "3,2", "from": 2},
+                        {"index": 4, "m": 4, "BS": "", "from": 0},
+                        {"index": 5, "m": 4, "BS": "4,1", "from": 4},
+                        {"index": 6, "m": 6, "BS": "", "from": 0},
+                    ]),
+                },
+                3: {
+                    +1: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 4, "BS": "", "from": 0},
+                        {"index": 3, "m": 6, "BS": "", "from": 0},
+                    ]),
+                    -1: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 4, "BS": "", "from": 1},
+                        {"index": 3, "m": 4, "BS": "4,1", "from": 1},
+                    ]),
+                    +2: _seq([
+                        {"index": 1, "m": 1, "BS": "", "from": 0},
+                        {"index": 2, "m": 3, "BS": "", "from": 0},
+                        {"index": 3, "m": 5, "BS": "", "from": 0},
+                    ]),
+                    -2: _seq([
+                        {"index": 1, "m": 1, "BS": "", "from": 0},
+                        {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                        {"index": 3, "m": 1, "BS": "2,2", "from": 1},
+                        {"index": 4, "m": 3, "BS": "", "from": 0},
+                        {"index": 5, "m": 3, "BS": "4,2", "from": 4},
+                        {"index": 6, "m": 5, "BS": "", "from": 0},
+                    ]),
+                    +3: _seq([
+                        {"index": 1, "m": 2, "BS": "", "from": 0},
+                        {"index": 2, "m": 4, "BS": "", "from": 0},
+                        {"index": 3, "m": 6, "BS": "", "from": 0},
                     ]),
                     -3: _seq([
                         {"index": 1, "m": 2, "BS": "", "from": 0},
@@ -354,11 +354,11 @@ def format_tree_node(node, indent=0):
 
 
 def generate_python_code():
-    """Generate complete Python code for AUTO_SETTINGS_TREE."""
+    """Generate complete Python code for the AUTO_SETTINGS tree."""
     tree = generate_tree_structure()
 
     lines = [
-        'AUTO_SETTINGS_TREE: Dict[int, Dict[str, Any]] = {',
+        'AUTO_SETTINGS: Dict[int, Dict[str, Any]] = {',
         '    0: {',
         '        "baseline": {',
     ]
