@@ -192,7 +192,6 @@ ISCs: Comma-separated list of intersystem crossings (e.g., S1>T1, T1>S1)
 ICs: Comma-separated list of internal conversions (e.g., S1>S0, T1>T2)
 All states use multiplicity M=1 and charge from CONTROL
 -------------------------------------------------
-use yes/no not Yes/No !!!!!!
 """
 # -------------------------------------------------------------------------------------------------------
 def convert_xyz_to_input_txt(src_xyz: str, dst_txt: str = "input.txt") -> str:

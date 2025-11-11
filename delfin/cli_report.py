@@ -10,6 +10,7 @@ from delfin.energies import find_gibbs_energy
 from delfin.config import get_E_ref
 from delfin.cli_calculations import calculate_redox_potentials, select_final_potentials
 from delfin.reporting.delfin_reports import generate_summary_report_DELFIN
+from delfin.copy_helpers import extract_preferred_spin
 
 logger = get_logger(__name__)
 
@@ -155,6 +156,9 @@ def run_report_mode(config: Dict[str, Any]) -> int:
         except Exception:
             pass
 
+    # Refresh multiplicity label from OCCUPIER, if available
+    _apply_occuper_spin_metadata(config, Path('.'))
+
     # Generate report
     logger.info("Generating DELFIN.txt report...")
 
@@ -187,3 +191,15 @@ def run_report_mode(config: Dict[str, Any]) -> int:
         return 1
 
     return 0
+
+
+def _apply_occuper_spin_metadata(config: Dict[str, Any], workspace: Path) -> None:
+    occ_folder = workspace / "initial_OCCUPIER"
+    mult, bs = extract_preferred_spin(occ_folder)
+    if mult is None:
+        return
+    config['multiplicity_0'] = mult
+    if bs:
+        config['_multiplicity_display'] = f"{mult} (BS {bs})"
+    else:
+        config['_multiplicity_display'] = str(mult)

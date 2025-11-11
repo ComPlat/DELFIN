@@ -17,6 +17,10 @@ from .occupier_sequences import (
     remove_existing_sequence_blocks,
 )
 
+_SPIN_LINE_RE = re.compile(
+    r"multiplicity\s+(\d+)(?:,\s*brokensym\s+([0-9,]+))?",
+    re.IGNORECASE,
+)
 
 _XYZ_COORD_LINE_RE = re.compile(
     r"^\s*[A-Za-z]{1,2}[A-Za-z0-9()]*\s+"      # Atom label, optional index
@@ -127,6 +131,46 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
             print(f"  GBW file:       {gbw_path}")
         print()
     return multiplicity, additions, min_fspe_index, gbw_path
+
+
+def extract_preferred_spin(folder: Path) -> Tuple[Optional[int], Optional[str]]:
+    """Return preferred OCCUPIER multiplicity and BrokenSym label (if any)."""
+    occ_file = folder / "OCCUPIER.txt"
+    if not occ_file.exists():
+        return None, None
+    try:
+        lines = occ_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return None, None
+
+    for idx, line in enumerate(lines):
+        if "<-- PREFERRED VALUE" not in line:
+            continue
+        for follow in lines[idx:]:
+            stripped = follow.strip()
+            if stripped.lower().startswith("multiplicity"):
+                match = _SPIN_LINE_RE.search(stripped)
+                if match:
+                    try:
+                        mult = int(match.group(1))
+                    except ValueError:
+                        return None, None
+                    bs = match.group(2)
+                    return mult, bs
+                parts = stripped.split()
+                if len(parts) >= 2:
+                    try:
+                        mult = int(parts[1].rstrip(","))
+                    except ValueError:
+                        break
+                    lowered = stripped.lower()
+                    bs = None
+                    if "brokensym" in lowered:
+                        tail = lowered.split("brokensym", 1)[1].strip()
+                        bs = tail.split()[0].strip(",")
+                    return mult, bs
+        break
+    return None, None
 # -------------------------------------------------------------------------------------------------------
 def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optional[Path] = None):
     """Prepare OCCUPIER folder without running OCCUPIER (for scheduler-driven execution)."""

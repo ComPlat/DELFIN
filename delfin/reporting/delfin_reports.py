@@ -248,6 +248,9 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
 
     delfin_output_path = output_dir / 'DELFIN.txt'
     with open(delfin_output_path, 'w', encoding='utf-8') as file:
+        multiplicity_display = config.get('_multiplicity_display')
+        if not multiplicity_display:
+            multiplicity_display = str(multiplicity)
         file.write(
             f"{banner}\n\n"
             f"Compound name (NAME): {name_str}\n\n"
@@ -256,7 +259,7 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
             f"{method_tddft_block}\n\n"
             f"used Method: {config['method']}\n"
             f"Charge:        {charge}\n"
-            f"Multiplicity:  {multiplicity}\n\n"
+            f"Multiplicity:  {multiplicity_display}\n\n"
             f"Coordinates:\n{xyz}\n\n"
             f"{middle}\n\n"
             f"TOTAL RUN TIME: {duration_format}\n"

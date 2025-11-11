@@ -34,6 +34,7 @@ from .pipeline import (
     run_occuper_phase,
     run_esd_phase,
 )
+from .copy_helpers import extract_preferred_spin
 
 logger = get_logger(__name__)
 
@@ -354,6 +355,18 @@ def _confirm_purge(root: Path) -> bool:
         return False
     return reply.strip().lower() in {"y", "yes"}
 
+
+def _sync_occupier_spin_metadata(ctx: PipelineContext, config: dict) -> None:
+    """Load preferred OCCUPIER multiplicity/BS for reporting."""
+    occ_folder = ctx.control_file_path.parent / "initial_OCCUPIER"
+    mult, bs = extract_preferred_spin(occ_folder)
+    if mult is None:
+        return
+    ctx.extra['multiplicity_0'] = mult
+    config['multiplicity_0'] = mult
+    label = f"{mult} (BS {bs})" if bs else str(mult)
+    ctx.extra['multiplicity_label'] = label
+    config['_multiplicity_display'] = label
 
 
 
@@ -708,6 +721,7 @@ def main(argv: list[str] | None = None) -> int:
     if method_token == "OCCUPIER":
         if not run_occuper_phase(pipeline_ctx):
             return _finalize(1)
+        _sync_occupier_spin_metadata(pipeline_ctx, config)
 
     # ------------------- classic --------------------
     if method_token == "classic":
@@ -732,6 +746,10 @@ def main(argv: list[str] | None = None) -> int:
                 pipeline_ctx.multiplicity = int(mul0)
             except Exception:
                 pipeline_ctx.multiplicity = mul0  # fallback to raw value
+        if '_multiplicity_display' not in config:
+            label = pipeline_ctx.extra.get('multiplicity_label')
+            if label:
+                config['_multiplicity_display'] = label
     elif method_token == "manually":
         try:
             pipeline_ctx.multiplicity = int(config.get('multiplicity_0', pipeline_ctx.multiplicity))
