@@ -14,6 +14,7 @@ from .occupier_sequences import (
     resolve_sequences_for_delta,
     write_species_delta_marker,
     append_sequence_overrides,
+    remove_existing_sequence_blocks,
 )
 
 
@@ -212,6 +213,7 @@ def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optio
     if method_token == "auto":
         seq_bundle = resolve_sequences_for_delta(parent_config, charge_delta)
         if seq_bundle:
+            remove_existing_sequence_blocks(control_txt)
             append_sequence_overrides(control_txt, seq_bundle)
 
     msg_parts = ["input_file=input.xyz"]
@@ -317,6 +319,7 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
     if str(config.get("OCCUPIER_method", "auto")).strip().lower() == "auto":
         seq_bundle = resolve_sequences_for_delta(config, charge_delta)
         if seq_bundle:
+            remove_existing_sequence_blocks(control_path)
             append_sequence_overrides(control_path, seq_bundle)
     msg_parts = ["input_file=input.xyz"]
     if charge_delta != 0:

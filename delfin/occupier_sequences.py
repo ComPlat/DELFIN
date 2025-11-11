@@ -219,3 +219,48 @@ def append_sequence_overrides(control_path: Path, bundle: Dict[str, List[Dict[st
 
     with control_path.open("a", encoding="utf-8") as fh:
         fh.writelines(lines)
+
+
+def _strip_section(text: str, start_marker: str, end_markers: tuple[str, ...]) -> str:
+    start = text.find(start_marker)
+    if start == -1:
+        return text
+    end = len(text)
+    for marker in end_markers:
+        idx = text.find(marker, start + len(start_marker))
+        if idx != -1 and idx < end:
+            end = idx
+    return text[:start] + text[end:]
+
+
+def remove_existing_sequence_blocks(control_path: Path) -> None:
+    """Remove OCCUPIER sequence/INFO blocks before writing auto overrides."""
+    try:
+        original = control_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    updated = original
+    updated = _strip_section(
+        updated,
+        "\nOCCUPIER_sequence_profiles:",
+        ("\nparallel_workflows=", "\n# AUTO sequence overrides", "\nESD MODULE"),
+    )
+    updated = _strip_section(
+        updated,
+        "\nINFOS:",
+        ("\n# AUTO sequence overrides", "\nESD MODULE"),
+    )
+    updated = _strip_section(
+        updated,
+        "\n# AUTO sequence overrides",
+        ("\nESD MODULE",),
+    )
+    trunc_match = re.search(r"\nOCCUPIER_method=auto[^\n]*\n-+\n", updated)
+    if trunc_match:
+        updated = updated[: trunc_match.end()]
+
+    if updated != original:
+        if not updated.endswith("\n"):
+            updated += "\n"
+        control_path.write_text(updated, encoding="utf-8")
