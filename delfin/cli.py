@@ -1,7 +1,8 @@
 from __future__ import annotations
-import os, time, sys, argparse, shutil
+import os, time, sys, argparse, shutil, fnmatch
 from pathlib import Path
 
+from dataclasses import asdict
 from typing import Optional
 from delfin.common.logging import configure_logging, get_logger, add_file_handler
 from delfin.common.paths import get_runtime_dir, resolve_path
@@ -35,6 +36,140 @@ from .pipeline import (
 )
 
 logger = get_logger(__name__)
+
+_STEP_FILE_SUFFIXES: tuple[str, ...] = (
+    ".inp",
+    ".out",
+    ".xyz",
+    ".gbw",
+    ".engrad",
+    ".hess",
+    ".molden",
+    ".prop",
+    ".cpcm",
+    ".cpcm_corr",
+    ".densitiesinfo",
+    ".tmp",
+    ".tmp1",
+    ".tmp2",
+    ".opt",
+)
+
+
+def _build_step_bases() -> set[str]:
+    """Collect base filenames that DELFIN routinely generates."""
+    bundle = asdict(FileBundle())
+    bases: set[str] = {Path(value).stem for value in bundle.values()}
+    # Additional artifacts not covered by FileBundle
+    bases.update({
+        "absorption_spec",
+        "emission_t1",
+        "emission_s1",
+        "start",
+    })
+    occ_steps = ["initial"]
+    occ_steps.extend(f"ox_step_{idx}" for idx in range(1, 4))
+    occ_steps.extend(f"red_step_{idx}" for idx in range(1, 4))
+    for token in occ_steps:
+        bases.add(f"input_{token}_OCCUPIER")
+    return bases
+
+
+_STEP_FILE_BASES = _build_step_bases()
+_STEP_FILE_NAMES = {
+    f"{base}{suffix}" for base in _STEP_FILE_BASES for suffix in _STEP_FILE_SUFFIXES
+}
+
+_STEP_FILE_GLOB_PATTERNS = {
+    pattern.format(base=base)
+    for base in _STEP_FILE_BASES
+    for pattern in (
+        "{base}.bibtex",
+        "{base}.densities",
+        "{base}.property.txt",
+        "{base}.property",
+        "{base}.hess*",
+        "{base}_trj.xyz",
+        "{base}_trj*.xyz",
+    )
+}
+
+_SAFE_FILE_NAMES: set[str] = {
+    "DELFIN.txt",
+    "OCCUPIER.txt",
+    "ESD.txt",
+    "delfin_run.log",
+    "occupier.log",
+    "s1_state_opt.failed",
+    ".delfin_occ_auto_state.json",
+    ".delfin_occ_delta",
+    ".delfin_done_xtb",
+    ".delfin_done_goat",
+    ".delfin_done_crest",
+    ".delfin_done_xtb_solvator",
+    ".qmmm_cache.json",
+}
+
+_SAFE_FILE_GLOBS: tuple[str, ...] = (
+    "delfin_run.log*",
+)
+
+_SAFE_DIR_NAMES: set[str] = {
+    "CREST",
+    "ESD",
+    "XTB_SOLVATOR",
+    ".orca_scratch",
+}
+
+_SAFE_DIR_PATTERNS: tuple[str, ...] = (
+    "*_OCCUPIER",
+    "*_IMAG",
+)
+
+_DIR_SIGNATURES: tuple[tuple[str, ...], ...] = (
+    ("XTB.inp", "output_XTB.out", "XTB.xyz"),
+    ("XTB_GOAT.inp", "output_XTB_GOAT.out", "XTB_GOAT.globalminimum.xyz"),
+    ("XTB_SOLVATOR.inp", "output_XTB_SOLVATOR.out", "XTB_SOLVATOR.solvator.xyz"),
+    ("CREST.out", "crest_best.xyz", "initial_opt.xyz"),
+)
+
+
+def _dir_has_known_signature(path: Path) -> bool:
+    """Check if a directory contains marker files from helper workflows."""
+    try:
+        if not path.is_dir():
+            return False
+    except OSError:
+        return False
+
+    for markers in _DIR_SIGNATURES:
+        for marker in markers:
+            if (path / marker).exists():
+                return True
+    return False
+
+
+def _is_workspace_artifact(entry: Path) -> bool:
+    """Return True if the given filesystem entry looks like a DELFIN artifact."""
+    name = entry.name
+    if entry.is_dir():
+        if name in _SAFE_DIR_NAMES:
+            return True
+        if any(fnmatch.fnmatch(name, pattern) for pattern in _SAFE_DIR_PATTERNS):
+            return True
+        if _dir_has_known_signature(entry):
+            return True
+        return False
+
+    if name in _SAFE_FILE_NAMES:
+        return True
+    if any(fnmatch.fnmatch(name, pattern) for pattern in _SAFE_FILE_GLOBS):
+        return True
+    if name in _STEP_FILE_NAMES:
+        return True
+    if any(fnmatch.fnmatch(name, pattern) for pattern in _STEP_FILE_GLOB_PATTERNS):
+        return True
+    return False
 
 
 def _run_cleanup_subcommand(argv: list[str]) -> int:
@@ -120,20 +255,39 @@ def _safe_keep_set(control_path: Path) -> set[str]:
     return keep
 
 
-def _purge_workspace(root: Path, keep_names: set[str]) -> None:
-    """Remove all files/directories under root except those in keep_names."""
-    for entry in root.iterdir():
-        if entry.name in keep_names:
+def _purge_workspace(root: Path, keep_names: set[str]) -> tuple[list[str], list[str]]:
+    """Remove DELFIN artifacts under root while preserving keep_names and unknown files."""
+    removed: list[str] = []
+    skipped: list[str] = []
+    for entry in sorted(root.iterdir(), key=lambda p: p.name):
+        name = entry.name
+        if name in keep_names:
             continue
+        try:
+            if entry.is_symlink():
+                skipped.append(f"{name} (symlink)")
+                continue
+        except OSError as exc:  # noqa: BLE001
+            logger.warning("Failed to inspect %s: %s", entry, exc)
+            skipped.append(name)
+            continue
+
+        if not _is_workspace_artifact(entry):
+            skipped.append(name)
+            continue
+
         try:
             if entry.is_dir():
                 shutil.rmtree(entry)
             else:
                 entry.unlink()
+            removed.append(name)
         except FileNotFoundError:
             continue
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to remove %s: %s", entry, exc)
+            skipped.append(name)
+    return removed, skipped
 
 
 def _is_delfin_workspace(root: Path) -> bool:
@@ -188,7 +342,10 @@ def _confirm_purge(root: Path) -> bool:
         print()
 
     # Standard confirmation
-    prompt = "This will delete everything except CONTROL.txt and the main input file. Continue? [y/N]: "
+    prompt = (
+        "This will delete DELFIN artifacts (OCCUPIER folders, *.inp/*.out, logs) while keeping "
+        "CONTROL.txt and the referenced input file. Continue? [y/N]: "
+    )
     try:
         reply = input(prompt)
     except EOFError:
@@ -247,8 +404,14 @@ def main(argv: list[str] | None = None) -> int:
             print("Purge aborted.")
             return 0
 
-        _purge_workspace(workspace_root, keep)
-        print(f"Workspace purged (kept: {', '.join(sorted(keep))}).")
+        removed, skipped = _purge_workspace(workspace_root, keep)
+        print(
+            f"Workspace purged (removed {len(removed)} item(s); kept: {', '.join(sorted(keep))})."
+        )
+        if skipped:
+            print("Skipped entries (not recognized as DELFIN artifacts):")
+            for name in skipped:
+                print(f"  {name}")
         return 0
 
     # Only cleanup and exit

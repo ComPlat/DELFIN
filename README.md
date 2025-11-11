@@ -82,7 +82,7 @@ python -m delfin
 - `delfin cleanup --orca`
   stops running ORCA jobs in the current workspace, purges OCCUPIER scratch folders, and cleans leftover temporary files.
 - `delfin --purge`
-  clears the working directory (keeps CONTROL.txt and the configured input file only) after confirmation.
+  removes DELFIN-generated artifacts (OCCUPIER folders, ORCA inputs/outputs, logs) after confirmation while keeping CONTROL.txt, the configured input file, and any unrelated files.
 - `delfin --recalc`
   re-parses existing results and only restarts missing or incomplete jobs.
 - `delfin --report`

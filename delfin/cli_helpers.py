@@ -50,7 +50,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "  • Skips removal of intermediate files at the end of a run (they reside in DELFIN_SCRATCH when set).\n"
         "  • Handy when debugging or inspecting intermediates after automated runs.\n\n"
     "Notes on --purge:\n"
-    "  • Removes everything in the working directory except CONTROL.txt and the primary input file.\n"
+    "  • Removes only DELFIN-generated artifacts (OCCUPIER folders, ORCA inputs/outputs, logs).\n"
+    "  • CONTROL.txt and the referenced input file are always preserved; unknown files are skipped.\n"
     "  • Always asks for confirmation before deleting files.\n\n"
     "Notes on --recalc:\n"
     "  • Only (re)runs external jobs whose output (.out) files are missing or appear incomplete.\n"
@@ -77,7 +78,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "  delfin cleanup --orca\n"
         "      Terminate running ORCA jobs, purge OCCUPIER folders, and clean up temporary files.\n\n"
         "  delfin --purge\n"
-        "      Delete everything in the working directory except CONTROL.txt and the configured input file.\n\n"
+        "      Delete DELFIN artifacts in the working directory (keeps CONTROL.txt/input, skips unfamiliar files).\n\n"
         "  delfin --recalc\n"
         "      Re-parse existing outputs and (re)run only external jobs with missing/incomplete .out files.\n\n"
         "  delfin --imag\n"
@@ -116,7 +117,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--purge",
         action="store_true",
-        help="Delete everything in the working directory except CONTROL.txt and the referenced input file."
+        help="Remove DELFIN-generated artifacts (OCCUPIER folders, ORCA inputs/outputs, logs) while keeping CONTROL.txt and the referenced input file."
     )
     p.add_argument(
         "--no-cleanup",
