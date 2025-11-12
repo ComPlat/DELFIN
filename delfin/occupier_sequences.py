@@ -236,8 +236,8 @@ def _strip_section(text: str, start_marker: str, end_markers: tuple[str, ...]) -
     return text[:start] + text[end:]
 
 
-def _strip_infos_section(text: str) -> str:
-    """Remove the complete INFOS section including surrounding dashes."""
+def _strip_infos_and_esd_sections(text: str) -> str:
+    """Remove everything from INFOS: to the end of ESD MODULE section (including all dashes)."""
     # Find INFOS: marker
     infos_start = text.find("INFOS:")
     if infos_start == -1:
@@ -250,40 +250,21 @@ def _strip_infos_section(text: str) -> str:
         if potential_dash_line.startswith("-"):
             infos_start = line_start + 1
 
-    # Find the second dash line after INFOS: (skip the first one right after INFOS:)
-    search_from = text.find("-------------------------------------------------", infos_start + 6)
-    if search_from != -1:
-        # Find the next dash line (the closing one)
-        end = text.find("-------------------------------------------------", search_from + 10)
-        if end != -1:
-            # Include the dash line and newline
-            end_of_line = text.find("\n", end)
-            if end_of_line != -1:
-                end = end_of_line + 1
-            else:
-                end = end + len("-------------------------------------------------")
-            return text[:infos_start] + text[end:]
+    # Find the last dash line after ESD MODULE (this closes the entire INFOS+ESD block)
+    # We look for the third occurrence of dashes after INFOS:
+    search_from = infos_start
+    dash_count = 0
+    end = -1
 
-    return text
+    while dash_count < 3:
+        idx = text.find("-------------------------------------------------", search_from)
+        if idx == -1:
+            break
+        dash_count += 1
+        search_from = idx + 10
+        if dash_count == 3:
+            end = idx
 
-
-def _strip_esd_module_section(text: str) -> str:
-    """Remove the complete ESD MODULE section including surrounding dashes."""
-    # Find ESD MODULE marker
-    esd_start = text.find("ESD MODULE")
-    if esd_start == -1:
-        return text
-
-    # Look backwards to find the dash line before ESD MODULE
-    line_start = text.rfind("\n", 0, esd_start)
-    if line_start != -1:
-        potential_dash_line = text[line_start+1:esd_start].strip()
-        if potential_dash_line.startswith("-"):
-            esd_start = line_start + 1
-
-    # Find the closing dash line after ESD MODULE content
-    search_from = esd_start + len("ESD MODULE")
-    end = text.find("-------------------------------------------------", search_from)
     if end != -1:
         # Include the dash line and newline
         end_of_line = text.find("\n", end)
@@ -291,7 +272,7 @@ def _strip_esd_module_section(text: str) -> str:
             end = end_of_line + 1
         else:
             end = end + len("-------------------------------------------------")
-        return text[:esd_start] + text[end:]
+        return text[:infos_start] + text[end:]
 
     return text
 
@@ -315,23 +296,21 @@ def remove_existing_sequence_blocks(control_path: Path, force: bool = False) -> 
     if force:
         # For copied CONTROL files
         if is_auto:
-            # Auto mode: remove all template sections
+            # Auto mode: remove all template sections (OCCUPIER_sequence_profiles, INFOS, ESD MODULE)
             updated = _strip_section(
                 updated,
                 "OCCUPIER_sequence_profiles:",
-                ("INFOS:", "# AUTO sequence overrides", "ESD MODULE"),
+                ("INFOS:", "# AUTO sequence overrides"),
             )
-            updated = _strip_infos_section(updated)
-            updated = _strip_esd_module_section(updated)
+            updated = _strip_infos_and_esd_sections(updated)
             updated = _strip_section(
                 updated,
                 "# AUTO sequence overrides",
-                ("ESD MODULE",),
+                (),
             )
         else:
             # Manually mode: keep OCCUPIER_sequence_profiles, remove only INFOS and ESD MODULE
-            updated = _strip_infos_section(updated)
-            updated = _strip_esd_module_section(updated)
+            updated = _strip_infos_and_esd_sections(updated)
     else:
         # For main CONTROL file: only remove OCCUPIER_sequence_profiles if method=auto
         if not is_auto:
