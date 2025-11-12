@@ -132,6 +132,8 @@ pal_jobs=4
 OCCUPIER-Settings:
 --------------------
 OCCUPIER_method=auto|manually
+OCCUPIER_tree=deep|flat
+# deep -> 3x3x3 branch auto tree (27 leaves per sign & FoB), flat -> legacy sequences
 frequency_calculation_OCCUPIER=no
 occupier_selection=tolerance|truncation|rounding
 occupier_precision=3

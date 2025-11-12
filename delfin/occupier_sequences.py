@@ -95,7 +95,8 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int) -> Dict[str,
     manual_bundle = _resolve_manual_sequences(config, delta)
     method = str(config.get("OCCUPIER_method", "manually") or "manually").strip().lower()
     if method == "auto":
-        auto_bundle = resolve_auto_sequence_bundle(delta)
+        tree_mode = str(config.get("OCCUPIER_tree", "deep") or "deep").strip().lower()
+        auto_bundle = resolve_auto_sequence_bundle(delta, tree_mode=tree_mode)
         if auto_bundle:
             missing_even = "even_seq" not in auto_bundle
             missing_odd = "odd_seq" not in auto_bundle

@@ -83,6 +83,16 @@ def _as_occupier_method(value: Any) -> str:
         return "auto"
     raise ValueError("must be one of: manually, auto")
 
+
+def _as_occupier_tree(value: Any) -> str:
+    text = str(value or "deep").strip().lower()
+    if text in {"deep", "tree"}:
+        return "deep"
+    if text in {"flat", "flatt", "legacy"}:
+        return "flat"
+    raise ValueError("must be one of: deep, flat")
+
+
 CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("NAME", _as_str, default=""),
     FieldSpec("SMILES", _as_str, default=""),
@@ -104,6 +114,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
     FieldSpec("IMAG_option", _as_imag_option, default=2),
     FieldSpec("OCCUPIER_method", _as_occupier_method, default="manually"),
+    FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep"),
 )
 
 
