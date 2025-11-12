@@ -1,8 +1,10 @@
 import ast
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from delfin.common.control_validator import validate_control_config
+from delfin.occupier_sequences import remove_existing_sequence_blocks
 
 from delfin.common.logging import get_logger
 
@@ -197,6 +199,7 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     Returns:
         Dictionary containing parsed configuration parameters
     """
+    remove_existing_sequence_blocks(Path(file_path))
     config = _parse_control_file(file_path, keep_steps_literal=True)
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
@@ -214,6 +217,7 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     Returns:
         Dictionary containing parsed OCCUPIER configuration
     """
+    remove_existing_sequence_blocks(Path(path))
     config = _parse_control_file(path, keep_steps_literal=False)
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
@@ -369,4 +373,3 @@ def get_E_ref(config: Dict[str, Any]) -> float:
         }
 
         return solvent_E_ref.get(solvent_key, 4.345)
-

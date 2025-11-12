@@ -223,45 +223,132 @@ def append_sequence_overrides(control_path: Path, bundle: Dict[str, List[Dict[st
 
 
 def _strip_section(text: str, start_marker: str, end_markers: tuple[str, ...]) -> str:
+    """Remove the text block starting at start_marker up to the first end marker."""
     start = text.find(start_marker)
     if start == -1:
         return text
     end = len(text)
+    search_from = start + len(start_marker)
     for marker in end_markers:
-        idx = text.find(marker, start + len(start_marker))
+        idx = text.find(marker, search_from)
         if idx != -1 and idx < end:
             end = idx
     return text[:start] + text[end:]
 
 
-def remove_existing_sequence_blocks(control_path: Path) -> None:
-    """Remove OCCUPIER sequence/INFO blocks before writing auto overrides."""
+def _strip_infos_section(text: str) -> str:
+    """Remove the complete INFOS section including surrounding dashes."""
+    # Find INFOS: marker
+    infos_start = text.find("INFOS:")
+    if infos_start == -1:
+        return text
+
+    # Look backwards to find the dash line before INFOS:
+    line_start = text.rfind("\n", 0, infos_start)
+    if line_start != -1:
+        potential_dash_line = text[line_start+1:infos_start].strip()
+        if potential_dash_line.startswith("-"):
+            infos_start = line_start + 1
+
+    # Find the second dash line after INFOS: (skip the first one right after INFOS:)
+    search_from = text.find("-------------------------------------------------", infos_start + 6)
+    if search_from != -1:
+        # Find the next dash line (the closing one)
+        end = text.find("-------------------------------------------------", search_from + 10)
+        if end != -1:
+            # Include the dash line and newline
+            end_of_line = text.find("\n", end)
+            if end_of_line != -1:
+                end = end_of_line + 1
+            else:
+                end = end + len("-------------------------------------------------")
+            return text[:infos_start] + text[end:]
+
+    return text
+
+
+def _strip_esd_module_section(text: str) -> str:
+    """Remove the complete ESD MODULE section including surrounding dashes."""
+    # Find ESD MODULE marker
+    esd_start = text.find("ESD MODULE")
+    if esd_start == -1:
+        return text
+
+    # Look backwards to find the dash line before ESD MODULE
+    line_start = text.rfind("\n", 0, esd_start)
+    if line_start != -1:
+        potential_dash_line = text[line_start+1:esd_start].strip()
+        if potential_dash_line.startswith("-"):
+            esd_start = line_start + 1
+
+    # Find the closing dash line after ESD MODULE content
+    search_from = esd_start + len("ESD MODULE")
+    end = text.find("-------------------------------------------------", search_from)
+    if end != -1:
+        # Include the dash line and newline
+        end_of_line = text.find("\n", end)
+        if end_of_line != -1:
+            end = end_of_line + 1
+        else:
+            end = end + len("-------------------------------------------------")
+        return text[:esd_start] + text[end:]
+
+    return text
+
+
+def remove_existing_sequence_blocks(control_path: Path, force: bool = False) -> None:
+    """Remove OCCUPIER sequence/INFO blocks before writing auto overrides.
+
+    Args:
+        control_path: Path to CONTROL.txt file
+        force: If True, this is a copied CONTROL file - remove based on method.
+               If False, this is main CONTROL - only remove OCCUPIER_sequence_profiles if method=auto.
+    """
     try:
         original = control_path.read_text(encoding="utf-8")
     except OSError:
         return
 
     updated = original
-    updated = _strip_section(
-        updated,
-        "\nOCCUPIER_sequence_profiles:",
-        ("\nparallel_workflows=", "\n# AUTO sequence overrides", "\nESD MODULE"),
-    )
-    updated = _strip_section(
-        updated,
-        "\nINFOS:",
-        ("\n# AUTO sequence overrides", "\nESD MODULE"),
-    )
-    updated = _strip_section(
-        updated,
-        "\n# AUTO sequence overrides",
-        ("\nESD MODULE",),
-    )
-    trunc_match = re.search(r"\nOCCUPIER_method=auto[^\n]*\n-+\n", updated)
-    if trunc_match:
-        updated = updated[: trunc_match.end()]
+    is_auto = "OCCUPIER_method=auto" in original
+
+    if force:
+        # For copied CONTROL files
+        if is_auto:
+            # Auto mode: remove all template sections
+            updated = _strip_section(
+                updated,
+                "OCCUPIER_sequence_profiles:",
+                ("INFOS:", "# AUTO sequence overrides", "ESD MODULE"),
+            )
+            updated = _strip_infos_section(updated)
+            updated = _strip_esd_module_section(updated)
+            updated = _strip_section(
+                updated,
+                "# AUTO sequence overrides",
+                ("ESD MODULE",),
+            )
+        else:
+            # Manually mode: keep OCCUPIER_sequence_profiles, remove only INFOS and ESD MODULE
+            updated = _strip_infos_section(updated)
+            updated = _strip_esd_module_section(updated)
+    else:
+        # For main CONTROL file: only remove OCCUPIER_sequence_profiles if method=auto
+        if not is_auto:
+            return
+
+        # Remove OCCUPIER_sequence_profiles section (but keep INFOS)
+        updated = _strip_section(
+            updated,
+            "OCCUPIER_sequence_profiles:",
+            ("INFOS:",),
+        )
+        # Remove old AUTO sequence overrides if present
+        updated = _strip_section(
+            updated,
+            "# AUTO sequence overrides",
+            ("ESD MODULE", "INFOS:"),
+        )
 
     if updated != original:
-        if not updated.endswith("\n"):
-            updated += "\n"
-        control_path.write_text(updated, encoding="utf-8")
+        control_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
