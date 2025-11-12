@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from delfin.common.logging import get_logger
 from delfin.deep_auto_tree import DEEP_AUTO_SETTINGS
+from delfin.deep2_auto_tree import DEEP2_AUTO_SETTINGS
 
 logger = get_logger(__name__)
 
@@ -432,6 +433,7 @@ def _extract_sequence_from_tree_node(tree_node: Dict[str, Any], preferred_sub_in
 _TREE_DATASETS = {
     "deep": AUTO_SETTINGS,
     "flat": AUTO_SETTINGS_FLAT,
+    "deep2": DEEP2_AUTO_SETTINGS,
 }
 
 
