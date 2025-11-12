@@ -431,9 +431,7 @@ def _extract_sequence_from_tree_node(tree_node: Dict[str, Any], preferred_sub_in
 
 _TREE_DATASETS = {
     "deep": AUTO_SETTINGS,
-    "tree": AUTO_SETTINGS,
     "flat": AUTO_SETTINGS_FLAT,
-    "flatt": AUTO_SETTINGS_FLAT,
 }
 
 
