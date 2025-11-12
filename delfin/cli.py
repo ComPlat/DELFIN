@@ -54,6 +54,14 @@ _STEP_FILE_SUFFIXES: tuple[str, ...] = (
     ".tmp1",
     ".tmp2",
     ".opt",
+    ".gbw_hs",        # ORCA Hessian matrix file
+    ".carthess",      # ORCA Cartesian Hessian
+    ".qro",           # ORCA quasi-restricted orbitals
+    ".uco",           # ORCA unrestricted corresponding orbitals
+    ".uno",           # ORCA unrestricted natural orbitals
+    ".unoloc",        # ORCA localized UNOs
+    ".unso",          # ORCA unrestricted natural spin orbitals
+    ".hostnames",     # ORCA parallel job hostnames
 )
 
 
@@ -92,6 +100,8 @@ _STEP_FILE_GLOB_PATTERNS = {
         "{base}.hess*",
         "{base}_trj.xyz",
         "{base}_trj*.xyz",
+        "{base}.*.*",        # Catches files like red_step_1.B.24.tmp, red_step_1.gpot0.tmp, etc.
+        "{base}.bas*",       # ORCA basis set files (bas0, bas1, bas2, etc.)
     )
 }
 
@@ -326,6 +336,13 @@ def _is_delfin_workspace(root: Path) -> bool:
     if has_inp and has_out:
         return True
 
+    # Check for ORCA temporary/output files (e.g., *.tmp, *.gbw_hs, *.scfgrad.inp)
+    # These indicate an ORCA calculation has been run in this directory
+    orca_patterns = ["*.tmp", "*.gbw_hs", "*.scfgrad.inp", "*.hostnames"]
+    for pattern in orca_patterns:
+        if any(root.glob(pattern)):
+            return True
+
     return False
 
 
@@ -337,7 +354,10 @@ def _confirm_purge(root: Path) -> bool:
         print("   No typical DELFIN artifacts found (OCCUPIER folders, .inp/.out files, etc.)")
         print(f"   Current directory: {root.absolute()}")
         print()
-        confirm = input("Are you ABSOLUTELY SURE you want to purge this directory? [yes/NO]: ")
+        try:
+            confirm = input("Are you ABSOLUTELY SURE you want to purge this directory? [yes/NO]: ")
+        except EOFError:
+            return False
         if confirm.strip().lower() != "yes":
             return False
         print()
