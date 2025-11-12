@@ -7,6 +7,7 @@ import time
 import socket
 from pathlib import Path
 from shutil import which
+import tempfile
 from typing import Dict, Iterable, Optional
 
 from delfin.common.logging import get_logger
@@ -73,7 +74,7 @@ def _ensure_orca_scratch_dir() -> Path:
             base_path = Path(candidate).expanduser()
             break
     else:
-        base_path = get_runtime_dir().joinpath(".orca_scratch")
+        base_path = Path(tempfile.gettempdir()).joinpath("delfin_orca_scratch")
 
     base_path.mkdir(parents=True, exist_ok=True)
 
