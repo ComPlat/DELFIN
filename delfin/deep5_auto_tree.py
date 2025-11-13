@@ -3,7 +3,7 @@ from __future__ import annotations
 
 # Deep5 AUTO tree: Adaptive BS (Broken Symmetry) evolution
 # Rules:
-#   - Pure m wins → test BS(m_aligned,1) next (aligned to next-level parity)
+#   - Pure m wins → test BS(m-1,1) next (aligned to next-level parity)
 #   - BS(M,N) → expand: BS(M+1,N), BS(M,N+1)
 #   - BS(M,N) → reduce: BS(M-1,N), BS(M,N-1)
 #   - Constraint: M ≥ N, each seq has only even OR odd m
