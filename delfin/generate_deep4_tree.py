@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate deep4 tree with adaptive BS evolution.
+"""Generate deep adaptive (deep4/deep5) trees with BS evolution.
 
 ================================================================================
 DEEP4 TREE - ADAPTIVE BROKEN SYMMETRY EVOLUTION
@@ -521,16 +521,15 @@ def write_branches_recursive(f, branches: dict, indent_level: int):
     f.write(f"{ind}}}")
 
 
-def write_deep4_tree_file(output_path: str = "delfin/deep4_auto_tree.py", max_depth: int = 2):
-    """Write the deep4 tree to a Python file."""
+def _write_adaptive_tree_file(tree_label: str, output_path: str, max_depth: int) -> None:
+    """Write an adaptive deep tree (Deep4/Deep5) to disk."""
     tree = generate_deep4_tree(max_depth)
-
     with open(output_path, "w", encoding="utf-8") as f:
-        f.write('"""Deep4 AUTO tree - adaptive BS evolution."""\n')
+        f.write(f'"""{tree_label} AUTO tree - adaptive BS evolution."""\n')
         f.write("from __future__ import annotations\n\n")
-        f.write("# Deep4 AUTO tree: Adaptive BS (Broken Symmetry) evolution\n")
+        f.write(f"# {tree_label} AUTO tree: Adaptive BS (Broken Symmetry) evolution\n")
         f.write("# Rules:\n")
-        f.write("#   - Pure m=M → test BS(M,1) next\n")
+        f.write("#   - Pure m wins → test BS(m_aligned,1) next (aligned to next-level parity)\n")
         f.write("#   - BS(M,N) → expand: BS(M+1,N), BS(M,N+1)\n")
         f.write("#   - BS(M,N) → reduce: BS(M-1,N), BS(M,N-1)\n")
         f.write("#   - Constraint: M ≥ N, each seq has only even OR odd m\n")
@@ -538,7 +537,8 @@ def write_deep4_tree_file(output_path: str = "delfin/deep4_auto_tree.py", max_de
         f.write("#   - Sub-index = test configuration at each level\n")
         f.write("#\n")
         f.write("# Structure: branches[parity][fob][direction][sub]['seq'/'branches']\n")
-        f.write("DEEP4_AUTO_SETTINGS = {\n")
+        settings_name = f"{tree_label.upper()}_AUTO_SETTINGS"
+        f.write(f"{settings_name} = {{\n")
 
         for anchor in sorted(tree.keys()):
             data = tree[anchor]
@@ -565,6 +565,11 @@ def write_deep4_tree_file(output_path: str = "delfin/deep4_auto_tree.py", max_de
             f.write("    },\n")
 
         f.write("}\n")
+
+
+def write_deep4_tree_file(output_path: str = "delfin/deep4_auto_tree.py", max_depth: int = 2):
+    """Write the Deep4 tree to a Python file."""
+    _write_adaptive_tree_file("Deep4", output_path, max_depth)
 
     print(f"Generated {output_path}")
 

@@ -12,6 +12,7 @@ from delfin.deep_auto_tree import DEEP_AUTO_SETTINGS
 from delfin.deep2_auto_tree import DEEP2_AUTO_SETTINGS
 from delfin.deep3_auto_tree import DEEP3_AUTO_SETTINGS
 from delfin.deep4_auto_tree import DEEP4_AUTO_SETTINGS
+from delfin.deep5_auto_tree import DEEP5_AUTO_SETTINGS
 
 logger = get_logger(__name__)
 
@@ -470,6 +471,7 @@ _TREE_DATASETS = {
     "deep2": DEEP2_AUTO_SETTINGS,
     "deep3": DEEP3_AUTO_SETTINGS,
     "deep4": DEEP4_AUTO_SETTINGS,
+    "deep5": DEEP5_AUTO_SETTINGS,
 }
 
 
@@ -494,8 +496,8 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
     def _copy_sequence(seq: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return copy.deepcopy(seq)
 
-    # Check if this is a recursive tree (deep3/deep4)
-    is_recursive_tree = normalized_mode in {"deep3", "deep4"}
+    # Check if this is a recursive tree (deep3/deep4/deep5)
+    is_recursive_tree = normalized_mode in {"deep3", "deep4", "deep5"}
 
     for anchor, settings in settings_source.items():
         offset = delta - anchor

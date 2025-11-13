@@ -132,12 +132,13 @@ pal_jobs=4
 OCCUPIER-Settings:
 --------------------
 OCCUPIER_method=auto|manually
-OCCUPIER_tree=deep|flat|deep2|deep3|deep4
+OCCUPIER_tree=deep|flat|deep2|deep3|deep4|deep5
 # deep   -> 3x3x3 branch auto tree (27 leaves per sign & FoB)
 # flat   -> legacy flat sequences
 # deep2  -> 3x3 branch tree based on flat (customizable)
 # deep3  -> recursive tree structure (paths: 0→±1→±2→±3)
 # deep4  -> adaptive BS evolution (pure m → BS/expanded sequences)
+# deep5  -> deep4 logic extended to ±3 depth (more BS propagation)
 frequency_calculation_OCCUPIER=no
 occupier_selection=tolerance|truncation|rounding
 occupier_precision=3
