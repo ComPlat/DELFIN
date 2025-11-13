@@ -11,6 +11,7 @@ from delfin.common.logging import get_logger
 from delfin.deep_auto_tree import DEEP_AUTO_SETTINGS
 from delfin.deep2_auto_tree import DEEP2_AUTO_SETTINGS
 from delfin.deep3_auto_tree import DEEP3_AUTO_SETTINGS
+from delfin.deep4_auto_tree import DEEP4_AUTO_SETTINGS
 
 logger = get_logger(__name__)
 
@@ -433,7 +434,7 @@ def _extract_sequence_from_tree_node(tree_node: Dict[str, Any], preferred_sub_in
 def _navigate_recursive_tree(node: Dict[str, Any], remaining_steps: int, direction: int, preferred_sub: int = 1) -> Optional[List[Dict[str, Any]]]:
     """Navigate recursive tree structure to find sequence at target depth.
 
-    For deep3, structure is: node['branches'][direction][sub]['branches'][direction][sub]...
+    For deep3/deep4, structure is: node['branches'][direction][sub]['branches'][direction][sub]...
     remaining_steps=0 means we're at the target node
     """
     if remaining_steps == 0:
@@ -468,6 +469,7 @@ _TREE_DATASETS = {
     "flat": AUTO_SETTINGS_FLAT,
     "deep2": DEEP2_AUTO_SETTINGS,
     "deep3": DEEP3_AUTO_SETTINGS,
+    "deep4": DEEP4_AUTO_SETTINGS,
 }
 
 
@@ -492,8 +494,8 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
     def _copy_sequence(seq: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return copy.deepcopy(seq)
 
-    # Check if this is a recursive tree (deep3)
-    is_recursive_tree = (normalized_mode == "deep3")
+    # Check if this is a recursive tree (deep3/deep4)
+    is_recursive_tree = normalized_mode in {"deep3", "deep4"}
 
     for anchor, settings in settings_source.items():
         offset = delta - anchor
@@ -526,7 +528,7 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
 
             for branch_index in ordered_indices:
                 if is_recursive_tree:
-                    # For recursive trees (deep3), navigate through the tree
+                    # For recursive trees (deep3/deep4), navigate through the tree
                     # offset can be ±1, ±2, ±3
                     # direction is +1 or -1, depth is abs(offset)
                     direction = +1 if offset > 0 else -1

@@ -168,8 +168,10 @@ delfin/
   deep_auto_tree.py # Deep tree structure (3×3×3 uniform branching)
   deep2_auto_tree.py # Deep2 tree structure (3×3 from flat, customizable)
   deep3_auto_tree.py # Deep3 recursive tree (paths: 0→±1→±2→±3)
+  deep4_auto_tree.py # Deep4 adaptive BS-evolution tree (dynamic BS branching)
   generate_deep2_tree.py # Generator for deep2 from flat sequences
   generate_deep3_tree.py # Generator for deep3 recursive structure
+  generate_deep4_tree.py # Generator for deep4 adaptive tree
   copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
   thread_safe_helpers.py  # thread-safe workflow execution with PAL management
   global_manager.py       # singleton global job manager for resource coordination
@@ -196,11 +198,12 @@ delfin/
 
 * `method = OCCUPIER | classic | manually` (leave empty for ESD-only runs)
 * `OCCUPIER_method = auto | manually` (auto uses adaptive tree-based sequences)
-* `OCCUPIER_tree = flat | deep | deep2 | deep3` (tree mode for auto OCCUPIER; default: `deep`)
+* `OCCUPIER_tree = flat | deep | deep2 | deep3 | deep4` (tree mode for auto OCCUPIER; default: `deep`)
   - `flat`: Legacy flat sequences
   - `deep`: 3×3×3 uniform branching
   - `deep2`: 3×3 tree from flat (customizable)
   - `deep3`: Recursive 0→±1→±2→±3 paths
+  - `deep4`: Adaptive broken-symmetry evolution (pure → BS expansion/reduction)
 * `calc_initial = yes | no`
 * `oxidation_steps = 1,2,3` (string; steps to compute)
 * `reduction_steps = 1,2,3` (string; steps to compute)
