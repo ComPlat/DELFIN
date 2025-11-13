@@ -101,6 +101,34 @@ def _as_occupier_tree(value: Any) -> str:
     raise ValueError("must be one of: deep, flat, deep2, deep3, deep4, deep5")
 
 
+def _as_ap_method(value: Any) -> int | None:
+    """Coerce APMethod tokens into ORCA-compatible integers."""
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    lowered = text.lower()
+
+    if not text:
+        return None
+    if lowered in {"none", "off", "disable", "disabled", "false"}:
+        return None
+    if lowered == "apbs":
+        return 2
+    candidate = text
+    if lowered.startswith("ap") and lowered[2:].isdigit():
+        candidate = lowered[2:]
+
+    try:
+        parsed = int(candidate)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("must be an integer (e.g. 1-4) or 'none'") from exc
+
+    if parsed <= 0:
+        return None
+    return parsed
+
+
 CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("NAME", _as_str, default=""),
     FieldSpec("SMILES", _as_str, default=""),
@@ -123,6 +151,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("IMAG_option", _as_imag_option, default=2),
     FieldSpec("OCCUPIER_method", _as_occupier_method, default="manually"),
     FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep"),
+    FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),
 )
 
 

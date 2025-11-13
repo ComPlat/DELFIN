@@ -948,7 +948,8 @@ def run_OCCUPIER():
 
         freq_enabled = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
         pass_wf_enabled = str(config.get('pass_wavefunction', 'no')).strip().lower() in ('yes', 'true', '1', 'on', 'y')
-        apm = config.get("approximate_spin_projection_APMethod")
+        raw_apm = config.get("approximate_spin_projection_APMethod")
+        apm = str(raw_apm).strip() if raw_apm not in (None, "", 0, "0") else ""
 
         def make_work(entry_dict: dict) -> callable:
             idx = int(entry_dict["index"])
@@ -984,10 +985,10 @@ def run_OCCUPIER():
                         )
 
                 if bs:
-                    if freq_enabled:
-                        parts.append(f"%scf\n  BrokenSym {bs}\nend")
-                    else:
-                        parts.append(f"%scf\n  BrokenSym {bs}\n  APMethod {apm}\nend")
+                    scf_lines = [f"  BrokenSym {bs}"]
+                    if not freq_enabled and apm:
+                        scf_lines.append(f"  APMethod {apm}")
+                    parts.append("%scf\n" + "\n".join(scf_lines) + "\nend")
 
                 additions = "\n".join(parts)
 

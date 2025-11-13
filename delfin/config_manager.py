@@ -60,7 +60,7 @@ class DelfinConfig:
 
     # Advanced settings
     dev_max: Optional[float] = None
-    approximate_spin_projection_APMethod: Optional[Union[str, int]] = None
+    approximate_spin_projection_APMethod: Optional[Union[str, int]] = 2
 
     # File configuration
     out_files: Dict[int, str] = field(default_factory=dict)

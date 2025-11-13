@@ -235,7 +235,12 @@ def _create_occupier_fob_jobs(
         "on",
         "y",
     )
-    ap_method = global_config.get("approximate_spin_projection_APMethod", "APBS")
+    raw_ap_method = global_config.get("approximate_spin_projection_APMethod")
+    ap_method = (
+        str(raw_ap_method).strip()
+        if raw_ap_method not in (None, "", 0, "0")
+        else None
+    )
     recalc_enabled = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
 
     cores_min = max(1, min(total_cores, max(2, total_cores // 6)))  # ensure ≥1
@@ -318,10 +323,10 @@ def _create_occupier_fob_jobs(
                                     )
 
                             if _bs_token:
-                                if freq_enabled:
-                                    additions.append(f"%scf\n  BrokenSym {_bs_token}\nend")
-                                else:
-                                    additions.append(f"%scf\n  BrokenSym {_bs_token}\n  APMethod {ap_method}\nend")
+                                scf_lines = [f"  BrokenSym {_bs_token}"]
+                                if not freq_enabled and ap_method:
+                                    scf_lines.append(f"  APMethod {ap_method}")
+                                additions.append("%scf\n" + "\n".join(scf_lines) + "\nend")
 
                             additions_str = "\n".join(additions)
 
