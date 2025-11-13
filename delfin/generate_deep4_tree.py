@@ -88,9 +88,9 @@ preferred configuration:
 
 Rule 1: BS INITIATION (from pure state)
 ----------------------------------------
-If at level N, a pure state with m=M was preferred, then at level N±1:
-    - Test BS(M,1) alongside pure states
-    - The BS(M,1) gets multiplicity m adjusted for the new level's parity
+If at level N, a pure state with multiplicity m was preferred, then at level N±1:
+    - Test BS(m_aligned, 1) alongside the pure states, where m_aligned respects the next level's parity
+    - Example: choosing m=2 (even) feeds BS(1,1) on the next odd branch; choosing m=6 feeds BS(5,1)
 
 Example:
     Level 0: m=6 preferred (pure state, no BS)
@@ -193,6 +193,7 @@ important electronic configurations.
 """
 from __future__ import annotations
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 # Import the flat tree structure
@@ -201,24 +202,22 @@ from delfin.occupier_auto import AUTO_SETTINGS_FLAT
 
 
 def get_m_for_bs_in_parity(M: int, N: int, parity: str) -> int:
-    """Get the multiplicity m for BS(M,N) that fits the given parity.
+    """Return a parity-aligned multiplicity for BS(M,N).
 
-    BS(M,N) can have different m values depending on the sequence parity.
-    Rule: Start with M, adjust to match parity if needed.
-
-    Note: 'even' branch has ODD m, 'odd' branch has EVEN m.
+    Ensures the returned multiplicity:
+      * Matches the allowed parity ladder (odd vs. even m)
+      * Stays as close as possible to the requested M
+      * Respects the BS constraint m >= N
     """
-    # Get valid m values for this parity
-    # even branch → odd m (1,3,5), odd branch → even m (2,4,6)
     valid_m = [1, 3, 5] if parity == "even" else [2, 4, 6]
 
-    # Start with M as preferred value
-    if M in valid_m:
-        return M
+    # Prefer candidates that keep BS tuples valid (m >= N)
+    candidates = [value for value in valid_m if value >= N]
+    if not candidates:
+        candidates = valid_m
 
-    # If M doesn't match parity, find closest valid m
-    closest_m = min(valid_m, key=lambda m: abs(m - M))
-    return closest_m
+    aligned = min(candidates, key=lambda value: (abs(value - M), value))
+    return aligned if aligned >= N else max(aligned, N)
 
 
 def evolve_bs(M: int, N: int) -> list[tuple[int, int]]:
@@ -259,12 +258,12 @@ def get_pure_states_for_parity(parity: str) -> list[int]:
         return [2, 4, 6]  # odd branch → even m
 
 
-def generate_baseline_seq(parity: str, add_bs: tuple[int, int] | None = None) -> list[dict]:
-    """Generate a baseline sequence with optional BS.
+def generate_baseline_seq(parity: str, add_bs: list[tuple[int, int]] | None = None) -> list[dict]:
+    """Generate a baseline sequence with optional BS injections.
 
     Args:
         parity: "even" or "odd" - determines which pure m values to include
-        add_bs: Optional (M, N) tuple to add BS configuration
+        add_bs: Optional list of (M, N) tuples to add BS configurations
     """
     pure_m_values = get_pure_states_for_parity(parity)
     seq = []
@@ -278,28 +277,31 @@ def generate_baseline_seq(parity: str, add_bs: tuple[int, int] | None = None) ->
             "from": 0
         })
 
-    # Add BS if specified
     if add_bs:
-        M, N = add_bs
-        m_bs = get_m_for_bs_in_parity(M, N, parity)
-        bs_str = f"{M},{N}"
+        seen_bs: set[tuple[int, int]] = set()
+        for M, N in add_bs:
+            if (M, N) in seen_bs:
+                continue
+            seen_bs.add((M, N))
 
-        # Insert BS after the corresponding pure m value
-        insert_idx = len(seq)  # default: at end
-        for i, entry in enumerate(seq):
-            if entry["m"] >= m_bs:
-                insert_idx = i + 1
-                break
+            m_bs = get_m_for_bs_in_parity(M, N, parity)
+            bs_str = f"{M},{N}"
 
-        bs_entry = {
-            "index": insert_idx + 1,
-            "m": m_bs,
-            "BS": bs_str,
-            "from": insert_idx
-        }
-        seq.insert(insert_idx, bs_entry)
+            insert_idx = len(seq)  # default append
+            for i, entry in enumerate(seq):
+                if entry["m"] >= m_bs:
+                    insert_idx = i + 1
+                    break
 
-        # Renumber indices
+            bs_entry = {
+                "index": insert_idx + 1,
+                "m": m_bs,
+                "BS": bs_str,
+                "from": insert_idx,
+            }
+            seq.insert(insert_idx, bs_entry)
+
+        # Renumber after all insertions
         for idx, entry in enumerate(seq, start=1):
             entry["index"] = idx
 
@@ -324,11 +326,11 @@ def generate_test_configs(prev_config: dict | None, current_parity: str) -> list
         for m in pure_m_values:
             test_configs.append({"m": m, "BS": ""})
 
-        # Add BS initiation BS(M,1)
-        M = prev_config["m"]
-        if M >= 1:
-            m_bs = get_m_for_bs_in_parity(M, 1, current_parity)
-            test_configs.append({"m": m_bs, "BS": f"{M},1"})
+        # Add BS initiation BS(M,1) with parity-aligned M
+        M_raw = prev_config["m"]
+        if M_raw >= 1:
+            m_bs = get_m_for_bs_in_parity(M_raw, 1, current_parity)
+            test_configs.append({"m": m_bs, "BS": f"{m_bs},1"})
 
     else:
         # Previous was BS → evolve BS + pure states
@@ -368,19 +370,34 @@ def build_recursive_branches(
     # Generate test configs for this level
     test_configs = generate_test_configs(prev_config, current_parity)
 
+    # Build a single sequence containing all pure states + BS variants
+    bs_tuples: list[tuple[int, int]] = []
+    for candidate in test_configs:
+        bs_value = candidate.get("BS") or ""
+        if not bs_value:
+            continue
+        parts = tuple(int(x) for x in bs_value.split(","))
+        if parts not in bs_tuples:
+            bs_tuples.append(parts)
+
+    sequence_template = generate_baseline_seq(current_parity, bs_tuples if bs_tuples else None)
+
+    index_lookup: dict[tuple[int, str], int] = {}
+    for entry in sequence_template:
+        key = (entry["m"], entry.get("BS", ""))
+        # Record the first occurrence; duplicates (pure states) won't appear
+        index_lookup.setdefault(key, entry["index"])
+
     # For each direction (-1, +1)
     for direction in [-1, 1]:
         dir_branches = {}
 
-        # For each test config, create a sub-branch
-        for sub_idx, config in enumerate(test_configs, start=1):
-            # Generate sequence with this config
-            bs_tuple = None
-            if config["BS"]:
-                bs_parts = config["BS"].split(",")
-                bs_tuple = (int(bs_parts[0]), int(bs_parts[1]))
-
-            seq = generate_baseline_seq(current_parity, bs_tuple)
+        # For each test config, create a sub-branch keyed by its sequence index
+        for config in test_configs:
+            key = (config["m"], config.get("BS", ""))
+            sub_idx = index_lookup.get(key)
+            if sub_idx is None:
+                continue
 
             # Recursively build deeper branches
             deeper_branches = build_recursive_branches(
@@ -391,7 +408,7 @@ def build_recursive_branches(
             )
 
             dir_branches[sub_idx] = {
-                "seq": seq,
+                "seq": deepcopy(sequence_template),
                 "branches": deeper_branches
             }
 

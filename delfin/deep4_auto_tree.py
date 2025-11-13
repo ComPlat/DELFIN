@@ -32,39 +32,43 @@ DEEP4_AUTO_SETTINGS = {
                         1: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -75,31 +79,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -111,41 +118,75 @@ DEEP4_AUTO_SETTINGS = {
                         2: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -154,33 +195,66 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -190,8 +264,9 @@ DEEP4_AUTO_SETTINGS = {
                         3: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
@@ -199,7 +274,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -207,7 +283,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -215,7 +292,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -223,8 +301,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -234,7 +312,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -242,7 +321,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -250,7 +330,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -258,8 +339,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -269,7 +350,7 @@ DEEP4_AUTO_SETTINGS = {
                         4: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                 {"index": 3, "m": 4, "BS": "", "from": 0},
                                 {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
@@ -280,6 +361,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -288,6 +370,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -296,15 +379,16 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
-                                            {"index": 3, "m": 3, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -315,6 +399,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -323,6 +408,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -331,15 +417,16 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
-                                            {"index": 3, "m": 3, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -351,39 +438,43 @@ DEEP4_AUTO_SETTINGS = {
                         1: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -394,31 +485,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -430,41 +524,75 @@ DEEP4_AUTO_SETTINGS = {
                         2: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -473,33 +601,66 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -509,8 +670,9 @@ DEEP4_AUTO_SETTINGS = {
                         3: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
@@ -518,7 +680,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -526,7 +689,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -534,7 +698,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -542,8 +707,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -553,7 +718,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -561,7 +727,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -569,7 +736,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -577,8 +745,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -588,7 +756,7 @@ DEEP4_AUTO_SETTINGS = {
                         4: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                 {"index": 3, "m": 4, "BS": "", "from": 0},
                                 {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
@@ -599,6 +767,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -607,6 +776,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -615,15 +785,16 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
-                                            {"index": 3, "m": 3, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -634,6 +805,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -642,6 +814,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -650,15 +823,16 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
-                                            {"index": 3, "m": 3, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -672,39 +846,43 @@ DEEP4_AUTO_SETTINGS = {
                         1: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -715,31 +893,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -751,41 +932,75 @@ DEEP4_AUTO_SETTINGS = {
                         2: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -794,33 +1009,66 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -830,8 +1078,9 @@ DEEP4_AUTO_SETTINGS = {
                         3: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
@@ -839,7 +1088,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -847,7 +1097,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -855,7 +1106,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -863,8 +1115,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -874,7 +1126,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -882,7 +1135,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -890,7 +1144,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -898,8 +1153,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -909,7 +1164,7 @@ DEEP4_AUTO_SETTINGS = {
                         4: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                 {"index": 3, "m": 4, "BS": "", "from": 0},
                                 {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
@@ -920,6 +1175,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -928,6 +1184,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -936,6 +1193,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -943,26 +1201,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "3,2", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
-                                            {"index": 3, "m": 3, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -973,6 +1213,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -981,6 +1222,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -989,6 +1231,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -996,26 +1239,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "3,2", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
-                                            {"index": 3, "m": 3, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1027,39 +1252,43 @@ DEEP4_AUTO_SETTINGS = {
                         1: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -1070,31 +1299,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -1106,41 +1338,75 @@ DEEP4_AUTO_SETTINGS = {
                         2: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1149,33 +1415,66 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 3, "BS": "2,2", "from": 2},
+                                            {"index": 5, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 6, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1185,8 +1484,9 @@ DEEP4_AUTO_SETTINGS = {
                         3: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                {"index": 3, "m": 4, "BS": "", "from": 0},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
@@ -1194,7 +1494,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1202,7 +1503,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1210,7 +1512,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1218,8 +1521,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1229,7 +1532,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1237,7 +1541,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1245,7 +1550,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1253,8 +1559,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1264,7 +1570,7 @@ DEEP4_AUTO_SETTINGS = {
                         4: {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
-                                {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                 {"index": 3, "m": 4, "BS": "", "from": 0},
                                 {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
@@ -1275,6 +1581,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1283,6 +1590,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1291,6 +1599,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1298,26 +1607,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "3,2", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
-                                            {"index": 3, "m": 3, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1328,6 +1619,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1336,6 +1628,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1344,6 +1637,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1351,26 +1645,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "3,2", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
-                                            {"index": 3, "m": 3, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1385,38 +1661,42 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
                                 {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -1427,31 +1707,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -1464,7 +1747,8 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
                                 {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
@@ -1472,7 +1756,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1480,7 +1765,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1488,7 +1774,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1496,7 +1783,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -1507,7 +1794,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1515,7 +1803,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1523,7 +1812,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1531,7 +1821,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -1543,7 +1833,8 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
                                 {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
@@ -1551,7 +1842,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1559,7 +1853,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1567,7 +1864,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1575,8 +1875,32 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1586,7 +1910,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1594,7 +1921,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1602,7 +1932,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1610,8 +1943,32 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1622,7 +1979,7 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
                                 {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 4, "BS": "5,1", "from": 2},
+                                {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                 {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
@@ -1632,6 +1989,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1640,6 +1998,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1648,6 +2007,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1656,25 +2016,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "5,2", "from": 3},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1685,6 +2027,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1693,6 +2036,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1701,6 +2045,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1709,25 +2054,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "5,2", "from": 3},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1740,38 +2067,42 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
                                 {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -1782,31 +2113,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                            {"index": 3, "m": 3, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                            {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                             {"index": 3, "m": 3, "BS": "", "from": 0},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
@@ -1819,7 +2153,8 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
                                 {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
@@ -1827,7 +2162,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1835,7 +2171,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1843,7 +2180,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1851,7 +2189,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -1862,7 +2200,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1870,7 +2209,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1878,7 +2218,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -1886,7 +2227,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
                                             {"index": 4, "m": 5, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -1898,7 +2239,8 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
                                 {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 6, "BS": "", "from": 0},
+                                {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
@@ -1906,7 +2248,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1914,7 +2259,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1922,7 +2270,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1930,8 +2281,32 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1941,7 +2316,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1949,7 +2327,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1957,7 +2338,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1965,8 +2349,32 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 1, "BS": "", "from": 0},
+                                            {"index": 2, "m": 3, "BS": "", "from": 0},
+                                            {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                            {"index": 4, "m": 3, "BS": "4,2", "from": 2},
+                                            {"index": 5, "m": 5, "BS": "", "from": 0},
+                                            {"index": 6, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1977,7 +2385,7 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 2, "BS": "", "from": 0},
                                 {"index": 2, "m": 4, "BS": "", "from": 0},
-                                {"index": 3, "m": 4, "BS": "5,1", "from": 2},
+                                {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                 {"index": 4, "m": 6, "BS": "", "from": 0},
                             ],
                             "branches": {
@@ -1987,6 +2395,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -1995,6 +2404,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -2003,6 +2413,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -2011,25 +2422,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "5,2", "from": 3},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -2040,6 +2433,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -2048,6 +2442,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -2056,6 +2451,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -2064,25 +2460,7 @@ DEEP4_AUTO_SETTINGS = {
                                             {"index": 1, "m": 1, "BS": "", "from": 0},
                                             {"index": 2, "m": 3, "BS": "", "from": 0},
                                             {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "6,1", "from": 3},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 5, "BS": "", "from": 0},
-                                            {"index": 4, "m": 5, "BS": "5,2", "from": 3},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 1, "BS": "", "from": 0},
-                                            {"index": 2, "m": 3, "BS": "", "from": 0},
-                                            {"index": 3, "m": 3, "BS": "4,1", "from": 2},
-                                            {"index": 4, "m": 5, "BS": "", "from": 0},
+                                            {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -2098,39 +2476,43 @@ DEEP4_AUTO_SETTINGS = {
                         1: {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
-                                {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                {"index": 3, "m": 3, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2141,31 +2523,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2177,39 +2562,43 @@ DEEP4_AUTO_SETTINGS = {
                         2: {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
-                                {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                {"index": 3, "m": 3, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2220,31 +2609,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2256,40 +2648,44 @@ DEEP4_AUTO_SETTINGS = {
                         3: {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
-                                {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                {"index": 3, "m": 3, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -2299,32 +2695,35 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -2335,7 +2734,7 @@ DEEP4_AUTO_SETTINGS = {
                         4: {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
-                                {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                 {"index": 3, "m": 3, "BS": "", "from": 0},
                                 {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
@@ -2345,7 +2744,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -2353,7 +2753,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -2361,33 +2762,16 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "2,2", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 2, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -2398,7 +2782,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -2406,7 +2791,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -2414,33 +2800,16 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "2,2", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 2, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -2453,39 +2822,43 @@ DEEP4_AUTO_SETTINGS = {
                         1: {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
-                                {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                {"index": 3, "m": 3, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2496,31 +2869,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2532,39 +2908,43 @@ DEEP4_AUTO_SETTINGS = {
                         2: {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
-                                {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                {"index": 3, "m": 3, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2575,31 +2955,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2611,40 +2994,44 @@ DEEP4_AUTO_SETTINGS = {
                         3: {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
-                                {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 2, "m": 1, "BS": "1,1", "from": 1},
+                                {"index": 3, "m": 3, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -2654,32 +3041,35 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -2690,7 +3080,7 @@ DEEP4_AUTO_SETTINGS = {
                         4: {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
-                                {"index": 2, "m": 1, "BS": "2,1", "from": 1},
+                                {"index": 2, "m": 1, "BS": "1,1", "from": 1},
                                 {"index": 3, "m": 3, "BS": "", "from": 0},
                                 {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
@@ -2700,7 +3090,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -2708,7 +3099,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -2716,33 +3108,16 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "2,2", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 2, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -2753,7 +3128,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -2761,7 +3137,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -2769,33 +3146,16 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "2,2", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 2, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -2811,38 +3171,42 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2853,31 +3217,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2890,38 +3257,42 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2932,31 +3303,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -2969,40 +3343,74 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3011,33 +3419,66 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3048,7 +3489,7 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 3, "BS": "4,1", "from": 2},
+                                {"index": 3, "m": 3, "BS": "3,1", "from": 2},
                                 {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
@@ -3057,7 +3498,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3065,7 +3507,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3073,7 +3516,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3081,25 +3525,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "4,2", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -3110,7 +3536,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3118,7 +3545,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3126,7 +3554,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3134,25 +3563,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "4,2", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -3166,38 +3577,42 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -3208,31 +3623,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -3245,38 +3663,42 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -3287,31 +3709,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -3324,40 +3749,74 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 3, "m": 3, "BS": "3,1", "from": 2},
+                                {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3366,33 +3825,66 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    5: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 2, "BS": "3,2", "from": 1},
+                                            {"index": 4, "m": 4, "BS": "", "from": 0},
+                                            {"index": 5, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 6, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3403,7 +3895,7 @@ DEEP4_AUTO_SETTINGS = {
                             "seq": [
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
-                                {"index": 3, "m": 3, "BS": "4,1", "from": 2},
+                                {"index": 3, "m": 3, "BS": "3,1", "from": 2},
                                 {"index": 4, "m": 5, "BS": "", "from": 0},
                             ],
                             "branches": {
@@ -3412,7 +3904,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3420,7 +3913,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3428,7 +3922,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3436,25 +3931,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "4,2", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -3465,7 +3942,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3473,7 +3951,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3481,7 +3960,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3489,25 +3969,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    5: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "4,2", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
-                                        ],
-                                        "branches": {},
-                                    },
-                                    6: {
-                                        "seq": [
-                                            {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
-                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -3524,37 +3986,41 @@ DEEP4_AUTO_SETTINGS = {
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
                                 {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -3565,31 +4031,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -3603,37 +4072,41 @@ DEEP4_AUTO_SETTINGS = {
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
                                 {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -3644,31 +4117,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -3682,6 +4158,7 @@ DEEP4_AUTO_SETTINGS = {
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
                                 {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                             ],
                             "branches": {
                                 -1: {
@@ -3689,7 +4166,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3697,7 +4175,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3705,7 +4184,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3713,7 +4193,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -3724,7 +4204,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3732,7 +4213,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3740,7 +4222,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -3748,7 +4231,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -3761,7 +4244,7 @@ DEEP4_AUTO_SETTINGS = {
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
                                 {"index": 3, "m": 5, "BS": "", "from": 0},
-                                {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                             ],
                             "branches": {
                                 -1: {
@@ -3769,7 +4252,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -3777,7 +4263,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -3785,7 +4274,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -3793,8 +4285,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "6,2", "from": 3},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -3802,8 +4296,21 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -3813,7 +4320,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -3821,7 +4331,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -3829,7 +4342,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -3837,8 +4353,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "6,2", "from": 3},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -3846,8 +4364,21 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -3861,37 +4392,41 @@ DEEP4_AUTO_SETTINGS = {
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
                                 {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -3902,31 +4437,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "1,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -3940,37 +4478,41 @@ DEEP4_AUTO_SETTINGS = {
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
                                 {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                             ],
                             "branches": {
                                 -1: {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -3981,31 +4523,34 @@ DEEP4_AUTO_SETTINGS = {
                                     1: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     2: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     3: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
+                                            {"index": 3, "m": 4, "BS": "", "from": 0},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
                                     4: {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
-                                            {"index": 2, "m": 2, "BS": "3,1", "from": 1},
+                                            {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                                             {"index": 3, "m": 4, "BS": "", "from": 0},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
@@ -4019,6 +4564,7 @@ DEEP4_AUTO_SETTINGS = {
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
                                 {"index": 3, "m": 5, "BS": "", "from": 0},
+                                {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                             ],
                             "branches": {
                                 -1: {
@@ -4026,7 +4572,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -4034,7 +4581,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -4042,7 +4590,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -4050,7 +4599,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -4061,7 +4610,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -4069,7 +4619,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -4077,7 +4628,8 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
                                     },
@@ -4085,7 +4637,7 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
                                             {"index": 4, "m": 6, "BS": "", "from": 0},
                                         ],
                                         "branches": {},
@@ -4098,7 +4650,7 @@ DEEP4_AUTO_SETTINGS = {
                                 {"index": 1, "m": 1, "BS": "", "from": 0},
                                 {"index": 2, "m": 3, "BS": "", "from": 0},
                                 {"index": 3, "m": 5, "BS": "", "from": 0},
-                                {"index": 4, "m": 5, "BS": "6,1", "from": 3},
+                                {"index": 4, "m": 5, "BS": "5,1", "from": 3},
                             ],
                             "branches": {
                                 -1: {
@@ -4106,7 +4658,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -4114,7 +4669,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -4122,7 +4680,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -4130,8 +4691,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "6,2", "from": 3},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -4139,8 +4702,21 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -4150,7 +4726,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -4158,7 +4737,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -4166,7 +4748,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -4174,8 +4759,10 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 6, "BS": "", "from": 0},
-                                            {"index": 4, "m": 6, "BS": "6,2", "from": 3},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
@@ -4183,8 +4770,21 @@ DEEP4_AUTO_SETTINGS = {
                                         "seq": [
                                             {"index": 1, "m": 2, "BS": "", "from": 0},
                                             {"index": 2, "m": 4, "BS": "", "from": 0},
-                                            {"index": 3, "m": 4, "BS": "5,1", "from": 2},
-                                            {"index": 4, "m": 6, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
+                                        ],
+                                        "branches": {},
+                                    },
+                                    6: {
+                                        "seq": [
+                                            {"index": 1, "m": 2, "BS": "", "from": 0},
+                                            {"index": 2, "m": 4, "BS": "", "from": 0},
+                                            {"index": 3, "m": 4, "BS": "4,1", "from": 2},
+                                            {"index": 4, "m": 4, "BS": "5,2", "from": 2},
+                                            {"index": 5, "m": 6, "BS": "", "from": 0},
+                                            {"index": 6, "m": 6, "BS": "6,1", "from": 3},
                                         ],
                                         "branches": {},
                                     },
