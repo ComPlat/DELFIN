@@ -15,6 +15,7 @@ from delfin.copy_helpers import read_occupier_file, copy_preferred_files_with_na
 from delfin.occupier_sequences import resolve_sequences_for_delta
 from delfin.imag import run_IMAG
 from delfin.orca import run_orca
+from delfin.occupier_flat_extraction import _cwd_lock
 from delfin.xyz_io import (
     create_s1_optimization_input,
     read_xyz_and_create_input2,
@@ -814,101 +815,120 @@ def build_occupier_jobs(
             root_dir = Path(os.getcwd()).resolve()
 
             def _work(cores: int) -> None:
-                dyn_mult = mult
-                dyn_adds = adds
+                # Ensure we're in the root directory for this job
+                import os
+                original_cwd = None
+                with _cwd_lock:
+                    original_cwd = os.getcwd()
+                    try:
+                        os.chdir(root_dir)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("[occupier_ox%d] Could not change to root_dir %s: %s", idx, root_dir, e)
+
                 try:
-                    refreshed_mult, refreshed_adds, _ = read_occ(f"ox_step_{idx}_OCCUPIER", "ox", idx)
-                    if refreshed_mult:
-                        dyn_mult = refreshed_mult
-                    if isinstance(refreshed_adds, str):
-                        dyn_adds = refreshed_adds
-                except Exception:  # noqa: BLE001
-                    logger.debug("[occupier] Using fallback multiplicity/additions for ox_step_%d", idx, exc_info=True)
+                    dyn_mult = mult
+                    dyn_adds = adds
+                    try:
+                        refreshed_mult, refreshed_adds, _ = read_occ(f"ox_step_{idx}_OCCUPIER", "ox", idx)
+                        if refreshed_mult:
+                            dyn_mult = refreshed_mult
+                        if isinstance(refreshed_adds, str):
+                            dyn_adds = refreshed_adds
+                    except Exception:  # noqa: BLE001
+                        logger.debug("[occupier] Using fallback multiplicity/additions for ox_step_%d", idx, exc_info=True)
 
-                # Determine geometry paths using absolute paths from root_dir
-                if use_solvator:
-                    primary_geom = root_dir / ("initial.xyz" if idx == 1 else f"ox_step_{idx - 1}.xyz")
-                    fallback_geom = root_dir / f"input_ox_step_{idx}_OCCUPIER.xyz"
-                else:
-                    occ_geom = root_dir / f"input_ox_step_{idx}_OCCUPIER.xyz"
-                    run_geom = root_dir / f"ox_step_{idx}.xyz"
-                    primary_geom = run_geom if run_geom.exists() else occ_geom
-                    fallback_geom = occ_geom
+                    # Determine geometry paths using absolute paths from root_dir
+                    if use_solvator:
+                        primary_geom = root_dir / ("initial.xyz" if idx == 1 else f"ox_step_{idx - 1}.xyz")
+                        fallback_geom = root_dir / f"input_ox_step_{idx}_OCCUPIER.xyz"
+                    else:
+                        occ_geom = root_dir / f"input_ox_step_{idx}_OCCUPIER.xyz"
+                        run_geom = root_dir / f"ox_step_{idx}.xyz"
+                        primary_geom = run_geom if run_geom.exists() else occ_geom
+                        fallback_geom = occ_geom
 
-                geom_path = primary_geom if primary_geom.exists() else fallback_geom
-                if not geom_path.exists() and _recalc_enabled():
-                    restored = _restore_occ_geometry("ox", idx)
-                    if restored:
-                        geom_path = restored
-                if not geom_path.exists():
-                    import os
-                    cwd = os.getcwd()
-                    abs_primary = primary_geom.resolve() if primary_geom else None
-                    abs_fallback = fallback_geom.resolve() if fallback_geom else None
-                    logger.error(
-                        "[occupier] Geometry not found! CWD=%s, primary=%s (abs=%s, exists=%s), fallback=%s (abs=%s, exists=%s)",
-                        cwd, primary_geom, abs_primary, primary_geom.exists() if primary_geom else False,
-                        fallback_geom, abs_fallback, fallback_geom.exists() if fallback_geom else False
+                    geom_path = primary_geom if primary_geom.exists() else fallback_geom
+                    if not geom_path.exists() and _recalc_enabled():
+                        restored = _restore_occ_geometry("ox", idx)
+                        if restored:
+                            geom_path = restored
+                    if not geom_path.exists():
+                        import os
+                        cwd = os.getcwd()
+                        abs_primary = primary_geom.resolve() if primary_geom else None
+                        abs_fallback = fallback_geom.resolve() if fallback_geom else None
+                        logger.error(
+                            "[occupier] Geometry not found! CWD=%s, primary=%s (abs=%s, exists=%s), fallback=%s (abs=%s, exists=%s)",
+                            cwd, primary_geom, abs_primary, primary_geom.exists() if primary_geom else False,
+                            fallback_geom, abs_fallback, fallback_geom.exists() if fallback_geom else False
+                        )
+                        raise FileNotFoundError(
+                            f"Geometry for oxidation step {idx} not found "
+                            f"(checked {primary_geom} and {fallback_geom})"
+                        )
+
+                    if primary_geom != fallback_geom and primary_geom != geom_path:
+                        logger.warning(
+                            "[occupier] Primary oxidation geometry %s missing; using fallback %s",
+                            primary_geom,
+                            geom_path,
+                        )
+    
+                    read_xyz_and_create_input3(
+                        str(geom_path),
+                        inp,
+                        charge_value,
+                        dyn_mult,
+                        solvent,
+                        metals,
+                        metal_basis,
+                        main_basis,
+                        config,
+                        dyn_adds,
                     )
-                    raise FileNotFoundError(
-                        f"Geometry for oxidation step {idx} not found "
-                        f"(checked {primary_geom} and {fallback_geom})"
+                    inp_path = Path(inp)
+                    if not inp_path.exists():
+                        raise RuntimeError(f"Failed to create {inp}")
+                    _update_pal_block(str(inp_path), cores)
+    
+                    # Add %moinp block to reuse OCCUPIER wavefunction
+                    gbw_ox = root_dir / f"input_ox_step_{idx}_OCCUPIER.gbw"
+                    if not xtb_solvator_enabled and gbw_ox.exists():
+                        _add_moinp_block(str(inp_path), str(gbw_ox))
+                        logger.info("[occupier_ox%d] Using GBW from OCCUPIER: %s", idx, gbw_ox)
+                    elif xtb_solvator_enabled and gbw_ox.exists():
+                        logger.debug("[occupier_ox%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
+    
+                    if not run_orca(inp, out):
+                        raise RuntimeError(f"ORCA terminated abnormally for {out}")
+                    run_IMAG(
+                        out,
+                        f"ox_step_{idx}",
+                        step_charge,
+                        multiplicity_step,
+                        solvent,
+                        metals,
+                        config,
+                        main_basis,
+                        metal_basis,
+                        additions_step,
+                        step_name=f"ox_step_{idx}",
+                        source_input=inp,
                     )
-
-                if primary_geom != fallback_geom and primary_geom != geom_path:
-                    logger.warning(
-                        "[occupier] Primary oxidation geometry %s missing; using fallback %s",
-                        primary_geom,
-                        geom_path,
+                    logger.info(
+                        "%s %s freq & geometry optimization cation (step %d) complete!",
+                        functional,
+                        main_basis,
+                        idx,
                     )
-
-                read_xyz_and_create_input3(
-                    str(geom_path),
-                    inp,
-                    charge_value,
-                    dyn_mult,
-                    solvent,
-                    metals,
-                    metal_basis,
-                    main_basis,
-                    config,
-                    dyn_adds,
-                )
-                inp_path = Path(inp)
-                if not inp_path.exists():
-                    raise RuntimeError(f"Failed to create {inp}")
-                _update_pal_block(str(inp_path), cores)
-
-                # Add %moinp block to reuse OCCUPIER wavefunction
-                gbw_ox = root_dir / f"input_ox_step_{idx}_OCCUPIER.gbw"
-                if not xtb_solvator_enabled and gbw_ox.exists():
-                    _add_moinp_block(str(inp_path), str(gbw_ox))
-                    logger.info("[occupier_ox%d] Using GBW from OCCUPIER: %s", idx, gbw_ox)
-                elif xtb_solvator_enabled and gbw_ox.exists():
-                    logger.debug("[occupier_ox%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
-
-                if not run_orca(inp, out):
-                    raise RuntimeError(f"ORCA terminated abnormally for {out}")
-                run_IMAG(
-                    out,
-                    f"ox_step_{idx}",
-                    step_charge,
-                    multiplicity_step,
-                    solvent,
-                    metals,
-                    config,
-                    main_basis,
-                    metal_basis,
-                    additions_step,
-                    step_name=f"ox_step_{idx}",
-                    source_input=inp,
-                )
-                logger.info(
-                    "%s %s freq & geometry optimization cation (step %d) complete!",
-                    functional,
-                    main_basis,
-                    idx,
-                )
+                finally:
+                    # Restore original working directory
+                    if original_cwd is not None:
+                        with _cwd_lock:
+                            try:
+                                os.chdir(original_cwd)
+                            except Exception:  # noqa: BLE001
+                                pass
 
             return _work
 
@@ -953,101 +973,120 @@ def build_occupier_jobs(
             root_dir = Path(os.getcwd()).resolve()
 
             def _work(cores: int) -> None:
-                dyn_mult = mult
-                dyn_adds = adds
+                # Ensure we're in the root directory for this job
+                import os
+                original_cwd = None
+                with _cwd_lock:
+                    original_cwd = os.getcwd()
+                    try:
+                        os.chdir(root_dir)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("[occupier_red%d] Could not change to root_dir %s: %s", idx, root_dir, e)
+
                 try:
-                    refreshed_mult, refreshed_adds, _ = read_occ(f"red_step_{idx}_OCCUPIER", "red", idx)
-                    if refreshed_mult:
-                        dyn_mult = refreshed_mult
-                    if isinstance(refreshed_adds, str):
-                        dyn_adds = refreshed_adds
-                except Exception:  # noqa: BLE001
-                    logger.debug("[occupier] Using fallback multiplicity/additions for red_step_%d", idx, exc_info=True)
+                    dyn_mult = mult
+                    dyn_adds = adds
+                    try:
+                        refreshed_mult, refreshed_adds, _ = read_occ(f"red_step_{idx}_OCCUPIER", "red", idx)
+                        if refreshed_mult:
+                            dyn_mult = refreshed_mult
+                        if isinstance(refreshed_adds, str):
+                            dyn_adds = refreshed_adds
+                    except Exception:  # noqa: BLE001
+                        logger.debug("[occupier] Using fallback multiplicity/additions for red_step_%d", idx, exc_info=True)
 
                 # Determine geometry paths using absolute paths from root_dir
-                if use_solvator:
-                    primary_geom = root_dir / ("initial.xyz" if idx == 1 else f"red_step_{idx - 1}.xyz")
-                    fallback_geom = root_dir / f"input_red_step_{idx}_OCCUPIER.xyz"
-                else:
-                    occ_geom = root_dir / f"input_red_step_{idx}_OCCUPIER.xyz"
-                    run_geom = root_dir / f"red_step_{idx}.xyz"
-                    primary_geom = run_geom if run_geom.exists() else occ_geom
-                    fallback_geom = occ_geom
-
-                geom_path = primary_geom if primary_geom.exists() else fallback_geom
-                if not geom_path.exists() and _recalc_enabled():
-                    restored = _restore_occ_geometry("red", idx)
-                    if restored:
-                        geom_path = restored
-                if not geom_path.exists():
-                    import os
-                    cwd = os.getcwd()
-                    abs_primary = primary_geom.resolve() if primary_geom else None
-                    abs_fallback = fallback_geom.resolve() if fallback_geom else None
-                    logger.error(
-                        "[occupier] Geometry not found! CWD=%s, primary=%s (abs=%s, exists=%s), fallback=%s (abs=%s, exists=%s)",
-                        cwd, primary_geom, abs_primary, primary_geom.exists() if primary_geom else False,
-                        fallback_geom, abs_fallback, fallback_geom.exists() if fallback_geom else False
+                    if use_solvator:
+                        primary_geom = root_dir / ("initial.xyz" if idx == 1 else f"red_step_{idx - 1}.xyz")
+                        fallback_geom = root_dir / f"input_red_step_{idx}_OCCUPIER.xyz"
+                    else:
+                        occ_geom = root_dir / f"input_red_step_{idx}_OCCUPIER.xyz"
+                        run_geom = root_dir / f"red_step_{idx}.xyz"
+                        primary_geom = run_geom if run_geom.exists() else occ_geom
+                        fallback_geom = occ_geom
+    
+                    geom_path = primary_geom if primary_geom.exists() else fallback_geom
+                    if not geom_path.exists() and _recalc_enabled():
+                        restored = _restore_occ_geometry("red", idx)
+                        if restored:
+                            geom_path = restored
+                    if not geom_path.exists():
+                        import os
+                        cwd = os.getcwd()
+                        abs_primary = primary_geom.resolve() if primary_geom else None
+                        abs_fallback = fallback_geom.resolve() if fallback_geom else None
+                        logger.error(
+                            "[occupier] Geometry not found! CWD=%s, primary=%s (abs=%s, exists=%s), fallback=%s (abs=%s, exists=%s)",
+                            cwd, primary_geom, abs_primary, primary_geom.exists() if primary_geom else False,
+                            fallback_geom, abs_fallback, fallback_geom.exists() if fallback_geom else False
+                        )
+                        raise FileNotFoundError(
+                            f"Geometry for reduction step {idx} not found "
+                            f"(checked {primary_geom} and {fallback_geom})"
+                        )
+    
+                    if primary_geom != fallback_geom and primary_geom != geom_path:
+                        logger.warning(
+                            "[occupier] Primary reduction geometry %s missing; using fallback %s",
+                            primary_geom,
+                            geom_path,
+                        )
+    
+                    read_xyz_and_create_input3(
+                        str(geom_path),
+                        inp,
+                        charge_value,
+                        dyn_mult,
+                        solvent,
+                        metals,
+                        metal_basis,
+                        main_basis,
+                        config,
+                        dyn_adds,
                     )
-                    raise FileNotFoundError(
-                        f"Geometry for reduction step {idx} not found "
-                        f"(checked {primary_geom} and {fallback_geom})"
+                    inp_path = Path(inp)
+                    if not inp_path.exists():
+                        raise RuntimeError(f"Failed to create {inp}")
+                    _update_pal_block(str(inp_path), cores)
+    
+                    # Add %moinp block to reuse OCCUPIER wavefunction
+                    gbw_red = root_dir / f"input_red_step_{idx}_OCCUPIER.gbw"
+                    if not xtb_solvator_enabled and gbw_red.exists():
+                        _add_moinp_block(str(inp_path), str(gbw_red))
+                        logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
+                    elif xtb_solvator_enabled and gbw_red.exists():
+                        logger.debug("[occupier_red%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
+    
+                    if not run_orca(inp, out):
+                        raise RuntimeError(f"ORCA terminated abnormally for {out}")
+                    run_IMAG(
+                        out,
+                        f"red_step_{idx}",
+                        step_charge,
+                        multiplicity_step,
+                        solvent,
+                        metals,
+                        config,
+                        main_basis,
+                        metal_basis,
+                        additions_step,
+                        step_name=f"red_step_{idx}",
+                        source_input=inp,
+                )
+                    logger.info(
+                        "%s %s freq & geometry optimization anion (step %d) complete!",
+                        functional,
+                        main_basis,
+                        idx,
                     )
-
-                if primary_geom != fallback_geom and primary_geom != geom_path:
-                    logger.warning(
-                        "[occupier] Primary reduction geometry %s missing; using fallback %s",
-                        primary_geom,
-                        geom_path,
-                    )
-
-                read_xyz_and_create_input3(
-                    str(geom_path),
-                    inp,
-                    charge_value,
-                    dyn_mult,
-                    solvent,
-                    metals,
-                    metal_basis,
-                    main_basis,
-                    config,
-                    dyn_adds,
-                )
-                inp_path = Path(inp)
-                if not inp_path.exists():
-                    raise RuntimeError(f"Failed to create {inp}")
-                _update_pal_block(str(inp_path), cores)
-
-                # Add %moinp block to reuse OCCUPIER wavefunction
-                gbw_red = root_dir / f"input_red_step_{idx}_OCCUPIER.gbw"
-                if not xtb_solvator_enabled and gbw_red.exists():
-                    _add_moinp_block(str(inp_path), str(gbw_red))
-                    logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
-                elif xtb_solvator_enabled and gbw_red.exists():
-                    logger.debug("[occupier_red%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
-
-                if not run_orca(inp, out):
-                    raise RuntimeError(f"ORCA terminated abnormally for {out}")
-                run_IMAG(
-                    out,
-                    f"red_step_{idx}",
-                    step_charge,
-                    multiplicity_step,
-                    solvent,
-                    metals,
-                    config,
-                    main_basis,
-                    metal_basis,
-                    additions_step,
-                    step_name=f"red_step_{idx}",
-                    source_input=inp,
-                )
-                logger.info(
-                    "%s %s freq & geometry optimization anion (step %d) complete!",
-                    functional,
-                    main_basis,
-                    idx,
-                )
+                finally:
+                    # Restore original working directory
+                    if original_cwd is not None:
+                        with _cwd_lock:
+                            try:
+                                os.chdir(original_cwd)
+                            except Exception:  # noqa: BLE001
+                                pass
 
             return _work
 
