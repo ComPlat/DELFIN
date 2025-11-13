@@ -189,6 +189,12 @@ delfin/
 ## Typical workflow switches (in CONTROL.txt)
 
 * `method = OCCUPIER | classic | manually` (leave empty for ESD-only runs)
+* `OCCUPIER_method = auto | manually` (auto uses adaptive tree-based sequences)
+* `OCCUPIER_tree = flat | deep | deep2 | deep3` (tree mode for auto OCCUPIER; default: `deep`)
+  - `flat`: Legacy flat sequences
+  - `deep`: 3×3×3 uniform branching
+  - `deep2`: 3×3 tree from flat (customizable)
+  - `deep3`: Recursive 0→±1→±2→±3 paths
 * `calc_initial = yes | no`
 * `oxidation_steps = 1,2,3` (string; steps to compute)
 * `reduction_steps = 1,2,3` (string; steps to compute)

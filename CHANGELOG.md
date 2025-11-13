@@ -5,6 +5,16 @@ All notable changes to DELFIN will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Auto OCCUPIER deep3 tree mode**: Recursive tree structure with true depth (paths: 0→±1→±2→±3) for enhanced spin-state exploration
+- **Tree visualization**: ASCII diagrams in `deep_auto_tree.py` and `deep2_auto_tree.py` showing complete branch structure
+
+### Changed
+- **Auto OCCUPIER navigation**: Enhanced to support recursive tree structures via `_navigate_recursive_tree()`
+- **Tree synchronization**: `generate_deep2_tree.py` now auto-syncs with flat sequences
+
 ## [1.0.4]
 
 ### IMAG improvements

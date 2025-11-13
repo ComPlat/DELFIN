@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from delfin.common.logging import get_logger
 from delfin.deep_auto_tree import DEEP_AUTO_SETTINGS
 from delfin.deep2_auto_tree import DEEP2_AUTO_SETTINGS
+from delfin.deep3_auto_tree import DEEP3_AUTO_SETTINGS
 
 logger = get_logger(__name__)
 
@@ -429,10 +430,44 @@ def _extract_sequence_from_tree_node(tree_node: Dict[str, Any], preferred_sub_in
     return None
 
 
+def _navigate_recursive_tree(node: Dict[str, Any], remaining_steps: int, direction: int, preferred_sub: int = 1) -> Optional[List[Dict[str, Any]]]:
+    """Navigate recursive tree structure to find sequence at target depth.
+
+    For deep3, structure is: node['branches'][direction][sub]['branches'][direction][sub]...
+    remaining_steps=0 means we're at the target node
+    """
+    if remaining_steps == 0:
+        # We're at the target node, extract its sequence
+        if "seq" in node:
+            return node.get("seq")
+        return None
+
+    # Navigate one level deeper
+    inner_branches = node.get("branches", {})
+    if not inner_branches or direction not in inner_branches:
+        return None
+
+    # Get the next level (dict of sub-indices)
+    next_level = inner_branches[direction]
+
+    # Try preferred sub-index first
+    if preferred_sub in next_level:
+        return _navigate_recursive_tree(next_level[preferred_sub], remaining_steps - 1, direction, preferred_sub)
+
+    # Fallback: try first available sub-index
+    for sub_idx in sorted(next_level.keys()):
+        result = _navigate_recursive_tree(next_level[sub_idx], remaining_steps - 1, direction, preferred_sub)
+        if result:
+            return result
+
+    return None
+
+
 _TREE_DATASETS = {
     "deep": AUTO_SETTINGS,
     "flat": AUTO_SETTINGS_FLAT,
     "deep2": DEEP2_AUTO_SETTINGS,
+    "deep3": DEEP3_AUTO_SETTINGS,
 }
 
 
@@ -456,6 +491,9 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
 
     def _copy_sequence(seq: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return copy.deepcopy(seq)
+
+    # Check if this is a recursive tree (deep3)
+    is_recursive_tree = (normalized_mode == "deep3")
 
     for anchor, settings in settings_source.items():
         offset = delta - anchor
@@ -487,15 +525,42 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
                     ordered_indices.append(candidate)
 
             for branch_index in ordered_indices:
-                delta_node = parity_branches.get(branch_index, {}).get(offset)
-                if not delta_node:
-                    continue
+                if is_recursive_tree:
+                    # For recursive trees (deep3), navigate through the tree
+                    # offset can be ±1, ±2, ±3
+                    # direction is +1 or -1, depth is abs(offset)
+                    direction = +1 if offset > 0 else -1
+                    depth = abs(offset)
 
-                # Extract sequence from tree node structure
-                if isinstance(delta_node, list):
-                    seq = delta_node
+                    # Get the first-level node
+                    first_level = parity_branches.get(branch_index, {}).get(direction)
+                    if not first_level:
+                        continue
+
+                    # Navigate recursively to find the sequence
+                    if depth == 1:
+                        # Direct child
+                        seq = _extract_sequence_from_tree_node(first_level, preferred_sub_index=1)
+                    else:
+                        # Need to navigate deeper (depth-1 more steps from first sub-node)
+                        # Start from first sub-node
+                        sub_node = first_level.get(1)
+                        if not sub_node:
+                            continue
+                        # remaining_steps = depth - 1 (we already took 1 step to get to first_level)
+                        seq = _navigate_recursive_tree(sub_node, depth - 1, direction, preferred_sub=1)
                 else:
-                    seq = _extract_sequence_from_tree_node(delta_node, preferred_sub_index=1)
+                    # Non-recursive trees (flat, deep, deep2)
+                    delta_node = parity_branches.get(branch_index, {}).get(offset)
+                    if not delta_node:
+                        continue
+
+                    # Extract sequence from tree node structure
+                    if isinstance(delta_node, list):
+                        seq = delta_node
+                    else:
+                        seq = _extract_sequence_from_tree_node(delta_node, preferred_sub_index=1)
+
                 if not seq:
                     continue
 

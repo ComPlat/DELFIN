@@ -92,7 +92,9 @@ def _as_occupier_tree(value: Any) -> str:
         return "flat"
     if text == "deep2":
         return "deep2"
-    raise ValueError("must be one of: deep, flat, deep2")
+    if text == "deep3":
+        return "deep3"
+    raise ValueError("must be one of: deep, flat, deep2, deep3")
 
 
 CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
