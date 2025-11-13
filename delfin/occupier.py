@@ -10,7 +10,12 @@ from delfin.common.paths import resolve_path
 from delfin.global_manager import get_global_manager
 
 from .config import OCCUPIER_parser, read_control_file
-from .occupier_sequences import infer_species_delta, resolve_sequences_for_delta
+from .occupier_sequences import (
+    infer_species_delta,
+    resolve_sequences_for_delta,
+    append_sequence_overrides,
+    remove_existing_sequence_blocks,
+)
 from .utils import (
     set_main_basisset,
     search_transition_metals,
@@ -753,6 +758,14 @@ def run_OCCUPIER():
 
         species_delta = infer_species_delta(Path.cwd())
         seq_bundle = resolve_sequences_for_delta(config, species_delta)
+
+        method_token = str(config.get("OCCUPIER_method", "auto") or "auto").strip().lower()
+        if method_token == "auto" and seq_bundle:
+            try:
+                remove_existing_sequence_blocks(control_file_path, force=True)
+                append_sequence_overrides(control_file_path, seq_bundle)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[occupier] Failed to refresh auto sequence overrides: %s", exc)
 
         # Choose which sequence to run
         seq_key = "even_seq" if is_even else "odd_seq"

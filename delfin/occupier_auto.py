@@ -401,6 +401,10 @@ def _preferred_index_for_anchor(anchor: int, parity: str, root: Path) -> Optiona
         return None
     value = anchor_state.get(token)
     if value is None:
+        # Fallback: reuse preference from opposite parity to keep BS evolution consistent
+        other_token = "odd" if token == "even" else "even"
+        value = anchor_state.get(other_token)
+    if value is None:
         return None
     try:
         return int(value)
