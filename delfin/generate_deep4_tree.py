@@ -89,8 +89,9 @@ preferred configuration:
 Rule 1: BS INITIATION (from pure state)
 ----------------------------------------
 If at level N, a pure state with multiplicity m was preferred, then at level N±1:
-    - Test BS(m_aligned, 1) alongside the pure states, where m_aligned respects the next level's parity
-    - Example: choosing m=2 (even) feeds BS(1,1) on the next odd branch; choosing m=6 feeds BS(5,1)
+    - Derive the physical BS anchor M = m - 1 (only if M ≥ 1)
+    - Test BS(M,1) alongside the pure states; the stored multiplicity is still parity-aligned
+    - Example: choosing m=6 feeds BS(5,1); choosing m=2 feeds BS(1,1); choosing m=1 yields no BS candidate
 
 Example:
     Level 0: m=6 preferred (pure state, no BS)
@@ -326,11 +327,15 @@ def generate_test_configs(prev_config: dict | None, current_parity: str) -> list
         for m in pure_m_values:
             test_configs.append({"m": m, "BS": ""})
 
-        # Add BS initiation BS(M,1) with parity-aligned M
-        M_raw = prev_config["m"]
-        if M_raw >= 1:
-            m_bs = get_m_for_bs_in_parity(M_raw, 1, current_parity)
-            test_configs.append({"m": m_bs, "BS": f"{m_bs},1"})
+        # Add BS initiation BS(M,1) where physical M = m-1 (only if ≥ 1)
+        try:
+            raw_m = int(prev_config.get("m", 0))
+        except (TypeError, ValueError):
+            raw_m = 0
+        M_phys = raw_m - 1
+        if M_phys >= 1:
+            m_bs = get_m_for_bs_in_parity(M_phys, 1, current_parity)
+            test_configs.append({"m": m_bs, "BS": f"{M_phys},1"})
 
     else:
         # Previous was BS → evolve BS + pure states
