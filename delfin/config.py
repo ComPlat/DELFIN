@@ -161,6 +161,22 @@ def _load_template_defaults() -> Dict[str, Any]:
     return deepcopy(_TEMPLATE_DEFAULTS_CACHE)
 
 
+def _collect_missing_required_keys(user_keys: Set[str], placeholder_keys: Set[str]) -> List[str]:
+    required_missing = {key for key in _TEMPLATE_REQUIRED_KEYS if key not in user_keys}
+    placeholder_required = _TEMPLATE_REQUIRED_KEYS & placeholder_keys
+    return sorted(required_missing | placeholder_required)
+
+
+def _raise_if_missing_required(user_keys: Set[str], placeholder_keys: Set[str]) -> None:
+    missing_all = _collect_missing_required_keys(user_keys, placeholder_keys)
+    if missing_all:
+        joined = ", ".join(missing_all)
+        raise ValueError(
+            f"Missing required CONTROL values for: {joined}. "
+            "Replace template placeholders (e.g. [CHARGE], [SOLVENT]) with actual values."
+        )
+
+
 def _parse_control_file(file_path: str, *, keep_steps_literal: bool, content: Optional[str] = None) -> Dict[str, Any]:
     config: Dict[str, Any] = {}
     sequence_blocks: List[Dict[str, Any]] = []
@@ -254,21 +270,18 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     config = _parse_control_file(file_path, keep_steps_literal=True, content=text)
     user_keys = set(config.keys())
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
+    defaults = _load_template_defaults()
+    _raise_if_missing_required(user_keys, placeholder_keys)
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
         user_keys.add("_occupier_sequence_blocks")
 
-    defaults = _load_template_defaults()
     merged = dict(validated)
     for key, value in defaults.items():
         if key not in user_keys:
             merged[key] = value
 
-    missing_required = {key for key in _TEMPLATE_REQUIRED_KEYS if key not in user_keys}
-    missing_all = sorted(missing_required | placeholder_keys)
-    if missing_all:
-        raise ValueError(f"Missing required CONTROL values for: {', '.join(missing_all)}")
     return merged
 
 def OCCUPIER_parser(path: str) -> Dict[str, Any]:
@@ -287,21 +300,18 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     config = _parse_control_file(path, keep_steps_literal=False, content=text)
     user_keys = set(config.keys())
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
+    defaults = _load_template_defaults()
+    _raise_if_missing_required(user_keys, placeholder_keys)
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
         user_keys.add("_occupier_sequence_blocks")
 
-    defaults = _load_template_defaults()
     merged = dict(validated)
     for key, value in defaults.items():
         if key not in user_keys:
             merged[key] = value
 
-    missing_required = {key for key in _TEMPLATE_REQUIRED_KEYS if key not in user_keys}
-    missing_all = sorted(missing_required | placeholder_keys)
-    if missing_all:
-        raise ValueError(f"Missing required CONTROL values for: {', '.join(missing_all)}")
     return merged
 
 
