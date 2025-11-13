@@ -114,12 +114,15 @@ def _parse_sequence_block(lines: List[str], start_idx: int) -> Tuple[Dict[str, A
     return block, idx
 
 
-def _parse_control_file(file_path: str, *, keep_steps_literal: bool) -> Dict[str, Any]:
+def _parse_control_file(file_path: str, *, keep_steps_literal: bool, content: Optional[str] = None) -> Dict[str, Any]:
     config: Dict[str, Any] = {}
     sequence_blocks: List[Dict[str, Any]] = []
 
-    with open(file_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
+    if content is None:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    else:
+        lines = content.splitlines(keepends=True)
 
     idx = 0
     total_lines = len(lines)
@@ -199,8 +202,9 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     Returns:
         Dictionary containing parsed configuration parameters
     """
-    remove_existing_sequence_blocks(Path(file_path))
-    config = _parse_control_file(file_path, keep_steps_literal=True)
+    sanitized = remove_existing_sequence_blocks(Path(file_path), persist=False)
+    text = sanitized or Path(file_path).read_text(encoding="utf-8")
+    config = _parse_control_file(file_path, keep_steps_literal=True, content=text)
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
@@ -217,8 +221,9 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     Returns:
         Dictionary containing parsed OCCUPIER configuration
     """
-    remove_existing_sequence_blocks(Path(path))
-    config = _parse_control_file(path, keep_steps_literal=False)
+    sanitized = remove_existing_sequence_blocks(Path(path), persist=False)
+    text = sanitized or Path(path).read_text(encoding="utf-8")
+    config = _parse_control_file(path, keep_steps_literal=False, content=text)
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]

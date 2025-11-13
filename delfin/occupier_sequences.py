@@ -277,7 +277,7 @@ def _strip_infos_and_esd_sections(text: str) -> str:
     return text
 
 
-def remove_existing_sequence_blocks(control_path: Path, force: bool = False) -> None:
+def remove_existing_sequence_blocks(control_path: Path, force: bool = False, *, persist: bool = True) -> str:
     """Remove OCCUPIER sequence/INFO blocks before writing auto overrides.
 
     Args:
@@ -288,7 +288,7 @@ def remove_existing_sequence_blocks(control_path: Path, force: bool = False) -> 
     try:
         original = control_path.read_text(encoding="utf-8")
     except OSError:
-        return
+        return ""
 
     updated = original
     is_auto = "OCCUPIER_method=auto" in original
@@ -314,7 +314,7 @@ def remove_existing_sequence_blocks(control_path: Path, force: bool = False) -> 
     else:
         # For main CONTROL file: only remove OCCUPIER_sequence_profiles if method=auto
         if not is_auto:
-            return
+            return original
 
         # Remove OCCUPIER_sequence_profiles section (but keep INFOS)
         updated = _strip_section(
@@ -329,5 +329,7 @@ def remove_existing_sequence_blocks(control_path: Path, force: bool = False) -> 
             ("ESD MODULE", "INFOS:"),
         )
 
-    if updated != original:
+    if updated != original and persist:
         control_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
+
+    return updated if updated != original else original
