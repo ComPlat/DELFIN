@@ -2,7 +2,7 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17208145.svg)](https://doi.org/10.5281/zenodo.17208145)
 
-> 📄 **Preprint**: *Hartmann, M. et al. “DELFIN: Automated spin-state and redox prediction workflows”*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv.XXXX
+> 📄 **Preprint**: *Hartmann, M. et al. “DELFIN: Automated spin-state and redox prediction workflows”*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256 — https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
 
 **Automated DFT-based prediction of preferred spin states and associated redox potentials**
 
