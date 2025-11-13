@@ -164,6 +164,12 @@ delfin/
   energies.py       # extractors for energies (FSPE, Gibbs, ZPE, electronic energies)
   parser.py         # parser utilities for ORCA output files
   occupier.py       # OCCUPIER workflow (sequence execution + summary)
+  occupier_auto.py  # Auto OCCUPIER sequence management and tree navigation
+  deep_auto_tree.py # Deep tree structure (3×3×3 uniform branching)
+  deep2_auto_tree.py # Deep2 tree structure (3×3 from flat, customizable)
+  deep3_auto_tree.py # Deep3 recursive tree (paths: 0→±1→±2→±3)
+  generate_deep2_tree.py # Generator for deep2 from flat sequences
+  generate_deep3_tree.py # Generator for deep3 recursive structure
   copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
   thread_safe_helpers.py  # thread-safe workflow execution with PAL management
   global_manager.py       # singleton global job manager for resource coordination
