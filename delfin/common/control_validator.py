@@ -131,7 +131,22 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     errors: list[str] = []
     validated: dict[str, Any] = dict(config)
 
+    # First pass: validate OCCUPIER_method to determine if tree validation is needed
+    occupier_method_raw = config.get("OCCUPIER_method", None)
+    occupier_method = "manually"  # default
+    if occupier_method_raw is not None and occupier_method_raw != "":
+        try:
+            occupier_method = _as_occupier_method(occupier_method_raw)
+        except Exception:  # noqa: BLE001
+            occupier_method = "manually"
+
     for spec in CONTROL_FIELD_SPECS:
+        # Skip OCCUPIER_tree validation if OCCUPIER_method is 'manually'
+        if spec.name == "OCCUPIER_tree" and occupier_method == "manually":
+            # Just set default without validation when manually mode
+            validated[spec.name] = "deep"
+            continue
+
         raw = config.get(spec.name, None)
         if raw is None or raw == "":
             if spec.required and spec.default is None:

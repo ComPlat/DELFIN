@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.global_manager import get_global_manager
-from delfin.copy_helpers import read_occupier_file
+from delfin.copy_helpers import read_occupier_file, copy_preferred_files_with_names
 from delfin.occupier_sequences import resolve_sequences_for_delta
 from delfin.imag import run_IMAG
 from delfin.orca import run_orca
@@ -809,6 +809,10 @@ def build_occupier_jobs(
                                 inp: str, out: str,
                                 charge_value: int,
                                 use_solvator: bool) -> Callable[[int], None]:
+            # Capture the root directory at job creation time (absolute path)
+            import os
+            root_dir = Path(os.getcwd()).resolve()
+
             def _work(cores: int) -> None:
                 dyn_mult = mult
                 dyn_adds = adds
@@ -821,18 +825,31 @@ def build_occupier_jobs(
                 except Exception:  # noqa: BLE001
                     logger.debug("[occupier] Using fallback multiplicity/additions for ox_step_%d", idx, exc_info=True)
 
-                # Determine geometry paths at RUNTIME, not at job creation time
+                # Determine geometry paths using absolute paths from root_dir
                 if use_solvator:
-                    primary_geom = Path("initial.xyz") if idx == 1 else Path(f"ox_step_{idx - 1}.xyz")
-                    fallback_geom = Path(f"input_ox_step_{idx}_OCCUPIER.xyz")
+                    primary_geom = root_dir / ("initial.xyz" if idx == 1 else f"ox_step_{idx - 1}.xyz")
+                    fallback_geom = root_dir / f"input_ox_step_{idx}_OCCUPIER.xyz"
                 else:
-                    occ_geom = Path(f"input_ox_step_{idx}_OCCUPIER.xyz")
-                    run_geom = Path(f"ox_step_{idx}.xyz")
+                    occ_geom = root_dir / f"input_ox_step_{idx}_OCCUPIER.xyz"
+                    run_geom = root_dir / f"ox_step_{idx}.xyz"
                     primary_geom = run_geom if run_geom.exists() else occ_geom
                     fallback_geom = occ_geom
 
                 geom_path = primary_geom if primary_geom.exists() else fallback_geom
+                if not geom_path.exists() and _recalc_enabled():
+                    restored = _restore_occ_geometry("ox", idx)
+                    if restored:
+                        geom_path = restored
                 if not geom_path.exists():
+                    import os
+                    cwd = os.getcwd()
+                    abs_primary = primary_geom.resolve() if primary_geom else None
+                    abs_fallback = fallback_geom.resolve() if fallback_geom else None
+                    logger.error(
+                        "[occupier] Geometry not found! CWD=%s, primary=%s (abs=%s, exists=%s), fallback=%s (abs=%s, exists=%s)",
+                        cwd, primary_geom, abs_primary, primary_geom.exists() if primary_geom else False,
+                        fallback_geom, abs_fallback, fallback_geom.exists() if fallback_geom else False
+                    )
                     raise FileNotFoundError(
                         f"Geometry for oxidation step {idx} not found "
                         f"(checked {primary_geom} and {fallback_geom})"
@@ -863,7 +880,7 @@ def build_occupier_jobs(
                 _update_pal_block(str(inp_path), cores)
 
                 # Add %moinp block to reuse OCCUPIER wavefunction
-                gbw_ox = Path(f"input_ox_step_{idx}_OCCUPIER.gbw")
+                gbw_ox = root_dir / f"input_ox_step_{idx}_OCCUPIER.gbw"
                 if not xtb_solvator_enabled and gbw_ox.exists():
                     _add_moinp_block(str(inp_path), str(gbw_ox))
                     logger.info("[occupier_ox%d] Using GBW from OCCUPIER: %s", idx, gbw_ox)
@@ -931,6 +948,10 @@ def build_occupier_jobs(
                                  inp: str, out: str,
                                  charge_value: int,
                                  use_solvator: bool) -> Callable[[int], None]:
+            # Capture the root directory at job creation time (absolute path)
+            import os
+            root_dir = Path(os.getcwd()).resolve()
+
             def _work(cores: int) -> None:
                 dyn_mult = mult
                 dyn_adds = adds
@@ -943,18 +964,31 @@ def build_occupier_jobs(
                 except Exception:  # noqa: BLE001
                     logger.debug("[occupier] Using fallback multiplicity/additions for red_step_%d", idx, exc_info=True)
 
-                # Determine geometry paths at RUNTIME, not at job creation time
+                # Determine geometry paths using absolute paths from root_dir
                 if use_solvator:
-                    primary_geom = Path("initial.xyz") if idx == 1 else Path(f"red_step_{idx - 1}.xyz")
-                    fallback_geom = Path(f"input_red_step_{idx}_OCCUPIER.xyz")
+                    primary_geom = root_dir / ("initial.xyz" if idx == 1 else f"red_step_{idx - 1}.xyz")
+                    fallback_geom = root_dir / f"input_red_step_{idx}_OCCUPIER.xyz"
                 else:
-                    occ_geom = Path(f"input_red_step_{idx}_OCCUPIER.xyz")
-                    run_geom = Path(f"red_step_{idx}.xyz")
+                    occ_geom = root_dir / f"input_red_step_{idx}_OCCUPIER.xyz"
+                    run_geom = root_dir / f"red_step_{idx}.xyz"
                     primary_geom = run_geom if run_geom.exists() else occ_geom
                     fallback_geom = occ_geom
 
                 geom_path = primary_geom if primary_geom.exists() else fallback_geom
+                if not geom_path.exists() and _recalc_enabled():
+                    restored = _restore_occ_geometry("red", idx)
+                    if restored:
+                        geom_path = restored
                 if not geom_path.exists():
+                    import os
+                    cwd = os.getcwd()
+                    abs_primary = primary_geom.resolve() if primary_geom else None
+                    abs_fallback = fallback_geom.resolve() if fallback_geom else None
+                    logger.error(
+                        "[occupier] Geometry not found! CWD=%s, primary=%s (abs=%s, exists=%s), fallback=%s (abs=%s, exists=%s)",
+                        cwd, primary_geom, abs_primary, primary_geom.exists() if primary_geom else False,
+                        fallback_geom, abs_fallback, fallback_geom.exists() if fallback_geom else False
+                    )
                     raise FileNotFoundError(
                         f"Geometry for reduction step {idx} not found "
                         f"(checked {primary_geom} and {fallback_geom})"
@@ -985,7 +1019,7 @@ def build_occupier_jobs(
                 _update_pal_block(str(inp_path), cores)
 
                 # Add %moinp block to reuse OCCUPIER wavefunction
-                gbw_red = Path(f"input_red_step_{idx}_OCCUPIER.gbw")
+                gbw_red = root_dir / f"input_red_step_{idx}_OCCUPIER.gbw"
                 if not xtb_solvator_enabled and gbw_red.exists():
                     _add_moinp_block(str(inp_path), str(gbw_red))
                     logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
@@ -2172,3 +2206,77 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
     )
 
     return combined_jobs
+def _recalc_enabled() -> bool:
+    return str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+
+
+def _restore_occ_geometry(stage: str, idx: int) -> Optional[Path]:
+    """Rebuild OCCUPIER geometry/GBW for the requested stage from OCCUPIER outputs.
+
+    Returns path to the restored fallback geometry (input_*_OCCUPIER.xyz).
+    """
+    stage = stage.lower()
+    folder = Path(f"{stage}_step_{idx}_OCCUPIER")
+    if not folder.is_dir():
+        return None
+
+    dest_dir = folder.parent
+    dest_input_name = f"input_{stage}_step_{idx}_OCCUPIER.xyz"
+    try:
+        _, dest_input_path, preferred_index = copy_preferred_files_with_names(
+            folder_name=str(folder),
+            dest_output_filename=f"occ_{stage}_step_{idx}_preferred.out",
+            dest_input_filename=dest_input_name,
+            dest_dir=str(dest_dir),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[recalc] Failed to reconstruct OCCUPIER geometry for %s_step_%d: %s",
+            stage,
+            idx,
+            exc,
+        )
+        return None
+
+    # Try to copy the corresponding GBW if available (best-effort)
+    try:
+        pref_idx = int(preferred_index) if preferred_index is not None else None
+    except (TypeError, ValueError):
+        pref_idx = None
+
+    if pref_idx:
+        gbw_source_candidates = [
+            folder / ("input.gbw" if pref_idx == 1 else f"input{pref_idx}.gbw"),
+            folder / ("input.gbw_hs" if pref_idx == 1 else f"input{pref_idx}.gbw_hs"),
+            folder / ("input.gbw_bs" if pref_idx == 1 else f"input{pref_idx}.gbw_bs"),
+        ]
+        dest_gbw = dest_dir / f"input_{stage}_step_{idx}_OCCUPIER.gbw"
+        for candidate in gbw_source_candidates:
+            if candidate.exists():
+                try:
+                    shutil.copy(candidate, dest_gbw)
+                except Exception as gbw_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[recalc] Failed to copy GBW %s → %s: %s",
+                        candidate,
+                        dest_gbw,
+                        gbw_exc,
+                    )
+                break
+
+    restored_path = dest_dir / dest_input_name
+    if restored_path.exists():
+        # Also refresh the run-level XYZ (ox_step_n.xyz / red_step_n.xyz) so primary_geom exists
+        run_xyz = dest_dir / f"{stage}_step_{idx}.xyz"
+        try:
+            shutil.copy(restored_path, run_xyz)
+        except Exception as run_exc:  # noqa: BLE001
+            logger.warning(
+                "[recalc] Failed to refresh %s from %s: %s",
+                run_xyz,
+                restored_path,
+                run_exc,
+            )
+        logger.info("[recalc] Restored OCCUPIER geometry for %s_step_%d from %s", stage, idx, folder)
+        return restored_path
+    return None
