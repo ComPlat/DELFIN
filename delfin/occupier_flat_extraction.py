@@ -283,9 +283,9 @@ def _create_occupier_fob_jobs(
             _idx: int = idx,
             _inp_name: str = inp_name,
             _out_name: str = out_name,
-            _multiplicity: int = multiplicity,
-            _bs_token: str = bs_token,
-            _src_idx: int = src_idx,
+            _initial_multiplicity: int = multiplicity,
+            _initial_bs_token: str = bs_token,
+            _initial_src_idx: int = src_idx,
         ) -> Callable[[int], None]:
             def _work(cores: int) -> None:
                 _ensure_start(start_ref, start_lock)
@@ -300,6 +300,62 @@ def _create_occupier_fob_jobs(
                     with results_lock:
                         fspe_results[_idx] = energy
                     return
+
+                # RUNTIME: Re-resolve sequence parameters from current state
+                # This ensures we use the correct multiplicity/BS based on the actual preferred index
+                _multiplicity = _initial_multiplicity
+                _bs_token = _initial_bs_token
+                _src_idx = _initial_src_idx
+
+                try:
+                    # Read current CONTROL to get the latest sequence (which may have been updated after initial setup)
+                    control_path = target_folder / "CONTROL.txt"
+                    if control_path.exists():
+                        from delfin.config import OCCUPIER_parser
+                        from delfin.occupier_sequences import resolve_sequences_for_delta, infer_species_delta
+
+                        runtime_config = OCCUPIER_parser(str(control_path))
+                        runtime_delta = infer_species_delta(target_folder, default=0)
+
+                        # Get the current sequence bundle (which reflects the latest state)
+                        from delfin.utils import calculate_total_electrons_txt
+                        electron_result = calculate_total_electrons_txt(str(control_path))
+                        if electron_result:
+                            neutral_electrons, _ = electron_result
+                            actual_electrons = neutral_electrons - stage_charge
+                            runtime_is_even = (actual_electrons % 2) == 0
+                        else:
+                            # Fallback: assume from stage_charge parity
+                            runtime_is_even = (stage_charge % 2) == 0
+                        runtime_seq_key = "even_seq" if runtime_is_even else "odd_seq"
+
+                        runtime_bundle = resolve_sequences_for_delta(runtime_config, runtime_delta)
+                        runtime_seq = runtime_bundle.get(runtime_seq_key, [])
+
+                        # Find our entry by index
+                        for runtime_entry in runtime_seq:
+                            if int(runtime_entry.get("index", 0)) == _idx:
+                                _multiplicity = runtime_entry.get("m", _initial_multiplicity)
+                                _bs_token = runtime_entry.get("BS", _initial_bs_token)
+                                _src_idx = _resolve_primary_source(
+                                    runtime_entry.get("from", _idx - 1),
+                                    _idx - 1
+                                )
+                                logger.debug(
+                                    "[%s] FoB %d: Runtime parameters from CONTROL: m=%d, BS=%s, from=%s",
+                                    folder_name, _idx, _multiplicity, _bs_token or "(none)", _src_idx
+                                )
+                                break
+                        else:
+                            logger.warning(
+                                "[%s] FoB %d: Index not found in runtime sequence, using initial parameters",
+                                folder_name, _idx
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[%s] FoB %d: Failed to resolve runtime parameters (%s), using initial values",
+                        folder_name, _idx, exc
+                    )
 
                 try:
                     with _cwd_lock:

@@ -5,7 +5,7 @@ import shutil
 import sys
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import OCCUPIER_parser
 from .occupier import run_OCCUPIER
@@ -257,10 +257,35 @@ def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optio
     remove_existing_sequence_blocks(control_txt, force=True)
 
     method_token = str(parent_config.get("OCCUPIER_method", "auto")).strip().lower()
+    seq_bundle: Dict[str, List[Dict[str, Any]]] = {}
     if method_token == "auto":
         seq_bundle = resolve_sequences_for_delta(parent_config, charge_delta)
         if seq_bundle:
             append_sequence_overrides(control_txt, seq_bundle)
+
+    # RUNTIME UPDATE: Re-resolve sequences if state file exists
+    # This handles the case where setup happened before the state was available
+    state_file = parent_dir / ".delfin_occ_auto_state.json"
+    if method_token == "auto" and state_file.exists():
+        try:
+            # Re-resolve with current state
+            updated_bundle = resolve_sequences_for_delta(parent_config, charge_delta)
+            if updated_bundle and updated_bundle != seq_bundle:
+                from delfin.common.logging import get_logger
+                logger = get_logger(__name__)
+                logger.info(
+                    "[%s] State file detected, updating CONTROL with state-aware sequences for delta=%d",
+                    folder_name, charge_delta
+                )
+                remove_existing_sequence_blocks(control_txt, force=True)
+                append_sequence_overrides(control_txt, updated_bundle)
+        except Exception as exc:  # noqa: BLE001
+            from delfin.common.logging import get_logger
+            logger = get_logger(__name__)
+            logger.warning(
+                "[%s] Failed to update CONTROL with state-aware sequences: %s",
+                folder_name, exc
+            )
 
     msg_parts = ["input_file=input.xyz"]
     if charge_delta != 0:

@@ -183,6 +183,26 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
         if auto_seq_bundle and method_token == "auto":
             append_sequence_overrides(target_control, auto_seq_bundle)
 
+        # RUNTIME UPDATE: Re-resolve sequences if state file exists
+        # This handles the case where setup happened before the state was available
+        state_file = original_cwd / ".delfin_occ_auto_state.json"
+        if method_token == "auto" and state_file.exists():
+            try:
+                # Re-resolve with current state
+                updated_bundle = resolve_sequences_for_delta(config, charge_delta)
+                if updated_bundle and updated_bundle != auto_seq_bundle:
+                    logger.info(
+                        "[%s] State file detected, updating CONTROL with state-aware sequences for delta=%d",
+                        folder_name, charge_delta
+                    )
+                    remove_existing_sequence_blocks(target_control, force=True)
+                    append_sequence_overrides(target_control, updated_bundle)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[%s] Failed to update CONTROL with state-aware sequences: %s",
+                    folder_name, exc
+                )
+
         return folder
 
     except Exception as e:
