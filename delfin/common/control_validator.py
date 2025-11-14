@@ -81,7 +81,8 @@ def _as_occupier_method(value: Any) -> str:
         return "manually"
     if text == "auto":
         return "auto"
-    raise ValueError("must be one of: manually, auto")
+    # Default to "auto" for invalid values instead of raising error
+    return "auto"
 
 
 def _as_occupier_tree(value: Any) -> str:
@@ -98,7 +99,8 @@ def _as_occupier_tree(value: Any) -> str:
         return "deep4"
     if text in {"deep5", "dee5"}:
         return "deep5"
-    raise ValueError("must be one of: deep, flat, deep2, deep3, deep4, deep5")
+    # Default to "deep" for invalid values instead of raising error
+    return "deep"
 
 
 def _as_ap_method(value: Any) -> int | None:
