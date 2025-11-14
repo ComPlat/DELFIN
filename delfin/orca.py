@@ -10,6 +10,11 @@ from shutil import which
 import tempfile
 from typing import Dict, Iterable, Optional
 
+try:
+    import psutil
+except ImportError:
+    psutil = None  # type: ignore
+
 from delfin.common.logging import get_logger
 from delfin.common.paths import get_runtime_dir
 from delfin.global_manager import get_global_manager
@@ -247,6 +252,16 @@ def _run_orca_subprocess(
                 logger.error(f"Check {output_log} for error messages")
                 return False
 
+            # BUGFIX: Ensure all MPI child processes are terminated
+            # ORCA sometimes leaves MPI workers running even after main process exits
+            # Give them a short grace period, then force cleanup
+            import time
+            time.sleep(0.5)  # Brief grace period for clean MPI shutdown
+            try:
+                _ensure_process_group_terminated(process, grace_timeout=2.0)
+            except Exception as e:
+                logger.debug(f"Process cleanup after successful ORCA run: {e}")
+
             return True
 
     except subprocess.TimeoutExpired:
@@ -357,6 +372,74 @@ def _monitor_orca_progress(output_file: str, stop_event: threading.Event, input_
         except Exception as e:
             logger.debug(f"Progress monitor error: {e}")
             time.sleep(5)
+
+
+def _ensure_process_group_terminated(process: subprocess.Popen, grace_timeout: float = 2.0) -> None:
+    """Ensure all processes in the process group are terminated, even orphaned children.
+
+    ORCA sometimes leaves MPI worker processes running even after the main process exits.
+    This function checks for such orphans and cleans them up.
+    """
+    try:
+        pgid = os.getpgid(process.pid)
+    except (ProcessLookupError, OSError):
+        # Process group already gone
+        return
+
+    if psutil is None:
+        # psutil not available, use fallback
+        logger.debug("psutil not available, using process group kill fallback")
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+            time.sleep(grace_timeout)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        return
+
+    try:
+        # Find all processes in this process group
+        orphans = []
+        for proc in psutil.process_iter(['pid', 'name', 'status']):
+            try:
+                if os.getpgid(proc.pid) == pgid and proc.pid != process.pid:
+                    orphans.append(proc)
+            except (psutil.NoSuchProcess, ProcessLookupError, OSError):
+                continue
+
+        if not orphans:
+            return  # All clean
+
+        logger.debug(f"Found {len(orphans)} orphaned processes in group {pgid}")
+
+        # Try graceful termination first
+        for proc in orphans:
+            try:
+                proc.terminate()
+            except (psutil.NoSuchProcess, ProcessLookupError):
+                pass
+
+        # Wait for grace period
+        gone, alive = psutil.wait_procs(orphans, timeout=grace_timeout)
+
+        # Force kill any survivors
+        for proc in alive:
+            try:
+                logger.warning(f"Force killing orphaned ORCA process {proc.pid} ({proc.name()})")
+                proc.kill()
+            except (psutil.NoSuchProcess, ProcessLookupError):
+                pass
+
+    except Exception as e:
+        # If psutil fails, fall back to process group kill
+        logger.debug(f"Orphan cleanup via psutil failed: {e}, using fallback")
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+            import time
+            time.sleep(grace_timeout)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
 
 
 def _kill_process_group(process: subprocess.Popen) -> None:
