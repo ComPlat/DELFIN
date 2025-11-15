@@ -67,6 +67,114 @@ class JobDescriptor:
     preferred_cores: Optional[int] = None
 
 
+@dataclass
+class _StageSpec:
+    folder_name: str
+    charge_delta: int
+    source_folder: Optional[str]
+    stage_prefix: str
+    ensure_setup: Callable[[], Path]
+    folder_path: Path
+    stage_charge: int
+    depends_on: Set[str] = field(default_factory=set)
+
+
+class _AutoStageController:
+    """Feeds OCCUPIER FoB jobs to the scheduler stage-by-stage in auto mode."""
+
+    def __init__(
+        self,
+        *,
+        stage_specs: List[_StageSpec],
+        build_stage_fn: Callable[[_StageSpec], tuple[List[WorkflowJob], Optional[str]]],
+        post_job_builder: Callable[[], List[WorkflowJob]],
+        logger_label: str = "occupier_flat",
+    ) -> None:
+        self._specs = {spec.stage_prefix: spec for spec in stage_specs}
+        self._deps = {spec.stage_prefix: set(spec.depends_on) for spec in stage_specs}
+        self._started: Set[str] = set()
+        self._completed: Set[str] = set()
+        self._pending_callbacks: Dict[str, List[str]] = {}
+        self._build_stage = build_stage_fn
+        self._build_post_jobs = post_job_builder
+        self._manager: Optional[_WorkflowManager] = None
+        self._lock = threading.RLock()
+        self._best_by_prefix: Dict[str, Optional[str]] = {}
+        self._best_by_job_id: Dict[str, str] = {}
+        self._post_jobs_enqueued = False
+        self._active = True
+        self._label = logger_label
+
+    def attach(self, manager: _WorkflowManager) -> None:
+        with self._lock:
+            self._manager = manager
+            manager.register_completion_listener(self._handle_completion)
+
+    def bootstrap(self) -> List[WorkflowJob]:
+        with self._lock:
+            return self._start_ready_specs(via_manager=False)
+
+    def _handle_completion(self, job_id: str) -> None:
+        with self._lock:
+            if not self._active:
+                return
+            prefix = self._best_by_job_id.pop(job_id, None)
+            if not prefix:
+                return
+            self._completed.add(prefix)
+            self._start_ready_specs(via_manager=True)
+            if len(self._completed) == len(self._specs):
+                self._enqueue_post_jobs()
+
+    def _start_ready_specs(self, *, via_manager: bool) -> List[WorkflowJob]:
+        ready_jobs: List[WorkflowJob] = []
+        for prefix, spec in self._specs.items():
+            if prefix in self._started:
+                continue
+            deps = self._deps.get(prefix, set())
+            if any(dep not in self._completed for dep in deps):
+                continue
+            jobs, best_id = self._build_stage(spec)
+            self._started.add(prefix)
+            self._best_by_prefix[prefix] = best_id
+            if best_id:
+                self._best_by_job_id[best_id] = prefix
+            else:
+                self._completed.add(prefix)
+
+            if jobs:
+                if via_manager and self._manager is not None:
+                    logger.info(
+                        "[%s] Auto OCCUPIER: queued stage %s",
+                        self._label,
+                        spec.folder_name,
+                    )
+                    for job in jobs:
+                        self._manager.add_job(job)
+                else:
+                    ready_jobs.extend(jobs)
+        if via_manager and not ready_jobs and self._manager and len(self._started) == len(self._specs):
+            self._enqueue_post_jobs()
+        return ready_jobs
+
+    def _enqueue_post_jobs(self) -> None:
+        if self._post_jobs_enqueued:
+            return
+        self._post_jobs_enqueued = True
+        post_jobs = self._build_post_jobs()
+        if post_jobs and self._manager:
+            logger.info(
+                "[%s] Auto OCCUPIER: adding %d post-processing jobs",
+                self._label,
+                len(post_jobs),
+            )
+            for job in post_jobs:
+                self._manager.add_job(job)
+        if self._manager:
+            self._manager.unregister_completion_listener(self._handle_completion)
+        self._active = False
+
+
 def run_occupier_orca_jobs(
     context: OccupierExecutionContext,
     parallel_enabled: bool,
@@ -1433,11 +1541,27 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
 
         return _ensure
 
-    stage_specs: List[tuple[str, int, Optional[str], str]] = [
-        ("initial_OCCUPIER", 0, None, "initial"),
-    ]
+    def _make_spec(folder: str, delta: int, source: Optional[str], prefix: str) -> _StageSpec:
+        ensure_setup = make_setup(folder, delta, source)
+        depends_on: Set[str] = set()
+        if source:
+            source_prefix = source.replace("_OCCUPIER", "").replace("_step_", "_")
+            if source_prefix:
+                depends_on.add(source_prefix)
+        return _StageSpec(
+            folder_name=folder,
+            charge_delta=delta,
+            source_folder=source,
+            stage_prefix=prefix,
+            ensure_setup=ensure_setup,
+            folder_path=original_cwd / folder,
+            stage_charge=base_charge + delta,
+            depends_on=depends_on,
+        )
+
+    stage_specs: List[_StageSpec] = [_make_spec("initial_OCCUPIER", 0, None, "initial")]
     stage_specs.extend(
-        (
+        _make_spec(
             f"red_step_{step}_OCCUPIER",
             -step,
             "initial_OCCUPIER" if step == 1 else f"red_step_{step-1}_OCCUPIER",
@@ -1446,7 +1570,7 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         for step in reduction_steps
     )
     stage_specs.extend(
-        (
+        _make_spec(
             f"ox_step_{step}_OCCUPIER",
             step,
             "initial_OCCUPIER" if step == 1 else f"ox_step_{step-1}_OCCUPIER",
@@ -1483,11 +1607,10 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             cores_max=total_cores,
         )
 
-    for folder_name, charge_delta, source_folder, stage_prefix in stage_specs:
-        ensure_setup = make_setup(folder_name, charge_delta, source_folder)
+    def build_stage(spec: _StageSpec) -> tuple[List[WorkflowJob], Optional[str]]:
         dependencies: Set[str] = set()
-        if source_folder:
-            source_prefix = source_folder.replace("_OCCUPIER", "").replace("_step_", "_")
+        if spec.source_folder:
+            source_prefix = spec.source_folder.replace("_OCCUPIER", "").replace("_step_", "_")
             source_token = stage_completion.get(source_prefix)
             if source_token:
                 dependencies.add(source_token)
@@ -1496,54 +1619,51 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
                     "[occupier_flat] Missing completion token for %s while preparing %s; "
                     "stage dependencies may be incomplete",
                     source_prefix,
-                    stage_prefix,
+                    spec.stage_prefix,
                 )
 
-        folder_path = original_cwd / folder_name
-        stage_charge = base_charge + charge_delta
-        sequence_key, sequence = select_sequence(charge_delta)
+        sequence_key, sequence = select_sequence(spec.charge_delta)
 
         if not sequence:
             logger.warning(
                 "[occupier_flat] No sequence entries for %s – running OCCUPIER sequentially",
-                folder_name,
+                spec.folder_name,
             )
-            fallback_job = make_fallback_job(folder_name, stage_prefix, ensure_setup, dependencies=set(dependencies))
-            jobs.append(fallback_job)
-            stage_completion[stage_prefix] = fallback_job.job_id
-            if stage_prefix == "initial":
+            fallback_job = make_fallback_job(spec.folder_name, spec.stage_prefix, spec.ensure_setup, dependencies=set(dependencies))
+            stage_completion[spec.stage_prefix] = fallback_job.job_id
+            if spec.stage_prefix == "initial":
                 stage_completion["initial"] = fallback_job.job_id
-            continue
+            return [fallback_job], fallback_job.job_id
 
         inner_config = dict(config)
         inner_config['PAL'] = total_cores
 
         inner_jobs, best_job_id = _create_occupier_fob_jobs(
-            folder_name=folder_name,
-            folder_path=folder_path,
-            stage_prefix=stage_prefix,
+            folder_name=spec.folder_name,
+            folder_path=spec.folder_path,
+            stage_prefix=spec.stage_prefix,
             sequence=sequence,
             sequence_label=sequence_key,
             total_cores=total_cores,
             global_config=inner_config,
-            ensure_setup=ensure_setup,
-            source_folder=source_folder,
+            ensure_setup=spec.ensure_setup,
+            source_folder=spec.source_folder,
             metals=metals,
             metal_basisset=metal_basisset,
             main_basisset=main_basisset,
             solvent=solvent,
             occ_results=occ_results,
-            stage_charge=stage_charge,
+            stage_charge=spec.stage_charge,
         )
 
         if dependencies:
             for job in inner_jobs:
                 job.dependencies = set(job.dependencies) | set(dependencies)
 
-        jobs.extend(inner_jobs)
-        stage_completion[stage_prefix] = best_job_id
-        if stage_prefix == "initial":
+        stage_completion[spec.stage_prefix] = best_job_id
+        if spec.stage_prefix == "initial":
             stage_completion["initial"] = best_job_id
+        return inner_jobs, best_job_id
 
     context = OccupierExecutionContext(
         charge=base_charge,
@@ -1554,63 +1674,82 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         config=config,
     )
 
-    post_jobs = build_occupier_jobs(context, planning_only=True, include_auxiliary=True)
+    def build_post_processing_jobs() -> List[WorkflowJob]:
+        post_jobs = build_occupier_jobs(context, planning_only=True, include_auxiliary=True)
 
-    def _map_occ_dependency(dep: str) -> Optional[str]:
-        if dep == "occ_proc_initial":
-            return stage_completion.get("initial")
-        match = re.match(r"occ_proc_(ox|red)_(\d+)", dep)
-        if match:
-            stage_type, step = match.groups()
-            return stage_completion.get(f"{stage_type}_{step}")
-        return dep
+        def _map_occ_dependency(dep: str) -> Optional[str]:
+            if dep == "occ_proc_initial":
+                return stage_completion.get("initial")
+            match = re.match(r"occ_proc_(ox|red)_(\d+)", dep)
+            if match:
+                stage_type, step = match.groups()
+                return stage_completion.get(f"{stage_type}_{step}")
+            return dep
 
-    filtered_post_jobs: List[WorkflowJob] = []
-    for job in post_jobs:
-        remapped: Set[str] = set()
-        skip = False
-        for dep in job.dependencies:
-            if dep.startswith("occ_proc_"):
-                mapped = _map_occ_dependency(dep)
-                if not mapped or mapped.startswith("occ_proc_"):
-                    logger.debug(
-                        "[occupier_flat] Skipping post-processing job %s due to missing dependency %s",
-                        job.job_id,
-                        dep,
-                    )
-                    skip = True
-                    break
-                remapped.add(mapped)
-            else:
-                remapped.add(dep)
-        if skip:
-            continue
-        if job.job_id == "occupier_initial":
-            initial_token = stage_completion.get("initial")
-            if initial_token:
-                remapped.add(initial_token)
-        elif job.job_id.startswith("occupier_ox_"):
-            step_id = job.job_id.split("_")[2]
-            token = stage_completion.get(f"ox_{step_id}")
-            if token:
-                remapped.add(token)
-        elif job.job_id.startswith("occupier_red_"):
-            step_id = job.job_id.split("_")[2]
-            token = stage_completion.get(f"red_{step_id}")
-            if token:
-                remapped.add(token)
-        job.dependencies = remapped
-        filtered_post_jobs.append(job)
+        filtered: List[WorkflowJob] = []
+        for job in post_jobs:
+            remapped: Set[str] = set()
+            skip = False
+            for dep in job.dependencies:
+                if dep.startswith("occ_proc_"):
+                    mapped = _map_occ_dependency(dep)
+                    if not mapped or mapped.startswith("occ_proc_"):
+                        logger.debug(
+                            "[occupier_flat] Skipping post-processing job %s due to missing dependency %s",
+                            job.job_id,
+                            dep,
+                        )
+                        skip = True
+                        break
+                    remapped.add(mapped)
+                else:
+                    remapped.add(dep)
+            if skip:
+                continue
+            if job.job_id == "occupier_initial":
+                initial_token = stage_completion.get("initial")
+                if initial_token:
+                    remapped.add(initial_token)
+            elif job.job_id.startswith("occupier_ox_"):
+                step_id = job.job_id.split("_")[2]
+                token = stage_completion.get(f"ox_{step_id}")
+                if token:
+                    remapped.add(token)
+            elif job.job_id.startswith("occupier_red_"):
+                step_id = job.job_id.split("_")[2]
+                token = stage_completion.get(f"red_{step_id}")
+                if token:
+                    remapped.add(token)
+            job.dependencies = remapped
+            filtered.append(job)
+        return filtered
 
-    if filtered_post_jobs:
-        logger.info(
-            "[occupier_flat] Appending %d post-processing jobs to OCCUPIER plan",
-            len(filtered_post_jobs),
+    sequential_auto = str(config.get("OCCUPIER_method", "manually")).strip().lower() == "auto"
+    if stage_specs and sequential_auto:
+        logger.info("[occupier_flat] Auto OCCUPIER → enabling dependency-driven scheduling")
+        controller = _AutoStageController(
+            stage_specs=stage_specs,
+            build_stage_fn=build_stage,
+            post_job_builder=build_post_processing_jobs,
         )
-        jobs.extend(filtered_post_jobs)
+        initial_jobs = controller.bootstrap()
+        config['_post_attach_callback'] = controller.attach
+        jobs.extend(initial_jobs)
+    else:
+        for spec in stage_specs:
+            stage_jobs, _ = build_stage(spec)
+            jobs.extend(stage_jobs)
+
+        post_jobs = build_post_processing_jobs()
+        if post_jobs:
+            logger.info(
+                "[occupier_flat] Appending %d post-processing jobs to OCCUPIER plan",
+                len(post_jobs),
+            )
+            jobs.extend(post_jobs)
 
     logger.info(
-        "[occupier_flat] Built %d OCCUPIER jobs (FoBs + post-processing) across %d stages (ox=%d, red=%d)",
+        "[occupier_flat] Prepared %d OCCUPIER jobs (FoBs + post-processing) across %d stages (ox=%d, red=%d)",
         len(jobs),
         len(stage_specs),
         len(oxidation_steps),

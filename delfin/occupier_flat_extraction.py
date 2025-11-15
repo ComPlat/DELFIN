@@ -274,6 +274,19 @@ def _create_occupier_fob_jobs(
         raw_from = entry.get("from", idx - 1)
         src_idx = _resolve_primary_source(raw_from, idx - 1)
 
+        # Ensure dependency graph reflects the actual geometry source. In some auto
+        # sequence setups the "from" entry may be missing/None which causes the
+        # dependency parser to skip it even though _resolve_primary_source falls
+        # back to idx-1. That leads to FoBs starting before their parent geometry
+        # exists and ultimately to missing input{N}.xyz files. Guard against this
+        # by enforcing a dependency on the resolved source whenever it refers to
+        # another FoB in the same stage.
+        if (
+            1 < src_idx < idx
+            and src_idx in local_dependencies
+        ):
+            local_dependencies[idx].add(f"{stage_prefix}_fob_{src_idx}")
+
         stem = _stem(idx)
         inp_name = f"{stem}.inp"
         out_name = "output.out" if idx == 1 else f"output{idx}.out"
