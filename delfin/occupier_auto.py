@@ -368,6 +368,14 @@ def _parity_token(parity: str) -> str:
     return "even" if parity.lower().startswith("even") else "odd"
 
 
+def _parity_with_distance(parity: str, distance: int) -> str:
+    """Return parity flipped `distance` times."""
+    token = _parity_token(parity)
+    if distance % 2 == 0:
+        return token
+    return "odd" if token == "even" else "even"
+
+
 def infer_parity_from_m(value: Any, fallback: Optional[str] = None) -> Optional[str]:
     try:
         m_val = int(value)
@@ -393,23 +401,56 @@ def record_auto_preference(parity: str, preferred_index: Optional[int], delta: i
                  preferred_index, parity, delta, root_path)
 
 
-def _preferred_index_for_anchor(anchor: int, parity: str, root: Path) -> Optional[int]:
-    token = _parity_token(parity)
-    state = _load_state(root)
-    anchor_state = state.get(str(anchor))
-    if not isinstance(anchor_state, dict):
+def _preferred_index_from_state(state: Dict[str, Any], delta: int,
+                                parity: Optional[str] = None) -> Optional[int]:
+    entry = state.get(str(delta))
+    if not isinstance(entry, dict):
         return None
-    value = anchor_state.get(token)
-    if value is None:
-        # Fallback: reuse preference from opposite parity to keep BS evolution consistent
-        other_token = "odd" if token == "even" else "even"
-        value = anchor_state.get(other_token)
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except Exception:  # noqa: BLE001
-        return None
+    tokens: List[str]
+    if parity is None:
+        tokens = ["even", "odd"]
+    else:
+        token = _parity_token(parity)
+        other = "odd" if token == "even" else "even"
+        tokens = [token, other]
+    for token in tokens:
+        value = entry.get(token)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def _collect_preference_chain(anchor: int, target: int, parity: str,
+                              state: Dict[str, Any]) -> List[int]:
+    """Collect recorded FoB preferences along the path from anchor to target."""
+    if anchor == target:
+        return []
+    direction = 1 if target > anchor else -1
+    steps = abs(target - anchor)
+    chain: List[int] = []
+    for step in range(steps):
+        delta_value = anchor + direction * step
+        remaining = steps - step
+        parity_token = _parity_with_distance(parity, remaining)
+        pref = _preferred_index_from_state(state, delta_value, parity_token)
+        if pref is None:
+            break
+        chain.append(pref)
+    return chain
+
+
+def _ordered_candidates(source: Dict[int, Any], preferred: Optional[int]) -> List[int]:
+    ordered: List[int] = []
+    if preferred is not None and preferred in source:
+        ordered.append(preferred)
+    for candidate in sorted(source.keys()):
+        if candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
 
 
 def _extract_sequence_from_tree_node(tree_node: Dict[str, Any], preferred_sub_index: int = 1) -> Optional[List[Dict[str, Any]]]:
@@ -436,7 +477,8 @@ def _extract_sequence_from_tree_node(tree_node: Dict[str, Any], preferred_sub_in
     return None
 
 
-def _navigate_recursive_tree(node: Dict[str, Any], remaining_steps: int, direction: int, preferred_sub: int = 1) -> Optional[List[Dict[str, Any]]]:
+def _navigate_recursive_tree(node: Dict[str, Any], remaining_steps: int, direction: int,
+                             preferred_chain: Optional[List[int]] = None) -> Optional[List[Dict[str, Any]]]:
     """Navigate recursive tree structure to find sequence at target depth.
 
     For deep3/deep4, structure is: node['branches'][direction][sub]['branches'][direction][sub]...
@@ -455,17 +497,16 @@ def _navigate_recursive_tree(node: Dict[str, Any], remaining_steps: int, directi
 
     # Get the next level (dict of sub-indices)
     next_level = inner_branches[direction]
+    preferred_sub = None
+    tail: List[int] = []
+    if preferred_chain:
+        preferred_sub = preferred_chain[0]
+        tail = preferred_chain[1:]
 
-    # Try preferred sub-index first
-    if preferred_sub in next_level:
-        return _navigate_recursive_tree(next_level[preferred_sub], remaining_steps - 1, direction, preferred_sub)
-
-    # Fallback: try first available sub-index
-    for sub_idx in sorted(next_level.keys()):
-        result = _navigate_recursive_tree(next_level[sub_idx], remaining_steps - 1, direction, preferred_sub)
+    for sub_idx in _ordered_candidates(next_level, preferred_sub):
+        result = _navigate_recursive_tree(next_level[sub_idx], remaining_steps - 1, direction, tail)
         if result:
             return result
-
     return None
 
 
@@ -485,6 +526,7 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
     normalized_mode = str(tree_mode or "deep").strip().lower()
     settings_source = _TREE_DATASETS.get(normalized_mode, AUTO_SETTINGS)
     root_path = _resolve_root(root)
+    state_cache = _load_state(root_path)
     bundle: Dict[str, List[Dict[str, Any]]] = {}
 
     def _storage_key(seq: List[Dict[str, Any]], fallback_parity: str) -> str:
@@ -523,14 +565,9 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
             if not parity_branches:
                 continue
 
-            pref_index = _preferred_index_for_anchor(anchor, parity, root_path)
-            ordered_indices: list[int] = []
-            if pref_index is not None and pref_index in parity_branches:
-                ordered_indices.append(pref_index)
-            # Append remaining candidates in ascending order for determinism
-            for candidate in sorted(parity_branches.keys()):
-                if candidate not in ordered_indices:
-                    ordered_indices.append(candidate)
+            preference_chain = _collect_preference_chain(anchor, delta, parity, state_cache)
+            preferred_branch = preference_chain[0] if preference_chain else None
+            ordered_indices = _ordered_candidates(parity_branches, preferred_branch)
 
             for branch_index in ordered_indices:
                 if is_recursive_tree:
@@ -540,23 +577,29 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
                     direction = +1 if offset > 0 else -1
                     depth = abs(offset)
 
-                    # Get the first-level node
-                    first_level = parity_branches.get(branch_index, {}).get(direction)
+                    branch_info = parity_branches.get(branch_index, {})
+                    first_level = branch_info.get(direction)
                     if not first_level:
                         continue
 
-                    # Navigate recursively to find the sequence
+                    sub_chain: List[int] = []
+                    if preferred_branch is not None and branch_index == preferred_branch:
+                        sub_chain = preference_chain[1:]
+
                     if depth == 1:
-                        # Direct child
-                        seq = _extract_sequence_from_tree_node(first_level, preferred_sub_index=1)
+                        pref_sub = sub_chain[0] if sub_chain else 1
+                        seq = _extract_sequence_from_tree_node(first_level, preferred_sub_index=pref_sub)
                     else:
-                        # Need to navigate deeper (depth-1 more steps from first sub-node)
-                        # Start from first sub-node
-                        sub_node = first_level.get(1)
-                        if not sub_node:
-                            continue
-                        # remaining_steps = depth - 1 (we already took 1 step to get to first_level)
-                        seq = _navigate_recursive_tree(sub_node, depth - 1, direction, preferred_sub=1)
+                        ordered_first = _ordered_candidates(first_level, sub_chain[0] if sub_chain else None)
+                        seq = None
+                        for sub_idx in ordered_first:
+                            next_node = first_level.get(sub_idx)
+                            if not next_node:
+                                continue
+                            chain_tail = sub_chain[1:] if sub_chain else []
+                            seq = _navigate_recursive_tree(next_node, depth - 1, direction, chain_tail)
+                            if seq:
+                                break
                 else:
                     # Non-recursive trees (flat, deep, deep2)
                     delta_node = parity_branches.get(branch_index, {}).get(offset)
@@ -574,7 +617,7 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
 
                 key = _storage_key(seq, parity)
                 bundle[key] = _copy_sequence(seq)
-                if pref_index is None:
+                if preferred_branch is None:
                     logger.debug(
                         "[occupier_auto] Using fallback branch %s for parity=%s, anchor=%s, offset=%s",
                         branch_index,
