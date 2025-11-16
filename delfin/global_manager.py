@@ -379,7 +379,8 @@ class GlobalJobManager:
         self._terminate_all_processes(reason=reason)
         if self.pool is not None:
             try:
-                self.pool.shutdown()
+                # On interrupt: don't wait for jobs, cancel pending
+                self.pool.shutdown(wait=False, cancel_pending=True)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Error while shutting down core pool after SIGINT: %s", exc)
 

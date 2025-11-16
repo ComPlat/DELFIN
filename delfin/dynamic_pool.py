@@ -79,6 +79,9 @@ class DynamicCorePool:
 
     def submit_job(self, job: PoolJob) -> str:
         """Submit a job to the dynamic pool."""
+        if self._shutdown:
+            logger.warning(f"Pool is shutting down, cannot accept job {job.job_id}")
+            raise RuntimeError("Cannot submit job: pool is shutting down")
         job.retry_count = 0
         job.next_retry_time = time.time()
         priority_value = job.priority.value
@@ -177,6 +180,11 @@ class DynamicCorePool:
     def _start_job(self, job: PoolJob, allocated_cores: int):
         """Start a job with allocated resources."""
         with self._lock:
+            # Check if pool is shutting down
+            if self._shutdown:
+                logger.debug(f"Pool shutting down, cannot start job {job.job_id}")
+                return
+
             # Reserve resources
             self._allocated_cores += allocated_cores
             self._allocated_memory += job.memory_mb
@@ -250,6 +258,8 @@ class DynamicCorePool:
 
     def _try_rebalance_resources(self):
         """Attempt to rebalance resources and start new jobs."""
+        if self._shutdown:
+            return
         self._schedule_pending_jobs()
         # NOTE: Core reallocation is disabled for ORCA jobs because ORCA cannot
         # change core count during execution (it's fixed in the .inp file at start).
@@ -362,20 +372,37 @@ class DynamicCorePool:
                 }
             }
 
-    def shutdown(self):
-        """Shutdown the pool gracefully."""
+    def shutdown(self, wait: bool = True, cancel_pending: bool = False):
+        """Shutdown the pool gracefully.
+
+        Args:
+            wait: If True, wait for running jobs to complete
+            cancel_pending: If True, cancel all pending jobs (not running)
+        """
         logger.info("Shutting down dynamic core pool...")
         self._shutdown = True
+
+        if cancel_pending:
+            # Clear pending queue
+            while not self._job_queue.empty():
+                try:
+                    self._job_queue.get_nowait()
+                except queue.Empty:
+                    break
+            logger.info("Cancelled all pending jobs")
+
         self._signal_state_change()
         self._resource_event.set()
         if self._scheduler_thread.is_alive():
             self._scheduler_thread.join(timeout=2)
-        self._executor.shutdown(wait=True)
+        self._executor.shutdown(wait=wait, cancel_futures=not wait)
         if self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=2)
 
     def _schedule_pending_jobs(self):
         """Start as many queued jobs as resources allow."""
+        if self._shutdown:
+            return
         # Keep trying to pack jobs until we can't start any more
         while True:
             started_any = False
