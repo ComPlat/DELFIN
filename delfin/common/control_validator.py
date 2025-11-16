@@ -99,6 +99,8 @@ def _as_occupier_tree(value: Any) -> str:
         return "deep4"
     if text in {"deep5", "dee5"}:
         return "deep5"
+    if text in {"deep6", "dee6"}:
+        return "deep6"
     # Default to "deep" for invalid values instead of raising error
     return "deep"
 
@@ -152,7 +154,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
     FieldSpec("IMAG_option", _as_imag_option, default=2),
     FieldSpec("OCCUPIER_method", _as_occupier_method, default="manually"),
-    FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep"),
+    FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep6"),
     FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),
 )
 
