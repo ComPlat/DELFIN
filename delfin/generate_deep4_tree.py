@@ -372,10 +372,10 @@ def build_recursive_branches(
     branches = {}
     next_parity = "odd" if current_parity == "even" else "even"
 
-    # Generate test configs for this level
+    # Generate test configs for THIS level based on prev_config
     test_configs = generate_test_configs(prev_config, current_parity)
 
-    # Build a single sequence containing all pure states + BS variants
+    # Build sequence with all test configs for THIS level
     bs_tuples: list[tuple[int, int]] = []
     for candidate in test_configs:
         bs_value = candidate.get("BS") or ""
@@ -385,35 +385,40 @@ def build_recursive_branches(
         if parts not in bs_tuples:
             bs_tuples.append(parts)
 
-    sequence_template = generate_baseline_seq(current_parity, bs_tuples if bs_tuples else None)
+    # This is the sequence that will be tested at THIS level
+    current_level_sequence = generate_baseline_seq(current_parity, bs_tuples if bs_tuples else None)
 
+    # Build index lookup for THIS level's sequence
     index_lookup: dict[tuple[int, str], int] = {}
-    for entry in sequence_template:
+    for entry in current_level_sequence:
         key = (entry["m"], entry.get("BS", ""))
-        # Record the first occurrence; duplicates (pure states) won't appear
         index_lookup.setdefault(key, entry["index"])
 
     # For each direction (-1, +1)
     for direction in [-1, 1]:
         dir_branches = {}
 
-        # For each test config, create a sub-branch keyed by its sequence index
+        # For each test config at THIS level, build its deeper branches
         for config in test_configs:
             key = (config["m"], config.get("BS", ""))
             sub_idx = index_lookup.get(key)
             if sub_idx is None:
                 continue
 
-            # Recursively build deeper branches
+            # Recursively build deeper branches for THIS specific config
+            # This config becomes the prev_config for the next level
             deeper_branches = build_recursive_branches(
                 depth + 1,
                 max_depth,
                 next_parity,
-                config
+                config  # This config determines what's tested at the next level
             )
 
+            # Store this sub-branch with:
+            # - seq: What's tested at THIS level (same for all sub-branches here)
+            # - branches: What happens at deeper levels (different for each sub)
             dir_branches[sub_idx] = {
-                "seq": deepcopy(sequence_template),
+                "seq": deepcopy(current_level_sequence),
                 "branches": deeper_branches
             }
 
