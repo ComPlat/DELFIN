@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from delfin.common.logging import get_logger
 
-from .occupier_auto import resolve_auto_sequence_bundle
+from .occupier_auto import resolve_auto_sequence_bundle, _parity_token
 
 _DELTA_MARKER = ".delfin_occ_delta"
 _FOLDER_PATTERN = re.compile(r"(ox|red)(?:_step)?_(\d+)", re.IGNORECASE)
@@ -69,6 +69,9 @@ def _ensure_sequence_cache(config: Dict[str, Any]) -> Dict[int, Dict[str, List[D
 
 
 def _resolve_manual_sequences(config: Dict[str, Any], delta: int) -> Dict[str, List[Dict[str, Any]]]:
+    method_token = str(config.get("OCCUPIER_method", "manually") or "manually").strip().lower()
+    if method_token == "auto":
+        return {}
     cache = _ensure_sequence_cache(config)
     bundle: Dict[str, List[Dict[str, Any]]] = {}
     entry = cache.get(delta)
@@ -90,13 +93,43 @@ def _resolve_manual_sequences(config: Dict[str, Any], delta: int) -> Dict[str, L
     return bundle
 
 
-def resolve_sequences_for_delta(config: Dict[str, Any], delta: int) -> Dict[str, List[Dict[str, Any]]]:
+def _infer_parity_hint(config: Dict[str, Any], delta: int) -> Optional[str]:
+    neutral = config.get("_neutral_electrons")
+    try:
+        base_charge = _coerce_int(config.get("charge"), fallback=0)
+    except Exception:
+        base_charge = 0
+    if neutral is not None:
+        try:
+            electrons = int(neutral) - (base_charge + delta)
+            return "even" if electrons % 2 == 0 else "odd"
+        except Exception:
+            pass
+    mult_guess = config.get("_multiplicity_guess")
+    if mult_guess is not None:
+        try:
+            guess = int(mult_guess)
+            base_even = (guess % 2 == 1)
+            actual_even = base_even if (delta % 2 == 0) else not base_even
+            return "even" if actual_even else "odd"
+        except Exception:
+            return None
+    return None
+
+
+def resolve_sequences_for_delta(config: Dict[str, Any], delta: int,
+                                parity_hint: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
     """Return copies of even/odd sequences for a specific charge delta."""
     manual_bundle = _resolve_manual_sequences(config, delta)
+    parity_target = parity_hint or _infer_parity_hint(config, delta)
     method = str(config.get("OCCUPIER_method", "manually") or "manually").strip().lower()
     if method == "auto":
         tree_mode = str(config.get("OCCUPIER_tree", "deep") or "deep").strip().lower()
-        auto_bundle = resolve_auto_sequence_bundle(delta, tree_mode=tree_mode)
+        auto_bundle = resolve_auto_sequence_bundle(
+            delta,
+            tree_mode=tree_mode,
+            parity_hint=parity_target or parity_hint,
+        )
         if auto_bundle:
             missing_even = "even_seq" not in auto_bundle
             missing_odd = "odd_seq" not in auto_bundle
@@ -104,14 +137,23 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int) -> Dict[str,
                 auto_bundle["even_seq"] = manual_bundle["even_seq"]
             if missing_odd and "odd_seq" in manual_bundle:
                 auto_bundle["odd_seq"] = manual_bundle["odd_seq"]
-            return auto_bundle
+            bundle = auto_bundle
+        else:
+            bundle = manual_bundle
 
-        logger.debug(
-            "[occupier_sequences] No auto sequence rule for delta=%s; falling back to CONTROL definitions.",
-            delta,
-        )
+        # For AUTO mode, always return both sequences (DELFIN chooses at runtime)
+        return bundle
+    else:
+        bundle = manual_bundle
 
-    return manual_bundle
+    # For manual mode, filter to single parity if hint provided
+    if parity_target:
+        key = f"{_parity_token(parity_target)}_seq"
+        seq = bundle.get(key)
+        if seq:
+            return {key: seq}
+
+    return bundle
 
 
 def parse_species_delta(value: Any) -> int:
@@ -277,7 +319,13 @@ def _strip_infos_and_esd_sections(text: str) -> str:
     return text
 
 
-def remove_existing_sequence_blocks(control_path: Path, force: bool = False, *, persist: bool = True) -> str:
+def remove_existing_sequence_blocks(
+    control_path: Path,
+    force: bool = False,
+    *,
+    persist: bool = True,
+    preserve_auto_sequences: bool = False,
+) -> str:
     """Remove OCCUPIER sequence/INFO blocks before writing auto overrides.
 
     Args:
@@ -291,6 +339,9 @@ def remove_existing_sequence_blocks(control_path: Path, force: bool = False, *, 
         return ""
 
     updated = original
+
+    if preserve_auto_sequences:
+        return original
     is_auto = "OCCUPIER_method=auto" in original
 
     if force:

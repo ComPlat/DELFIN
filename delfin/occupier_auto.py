@@ -13,6 +13,7 @@ from delfin.deep2_auto_tree import DEEP2_AUTO_SETTINGS
 from delfin.deep3_auto_tree import DEEP3_AUTO_SETTINGS
 from delfin.deep4_auto_tree import DEEP4_AUTO_SETTINGS
 from delfin.deep5_auto_tree import DEEP5_AUTO_SETTINGS
+from delfin.deep6_auto_tree import DEEP6_AUTO_SETTINGS
 
 logger = get_logger(__name__)
 
@@ -517,17 +518,23 @@ _TREE_DATASETS = {
     "deep3": DEEP3_AUTO_SETTINGS,
     "deep4": DEEP4_AUTO_SETTINGS,
     "deep5": DEEP5_AUTO_SETTINGS,
+    "deep6": DEEP6_AUTO_SETTINGS,
 }
 
 
 def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
-                                 tree_mode: str = "deep") -> Dict[str, List[Dict[str, Any]]]:
+                                 tree_mode: str = "deep",
+                                 parity_hint: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
     """Return auto-managed sequences for the requested delta (if available)."""
     normalized_mode = str(tree_mode or "deep").strip().lower()
     settings_source = _TREE_DATASETS.get(normalized_mode, AUTO_SETTINGS)
     root_path = _resolve_root(root)
     state_cache = _load_state(root_path)
     bundle: Dict[str, List[Dict[str, Any]]] = {}
+    requested_parities: tuple[str, ...]
+    # For AUTO trees, always provide both parities (ORCA chooses at runtime)
+    # parity_hint is only used for manual/legacy modes
+    requested_parities = ("even", "odd")
 
     def _storage_key(seq: List[Dict[str, Any]], fallback_parity: str) -> str:
         m_candidate = None
@@ -545,13 +552,19 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
     # Check if this is a recursive tree (deep3/deep4/deep5)
     is_recursive_tree = normalized_mode in {"deep3", "deep4", "deep5"}
 
+    oxidation_baseline = None
+    if normalized_mode == "deep6":
+        base_settings = settings_source.get(0)
+        if base_settings:
+            oxidation_baseline = base_settings.get("baseline", {})
+
     for anchor, settings in settings_source.items():
         offset = delta - anchor
         baseline = settings.get("baseline", {})
         branches = settings.get("branches", {})
 
         if offset == 0:
-            for parity in ("even", "odd"):
+            for parity in requested_parities:
                 seq = baseline.get(parity)
                 if seq:
                     key = _storage_key(seq, parity)
@@ -560,13 +573,25 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
                 return bundle
             continue
 
-        for parity in ("even", "odd"):
+        use_simplified_oxidation = normalized_mode == "deep6" and offset > 0 and oxidation_baseline
+
+        for parity in requested_parities:
             parity_branches = branches.get(parity, {})
             if not parity_branches:
+                if use_simplified_oxidation:
+                    seq = oxidation_baseline.get(parity)
+                    if seq:
+                        key = _storage_key(seq, parity)
+                        bundle[key] = _copy_sequence(seq)
+                        return bundle
                 continue
 
-            preference_chain = _collect_preference_chain(anchor, delta, parity, state_cache)
-            preferred_branch = preference_chain[0] if preference_chain else None
+            if normalized_mode == "deep6":
+                preferred_branch = _preferred_index_from_state(state_cache, anchor, parity)
+                preference_chain: List[int] = [preferred_branch] if preferred_branch else []
+            else:
+                preference_chain = _collect_preference_chain(anchor, delta, parity, state_cache)
+                preferred_branch = preference_chain[0] if preference_chain else None
             ordered_indices = _ordered_candidates(parity_branches, preferred_branch)
 
             for branch_index in ordered_indices:
@@ -600,6 +625,10 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
                             seq = _navigate_recursive_tree(next_node, depth - 1, direction, chain_tail)
                             if seq:
                                 break
+                elif use_simplified_oxidation:
+                    seq = oxidation_baseline.get(parity)
+                    if not seq:
+                        continue
                 else:
                     # Non-recursive trees (flat, deep, deep2)
                     delta_node = parity_branches.get(branch_index, {}).get(offset)
