@@ -38,22 +38,53 @@ def _format_sequence(seq: List[dict], indent: int) -> str:
 
 
 def _negative_sequences(parity: str, baseline_m: int) -> Dict[int, List[dict]]:
-    """Build deterministic BS sequences for negative offsets."""
+    """Build deterministic BS sequences for negative offsets.
+
+    Strategy to avoid BS explosion while showing evolution options:
+    - Level -1: Start with BS(baseline_m - 1, 1)
+    - Level -2: Show all 4 evolutions of the Level -1 BS
+    - Level -3+: Follow only the main evolution path (highest M, then N)
+
+    This gives good BS coverage at -1 and -2 while avoiding explosion at deeper levels.
+    """
     sequences: Dict[int, List[dict]] = {}
-    current_bs: set[Tuple[int, int]] = set()
+
+    # Start with initial BS
     anchor = baseline_m - 1
-    if anchor >= 1:
-        current_bs.add((anchor, 1))
+    if anchor < 1:
+        # No BS possible, only pure states
+        for depth in range(1, NEGATIVE_DEPTH + 1):
+            sequences[-depth] = generate_baseline_seq(parity, None)
+        return sequences
+
+    current_bs = (anchor, 1)  # Single BS to track main evolution path
 
     for depth in range(1, NEGATIVE_DEPTH + 1):
-        bs_entries = sorted(current_bs) if current_bs else None
+        if depth == 1:
+            # Level -1: Just the initial BS
+            bs_entries = [current_bs]
+        elif depth == 2:
+            # Level -2: Show all evolutions of initial BS
+            bs_entries = evolve_bs(current_bs[0], current_bs[1])
+            if not bs_entries:
+                bs_entries = None
+        else:
+            # Level -3+: Follow only main evolution path to avoid explosion
+            evolved = evolve_bs(current_bs[0], current_bs[1])
+            if evolved:
+                # Pick the "best" evolution: highest M, then highest N
+                current_bs = max(evolved, key=lambda bs: (bs[0], bs[1]))
+                bs_entries = [current_bs]
+            else:
+                bs_entries = None
+
         sequences[-depth] = generate_baseline_seq(parity, bs_entries)
 
-        next_bs: set[Tuple[int, int]] = set()
-        for M, N in current_bs:
-            for evolved in evolve_bs(M, N):
-                next_bs.add(evolved)
-        current_bs = next_bs
+        # Update current_bs for next iteration (if we're at level -1)
+        if depth == 1 and evolve_bs(current_bs[0], current_bs[1]):
+            # For level -2, we need to pick one to continue the path
+            evolved = evolve_bs(current_bs[0], current_bs[1])
+            current_bs = max(evolved, key=lambda bs: (bs[0], bs[1]))
 
     return sequences
 
