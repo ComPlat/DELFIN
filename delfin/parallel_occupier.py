@@ -5,9 +5,10 @@ import re
 import time
 import shutil
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.global_manager import get_global_manager
@@ -77,6 +78,14 @@ class _StageSpec:
     folder_path: Path
     stage_charge: int
     depends_on: Set[str] = field(default_factory=set)
+
+
+def _resolve_workspace_root(base: Optional[Path] = None) -> Path:
+    """Return project root even if current path points inside *_OCCUPIER folders."""
+    current = Path(base) if base else Path.cwd()
+    while current.name.endswith("_OCCUPIER"):
+        current = current.parent
+    return current
 
 
 class _AutoStageController:
@@ -409,6 +418,40 @@ def build_occupier_jobs(
     config = context.config
     jobs: List[WorkflowJob] = []
     descriptors: List[JobDescriptor] = []
+    workspace_root = _resolve_workspace_root()
+
+    @contextmanager
+    def _use_workspace() -> Iterator[None]:
+        prev_cwd = os.getcwd()
+        try:
+            os.chdir(workspace_root)
+            yield
+        finally:
+            try:
+                os.chdir(prev_cwd)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[occupier] Failed to restore working directory to %s",
+                    prev_cwd,
+                    exc_info=True,
+                )
+
+    def _wrap_with_workspace(func: Callable[[int], None]) -> Callable[[int], None]:
+        def _runner(cores: int) -> None:
+            prev_cwd = os.getcwd()
+            try:
+                os.chdir(workspace_root)
+                func(cores)
+            finally:
+                try:
+                    os.chdir(prev_cwd)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "[occupier] Failed to restore working directory to %s",
+                        prev_cwd,
+                        exc_info=True,
+                    )
+        return _runner
     occ_results: Dict[str, Dict[str, Any]] = config.setdefault('_occ_results_runtime', {})
 
     total_cores = max(1, _parse_int(config.get('PAL'), fallback=1))
@@ -594,80 +637,80 @@ def build_occupier_jobs(
         def run_initial(cores: int,
                         _mult=multiplicity_0,
                         _adds=additions_0) -> None:
-            logger.info("[occupier] Preparing initial frequency job")
-            mult_val = _mult
-            adds_val = _adds
-            try:
-                dyn_mult, dyn_adds, _ = read_occ("initial_OCCUPIER", "initial", None)
-                if dyn_mult:
-                    mult_val = dyn_mult
-                if isinstance(dyn_adds, str):
-                    adds_val = dyn_adds
-            except Exception:  # noqa: BLE001
-                logger.debug("[occupier] Using fallback multiplicity/additions for initial job", exc_info=True)
+            with _use_workspace():
+                logger.info("[occupier] Preparing initial frequency job")
+                mult_val = _mult
+                adds_val = _adds
+                try:
+                    dyn_mult, dyn_adds, _ = read_occ("initial_OCCUPIER", "initial", None)
+                    if dyn_mult:
+                        mult_val = dyn_mult
+                    if isinstance(dyn_adds, str):
+                        adds_val = dyn_adds
+                except Exception:  # noqa: BLE001
+                    logger.debug("[occupier] Using fallback multiplicity/additions for initial job", exc_info=True)
 
-            geom_source = Path("input_initial_OCCUPIER.xyz")
-            if xtb_solvator_enabled:
-                solv_geom = Path("XTB_SOLVATOR") / "XTB_SOLVATOR.solvator.xyz"
-                if solv_geom.exists():
-                    geom_source = solv_geom
-                    logger.info("[occupier_initial] Using solvator geometry from %s", geom_source)
-                else:
-                    logger.warning(
-                        "[occupier_initial] Expected solvator geometry %s missing; falling back to %s",
-                        solv_geom,
-                        geom_source,
-                    )
+                geom_source: Path = workspace_root / "input_initial_OCCUPIER.xyz"
+                if xtb_solvator_enabled:
+                    solv_geom = workspace_root / "XTB_SOLVATOR" / "XTB_SOLVATOR.solvator.xyz"
+                    if solv_geom.exists():
+                        geom_source = solv_geom
+                        logger.info("[occupier_initial] Using solvator geometry from %s", geom_source)
+                    else:
+                        logger.warning(
+                            "[occupier_initial] Expected solvator geometry %s missing; falling back to %s",
+                            solv_geom,
+                            geom_source,
+                        )
 
-            read_xyz_and_create_input3(
-                str(geom_source),
-                "initial.inp",
-                base_charge,
-                mult_val,
-                solvent,
-                metals,
-                metal_basis,
-                main_basis,
-                config,
-                adds_val,
-            )
-            _update_pal_block("initial.inp", cores)
+                read_xyz_and_create_input3(
+                    str(geom_source),
+                    str(workspace_root / "initial.inp"),
+                    base_charge,
+                    mult_val,
+                    solvent,
+                    metals,
+                    metal_basis,
+                    main_basis,
+                    config,
+                    adds_val,
+                )
+                _update_pal_block(str(workspace_root / "initial.inp"), cores)
 
-            # Add %moinp block to reuse OCCUPIER wavefunction
-            gbw_initial = Path("input_initial_OCCUPIER.gbw")
-            if not xtb_solvator_enabled and gbw_initial.exists():
-                _add_moinp_block("initial.inp", str(gbw_initial))
-                logger.info("[occupier_initial] Using GBW from OCCUPIER: %s", gbw_initial)
-            elif xtb_solvator_enabled:
-                logger.debug("[occupier_initial] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled")
+                # Add %moinp block to reuse OCCUPIER wavefunction
+                gbw_initial = workspace_root / "input_initial_OCCUPIER.gbw"
+                if not xtb_solvator_enabled and gbw_initial.exists():
+                    _add_moinp_block(str(workspace_root / "initial.inp"), str(gbw_initial))
+                    logger.info("[occupier_initial] Using GBW from OCCUPIER: %s", gbw_initial)
+                elif xtb_solvator_enabled:
+                    logger.debug("[occupier_initial] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled")
 
-            if not run_orca("initial.inp", "initial.out"):
-                raise RuntimeError("ORCA terminated abnormally for initial.out")
-            run_IMAG(
-                "initial.out",
-                "initial",
-                base_charge,
-                mult_val,
-                solvent,
-                metals,
-                config,
-                main_basis,
-                metal_basis,
-                adds_val,
-                source_input="initial.inp",
-            )
-            logger.info(
-                "%s %s freq & geometry optimization of the initial system complete!",
-                functional,
-                main_basis,
-            )
-            initial_xyz = Path("initial.xyz")
-            if not initial_xyz.exists():
-                source_xyz = Path(str(geom_source))
-                if source_xyz.exists():
-                    shutil.copy(source_xyz, initial_xyz)
-                else:
-                    logger.warning("initial.xyz missing and no backup geometry found")
+                if not run_orca(str(workspace_root / "initial.inp"), str(workspace_root / "initial.out")):
+                    raise RuntimeError("ORCA terminated abnormally for initial.out")
+                run_IMAG(
+                    str(workspace_root / "initial.out"),
+                    "initial",
+                    base_charge,
+                    mult_val,
+                    solvent,
+                    metals,
+                    config,
+                    main_basis,
+                    metal_basis,
+                    adds_val,
+                    source_input=str(workspace_root / "initial.inp"),
+                )
+                logger.info(
+                    "%s %s freq & geometry optimization of the initial system complete!",
+                    functional,
+                    main_basis,
+                )
+                initial_xyz = workspace_root / "initial.xyz"
+                if not initial_xyz.exists():
+                    if geom_source.exists():
+                        shutil.copy(geom_source, initial_xyz)
+                    else:
+                        logger.warning("initial.xyz missing and no backup geometry found")
 
         register_descriptor(JobDescriptor(
             job_id="occupier_initial",
@@ -1286,7 +1329,7 @@ def build_occupier_jobs(
         jobs.append(
             WorkflowJob(
                 job_id=descriptor.job_id,
-                work=descriptor.work,
+                work=_wrap_with_workspace(descriptor.work),
                 description=descriptor.description,
                 dependencies=dependencies,
                 cores_min=cores_min_v,
