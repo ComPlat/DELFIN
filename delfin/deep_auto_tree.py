@@ -1,13 +1,19 @@
-"""DEEP AUTO tree - adaptive BS evolution with correct rules."""
+"""DEEP AUTO tree - Adaptive BS evolution.
+
+All pure states have from=0
+"""
 from __future__ import annotations
 
-# DEEP AUTO tree: Adaptive BS (Broken Symmetry) evolution
+# DEEP AUTO tree: Adaptive BS evolution
 # Rules:
 #   - Pure m wins → test BS(m-1,1) with m_new = m-1 (only 1 BS)
 #   - BS(M,N) wins → test up to 4 variants: BS(M±1,N), BS(M,N±1)
 #   - Each sub-index has its own sequence based on what won
 #   - Constraint: M ≥ N ≥ 1
 #   - Depth: 3 levels (0 → ±1 → ±2 → ±3)
+# Standard from values:
+#   - Pure states: from = 0 (all)
+#   - BS entries: from = index of pure state with same m
 DEEP_AUTO_SETTINGS = {
     0: {
         "baseline": {
