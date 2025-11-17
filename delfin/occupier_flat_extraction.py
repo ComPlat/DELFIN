@@ -533,6 +533,17 @@ def _create_occupier_fob_jobs(
             duration_start = start_ref.get("value") or time.time()
             duration = max(0.0, time.time() - duration_start)
 
+            # Build out_files mapping for generate_summary_report_OCCUPIER
+            # Maps index -> output filename (output.out, output2.out, output3.out)
+            out_files_map = {}
+            for entry in sequence:
+                idx = int(entry["index"])
+                out_files_map[idx] = "output.out" if idx == 1 else f"output{idx}.out"
+
+            # Create a modified config with out_files
+            report_config = dict(control_config)
+            report_config["out_files"] = out_files_map
+
             try:
                 with _cwd_lock:
                     prev_cwd = os.getcwd()
@@ -543,8 +554,8 @@ def _create_occupier_fob_jobs(
                             fspe_values,
                             is_even,
                             charge,
-                            control_config.get("solvent", ""),
-                            control_config,
+                            report_config.get("solvent", ""),
+                            report_config,
                             main_basis_local,
                             sequence,
                         )
