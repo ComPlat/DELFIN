@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from delfin.common.logging import get_logger
+from delfin.common.control_validator import _as_occupier_tree
 
 from .occupier_auto import resolve_auto_sequence_bundle, _parity_token
 
@@ -124,7 +125,7 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int,
     parity_target = parity_hint or _infer_parity_hint(config, delta)
     method = str(config.get("OCCUPIER_method", "manually") or "manually").strip().lower()
     if method == "auto":
-        tree_mode = str(config.get("OCCUPIER_tree", "deep") or "deep").strip().lower()
+        tree_mode = _as_occupier_tree(config.get("OCCUPIER_tree", "deep"))
         auto_bundle = resolve_auto_sequence_bundle(
             delta,
             tree_mode=tree_mode,
