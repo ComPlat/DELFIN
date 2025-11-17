@@ -108,24 +108,44 @@ def _ensure_start(start_ref: Dict[str, Optional[float]], lock: threading.Lock) -
                 start_ref["value"] = time.time()
 
 
+def _has_preferred_entry(result: Any) -> bool:
+    """Return True when read_occupier_file delivered a valid preferred index."""
+    if not result or not isinstance(result, (list, tuple)):
+        return False
+    if len(result) < 3:
+        return False
+    return result[2] is not None
+
+
 def _update_runtime_cache(
     folder_name: str,
     folder_path: Path,
     config: Dict[str, Any],
     occ_results: Dict[str, Dict[str, Any]],
 ) -> None:
-    try:
-        result = read_occupier_file(
-            str(folder_path),
-            "OCCUPIER.txt",
-            None,
-            None,
-            None,
-            config,
-            verbose=False,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[%s] Failed to read OCCUPIER summary: %s", folder_name, exc)
+    result = None
+    for attempt in range(5):
+        try:
+            result = read_occupier_file(
+                str(folder_path),
+                "OCCUPIER.txt",
+                None,
+                None,
+                None,
+                config,
+                verbose=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[%s] Failed to read OCCUPIER summary: %s", folder_name, exc)
+            return
+
+        if _has_preferred_entry(result):
+            break
+        # OCCUPIER.txt might still be flushing → brief backoff
+        if attempt < 4:
+            time.sleep(0.2 * (attempt + 1))
+    else:
+        logger.warning("[%s] OCCUPIER.txt missing preferred entry after retries; skipping runtime cache update", folder_name)
         return
 
     if not result:
