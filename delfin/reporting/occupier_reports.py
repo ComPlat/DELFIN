@@ -37,16 +37,16 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
          • If quality is comparable, choose the lower-energy solution.
 
     Additional CONTROL switches (optional, meaningful defaults):
-      clean_override_window_h   (float, default 0.003): energy window for pulling in cleaner candidates
+      clean_override_window_h   (float, default 0.004): energy window for pulling in cleaner candidates
                                   when there is only one energy winner.
       clean_quality_improvement (float, default 0.05): minimum quality improvement required for the override.
       clean_quality_good        (float, default 0.05): absolute threshold regarded as "good" quality.
-      clean_bias_window_h       (float, default 0.003): energy proximity used by the clean bias.
+      clean_bias_window_h       (float, default 0.004): energy proximity used by the clean bias.
       quality_bias_window       (float, default 0.05): minimum quality difference for the clean bias to trigger.
 
     Further configurable knobs:
       dev_similarity            (float, default 0.15): similarity threshold when comparing deviations.
-      bs_override_window_h      (float, default 0.002): AF override energy window.
+      bs_override_window_h      (float, default 0.004): AF override energy window.
 
     Existing switches that continue to apply:
       occupier_selection = tolerance | truncation | rounding
@@ -236,17 +236,17 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
     DEV_MATCH_WINDOW = 0.30
 
     # AF override (energy window to pull BS candidates back in when contamination is high)
-    EPS_AF = float(config.get('bs_override_window_h', 0.002))
+    EPS_AF = float(config.get('bs_override_window_h', 0.004))
 
     # Energy-bias (wie bisher)
     E_BIAS_H = float(config.get('energy_bias_window_h', 0.002))
     MIS_BIAS = float(config.get('mismatch_bias_window', 0.05))
 
     # Clean-preference knobs
-    CLEAN_OVERRIDE_H = float(config.get('clean_override_window_h', 0.003))
+    CLEAN_OVERRIDE_H = float(config.get('clean_override_window_h', 0.004))
     CLEAN_Q_IMPROVE  = float(config.get('clean_quality_improvement', 0.05))
     CLEAN_Q_GOOD     = float(config.get('clean_quality_good', 0.05))
-    CLEAN_BIAS_H     = float(config.get('clean_bias_window_h', 0.003))
+    CLEAN_BIAS_H     = float(config.get('clean_bias_window_h', 0.004))
     QUAL_BIAS_WIN    = float(config.get('quality_bias_window', 0.05))
 
     # ----------------------- caches & parsers ----------------------------------

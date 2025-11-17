@@ -42,21 +42,21 @@ class DelfinConfig:
 
     # OCCUPIER selection parameters
     occupier_selection: str = "tolerance"
-    occupier_precision: int = 6
-    occupier_epsilon: float = 1e-6
+    occupier_precision: int = 3
+    occupier_epsilon: float = 5e-4
 
     # Clean preference parameters (new)
-    clean_override_window_h: float = 0.003
+    clean_override_window_h: float = 0.004
     clean_quality_improvement: float = 0.05
     clean_quality_good: float = 0.05
-    clean_bias_window_h: float = 0.003
+    clean_bias_window_h: float = 0.004
     quality_bias_window: float = 0.05
 
     # Energy bias parameters
     energy_bias_window_h: float = 0.002
     mismatch_bias_window: float = 0.05
     dev_similarity: float = 0.15
-    bs_override_window_h: float = 0.002
+    bs_override_window_h: float = 0.004
 
     # Advanced settings
     dev_max: Optional[float] = None

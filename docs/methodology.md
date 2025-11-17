@@ -325,9 +325,9 @@ DELFIN demonstrates competitive or superior accuracy compared to manual DFT calc
 - **Selection method**: `tolerance | truncation | rounding`
 
 ### State Selection Criteria
-- **Clean override window**: `0.003 Hartree` (energy window for clean state preference)
+- **Clean override window**: `0.004 Hartree` (energy window for clean state preference)
 - **Quality improvement threshold**: `0.05 Hartree` (minimum improvement for state ranking)
-- **Bias window**: `0.003 Hartree` (energy bias tolerance)
+- **Bias window**: `0.004 Hartree` (energy bias tolerance)
 - **Spin contamination tolerance**: System-dependent ⟨S²⟩ analysis
 
 ### ORCA Convergence Settings
