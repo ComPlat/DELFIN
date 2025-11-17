@@ -132,7 +132,7 @@ pal_jobs=4
 OCCUPIER-Settings:
 --------------------
 OCCUPIER_method=auto|manually
-OCCUPIER_tree=deep|flat|deep2
+OCCUPIER_tree=deep|flat|deep2|deep3
 frequency_calculation_OCCUPIER=no
 occupier_selection=tolerance|truncation|rounding
 occupier_precision=3

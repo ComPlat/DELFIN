@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from delfin.common.logging import get_logger
 from delfin.deep2_auto_tree import DEEP2_AUTO_SETTINGS
+from delfin.deep3_auto_tree import DEEP3_AUTO_SETTINGS
 from delfin.deep_auto_tree import DEEP_AUTO_SETTINGS
 
 logger = get_logger(__name__)
@@ -510,6 +511,7 @@ def _navigate_recursive_tree(node: Dict[str, Any], remaining_steps: int, directi
 _TREE_DATASETS = {
     "flat": AUTO_SETTINGS_FLAT,
     "deep2": DEEP2_AUTO_SETTINGS,
+    "deep3": DEEP3_AUTO_SETTINGS,
     "deep": DEEP_AUTO_SETTINGS,
 }
 
