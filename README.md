@@ -165,15 +165,10 @@ delfin/
   parser.py         # parser utilities for ORCA output files
   occupier.py       # OCCUPIER workflow (sequence execution + summary)
   occupier_auto.py  # Auto OCCUPIER sequence management and tree navigation
-  deep_auto_tree.py # Deep tree structure (3×3×3 uniform branching)
-  deep2_auto_tree.py # Deep2 tree structure (3×3 from flat, customizable)
-  deep3_auto_tree.py # Deep3 recursive tree (paths: 0→±1→±2→±3)
-  deep4_auto_tree.py # Deep4 adaptive BS-evolution tree (dynamic BS branching to ±2)
-  deep5_auto_tree.py # Deep5 tree: Deep4 logic extended to ±3 depth
-  generate_deep2_tree.py # Generator for deep2 from flat sequences
-  generate_deep3_tree.py # Generator for deep3 recursive structure
-  generate_deep4_tree.py # Generator for adaptive tree data (Deep4 default)
-  generate_deep5_tree.py # Wrapper to emit the ±3 Deep5 dataset
+  deep_auto_tree.py # Deep tree: adaptive BS evolution (reduction: BS(m-1,1) or BS(M±1,N); oxidation: pure only)
+  deep2_auto_tree.py # Deep2 tree: only pure states (no BS), simple 3×3 branching
+  generate_deep2_tree.py # Generator for deep2 (pure states only)
+  generate_deep_tree.py # Generator for deep tree with adaptive BS evolution
   copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
   thread_safe_helpers.py  # thread-safe workflow execution with PAL management
   global_manager.py       # singleton global job manager for resource coordination
@@ -200,13 +195,13 @@ delfin/
 
 * `method = OCCUPIER | classic | manually` (leave empty for ESD-only runs)
 * `OCCUPIER_method = auto | manually` (auto uses adaptive tree-based sequences)
-* `OCCUPIER_tree = flat | deep | deep2 | deep3 | deep4 | deep5` (tree mode for auto OCCUPIER; default: `deep`)
-  - `flat`: Legacy flat sequences
-  - `deep`: 3×3×3 uniform branching
-  - `deep2`: 3×3 tree from flat (customizable)
-  - `deep3`: Recursive 0→±1→±2→±3 paths
-  - `deep4`: Adaptive broken-symmetry evolution (pure → BS expansion/reduction, depth ±2)
-  - `deep5`: Same adaptive logic, extended to a true ±3 depth for additional BS propagation
+* `OCCUPIER_tree = flat | deep2 | deep` (tree mode for auto OCCUPIER; default: `deep`)
+  - `flat`: Legacy flat sequences with BS
+  - `deep2`: Only pure states (no BS), simple testing
+  - `deep`: Adaptive BS evolution (recommended)
+    - Reduction: BS(m-1,1) when pure wins; BS(M±1,N), BS(M,N±1) when BS wins
+    - Oxidation: Only pure states (no BS)
+    - Depth: 3 levels (0 → ±1 → ±2 → ±3)
 * `calc_initial = yes | no`
 * `oxidation_steps = 1,2,3` (string; steps to compute)
 * `reduction_steps = 1,2,3` (string; steps to compute)

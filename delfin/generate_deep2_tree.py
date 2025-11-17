@@ -44,11 +44,14 @@ def generate_deep2_tree():
                     if not flat_sequence:
                         continue
 
-                    # Create 3 sub-branches with identical sequences (same structure as deep tree)
+                    # Create 3 sub-branches with identical sequences (remove BS, only pure states)
+                    # Deep2 = no BS, only pure states (1,3,5 or 2,4,6)
+                    pure_sequence = [dict(item) for item in flat_sequence if item.get("BS", "") == ""]
+
                     deep2_offset = {}
                     for sub_index in [1, 2, 3]:
                         deep2_offset[sub_index] = {
-                            "seq": [dict(item) for item in flat_sequence],
+                            "seq": pure_sequence,
                             "branches": {},
                         }
 

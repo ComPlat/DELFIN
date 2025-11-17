@@ -86,6 +86,7 @@ def _as_occupier_method(value: Any) -> str:
 
 
 def _as_occupier_tree(value: Any) -> str:
+    """Coerce user value into a known tree token (flat, deep2, deep)."""
     text = str(value or "deep").strip().lower()
     if text in {"deep", "tree"}:
         return "deep"
@@ -93,15 +94,10 @@ def _as_occupier_tree(value: Any) -> str:
         return "flat"
     if text == "deep2":
         return "deep2"
-    if text == "deep3":
-        return "deep3"
-    if text in {"deep4", "dee4"}:
-        return "deep4"
-    if text in {"deep5", "dee5"}:
-        return "deep5"
-    if text in {"deep6", "dee6"}:
-        return "deep6"
-    # Default to "deep" for invalid values instead of raising error
+    # Legacy aliases for backwards compatibility - map to "deep"
+    if text in {"deep3", "deep4", "dee4", "deep5", "dee5", "deep6", "dee6"}:
+        return "deep"
+    # Default to "deep" for invalid values
     return "deep"
 
 
@@ -154,7 +150,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
     FieldSpec("IMAG_option", _as_imag_option, default=2),
     FieldSpec("OCCUPIER_method", _as_occupier_method, default="manually"),
-    FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep6"),
+    FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep"),
     FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),
 )
 

@@ -132,7 +132,7 @@ pal_jobs=4
 OCCUPIER-Settings:
 --------------------
 OCCUPIER_method=auto|manually
-OCCUPIER_tree=deep|flat|deep2|deep3|deep4|deep5
+OCCUPIER_tree=deep|flat|deep2
 frequency_calculation_OCCUPIER=no
 occupier_selection=tolerance|truncation|rounding
 occupier_precision=3
@@ -186,12 +186,9 @@ IMAG_option:
   1 -> red/ox OCCUPIER continues immediately (IMAG and OCCUPIER run in parallel)
   2 -> red/ox OCCUPIER waits for IMAG to finish and uses the refined geometry
 OCCUPIER_option:
-# deep   -> 3x3x3 branch auto tree (27 leaves per sign & FoB)
-# flat   -> legacy flat sequences
-# deep2  -> 3x3 branch tree based on flat (customizable)
-# deep3  -> recursive tree structure (paths: 0→±1→±2→±3)
-# deep4  -> adaptive BS evolution (pure m → BS/expanded sequences)
-# deep5  -> deep4 logic extended to ±3 depth (more BS propagation)
+# flat   -> legacy flat sequences with BS
+# deep2  -> only pure states, no BS (simple testing)
+# deep   -> adaptive BS evolution (reduction: BS(m-1,1) or BS(M±1,N); oxidation: pure only)
 -------------------------------------------------
 ESD MODULE (Excited State Dynamics):
 ESD_modul: yes/no - Enable ESD calculations in separate ESD/ directory

@@ -31,9 +31,16 @@ def format_bs(m: int, n: int) -> str:
     return f"{m},{n}"
 
 
-def bs_to_multiplicity(m: int, n: int) -> int:
-    """Calculate multiplicity from BS(M,N): m = ((M-N)/2)*2 + 1"""
-    return ((m - n) // 2) * 2 + 1
+def bs_to_multiplicity(M: int, N: int) -> int:
+    """Calculate multiplicity from BS(M,N).
+
+    Physics:
+    - M α-electrons, N β-electrons
+    - Unpaired electrons: M - N
+    - Spin: S = (M - N) / 2
+    - Multiplicity: m = 2S + 1 = M - N + 1
+    """
+    return M - N + 1
 
 
 def validate_bs(m: int, n: int) -> bool:
