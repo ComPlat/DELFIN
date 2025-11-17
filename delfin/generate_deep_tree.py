@@ -160,109 +160,106 @@ def _generate_baseline_seq(
     return seq
 
 
+def _next_bs_candidates(prev_m: int, prev_bs: str) -> List[Tuple[int, int]]:
+    """Return BS candidates for the next reduction step."""
+    if prev_bs:
+        try:
+            m_val, n_val = [int(part) for part in prev_bs.split(",", 1)]
+        except Exception:
+            return []
+        return [
+            (M, N)
+            for M, N in evolve_bs(m_val, n_val)
+            if M >= 1 and N >= 1 and M >= N
+        ]
+
+    target = prev_m - 1
+    if target >= 1:
+        return [(target, 1)]
+    return []
+
+
+def _generate_reduction_sequence(
+    parity: str,
+    prev_m: int,
+    prev_bs: str,
+    progressive_from: bool,
+) -> List[dict]:
+    """Generate reduction sequence that obeys the adaptive BS rules."""
+    bs_candidates = _next_bs_candidates(prev_m, prev_bs)
+    add_bs = bs_candidates if bs_candidates else None
+    return _generate_baseline_seq(
+        parity,
+        add_bs=add_bs,
+        progressive_from=progressive_from,
+    )
+
+
 def _build_recursive_branches(
     depth: int,
     max_depth: int,
     current_parity: str,
     prev_m: int,
     prev_bs: str,
-    progressive_from: bool = False
+    progressive_from: bool = False,
 ) -> dict:
-    """Build recursive branches with adaptive BS evolution.
-
-    Returns: {direction: {sub_idx: {"seq": [...], "branches": {...}}, ...}, ...}
-    """
+    """Build recursive branches with adaptive BS evolution."""
     if depth >= max_depth:
         return {}
 
     branches = {}
     next_parity = "odd" if current_parity == "even" else "even"
 
-    # Determine what BS configurations to test at THIS level
-    bs_to_test: List[Tuple[int, int]] = []
-
-    if prev_bs == "":
-        # Previous was pure m → test BS(m-1, 1) if valid
-        M = prev_m - 1
-        if M >= 1:
-            bs_to_test = [(M, 1)]
-    else:
-        # Previous was BS(M,N) → test up to 4 evolutions
-        parts = prev_bs.split(",")
-        M_prev = int(parts[0])
-        N_prev = int(parts[1])
-        bs_to_test = evolve_bs(M_prev, N_prev)
-
-    # Generate sequence for THIS level
-    current_level_sequence = _generate_baseline_seq(
+    # Negative direction (reduction): adaptive BS evolution
+    reduction_seq = _generate_reduction_sequence(
         current_parity,
-        bs_to_test if bs_to_test else None,
-        progressive_from=progressive_from
+        prev_m,
+        prev_bs,
+        progressive_from,
     )
+    reduction_branches: dict[int, dict] = {}
+    for entry in reduction_seq:
+        sub_idx = entry["index"]
+        entry_m = entry["m"]
+        entry_bs = entry.get("BS", "")
+        child_branches = _build_recursive_branches(
+            depth + 1,
+            max_depth,
+            next_parity,
+            entry_m,
+            entry_bs,
+            progressive_from=progressive_from,
+        )
+        reduction_branches[sub_idx] = {
+            "seq": copy.deepcopy(reduction_seq),
+            "branches": child_branches,
+        }
 
-    # Build index lookup for THIS level's sequence
-    index_lookup: dict[tuple[int, str], int] = {}
-    for entry in current_level_sequence:
-        key = (entry["m"], entry.get("BS", ""))
-        index_lookup.setdefault(key, entry["index"])
+    # Positive direction (oxidation): pure sequence only
+    oxidation_seq = _generate_baseline_seq(
+        current_parity,
+        add_bs=None,
+        progressive_from=progressive_from,
+    )
+    oxidation_branches: dict[int, dict] = {}
+    for entry in oxidation_seq:
+        sub_idx = entry["index"]
+        entry_m = entry["m"]
+        child_branches = _build_recursive_branches(
+            depth + 1,
+            max_depth,
+            next_parity,
+            entry_m,
+            "",  # oxidation resets to pure
+            progressive_from=progressive_from,
+        )
+        oxidation_branches[sub_idx] = {
+            "seq": copy.deepcopy(oxidation_seq),
+            "branches": child_branches,
+        }
 
-    # For each direction (-1, +1)
-    for direction in [-1, 1]:
-        dir_branches = {}
-
-        # For POSITIVE direction (oxidation): no BS, only pure states
-        if direction == 1:
-            # Generate pure state sequence (no BS)
-            pure_seq = _generate_baseline_seq(
-                current_parity,
-                add_bs=None,
-                progressive_from=progressive_from
-            )
-
-            # Build branches for each pure state
-            for entry in pure_seq:
-                sub_idx = entry["index"]
-                entry_m = entry["m"]
-
-                # Recursively build deeper branches (also pure only)
-                deeper_branches = _build_recursive_branches(
-                    depth + 1,
-                    max_depth,
-                    next_parity,
-                    entry_m,
-                    "",  # Always empty BS for oxidation
-                    progressive_from=progressive_from
-                )
-
-                dir_branches[sub_idx] = {
-                    "seq": copy.deepcopy(pure_seq),
-                    "branches": deeper_branches
-                }
-        else:
-            # NEGATIVE direction (reduction): adaptive BS evolution
-            for entry in current_level_sequence:
-                sub_idx = entry["index"]
-                entry_m = entry["m"]
-                entry_bs = entry.get("BS", "")
-
-                # Recursively build deeper branches for THIS specific config
-                deeper_branches = _build_recursive_branches(
-                    depth + 1,
-                    max_depth,
-                    next_parity,
-                    entry_m,
-                    entry_bs,
-                    progressive_from=progressive_from
-                )
-
-                # Store this sub-branch
-                dir_branches[sub_idx] = {
-                    "seq": copy.deepcopy(current_level_sequence),
-                    "branches": deeper_branches
-                }
-
-        branches[direction] = dir_branches
-
+    branches[-1] = reduction_branches
+    branches[1] = oxidation_branches
     return branches
 
 
