@@ -617,13 +617,16 @@ def collect_gibbs_energies(ctx: PipelineContext) -> Dict[str, Optional[float]]:
 
     energies: Dict[str, Optional[float]] = {}
 
+    # Determine working directory from control file path
+    working_dir = ctx.control_file_path.parent
+
     for key, filename in file_map.items():
-        path = Path(filename)
+        path = working_dir / filename
         if not path.exists():
             energies[key] = None
             continue
 
-        value = find_gibbs_energy(filename)
+        value = find_gibbs_energy(str(path))
         energies[key] = value
         if value is not None:
             logger.info("Free Gibbs Free Energy %s (H): %s", key, value)
@@ -652,6 +655,9 @@ class SummaryResults:
 
 
 def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
+    # Arbeitsverzeichnis: Ordner, in dem die CONTROL-Datei liegt
+    working_dir = ctx.control_file_path.parent
+
     energies = collect_gibbs_energies(ctx)
 
     missing_potential_inputs = {
@@ -666,7 +672,8 @@ def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
 
     for key, (filename, potentials) in missing_potential_inputs.items():
         value = energies.get(key)
-        if value is None and Path(filename).exists():
+        file_path = working_dir / filename
+        if value is None and file_path.exists():
             logger.info(
                 "Skipping potentials %s (Gibbs data unavailable in %s)",
                 ", ".join(potentials),
@@ -676,24 +683,33 @@ def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
     m1_avg, m2_step, m3_mix, use_flags = calculate_redox_potentials(ctx.config, energies, E_ref)
     E_ox, E_ox_2, E_ox_3, E_red, E_red_2, E_red_3 = select_final_potentials(m1_avg, m2_step, m3_mix, use_flags)
 
-    ZPE_S0 = find_ZPE('initial.out')
-    ZPE_T1 = find_ZPE('t1_state_opt.out') if Path('t1_state_opt.out').exists() else None
-    ZPE_S1 = find_ZPE('s1_state_opt.out') if Path('s1_state_opt.out').exists() else None
-    E_0 = find_electronic_energy('initial.out')
-    E_T1 = find_electronic_energy('t1_state_opt.out') if Path('t1_state_opt.out').exists() else None
-    E_S1 = find_electronic_energy('s1_state_opt.out') if Path('s1_state_opt.out').exists() else None
+    # Absolutpfade für alle relevanten Ausgabedateien
+    initial_out = working_dir / 'initial.out'
+    t1_out = working_dir / 't1_state_opt.out'
+    s1_out = working_dir / 's1_state_opt.out'
+
+    ZPE_S0 = find_ZPE(str(initial_out))
+    ZPE_T1 = find_ZPE(str(t1_out)) if t1_out.exists() else None
+    ZPE_S1 = find_ZPE(str(s1_out)) if s1_out.exists() else None
+
+    E_0 = find_electronic_energy(str(initial_out))
+    E_T1 = find_electronic_energy(str(t1_out)) if t1_out.exists() else None
+    E_S1 = find_electronic_energy(str(s1_out)) if s1_out.exists() else None
 
     E_00_t1 = None
     E_00_s1 = None
+
     def _missing_components(components: dict[str, Optional[float]]) -> tuple[list[str], list[str]]:
-        missing = []
-        missing_files = []
+        missing: list[str] = []
+        missing_files: list[str] = []
         for label, value in components.items():
             if value is not None:
                 continue
             if '(' in label and label.endswith(')'):
                 filename = label[label.find('(') + 1:-1]
-                if not Path(filename).exists():
+                file_path = working_dir / filename
+                if not file_path.exists():
+                    # Datei existiert wirklich nicht im Arbeitsverzeichnis
                     missing_files.append(filename)
                     continue
             missing.append(label)
@@ -741,7 +757,7 @@ def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
     esd_summary: Optional[ESDSummary] = None
     esd_enabled, esd_states, esd_iscs, esd_ics = parse_esd_config(ctx.config)
     if esd_enabled:
-        esd_dir = ctx.control_file_path.parent / "ESD"
+        esd_dir = working_dir / "ESD"
         esd_summary = collect_esd_results(esd_dir, esd_states, esd_iscs, esd_ics)
 
     duration = time.time() - ctx.start_time
@@ -758,6 +774,7 @@ def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
         duration=duration,
         esd_summary=esd_summary,
     )
+
 
 
 def interpret_method_alias(raw_method: str) -> Tuple[str, Optional[str]]:
