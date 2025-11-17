@@ -243,9 +243,25 @@ def _create_occupier_fob_jobs(
     )
     recalc_enabled = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
 
+    num_fobs = len(sequence)
+
     cores_min = max(1, min(total_cores, max(2, total_cores // 6)))  # ensure ≥1
     cores_optimal = max(cores_min, min(total_cores, max(4, total_cores // 3)))
-    cores_max = max(cores_optimal, total_cores)
+
+    # cores_max per job should allow parallel execution of ALL FoBs when possible
+    # Strategy: Set cores_max to allow N FoBs to run in parallel, but with flexibility
+    # For 4 FoBs with 64 cores: cores_max ~= 64/3 = 21 (allows 3-4 parallel)
+    # For 3 FoBs with 24 cores: cores_max ~= 24/2 = 12 (allows 2-3 parallel)
+    if num_fobs >= 4:
+        # Allow at least 3 parallel FoBs for better throughput
+        cores_max_per_job = max(cores_optimal, total_cores // max(1, num_fobs - 1))
+    elif num_fobs >= 2:
+        # For 2-3 FoBs, allow at least 2 parallel
+        cores_max_per_job = max(cores_optimal, total_cores // 2)
+    else:
+        cores_max_per_job = total_cores
+
+    cores_max = min(cores_max_per_job, total_cores)
 
     # Asymmetric core allocation for FoB pairs based on multiplicity
     # Higher multiplicities typically take longer, so allocate more cores

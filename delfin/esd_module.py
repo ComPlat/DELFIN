@@ -60,7 +60,7 @@ def parse_esd_config(config: Dict[str, Any]) -> tuple[bool, List[str], List[str]
     else:
         ics = [ic.strip() for ic in str(ics_raw).split(',') if ic.strip()]
 
-    logger.info(f"ESD config: enabled={esd_enabled}, states={states}, ISCs={iscs}, ICs={ics}")
+    # logger.info(f"ESD config: enabled={esd_enabled}, states={states}, ISCs={iscs}, ICs={ics}")
 
     return esd_enabled, states, iscs, ics
 
