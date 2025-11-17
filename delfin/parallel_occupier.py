@@ -961,9 +961,8 @@ def build_occupier_jobs(
                                 inp: str, out: str,
                                 charge_value: int,
                                 use_solvator: bool) -> Callable[[int], None]:
-            # Capture the root directory at job creation time (absolute path)
-            import os
-            root_dir = Path(os.getcwd()).resolve()
+            # Use workspace_root instead of os.getcwd() to avoid race conditions
+            root_dir = Path(workspace_root).resolve()
 
             def _work(cores: int) -> None:
                 # Ensure we're in the root directory for this job
@@ -1119,9 +1118,8 @@ def build_occupier_jobs(
                                  inp: str, out: str,
                                  charge_value: int,
                                  use_solvator: bool) -> Callable[[int], None]:
-            # Capture the root directory at job creation time (absolute path)
-            import os
-            root_dir = Path(os.getcwd()).resolve()
+            # Use workspace_root instead of os.getcwd() to avoid race conditions
+            root_dir = Path(workspace_root).resolve()
 
             def _work(cores: int) -> None:
                 # Ensure we're in the root directory for this job
