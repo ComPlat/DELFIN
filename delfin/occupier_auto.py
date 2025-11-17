@@ -384,18 +384,21 @@ def infer_parity_from_m(value: Any, fallback: Optional[str] = None) -> Optional[
 
 def record_auto_preference(parity: str, preferred_index: Optional[int], delta: int,
                            *, root: Optional[Path] = None) -> None:
-    """Remember which FoB index won for a baseline (anchor) delta."""
+    """Remember which FoB index won for a given delta.
+
+    This stores preferences for all delta values, not just anchors, to enable
+    adaptive tree navigation for deep recursive trees.
+    """
     if preferred_index is None:
         return
-    anchor = AUTO_SETTINGS.get(delta)
-    if not anchor:
-        return
+    # Store preference for ALL delta values, not just anchors
+    # This enables recursive tree navigation to adapt based on previous choices
     root_path = _resolve_root(root)
     state = _load_state(root_path)
     entry = state.setdefault(str(delta), {})
     entry[_parity_token(parity)] = int(preferred_index)
     _save_state(state, root_path)
-    logger.debug("[occupier_auto] Recorded preferred index %s for parity=%s anchor=%s at %s",
+    logger.debug("[occupier_auto] Recorded preferred index %s for parity=%s delta=%s at %s",
                  preferred_index, parity, delta, root_path)
 
 
@@ -580,12 +583,11 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
                         return bundle
                 continue
 
-            if normalized_mode == "deep":
-                preferred_branch = _preferred_index_from_state(state_cache, anchor, parity)
-                preference_chain: List[int] = [preferred_branch] if preferred_branch else []
-            else:
-                preference_chain = _collect_preference_chain(anchor, delta, parity, state_cache)
-                preferred_branch = preference_chain[0] if preference_chain else None
+            # Collect preference chain for ALL tree modes
+            # For recursive trees (deep), this enables adaptive navigation based on
+            # intermediate step preferences, not just the anchor preference
+            preference_chain = _collect_preference_chain(anchor, delta, parity, state_cache)
+            preferred_branch = preference_chain[0] if preference_chain else None
             ordered_indices = _ordered_candidates(parity_branches, preferred_branch)
 
             for branch_index in ordered_indices:
