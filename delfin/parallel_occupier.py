@@ -1024,9 +1024,11 @@ def build_occupier_jobs(
                             geom_path,
                         )
     
+                    # Use absolute path for inp to avoid race conditions with CWD changes
+                    inp_abs = root_dir / inp
                     read_xyz_and_create_input3(
                         str(geom_path),
-                        inp,
+                        str(inp_abs),
                         charge_value,
                         dyn_mult,
                         solvent,
@@ -1036,20 +1038,19 @@ def build_occupier_jobs(
                         config,
                         dyn_adds,
                     )
-                    inp_path = Path(inp)
-                    if not inp_path.exists():
-                        raise RuntimeError(f"Failed to create {inp}")
-                    _update_pal_block(str(inp_path), cores)
-    
+                    if not inp_abs.exists():
+                        raise RuntimeError(f"Failed to create {inp_abs}")
+                    _update_pal_block(str(inp_abs), cores)
+
                     # Add %moinp block to reuse OCCUPIER wavefunction
                     gbw_ox = root_dir / f"input_ox_step_{idx}_OCCUPIER.gbw"
                     if not xtb_solvator_enabled and gbw_ox.exists():
-                        _add_moinp_block(str(inp_path), str(gbw_ox))
+                        _add_moinp_block(str(inp_abs), str(gbw_ox))
                         logger.info("[occupier_ox%d] Using GBW from OCCUPIER: %s", idx, gbw_ox)
                     elif xtb_solvator_enabled and gbw_ox.exists():
                         logger.debug("[occupier_ox%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
-    
-                    if not run_orca(inp, out):
+
+                    if not run_orca(str(inp_abs), out):
                         raise RuntimeError(f"ORCA terminated abnormally for {out}")
                     run_IMAG(
                         out,
@@ -1063,7 +1064,7 @@ def build_occupier_jobs(
                         metal_basis,
                         additions_step,
                         step_name=f"ox_step_{idx}",
-                        source_input=inp,
+                        source_input=str(inp_abs),
                     )
                     logger.info(
                         "%s %s freq & geometry optimization cation (step %d) complete!",
@@ -1181,9 +1182,11 @@ def build_occupier_jobs(
                             geom_path,
                         )
     
+                    # Use absolute path for inp to avoid race conditions with CWD changes
+                    inp_abs = root_dir / inp
                     read_xyz_and_create_input3(
                         str(geom_path),
-                        inp,
+                        str(inp_abs),
                         charge_value,
                         dyn_mult,
                         solvent,
@@ -1193,20 +1196,19 @@ def build_occupier_jobs(
                         config,
                         dyn_adds,
                     )
-                    inp_path = Path(inp)
-                    if not inp_path.exists():
-                        raise RuntimeError(f"Failed to create {inp}")
-                    _update_pal_block(str(inp_path), cores)
-    
+                    if not inp_abs.exists():
+                        raise RuntimeError(f"Failed to create {inp_abs}")
+                    _update_pal_block(str(inp_abs), cores)
+
                     # Add %moinp block to reuse OCCUPIER wavefunction
                     gbw_red = root_dir / f"input_red_step_{idx}_OCCUPIER.gbw"
                     if not xtb_solvator_enabled and gbw_red.exists():
-                        _add_moinp_block(str(inp_path), str(gbw_red))
+                        _add_moinp_block(str(inp_abs), str(gbw_red))
                         logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
                     elif xtb_solvator_enabled and gbw_red.exists():
                         logger.debug("[occupier_red%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
-    
-                    if not run_orca(inp, out):
+
+                    if not run_orca(str(inp_abs), out):
                         raise RuntimeError(f"ORCA terminated abnormally for {out}")
                     run_IMAG(
                         out,
@@ -1220,7 +1222,7 @@ def build_occupier_jobs(
                         metal_basis,
                         additions_step,
                         step_name=f"red_step_{idx}",
-                        source_input=inp,
+                        source_input=str(inp_abs),
                 )
                     logger.info(
                         "%s %s freq & geometry optimization anion (step %d) complete!",
