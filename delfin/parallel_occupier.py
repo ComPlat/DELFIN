@@ -1050,11 +1050,12 @@ def build_occupier_jobs(
                     elif xtb_solvator_enabled and gbw_ox.exists():
                         logger.debug("[occupier_ox%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
 
-                    if not run_orca(str(inp_abs), out):
-                        raise RuntimeError(f"ORCA terminated abnormally for {out}")
+                    out_abs = root_dir / out
+                    if not run_orca(str(inp_abs), str(out_abs)):
+                        raise RuntimeError(f"ORCA terminated abnormally for {out_abs}")
                     run_IMAG(
-                        out,
-                        f"ox_step_{idx}",
+                        str(out_abs),
+                        str(root_dir / f"ox_step_{idx}"),
                         step_charge,
                         multiplicity_step,
                         solvent,
@@ -1208,11 +1209,12 @@ def build_occupier_jobs(
                     elif xtb_solvator_enabled and gbw_red.exists():
                         logger.debug("[occupier_red%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
 
-                    if not run_orca(str(inp_abs), out):
-                        raise RuntimeError(f"ORCA terminated abnormally for {out}")
+                    out_abs = root_dir / out
+                    if not run_orca(str(inp_abs), str(out_abs)):
+                        raise RuntimeError(f"ORCA terminated abnormally for {out_abs}")
                     run_IMAG(
-                        out,
-                        f"red_step_{idx}",
+                        str(out_abs),
+                        str(root_dir / f"red_step_{idx}"),
                         step_charge,
                         multiplicity_step,
                         solvent,
