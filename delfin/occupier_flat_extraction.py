@@ -22,6 +22,7 @@ from delfin.occupier import (
     _stem,
     _parse_dependency_indices,
     _wait_for_geometry_source,
+    _parse_geometry_wait,
 )
 from delfin.utils import (
     calculate_total_electrons_txt,
@@ -279,12 +280,9 @@ def _create_occupier_fob_jobs(
         else None
     )
     recalc_enabled = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
-    try:
-        geometry_wait_timeout = float(global_config.get("occupier_geometry_wait_s", 900))
-    except (TypeError, ValueError):
-        geometry_wait_timeout = 900.0
-    if geometry_wait_timeout <= 0:
-        geometry_wait_timeout = 900.0
+    geometry_wait_timeout = _parse_geometry_wait(
+        global_config.get("occupier_geometry_wait_s"), default=None
+    )
 
     num_fobs = len(sequence)
 
@@ -430,6 +428,9 @@ def _create_occupier_fob_jobs(
                     label=folder_name,
                     fob_idx=_idx,
                     timeout=geometry_wait_timeout,
+                    failure_check=lambda _idx_ref=_src_idx: (
+                        _idx_ref in fspe_results and fspe_results[_idx_ref] is None
+                    ),
                 )
 
                 try:

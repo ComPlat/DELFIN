@@ -3,7 +3,7 @@
 import os, shutil, re, time, ast, math, threading
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from delfin.common.logging import get_logger, add_file_handler
 from delfin.common.paths import resolve_path
@@ -93,13 +93,36 @@ def _parse_dependency_indices(raw_from):
     return deps
 
 
+def _parse_geometry_wait(value: Any, default: Optional[float] = None) -> Optional[float]:
+    """Convert CONTROL option to seconds; <=0 or 'inf' disables timeout."""
+    try:
+        text = str(value).strip().lower()
+    except Exception:
+        text = ""
+
+    if not text:
+        return default
+    if text in {"inf", "+inf", "infinite", "none", "disable", "disabled"}:
+        return None
+
+    try:
+        parsed = float(text)
+    except (TypeError, ValueError):
+        return default
+
+    if parsed <= 0:
+        return None
+    return parsed
+
+
 def _wait_for_geometry_source(
     folder: Path,
     source_idx: int,
     *,
     label: str,
     fob_idx: int,
-    timeout: float = 900.0,
+    timeout: Optional[float] = 900.0,
+    failure_check: Optional[Callable[[], bool]] = None,
     poll_interval: float = 2.0,
 ) -> Path:
     """Block until the source geometry file exists or timeout expires."""
@@ -113,9 +136,13 @@ def _wait_for_geometry_source(
 
     while not candidate.exists():
         elapsed = time.time() - start
-        if elapsed >= timeout:
+        if timeout is not None and elapsed >= timeout:
             raise FileNotFoundError(
                 f"[{label}] FoB {fob_idx}: geometry '{candidate_name}' not available after {int(elapsed)}s"
+            )
+        if failure_check and failure_check():
+            raise FileNotFoundError(
+                f"[{label}] FoB {fob_idx}: source FoB {source_idx} failed and no geometry '{candidate_name}' was produced"
             )
         if elapsed - last_log >= 30.0:
             logger.info(
@@ -989,12 +1016,9 @@ def run_OCCUPIER():
 
         OK = "ORCA TERMINATED NORMALLY"
         recalc = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
-        try:
-            geometry_wait_timeout = float(config.get("occupier_geometry_wait_s", 900))
-        except (TypeError, ValueError):
-            geometry_wait_timeout = 900.0
-        if geometry_wait_timeout <= 0:
-            geometry_wait_timeout = 900.0
+        geometry_wait_timeout = _parse_geometry_wait(
+            config.get("occupier_geometry_wait_s"), default=None
+        )
 
         def _has_ok_marker(path: str) -> bool:
             candidate = resolve_path(path)
@@ -1059,12 +1083,20 @@ def run_OCCUPIER():
 
                 workdir = Path.cwd()
                 label = workdir.name or "occupier_core"
+                def _source_failed() -> bool:
+                    effective_idx = _src_idx
+                    return (
+                        effective_idx in fspe_results
+                        and fspe_results[effective_idx] is None
+                    )
+
                 _wait_for_geometry_source(
                     workdir,
-                    src_idx,
+                    _src_idx,
                     label=label,
                     fob_idx=idx,
                     timeout=geometry_wait_timeout,
+                    failure_check=_source_failed,
                 )
 
                 read_and_modify_file_OCCUPIER(
