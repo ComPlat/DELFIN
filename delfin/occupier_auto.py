@@ -720,7 +720,7 @@ class _CustomTreeBuilder:
         return branches
 
     def build_tree(self, max_depth: int = 3) -> Dict[int, Dict[str, Any]]:
-        if not self.pure_map["even"] or not self.pure_map["odd"]:
+        if not self.pure_map["even"] and not self.pure_map["odd"]:
             return {}
         tree: Dict[int, Dict[str, Any]] = {
             0: {

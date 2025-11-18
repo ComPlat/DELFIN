@@ -75,7 +75,7 @@ def _ensure_sequence_cache(config: Dict[str, Any]) -> Dict[int, Dict[str, List[D
     return cache
 
 
-def _extract_custom_tree_sequences(config: Dict[str, Any]) -> tuple[Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]]]:
+def _extract_custom_tree_sequences(config: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     blocks = config.get("_occupier_sequence_blocks")
     target_block = None
     if isinstance(blocks, list) and blocks:
@@ -90,15 +90,14 @@ def _extract_custom_tree_sequences(config: Dict[str, Any]) -> tuple[Optional[Lis
         if target_block is None:
             target_block = blocks[0]
         if target_block:
-            even_seq = copy.deepcopy(target_block.get("even_seq")) if isinstance(target_block.get("even_seq"), list) else None
-            odd_seq = copy.deepcopy(target_block.get("odd_seq")) if isinstance(target_block.get("odd_seq"), list) else None
-            if even_seq or odd_seq:
-                return even_seq, odd_seq
+            even_seq = copy.deepcopy(target_block.get("even_seq")) if isinstance(target_block.get("even_seq"), list) else []
+            odd_seq = copy.deepcopy(target_block.get("odd_seq")) if isinstance(target_block.get("odd_seq"), list) else []
+            return even_seq, odd_seq
 
     global_even = config.get("even_seq")
     global_odd = config.get("odd_seq")
-    even_seq = copy.deepcopy(global_even) if isinstance(global_even, list) else None
-    odd_seq = copy.deepcopy(global_odd) if isinstance(global_odd, list) else None
+    even_seq = copy.deepcopy(global_even) if isinstance(global_even, list) else []
+    odd_seq = copy.deepcopy(global_odd) if isinstance(global_odd, list) else []
     return even_seq, odd_seq
 
 
@@ -107,7 +106,7 @@ def _get_custom_tree_dataset(config: Dict[str, Any]) -> Optional[Dict[int, Dict[
     if isinstance(cached, dict) and cached:
         return cached
     even_seq, odd_seq = _extract_custom_tree_sequences(config)
-    if not even_seq or not odd_seq:
+    if not even_seq and not odd_seq:
         return None
     dataset = build_custom_auto_tree(even_seq, odd_seq)
     if dataset:
@@ -398,6 +397,14 @@ def remove_existing_sequence_blocks(
         return ""
 
     updated = original
+
+    lower = original.lower()
+    own_mode = "occupier_tree=own" in lower or "occupier_tree=dee4" in lower
+
+    # In own-mode keep sequences in the main CONTROL (force=False) but strip
+    # them from the OCCUPIER copies (force=True) so auto-tree handles them.
+    if own_mode and not force:
+        return original
 
     if preserve_auto_sequences:
         return original
