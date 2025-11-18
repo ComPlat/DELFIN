@@ -249,6 +249,16 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
     CLEAN_BIAS_H     = float(config.get('clean_bias_window_h', 0.004))
     QUAL_BIAS_WIN    = float(config.get('quality_bias_window', 0.05))
 
+    # Additional raw spin-contamination override (prefers smaller ⟨S²⟩ when energies match)
+    SPIN_BIAS_WINDOW = float(config.get('spin_bias_energy_window_h', 0.002))
+    SPIN_BIAS_GAIN   = float(config.get('spin_bias_min_gain', 0.003))
+    SPIN_BIAS_TRIGGER= float(config.get('spin_bias_trigger_dev', 0.05))
+
+    # BrokenSym pair bias (prefer BS(M,1) / BS(M,2) when contamination is ~1 or ~2 and energies match)
+    SPIN_PAIR_WINDOW = float(config.get('spin_pair_bias_window_h', 0.0015))
+    SPIN_PAIR_DEV    = float(config.get('spin_pair_bias_dev_window', 0.20))
+    SPIN_PAIR_GAIN   = float(config.get('spin_pair_bias_min_gain', 0.10))
+
     # ----------------------- caches & parsers ----------------------------------
     dev_cache: dict[int, Optional[float]] = {}
     j3_cache: dict[int, Optional[float]] = {}
@@ -454,6 +464,88 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
         min_fspe_index = pick_i
         min_fspe_value = pick_E
 
+    # ----------------------- raw spin contamination override -------------------
+    if min_fspe_index is not None:
+        base_dev = effective_dev(min_fspe_index)
+        if (base_dev is not None) and (base_dev >= SPIN_BIAS_TRIGGER):
+            base_E = energies_by_idx.get(min_fspe_index, float("inf"))
+            fallback_idx = min_fspe_index
+            fallback_E = base_E
+            best_tuple: Optional[tuple[float, float, int]] = None  # (dev, energy, idx)
+            for idx, energy in valid_all:
+                if idx == min_fspe_index:
+                    continue
+                if abs(energy - base_E) > SPIN_BIAS_WINDOW + 1e-12:
+                    continue
+                cand_dev = effective_dev(idx)
+                if not cand_dev < float("inf"):
+                    continue
+                if (base_dev - cand_dev) < SPIN_BIAS_GAIN:
+                    continue
+                cand_tuple = (cand_dev, energy, idx)
+                if (best_tuple is None) or (cand_tuple < best_tuple):
+                    best_tuple = cand_tuple
+            if best_tuple is not None:
+                best_dev, best_energy, best_idx = best_tuple
+                logger.info(
+                    "OCCUPIER spin-contamination bias: replacing index %s (dev %.4f) with %s (dev %.4f, ΔE %.6f)",
+                    fallback_idx,
+                    base_dev,
+                    best_idx,
+                    best_dev,
+                    best_energy - base_E,
+                )
+                min_fspe_index = best_idx
+                min_fspe_value = best_energy
+
+    # ----------------------- BS(M,k) pair preference override ------------------
+    if min_fspe_index is not None and SPIN_PAIR_WINDOW > 0 and SPIN_PAIR_DEV > 0:
+        base_energy = energies_by_idx.get(min_fspe_index, float("inf"))
+        base_pair = bs_pair_count(min_fspe_index)
+        base_dev = effective_dev(min_fspe_index)
+        base_mismatch = float("inf")
+        if base_pair in (1, 2) and base_dev < float("inf"):
+            base_mismatch = abs(base_dev - base_pair)
+
+        best_tuple: Optional[tuple[float, float, int]] = None
+        for idx, energy in valid_all:
+            bs_count = bs_pair_count(idx)
+            if bs_count not in (1, 2):
+                continue
+            if abs(energy - base_energy) > SPIN_PAIR_WINDOW + 1e-12:
+                continue
+            dev = effective_dev(idx)
+            if not dev < float("inf"):
+                continue
+            mismatch = abs(dev - bs_count)
+            if mismatch > SPIN_PAIR_DEV:
+                continue
+            cand = (mismatch, energy, idx)
+            if best_tuple is None or cand < best_tuple:
+                best_tuple = cand
+
+        if best_tuple is not None:
+            best_mismatch, best_energy, best_idx = best_tuple
+            improvement = base_mismatch - best_mismatch
+            needs_switch = (
+                (base_pair not in (1, 2))
+                or (base_mismatch > SPIN_PAIR_DEV)
+                or (improvement >= SPIN_PAIR_GAIN)
+            )
+            if needs_switch and min_fspe_index != best_idx:
+                logger.info(
+                    "OCCUPIER BS pair bias: switching preferred index %s (pair=%s, dev=%.4f) -> %s (pair=%s, dev=%.4f, ΔE %.6f)",
+                    min_fspe_index,
+                    base_pair,
+                    base_dev if base_dev < float("inf") else float("nan"),
+                    best_idx,
+                    bs_pair_count(best_idx),
+                    effective_dev(best_idx),
+                    best_energy - base_energy,
+                )
+                min_fspe_index = best_idx
+                min_fspe_value = best_energy
+
     if occ_method == "auto" and min_fspe_index is not None:
         try:
             delta_value = infer_species_delta()
@@ -537,6 +629,8 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
             f"(Energy-bias: energy_bias_window_h={E_BIAS_H}, mismatch_bias_window={MIS_BIAS} -> prefer lower E only when qualities are similar)\n"
             f"(Clean-bias: clean_bias_window_h={CLEAN_BIAS_H}, quality_bias_window={QUAL_BIAS_WIN} -> prefer cleaner when energies are close)\n"
             f"(Clean-override: clean_override_window_h={CLEAN_OVERRIDE_H}, clean_quality_improvement={CLEAN_Q_IMPROVE}, clean_quality_good={CLEAN_Q_GOOD})\n"
+            f"(Spin-bias: spin_bias_energy_window_h={SPIN_BIAS_WINDOW}, spin_bias_min_gain={SPIN_BIAS_GAIN}, spin_bias_trigger_dev={SPIN_BIAS_TRIGGER})\n"
+            f"(BS-pair bias: spin_pair_bias_window_h={SPIN_PAIR_WINDOW}, spin_pair_bias_dev_window={SPIN_PAIR_DEV}, spin_pair_bias_min_gain={SPIN_PAIR_GAIN})\n"
             f"(Preferred Index: {min_fspe_index if min_fspe_index is not None else 'N/A'})\n"
             f"(Electron number: {parity})\n"
         )
