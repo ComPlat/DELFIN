@@ -13,7 +13,7 @@ from delfin.common.logging import get_logger
 from delfin.config import OCCUPIER_parser
 from delfin.copy_helpers import read_occupier_file
 from delfin.orca import run_orca
-from delfin.parallel_classic_manually import WorkflowJob, _update_pal_block
+from delfin.parallel_classic_manually import WorkflowJob, _update_pal_block, normalize_parallel_token
 from delfin.process_checker import check_and_warn_competing_processes
 from delfin.reporting import generate_summary_report_OCCUPIER
 from delfin.occupier import (
@@ -21,6 +21,7 @@ from delfin.occupier import (
     _resolve_primary_source,
     _stem,
     _parse_dependency_indices,
+    _wait_for_geometry_source,
 )
 from delfin.utils import (
     calculate_total_electrons_txt,
@@ -86,9 +87,15 @@ def _parse_energy(path: Path, use_gibbs: bool) -> Optional[float]:
     return None
 
 
-def _build_local_dependency_map(sequence: List[Dict[str, Any]], stage_prefix: str) -> Dict[int, Set[str]]:
+def _build_local_dependency_map(
+    sequence: List[Dict[str, Any]],
+    stage_prefix: str,
+    *,
+    force_sequential: bool = False,
+) -> Dict[int, Set[str]]:
     known_indices = {int(entry["index"]) for entry in sequence if "index" in entry}
     dependencies: Dict[int, Set[str]] = {}
+    previous_idx: Optional[int] = None
 
     for entry in sequence:
         idx = int(entry["index"])
@@ -97,7 +104,10 @@ def _build_local_dependency_map(sequence: List[Dict[str, Any]], stage_prefix: st
             for dep in _parse_dependency_indices(entry.get("from", idx - 1))
             if dep in known_indices
         }
+        if force_sequential and previous_idx is not None and idx != previous_idx:
+            deps.add(f"{stage_prefix}_fob_{previous_idx}")
         dependencies[idx] = deps
+        previous_idx = idx
     return dependencies
 
 
@@ -239,7 +249,14 @@ def _create_occupier_fob_jobs(
         len(sequence),
     )
 
-    local_dependencies = _build_local_dependency_map(sequence, stage_prefix)
+    parallel_setting = normalize_parallel_token(global_config.get("parallel_workflows", "auto"))
+    force_sequential = parallel_setting == "disable"
+
+    local_dependencies = _build_local_dependency_map(
+        sequence,
+        stage_prefix,
+        force_sequential=force_sequential,
+    )
 
     if source_folder:
         source_prefix = source_folder.replace("_OCCUPIER", "").replace("_step_", "_")
@@ -262,6 +279,12 @@ def _create_occupier_fob_jobs(
         else None
     )
     recalc_enabled = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+    try:
+        geometry_wait_timeout = float(global_config.get("occupier_geometry_wait_s", 900))
+    except (TypeError, ValueError):
+        geometry_wait_timeout = 900.0
+    if geometry_wait_timeout <= 0:
+        geometry_wait_timeout = 900.0
 
     num_fobs = len(sequence)
 
@@ -391,15 +414,23 @@ def _create_occupier_fob_jobs(
                                 )
                                 break
                         else:
-                            logger.warning(
-                                "[%s] FoB %d: Index not found in runtime sequence, using initial parameters",
-                                folder_name, _idx
-                            )
+                                logger.warning(
+                                    "[%s] FoB %d: Index not found in runtime sequence, using initial parameters",
+                                    folder_name, _idx
+                                )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "[%s] FoB %d: Failed to resolve runtime parameters (%s), using initial values",
                         folder_name, _idx, exc
                     )
+
+                _wait_for_geometry_source(
+                    target_folder,
+                    _src_idx,
+                    label=folder_name,
+                    fob_idx=_idx,
+                    timeout=geometry_wait_timeout,
+                )
 
                 try:
                     with _cwd_lock:

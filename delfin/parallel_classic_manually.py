@@ -252,24 +252,17 @@ class _WorkflowManager:
                     continue
                 break
 
-            ready = [job for job in pending.values() if job.dependencies <= self._completed]
+            finished_tokens = self._completed | set(self._failed) | set(self._skipped)
+            ready = [
+                job for job in pending.values()
+                if job.dependencies <= finished_tokens
+            ]
 
             if not ready:
                 blocked = {
-                    job.job_id: sorted(job.dependencies - self._completed)
+                    job.job_id: sorted(job.dependencies - finished_tokens)
                     for job in pending.values()
                 }
-
-                failed_ids = set(self._failed)
-                skipped_any = False
-                if failed_ids:
-                    for job_id, missing in list(blocked.items()):
-                        if any(dep in failed_ids for dep in missing):
-                            self._mark_skipped(job_id, missing)
-                            pending.pop(job_id, None)
-                            skipped_any = True
-                if skipped_any:
-                    continue
 
                 try:
                     status = self.pool.get_status()
@@ -306,6 +299,9 @@ class _WorkflowManager:
 
             ready.sort(key=self._job_order_key)
 
+            failed_ids = set(self._failed)
+            skipped_ids = set(self._skipped)
+
             try:
                 status = self.pool.get_status()
             except Exception:
@@ -321,6 +317,16 @@ class _WorkflowManager:
             allocations = self._plan_core_allocations(ready, status)
 
             for job in ready:
+                failed_prereqs = sorted(job.dependencies & failed_ids)
+                skipped_prereqs = sorted(job.dependencies & skipped_ids)
+                if failed_prereqs or skipped_prereqs:
+                    logger.warning(
+                        "[%s] Job %s starting although prerequisites failed/skipped: failed=%s, skipped=%s",
+                        self.label,
+                        job.job_id,
+                        failed_prereqs or "none",
+                        skipped_prereqs or "none",
+                    )
                 self._submit(job, allocations.get(job.job_id))
                 pending.pop(job.job_id, None)
 

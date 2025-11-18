@@ -93,6 +93,43 @@ def _parse_dependency_indices(raw_from):
     return deps
 
 
+def _wait_for_geometry_source(
+    folder: Path,
+    source_idx: int,
+    *,
+    label: str,
+    fob_idx: int,
+    timeout: float = 900.0,
+    poll_interval: float = 2.0,
+) -> Path:
+    """Block until the source geometry file exists or timeout expires."""
+    if source_idx <= 1:
+        candidate_name = "input.xyz"
+    else:
+        candidate_name = f"input{source_idx}.xyz"
+    candidate = folder / candidate_name
+    start = time.time()
+    last_log = 0.0
+
+    while not candidate.exists():
+        elapsed = time.time() - start
+        if elapsed >= timeout:
+            raise FileNotFoundError(
+                f"[{label}] FoB {fob_idx}: geometry '{candidate_name}' not available after {int(elapsed)}s"
+            )
+        if elapsed - last_log >= 30.0:
+            logger.info(
+                "[%s] FoB %d waiting for %s (%.0fs elapsed)",
+                label,
+                fob_idx,
+                candidate_name,
+                elapsed,
+            )
+            last_log = elapsed
+        time.sleep(poll_interval)
+    return candidate
+
+
 # Covalent radii cache
 COVALENT_RADII_CACHE: Dict[str, Optional[Dict[str, float]]] = {}
 
@@ -911,13 +948,22 @@ def run_OCCUPIER():
         )
 
         known_indices = {int(entry["index"]) for entry in sequence if "index" in entry}
+        force_sequential = parallel_setting == "disable"
+        previous_idx: Optional[int] = None
         dependencies_map = {
             int(entry["index"]): {
-                f"occ_{dep}" for dep in _parse_dependency_indices(entry.get("from", entry["index"] - 1))
+                f"occ_{dep}"
+                for dep in _parse_dependency_indices(entry.get("from", entry["index"] - 1))
                 if dep in known_indices
             }
             for entry in sequence
         }
+        if force_sequential:
+            for entry in sequence:
+                idx = int(entry["index"])
+                if previous_idx is not None and idx != previous_idx:
+                    dependencies_map[idx].add(f"occ_{previous_idx}")
+                previous_idx = idx
 
         # Always use the global job manager (even in subprocess mode)
         global_mgr = get_global_manager()
@@ -943,6 +989,12 @@ def run_OCCUPIER():
 
         OK = "ORCA TERMINATED NORMALLY"
         recalc = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+        try:
+            geometry_wait_timeout = float(config.get("occupier_geometry_wait_s", 900))
+        except (TypeError, ValueError):
+            geometry_wait_timeout = 900.0
+        if geometry_wait_timeout <= 0:
+            geometry_wait_timeout = 900.0
 
         def _has_ok_marker(path: str) -> bool:
             candidate = resolve_path(path)
@@ -1004,6 +1056,16 @@ def run_OCCUPIER():
                     parts.append("%scf\n" + "\n".join(scf_lines) + "\nend")
 
                 additions = "\n".join(parts)
+
+                workdir = Path.cwd()
+                label = workdir.name or "occupier_core"
+                _wait_for_geometry_source(
+                    workdir,
+                    src_idx,
+                    label=label,
+                    fob_idx=idx,
+                    timeout=geometry_wait_timeout,
+                )
 
                 read_and_modify_file_OCCUPIER(
                     src_idx,
