@@ -422,15 +422,22 @@ def _create_occupier_fob_jobs(
                         folder_name, _idx, exc
                     )
 
+                def _source_failed_closure(idx_ref: int = _src_idx) -> bool:
+                    with results_lock:
+                        return idx_ref in fspe_results and fspe_results[idx_ref] is None
+
+                def _source_completed_closure(idx_ref: int = _src_idx) -> bool:
+                    with results_lock:
+                        return idx_ref in fspe_results
+
                 _wait_for_geometry_source(
                     target_folder,
                     _src_idx,
                     label=folder_name,
                     fob_idx=_idx,
                     timeout=geometry_wait_timeout,
-                    failure_check=lambda _idx_ref=_src_idx: (
-                        _idx_ref in fspe_results and fspe_results[_idx_ref] is None
-                    ),
+                    failure_check=_source_failed_closure,
+                    completion_check=_source_completed_closure,
                 )
 
                 try:

@@ -123,6 +123,7 @@ def _wait_for_geometry_source(
     fob_idx: int,
     timeout: Optional[float] = 900.0,
     failure_check: Optional[Callable[[], bool]] = None,
+    completion_check: Optional[Callable[[], bool]] = None,
     poll_interval: float = 2.0,
 ) -> Path:
     """Block until the source geometry file exists or timeout expires."""
@@ -134,22 +135,38 @@ def _wait_for_geometry_source(
     start = time.time()
     last_log = 0.0
 
-    while not candidate.exists():
+    while True:
+        if completion_check:
+            try:
+                completed = completion_check()
+            except Exception:
+                completed = False
+        else:
+            completed = True
+
+        if candidate.exists() and completed:
+            break
+
         elapsed = time.time() - start
-        if timeout is not None and elapsed >= timeout:
-            raise FileNotFoundError(
-                f"[{label}] FoB {fob_idx}: geometry '{candidate_name}' not available after {int(elapsed)}s"
-            )
-        if failure_check and failure_check():
+        if not candidate.exists():
+            if timeout is not None and elapsed >= timeout:
+                raise FileNotFoundError(
+                    f"[{label}] FoB {fob_idx}: geometry '{candidate_name}' not available after {int(elapsed)}s"
+                )
+        if failure_check and failure_check() and not candidate.exists():
             raise FileNotFoundError(
                 f"[{label}] FoB {fob_idx}: source FoB {source_idx} failed and no geometry '{candidate_name}' was produced"
             )
         if elapsed - last_log >= 30.0:
+            if candidate.exists() and not completed:
+                msg = f"{candidate_name} (upstream ORCA still running)"
+            else:
+                msg = candidate_name
             logger.info(
                 "[%s] FoB %d waiting for %s (%.0fs elapsed)",
                 label,
                 fob_idx,
-                candidate_name,
+                msg,
                 elapsed,
             )
             last_log = elapsed
@@ -1085,10 +1102,16 @@ def run_OCCUPIER():
                 label = workdir.name or "occupier_core"
                 def _source_failed() -> bool:
                     effective_idx = _src_idx
-                    return (
-                        effective_idx in fspe_results
-                        and fspe_results[effective_idx] is None
-                    )
+                    with results_lock:
+                        return (
+                            effective_idx in fspe_results
+                            and fspe_results[effective_idx] is None
+                        )
+
+                def _source_completed() -> bool:
+                    effective_idx = _src_idx
+                    with results_lock:
+                        return effective_idx in fspe_results
 
                 _wait_for_geometry_source(
                     workdir,
@@ -1097,6 +1120,7 @@ def run_OCCUPIER():
                     fob_idx=idx,
                     timeout=geometry_wait_timeout,
                     failure_check=_source_failed,
+                    completion_check=_source_completed,
                 )
 
                 read_and_modify_file_OCCUPIER(
