@@ -9,8 +9,10 @@ def normalize_bang(bang: str) -> str:
     return bang if bang.endswith("\n") else bang + "\n"
 
 
-def collect_output_blocks(config: Dict[str, Any]) -> List[str]:
+def collect_output_blocks(config: Dict[str, Any], *, allow: bool = True) -> List[str]:
     """Build optional %output blocks based on configuration flags."""
+    if not allow:
+        return []
     blocks: List[str] = []
     if str(config.get("print_MOs", "no")).lower() == "yes":
         blocks.append("%output\nprint[p_mos] 1\nprint[p_basis] 2\nend\n")
