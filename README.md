@@ -195,7 +195,7 @@ delfin/
 
 * `method = OCCUPIER | classic | manually` (leave empty for ESD-only runs)
 * `OCCUPIER_method = auto | manually` (auto uses adaptive tree-based sequences)
-* `OCCUPIER_tree = flat | deep2 | deep` (tree mode for auto OCCUPIER; default: `deep`)
+* `OCCUPIER_tree = flat | deep2 | deep3 | deep | own` (auto tree mode; `own` builds a custom adaptive tree from the CONTROL `OCCUPIER_sequence_profiles` block)
   - `flat`: Legacy flat sequences with BS
   - `deep2`: Only pure states (no BS), simple testing
   - `deep`: Adaptive BS evolution (recommended)

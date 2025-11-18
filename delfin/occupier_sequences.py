@@ -11,7 +11,13 @@ from typing import Any, Dict, List, Optional
 from delfin.common.logging import get_logger
 from delfin.common.control_validator import _as_occupier_tree
 
-from .occupier_auto import resolve_auto_sequence_bundle, _parity_token
+from .occupier_auto import (
+    resolve_auto_sequence_bundle,
+    _parity_token,
+    build_custom_auto_tree,
+    persist_custom_tree,
+    _resolve_root,
+)
 
 _DELTA_MARKER = ".delfin_occ_delta"
 _FOLDER_PATTERN = re.compile(r"(ox|red)(?:_step)?_(\d+)", re.IGNORECASE)
@@ -67,6 +73,51 @@ def _ensure_sequence_cache(config: Dict[str, Any]) -> Dict[int, Dict[str, List[D
     cache = _build_sequence_cache(blocks)
     config["_occupier_sequence_cache"] = cache
     return cache
+
+
+def _extract_custom_tree_sequences(config: Dict[str, Any]) -> tuple[Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]]]:
+    blocks = config.get("_occupier_sequence_blocks")
+    target_block = None
+    if isinstance(blocks, list) and blocks:
+        for block in blocks:
+            try:
+                deltas = block.get("deltas") or []
+            except AttributeError:
+                continue
+            if any(_coerce_int(delta) == 0 for delta in deltas):
+                target_block = block
+                break
+        if target_block is None:
+            target_block = blocks[0]
+        if target_block:
+            even_seq = copy.deepcopy(target_block.get("even_seq")) if isinstance(target_block.get("even_seq"), list) else None
+            odd_seq = copy.deepcopy(target_block.get("odd_seq")) if isinstance(target_block.get("odd_seq"), list) else None
+            if even_seq or odd_seq:
+                return even_seq, odd_seq
+
+    global_even = config.get("even_seq")
+    global_odd = config.get("odd_seq")
+    even_seq = copy.deepcopy(global_even) if isinstance(global_even, list) else None
+    odd_seq = copy.deepcopy(global_odd) if isinstance(global_odd, list) else None
+    return even_seq, odd_seq
+
+
+def _get_custom_tree_dataset(config: Dict[str, Any]) -> Optional[Dict[int, Dict[str, Any]]]:
+    cached = config.get("_custom_tree_dataset")
+    if isinstance(cached, dict) and cached:
+        return cached
+    even_seq, odd_seq = _extract_custom_tree_sequences(config)
+    if not even_seq or not odd_seq:
+        return None
+    dataset = build_custom_auto_tree(even_seq, odd_seq)
+    if dataset:
+        config["_custom_tree_dataset"] = dataset
+        try:
+            root_path = _resolve_root()
+        except Exception:
+            root_path = Path.cwd()
+        persist_custom_tree(dataset, root=root_path)
+    return dataset
 
 
 def _resolve_manual_sequences(config: Dict[str, Any], delta: int) -> Dict[str, List[Dict[str, Any]]]:
@@ -126,10 +177,17 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int,
     method = str(config.get("OCCUPIER_method", "manually") or "manually").strip().lower()
     if method == "auto":
         tree_mode = _as_occupier_tree(config.get("OCCUPIER_tree", "deep"))
+        custom_tree = None
+        if tree_mode == "own":
+            custom_tree = _get_custom_tree_dataset(config)
+            if not custom_tree:
+                logger.warning("OCCUPIER_tree=own requested but no custom sequences found; falling back to manual sequences.")
+                return manual_bundle
         auto_bundle = resolve_auto_sequence_bundle(
             delta,
             tree_mode=tree_mode,
             parity_hint=parity_target or parity_hint,
+            custom_dataset=custom_tree,
         )
         if auto_bundle:
             missing_even = "even_seq" not in auto_bundle

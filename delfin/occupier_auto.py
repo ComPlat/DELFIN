@@ -511,6 +511,270 @@ def _navigate_recursive_tree(node: Dict[str, Any], remaining_steps: int, directi
     return None
 
 
+def _sanitize_sequence_entries(seq: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Return a cleaned, index-ordered copy of the provided sequence."""
+    if not isinstance(seq, list):
+        return []
+    sanitized: List[Dict[str, Any]] = []
+    for raw in seq:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            m_val = int(raw.get("m"))
+        except (TypeError, ValueError):
+            continue
+        try:
+            idx_val = int(raw.get("index", len(sanitized) + 1))
+        except (TypeError, ValueError):
+            idx_val = len(sanitized) + 1
+        bs_val = str(raw.get("BS", "") or "").strip()
+        try:
+            from_val = int(raw.get("from", 0))
+        except (TypeError, ValueError):
+            from_val = 0
+        sanitized.append({"index": idx_val, "m": m_val, "BS": bs_val, "from": from_val})
+
+    sanitized.sort(key=lambda entry: entry["index"])
+    for idx, entry in enumerate(sanitized, start=1):
+        entry["index"] = idx
+    return sanitized
+
+
+def _extract_pure_values(seq: List[Dict[str, Any]]) -> List[int]:
+    """Return ordered list of pure multiplicities from a sequence."""
+    values: List[int] = []
+    seen: set[int] = set()
+    for entry in seq:
+        if entry.get("BS"):
+            continue
+        m_val = entry.get("m")
+        if isinstance(m_val, int) and m_val not in seen:
+            values.append(m_val)
+            seen.add(m_val)
+    return values
+
+
+def _extract_bs_pairs(seq: List[Dict[str, Any]]) -> List[Tuple[int, int]]:
+    """Parse BS indices as (M, N) tuples."""
+    pairs: List[Tuple[int, int]] = []
+    seen: set[Tuple[int, int]] = set()
+    for entry in seq:
+        raw = str(entry.get("BS", "") or "").strip()
+        if not raw or "," not in raw:
+            continue
+        try:
+            m_val, n_val = [int(token.strip()) for token in raw.split(",", 1)]
+        except Exception:  # noqa: BLE001
+            continue
+        pair = (m_val, n_val)
+        if pair not in seen:
+            pairs.append(pair)
+            seen.add(pair)
+    return pairs
+
+
+class _CustomTreeBuilder:
+    """Build adaptive tree datasets from user-supplied baseline sequences."""
+
+    def __init__(self, even_seq: Optional[List[Dict[str, Any]]], odd_seq: Optional[List[Dict[str, Any]]]):
+        self.baseline = {
+            "even": _sanitize_sequence_entries(even_seq),
+            "odd": _sanitize_sequence_entries(odd_seq),
+        }
+        self.pure_map = {
+            "even": _extract_pure_values(self.baseline["even"]),
+            "odd": _extract_pure_values(self.baseline["odd"]),
+        }
+        self.bs_map = {
+            "even": _extract_bs_pairs(self.baseline["even"]),
+            "odd": _extract_bs_pairs(self.baseline["odd"]),
+        }
+        self.min_m = {parity: min(values) if values else 1 for parity, values in self.pure_map.items()}
+        self.max_m = {parity: max(values) if values else 1 for parity, values in self.pure_map.items()}
+
+    def _align_m_for_bs(self, M: int, N: int, parity: str) -> int:
+        valid = self.pure_map.get(parity) or [max(N, 1)]
+        candidates = [value for value in valid if value >= N]
+        if not candidates:
+            candidates = list(valid)
+        aligned = min(candidates, key=lambda value: (abs(value - M), value))
+        return aligned if aligned >= N else max(aligned, N)
+
+    def _generate_baseline_seq(self, parity: str, *, include_initial_bs: bool,
+                               add_bs: Optional[List[Tuple[int, int]]] = None) -> List[Dict[str, Any]]:
+        seq: List[Dict[str, Any]] = []
+        pure_values = self.pure_map.get(parity, [])
+        prev_pure_idx = 0
+        for m_val in pure_values:
+            idx = len(seq) + 1
+            seq.append({"index": idx, "m": m_val, "BS": "", "from": prev_pure_idx})
+            prev_pure_idx = idx
+
+        bs_pool: List[Tuple[int, int]] = []
+        if include_initial_bs:
+            bs_pool.extend(self.bs_map.get(parity, []))
+        if add_bs:
+            for pair in add_bs:
+                if pair not in bs_pool:
+                    bs_pool.append(pair)
+
+        for M, N in bs_pool:
+            m_bs = self._align_m_for_bs(M, N, parity)
+            insert_idx = 0
+            for i, entry in enumerate(seq):
+                if entry["m"] <= m_bs:
+                    insert_idx = i + 1
+            seq.insert(insert_idx, {"index": insert_idx + 1, "m": m_bs, "BS": f"{M},{N}", "from": 0})
+
+        pure_index_map: Dict[int, int] = {}
+        prev_pure_idx = 0
+        for idx, entry in enumerate(seq, start=1):
+            entry["index"] = idx
+            if entry["BS"]:
+                continue
+            entry["from"] = prev_pure_idx
+            prev_pure_idx = idx
+            pure_index_map[entry["m"]] = idx
+        for entry in seq:
+            if entry["BS"]:
+                entry["from"] = pure_index_map.get(entry["m"], 0)
+        return seq
+
+    def _evolve_bs(self, parity: str, M: int, N: int) -> List[Tuple[int, int]]:
+        options: List[Tuple[int, int]] = []
+        max_m = self.max_m.get(parity, max(M, N))
+        min_m = self.min_m.get(parity, 1)
+
+        if M + 1 <= max_m:
+            options.append((M + 1, N))
+        if N + 1 <= max_m and N + 1 <= M:
+            options.append((M, N + 1))
+        if M - 1 >= N and M - 1 >= min_m:
+            options.append((M - 1, N))
+        if N - 1 >= 1:
+            options.append((M, N - 1))
+        return options
+
+    def _next_bs_candidates(self, parity: str, prev_m: int, prev_bs: str) -> List[Tuple[int, int]]:
+        if prev_bs:
+            try:
+                m_val, n_val = [int(token) for token in prev_bs.split(",", 1)]
+            except Exception:
+                return []
+            return self._evolve_bs(parity, m_val, n_val)
+
+        target = prev_m - 1
+        if target >= self.min_m.get(parity, 1):
+            return [(target, 1)]
+        return []
+
+    def _generate_reduction_sequence(self, parity: str, prev_m: int, prev_bs: str) -> List[Dict[str, Any]]:
+        add_bs = self._next_bs_candidates(parity, prev_m, prev_bs)
+        return self._generate_baseline_seq(parity, include_initial_bs=True, add_bs=add_bs or None)
+
+    def _generate_oxidation_sequence(self, parity: str) -> List[Dict[str, Any]]:
+        return self._generate_baseline_seq(parity, include_initial_bs=False)
+
+    def _build_recursive_branches(self, depth: int, max_depth: int, current_parity: str,
+                                  prev_m: int, prev_bs: str) -> Dict[int, Dict[str, Any]]:
+        if depth >= max_depth:
+            return {}
+
+        branches: Dict[int, Dict[str, Any]] = {}
+        next_parity = "odd" if current_parity == "even" else "even"
+
+        reduction_seq = self._generate_reduction_sequence(current_parity, prev_m, prev_bs)
+        reduction_branches: Dict[int, Dict[str, Any]] = {}
+        for entry in reduction_seq:
+            entry_m = entry["m"]
+            entry_bs = entry.get("BS", "")
+            child = self._build_recursive_branches(
+                depth + 1,
+                max_depth,
+                next_parity,
+                entry_m,
+                entry_bs,
+            )
+            reduction_branches[entry["index"]] = {
+                "seq": copy.deepcopy(reduction_seq),
+                "branches": child,
+            }
+
+        oxidation_seq = self._generate_oxidation_sequence(current_parity)
+        oxidation_branches: Dict[int, Dict[str, Any]] = {}
+        for entry in oxidation_seq:
+            child = self._build_recursive_branches(
+                depth + 1,
+                max_depth,
+                next_parity,
+                entry["m"],
+                "",
+            )
+            oxidation_branches[entry["index"]] = {
+                "seq": copy.deepcopy(oxidation_seq),
+                "branches": child,
+            }
+
+        branches[-1] = reduction_branches
+        branches[1] = oxidation_branches
+        return branches
+
+    def build_tree(self, max_depth: int = 3) -> Dict[int, Dict[str, Any]]:
+        if not self.pure_map["even"] or not self.pure_map["odd"]:
+            return {}
+        tree: Dict[int, Dict[str, Any]] = {
+            0: {
+                "baseline": {
+                    "even": copy.deepcopy(self.baseline["even"]),
+                    "odd": copy.deepcopy(self.baseline["odd"]),
+                },
+                "branches": {
+                    "even": {},
+                    "odd": {},
+                },
+            }
+        }
+        for parity in ("even", "odd"):
+            baseline_values = self.pure_map.get(parity, [])
+            target_parity = "odd" if parity == "even" else "even"
+            parity_branches: Dict[int, Dict[str, Any]] = {}
+            for fob_idx, m_val in enumerate(baseline_values, start=1):
+                parity_branches[fob_idx] = self._build_recursive_branches(
+                    depth=0,
+                    max_depth=max_depth,
+                    current_parity=target_parity,
+                    prev_m=m_val,
+                    prev_bs="",
+                )
+            tree[0]["branches"][parity] = parity_branches
+        return tree
+
+
+def build_custom_auto_tree(even_seq: Optional[List[Dict[str, Any]]],
+                           odd_seq: Optional[List[Dict[str, Any]]],
+                           max_depth: int = 3) -> Dict[int, Dict[str, Any]]:
+    """Construct an auto tree dataset from user-supplied baseline sequences."""
+    builder = _CustomTreeBuilder(even_seq, odd_seq)
+    return builder.build_tree(max_depth=max_depth)
+
+
+def persist_custom_tree(dataset: Dict[int, Dict[str, Any]], root: Path | None = None,
+                        filename: str = "own_auto_tree.json") -> Optional[Path]:
+    """Write the custom tree dataset to JSON for inspection."""
+    if not dataset:
+        return None
+    target_root = _resolve_root(root)
+    path = target_root / filename
+    try:
+        with path.open("w", encoding="utf-8") as fh:
+            json.dump(dataset, fh, indent=2, sort_keys=True)
+        logger.info("Wrote custom OCCUPIER tree to %s", path)
+        return path
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to write custom OCCUPIER tree %s: %s", path, exc)
+    return None
+
+
 _TREE_DATASETS = {
     "flat": AUTO_SETTINGS_FLAT,
     "deep2": DEEP2_AUTO_SETTINGS,
@@ -521,10 +785,16 @@ _TREE_DATASETS = {
 
 def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
                                  tree_mode: str = "deep",
-                                 parity_hint: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
+                                 parity_hint: Optional[str] = None,
+                                 custom_dataset: Optional[Dict[int, Dict[str, Any]]] = None) -> Dict[str, List[Dict[str, Any]]]:
     """Return auto-managed sequences for the requested delta (if available)."""
     normalized_mode = str(tree_mode or "deep").strip().lower()
-    settings_source = _TREE_DATASETS.get(normalized_mode, AUTO_SETTINGS)
+    if normalized_mode == "own":
+        if not custom_dataset:
+            return {}
+        settings_source = custom_dataset
+    else:
+        settings_source = _TREE_DATASETS.get(normalized_mode, AUTO_SETTINGS)
     root_path = _resolve_root(root)
     state_cache = _load_state(root_path)
     bundle: Dict[str, List[Dict[str, Any]]] = {}
@@ -547,10 +817,10 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
         return copy.deepcopy(seq)
 
     # Check if this is a recursive tree (deep has recursive structure)
-    is_recursive_tree = normalized_mode == "deep"
+    is_recursive_tree = normalized_mode in {"deep", "own"}
 
     oxidation_baseline = None
-    if normalized_mode == "deep":
+    if normalized_mode in {"deep", "own"}:
         base_settings = settings_source.get(0)
         if base_settings:
             oxidation_baseline = base_settings.get("baseline", {})
@@ -570,7 +840,7 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
                 return bundle
             continue
 
-        use_simplified_oxidation = normalized_mode == "deep" and offset > 0 and oxidation_baseline
+        use_simplified_oxidation = normalized_mode in {"deep", "own"} and offset > 0 and oxidation_baseline
 
         for parity in requested_parities:
             parity_branches = branches.get(parity, {})

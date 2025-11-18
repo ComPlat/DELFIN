@@ -96,8 +96,12 @@ def _as_occupier_tree(value: Any) -> str:
         return "deep2"
     if text == "deep3":
         return "deep3"
+    if text in {"deep4", "dee4"}:
+        return "own"
+    if text in {"own", "custom"}:
+        return "own"
     # Legacy aliases for backwards compatibility - map to "deep"
-    if text in {"deep4", "dee4", "deep5", "dee5", "deep6", "dee6"}:
+    if text in {"deep5", "dee5", "deep6", "dee6"}:
         return "deep"
     # Default to "deep" for invalid values
     return "deep"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate DEEP4 tree with adaptive BS evolution and custom baseline."""
+"""Generate OWN tree with adaptive BS evolution and custom baseline."""
 from __future__ import annotations
 
 import copy
@@ -64,7 +64,7 @@ def evolve_bs(M: int, N: int) -> list[tuple[int, int]]:
 
 
 def get_pure_states_for_parity(parity: str) -> list[int]:
-    """Return custom pure state ladder for DEEP4."""
+    """Return custom pure state ladder for OWN generator."""
     return list(CUSTOM_BASE_PURE[parity])
 
 
@@ -261,7 +261,7 @@ def _build_recursive_branches(
 
 
 def generate_deep_tree(max_depth: int = 3, progressive_from: bool = False) -> dict:
-    """Generate DEEP4 tree with adaptive BS evolution.
+    """Generate OWN tree with adaptive BS evolution.
 
     Args:
         max_depth: Maximum depth of the tree (default 3)
@@ -344,13 +344,13 @@ def _write_branches_recursive(f, branches: dict, indent_level: int):
     f.write(f"{ind}}}")
 
 
-def write_deep_tree_file(output_path: str = "delfin/deep4_auto_tree.py", progressive_from: bool = False) -> None:
-    """Write DEEP4 tree to file with nested structure."""
+def write_deep_tree_file(output_path: str = "delfin/own_auto_tree.py", progressive_from: bool = False) -> None:
+    """Write OWN tree to file with nested structure."""
     tree = generate_deep_tree(max_depth=3, progressive_from=progressive_from)
     path = Path(output_path)
 
-    tree_name = "DEEP4"
-    settings_var = "DEEP4_AUTO_SETTINGS"
+    tree_name = "OWN"
+    settings_var = "OWN_AUTO_SETTINGS"
 
     with path.open("w", encoding="utf-8") as fh:
         fh.write(f'"""{tree_name} AUTO tree - Adaptive BS evolution with custom baseline.\n\n')
@@ -401,5 +401,5 @@ def write_deep_tree_file(output_path: str = "delfin/deep4_auto_tree.py", progres
 if __name__ == "__main__":
     import sys
 
-    write_deep_tree_file("delfin/deep4_auto_tree.py", progressive_from=False)
-    print("DEEP4 tree generated at delfin/deep4_auto_tree.py")
+    write_deep_tree_file("delfin/own_auto_tree.py", progressive_from=False)
+    print("OWN tree generated at delfin/own_auto_tree.py")
