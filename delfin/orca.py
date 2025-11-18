@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import socket
+import shutil
 from pathlib import Path
 from shutil import which
 import tempfile
@@ -94,6 +95,28 @@ def _ensure_orca_scratch_dir() -> Path:
     _ensure_openmpi_subdir(scratch_dir)
     _RUN_SCRATCH_DIR = scratch_dir
     return scratch_dir
+
+
+def get_orca_scratch_dir() -> Optional[Path]:
+    """Return the active ORCA scratch directory for this run, if any."""
+    return _RUN_SCRATCH_DIR
+
+
+def cleanup_orca_scratch_dir() -> Optional[Path]:
+    """Remove the active ORCA scratch directory created for this run."""
+    global _RUN_SCRATCH_DIR
+    target = _RUN_SCRATCH_DIR
+    _RUN_SCRATCH_DIR = None
+    if target is None:
+        return None
+
+    try:
+        if target.exists():
+            shutil.rmtree(target)
+            logger.info("Removed ORCA scratch directory %s", target)
+    except Exception:
+        logger.warning("Failed to remove ORCA scratch directory %s", target, exc_info=True)
+    return target
 
 
 def _prepare_orca_environment(extra_scratch: Optional[Path] = None) -> Dict[str, str]:
