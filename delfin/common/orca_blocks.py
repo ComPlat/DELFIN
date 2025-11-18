@@ -9,7 +9,7 @@ def normalize_bang(bang: str) -> str:
     return bang if bang.endswith("\n") else bang + "\n"
 
 
-def collect_output_blocks(config: Dict[str, Any], *, allow: bool = True) -> List[str]:
+def collect_output_blocks(config: Dict[str, Any], *, allow: bool = False) -> List[str]:
     """Build optional %output blocks based on configuration flags."""
     if not allow:
         return []

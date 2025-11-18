@@ -565,7 +565,7 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
         qmmm_method=qmmm_token,
     )
 
-    output_blocks = collect_output_blocks(config, allow=False)
+    output_blocks = collect_output_blocks(config, allow=True)
     builder = OrcaInputBuilder(bang)
     builder.add_resources(config['maxcore'], config['PAL'], resolve_maxiter(config))
     builder.add_additions(additions)
@@ -637,7 +637,7 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
         else:
             bang = bang + " FREQ"
 
-    output_blocks = collect_output_blocks(config, allow=False)
+    output_blocks = collect_output_blocks(config, allow=True)
     builder = OrcaInputBuilder(bang)
     builder.add_resources(config['maxcore'], config['PAL'], resolve_maxiter(config))
     builder.add_additions(additions)
