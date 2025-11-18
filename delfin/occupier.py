@@ -1102,6 +1102,8 @@ def run_OCCUPIER():
                 label = workdir.name or "occupier_core"
                 def _source_failed() -> bool:
                     effective_idx = _src_idx
+                    if effective_idx <= 1:
+                        return False
                     with results_lock:
                         return (
                             effective_idx in fspe_results
@@ -1110,6 +1112,8 @@ def run_OCCUPIER():
 
                 def _source_completed() -> bool:
                     effective_idx = _src_idx
+                    if effective_idx <= 1:
+                        return True
                     with results_lock:
                         return effective_idx in fspe_results
 

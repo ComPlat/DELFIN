@@ -423,10 +423,14 @@ def _create_occupier_fob_jobs(
                     )
 
                 def _source_failed_closure(idx_ref: int = _src_idx) -> bool:
+                    if idx_ref <= 1:
+                        return False
                     with results_lock:
                         return idx_ref in fspe_results and fspe_results[idx_ref] is None
 
                 def _source_completed_closure(idx_ref: int = _src_idx) -> bool:
+                    if idx_ref <= 1:
+                        return True
                     with results_lock:
                         return idx_ref in fspe_results
 
