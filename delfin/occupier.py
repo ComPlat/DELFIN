@@ -162,7 +162,7 @@ def _wait_for_geometry_source(
                 msg = f"{candidate_name} (upstream ORCA still running)"
             else:
                 msg = candidate_name
-            logger.info(
+            logger.debug(
                 "[%s] FoB %d waiting for %s (%.0fs elapsed)",
                 label,
                 fob_idx,
