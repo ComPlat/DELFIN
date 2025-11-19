@@ -195,8 +195,8 @@ AUTO_SETTINGS_FLAT: Dict[int, Dict[str, Any]] = {
                         {"index": 1, "m": 2, "BS": "", "from": 0},
                         {"index": 2, "m": 2, "BS": "2,1", "from": 1},
                         {"index": 3, "m": 2, "BS": "3,2", "from": 1},
-                        {"index": 4, "m": 4, "BS": "", "from": 0},
-                        {"index": 5, "m": 4, "BS": "4,3", "from": 4},
+                        {"index": 4, "m": 2, "BS": "4,3", "from": 4},
+                        {"index": 5, "m": 4, "BS": "", "from": 0},
                         {"index": 6, "m": 6, "BS": "", "from": 0},
                     ]),
                 },
@@ -634,12 +634,34 @@ class _CustomTreeBuilder:
         return [1, 3, 5] if parity == "even" else [2, 4, 6]
 
     def _align_m_for_bs(self, M: int, N: int, parity: str) -> int:
-        valid = self.pure_map.get(parity) or [max(N, 1)]
-        candidates = [value for value in valid if value >= N]
-        if not candidates:
-            candidates = list(valid)
-        aligned = min(candidates, key=lambda value: (abs(value - M), value))
-        return aligned if aligned >= N else max(aligned, N)
+        """Derive an aligned m value for BS(M,N) using m = (M - N) + 1."""
+        raw = max(1, M - N + 1)
+        limit_min = max(1, N)
+        limit_max = 8
+        if raw < limit_min:
+            raw = limit_min
+        if raw > limit_max:
+            raw = limit_max
+
+        def _adjust(value: int, target_parity: str) -> int:
+            if self._parity_matches(target_parity, value):
+                return value
+            if value + 1 <= limit_max:
+                candidate = value + 1
+                if self._parity_matches(target_parity, candidate):
+                    return candidate
+            if value - 1 >= limit_min:
+                candidate = value - 1
+                if self._parity_matches(target_parity, candidate):
+                    return candidate
+            return value
+
+        aligned = _adjust(raw, parity)
+        if aligned < limit_min:
+            aligned = limit_min
+        if aligned > limit_max:
+            aligned = limit_max
+        return aligned
 
     def _generate_baseline_seq(self, parity: str, *, include_initial_bs: bool,
                                add_bs: Optional[List[Tuple[int, int]]] = None) -> List[Dict[str, Any]]:
