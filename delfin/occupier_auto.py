@@ -705,66 +705,15 @@ class _CustomTreeBuilder:
         candidates.sort()
         return candidates
 
-    def _inject_neighbor_pure_states(self, seq: List[Dict[str, Any]], parity: str, prev_m: int) -> List[Dict[str, Any]]:
-        """Ensure m-1 and m+1 (if valid) are part of the sequence when pure states won."""
-        if not seq:
-            return seq
-
-        window = getattr(self, "pure_window", 1)
-        if window <= 0:
-            return seq
-
-        limit_min = min(self.min_m.get(parity, 1), 1)
-        limit_max = max(self.max_m.get(parity, 8), 8)
-        candidates: List[int] = []
-        for delta in range(-window, window + 1):
-            if delta == 0:
-                continue
-            value = prev_m + delta
-            if value < limit_min or value > limit_max:
-                continue
-            if not self._parity_matches(parity, value):
-                continue
-            candidates.append(value)
-
-        pure_values = {entry["m"] for entry in seq if not entry.get("BS")}
-        changed = False
-        for value in candidates:
-            if value in pure_values:
-                continue
-            insert_idx = len(seq)
-            for idx, entry in enumerate(seq):
-                if entry["m"] > value:
-                    insert_idx = idx
-                    break
-            seq.insert(insert_idx, {"index": 0, "m": value, "BS": "", "from": 0})
-            pure_values.add(value)
-            changed = True
-
-        if not changed:
-            return seq
-
-        pure_index_map: Dict[int, int] = {}
-        for idx, entry in enumerate(seq, start=1):
-            entry["index"] = idx
-            if entry["BS"]:
-                continue
-            entry["from"] = 0
-            pure_index_map[entry["m"]] = idx
-
-        for entry in seq:
-            if entry["BS"]:
-                entry["from"] = pure_index_map.get(entry["m"], 0)
-        return seq
-
     def _pure_window_sequence(self, parity: str, center_m: int) -> List[Dict[str, Any]]:
+        """Return pure-only sequence centered around the winning m."""
         window = getattr(self, "pure_window", 1)
-        base_values = self.pure_map.get(parity) or self._default_pure_values(parity)
+        baseline = self.pure_map.get(parity) or self._default_pure_values(parity)
         if window <= 0:
-            values = list(base_values)
+            values = list(baseline)
         else:
-            limit_min = min(base_values) if base_values else 1
-            limit_max = max(base_values) if base_values else 8
+            limit_min = min(baseline) if baseline else 1
+            limit_max = max(baseline) if baseline else 8
             limit_min = min(limit_min, 1)
             limit_max = max(limit_max, 8)
             values: List[int] = []
@@ -777,11 +726,37 @@ class _CustomTreeBuilder:
                 if candidate not in values:
                     values.append(candidate)
             if not values:
-                values = list(base_values)
+                values = list(baseline)
         values.sort()
         seq: List[Dict[str, Any]] = []
         for idx, m_val in enumerate(values, start=1):
             seq.append({"index": idx, "m": m_val, "BS": "", "from": 0})
+        return seq
+
+    def _inject_bs_entries(self, seq: List[Dict[str, Any]], parity: str,
+                           add_bs: Optional[List[Tuple[int, int]]]) -> List[Dict[str, Any]]:
+        if not add_bs:
+            return seq
+
+        for M, N in add_bs:
+            aligned = self._align_m_for_bs(M, N, parity)
+            pure_idx = next((i for i, entry in enumerate(seq)
+                             if entry["m"] == aligned and not entry.get("BS")), None)
+            if pure_idx is None:
+                continue  # window excludes this multiplicity
+            insert_idx = pure_idx + 1
+            while insert_idx < len(seq) and seq[insert_idx]["m"] == aligned and seq[insert_idx].get("BS"):
+                insert_idx += 1
+            bs_entry = {"index": 0, "m": aligned, "BS": f"{M},{N}", "from": 0}
+            seq.insert(insert_idx, bs_entry)
+            # reindex will happen later
+
+        for idx, entry in enumerate(seq, start=1):
+            entry["index"] = idx
+            if entry.get("BS"):
+                pure_idx = next((item["index"] for item in seq
+                                 if item["m"] == entry["m"] and not item.get("BS")), 0)
+                entry["from"] = pure_idx
         return seq
 
     def _evolve_bs(self, parity: str, M: int, N: int) -> List[Tuple[int, int]]:
@@ -816,21 +791,19 @@ class _CustomTreeBuilder:
 
     def _generate_reduction_sequence(self, parity: str, prev_m: int, prev_bs: str) -> List[Dict[str, Any]]:
         """Generate reduction sequence - can include BS evolution."""
-        if not prev_bs:
-            return self._pure_window_sequence(parity, prev_m)
-
-        if not self.pure_map.get(parity):
-            other_parity = "odd" if parity == "even" else "even"
-            if not self.pure_map.get(other_parity):
-                return []
-            return self._generate_baseline_seq(other_parity, include_initial_bs=False, add_bs=None)
-
-        add_bs = self._next_bs_candidates(parity, prev_m, prev_bs)
-        return self._generate_baseline_seq(parity, include_initial_bs=True, add_bs=add_bs or None)
+        seq = self._pure_window_sequence(parity, prev_m)
+        if prev_bs:
+            add_bs = self._next_bs_candidates(parity, prev_m, prev_bs)
+            seq = self._inject_bs_entries(seq, parity, add_bs)
+        return seq
 
     def _generate_oxidation_sequence(self, parity: str, prev_m: int, prev_bs: str) -> List[Dict[str, Any]]:
         """Generate oxidation sequence - always uses windowed pure candidates."""
-        return self._pure_window_sequence(parity, prev_m)
+        seq = self._pure_window_sequence(parity, prev_m)
+        if prev_bs:
+            add_bs = self._next_bs_candidates(parity, prev_m, prev_bs)
+            seq = self._inject_bs_entries(seq, parity, add_bs)
+        return seq
 
     def _build_recursive_branches(self, depth: int, max_depth: int, current_parity: str,
                                   prev_m: int, prev_bs: str) -> Dict[int, Dict[str, Any]]:
