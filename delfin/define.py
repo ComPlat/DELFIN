@@ -133,6 +133,7 @@ OCCUPIER-Settings:
 --------------------
 OCCUPIER_method=auto|manually
 OCCUPIER_tree=deep|flat|deep2|deep3|own
+OWN_TREE_PURE_WINDOW=
 frequency_calculation_OCCUPIER=no
 occupier_selection=tolerance|truncation|rounding
 occupier_precision=3

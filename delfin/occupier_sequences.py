@@ -23,6 +23,9 @@ _DELTA_MARKER = ".delfin_occ_delta"
 _FOLDER_PATTERN = re.compile(r"(ox|red)(?:_step)?_(\d+)", re.IGNORECASE)
 logger = get_logger(__name__)
 
+# Global flag to ensure tree is built only once (then read from file)
+_GLOBAL_CUSTOM_TREE_BUILT = False
+
 
 def _coerce_int(value: Any, fallback: int = 0) -> int:
     """Best-effort conversion to int with fallback."""
@@ -102,20 +105,48 @@ def _extract_custom_tree_sequences(config: Dict[str, Any]) -> tuple[List[Dict[st
 
 
 def _get_custom_tree_dataset(config: Dict[str, Any]) -> Optional[Dict[int, Dict[str, Any]]]:
-    cached = config.get("_custom_tree_dataset")
-    if isinstance(cached, dict) and cached:
-        return cached
+    global _GLOBAL_CUSTOM_TREE_BUILT
+
+    try:
+        root_path = _resolve_root()
+    except Exception:
+        root_path = Path.cwd()
+
+    tree_file = root_path / "own_auto_tree.json"
+
+    # If tree file exists, read from disk (every FoB reads from file)
+    if tree_file.exists():
+        try:
+            with tree_file.open("r", encoding="utf-8") as fh:
+                dataset = json.load(fh)
+            # Convert string keys back to int for anchor level
+            if dataset and isinstance(dataset, dict):
+                return {int(k): v for k, v in dataset.items()}
+        except Exception as exc:
+            logger.warning("Failed to read custom tree from %s: %s", tree_file, exc)
+
+    # Build tree only if not already built
+    if _GLOBAL_CUSTOM_TREE_BUILT:
+        return None
+
     even_seq, odd_seq = _extract_custom_tree_sequences(config)
     if not even_seq and not odd_seq:
         return None
-    dataset = build_custom_auto_tree(even_seq, odd_seq)
-    if dataset:
-        config["_custom_tree_dataset"] = dataset
+
+    # Build and persist tree (only once)
+    raw_window = config.get("OWN_TREE_PURE_WINDOW")
+    pure_window_value: Optional[int] = None
+    if raw_window not in (None, ""):
         try:
-            root_path = _resolve_root()
+            pure_window_value = int(str(raw_window).strip())
         except Exception:
-            root_path = Path.cwd()
+            logger.warning("Invalid OWN_TREE_PURE_WINDOW value '%s'; falling back to default window.", raw_window)
+
+    dataset = build_custom_auto_tree(even_seq, odd_seq, pure_window=pure_window_value)
+    if dataset:
         persist_custom_tree(dataset, root=root_path)
+        _GLOBAL_CUSTOM_TREE_BUILT = True
+
     return dataset
 
 
@@ -188,7 +219,13 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int,
             parity_hint=parity_target or parity_hint,
             custom_dataset=custom_tree,
         )
-        if auto_bundle:
+        # Check if auto_bundle has actual sequences (not just empty dict)
+        has_auto_sequences = auto_bundle and any(
+            key in auto_bundle and auto_bundle[key]
+            for key in ("even_seq", "odd_seq", "initial_sequence")
+        )
+        if has_auto_sequences:
+            # Auto bundle found - augment with manual sequences if needed
             missing_even = "even_seq" not in auto_bundle
             missing_odd = "odd_seq" not in auto_bundle
             if missing_even and "even_seq" in manual_bundle:
@@ -197,6 +234,7 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int,
                 auto_bundle["odd_seq"] = manual_bundle["odd_seq"]
             bundle = auto_bundle
         else:
+            # No auto bundle or empty - fall back to manual sequences
             bundle = manual_bundle
 
         # For AUTO mode, always return both sequences (DELFIN chooses at runtime)

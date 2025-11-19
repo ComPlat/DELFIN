@@ -34,6 +34,10 @@ if TYPE_CHECKING:
 
 JOB_DURATION_HISTORY: Dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=8))
 
+# Global registry of active workflow managers for nested workflow coordination
+_ACTIVE_MANAGERS: Dict[int, '_WorkflowManager'] = {}
+_ACTIVE_MANAGERS_LOCK = threading.Lock()
+
 
 @dataclass
 class WorkflowJob:
@@ -118,6 +122,20 @@ class _WorkflowManager:
         self._lock = threading.RLock()
         self._event = threading.Event()
         self._completion_listeners: List[Callable[[str], None]] = []
+        self._parent_manager: Optional['_WorkflowManager'] = None
+
+        # Register this manager globally for nested workflow coordination
+        # If there's already a manager registered, this is a nested workflow
+        with _ACTIVE_MANAGERS_LOCK:
+            # Find parent manager (the most recently created one that isn't us)
+            if _ACTIVE_MANAGERS:
+                # Get the most recent manager as parent (excluding self if somehow already there)
+                for mgr_id, mgr in reversed(list(_ACTIVE_MANAGERS.items())):
+                    if mgr_id != id(self) and mgr.label != label:
+                        self._parent_manager = mgr
+                        logger.debug("[%s] Detected parent manager: [%s]", label, mgr.label)
+                        break
+            _ACTIVE_MANAGERS[id(self)] = self
 
         callback = self.config.pop('_post_attach_callback', None)
         if callable(callback):
@@ -283,6 +301,17 @@ class _WorkflowManager:
                 ))
 
                 if running:
+                    # Check if we have capacity to start jobs despite other jobs running
+                    # This handles the case where nested workflows are using the pool
+                    if status:
+                        allocated = status.get('allocated_cores', 0)
+                        available = self.total_cores - allocated
+                        # If we have enough cores available and there are blocked jobs,
+                        # check more frequently instead of waiting the full timeout
+                        if available >= 2 and blocked:
+                            self._event.wait(timeout=0.1)
+                            self._event.clear()
+                            continue
                     self._event.wait(timeout=0.5)
                     self._event.clear()
                     continue
@@ -357,6 +386,9 @@ class _WorkflowManager:
 
     def shutdown(self) -> None:
         logger.debug("[%s] Global pool in use - shutdown handled by GlobalJobManager", self.label)
+        # Unregister from global registry
+        with _ACTIVE_MANAGERS_LOCK:
+            _ACTIVE_MANAGERS.pop(id(self), None)
 
     def _sync_parallel_flag(self) -> None:
         self._parallel_enabled = (
@@ -429,6 +461,9 @@ class _WorkflowManager:
             self._inflight.discard(job_id)
             self._event.set()
         self._notify_completion(job_id)
+        # Notify parent manager if this is a nested workflow
+        if self._parent_manager is not None:
+            self._parent_manager.reschedule_pending()
 
     def _mark_failed(self, job_id: str, exc: Exception) -> None:
         message = f"{exc.__class__.__name__}: {exc}"
@@ -436,6 +471,9 @@ class _WorkflowManager:
             self._failed[job_id] = message
             self._inflight.discard(job_id)
             self._event.set()
+        # Notify parent manager if this is a nested workflow
+        if self._parent_manager is not None:
+            self._parent_manager.reschedule_pending()
 
     def _mark_skipped(self, job_id: str, missing: Iterable[str]) -> None:
         with self._lock:

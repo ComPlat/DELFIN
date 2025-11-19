@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 from typing import List, Tuple
 
 # Custom baseline definition (seed block)
 CUSTOM_BASE_PURE = {
-    "even": [1, 3, 5, 7],
-    "odd": [2, 4, 6, 8],
+    "even": [1, 3],
+    "odd": [2, 4],
 }
 
 CUSTOM_BASE_BS = {
     "even": [(4, 2), (5, 3), (5, 1), (6, 2)],
     "odd": [(2, 1), (3, 2), (5, 2)],
 }
+
+# Optional lever: limit pure candidates to a symmetric ±window around prev_m
+OWN_TREE_PURE_WINDOW=1
+PURE_WINDOW = int(os.environ.get("OWN_TREE_PURE_WINDOW", "0"))
 
 
 def get_m_for_bs_in_parity(M: int, N: int, parity: str) -> int:
@@ -183,6 +188,14 @@ def _generate_reduction_sequence(
     progressive_from: bool,
 ) -> List[dict]:
     """Generate reduction sequence that obeys the adaptive BS rules."""
+    if PURE_WINDOW > 0 and not prev_bs:
+        return _generate_windowed_pure_seq(
+            parity,
+            center_m=prev_m,
+            window=PURE_WINDOW,
+            progressive_from=progressive_from,
+        )
+
     bs_candidates = _next_bs_candidates(prev_m, prev_bs)
     add_bs = bs_candidates if bs_candidates else None
     return _generate_baseline_seq(
@@ -190,6 +203,35 @@ def _generate_reduction_sequence(
         add_bs=add_bs,
         progressive_from=progressive_from,
     )
+
+
+def _generate_windowed_pure_seq(
+    parity: str,
+    center_m: int,
+    window: int,
+    progressive_from: bool,
+) -> List[dict]:
+    """Return pure states within ±window (no BS)."""
+    if window <= 0:
+        return _generate_baseline_seq(parity, progressive_from=progressive_from)
+
+    pure_values = [
+        m for m in get_pure_states_for_parity(parity)
+        if center_m - window <= m <= center_m + window
+    ]
+    # Fallback to full ladder if nothing matched
+    if not pure_values:
+        pure_values = get_pure_states_for_parity(parity)
+
+    seq: List[dict] = []
+    for idx, m in enumerate(pure_values, start=1):
+        seq.append({
+            "index": idx,
+            "m": m,
+            "BS": "",
+            "from": idx - 1 if progressive_from and idx > 1 else 0,
+        })
+    return seq
 
 
 def _build_recursive_branches(
@@ -232,12 +274,20 @@ def _build_recursive_branches(
             "branches": child_branches,
         }
 
-    # Positive direction (oxidation): pure sequence only
-    oxidation_seq = _generate_baseline_seq(
-        current_parity,
-        add_bs=None,
-        progressive_from=progressive_from,
-    )
+    # Positive direction (oxidation): pure sequence only (optionally windowed)
+    if PURE_WINDOW > 0:
+        oxidation_seq = _generate_windowed_pure_seq(
+            current_parity,
+            center_m=prev_m,
+            window=PURE_WINDOW,
+            progressive_from=progressive_from,
+        )
+    else:
+        oxidation_seq = _generate_baseline_seq(
+            current_parity,
+            add_bs=None,
+            progressive_from=progressive_from,
+        )
     oxidation_branches: dict[int, dict] = {}
     for entry in oxidation_seq:
         sub_idx = entry["index"]

@@ -1101,7 +1101,7 @@ def run_OCCUPIER():
                 workdir = Path.cwd()
                 label = workdir.name or "occupier_core"
                 def _source_failed() -> bool:
-                    effective_idx = _src_idx
+                    effective_idx = src_idx
                     if effective_idx <= 1:
                         return False
                     with results_lock:
@@ -1111,7 +1111,7 @@ def run_OCCUPIER():
                         )
 
                 def _source_completed() -> bool:
-                    effective_idx = _src_idx
+                    effective_idx = src_idx
                     if effective_idx <= 1:
                         return True
                     with results_lock:
@@ -1119,7 +1119,7 @@ def run_OCCUPIER():
 
                 _wait_for_geometry_source(
                     workdir,
-                    _src_idx,
+                    src_idx,
                     label=label,
                     fob_idx=idx,
                     timeout=geometry_wait_timeout,

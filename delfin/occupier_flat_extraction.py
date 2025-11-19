@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
-import shutil
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from delfin.common.logging import get_logger
@@ -38,6 +38,32 @@ _cwd_lock = threading.RLock()
 
 _OK_MARKER = "ORCA TERMINATED NORMALLY"
 _MIN_OK_FILESIZE = 100
+
+
+def _fallback_propagate_geometry(folder_name: str, folder_path: Path) -> None:
+    """Best-effort propagation when OCCUPIER.txt is missing."""
+    dest_label = folder_name.replace("_OCCUPIER", "")
+    if not dest_label:
+        return
+
+    dest_xyz = folder_path.parent / f"{dest_label}.xyz"
+    src_xyz = folder_path / "input.xyz"
+    if src_xyz.exists():
+        try:
+            shutil.copyfile(src_xyz, dest_xyz)
+            logger.warning("[%s] Fallback propagated %s to %s (no OCCUPIER summary)", folder_name, src_xyz, dest_xyz)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[%s] Failed to propagate fallback geometry %s → %s: %s", folder_name, src_xyz, dest_xyz, exc)
+    else:
+        logger.error("[%s] Cannot apply fallback – missing %s", folder_name, src_xyz)
+
+    src_gbw = folder_path / "input.gbw"
+    dest_gbw = folder_path.parent / f"input_{folder_name}.gbw"
+    if src_gbw.exists():
+        try:
+            shutil.copyfile(src_gbw, dest_gbw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[%s] Failed to propagate fallback GBW %s → %s: %s", folder_name, src_gbw, dest_gbw, exc)
 
 
 def _has_ok_marker(path: Path) -> bool:
@@ -157,10 +183,12 @@ def _update_runtime_cache(
             time.sleep(0.2 * (attempt + 1))
     else:
         logger.warning("[%s] OCCUPIER.txt missing preferred entry after retries; skipping runtime cache update", folder_name)
+        _fallback_propagate_geometry(folder_name, folder_path)
         return
 
     if not result:
         logger.warning("[%s] OCCUPIER.txt missing or invalid – runtime cache not updated", folder_name)
+        _fallback_propagate_geometry(folder_name, folder_path)
         return
 
     multiplicity = additions = preferred_index = gbw_path = None
@@ -175,6 +203,7 @@ def _update_runtime_cache(
                 folder_name,
                 result,
             )
+            _fallback_propagate_geometry(folder_name, folder_path)
             return
     else:
         logger.warning(
@@ -182,6 +211,7 @@ def _update_runtime_cache(
             folder_name,
             type(result).__name__,
         )
+        _fallback_propagate_geometry(folder_name, folder_path)
         return
 
     try:
@@ -370,7 +400,7 @@ def _create_occupier_fob_jobs(
                 # This ensures we use the correct multiplicity/BS based on the actual preferred index
                 _multiplicity = _initial_multiplicity
                 _bs_token = _initial_bs_token
-                _src_idx = _initial_src_idx
+                _src_idx = _initial_src_idx  # Initialize here so closures can always access it
 
                 try:
                     # Read current CONTROL to get the latest sequence (which may have been updated after initial setup)
