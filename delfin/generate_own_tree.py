@@ -100,26 +100,26 @@ def _format_sequence(seq: List[dict], indent: int) -> str:
     return "\n".join(lines)
 
 
-def _generate_baseline_seq(
+def _inject_bs_entries(
+    seq: List[dict],
     parity: str,
-    add_bs: List[Tuple[int, int]] | None = None,
-    progressive_from: bool = False
+    add_bs: List[Tuple[int, int]],
+    include_base_bs: bool = True
 ) -> List[dict]:
-    """Generate a baseline sequence with optional progressive from values.
+    """Inject BS entries into an existing sequence.
 
     Args:
+        seq: Existing sequence (typically pure states)
         parity: "even" or "odd"
-        add_bs: Optional list of (M, N) tuples for BS configurations
-        progressive_from: If True, pure states get from=0,1,2,... instead of all from=0
-    """
-    pure_m_values = get_pure_states_for_parity(parity)
-    seq = [
-        {"index": idx, "m": m, "BS": "", "from": 0}
-        for idx, m in enumerate(pure_m_values, start=1)
-    ]
+        add_bs: List of (M, N) tuples for BS configurations
+        include_base_bs: If True, also include CUSTOM_BASE_BS entries
 
+    Returns:
+        Modified sequence with BS entries injected
+    """
     bs_pool: List[Tuple[int, int]] = []
-    bs_pool.extend(CUSTOM_BASE_BS.get(parity, []))
+    if include_base_bs:
+        bs_pool.extend(CUSTOM_BASE_BS.get(parity, []))
     if add_bs:
         bs_pool.extend(add_bs)
 
@@ -168,6 +168,31 @@ def _generate_baseline_seq(
     return seq
 
 
+def _generate_baseline_seq(
+    parity: str,
+    add_bs: List[Tuple[int, int]] | None = None,
+    progressive_from: bool = False
+) -> List[dict]:
+    """Generate a baseline sequence with optional progressive from values.
+
+    Args:
+        parity: "even" or "odd"
+        add_bs: Optional list of (M, N) tuples for BS configurations
+        progressive_from: If True, pure states get from=0,1,2,... instead of all from=0
+    """
+    pure_m_values = get_pure_states_for_parity(parity)
+    seq = [
+        {"index": idx, "m": m, "BS": "", "from": 0}
+        for idx, m in enumerate(pure_m_values, start=1)
+    ]
+
+    # Inject BS entries if provided
+    if add_bs or CUSTOM_BASE_BS.get(parity):
+        seq = _inject_bs_entries(seq, parity, add_bs or [], include_base_bs=True)
+
+    return seq
+
+
 def _next_bs_candidates(prev_m: int, prev_bs: str) -> List[Tuple[int, int]]:
     """Return BS candidates for the next reduction step."""
     if prev_bs:
@@ -194,15 +219,23 @@ def _generate_reduction_sequence(
     progressive_from: bool,
 ) -> List[dict]:
     """Generate reduction sequence that obeys the adaptive BS rules."""
+    # Generate BS candidates based on previous winner
+    bs_candidates = _next_bs_candidates(prev_m, prev_bs)
+
+    # If PURE_WINDOW is active and previous was pure, use windowed pure sequence
     if PURE_WINDOW > 0 and not prev_bs:
-        return _generate_windowed_pure_seq(
+        seq = _generate_windowed_pure_seq(
             parity,
             center_m=prev_m,
             window=PURE_WINDOW,
             progressive_from=progressive_from,
         )
+        # Add BS candidates to the windowed sequence (including base BS)
+        if bs_candidates:
+            seq = _inject_bs_entries(seq, parity, bs_candidates, include_base_bs=True)
+        return seq
 
-    bs_candidates = _next_bs_candidates(prev_m, prev_bs)
+    # Otherwise use full baseline with BS candidates
     add_bs = bs_candidates if bs_candidates else None
     return _generate_baseline_seq(
         parity,

@@ -797,33 +797,41 @@ class _CustomTreeBuilder:
         return options
 
     def _next_bs_candidates(self, parity: str, prev_m: int, prev_bs: str) -> List[Tuple[int, int]]:
-        """Generate BS candidates when BS won previously.
+        """Generate BS candidates based on previous winner.
 
-        Rule: test BS(M±1,N) and BS(M,N±1)
+        Rules:
+        - If BS won: test BS(M±1,N) and BS(M,N±1)
+        - If pure m won: test BS(m-1,1) to initiate BS
         """
-        if not prev_bs:
-            return []
+        if prev_bs:
+            # BS evolution: expand/reduce
+            try:
+                m_val, n_val = [int(token) for token in prev_bs.split(",", 1)]
+            except Exception:
+                return []
+            return self._evolve_bs(parity, m_val, n_val)
 
-        try:
-            m_val, n_val = [int(token) for token in prev_bs.split(",", 1)]
-        except Exception:
-            return []
-
-        return self._evolve_bs(parity, m_val, n_val)
+        # Pure state won: initiate BS with BS(m-1,1)
+        target = prev_m - 1
+        if target >= 1:
+            return [(target, 1)]
+        return []
 
     def _generate_reduction_sequence(self, parity: str, prev_m: int, prev_bs: str) -> List[Dict[str, Any]]:
         """Generate reduction sequence - can include BS evolution."""
         seq = self._pure_window_sequence(parity, prev_m)
-        if prev_bs:
-            add_bs = self._next_bs_candidates(parity, prev_m, prev_bs)
+        # Always generate BS candidates (both for pure and BS winners)
+        add_bs = self._next_bs_candidates(parity, prev_m, prev_bs)
+        if add_bs:
             seq = self._inject_bs_entries(seq, parity, add_bs)
         return seq
 
     def _generate_oxidation_sequence(self, parity: str, prev_m: int, prev_bs: str) -> List[Dict[str, Any]]:
         """Generate oxidation sequence - always uses windowed pure candidates."""
         seq = self._pure_window_sequence(parity, prev_m)
-        if prev_bs:
-            add_bs = self._next_bs_candidates(parity, prev_m, prev_bs)
+        # Always generate BS candidates (both for pure and BS winners)
+        add_bs = self._next_bs_candidates(parity, prev_m, prev_bs)
+        if add_bs:
             seq = self._inject_bs_entries(seq, parity, add_bs)
         return seq
 
