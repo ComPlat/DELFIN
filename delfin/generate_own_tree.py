@@ -8,14 +8,17 @@ from pathlib import Path
 from typing import List, Tuple
 
 # Custom baseline definition (seed block)
+# Parity convention: 'even'/'odd' refers to electron count parity
+# Physics rule: odd electron count → even multiplicity (2,4,6)
+#               even electron count → odd multiplicity (1,3,5)
 CUSTOM_BASE_PURE = {
-    "even": [1, 3],
-    "odd": [2, 4],
+    "even": [1, 3],  # even electron count → odd multiplicity (singlet, triplet)
+    "odd": [2, 4],   # odd electron count → even multiplicity (doublet, quartet)
 }
 
 CUSTOM_BASE_BS = {
-    "even": [(4, 2), (5, 3), (5, 1), (6, 2)],
-    "odd": [(2, 1), (3, 2), (5, 2)],
+    "even": [(4, 2), (5, 3), (5, 1), (6, 2)],  # even electron count → odd m for BS
+    "odd": [(2, 1), (3, 2), (5, 2)],  # odd electron count → even m for BS
 }
 
 # Optional lever: limit pure candidates to a symmetric ±window around prev_m
@@ -30,6 +33,9 @@ def get_m_for_bs_in_parity(M: int, N: int, parity: str) -> int:
       * Matches the allowed parity ladder (odd vs. even m)
       * Stays as close as possible to the requested M
       * Respects the BS constraint m >= N
+
+    Note: 'even' parity = even electron count → odd m values (1,3,5)
+          'odd' parity = odd electron count → even m values (2,4,6)
     """
     valid_m = [1, 3, 5] if parity == "even" else [2, 4, 6]
 

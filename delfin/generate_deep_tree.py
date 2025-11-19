@@ -13,7 +13,11 @@ from typing import List, Tuple
 
 
 def get_m_for_bs_in_parity(M: int, N: int, parity: str) -> int:
-    """Return a parity-aligned multiplicity for BS(M,N) using m = (M - N) + 1."""
+    """Return a parity-aligned multiplicity for BS(M,N) using m = (M - N) + 1.
+
+    Note: 'even' parity = even electron count → odd m values (1,3,5)
+          'odd' parity = odd electron count → even m values (2,4,6)
+    """
     valid_m = [1, 3, 5] if parity == "even" else [2, 4, 6]
     target = max(1, M - N + 1)
 
