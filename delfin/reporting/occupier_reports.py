@@ -587,8 +587,8 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
         fspe_lines += f"Spin Contamination (⟨S²⟩ - S(S+1))   : {dev_txt}\n"
         if is_bs_flag:
             j3_val = get_j3(idx, True)
-            j3_str = "N/A" if j3_val is None else f"{j3_val:.2f} cm**-1"
-            fspe_lines += f"J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : {j3_str}\n"
+            j3_str = "N/A" if j3_val is None else f"{j3_val:.2f} cm⁻¹"
+            fspe_lines += f"J(Yamaguchi)=-(E[HS]-E[BS])/(⟨S²⟩HS-⟨S²⟩BS) : {j3_str}\n"
         fspe_lines += "----------------------------------------------------------------\n"
 
     # ----------------------- method line / metals block ------------------------
@@ -1050,8 +1050,8 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
         fspe_lines += f"Spin Contamination (⟨S²⟩ - S(S+1))   : {dev_txt}\n"
         if is_bs_flag:
             j3_val = get_j3(idx, True)
-            j3_str = "N/A" if j3_val is None else f"{j3_val:.2f} cm**-1"
-            fspe_lines += f"J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : {j3_str}\n"
+            j3_str = "N/A" if j3_val is None else f"{j3_val:.2f} cm⁻¹"
+            fspe_lines += f"J(Yamaguchi)=-(E[HS]-E[BS])/(⟨S²⟩HS-⟨S²⟩BS) : {j3_str}\n"
         fspe_lines += "----------------------------------------------------------------\n"
 
     # ----------------------- method line / metals block ------------------------

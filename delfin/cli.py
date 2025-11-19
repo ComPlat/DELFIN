@@ -119,6 +119,8 @@ _SAFE_FILE_NAMES: set[str] = {
     ".delfin_done_crest",
     ".delfin_done_xtb_solvator",
     ".qmmm_cache.json",
+    "own_auto_tree.json",
+    "start.txt",
 }
 
 _SAFE_FILE_GLOBS: tuple[str, ...] = (
@@ -263,6 +265,9 @@ def _safe_keep_set(control_path: Path) -> set[str]:
             logger.warning("Could not parse CONTROL.txt while preparing purge: %s", exc)
     # Always keep fallback input.txt if CONTROL is missing or invalid
     keep.add("input.txt")
+    # start.txt and own_auto_tree.json must always be purged, never kept
+    keep.discard("start.txt")
+    keep.discard("own_auto_tree.json")
     return keep
 
 
