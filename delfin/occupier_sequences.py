@@ -142,7 +142,14 @@ def _get_custom_tree_dataset(config: Dict[str, Any]) -> Optional[Dict[int, Dict[
         except Exception:
             logger.warning("Invalid OWN_TREE_PURE_WINDOW value '%s'; falling back to default window.", raw_window)
 
-    dataset = build_custom_auto_tree(even_seq, odd_seq, pure_window=pure_window_value)
+    raw_progressive = str(config.get("OWN_progressive_from", "no")).strip().lower()
+    progressive_flag = raw_progressive in ("yes", "true", "1", "on")
+    dataset = build_custom_auto_tree(
+        even_seq,
+        odd_seq,
+        pure_window=pure_window_value,
+        progressive_from=progressive_flag,
+    )
     if dataset:
         persist_custom_tree(dataset, root=root_path)
         _GLOBAL_CUSTOM_TREE_BUILT = True

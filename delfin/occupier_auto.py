@@ -584,7 +584,7 @@ class _CustomTreeBuilder:
     """Build adaptive tree datasets from user-supplied baseline sequences."""
 
     def __init__(self, even_seq: Optional[List[Dict[str, Any]]], odd_seq: Optional[List[Dict[str, Any]]],
-                 pure_window: Optional[int] = None):
+                 pure_window: Optional[int] = None, progressive_from: bool = False):
         sanitized = {
             "even": _sanitize_sequence_entries(even_seq),
             "odd": _sanitize_sequence_entries(odd_seq),
@@ -597,6 +597,7 @@ class _CustomTreeBuilder:
             self.pure_window = max(0, int(inferred))
         except Exception:
             self.pure_window = max(0, PURE_WINDOW)
+        self.progressive_from = bool(progressive_from)
         self.pure_map = {
             "even": _extract_pure_values(sanitized["even"]),
             "odd": _extract_pure_values(sanitized["odd"]),
@@ -670,7 +671,7 @@ class _CustomTreeBuilder:
 
         for m_val in pure_values:
             idx = len(seq) + 1
-            seq.append({"index": idx, "m": m_val, "BS": "", "from": 0})
+            seq.append({"index": idx, "m": m_val, "BS": "", "from": (idx - 1 if self.progressive_from else 0)})
 
         bs_pool: List[Tuple[int, int]] = []
         if include_initial_bs:
@@ -693,7 +694,7 @@ class _CustomTreeBuilder:
             entry["index"] = idx
             if entry["BS"]:
                 continue
-            entry["from"] = 0
+            entry["from"] = idx - 1 if self.progressive_from else 0
             pure_index_map[entry["m"]] = idx
 
         for entry in seq:
@@ -752,7 +753,7 @@ class _CustomTreeBuilder:
         values.sort()
         seq: List[Dict[str, Any]] = []
         for idx, m_val in enumerate(values, start=1):
-            seq.append({"index": idx, "m": m_val, "BS": "", "from": 0})
+            seq.append({"index": idx, "m": m_val, "BS": "", "from": (idx - 1 if self.progressive_from else 0)})
         return seq
 
     def _inject_bs_entries(self, seq: List[Dict[str, Any]], parity: str,
@@ -916,9 +917,11 @@ def build_custom_auto_tree(even_seq: Optional[List[Dict[str, Any]]],
                            odd_seq: Optional[List[Dict[str, Any]]],
                            *,
                            pure_window: Optional[int] = None,
-                           max_depth: int = 3) -> Dict[int, Dict[str, Any]]:
+                           max_depth: int = 3,
+                           progressive_from: bool = False) -> Dict[int, Dict[str, Any]]:
     """Construct an auto tree dataset from user-supplied baseline sequences."""
-    builder = _CustomTreeBuilder(even_seq, odd_seq, pure_window=pure_window)
+    builder = _CustomTreeBuilder(even_seq, odd_seq, pure_window=pure_window,
+                                 progressive_from=progressive_from)
     return builder.build_tree(max_depth=max_depth)
 
 

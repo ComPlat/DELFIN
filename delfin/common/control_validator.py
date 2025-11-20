@@ -157,6 +157,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("IMAG_option", _as_imag_option, default=2),
     FieldSpec("OCCUPIER_method", _as_occupier_method, default="auto"),
     FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep"),
+    FieldSpec("OWN_progressive_from", _as_yes_no, default="no"),
     FieldSpec("OWN_TREE_PURE_WINDOW", _as_int, default=None, allow_none=True),
     FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),
 )
