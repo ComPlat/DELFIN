@@ -76,12 +76,24 @@ def _strip_xyz_header(lines):
         return lines
     working = list(lines)
     first = working[0].strip()
+    def _is_coord_line(parts: list[str]) -> bool:
+        """Return True if parts look like 'Elem x y z' with numeric coords."""
+        if len(parts) < 4 or not parts[0] or not parts[0][0].isalpha():
+            return False
+        try:
+            float(parts[1])
+            float(parts[2])
+            float(parts[3])
+            return True
+        except Exception:
+            return False
+
     try:
         int(first)
         working = working[1:]
         if working:
             head = working[0].strip().split()
-            if (len(head) < 4) or (not head[0]) or (not head[0][0].isalpha()):
+            if not _is_coord_line(head):
                 working = working[1:]
         return working
     except ValueError:
