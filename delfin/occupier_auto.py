@@ -434,14 +434,13 @@ def _collect_preference_chain(anchor: int, target: int, parity: str,
     direction = 1 if target > anchor else -1
     steps = abs(target - anchor)
     chain: List[int] = []
-    for step in range(steps):
+    for step in range(1, steps + 1):
         delta_value = anchor + direction * step
         remaining = steps - step
         parity_token = _parity_with_distance(parity, remaining)
         pref = _preferred_index_from_state(state, delta_value, parity_token)
-        if pref is None:
-            break
-        chain.append(pref)
+        if pref is not None:
+            chain.append(pref)
     return chain
 
 
@@ -992,7 +991,12 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
         if base_settings:
             oxidation_baseline = base_settings.get("baseline", {})
 
-    for anchor, settings in settings_source.items():
+    for anchor_key, settings in settings_source.items():
+        try:
+            anchor = int(anchor_key)
+        except Exception:  # noqa: BLE001
+            logger.debug("[occupier_auto] Skipping non-numeric anchor key: %s", anchor_key)
+            continue
         offset = delta - anchor
         baseline = settings.get("baseline", {})
         branches = settings.get("branches", {})
@@ -1039,8 +1043,10 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
 
             # Collect preference chain for ALL tree modes
             # Use source_parity to find which FoB won at the previous step
-            preference_chain = _collect_preference_chain(anchor, delta - (1 if offset > 0 else -1), source_parity, state_cache)
-            preferred_branch = preference_chain[0] if preference_chain else None
+            # Follow recorded preferences from anchor to target delta
+            preference_chain = _collect_preference_chain(anchor, delta, source_parity, state_cache)
+            anchor_preference = _preferred_index_from_state(state_cache, anchor, source_parity)
+            preferred_branch = anchor_preference if anchor_preference is not None else (preference_chain[0] if preference_chain else None)
             ordered_indices = _ordered_candidates(parity_branches, preferred_branch)
 
             for branch_index in ordered_indices:
@@ -1073,7 +1079,8 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
                             next_node = first_level.get(sub_idx)
                             if not next_node:
                                 continue
-                            chain_tail = sub_chain[1:] if sub_chain else []
+                            # If there are no deeper preferences, keep following the same sub_idx path
+                            chain_tail = sub_chain[1:] if sub_chain else [sub_idx]
                             seq = _navigate_recursive_tree(next_node, depth - 1, direction, chain_tail)
                             if seq:
                                 break

@@ -13,21 +13,12 @@ from typing import List, Tuple
 
 
 def get_m_for_bs_in_parity(M: int, N: int, parity: str) -> int:
-    """Return a parity-aligned multiplicity for BS(M,N) using m = (M - N) + 1.
+    """Return the multiplicity for BS(M,N) using m = (M - N) + 1.
 
-    Note: 'even' parity = even electron count → odd m values (1,3,5)
-          'odd' parity = odd electron count → even m values (2,4,6)
+    Parity alignment is not adjusted here; the adaptive rules ensure the
+    generated BS tuples already produce valid multiplicities for the next step.
     """
-    valid_m = [1, 3, 5] if parity == "even" else [2, 4, 6]
-    target = max(1, M - N + 1)
-
-    # Prefer candidates that keep BS tuples valid (m >= N)
-    candidates = [value for value in valid_m if value >= N]
-    if not candidates:
-        candidates = valid_m
-
-    aligned = min(candidates, key=lambda value: (abs(value - target), value))
-    return aligned
+    return max(1, M - N + 1)
 
 
 def evolve_bs(M: int, N: int) -> list[tuple[int, int]]:
