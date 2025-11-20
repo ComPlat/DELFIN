@@ -155,7 +155,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
     FieldSpec("IMAG_option", _as_imag_option, default=2),
-    FieldSpec("OCCUPIER_method", _as_occupier_method, default="manually"),
+    FieldSpec("OCCUPIER_method", _as_occupier_method, default="auto"),
     FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep"),
     FieldSpec("OWN_TREE_PURE_WINDOW", _as_int, default=None, allow_none=True),
     FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),

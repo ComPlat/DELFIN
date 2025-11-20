@@ -151,7 +151,7 @@ def _get_custom_tree_dataset(config: Dict[str, Any]) -> Optional[Dict[int, Dict[
 
 
 def _resolve_manual_sequences(config: Dict[str, Any], delta: int) -> Dict[str, List[Dict[str, Any]]]:
-    method_token = str(config.get("OCCUPIER_method", "manually") or "manually").strip().lower()
+    method_token = str(config.get("OCCUPIER_method", "auto") or "auto").strip().lower()
     if method_token == "auto":
         return {}
     cache = _ensure_sequence_cache(config)
@@ -204,7 +204,7 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int,
     """Return copies of even/odd sequences for a specific charge delta."""
     manual_bundle = _resolve_manual_sequences(config, delta)
     parity_target = parity_hint or _infer_parity_hint(config, delta)
-    method = str(config.get("OCCUPIER_method", "manually") or "manually").strip().lower()
+    method = str(config.get("OCCUPIER_method", "auto") or "auto").strip().lower()
     if method == "auto":
         tree_mode = _as_occupier_tree(config.get("OCCUPIER_tree", "deep"))
         custom_tree = None

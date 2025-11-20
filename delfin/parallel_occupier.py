@@ -1839,7 +1839,7 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             filtered.append(job)
         return filtered
 
-    sequential_auto = str(config.get("OCCUPIER_method", "manually")).strip().lower() == "auto"
+    sequential_auto = str(config.get("OCCUPIER_method", "auto")).strip().lower() == "auto"
     if stage_specs and sequential_auto:
         logger.info("[occupier_flat] Auto OCCUPIER → enabling dependency-driven scheduling")
         controller = _AutoStageController(
