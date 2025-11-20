@@ -329,29 +329,24 @@ def _create_occupier_fob_jobs(
     # concurrency but lets sequential stretches finish faster.
     cores_max = total_cores
 
-    # Dual-path heuristic: if both ox/red are active and this is a step_1 stage,
-    # cap cores so ox_1 and red_1 can run concurrently instead of one job monopolizing PAL.
+    # Respect pal_jobs cap if provided: limit per-FoB cores to PAL/pal_jobs (>= cores_min)
     try:
-        has_ox = bool(global_config.get("oxidation_steps"))
-        has_red = bool(global_config.get("reduction_steps"))
+        pal_jobs_raw = global_config.get("pal_jobs")
+        pal_jobs_val = int(pal_jobs_raw) if pal_jobs_raw not in (None, "", 0, "0") else None
     except Exception:
-        has_ox = has_red = False
-    if has_ox and has_red:
-        import re
-        m = re.search(r"(ox|red)_step_(\d+)_OCCUPIER", folder_name)
-        if m:
-            step_idx = int(m.group(2))
-            if step_idx == 1:
-                cap = max(cores_min, max(1, total_cores // 2))
-                cores_optimal = min(cores_optimal, cap)
-                cores_max = min(cores_max, cap)
-                logger.info(
-                    "[%s] dual-path heuristic: capping cores to %d (min=%d, total=%d) to start ox/red in parallel",
-                    folder_name,
-                    cap,
-                    cores_min,
-                    total_cores,
-                )
+        pal_jobs_val = None
+    if pal_jobs_val:
+        cap = max(cores_min, max(1, total_cores // pal_jobs_val))
+        cores_optimal = min(cores_optimal, cap)
+        cores_max = min(cores_max, cap)
+        logger.info(
+            "[%s] pal_jobs heuristic: capping cores to %d (min=%d, total=%d, pal_jobs=%s)",
+            folder_name,
+            cap,
+            cores_min,
+            total_cores,
+            pal_jobs_val,
+        )
 
     # Asymmetric core allocation for FoB pairs based on multiplicity
     # Higher multiplicities typically take longer, so allocate more cores
