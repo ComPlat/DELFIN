@@ -648,9 +648,10 @@ def _create_occupier_fob_jobs(
             report_config = dict(control_config)
             report_config["out_files"] = out_files_map
 
+            prev_cwd_path: Optional[Path] = None
             try:
                 with _cwd_lock:
-                    prev_cwd = os.getcwd()
+                    prev_cwd_path = Path(os.getcwd())
                     try:
                         os.chdir(folder_dir)
                         generate_summary_report_OCCUPIER(
@@ -664,10 +665,41 @@ def _create_occupier_fob_jobs(
                             sequence,
                         )
                     finally:
-                        os.chdir(prev_cwd)
+                        os.chdir(prev_cwd_path)
             except Exception as exc:  # noqa: BLE001
                 logger.error("[%s] Failed to generate OCCUPIER summary: %s", folder_name, exc)
                 raise
+
+            report_target = folder_dir / "OCCUPIER.txt"
+            if not report_target.exists():
+                relocation_candidates = []
+                if prev_cwd_path:
+                    relocation_candidates.append(prev_cwd_path / "OCCUPIER.txt")
+                current_cwd_path = Path.cwd()
+                if not prev_cwd_path or current_cwd_path != prev_cwd_path:
+                    relocation_candidates.append(current_cwd_path / "OCCUPIER.txt")
+
+                for candidate in relocation_candidates:
+                    if not candidate.exists():
+                        continue
+                    try:
+                        shutil.move(str(candidate), report_target)
+                        logger.warning(
+                            "[%s] OCCUPIER summary written to %s; relocating to %s",
+                            folder_name,
+                            candidate,
+                            report_target,
+                        )
+                        break
+                    except Exception as move_exc:  # noqa: BLE001
+                        logger.error(
+                            "[%s] Could not relocate OCCUPIER summary from %s: %s",
+                            folder_name,
+                            candidate,
+                            move_exc,
+                        )
+                if not report_target.exists():
+                    raise RuntimeError(f"OCCUPIER.txt missing after summary generation for {folder_name}")
 
             logger.info("[%s] Best FoB selection completed", folder_name)
             _update_runtime_cache(folder_name, folder_dir, global_config, occ_results)

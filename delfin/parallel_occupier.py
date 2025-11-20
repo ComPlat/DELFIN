@@ -419,6 +419,46 @@ def build_occupier_jobs(
     jobs: List[WorkflowJob] = []
     descriptors: List[JobDescriptor] = []
     workspace_root = _resolve_workspace_root()
+    base_charge = _parse_int(context.charge, fallback=0)
+
+    neutral_electrons = config.get("_neutral_electrons")
+    try:
+        neutral_electrons = int(neutral_electrons)
+    except (TypeError, ValueError):
+        neutral_electrons = None
+
+    multiplicity_guess = config.get("_multiplicity_guess")
+    try:
+        multiplicity_guess = int(multiplicity_guess)
+    except (TypeError, ValueError):
+        multiplicity_guess = None
+
+    if neutral_electrons is None or multiplicity_guess is None:
+        try:
+            from delfin.utils import calculate_total_electrons_txt
+
+            control_path = workspace_root / "CONTROL.txt"
+            electron_info = calculate_total_electrons_txt(str(control_path))
+        except Exception:  # noqa: BLE001
+            electron_info = None
+
+        if electron_info:
+            if neutral_electrons is None and electron_info[0] is not None:
+                neutral_electrons = int(electron_info[0])
+                config["_neutral_electrons"] = neutral_electrons
+            if multiplicity_guess is None and electron_info[1] is not None:
+                multiplicity_guess = int(electron_info[1])
+                config["_multiplicity_guess"] = multiplicity_guess
+            logger.debug(
+                "[occupier] Derived electron info from CONTROL: neutral=%s, guess=%s",
+                electron_info[0],
+                electron_info[1],
+            )
+        else:
+            logger.debug(
+                "[occupier] Could not derive electron info from CONTROL at %s",
+                control_path,
+            )
 
     @contextmanager
     def _use_workspace() -> Iterator[None]:
@@ -510,6 +550,25 @@ def build_occupier_jobs(
     def register_descriptor(descriptor: JobDescriptor) -> None:
         descriptors.append(descriptor)
 
+    def _stage_delta(step_type: str, step: Optional[int]) -> int:
+        if step_type == "ox" and step:
+            return step
+        if step_type == "red" and step:
+            return -step
+        return 0
+
+    def _parity_aligned_default(delta: int) -> int:
+        if neutral_electrons is not None:
+            actual = neutral_electrons - (base_charge + delta)
+            return 1 if (actual % 2 == 0) else 2
+        if multiplicity_guess is not None:
+            base_even = (multiplicity_guess % 2 == 1)
+            stage_even = base_even if (delta % 2 == 0) else not base_even
+            return 1 if stage_even else 2
+        # Assume neutral species is even-electron as last resort
+        assumed_even = (delta % 2 == 0)
+        return 1 if assumed_even else 2
+
     def _control_multiplicity(step_type: str, step: Optional[int] = None) -> int:
         if step_type == "initial":
             keys = ["multiplicity_0", "multiplicity"]
@@ -525,7 +584,18 @@ def build_occupier_jobs(
                 return int(str(value).strip())
             except (TypeError, ValueError):
                 logger.debug("[occupier] Cannot parse %s='%s' from CONTROL.txt.", key, value)
-        return 1
+        delta = _stage_delta(step_type, step)
+        derived = _parity_aligned_default(delta)
+        logger.info(
+            "[occupier] Fallback multiplicity m=%d for %s step=%s (delta=%+d, neutral=%s, guess=%s)",
+            derived,
+            step_type,
+            step or 0,
+            delta,
+            neutral_electrons,
+            multiplicity_guess,
+        )
+        return derived
 
     def _control_additions(step_type: str, step: Optional[int] = None) -> str:
         if step_type == "initial":
