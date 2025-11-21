@@ -570,6 +570,40 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
         if x is None: return "N/A"
         return f"{x:.{prec}f}" if method == 'rounding' else fmt_truncate(x, prec)
 
+    def _kv(label: str, value: str, width: int = 32) -> str:
+        """Key/value helper with bounded padding so the colon stays nearby."""
+        if len(label) >= width:
+            return f"{label}: {value}"
+        return f"{label:<{width}}: {value}"
+
+    delim_col = max(36, len(energy_label) + 2)
+
+    def _kv(label: str, value: str, delim: str = ":", width: int = delim_col) -> str:
+        """Key/value helper with shared delimiter position (matches energy line)."""
+        if len(label) >= width:
+            return f"{label} {delim} {value}" if delim == "=" else f"{label}{delim} {value}"
+        pad = width - len(label)
+        if delim == "=":
+            return f"{label}{' ' * pad}= {value}"
+        return f"{label}{' ' * pad}: {value}"
+
+    def _unpaired_counts(entry: dict) -> tuple[Optional[int], Optional[int], str]:
+        """Return (alpha, beta, source_tag) for the entry."""
+        bs_token = str(entry.get("BS") or "").strip()
+        if bs_token:
+            try:
+                m_val, n_val = [int(tok) for tok in bs_token.split(",", 1)]
+                return max(m_val, 0), max(n_val, 0), "BS"
+            except Exception:
+                pass
+        try:
+            m_val = int(entry.get("m"))
+            if m_val >= 1:
+                return max(m_val - 1, 0), 0, "m"
+        except Exception:
+            pass
+        return None, None, ""
+
     fspe_lines = ""
     for entry, fspe in zip(sequence, fspe_values):
         idx = entry["index"]
@@ -582,13 +616,16 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
         mark = " <-- PREFERRED VALUE" if (min_fspe_index is not None and idx == min_fspe_index) else ""
         bs_line = f", BrokenSym {bs}" if bs else ""
 
-        fspe_lines += f"{energy_label} ({idx})   = {fspe_value}{mark}\n"
+        fspe_lines += _kv(f"{energy_label} ({idx})", f"{fspe_value}{mark}", delim="=") + "\n"
         fspe_lines += f"multiplicity {multiplicity}{bs_line}\n"
-        fspe_lines += f"Spin Contamination (⟨S²⟩ - S(S+1))   : {dev_txt}\n"
+        fspe_lines += _kv("Spin Contamination (⟨S²⟩ - S(S+1))", dev_txt) + "\n"
+        alpha_cnt, beta_cnt, src_tag = _unpaired_counts(entry)
         if is_bs_flag:
             j3_val = get_j3(idx, True)
             j3_str = "N/A" if j3_val is None else f"{j3_val:.2f} cm⁻¹"
-            fspe_lines += f"J(Yamaguchi)=-(E[HS]-E[BS])/(⟨S²⟩HS-⟨S²⟩BS) : {j3_str}\n"
+            fspe_lines += _kv("J(Yamaguchi)", j3_str) + "\n"
+        if alpha_cnt is not None and beta_cnt is not None:
+            fspe_lines += _kv("Unpaired e⁻ (α|β-spin)", f"{alpha_cnt:2d} | {beta_cnt:<2d}") + "\n"
         fspe_lines += "----------------------------------------------------------------\n"
 
     # ----------------------- method line / metals block ------------------------
@@ -609,6 +646,8 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
         method_str = method_line_from_control(include_freq)
 
     metal_basis_print = metal_basis_from_inp or metal_basisset_rep_ctl or ""
+    if not metals:
+        metal_basis_print = ""
 
     lowest_str = f"{fmt_truncate(min_fspe_value, prec)} (H)" if min_fspe_value is not None else "No valid FSPE values found"
 
@@ -1072,6 +1111,8 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
         method_str = method_line_from_control(include_freq)
 
     metal_basis_print = metal_basis_from_inp or metal_basisset_rep_ctl or ""
+    if not metals:
+        metal_basis_print = ""
 
     lowest_str = f"{fmt_truncate(min_fspe_value, prec)} (H)" if min_fspe_value is not None else "No valid FSPE values found"
 
