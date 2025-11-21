@@ -445,12 +445,38 @@ def _collect_preference_chain(anchor: int, target: int, parity: str,
 
 
 def _ordered_candidates(source: Dict[int, Any], preferred: Optional[int]) -> List[int]:
-    ordered: List[int] = []
-    if preferred is not None and preferred in source:
-        ordered.append(preferred)
-    for candidate in sorted(source.keys()):
-        if candidate not in ordered:
-            ordered.append(candidate)
+    """Return sorted candidate keys, honoring a preferred index (int/str tolerant)."""
+    if not source:
+        return []
+
+    def _normalize(key: Any) -> Any:
+        try:
+            return int(key)
+        except Exception:  # noqa: BLE001
+            return key
+
+    ordered: List[Any] = []
+    if preferred is not None:
+        for token in (preferred, str(preferred)):
+            if token in source and token not in ordered:
+                ordered.append(token)
+
+    numeric: List[tuple[int, Any]] = []
+    non_numeric: List[tuple[str, Any]] = []
+    for key in source.keys():
+        norm = _normalize(key)
+        if isinstance(norm, int):
+            numeric.append((norm, key))
+        else:
+            non_numeric.append((str(norm), key))
+
+    for _, key in sorted(numeric, key=lambda pair: pair[0]):
+        if key not in ordered:
+            ordered.append(key)
+    for _, key in sorted(non_numeric, key=lambda pair: pair[0]):
+        if key not in ordered:
+            ordered.append(key)
+
     return ordered
 
 
