@@ -1072,7 +1072,7 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
             # Follow recorded preferences from anchor to target delta
             preference_chain = _collect_preference_chain(anchor, delta, source_parity, state_cache)
             anchor_preference = _preferred_index_from_state(state_cache, anchor, source_parity)
-            preferred_branch = anchor_preference if anchor_preference is not None else (preference_chain[0] if preference_chain else None)
+            preferred_branch = anchor_preference
             ordered_indices = _ordered_candidates(parity_branches, preferred_branch)
 
             for branch_index in ordered_indices:
@@ -1092,8 +1092,8 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
                         continue
 
                     sub_chain: List[int] = []
-                    if preferred_branch is not None and branch_index == preferred_branch:
-                        sub_chain = preference_chain[1:]
+                    if preference_chain and (preferred_branch is None or branch_index == preferred_branch):
+                        sub_chain = preference_chain
 
                     if depth == 1:
                         pref_sub = sub_chain[0] if sub_chain else 1
