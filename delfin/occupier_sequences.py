@@ -446,10 +446,16 @@ def remove_existing_sequence_blocks(
     lower = original.lower()
     own_mode = "occupier_tree=own" in lower or "occupier_tree=dee4" in lower
 
-    # In own-mode keep sequences in the main CONTROL (force=False) but strip
-    # them from the OCCUPIER copies (force=True) so auto-tree handles them.
+    # In own-mode keep user-defined sequences but drop any stale auto overrides
     if own_mode and not force:
-        return original
+        updated = _strip_section(
+            original,
+            "# AUTO sequence overrides",
+            ("ESD MODULE", "INFOS:"),
+        )
+        if persist and updated != original:
+            control_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
+        return updated if updated != original else original
 
     if preserve_auto_sequences:
         return original

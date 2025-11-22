@@ -841,7 +841,10 @@ def run_OCCUPIER():
         seq_bundle = resolve_sequences_for_delta(config, species_delta)
 
         method_token = str(config.get("OCCUPIER_method", "auto") or "auto").strip().lower()
-        if method_token == "auto" and seq_bundle:
+        tree_token = str(config.get("OCCUPIER_tree", "deep") or "deep").strip().lower()
+        own_auto_mode = method_token == "auto" and tree_token == "own"
+
+        if method_token == "auto" and seq_bundle and not own_auto_mode:
             try:
                 remove_existing_sequence_blocks(control_file_path, force=True)
                 append_sequence_overrides(control_file_path, seq_bundle)
