@@ -384,27 +384,35 @@ def infer_parity_from_m(value: Any, fallback: Optional[str] = None) -> Optional[
 
 
 def record_auto_preference(parity: str, preferred_index: Optional[int], delta: int,
-                           *, root: Optional[Path] = None) -> None:
-    """Remember which FoB index won for a given delta.
+                           *, m_value: Optional[int] = None, bs_value: Optional[str] = None,
+                           root: Optional[Path] = None) -> None:
+    """Remember which FoB index won for a given delta, including m and BS values.
 
-    This stores preferences for all delta values, not just anchors, to enable
-    adaptive tree navigation for deep recursive trees.
+    This stores preferences for all delta values with full winner info (index, m, BS)
+    to enable rule-based sequence generation for own mode.
     """
     if preferred_index is None:
         return
-    # Store preference for ALL delta values, not just anchors
-    # This enables recursive tree navigation to adapt based on previous choices
     root_path = _resolve_root(root)
     state = _load_state(root_path)
     entry = state.setdefault(str(delta), {})
-    entry[_parity_token(parity)] = int(preferred_index)
+
+    # Store full winner info for own mode rule-based generation
+    winner_info = {"index": int(preferred_index)}
+    if m_value is not None:
+        winner_info["m"] = int(m_value)
+    if bs_value is not None:
+        winner_info["BS"] = str(bs_value).strip()
+
+    entry[_parity_token(parity)] = winner_info
     _save_state(state, root_path)
-    logger.debug("[occupier_auto] Recorded preferred index %s for parity=%s delta=%s at %s",
-                 preferred_index, parity, delta, root_path)
+    logger.debug("[occupier_auto] Recorded winner index=%s m=%s BS=%s for parity=%s delta=%s at %s",
+                 preferred_index, m_value, bs_value, parity, delta, root_path)
 
 
 def _preferred_index_from_state(state: Dict[str, Any], delta: int,
                                 parity: Optional[str] = None) -> Optional[int]:
+    """Get preferred index from state (backwards compatible with old int format)."""
     entry = state.get(str(delta))
     if not isinstance(entry, dict):
         return None
@@ -420,7 +428,46 @@ def _preferred_index_from_state(state: Dict[str, Any], delta: int,
         if value is None:
             continue
         try:
+            # New format: dict with {index, m, BS}
+            if isinstance(value, dict):
+                return int(value.get("index", 0))
+            # Old format: just int
             return int(value)
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def _get_winner_info_from_state(state: Dict[str, Any], delta: int,
+                                 parity: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Get full winner info (index, m, BS) from state.
+
+    Args:
+        state: The auto state dictionary
+        delta: The delta value to look up
+        parity: The parity to look up. If None, returns first found (even, then odd).
+                If specified, ONLY returns that parity (no fallback to other).
+    """
+    entry = state.get(str(delta))
+    if not isinstance(entry, dict):
+        return None
+
+    if parity is None:
+        # No parity specified: try both (even first, then odd)
+        tokens = ["even", "odd"]
+    else:
+        # Parity specified: ONLY return that parity (no fallback)
+        tokens = [_parity_token(parity)]
+
+    for token in tokens:
+        value = entry.get(token)
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            return value
+        # Old format fallback
+        try:
+            return {"index": int(value), "m": None, "BS": None}
         except Exception:  # noqa: BLE001
             return None
     return None
@@ -642,12 +689,11 @@ class _CustomTreeBuilder:
         self.min_m = {parity: min(values) if values else 1 for parity, values in self.pure_map.items()}
         # If parity is empty, use 7 as max_m (not 1) to allow BS evolution in nested levels
         self.max_m = {parity: max(values) if values else 8 for parity, values in self.pure_map.items()}
-        # Generate baseline with BS for all pure states (for reduction initiation)
-        baseline_bs_even = self._generate_baseline_bs_candidates("even")
-        baseline_bs_odd = self._generate_baseline_bs_candidates("odd")
+        # Baseline uses only user-defined sequences (no auto-BS)
+        # BS are added dynamically in branches based on winners
         self.baseline = {
-            "even": self._generate_baseline_seq("even", include_initial_bs=True, add_bs=baseline_bs_even),
-            "odd": self._generate_baseline_seq("odd", include_initial_bs=True, add_bs=baseline_bs_odd),
+            "even": self._generate_baseline_seq("even", include_initial_bs=True),
+            "odd": self._generate_baseline_seq("odd", include_initial_bs=True),
         }
 
     def _generate_baseline_bs_candidates(self, parity: str) -> List[Tuple[int, int]]:
@@ -865,119 +911,73 @@ class _CustomTreeBuilder:
             seq = self._inject_bs_entries(seq, parity, add_bs)
         return seq
 
-    def _generate_oxidation_sequence(self, parity: str, prev_m: int, prev_bs: str) -> List[Dict[str, Any]]:
-        """Generate oxidation sequence - always uses windowed pure candidates."""
-        seq = self._pure_window_sequence(parity, prev_m)
-        # Always generate BS candidates (both for pure and BS winners)
-        add_bs = self._next_bs_candidates(parity, prev_m, prev_bs)
-        if add_bs:
-            seq = self._inject_bs_entries(seq, parity, add_bs)
-        return seq
-
-    def _build_recursive_branches(self, depth: int, max_depth: int, current_parity: str,
-                                  prev_m: int, prev_bs: str) -> Dict[int, Dict[str, Any]]:
-        if depth >= max_depth:
-            return {}
-
-        branches: Dict[int, Dict[str, Any]] = {}
-        next_parity = "odd" if current_parity == "even" else "even"
-
-        reduction_seq = self._generate_reduction_sequence(current_parity, prev_m, prev_bs)
-        reduction_branches: Dict[int, Dict[str, Any]] = {}
-        for entry in reduction_seq:
-            entry_m = entry["m"]
-            entry_bs = entry.get("BS", "")
-            child = self._build_recursive_branches(
-                depth + 1,
-                max_depth,
-                next_parity,
-                entry_m,
-                entry_bs,
-            )
-            reduction_branches[entry["index"]] = {
-                "seq": copy.deepcopy(reduction_seq),
-                "branches": child,
-            }
-
-        oxidation_seq = self._generate_oxidation_sequence(current_parity, prev_m, prev_bs)
-        oxidation_branches: Dict[int, Dict[str, Any]] = {}
-        for entry in oxidation_seq:
-            entry_m = entry["m"]
-            entry_bs = entry.get("BS", "")
-            child = self._build_recursive_branches(
-                depth + 1,
-                max_depth,
-                next_parity,
-                entry_m,
-                entry_bs,
-            )
-            oxidation_branches[entry["index"]] = {
-                "seq": copy.deepcopy(oxidation_seq),
-                "branches": child,
-            }
-
-        branches[-1] = reduction_branches
-        branches[1] = oxidation_branches
-        return branches
-
-    def build_tree(self, max_depth: int = 3) -> Dict[int, Dict[str, Any]]:
-        if not self.pure_map["even"] and not self.pure_map["odd"]:
-            return {}
-        tree: Dict[int, Dict[str, Any]] = {
-            0: {
-                "baseline": {
-                    "even": copy.deepcopy(self.baseline["even"]),
-                    "odd": copy.deepcopy(self.baseline["odd"]),
-                },
-                "branches": {
-                    "even": {},
-                    "odd": {},
-                },
-            }
-        }
-        for parity in ("even", "odd"):
-            baseline_entries = self.baseline.get(parity, [])
-            target_parity = "odd" if parity == "even" else "even"
-            parity_branches: Dict[int, Dict[str, Any]] = {}
-            for fob_idx, entry in enumerate(baseline_entries, start=1):
-                parity_branches[fob_idx] = self._build_recursive_branches(
-                    depth=0,
-                    max_depth=max_depth,
-                    current_parity=target_parity,
-                    prev_m=entry["m"],
-                    prev_bs=entry.get("BS", ""),
-                )
-            tree[0]["branches"][parity] = parity_branches
-        return tree
+    # _generate_oxidation_sequence, _build_recursive_branches, and build_tree removed
+    # These were only used for tree building, which is no longer needed for own mode
 
 
-def build_custom_auto_tree(even_seq: Optional[List[Dict[str, Any]]],
-                           odd_seq: Optional[List[Dict[str, Any]]],
-                           *,
-                           pure_window: Optional[int] = None,
-                           max_depth: int = 3,
-                           progressive_from: bool = False) -> Dict[int, Dict[str, Any]]:
-    """Construct an auto tree dataset from user-supplied baseline sequences."""
+def generate_sequence_from_winner_rules(
+    even_seq: Optional[List[Dict[str, Any]]],
+    odd_seq: Optional[List[Dict[str, Any]]],
+    prev_m: int,
+    prev_bs: str,
+    target_parity: str,
+    *,
+    pure_window: Optional[int] = None,
+    progressive_from: bool = False,
+    include_bs: bool = True,
+) -> List[Dict[str, Any]]:
+    """Generate next sequence based on winner using rules (no tree needed).
+
+    Rules:
+    - Pure states: windowed around prev_m
+    - BS candidates (if include_bs=True):
+      - If BS won: evolve BS (M±1,N), (M,N±1)
+      - If pure won: initiate BS with BS(m-1,1)
+    """
     builder = _CustomTreeBuilder(even_seq, odd_seq, pure_window=pure_window,
                                  progressive_from=progressive_from)
-    return builder.build_tree(max_depth=max_depth)
+
+    # Generate pure states
+    seq = builder._pure_window_sequence(target_parity, prev_m)
+
+    # Add BS candidates if requested
+    if include_bs:
+        add_bs = builder._next_bs_candidates(target_parity, prev_m, prev_bs)
+        if add_bs:
+            seq = builder._inject_bs_entries(seq, target_parity, add_bs)
+
+    # Update progressive_from values after BS injection (if needed)
+    if progressive_from:
+        # Build pure_index_map (m -> index in OCCUPIER.txt)
+        pure_index_map: dict[int, int] = {}
+        for entry in seq:
+            if not entry.get("BS"):
+                pure_index_map[entry["m"]] = entry["index"]
+
+        # Get sorted pure m values
+        pure_m_values = sorted([m for m in pure_index_map.keys()])
+
+        # Update from values for pure states (progressive)
+        for entry in seq:
+            if not entry.get("BS"):
+                # Find position of this m in sorted pure m values
+                m = entry["m"]
+                pos = pure_m_values.index(m)
+                if pos == 0:
+                    entry["from"] = 0  # First pure state
+                else:
+                    # Point to previous pure state's index
+                    prev_m = pure_m_values[pos - 1]
+                    entry["from"] = pure_index_map[prev_m]
+            else:
+                # BS entries point to their pure m state
+                entry["from"] = pure_index_map.get(entry["m"], 0)
+
+    return seq
 
 
-def persist_custom_tree(dataset: Dict[int, Dict[str, Any]], root: Path | None = None,
-                        filename: str = "own_auto_tree.json") -> Optional[Path]:
-    """Write the custom tree dataset to JSON for inspection."""
-    if not dataset:
-        return None
-    target_root = _resolve_root(root)
-    path = target_root / filename
-    try:
-        with path.open("w", encoding="utf-8") as fh:
-            json.dump(dataset, fh, indent=2, sort_keys=True)
-        logger.info("Wrote custom OCCUPIER tree to %s", path)
-        return path
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to write custom OCCUPIER tree %s: %s", path, exc)
-    return None
+# build_custom_auto_tree and persist_custom_tree removed - no longer needed for own mode
+# Own mode now uses rule-based generation instead of pre-built trees
 
 
 _TREE_DATASETS = {
@@ -988,18 +988,166 @@ _TREE_DATASETS = {
 }
 
 
+def _resolve_own_mode_sequences(
+    delta: int,
+    custom_dataset: Dict[int, Dict[str, Any]],
+    *,
+    root: Optional[Path] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Rule-based sequence generation for own mode (no tree navigation).
+
+    For delta=0: Return baseline sequences
+    For delta!=0: Generate sequences based on previous winner using rules
+    """
+    root_path = _resolve_root(root)
+    state_cache = _load_state(root_path)
+    bundle: Dict[str, List[Dict[str, Any]]] = {}
+
+    def _storage_key(seq: List[Dict[str, Any]], fallback_parity: str) -> str:
+        m_candidate = None
+        for entry in seq:
+            if isinstance(entry, dict) and entry.get("m") is not None:
+                m_candidate = entry.get("m")
+                break
+        parity = infer_parity_from_m(m_candidate, fallback_parity)
+        parity = parity if parity in ("even", "odd") else fallback_parity
+        return f"{parity}_seq"
+
+    # Get baseline configuration
+    baseline_config = custom_dataset.get(0, {}).get("baseline", {})
+    even_baseline = baseline_config.get("even", [])
+    odd_baseline = baseline_config.get("odd", [])
+
+    if not even_baseline and not odd_baseline:
+        return {}
+
+    # Extract config parameters
+    pure_window = None
+    progressive_from = False
+    bs_in_oxidation = False
+    if config:
+        raw_window = config.get("OWN_TREE_PURE_WINDOW")
+        if raw_window not in (None, ""):
+            try:
+                pure_window = int(str(raw_window).strip())
+            except Exception:
+                pass
+        raw_progressive = str(config.get("OWN_progressive_from", "no")).strip().lower()
+        progressive_from = raw_progressive in ("yes", "true", "1", "on")
+        raw_bs_ox = str(config.get("OWN_BS_IN_OXIDATION", "no")).strip().lower()
+        bs_in_oxidation = raw_bs_ox in ("yes", "true", "1", "on")
+
+    # Delta 0: Return baseline
+    if delta == 0:
+        for parity in ("even", "odd"):
+            seq = baseline_config.get(parity)
+            if seq:
+                key = _storage_key(seq, parity)
+                bundle[key] = copy.deepcopy(seq)
+        return bundle
+
+    # Delta != 0: Generate from previous winner
+    # Only generate the opposite parity of the previous winner
+    direction = +1 if delta > 0 else -1
+    prev_delta = delta - direction
+
+    # Determine if BS should be included
+    # Oxidation (delta > 0): use bs_in_oxidation setting (default no)
+    # Reduction (delta < 0): always include BS (default yes)
+    is_oxidation = delta > 0
+    include_bs = bs_in_oxidation if is_oxidation else True
+
+    # First, try to find which parity won at previous delta
+    winner_info_even = _get_winner_info_from_state(state_cache, prev_delta, "even")
+    winner_info_odd = _get_winner_info_from_state(state_cache, prev_delta, "odd")
+
+    # Determine which parity won (prefer one with actual m value)
+    if winner_info_even and winner_info_even.get("m") is not None:
+        source_parity = "even"
+        winner_info = winner_info_even
+    elif winner_info_odd and winner_info_odd.get("m") is not None:
+        source_parity = "odd"
+        winner_info = winner_info_odd
+    else:
+        # No winner found - generate both parities as fallback
+        logger.debug("[own_mode] No winner found for delta=%s, generating both parities", prev_delta)
+        for target_parity in ("even", "odd"):
+            source_parity_fb = "odd" if target_parity == "even" else "even"
+            source_baseline = baseline_config.get(source_parity_fb, [])
+            if source_baseline:
+                mid_idx = len(source_baseline) // 2
+                prev_m = source_baseline[mid_idx].get("m", 3)
+                prev_bs = ""
+            else:
+                prev_m = 3 if source_parity_fb == "even" else 4
+                prev_bs = ""
+
+            seq = generate_sequence_from_winner_rules(
+                even_baseline,
+                odd_baseline,
+                prev_m,
+                prev_bs,
+                target_parity,
+                pure_window=pure_window,
+                progressive_from=progressive_from,
+                include_bs=include_bs,
+            )
+            if seq:
+                key = _storage_key(seq, target_parity)
+                bundle[key] = seq
+        return bundle
+
+    # Generate only the opposite parity of the winner
+    target_parity = "odd" if source_parity == "even" else "even"
+    prev_m = winner_info["m"]
+    prev_bs = winner_info.get("BS", "")
+
+    logger.debug(
+        "[own_mode] Winner from delta=%s was parity=%s (m=%s, BS=%s), generating parity=%s",
+        prev_delta, source_parity, prev_m, prev_bs, target_parity
+    )
+
+    # Generate sequence using rules
+    seq = generate_sequence_from_winner_rules(
+        even_baseline,
+        odd_baseline,
+        prev_m,
+        prev_bs,
+        target_parity,
+        pure_window=pure_window,
+        progressive_from=progressive_from,
+        include_bs=include_bs,
+    )
+
+    if seq:
+        key = _storage_key(seq, target_parity)
+        logger.debug(
+            "[own_mode] Generated sequence for delta=%s target_parity=%s: %d entries, m-values=%s, storage_key=%s",
+            delta, target_parity, len(seq), [e.get("m") for e in seq], key
+        )
+        bundle[key] = seq
+
+    return bundle
+
+
 def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
                                  tree_mode: str = "deep",
                                  parity_hint: Optional[str] = None,
-                                 custom_dataset: Optional[Dict[int, Dict[str, Any]]] = None) -> Dict[str, List[Dict[str, Any]]]:
+                                 custom_dataset: Optional[Dict[int, Dict[str, Any]]] = None,
+                                 config: Optional[Dict[str, Any]] = None) -> Dict[str, List[Dict[str, Any]]]:
     """Return auto-managed sequences for the requested delta (if available)."""
     normalized_mode = str(tree_mode or "deep").strip().lower()
+
+    # Special handling for own mode: rule-based generation (no tree navigation)
     if normalized_mode == "own":
         if not custom_dataset:
             return {}
-        settings_source = custom_dataset
-    else:
-        settings_source = _TREE_DATASETS.get(normalized_mode, AUTO_SETTINGS)
+        return _resolve_own_mode_sequences(
+            delta, custom_dataset, root=root, config=config
+        )
+
+    settings_source = _TREE_DATASETS.get(normalized_mode, AUTO_SETTINGS)
     root_path = _resolve_root(root)
     state_cache = _load_state(root_path)
     bundle: Dict[str, List[Dict[str, Any]]] = {}
@@ -1022,10 +1170,10 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
         return copy.deepcopy(seq)
 
     # Check if this is a recursive tree (deep has recursive structure)
-    is_recursive_tree = normalized_mode in {"deep", "own"}
+    is_recursive_tree = normalized_mode == "deep"
 
     oxidation_baseline = None
-    if normalized_mode in {"deep", "own"}:
+    if normalized_mode == "deep":
         base_settings = settings_source.get(0)
         if base_settings:
             oxidation_baseline = base_settings.get("baseline", {})
@@ -1053,14 +1201,21 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
         use_simplified_oxidation = normalized_mode in {"deep", "own"} and offset > 0 and oxidation_baseline
 
         for target_parity in requested_parities:
-            # For recursive trees: navigate from the branch matching the target delta's parity
-            # The tree structure encodes parity flips through depth, so we start from the
-            # baseline branch that matches where we want to end up
+            # For recursive trees: the tree structure encodes parity flips at each depth
+            # Navigate from the baseline branch that leads to the target parity after N flips
             if normalized_mode in {"deep", "own"}:
-                # Source parity is determined by flipping target parity by the offset distance
-                # offset=-1: flip once → source is opposite of target
-                # offset=-2: flip twice → source is same as target
-                source_parity = _parity_with_distance(target_parity, abs(offset))
+                # The tree alternates parity at each depth level
+                # To reach target parity at depth N, start from the branch that flips correctly
+                # depth 0 (baseline) → depth 1 (flip once) → depth 2 (flip twice)
+                # For even depth: same as baseline parity
+                # For odd depth: opposite of baseline parity
+                depth = abs(offset)
+                if depth % 2 == 0:
+                    # Even depth: same parity as target
+                    source_parity = target_parity
+                else:
+                    # Odd depth: opposite parity from target
+                    source_parity = "odd" if target_parity == "even" else "even"
             else:
                 source_parity = target_parity
 

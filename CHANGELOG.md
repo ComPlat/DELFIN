@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Auto OCCUPIER deep3 tree mode**: Recursive tree structure with true depth (paths: 0→±1→±2→±3) for enhanced spin-state exploration
 - **Tree visualization**: ASCII diagrams in `deep_auto_tree.py` and `deep2_auto_tree.py` showing complete branch structure
-- **Auto OCCUPIER own tree mode**: Build a custom adaptive tree per CONTROL via `OCCUPIER_tree=own`; the runtime generator reads `OCCUPIER_sequence_profiles` and stores the resulting tree as `own_auto_tree.json` in the workspace
+- **Auto OCCUPIER own mode**: Rule-based generation driven by the previous winner when `OCCUPIER_tree=own` (no prebuilt `own_auto_tree.json`)
 
 ### Changed
 - **Auto OCCUPIER navigation**: Enhanced to support recursive tree structures via `_navigate_recursive_tree()`

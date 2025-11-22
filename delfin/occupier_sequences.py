@@ -14,17 +14,12 @@ from delfin.common.control_validator import _as_occupier_tree
 from .occupier_auto import (
     resolve_auto_sequence_bundle,
     _parity_token,
-    build_custom_auto_tree,
-    persist_custom_tree,
     _resolve_root,
 )
 
 _DELTA_MARKER = ".delfin_occ_delta"
 _FOLDER_PATTERN = re.compile(r"(ox|red)(?:_step)?_(\d+)", re.IGNORECASE)
 logger = get_logger(__name__)
-
-# Global flag to ensure tree is built only once (then read from file)
-_GLOBAL_CUSTOM_TREE_BUILT = False
 
 
 def _coerce_int(value: Any, fallback: int = 0) -> int:
@@ -104,57 +99,25 @@ def _extract_custom_tree_sequences(config: Dict[str, Any]) -> tuple[List[Dict[st
     return even_seq, odd_seq
 
 
-def _get_custom_tree_dataset(config: Dict[str, Any]) -> Optional[Dict[int, Dict[str, Any]]]:
-    global _GLOBAL_CUSTOM_TREE_BUILT
+def _get_custom_baseline_sequences(config: Dict[str, Any]) -> Optional[Dict[int, Dict[str, Any]]]:
+    """Extract user-defined baseline sequences for own mode (no tree building).
 
-    try:
-        root_path = _resolve_root()
-    except Exception:
-        root_path = Path.cwd()
-
-    tree_file = root_path / "own_auto_tree.json"
-
-    # If tree file exists, read from disk (every FoB reads from file)
-    if tree_file.exists():
-        try:
-            with tree_file.open("r", encoding="utf-8") as fh:
-                dataset = json.load(fh)
-            # Convert string keys back to int for anchor level
-            if dataset and isinstance(dataset, dict):
-                return {int(k): v for k, v in dataset.items()}
-        except Exception as exc:
-            logger.warning("Failed to read custom tree from %s: %s", tree_file, exc)
-
-    # Build tree only if not already built
-    if _GLOBAL_CUSTOM_TREE_BUILT:
-        return None
-
+    Returns a minimal dataset with only baseline sequences:
+    {0: {"baseline": {"even": [...], "odd": [...]}}}
+    """
     even_seq, odd_seq = _extract_custom_tree_sequences(config)
     if not even_seq and not odd_seq:
         return None
 
-    # Build and persist tree (only once)
-    raw_window = config.get("OWN_TREE_PURE_WINDOW")
-    pure_window_value: Optional[int] = None
-    if raw_window not in (None, ""):
-        try:
-            pure_window_value = int(str(raw_window).strip())
-        except Exception:
-            logger.warning("Invalid OWN_TREE_PURE_WINDOW value '%s'; falling back to default window.", raw_window)
-
-    raw_progressive = str(config.get("OWN_progressive_from", "no")).strip().lower()
-    progressive_flag = raw_progressive in ("yes", "true", "1", "on")
-    dataset = build_custom_auto_tree(
-        even_seq,
-        odd_seq,
-        pure_window=pure_window_value,
-        progressive_from=progressive_flag,
-    )
-    if dataset:
-        persist_custom_tree(dataset, root=root_path)
-        _GLOBAL_CUSTOM_TREE_BUILT = True
-
-    return dataset
+    # Return only baseline (no tree building needed for rule-based mode)
+    return {
+        0: {
+            "baseline": {
+                "even": even_seq,
+                "odd": odd_seq,
+            }
+        }
+    }
 
 
 def _resolve_manual_sequences(config: Dict[str, Any], delta: int) -> Dict[str, List[Dict[str, Any]]]:
@@ -227,7 +190,7 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int,
     if method == "auto":
         custom_tree = None
         if tree_mode == "own":
-            custom_tree = _get_custom_tree_dataset(config)
+            custom_tree = _get_custom_baseline_sequences(config)
             if not custom_tree:
                 logger.warning("OCCUPIER_tree=own requested but no custom sequences found; falling back to manual sequences.")
                 return manual_bundle
@@ -236,6 +199,7 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int,
             tree_mode=tree_mode,
             parity_hint=parity_target or parity_hint,
             custom_dataset=custom_tree,
+            config=config,
         )
         # Check if auto_bundle has actual sequences (not just empty dict)
         has_auto_sequences = auto_bundle and any(

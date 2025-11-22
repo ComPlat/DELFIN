@@ -561,7 +561,15 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
                 preferred_entry.get("m") if preferred_entry else None,
                 "even" if is_even else "odd",
             )
-            record_auto_preference(parity_hint or ("even" if is_even else "odd"), min_fspe_index, delta_value)
+            m_val = preferred_entry.get("m") if preferred_entry else None
+            bs_val = preferred_entry.get("BS") if preferred_entry else None
+            record_auto_preference(
+                parity_hint or ("even" if is_even else "odd"),
+                min_fspe_index,
+                delta_value,
+                m_value=m_val,
+                bs_value=bs_val,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[occupier_auto] Failed to record preference: %s", exc)
 
@@ -1063,7 +1071,15 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
                 preferred_entry.get("m") if preferred_entry else None,
                 "even" if is_even else "odd",
             )
-            record_auto_preference(parity_hint or ("even" if is_even else "odd"), min_fspe_index, delta_value)
+            m_val = preferred_entry.get("m") if preferred_entry else None
+            bs_val = preferred_entry.get("BS") if preferred_entry else None
+            record_auto_preference(
+                parity_hint or ("even" if is_even else "odd"),
+                min_fspe_index,
+                delta_value,
+                m_value=m_val,
+                bs_value=bs_val,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[occupier_auto] Failed to record preference (safe): %s", exc)
 
