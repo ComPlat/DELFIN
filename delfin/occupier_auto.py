@@ -642,10 +642,23 @@ class _CustomTreeBuilder:
         self.min_m = {parity: min(values) if values else 1 for parity, values in self.pure_map.items()}
         # If parity is empty, use 7 as max_m (not 1) to allow BS evolution in nested levels
         self.max_m = {parity: max(values) if values else 8 for parity, values in self.pure_map.items()}
+        # Generate baseline with BS for all pure states (for reduction initiation)
+        baseline_bs_even = self._generate_baseline_bs_candidates("even")
+        baseline_bs_odd = self._generate_baseline_bs_candidates("odd")
         self.baseline = {
-            "even": self._generate_baseline_seq("even", include_initial_bs=True),
-            "odd": self._generate_baseline_seq("odd", include_initial_bs=True),
+            "even": self._generate_baseline_seq("even", include_initial_bs=True, add_bs=baseline_bs_even),
+            "odd": self._generate_baseline_seq("odd", include_initial_bs=True, add_bs=baseline_bs_odd),
         }
+
+    def _generate_baseline_bs_candidates(self, parity: str) -> List[Tuple[int, int]]:
+        """Generate BS(m-1,1) for all pure m values to enable reduction path BS initiation."""
+        pure_values = self.pure_map.get(parity, [])
+        bs_candidates: List[Tuple[int, int]] = []
+        for m_val in pure_values:
+            target = m_val - 1
+            if target >= 1:
+                bs_candidates.append((m_val, 1))
+        return bs_candidates
 
     @staticmethod
     def _parity_matches(parity: str, m_val: int) -> bool:
@@ -1040,20 +1053,14 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
         use_simplified_oxidation = normalized_mode in {"deep", "own"} and offset > 0 and oxidation_baseline
 
         for target_parity in requested_parities:
-            # For recursive trees the top-level branch is determined by the anchor parity.
-            # Parity changes are already encoded in the recursive structure, so always start
-            # from the anchor branch (which matches the neutral parity actually used).
+            # For recursive trees: navigate from the branch matching the target delta's parity
+            # The tree structure encodes parity flips through depth, so we start from the
+            # baseline branch that matches where we want to end up
             if normalized_mode in {"deep", "own"}:
-                anchor_state = state_cache.get(str(anchor), {}) if isinstance(state_cache, dict) else {}
-                if anchor_state.get("even"):
-                    anchor_parity = "even"
-                elif anchor_state.get("odd"):
-                    anchor_parity = "odd"
-                elif baseline.get("even"):
-                    anchor_parity = "even"
-                else:
-                    anchor_parity = "odd"
-                source_parity = anchor_parity
+                # Source parity is determined by flipping target parity by the offset distance
+                # offset=-1: flip once → source is opposite of target
+                # offset=-2: flip twice → source is same as target
+                source_parity = _parity_with_distance(target_parity, abs(offset))
             else:
                 source_parity = target_parity
 
