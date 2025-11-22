@@ -175,19 +175,8 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int,
     manual_bundle = _resolve_manual_sequences(config, delta)
     parity_target = parity_hint or _infer_parity_hint(config, delta)
     method = str(config.get("OCCUPIER_method", "auto") or "auto").strip().lower()
-    tree_mode = _as_occupier_tree(config.get("OCCUPIER_tree", "deep"))
-    force_manual_flag = str(config.get("OCCUPIER_force_manual_sequences", "no") or "no").strip().lower()
-    env_force = str(os.environ.get("DELFIN_FORCE_MANUAL_SEQ", "") or "").strip().lower()
-    force_manual = (
-        method == "auto"
-        and tree_mode != "own"
-        and (force_manual_flag in ("yes", "true", "1", "on") or env_force in ("yes", "true", "1", "on"))
-    )
-
-    if force_manual and manual_bundle:
-        return manual_bundle
-
     if method == "auto":
+        tree_mode = _as_occupier_tree(config.get("OCCUPIER_tree", "deep"))
         custom_tree = None
         if tree_mode == "own":
             custom_tree = _get_custom_baseline_sequences(config)
@@ -421,16 +410,10 @@ def remove_existing_sequence_blocks(
     lower = original.lower()
     own_mode = "occupier_tree=own" in lower or "occupier_tree=dee4" in lower
 
-    # In own-mode keep user-defined sequences but drop any stale auto overrides
+    # In own-mode keep sequences in the main CONTROL (force=False) but strip
+    # them from the OCCUPIER copies (force=True) so auto-tree handles them.
     if own_mode and not force:
-        updated = _strip_section(
-            original,
-            "# AUTO sequence overrides",
-            ("ESD MODULE", "INFOS:"),
-        )
-        if persist and updated != original:
-            control_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
-        return updated if updated != original else original
+        return original
 
     if preserve_auto_sequences:
         return original

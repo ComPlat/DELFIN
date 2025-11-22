@@ -841,17 +841,7 @@ def run_OCCUPIER():
         seq_bundle = resolve_sequences_for_delta(config, species_delta)
 
         method_token = str(config.get("OCCUPIER_method", "auto") or "auto").strip().lower()
-        tree_token = str(config.get("OCCUPIER_tree", "deep") or "deep").strip().lower()
-        own_auto_mode = method_token == "auto" and tree_token == "own"
-        force_manual_flag = str(config.get("OCCUPIER_force_manual_sequences", "no") or "no").strip().lower()
-        env_force = str(os.environ.get("DELFIN_FORCE_MANUAL_SEQ", "") or "").strip().lower()
-        force_manual_mode = (
-            method_token == "auto"
-            and tree_token != "own"
-            and (force_manual_flag in ("yes", "true", "1", "on") or env_force in ("yes", "true", "1", "on"))
-        )
-
-        if method_token == "auto" and seq_bundle and not own_auto_mode and not force_manual_mode:
+        if method_token == "auto" and seq_bundle:
             try:
                 remove_existing_sequence_blocks(control_file_path, force=True)
                 append_sequence_overrides(control_file_path, seq_bundle)

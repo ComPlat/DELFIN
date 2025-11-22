@@ -88,15 +88,6 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
             verbose=False,
         )
         method_token = str(config.get("OCCUPIER_method", "auto")).strip().lower()
-        tree_token = str(config.get("OCCUPIER_tree", "deep")).strip().lower()
-        own_auto_mode = method_token == "auto" and tree_token == "own"
-        force_manual_flag = str(config.get("OCCUPIER_force_manual_sequences", "no") or "no").strip().lower()
-        env_force = str(os.environ.get("DELFIN_FORCE_MANUAL_SEQ", "") or "").strip().lower()
-        force_manual_mode = (
-            method_token == "auto"
-            and tree_token != "own"
-            and (force_manual_flag in ("yes", "true", "1", "on") or env_force in ("yes", "true", "1", "on"))
-        )
         auto_seq_bundle: Dict[str, List[Dict[str, Any]]] = {}
         if method_token == "auto":
             auto_seq_bundle = resolve_sequences_for_delta(config, charge_delta)
@@ -187,15 +178,15 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
         _update_control_file_threadsafe(target_control, charge_delta, pal_override=None)
 
         # Always remove template sections (INFOS, etc.) from copied CONTROL files
-        if not own_auto_mode and not force_manual_mode:
-            remove_existing_sequence_blocks(target_control, force=True)
+        remove_existing_sequence_blocks(target_control, force=True)
 
-        if auto_seq_bundle and method_token == "auto" and not own_auto_mode and not force_manual_mode:
+        if auto_seq_bundle and method_token == "auto":
             append_sequence_overrides(target_control, auto_seq_bundle)
 
-        # RUNTIME UPDATE: Re-resolve sequences if state file exists (non-own auto only)
+        # RUNTIME UPDATE: Re-resolve sequences if state file exists
+        # This handles the case where setup happened before the state was available
         state_file = original_cwd / ".delfin_occ_auto_state.json"
-        if method_token == "auto" and state_file.exists() and not own_auto_mode and not force_manual_mode:
+        if method_token == "auto" and state_file.exists():
             try:
                 # Re-resolve with current state
                 updated_bundle = resolve_sequences_for_delta(config, charge_delta)
