@@ -205,10 +205,16 @@ def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optio
         print(f"[{folder_name}] Warning: could not parse CONTROL.txt ({exc}); auto sequences may fall back.")
         parent_config = {}
 
-    # Detect own-tree auto mode: keep user-specified sequences, skip auto overrides
-    own_auto_mode = (
-        str(parent_config.get("OCCUPIER_method", "auto")).strip().lower() == "auto"
-        and str(parent_config.get("OCCUPIER_tree", "deep")).strip().lower() == "own"
+    # Detect modes
+    method_token = str(parent_config.get("OCCUPIER_method", "auto")).strip().lower()
+    tree_token = str(parent_config.get("OCCUPIER_tree", "deep")).strip().lower()
+    own_auto_mode = method_token == "auto" and tree_token == "own"
+    force_manual_flag = str(parent_config.get("OCCUPIER_force_manual_sequences", "no") or "no").strip().lower()
+    env_force = str(os.environ.get("DELFIN_FORCE_MANUAL_SEQ", "") or "").strip().lower()
+    force_manual_mode = (
+        method_token == "auto"
+        and tree_token != "own"
+        and (force_manual_flag in ("yes", "true", "1", "on") or env_force in ("yes", "true", "1", "on"))
     )
 
     shutil.copy(control_source, folder / "CONTROL.txt")
@@ -260,13 +266,12 @@ def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optio
     write_species_delta_marker(folder, charge_delta)
 
     # Always remove template sections (INFOS, etc.) from copied CONTROL files
-    # For own-tree auto mode we keep the user-defined sequences intact (no auto overrides)
-    if not own_auto_mode:
+    # For own-tree auto mode or forced-manual mode we keep the user-defined sequences intact (no auto overrides)
+    if not own_auto_mode and not force_manual_mode:
         remove_existing_sequence_blocks(control_txt, force=True)
 
-    method_token = str(parent_config.get("OCCUPIER_method", "auto")).strip().lower()
     seq_bundle: Dict[str, List[Dict[str, Any]]] = {}
-    if method_token == "auto" and not own_auto_mode:
+    if method_token == "auto" and not own_auto_mode and not force_manual_mode:
         seq_bundle = resolve_sequences_for_delta(parent_config, charge_delta)
         if seq_bundle:
             append_sequence_overrides(control_txt, seq_bundle)
@@ -274,7 +279,7 @@ def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optio
     # RUNTIME UPDATE: Re-resolve sequences if state file exists
     # This handles the case where setup happened before the state was available
     state_file = parent_dir / ".delfin_occ_auto_state.json"
-    if method_token == "auto" and state_file.exists() and not own_auto_mode:
+    if method_token == "auto" and state_file.exists() and not own_auto_mode and not force_manual_mode:
         try:
             # Re-resolve with current state
             updated_bundle = resolve_sequences_for_delta(parent_config, charge_delta)
@@ -336,9 +341,15 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
         except Exception as exc:  # noqa: BLE001
             print(f"[{folder_name}] Warning: could not parse parent CONTROL.txt ({exc})")
             config = {}
-    own_auto_mode = (
-        str(config.get("OCCUPIER_method", "auto")).strip().lower() == "auto"
-        and str(config.get("OCCUPIER_tree", "deep")).strip().lower() == "own"
+    method_token = str(config.get("OCCUPIER_method", "auto")).strip().lower()
+    tree_token = str(config.get("OCCUPIER_tree", "deep")).strip().lower()
+    own_auto_mode = method_token == "auto" and tree_token == "own"
+    force_manual_flag = str(config.get("OCCUPIER_force_manual_sequences", "no") or "no").strip().lower()
+    env_force = str(os.environ.get("DELFIN_FORCE_MANUAL_SEQ", "") or "").strip().lower()
+    force_manual_mode = (
+        method_token == "auto"
+        and tree_token != "own"
+        and (force_manual_flag in ("yes", "true", "1", "on") or env_force in ("yes", "true", "1", "on"))
     )
     os.chdir(cwd)
     res = read_occupier_file(source_occ_folder, "OCCUPIER.txt", None, None, None, config)
@@ -401,10 +412,10 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
     write_species_delta_marker(Path.cwd(), charge_delta)
 
     # Always remove template sections (INFOS, etc.) from copied CONTROL files
-    if not own_auto_mode:
+    if not own_auto_mode and not force_manual_mode:
         remove_existing_sequence_blocks(control_path, force=True)
 
-    if str(config.get("OCCUPIER_method", "auto")).strip().lower() == "auto" and not own_auto_mode:
+    if method_token == "auto" and not own_auto_mode and not force_manual_mode:
         seq_bundle = resolve_sequences_for_delta(config, charge_delta)
         if seq_bundle:
             append_sequence_overrides(control_path, seq_bundle)
