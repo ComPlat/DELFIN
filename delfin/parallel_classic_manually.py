@@ -119,6 +119,7 @@ class _WorkflowManager:
         self._failed: Dict[str, str] = {}
         self._skipped: Dict[str, List[str]] = {}
         self._inflight: Set[str] = set()
+        self._job_start_times: Dict[str, float] = {}  # Track when jobs started
         self._lock = threading.RLock()
         self._event = threading.Event()
         self._completion_listeners: List[Callable[[str], None]] = []
@@ -227,10 +228,178 @@ class _WorkflowManager:
     def has_jobs(self) -> bool:
         return bool(self._jobs)
 
+    def _adjust_priorities_for_bottlenecks(self) -> None:
+        """Boost priority for jobs that block many downstream jobs."""
+        try:
+            from delfin.job_priority import adjust_job_priorities
+            boosted = adjust_job_priorities(self._jobs, bottleneck_threshold=3)
+            if boosted > 0:
+                logger.info(
+                    "[%s] Boosted priority for %d bottleneck job(s)",
+                    self.label,
+                    boosted,
+                )
+        except Exception as e:
+            logger.debug("[%s] Failed to adjust priorities: %s", self.label, e, exc_info=True)
+
+    def _check_exclusive_bottleneck_boost(self, job: WorkflowJob) -> Optional[int]:
+        """
+        Check if job is an exclusive bottleneck and should get all cores.
+
+        Returns forced_cores if boost applies, None otherwise.
+        """
+        try:
+            from delfin.job_priority import is_exclusive_bottleneck
+
+            # Get pending jobs
+            with self._lock:
+                finished = self._completed | set(self._failed) | set(self._skipped)
+                inflight = set(self._inflight)
+                pending_ids = set(self._jobs.keys()) - finished - inflight
+
+            # Check if this job is exclusive bottleneck
+            if is_exclusive_bottleneck(job.job_id, self._jobs, pending_ids):
+                logger.info(
+                    "[%s] Job %s is exclusive bottleneck → allocating max cores (%d)",
+                    self.label,
+                    job.job_id,
+                    job.cores_max,
+                )
+                return job.cores_max
+
+        except Exception as e:
+            logger.debug("[%s] Failed to check exclusive bottleneck: %s", self.label, e, exc_info=True)
+
+        return None
+
+    def _should_wait_for_exclusive_bottleneck(self, ready_jobs: List[WorkflowJob], status: Optional[Dict]) -> bool:
+        """
+        Check if we should wait for an exclusive bottleneck to run alone.
+
+        Returns True if:
+        - There is an exclusive bottleneck in ready jobs
+        - Other jobs are currently running
+        - We should wait for them to finish so bottleneck gets all cores
+
+        Args:
+            ready_jobs: List of jobs ready to run
+            status: Pool status dict
+
+        Returns:
+            True if we should wait, False otherwise
+        """
+        if not ready_jobs:
+            return False
+
+        # Check if any jobs are running
+        jobs_running = False
+        if status:
+            jobs_running = (
+                status.get('running_jobs', 0) > 0 or
+                status.get('queued_jobs', 0) > 0
+            )
+        if not jobs_running and not self._inflight:
+            # No jobs running, no need to wait
+            return False
+
+        try:
+            from delfin.job_priority import is_exclusive_bottleneck
+
+            # Get pending jobs (including ready ones)
+            with self._lock:
+                finished = self._completed | set(self._failed) | set(self._skipped)
+                inflight = set(self._inflight)
+                pending_ids = set(self._jobs.keys()) - finished - inflight
+
+            # Check if any ready job is an exclusive bottleneck
+            has_exclusive_bottleneck = False
+            bottleneck_job = None
+            for job in ready_jobs:
+                if is_exclusive_bottleneck(job.job_id, self._jobs, pending_ids):
+                    has_exclusive_bottleneck = True
+                    bottleneck_job = job
+                    break
+
+            if not has_exclusive_bottleneck:
+                return False
+
+            # Check if waiting makes sense based on job progress
+            # For long-running jobs (4-12h), only wait if almost done
+            current_time = time.time()
+            max_wait_time = 15 * 60  # Maximum 15 minutes willing to wait (jobs are typically 4-12h)
+
+            # Check running job start times and estimated completion
+            with self._lock:
+                for job_id in list(self._inflight):
+                    start_time = self._job_start_times.get(job_id)
+                    if start_time is None:
+                        continue
+
+                    elapsed = current_time - start_time
+
+                    # Get job estimated duration
+                    job = self._jobs.get(job_id)
+                    estimated_duration = job.estimated_duration if job else 14400.0  # Default 4h
+
+                    # Calculate estimated remaining time
+                    estimated_remaining = estimated_duration - elapsed
+                    progress_ratio = elapsed / estimated_duration if estimated_duration > 0 else 0
+
+                    # Only wait if job will finish within max_wait_time (30 min)
+                    # AND has completed at least 90% of its time
+                    if estimated_remaining > max_wait_time or progress_ratio < 0.90:
+                        # Job would take too long to finish
+                        estimated_remaining_min = estimated_remaining / 60
+                        logger.debug(
+                            "[%s] Not waiting for exclusive bottleneck %s: "
+                            "job %s is %.0f%% done (est. %.1f min remaining, max wait: %.0f min)",
+                            self.label,
+                            bottleneck_job.job_id,
+                            job_id,
+                            progress_ratio * 100,
+                            estimated_remaining_min,
+                            max_wait_time / 60,
+                        )
+                        return False
+
+            # Check available cores
+            # For long-running jobs (4-12h), only wait if very few cores available
+            if status:
+                allocated = status.get('allocated_cores', 0)
+                available = self.total_cores - allocated
+                # If >= 25% cores already available, don't wait (too long for benefit)
+                if available >= self.total_cores * 0.25:
+                    logger.debug(
+                        "[%s] Not waiting for exclusive bottleneck %s: "
+                        "%d cores (%.0f%%) already available (jobs typically 4-12h)",
+                        self.label,
+                        bottleneck_job.job_id,
+                        available,
+                        (available / self.total_cores) * 100,
+                    )
+                    return False
+
+            # All checks passed: wait for jobs to finish
+            logger.info(
+                "[%s] Waiting for running jobs to finish before starting exclusive bottleneck %s "
+                "(will maximize core allocation)",
+                self.label,
+                bottleneck_job.job_id,
+            )
+            return True
+
+        except Exception as e:
+            logger.debug("[%s] Failed to check exclusive bottleneck wait: %s", self.label, e, exc_info=True)
+
+        return False
+
     def run(self) -> None:
         if not self._jobs:
             logger.info("[%s] No jobs to schedule", self.label)
             return
+
+        # Adjust job priorities based on bottleneck detection
+        self._adjust_priorities_for_bottlenecks()
 
         pending: Dict[str, WorkflowJob] = {}
         self._sync_parallel_flag()
@@ -343,9 +512,19 @@ class _WorkflowManager:
                 sorted(self._completed),
             )
 
-            allocations = self._plan_core_allocations(ready, status)
+            # Check for exclusive bottleneck that should run alone
+            if self._should_wait_for_exclusive_bottleneck(ready, status):
+                # Wait for running jobs to finish before starting exclusive bottleneck
+                self._event.wait(timeout=1.0)
+                self._event.clear()
+                continue
+
+            allocations, caps = self._plan_core_allocations(ready, status)
 
             for job in ready:
+                if job.job_id not in allocations:
+                    # Not enough cores to start this job in the current packing round
+                    continue
                 failed_prereqs = sorted(job.dependencies & failed_ids)
                 skipped_prereqs = sorted(job.dependencies & skipped_ids)
                 if failed_prereqs or skipped_prereqs:
@@ -356,7 +535,11 @@ class _WorkflowManager:
                         failed_prereqs or "none",
                         skipped_prereqs or "none",
                     )
-                self._submit(job, allocations.get(job.job_id))
+                self._submit(
+                    job,
+                    allocations.get(job.job_id),
+                    lock_to_forced=caps.get(job.job_id, False),
+                )
                 pending.pop(job.job_id, None)
 
             # After submitting ready jobs, wait briefly for state changes
@@ -395,7 +578,17 @@ class _WorkflowManager:
             self.pool.max_concurrent_jobs > 1 and self.total_cores > 1
         )
 
-    def _submit(self, job: WorkflowJob, forced_cores: Optional[int] = None) -> None:
+    def _submit(
+        self,
+        job: WorkflowJob,
+        forced_cores: Optional[int] = None,
+        *,
+        lock_to_forced: bool = False,
+    ) -> None:
+        # Check if this is an exclusive bottleneck and boost cores
+        if forced_cores is None:
+            forced_cores = self._check_exclusive_bottleneck_boost(job)
+
         def runner(*_args, **kwargs):
             cores = kwargs.get('cores', job.cores_optimal)
             pool_snapshot = kwargs.get('pool_snapshot')
@@ -431,10 +624,10 @@ class _WorkflowManager:
 
         pool_job = PoolJob(
             job_id=job.job_id,
-            cores_min=self._resolve_min_cores(job, forced_cores),
-            cores_optimal=self._resolve_opt_cores(job, forced_cores),
-            cores_max=self._resolve_max_cores(job, forced_cores),
-            memory_mb=self._resolve_memory(job, forced_cores),
+            cores_min=self._resolve_min_cores(job, forced_cores, lock_to_forced),
+            cores_optimal=self._resolve_opt_cores(job, forced_cores, lock_to_forced),
+            cores_max=self._resolve_max_cores(job, forced_cores, lock_to_forced),
+            memory_mb=self._resolve_memory(job, forced_cores, lock_to_forced),
             priority=job.priority,
             execute_func=runner,
             args=(),
@@ -446,6 +639,7 @@ class _WorkflowManager:
         self.pool.submit_job(pool_job)
         with self._lock:
             self._inflight.add(job.job_id)
+            self._job_start_times[job.job_id] = time.time()
 
     @staticmethod
     def _job_order_key(job: WorkflowJob):
@@ -459,6 +653,7 @@ class _WorkflowManager:
         with self._lock:
             self._completed.add(job_id)
             self._inflight.discard(job_id)
+            self._job_start_times.pop(job_id, None)  # Clean up start time
             self._event.set()
         self._notify_completion(job_id)
         # Notify parent manager if this is a nested workflow
@@ -470,6 +665,7 @@ class _WorkflowManager:
         with self._lock:
             self._failed[job_id] = message
             self._inflight.discard(job_id)
+            self._job_start_times.pop(job_id, None)  # Clean up start time
             self._event.set()
         # Notify parent manager if this is a nested workflow
         if self._parent_manager is not None:
@@ -537,13 +733,17 @@ class _WorkflowManager:
         self,
         ready_jobs: List[WorkflowJob],
         status_snapshot: Optional[Dict[str, Any]],
-    ) -> Dict[str, int]:
+    ) -> tuple[Dict[str, int], Dict[str, bool]]:
         """
-        Determine per-job core targets so the last runnable job obtains full PAL and
-        otherwise share available cores evenly across ready jobs.
+        Determine per-job core targets with a packing step that maximizes the
+        number of concurrent ready jobs while respecting available cores.
+
+        Returns:
+            allocations: job_id -> planned cores
+            caps: job_id -> whether to hard-cap job to the planned cores
         """
         if not ready_jobs:
-            return {}
+            return {}, {}
 
         status_snapshot = status_snapshot or {}
         running_jobs = max(0, int(status_snapshot.get('running_jobs', 0)))
@@ -562,7 +762,9 @@ class _WorkflowManager:
             available = min(total, available)
 
         if not self._parallel_enabled:
-            return {job.job_id: total for job in ready_jobs}
+            return {job.job_id: total for job in ready_jobs}, {
+                job.job_id: True for job in ready_jobs
+            }
 
         if ready_count == 1:
             # Single ready job: give it all available cores (up to its max)
@@ -577,7 +779,7 @@ class _WorkflowManager:
                 available,
                 job.cores_max,
             )
-            return {job.job_id: target}
+            return {job.job_id: target}, {job.job_id: False}
 
         # Multiple jobs ready: distribute available capacity as evenly as possible.
         # Fall back to base share if available cores are insufficient.
@@ -634,26 +836,113 @@ class _WorkflowManager:
                         job.cores_max,
                     )
 
-        return allocations
+        # Pack allocations to ensure we start as many ready jobs as possible
+        packed_allocations, caps = self._pack_allocations(
+            ready_jobs,
+            available,
+            allocations,
+        )
 
-    def _resolve_min_cores(self, job: WorkflowJob, forced: Optional[int]) -> int:
-        # Minimum requirement stays at the job's baseline to ensure schedulability.
+        return packed_allocations, caps
+
+    def _pack_allocations(
+        self,
+        ready_jobs: List[WorkflowJob],
+        available: int,
+        proposed: Dict[str, int],
+    ) -> tuple[Dict[str, int], Dict[str, bool]]:
+        """
+        Bin-pack ready jobs into the available cores.
+
+        We keep jobs with smaller cores_min first to maximize concurrency,
+        then distribute any remaining cores towards the proposed targets.
+        """
+        if available <= 0 or not ready_jobs:
+            return {}, {}
+
+        jobs_sorted = sorted(
+            ready_jobs,
+            key=lambda j: (self._job_order_key(j), j.cores_min),
+        )
+
+        targets: Dict[str, int] = {}
+        for job in jobs_sorted:
+            target = proposed.get(job.job_id, job.cores_optimal)
+            target = max(job.cores_min, min(target, job.cores_max, self.total_cores))
+            targets[job.job_id] = target
+
+        selected: List[WorkflowJob] = []
+        remaining = available
+        for job in jobs_sorted:
+            if job.cores_min <= remaining:
+                selected.append(job)
+                remaining -= job.cores_min
+
+        if not selected:
+            return {}, {}
+
+        allocations: Dict[str, int] = {
+            job.job_id: job.cores_min for job in selected
+        }
+        remaining = available - sum(allocations.values())
+
+        # Fill towards targets while respecting remaining capacity
+        while remaining > 0:
+            gaps = [
+                (job, targets[job.job_id] - allocations[job.job_id])
+                for job in selected
+                if targets[job.job_id] > allocations[job.job_id]
+            ]
+            if not gaps:
+                break
+
+            gaps.sort(key=lambda item: (-item[1], self._job_order_key(item[0])))
+            for job, gap in gaps:
+                if remaining <= 0:
+                    break
+                step = min(gap, max(1, remaining // max(1, len(gaps))))
+                if step <= 0:
+                    continue
+                allocations[job.job_id] += step
+                remaining -= step
+
+        # Cap when we had to pack tightly (either we deferred jobs or could not reach targets)
+        could_not_reach_targets = any(
+            allocations[job.job_id] < targets[job.job_id] for job in selected
+        )
+        cap_needed = (
+            could_not_reach_targets
+            or len(selected) < len(ready_jobs)
+            or remaining == 0
+        )
+        caps = {job.job_id: cap_needed for job in selected}
+
+        return allocations, caps
+
+    def _resolve_min_cores(self, job: WorkflowJob, forced: Optional[int], lock: bool) -> int:
+        # Minimum requirement stays at the job's baseline unless we explicitly lock to a packed value.
+        if lock and forced is not None:
+            return max(1, min(forced, self.total_cores))
         return max(1, job.base_cores_min)
 
-    def _resolve_opt_cores(self, job: WorkflowJob, forced: Optional[int]) -> int:
+    def _resolve_opt_cores(self, job: WorkflowJob, forced: Optional[int], lock: bool) -> int:
         if forced is None:
             return job.cores_optimal
         forced = max(1, min(forced, self.total_cores))
+        if lock:
+            return forced
         return max(job.base_cores_min, forced)
 
-    def _resolve_max_cores(self, job: WorkflowJob, forced: Optional[int]) -> int:
+    def _resolve_max_cores(self, job: WorkflowJob, forced: Optional[int], lock: bool) -> int:
         base_max = job.base_cores_max
         if forced is None:
             return job.cores_max
         forced = max(1, min(forced, self.total_cores))
+        if lock:
+            return forced
         return max(base_max, job.cores_max, forced)
 
-    def _resolve_memory(self, job: WorkflowJob, forced: Optional[int]) -> int:
+    def _resolve_memory(self, job: WorkflowJob, forced: Optional[int], lock: bool) -> int:
         if forced is None:
             return job.memory_mb
         resolved = max(job.base_cores_min, min(forced, self.total_cores))

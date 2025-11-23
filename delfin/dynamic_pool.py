@@ -121,11 +121,27 @@ class DynamicCorePool:
             return cores
 
     def _calculate_balanced_allocation(self, new_job: PoolJob, available_cores: int) -> int:
-        """Allocate all currently available cores (bounded by job limits)."""
-        return max(
-            new_job.cores_min,
-            min(new_job.cores_optimal, new_job.cores_max, available_cores)
-        )
+        """
+        Allocate cores intelligently based on available resources and pending jobs.
+
+        If no other jobs are waiting, give more than cores_optimal (up to cores_max).
+        Otherwise, stick to cores_optimal to leave room for other jobs.
+        """
+        # Check if other jobs are waiting
+        has_pending = not self._job_queue.empty()
+
+        if has_pending:
+            # Other jobs waiting - use cores_optimal to leave resources
+            return max(
+                new_job.cores_min,
+                min(new_job.cores_optimal, new_job.cores_max, available_cores)
+            )
+        else:
+            # No other jobs waiting - use all available cores up to cores_max
+            return max(
+                new_job.cores_min,
+                min(new_job.cores_max, available_cores)
+            )
 
     def _min_waiting_cores_locked(self, default: int = 0) -> int:
         """Return minimum cores_min among queued jobs (expects caller holds lock)."""

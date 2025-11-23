@@ -40,6 +40,8 @@ from .process_checker import check_and_warn_competing_processes
 
 logger = get_logger(__name__)
 
+# Global lock to prevent race conditions when multiple FoBs read input0.xyz simultaneously
+_geometry_file_lock = threading.RLock()
 
 # ======================== Helper functions (extracted for flat architecture) ========================
 
@@ -275,22 +277,26 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
                                   config, additions):
     """Build the ORCA input with per-atom NewGTO for metals and first coordination sphere."""
     xyz_file = "input.xyz" if from_index == 1 else f"input{from_index}.xyz"
-    xyz_path = resolve_path(xyz_file)
-    if not xyz_path.exists():
-        if from_index == 1:
-            alt_path = resolve_path("input0.xyz")
-            if alt_path.exists():
-                logger.warning("Primary geometry '%s' missing; falling back to '%s'.", xyz_path, alt_path)
-                xyz_path = alt_path
+
+    # Thread-safe file reading to prevent race conditions when multiple FoBs
+    # access input0.xyz simultaneously
+    with _geometry_file_lock:
+        xyz_path = resolve_path(xyz_file)
+        if not xyz_path.exists():
+            if from_index == 1:
+                alt_path = resolve_path("input0.xyz")
+                if alt_path.exists():
+                    logger.warning("Primary geometry '%s' missing; falling back to '%s'.", xyz_path, alt_path)
+                    xyz_path = alt_path
+                else:
+                    logger.error(f"XYZ input file '{xyz_path}' not found.")
+                    return
             else:
                 logger.error(f"XYZ input file '{xyz_path}' not found.")
                 return
-        else:
-            logger.error(f"XYZ input file '{xyz_path}' not found.")
-            return
 
-    with xyz_path.open('r') as file:
-        lines = file.readlines()
+        with xyz_path.open('r') as file:
+            lines = file.readlines()
 
     cleaned_xyz = normalize_xyz_body(lines[2:])  # skip count/comment lines
     geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(cleaned_xyz, xyz_path)
@@ -615,27 +621,31 @@ def run_OCCUPIER():
           - optional per-atom NewGTO for the first coordination sphere.
         """
         xyz_file = "input.xyz" if from_index == 1 else f"input{from_index}.xyz"
-        xyz_path = resolve_path(xyz_file)
-        if not xyz_path.exists():
-            if from_index == 1:
-                # Some workflows maintain only input0.xyz; fall back gracefully.
-                alt_path = resolve_path("input0.xyz")
-                if alt_path.exists():
-                    logger.warning(
-                        "Primary geometry '%s' missing; falling back to '%s'.",
-                        xyz_path,
-                        alt_path,
-                    )
-                    xyz_path = alt_path
+
+        # Thread-safe file reading to prevent race conditions when multiple FoBs
+        # access input0.xyz simultaneously
+        with _geometry_file_lock:
+            xyz_path = resolve_path(xyz_file)
+            if not xyz_path.exists():
+                if from_index == 1:
+                    # Some workflows maintain only input0.xyz; fall back gracefully.
+                    alt_path = resolve_path("input0.xyz")
+                    if alt_path.exists():
+                        logger.warning(
+                            "Primary geometry '%s' missing; falling back to '%s'.",
+                            xyz_path,
+                            alt_path,
+                        )
+                        xyz_path = alt_path
+                    else:
+                        logger.error(f"XYZ input file '{xyz_path}' not found.")
+                        return
                 else:
                     logger.error(f"XYZ input file '{xyz_path}' not found.")
                     return
-            else:
-                logger.error(f"XYZ input file '{xyz_path}' not found.")
-                return
 
-        with xyz_path.open('r') as file:
-            lines = file.readlines()
+            with xyz_path.open('r') as file:
+                lines = file.readlines()
 
         cleaned_xyz = clean_xyz_block(lines[2:])  # skip count/comment lines
         geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(cleaned_xyz, xyz_path)

@@ -133,7 +133,8 @@ OCCUPIER-Settings:
 --------------------
 OCCUPIER_method=auto|manually
 OCCUPIER_tree=deep|flat|deep2|deep3|own
-OWN_TREE_PURE_WINDOW=
+OWN_TREE_PURE_WINDOW=1
+OWN_progressive_from=no
 frequency_calculation_OCCUPIER=no
 occupier_selection=tolerance|truncation|rounding
 occupier_precision=3
@@ -190,6 +191,11 @@ OCCUPIER_option:
 # flat   -> legacy flat sequences with BS
 # deep2  -> only pure states, no BS (simple testing)
 # deep   -> adaptive BS evolution (reduction: BS(m-1,1) or BS(M±1,N); oxidation: pure only)
+# own    -> rule-based mode using custom/auto sequences
+OWN_TREE_PURE_WINDOW: Number of pure states to test around previous winner (default: 1)
+OWN_progressive_from: Sequential pure states (yes) or all parallel (no, default)
+  - no  -> All pure states start from "from": 0 (maximum parallelization)
+  - yes -> Pure states build sequentially: m=1 -> m=3 -> m=5 (safer but slower)
 -------------------------------------------------
 ESD MODULE (Excited State Dynamics):
 ESD_modul: yes/no - Enable ESD calculations in separate ESD/ directory

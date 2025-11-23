@@ -329,7 +329,8 @@ def _create_occupier_fob_jobs(
     # concurrency but lets sequential stretches finish faster.
     cores_max = total_cores
 
-    # Respect pal_jobs cap if provided: limit per-FoB cores to PAL/pal_jobs (>= cores_min)
+    # Respect pal_jobs cap if provided: limit per-FoB cores_optimal to PAL/pal_jobs (>= cores_min)
+    # But keep cores_max at total_cores so jobs can expand when no others are waiting
     try:
         pal_jobs_raw = global_config.get("pal_jobs")
         pal_jobs_val = int(pal_jobs_raw) if pal_jobs_raw not in (None, "", 0, "0") else None
@@ -338,14 +339,14 @@ def _create_occupier_fob_jobs(
     if pal_jobs_val:
         cap = max(cores_min, max(1, total_cores // pal_jobs_val))
         cores_optimal = min(cores_optimal, cap)
-        cores_max = min(cores_max, cap)
+        # DON'T cap cores_max - allow jobs to use all cores if no others are waiting
+        # cores_max remains at total_cores
         logger.info(
-            "[%s] pal_jobs heuristic: capping cores to %d (min=%d, total=%d, pal_jobs=%s)",
+            "[%s] pal_jobs heuristic: cores_optimal=%d (pal_jobs=%s), cores_max=%d (expandable)",
             folder_name,
-            cap,
-            cores_min,
-            total_cores,
+            cores_optimal,
             pal_jobs_val,
+            cores_max,
         )
 
     # Asymmetric core allocation for FoB pairs based on multiplicity
