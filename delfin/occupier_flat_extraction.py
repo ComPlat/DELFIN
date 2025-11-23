@@ -423,8 +423,10 @@ def _create_occupier_fob_jobs(
 
                 try:
                     # Read current CONTROL to get the latest sequence (which may have been updated after initial setup)
+                    # DISABLED: This causes race conditions when multiple FoBs read CONTROL.txt concurrently
+                    # while it's being modified by setup functions. Use initial parameters instead.
                     control_path = target_folder / "CONTROL.txt"
-                    if control_path.exists():
+                    if False and control_path.exists():
                         from delfin.config import OCCUPIER_parser
                         from delfin.occupier_sequences import resolve_sequences_for_delta, infer_species_delta
 
