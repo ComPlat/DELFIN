@@ -71,10 +71,24 @@ class PoolJob:
 class DynamicCorePool:
     """Dynamic core pool with intelligent resource allocation."""
 
-    def __init__(self, total_cores: int, total_memory_mb: int, max_jobs: int = 4):
+    def __init__(self, total_cores: int, total_memory_mb: int, max_jobs: int = 4, config: Optional[Dict[str, Any]] = None):
         self.total_cores = total_cores
         self.total_memory_mb = total_memory_mb
         self.max_concurrent_jobs = max_jobs
+        self._original_max_jobs = max_jobs  # Store original for adaptive parallelism
+
+        # Configuration
+        self.config = config or {}
+
+        # Configurable timeouts (in seconds)
+        self.job_timeout_default = int(self.config.get('job_timeout_hours', 24)) * 3600
+        self.opt_timeout = int(self.config.get('opt_timeout_hours', 12)) * 3600
+        self.frequency_timeout = int(self.config.get('frequency_timeout_hours', 36)) * 3600
+        self.sp_timeout = int(self.config.get('sp_timeout_hours', 6)) * 3600
+
+        # Feature flags
+        self.enable_adaptive_parallelism = self._parse_bool(self.config.get('enable_adaptive_parallelism', 'yes'))
+        self.enable_performance_metrics = self._parse_bool(self.config.get('enable_performance_metrics', 'yes'))
 
         # Core allocation tracking
         self._allocated_cores = 0
@@ -88,6 +102,10 @@ class DynamicCorePool:
         self._completed_jobs: List[str] = []
         self._failed_jobs: List[str] = []
         self._job_counter = count()
+
+        # Performance metrics tracking
+        from collections import defaultdict
+        self._job_metrics = defaultdict(list) if self.enable_performance_metrics else None
 
         # Execution
         self._executor = ThreadPoolExecutor(max_workers=max_jobs)
@@ -104,6 +122,15 @@ class DynamicCorePool:
         self._scheduler_thread.start()
 
         logger.info(f"Dynamic Core Pool initialized: {total_cores} cores, {total_memory_mb}MB memory")
+
+    @staticmethod
+    def _parse_bool(value: Any) -> bool:
+        """Parse boolean value from config."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ('yes', 'true', '1', 'on')
+        return bool(value)
 
     def submit_job(self, job: PoolJob) -> str:
         """Submit a job to the dynamic pool.
@@ -563,6 +590,11 @@ class DynamicCorePool:
             try:
                 result = future.result()
                 self._completed_jobs.append(job_id)
+
+                # PERFORMANCE METRICS: Track job completion
+                if self._job_metrics is not None:
+                    self._record_job_metrics(job_id, duration, job.allocated_cores, success=True)
+
                 if not job.suppress_pool_logs:
                     source = "borrowed" if job.borrowed_cores > 0 else "pool"
                     logger.info(
@@ -571,6 +603,11 @@ class DynamicCorePool:
                     )
             except Exception as e:
                 self._failed_jobs.append(job_id)
+
+                # PERFORMANCE METRICS: Track job failure
+                if self._job_metrics is not None:
+                    self._record_job_metrics(job_id, duration, job.allocated_cores, success=False)
+
                 logger.error(f"Job {job_id} failed after {duration:.1f}s: {e}")
 
         # Try to start waiting jobs now that resources are free
@@ -727,32 +764,56 @@ class DynamicCorePool:
                         self._prevent_starvation()
                         last_starvation_check = now
 
+                    # ADAPTIVE PARALLELISM: Adjust parallelism based on failure rate
+                    if self.enable_adaptive_parallelism:
+                        self._check_failure_rate_and_adapt()
+
                 # Try to optimize resource allocation
                 self._try_rebalance_resources()
 
             except Exception as e:
                 logger.error(f"Resource monitor error: {e}")
 
+    def _get_job_timeout(self, job_id: str) -> float:
+        """Determine timeout for a job based on its type.
+
+        Args:
+            job_id: The job identifier
+
+        Returns:
+            Timeout in seconds
+        """
+        job_id_lower = job_id.lower()
+
+        # Check job type and return appropriate timeout
+        if 'frequency' in job_id_lower or 'freq' in job_id_lower:
+            return self.frequency_timeout
+        elif 'opt' in job_id_lower or 'optimization' in job_id_lower:
+            return self.opt_timeout
+        elif 'sp' in job_id_lower or 'single_point' in job_id_lower:
+            return self.sp_timeout
+        else:
+            return self.job_timeout_default
+
     def _detect_stuck_jobs(self):
         """Detect and handle stuck or timed-out jobs.
 
         Called by resource monitor (expects lock is held).
         Automatically terminates jobs that are severely stuck.
+        Uses configurable timeouts based on job type.
         """
         now = time.time()
         stuck_jobs = []
         jobs_to_kill = []
-
-        # Maximum allowed runtime before auto-termination
-        # Set to 24h based on analysis of 311 jobs across 4 systems
-        # Note: One outlier relaxed surface scan took 26.8h and would be terminated
-        stuck_kill_threshold = 86400  # 24 hours
 
         for job_id, job in self._running_jobs.items():
             if job.actual_start_time is None:
                 continue
 
             runtime = now - job.actual_start_time
+
+            # Get job-type-specific timeout
+            stuck_kill_threshold = self._get_job_timeout(job_id)
 
             # Calculate max allowed duration
             max_duration = job.max_duration if job.max_duration is not None else (job.estimated_duration * 3)
@@ -766,8 +827,7 @@ class DynamicCorePool:
                 stuck_jobs.append((job_id, runtime, max_duration))
 
                 # Check if job is WAY over limit → AUTO-TERMINATE
-                # Jobs running > 24h are terminated to prevent indefinite hangs
-                # This accommodates long frequency calculations (up to 22.8h observed)
+                # Use job-type-specific timeout threshold
                 if runtime > stuck_kill_threshold:
                     logger.error(
                         f"Job {job_id} is severely stuck: running for {runtime/3600:.1f}h, "
@@ -868,6 +928,56 @@ class DynamicCorePool:
             # Note: The priority boost will take effect on the next retry
             # when the job is re-queued in _try_start_next_job()
 
+    def _check_failure_rate_and_adapt(self):
+        """Adapt parallelism based on failure rate (graceful degradation).
+
+        Called periodically by resource monitor (expects lock is held).
+        Reduces parallelism if high failure rate detected (resource exhaustion).
+        Gradually increases back when failure rate improves.
+        """
+        total_jobs = len(self._completed_jobs) + len(self._failed_jobs)
+
+        # Need enough data for statistical significance
+        if total_jobs < 10:
+            return
+
+        failure_rate = len(self._failed_jobs) / total_jobs
+
+        # Determine action based on failure rate
+        if failure_rate > 0.50:  # >50% failures - CRITICAL
+            new_max = 1
+            reason = f"CRITICAL failure rate ({failure_rate:.0%})"
+
+        elif failure_rate > 0.30:  # >30% failures - HIGH
+            new_max = max(1, self.max_concurrent_jobs // 2)
+            reason = f"HIGH failure rate ({failure_rate:.0%})"
+
+        elif failure_rate > 0.15:  # >15% failures - MODERATE
+            new_max = max(1, int(self.max_concurrent_jobs * 0.75))
+            reason = f"MODERATE failure rate ({failure_rate:.0%})"
+
+        else:
+            # Success rate OK - try to restore parallelism gradually
+            if self.max_concurrent_jobs < self._original_max_jobs:
+                new_max = min(
+                    self._original_max_jobs,
+                    self.max_concurrent_jobs + 1
+                )
+                reason = f"recovering from previous failures ({failure_rate:.0%})"
+            else:
+                return  # All good, no action needed
+
+        # Apply changes if different from current
+        if new_max != self.max_concurrent_jobs:
+            old_max = self.max_concurrent_jobs
+            self.max_concurrent_jobs = new_max
+
+            logger.warning(
+                f"⚠️  ADAPTIVE PARALLELISM: {reason}\n"
+                f"   Adjusting max concurrent jobs: {old_max} → {new_max}\n"
+                f"   Stats: {len(self._completed_jobs)} completed, {len(self._failed_jobs)} failed"
+            )
+
     def wait_for_completion(self, timeout: Optional[float] = None) -> bool:
         """Wait for all jobs to complete."""
         deadline = time.time() + timeout if timeout else None
@@ -884,6 +994,10 @@ class DynamicCorePool:
                     logger.warning("Timeout waiting for job completion")
                     return False
                 self._condition.wait(timeout=remaining)
+
+        # Auto-print performance metrics if enabled
+        if self.enable_performance_metrics and self._job_metrics:
+            self.print_performance_metrics()
 
         return len(self._failed_jobs) == 0
 
@@ -934,6 +1048,143 @@ class DynamicCorePool:
         self._executor.shutdown(wait=wait, cancel_futures=not wait)
         if self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=2)
+
+        # Print performance metrics before final shutdown
+        if self.enable_performance_metrics and self._job_metrics:
+            self.print_performance_metrics()
+
+    def _classify_job_type(self, job_id: str) -> str:
+        """Classify job by type for metrics tracking.
+
+        Args:
+            job_id: Job identifier
+
+        Returns:
+            Job type string (e.g., 'initial', 'ox_step_1', 'frequency')
+        """
+        job_id_lower = job_id.lower()
+
+        if 'initial' in job_id_lower:
+            return 'initial'
+        elif 'frequency' in job_id_lower or 'freq' in job_id_lower:
+            return 'frequency'
+        elif 'ox' in job_id_lower:
+            # Extract step number if present
+            import re
+            match = re.search(r'ox.*?(\d+)', job_id_lower)
+            if match:
+                return f'ox_step_{match.group(1)}'
+            return 'oxidation'
+        elif 'red' in job_id_lower:
+            # Extract step number if present
+            import re
+            match = re.search(r'red.*?(\d+)', job_id_lower)
+            if match:
+                return f'red_step_{match.group(1)}'
+            return 'reduction'
+        elif 'occupier' in job_id_lower:
+            return 'occupier'
+        elif 'sp' in job_id_lower:
+            return 'single_point'
+        elif 'opt' in job_id_lower:
+            return 'optimization'
+        else:
+            return 'other'
+
+    def _record_job_metrics(self, job_id: str, duration: float, cores: int, success: bool):
+        """Record performance metrics for a completed/failed job.
+
+        Args:
+            job_id: Job identifier
+            duration: Job runtime in seconds
+            cores: Number of cores used
+            success: Whether job completed successfully
+        """
+        job_type = self._classify_job_type(job_id)
+        self._job_metrics[job_type].append({
+            'job_id': job_id,
+            'duration': duration,
+            'cores': cores,
+            'success': success,
+        })
+
+    def print_performance_metrics(self, output_file: Optional[str] = None):
+        """Print performance metrics report to logger and optionally to file.
+
+        Args:
+            output_file: Optional path to write metrics to. If None, uses
+                         'performance_metrics_<timestamp>.txt' in current directory.
+        """
+        if self._job_metrics is None or not self._job_metrics:
+            return
+
+        import statistics
+        from datetime import datetime
+
+        # Build metrics report as string
+        lines = []
+        lines.append("="*70)
+        lines.append("📊 JOB PERFORMANCE METRICS")
+        lines.append("="*70)
+        lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
+
+        total_jobs = 0
+        total_successes = 0
+        total_failures = 0
+        total_runtime = 0.0
+
+        for job_type in sorted(self._job_metrics.keys()):
+            metrics = self._job_metrics[job_type]
+            if not metrics:
+                continue
+
+            runtimes = [m['duration'] for m in metrics]
+            cores_used = [m['cores'] for m in metrics]
+            successes = sum(1 for m in metrics if m['success'])
+            failures = len(metrics) - successes
+
+            avg_time = statistics.mean(runtimes)
+            std_time = statistics.stdev(runtimes) if len(runtimes) > 1 else 0
+            min_time = min(runtimes)
+            max_time = max(runtimes)
+            avg_cores = statistics.mean(cores_used)
+            total_time = sum(runtimes)
+
+            # Accumulate totals
+            total_jobs += len(metrics)
+            total_successes += successes
+            total_failures += failures
+            total_runtime += total_time
+
+            lines.append(f"{job_type}:")
+            lines.append(f"  Jobs:         {len(metrics)} ({successes} ✓, {failures} ✗)")
+            lines.append(f"  Avg time:     {avg_time/60:.1f} min ±{std_time/60:.1f} min")
+            lines.append(f"  Range:        {min_time/60:.1f} - {max_time/60:.1f} min")
+            lines.append(f"  Avg cores:    {avg_cores:.1f}")
+            lines.append(f"  Total time:   {total_time/60:.1f} min")
+            lines.append("")
+
+        # Add summary
+        lines.append("="*70)
+        lines.append("SUMMARY:")
+        lines.append(f"  Total jobs:       {total_jobs} ({total_successes} ✓, {total_failures} ✗)")
+        lines.append(f"  Success rate:     {(total_successes/total_jobs*100):.1f}%" if total_jobs > 0 else "  Success rate:     N/A")
+        lines.append(f"  Total runtime:    {total_runtime/60:.1f} min ({total_runtime/3600:.1f} hours)")
+        lines.append("="*70)
+
+        # Write to file (no terminal output)
+        if output_file is None:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_file = f"performance_metrics_{timestamp}.txt"
+
+        try:
+            from pathlib import Path
+            output_path = Path(output_file)
+            output_path.write_text('\n'.join(lines), encoding='utf-8')
+            logger.info(f"📁 Performance metrics written to: {output_path.absolute()}")
+        except Exception as e:
+            logger.error(f"Failed to write metrics to file {output_file}: {e}")
 
     def _schedule_pending_jobs(self):
         """Start as many queued jobs as resources allow."""

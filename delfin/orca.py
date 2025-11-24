@@ -37,6 +37,19 @@ ORCA_PLOT_INPUT_TEMPLATE = (
 
 _RUN_SCRATCH_DIR: Optional[Path] = None
 
+# Transient error patterns that should trigger retry
+TRANSIENT_ERROR_PATTERNS = [
+    "cannot create temporary file",
+    "no space left on device",
+    "disk quota exceeded",
+    "stale file handle",
+    "connection timed out",
+    "cannot allocate memory",
+    "broken pipe",
+    "input/output error",
+    "resource temporarily unavailable",
+]
+
 
 def _ensure_openmpi_subdir(base_path: Path) -> None:
     """Create the OpenMPI-specific scratch subdirectory expected by ORCA."""
@@ -545,6 +558,112 @@ def run_orca(
         logger.info(f"ORCA run successful for '{input_file_path}'")
         return True
     return False
+
+
+def run_orca_with_retry(
+    input_file_path: str,
+    output_log: str,
+    timeout: Optional[int] = None,
+    *,
+    scratch_subdir: Optional[Path] = None,
+    working_dir: Optional[Path] = None,
+    config: Optional[Dict] = None,
+) -> bool:
+    """Execute ORCA calculation with transient error retry logic.
+
+    Wraps run_orca() with automatic retry for transient errors
+    (disk full, network glitches, temporary memory issues, etc.).
+
+    Args:
+        input_file_path: Path to ORCA input file (.inp)
+        output_log: Path for ORCA output file (.out)
+        timeout: Optional timeout in seconds for ORCA calculation
+        scratch_subdir: Optional scratch subdirectory
+        working_dir: Optional working directory
+        config: Configuration dict containing retry settings
+
+    Returns:
+        bool: True if ORCA completed successfully (possibly after retries), False otherwise
+    """
+    # Get retry settings from config
+    config = config or {}
+    retry_enabled = _parse_bool_config(config.get('orca_retry_enabled', 'no'))
+    max_attempts = int(config.get('orca_retry_max_attempts', 2))
+
+    # If retry disabled, just run once
+    if not retry_enabled:
+        return run_orca(input_file_path, output_log, timeout,
+                       scratch_subdir=scratch_subdir, working_dir=working_dir)
+
+    # Retry logic enabled
+    output_path = Path(output_log)
+
+    for attempt in range(max_attempts):
+        success = run_orca(input_file_path, output_log, timeout,
+                          scratch_subdir=scratch_subdir, working_dir=working_dir)
+
+        if success:
+            if attempt > 0:
+                logger.info(f"ORCA succeeded on attempt {attempt + 1}/{max_attempts}")
+            return True
+
+        # Check if error is transient by examining output log
+        if attempt < max_attempts - 1:  # Not the last attempt
+            if _is_transient_error(output_path):
+                delay = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s, ...
+                logger.warning(
+                    f"Transient ORCA error detected in '{output_log}'. "
+                    f"Retry {attempt + 1}/{max_attempts} after {delay}s..."
+                )
+                time.sleep(delay)
+                continue  # Retry
+            else:
+                # Permanent error, don't retry
+                logger.error(f"ORCA failed with permanent error (no retry)")
+                return False
+
+    # All retries exhausted
+    logger.error(f"ORCA failed after {max_attempts} attempts")
+    return False
+
+
+def _is_transient_error(output_path: Path) -> bool:
+    """Check if ORCA output contains transient error patterns.
+
+    Args:
+        output_path: Path to ORCA output file
+
+    Returns:
+        True if output contains transient error patterns, False otherwise
+    """
+    if not output_path.exists():
+        return False
+
+    try:
+        with output_path.open('r', encoding='utf-8', errors='replace') as f:
+            # Read last 5000 lines to check for errors
+            lines = f.readlines()[-5000:]
+            content = '\n'.join(lines).lower()
+
+            for pattern in TRANSIENT_ERROR_PATTERNS:
+                if pattern in content:
+                    logger.debug(f"Found transient error pattern: '{pattern}'")
+                    return True
+
+    except Exception as e:
+        logger.debug(f"Could not check for transient errors in {output_path}: {e}")
+
+    return False
+
+
+def _parse_bool_config(value) -> bool:
+    """Parse boolean value from config."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ('yes', 'true', '1', 'on')
+    return bool(value)
+
 
 def run_orca_IMAG(input_file_path: str, iteration: int, *, working_dir: Optional[Path] = None) -> bool:
     """Execute ORCA calculation for imaginary frequency workflow.

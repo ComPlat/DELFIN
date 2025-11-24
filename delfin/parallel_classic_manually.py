@@ -888,19 +888,49 @@ class _WorkflowManager:
             }
 
         if ready_count == 1:
-            # Single ready job: give it all available cores (up to its max)
+            # Single ready job: default to its optimal share; only grab the full pool
+            # when nothing else can run (no other pending work and no running/queued jobs).
+            with self._lock:
+                unfinished = (
+                    set(self._jobs.keys())
+                    - self._completed
+                    - set(self._failed)
+                    - set(self._skipped)
+                    - self._inflight
+                )
+            blocked_other = max(0, len(unfinished) - ready_count)
             job = ready_jobs[0]
-            target = max(job.cores_min, min(available, job.cores_max))
-            logger.debug(
-                "[%s] Exclusive allocation for %s (%s) → %d cores (available=%d, max=%d)",
-                self.label,
-                job.job_id,
-                job.description,
-                target,
-                available,
-                job.cores_max,
+            base_target = max(job.cores_min, min(job.cores_optimal, available))
+            nothing_else_runnable = (
+                blocked_other == 0 and running_jobs == 0 and queued_jobs == 0
             )
-            return {job.job_id: target}, {job.job_id: False}
+            if nothing_else_runnable:
+                target = max(base_target, min(available, job.cores_max))
+                cap = False
+                logger.debug(
+                    "[%s] Exclusive allocation for %s (%s) → %d cores (full pool, nothing else runnable)",
+                    self.label,
+                    job.job_id,
+                    job.description,
+                    target,
+                )
+            else:
+                target = base_target
+                cap = False
+                logger.debug(
+                    "[%s] Single ready job %s (%s) capped to optimal %d cores "
+                    "(blocked_other=%d, running=%d, queued=%d, available=%d, max=%d)",
+                    self.label,
+                    job.job_id,
+                    job.description,
+                    target,
+                    blocked_other,
+                    running_jobs,
+                    queued_jobs,
+                    available,
+                    job.cores_max,
+                )
+            return {job.job_id: target}, {job.job_id: cap}
 
         # Multiple jobs ready: distribute available capacity as evenly as possible.
         # Fall back to base share if available cores are insufficient.

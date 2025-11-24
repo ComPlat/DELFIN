@@ -128,6 +128,14 @@ PAL=12
 maxcore=6000
 parallel_workflows=yes
 pal_jobs=4
+job_timeout_hours=24
+opt_timeout_hours=12
+frequency_timeout_hours=36
+sp_timeout_hours=6
+orca_retry_enabled=yes
+orca_retry_max_attempts=2
+enable_adaptive_parallelism=yes
+enable_performance_metrics=yes
 ------------------------------------
 OCCUPIER-Settings:
 --------------------

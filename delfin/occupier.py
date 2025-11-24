@@ -43,6 +43,48 @@ logger = get_logger(__name__)
 # Global lock to prevent race conditions when multiple FoBs read input0.xyz simultaneously
 _geometry_file_lock = threading.RLock()
 
+# Safe file reader with retries to handle transient FS races
+def _read_file_lines_with_retries(
+    path: Path,
+    *,
+    attempts: int = 5,
+    delay: float = 0.5,
+    label: str = "file",
+    min_lines: int = 1,
+):
+    """Read lines from a file with retry/backoff to avoid partial reads."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with path.open('r') as handle:
+                lines = handle.readlines()
+            if len(lines) < min_lines:
+                raise ValueError(f"{label} '{path}' is too short ({len(lines)} lines)")
+            return lines
+        except Exception as exc:
+            last_exc = exc
+            if attempt < attempts:
+                wait = delay * attempt
+                logger.warning(
+                    "Read attempt %d/%d for %s '%s' failed: %s; retrying in %.1fs",
+                    attempt,
+                    attempts,
+                    label,
+                    path,
+                    exc,
+                    wait,
+                )
+                time.sleep(wait)
+            else:
+                logger.error(
+                    "Read failed for %s '%s' after %d attempts: %s",
+                    label,
+                    path,
+                    attempts,
+                    exc,
+                )
+                raise last_exc
+
 # ======================== Helper functions (extracted for flat architecture) ========================
 
 def _stem(i: int, base: str = "input") -> str:
@@ -289,22 +331,30 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
                     logger.warning("Primary geometry '%s' missing; falling back to '%s'.", xyz_path, alt_path)
                     xyz_path = alt_path
                 else:
-                    logger.error(f"XYZ input file '{xyz_path}' not found.")
-                    return
+                    error_msg = f"XYZ input file '{xyz_path}' not found (alt: '{alt_path}')"
+                    logger.error(error_msg)
+                    raise FileNotFoundError(error_msg)
             else:
-                logger.error(f"XYZ input file '{xyz_path}' not found.")
-                return
+                error_msg = f"XYZ input file '{xyz_path}' not found (from_index={from_index})"
+                logger.error(error_msg)
+                raise FileNotFoundError(error_msg)
 
-        with xyz_path.open('r') as file:
-            lines = file.readlines()
+        lines = _read_file_lines_with_retries(
+            xyz_path,
+            attempts=5,
+            delay=0.5,
+            label=f"XYZ geometry (from_index={from_index})",
+            min_lines=2,
+        )
 
     cleaned_xyz = normalize_xyz_body(lines[2:])  # skip count/comment lines
     geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(cleaned_xyz, xyz_path)
     _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
     atoms = _parse_xyz_atoms_with_indices(geom_lines)
     if not atoms:
-        logger.error("No atoms parsed from XYZ.")
-        return
+        error_msg = f"No atoms parsed from XYZ file '{xyz_file}'"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
 
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
@@ -638,22 +688,30 @@ def run_OCCUPIER():
                         )
                         xyz_path = alt_path
                     else:
-                        logger.error(f"XYZ input file '{xyz_path}' not found.")
-                        return
+                        error_msg = f"XYZ input file '{xyz_path}' not found (alt: '{alt_path}')"
+                        logger.error(error_msg)
+                        raise FileNotFoundError(error_msg)
                 else:
-                    logger.error(f"XYZ input file '{xyz_path}' not found.")
-                    return
+                    error_msg = f"XYZ input file '{xyz_path}' not found (from_index={from_index})"
+                    logger.error(error_msg)
+                    raise FileNotFoundError(error_msg)
 
-            with xyz_path.open('r') as file:
-                lines = file.readlines()
+            lines = _read_file_lines_with_retries(
+                xyz_path,
+                attempts=5,
+                delay=0.5,
+                label=f"XYZ geometry (from_index={from_index})",
+                min_lines=2,
+            )
 
         cleaned_xyz = clean_xyz_block(lines[2:])  # skip count/comment lines
         geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(cleaned_xyz, xyz_path)
         _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
         atoms = _parse_xyz_atoms_with_indices(geom_lines)
         if not atoms:
-            logger.error("No atoms parsed from XYZ.")
-            return
+            error_msg = f"No atoms parsed from XYZ file '{xyz_file}'"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
         enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes', 'true', '1', 'on')
         sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()

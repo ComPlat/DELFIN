@@ -148,6 +148,7 @@ class GlobalJobManager:
             total_cores=self.total_cores,
             total_memory_mb=self.total_memory,
             max_jobs=self.max_jobs,
+            config=sanitized,
         )
 
         pool_id = id(self.pool)
