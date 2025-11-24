@@ -653,8 +653,8 @@ class DynamicCorePool:
         jobs_to_kill = []
 
         # Maximum allowed runtime before auto-termination
-        # Set to 24h to accommodate very long frequency calculations
-        # Real data: Pacman_NiFeCl freq jobs can take up to 22.8h
+        # Set to 24h based on analysis of 311 jobs across 4 systems
+        # Note: One outlier relaxed surface scan took 26.8h and would be terminated
         stuck_kill_threshold = 86400  # 24 hours
 
         for job_id, job in self._running_jobs.items():
