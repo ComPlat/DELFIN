@@ -5,13 +5,29 @@ import time
 import queue
 from concurrent.futures import ThreadPoolExecutor, Future
 from typing import Dict, List, Optional, Any, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from itertools import count
 
 from delfin.common.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Thread-local storage for tracking current job context
+_job_context = threading.local()
+
+
+def get_current_job_id() -> Optional[str]:
+    """Get the ID of the currently executing pool job (if any).
+
+    Returns None if not currently executing within a pool job.
+    """
+    return getattr(_job_context, 'current_job_id', None)
+
+
+def _set_current_job_id(job_id: Optional[str]) -> None:
+    """Set the current job ID in thread-local context (internal use only)."""
+    _job_context.current_job_id = job_id
 
 
 class JobPriority(Enum):
@@ -38,6 +54,12 @@ class PoolJob:
     retry_count: int = 0
     next_retry_time: float = 0.0
     suppress_pool_logs: bool = False
+
+    # Parent-Child Job Tracking for nested jobs
+    parent_job_id: Optional[str] = None  # ID of parent job if this is a child
+    child_jobs: List[str] = field(default_factory=list)  # IDs of child jobs spawned by this job
+    borrowed_cores: int = 0  # Cores borrowed from parent job
+    lent_cores: int = 0  # Cores lent to child jobs
 
 
 class DynamicCorePool:
@@ -78,28 +100,124 @@ class DynamicCorePool:
         logger.info(f"Dynamic Core Pool initialized: {total_cores} cores, {total_memory_mb}MB memory")
 
     def submit_job(self, job: PoolJob) -> str:
-        """Submit a job to the dynamic pool."""
+        """Submit a job to the dynamic pool.
+
+        Automatically detects if being called from within another pool job
+        and sets up parent-child relationship for core borrowing.
+        """
         if self._shutdown:
             logger.warning(f"Pool is shutting down, cannot accept job {job.job_id}")
             raise RuntimeError("Cannot submit job: pool is shutting down")
+
+        # Auto-detect parent job if not explicitly set
+        if job.parent_job_id is None:
+            current_job_id = get_current_job_id()
+            if current_job_id is not None:
+                job.parent_job_id = current_job_id
+                # Register this job as a child of the parent
+                with self._lock:
+                    if current_job_id in self._running_jobs:
+                        parent_job = self._running_jobs[current_job_id]
+                        parent_job.child_jobs.append(job.job_id)
+                        logger.debug(
+                            f"Job {job.job_id} registered as child of {current_job_id}"
+                        )
+
         job.retry_count = 0
         job.next_retry_time = time.time()
         priority_value = job.priority.value
         self._job_queue.put((priority_value, job.next_retry_time, next(self._job_counter), job))
         if not job.suppress_pool_logs:
+            parent_info = f", parent={job.parent_job_id}" if job.parent_job_id else ""
             logger.info(
-                f"Job {job.job_id} queued (cores: {job.cores_min}-{job.cores_optimal}-{job.cores_max})"
+                f"Job {job.job_id} queued (cores: {job.cores_min}-{job.cores_optimal}-{job.cores_max}{parent_info})"
             )
         self._signal_state_change()
         return job.job_id
 
+    def try_borrow_cores_from_parent(self, child_job: PoolJob, requested_cores: int) -> int:
+        """Try to borrow cores from parent job for a child job.
+
+        Args:
+            child_job: The child job requesting cores
+            requested_cores: Number of cores requested
+
+        Returns:
+            Number of cores actually borrowed (may be less than requested or 0)
+        """
+        with self._lock:
+            if child_job.parent_job_id is None:
+                return 0
+
+            parent_job_id = child_job.parent_job_id
+            if parent_job_id not in self._running_jobs:
+                logger.debug(
+                    f"Cannot borrow cores: parent job {parent_job_id} not found or not running"
+                )
+                return 0
+
+            parent_job = self._running_jobs[parent_job_id]
+
+            # Calculate how many cores the parent can lend
+            # Parent must keep at least cores_min for itself
+            available_to_lend = parent_job.allocated_cores - parent_job.lent_cores - parent_job.cores_min
+            cores_to_lend = min(requested_cores, max(0, available_to_lend))
+
+            if cores_to_lend > 0:
+                parent_job.lent_cores += cores_to_lend
+                child_job.borrowed_cores = cores_to_lend
+                logger.debug(
+                    f"Job {child_job.job_id} borrowed {cores_to_lend} cores from parent {parent_job_id} "
+                    f"(parent has {parent_job.allocated_cores - parent_job.lent_cores} cores remaining)"
+                )
+
+            return cores_to_lend
+
+    def return_borrowed_cores(self, child_job: PoolJob) -> None:
+        """Return borrowed cores from child back to parent.
+
+        Args:
+            child_job: The child job returning cores
+        """
+        with self._lock:
+            if child_job.borrowed_cores == 0 or child_job.parent_job_id is None:
+                return
+
+            parent_job_id = child_job.parent_job_id
+            if parent_job_id in self._running_jobs:
+                parent_job = self._running_jobs[parent_job_id]
+                parent_job.lent_cores -= child_job.borrowed_cores
+                logger.debug(
+                    f"Job {child_job.job_id} returned {child_job.borrowed_cores} cores to parent {parent_job_id}"
+                )
+
+            child_job.borrowed_cores = 0
+
     def _calculate_optimal_allocation(self, job: PoolJob) -> Optional[int]:
-        """Calculate optimal core allocation for a job."""
+        """Calculate optimal core allocation for a job.
+
+        For child jobs, tries to borrow cores from parent if pool resources are insufficient.
+        """
         with self._lock:
             available_cores = self.total_cores - self._allocated_cores
             available_memory = self.total_memory_mb - self._allocated_memory
 
-            # Check if job can run at all
+            # If this is a child job and pool doesn't have enough cores,
+            # try to borrow from parent
+            if job.parent_job_id is not None and available_cores < job.cores_min:
+                borrowed = self.try_borrow_cores_from_parent(job, job.cores_optimal)
+                if borrowed >= job.cores_min:
+                    # Successfully borrowed enough cores from parent
+                    # Child job doesn't allocate from pool, uses borrowed cores
+                    logger.debug(
+                        f"Job {job.job_id} will run with {borrowed} borrowed cores from parent"
+                    )
+                    return borrowed
+                elif borrowed > 0:
+                    # Partially borrowed, return them and try normal allocation
+                    self.return_borrowed_cores(job)
+
+            # Check if job can run at all from pool resources
             if (available_cores < job.cores_min or
                 available_memory < job.memory_mb or
                 len(self._running_jobs) >= self.max_concurrent_jobs):
@@ -194,38 +312,46 @@ class DynamicCorePool:
             return False
 
     def _start_job(self, job: PoolJob, allocated_cores: int):
-        """Start a job with allocated resources."""
+        """Start a job with allocated resources (either from pool or borrowed from parent)."""
         with self._lock:
             # Check if pool is shutting down
             if self._shutdown:
                 logger.debug(f"Pool shutting down, cannot start job {job.job_id}")
                 return
 
-            # Reserve resources
-            self._allocated_cores += allocated_cores
-            self._allocated_memory += job.memory_mb
+            # Reserve resources only if not using borrowed cores
+            if job.borrowed_cores == 0:
+                self._allocated_cores += allocated_cores
+                self._allocated_memory += job.memory_mb
 
             job.allocated_cores = allocated_cores
             job.actual_start_time = time.time()
             self._running_jobs[job.job_id] = job
 
             if not job.suppress_pool_logs:
+                source = "borrowed from parent" if job.borrowed_cores > 0 else "from pool"
                 logger.info(
-                    f"Starting job {job.job_id} with {allocated_cores} cores "
-                    f"({self._allocated_cores}/{self.total_cores} cores used)"
+                    f"Starting job {job.job_id} with {allocated_cores} cores {source} "
+                    f"({self._allocated_cores}/{self.total_cores} pool cores used)"
                 )
 
-            # Create modified execution function with allocated cores
+            # Create modified execution function with allocated cores and job context
             def execute_with_cores():
-                # Add allocated cores and pool usage snapshot to kwargs
-                modified_kwargs = job.kwargs.copy()
-                modified_kwargs['cores'] = allocated_cores
-                modified_kwargs['pool_snapshot'] = (
-                    self._allocated_cores,
-                    self.total_cores,
-                )
+                # Set job context so child jobs can detect their parent
+                _set_current_job_id(job.job_id)
+                try:
+                    # Add allocated cores and pool usage snapshot to kwargs
+                    modified_kwargs = job.kwargs.copy()
+                    modified_kwargs['cores'] = allocated_cores
+                    modified_kwargs['pool_snapshot'] = (
+                        self._allocated_cores,
+                        self.total_cores,
+                    )
 
-                return job.execute_func(*job.args, **modified_kwargs)
+                    return job.execute_func(*job.args, **modified_kwargs)
+                finally:
+                    # Clear job context when done
+                    _set_current_job_id(None)
 
             # Submit to executor
             future = self._executor.submit(execute_with_cores)
@@ -243,9 +369,14 @@ class DynamicCorePool:
             job = self._running_jobs.pop(job_id)
             self._futures.pop(job_id, None)
 
-            # Release resources
-            self._allocated_cores -= job.allocated_cores
-            self._allocated_memory -= job.memory_mb
+            # Return borrowed cores to parent if applicable
+            if job.borrowed_cores > 0:
+                self.return_borrowed_cores(job)
+
+            # Release pool resources only if job was using pool cores
+            if job.borrowed_cores == 0:
+                self._allocated_cores -= job.allocated_cores
+                self._allocated_memory -= job.memory_mb
 
             duration = time.time() - job.actual_start_time if job.actual_start_time else 0
 
@@ -253,9 +384,10 @@ class DynamicCorePool:
                 result = future.result()
                 self._completed_jobs.append(job_id)
                 if not job.suppress_pool_logs:
+                    source = "borrowed" if job.borrowed_cores > 0 else "pool"
                     logger.info(
                         f"Job {job_id} completed in {duration:.1f}s, "
-                        f"freed {job.allocated_cores} cores"
+                        f"freed {job.allocated_cores} {source} cores"
                     )
             except Exception as e:
                 self._failed_jobs.append(job_id)

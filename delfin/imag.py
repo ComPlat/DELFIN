@@ -743,42 +743,62 @@ def _execute_sp_candidates(
     if not jobs:
         return []
     use_pool = False
+    parent_job_id = None
+
     if pool is not None:
+        # Check if we're running within a pool job (potential parent for borrowing)
+        from delfin.dynamic_pool import get_current_job_id
+        parent_job_id = get_current_job_id()
+
         try:
             status = pool.get_status()
         except Exception:
             status = None
+
         if status:
             total = status.get("total_cores", 0)
             allocated = status.get("allocated_cores", 0)
             queued = status.get("queued_jobs", 0)
             running = status.get("running_jobs", 0)
             available = total - allocated if total else 0
-
-            # Conservative approach to avoid deadlock:
-            # Only use pool if we have enough FREE cores to run all IMAG jobs in parallel
-            # without blocking. This prevents deadlock when IMAG is called from within a pool job.
-            # We need: available cores >= (number of jobs × cores per job)
             cores_needed = len(jobs) * core_allocation
 
-            # Additionally, require some headroom (at least 25% of total cores free)
-            # to ensure we're not competing for resources with the parent job
-            min_available = max(cores_needed, total // 4) if total else cores_needed
-
-            if available >= min_available and running < pool.max_concurrent_jobs:
-                use_pool = True
-                logging.debug(
-                    f"[IMAG] Using pool for {len(jobs)} SP calculations: {available}/{total} cores available, "
-                    f"{cores_needed} cores needed, {running}/{pool.max_concurrent_jobs} jobs running"
-                )
+            # If we have a parent job, IMAG child jobs can borrow cores from parent
+            # This makes parallel execution much more viable
+            if parent_job_id is not None:
+                # Parent exists - child jobs can borrow cores
+                # Use a more relaxed condition since borrowing prevents deadlock
+                if available > 0 and running < pool.max_concurrent_jobs:
+                    use_pool = True
+                    logging.debug(
+                        f"[IMAG] Using pool with parent-child borrowing for {len(jobs)} SP jobs: "
+                        f"parent_job={parent_job_id}, {available}/{total} pool cores available"
+                    )
+                else:
+                    logging.debug(
+                        f"[IMAG] Falling back to sequential (parent={parent_job_id}): "
+                        f"{available}/{total} cores, {running}/{pool.max_concurrent_jobs} running"
+                    )
             else:
-                logging.debug(
-                    f"[IMAG] Falling back to sequential execution to avoid deadlock: "
-                    f"{available}/{total} cores available, {cores_needed} cores needed for {len(jobs)} jobs, "
-                    f"{running}/{pool.max_concurrent_jobs} jobs running, {queued} jobs queued"
-                )
+                # No parent job - use conservative approach to avoid deadlock
+                # Require significant headroom (at least 25% of total cores)
+                min_available = max(cores_needed, total // 4) if total else cores_needed
+
+                if available >= min_available and running < pool.max_concurrent_jobs:
+                    use_pool = True
+                    logging.debug(
+                        f"[IMAG] Using pool for {len(jobs)} SP calculations: {available}/{total} cores available, "
+                        f"{cores_needed} cores needed, {running}/{pool.max_concurrent_jobs} jobs running"
+                    )
+                else:
+                    logging.debug(
+                        f"[IMAG] Falling back to sequential execution to avoid deadlock: "
+                        f"{available}/{total} cores available, {cores_needed} cores needed for {len(jobs)} jobs, "
+                        f"{running}/{pool.max_concurrent_jobs} jobs running, {queued} jobs queued"
+                    )
         else:
             use_pool = True
+
     if not use_pool:
         return _run_sp_candidates_sequential(jobs)
     return _run_sp_candidates_parallel(
