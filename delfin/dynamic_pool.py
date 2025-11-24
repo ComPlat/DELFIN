@@ -261,14 +261,41 @@ class DynamicCorePool:
         - allocated_cores matches sum of running job allocations
         - parent lent_cores matches sum of children borrowed_cores
         - no negative values
+        - pool capacity not exceeded
+
+        Auto-corrects accounting errors when safe to do so.
         """
         try:
-            total_allocated = sum(job.allocated_cores for job in self._running_jobs.values() if job.borrowed_cores == 0)
+            # Count pool-allocated cores (excluding borrowed cores)
+            total_allocated = sum(
+                job.allocated_cores
+                for job in self._running_jobs.values()
+                if job.borrowed_cores == 0
+            )
 
+            # CRITICAL: Pool accounting mismatch check
             if total_allocated != self._allocated_cores:
-                logger.warning(
-                    f"Resource accounting mismatch: Pool shows {self._allocated_cores} allocated, "
-                    f"but running jobs sum to {total_allocated}. Difference: {self._allocated_cores - total_allocated}"
+                job_details = [
+                    f"{job.job_id}={job.allocated_cores}c"
+                    + (f" (borrowed={job.borrowed_cores})" if job.borrowed_cores > 0 else "")
+                    + (f" (lent={job.lent_cores})" if job.lent_cores > 0 else "")
+                    for job in self._running_jobs.values()
+                ]
+                logger.error(
+                    f"CRITICAL RESOURCE ACCOUNTING MISMATCH:\n"
+                    f"  Pool allocated:  {self._allocated_cores} cores\n"
+                    f"  Jobs sum:        {total_allocated} cores\n"
+                    f"  Leak/Deficit:    {self._allocated_cores - total_allocated} cores\n"
+                    f"  Running jobs:    {', '.join(job_details)}\n"
+                    f"  Pool capacity:   {self.total_cores} cores"
+                )
+
+            # CRITICAL: Pool overflow check
+            if self._allocated_cores > self.total_cores:
+                logger.error(
+                    f"CRITICAL: Pool overflow detected! "
+                    f"{self._allocated_cores} cores allocated exceeds capacity of {self.total_cores} cores. "
+                    f"This should never happen!"
                 )
 
             # Validate parent-child accounting
@@ -284,14 +311,22 @@ class DynamicCorePool:
                     if actual_borrowed != job.lent_cores:
                         logger.warning(
                             f"Parent-child accounting mismatch: {job_id} shows {job.lent_cores} lent, "
-                            f"but children have {actual_borrowed} borrowed"
+                            f"but children have {actual_borrowed} borrowed. Auto-correcting."
                         )
                         # ROBUSTNESS: Auto-correct stale lending counters to avoid repeated noise and
                         # overly conservative scheduling when children already returned cores.
                         job.lent_cores = actual_borrowed
 
+                # ROBUSTNESS: Check for negative values
+                if job.lent_cores < 0:
+                    logger.error(f"BUG: Job {job_id} has negative lent_cores={job.lent_cores}! Forcing to 0.")
+                    job.lent_cores = 0
+                if job.borrowed_cores < 0:
+                    logger.error(f"BUG: Job {job_id} has negative borrowed_cores={job.borrowed_cores}! Forcing to 0.")
+                    job.borrowed_cores = 0
+
         except Exception as e:
-            logger.debug(f"Resource validation error (non-critical): {e}")
+            logger.error(f"Resource validation failed (this is a bug): {e}", exc_info=True)
 
     def _calculate_optimal_allocation(self, job: PoolJob) -> Optional[int]:
         """Calculate optimal core allocation for a job.
@@ -480,12 +515,41 @@ class DynamicCorePool:
             if job.borrowed_cores > 0:
                 self.return_borrowed_cores(job)
 
-            # Validate that all lent cores have been returned
+            # CRITICAL: Validate that all lent cores have been returned
             if job.lent_cores > 0:
-                logger.warning(
-                    f"Job {job_id} completing with {job.lent_cores} cores still lent to children. "
-                    f"This indicates children didn't properly return cores. Forcing cleanup."
+                # Calculate actual borrowed cores by children
+                actual_borrowed = sum(
+                    child.borrowed_cores
+                    for child_id in job.child_jobs
+                    if child_id in self._running_jobs
+                    for child in [self._running_jobs[child_id]]
                 )
+
+                logger.error(
+                    f"CRITICAL: Job {job_id} completing with {job.lent_cores} cores still lent "
+                    f"(actual borrowed by children: {actual_borrowed}). "
+                    f"This indicates a resource accounting leak. Auto-recovering."
+                )
+
+                # Auto-recovery: If children still have borrowed cores, they were orphaned
+                # This should have been handled by _handle_orphaned_children, but double-check
+                if actual_borrowed > 0:
+                    logger.error(
+                        f"BUG: Orphaned children still have {actual_borrowed} borrowed cores! "
+                        f"Force-converting to pool allocation to prevent leak."
+                    )
+                    for child_id in job.child_jobs:
+                        if child_id in self._running_jobs:
+                            child = self._running_jobs[child_id]
+                            if child.borrowed_cores > 0:
+                                self._allocated_cores += child.borrowed_cores
+                                logger.error(
+                                    f"Auto-recovery: Child {child_id} converted {child.borrowed_cores} "
+                                    f"borrowed cores → pool allocation"
+                                )
+                                child.borrowed_cores = 0
+                                child.parent_job_id = None
+
                 # Force cleanup to prevent core leak
                 job.lent_cores = 0
 
@@ -518,27 +582,51 @@ class DynamicCorePool:
 
         Converts borrowed cores to pool-allocated cores for orphaned children
         to prevent resource accounting errors.
+
+        This is a critical auto-recovery mechanism that prevents resource leaks
+        when parent jobs complete before their children.
         """
         orphaned_count = 0
+        total_cores_converted = 0
+
         for child_id in parent_job.child_jobs:
             if child_id in self._running_jobs:
                 child = self._running_jobs[child_id]
                 if child.borrowed_cores > 0:
                     # Child is orphaned with borrowed cores
                     # Convert borrowed cores to pool allocation
-                    logger.warning(
-                        f"Child job {child_id} orphaned by parent {parent_job.job_id}. "
-                        f"Converting {child.borrowed_cores} borrowed cores to pool allocation."
+                    cores_to_convert = child.borrowed_cores
+
+                    # ROBUSTNESS: Validate pool won't overflow
+                    new_allocation = self._allocated_cores + cores_to_convert
+                    if new_allocation > self.total_cores:
+                        logger.error(
+                            f"CRITICAL: Converting {cores_to_convert} borrowed cores from orphaned child {child_id} "
+                            f"would exceed pool capacity ({new_allocation} > {self.total_cores}). "
+                            f"This indicates a serious accounting bug!"
+                        )
+                        # Continue anyway to prevent worse corruption
+
+                    logger.error(
+                        f"AUTO-RECOVERY: Child job {child_id} orphaned by parent {parent_job.job_id}. "
+                        f"Converting {cores_to_convert} borrowed cores → pool allocation. "
+                        f"Pool: {self._allocated_cores} → {self._allocated_cores + cores_to_convert}/{self.total_cores}"
                     )
 
                     # Allocate from pool to replace borrowed cores
-                    self._allocated_cores += child.borrowed_cores
+                    self._allocated_cores += cores_to_convert
                     child.borrowed_cores = 0
                     child.parent_job_id = None  # Orphan the child
                     orphaned_count += 1
+                    total_cores_converted += cores_to_convert
 
         if orphaned_count > 0:
-            logger.info(f"Handled {orphaned_count} orphaned children from parent {parent_job.job_id}")
+            logger.warning(
+                f"Handled {orphaned_count} orphaned child(ren) from parent {parent_job.job_id}. "
+                f"Converted {total_cores_converted} cores: borrowed → pool allocation."
+            )
+            # Validate accounting after orphan handling
+            self._validate_resource_accounting()
 
     def drain_completed_jobs(self) -> List[str]:
         """Return and clear list of recently completed job ids."""

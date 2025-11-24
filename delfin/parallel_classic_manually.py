@@ -169,6 +169,45 @@ class _WorkflowManager:
         preferred = max(cores_min, min(default_opt, cores_max))
         return cores_min, preferred, cores_max
 
+    def _validate_no_cycles(self) -> None:
+        """Detect circular dependencies in the job graph using DFS.
+
+        Raises:
+            ValueError: If a circular dependency is detected.
+        """
+        visited: Set[str] = set()
+        rec_stack: Set[str] = set()
+        path: List[str] = []
+
+        def has_cycle(job_id: str) -> bool:
+            """DFS to detect cycles. Returns True if cycle found."""
+            visited.add(job_id)
+            rec_stack.add(job_id)
+            path.append(job_id)
+
+            job = self._jobs.get(job_id)
+            if job:
+                for dep in job.dependencies:
+                    if dep not in visited:
+                        if has_cycle(dep):
+                            return True
+                    elif dep in rec_stack:
+                        # Cycle detected! Build cycle path
+                        cycle_start = path.index(dep)
+                        cycle_path = path[cycle_start:] + [dep]
+                        raise ValueError(
+                            f"[{self.label}] Circular dependency detected: {' → '.join(cycle_path)}"
+                        )
+
+            path.pop()
+            rec_stack.remove(job_id)
+            return False
+
+        # Check all jobs for cycles
+        for job_id in self._jobs:
+            if job_id not in visited:
+                has_cycle(job_id)
+
     def add_job(self, job: WorkflowJob) -> None:
         with self._lock:
             if job.job_id in self._jobs:
@@ -198,6 +237,15 @@ class _WorkflowManager:
                     job.memory_mb = job.cores_optimal * self.maxcore_mb
 
             self._jobs[job.job_id] = job
+
+            # Validate no circular dependencies after adding job
+            try:
+                self._validate_no_cycles()
+            except ValueError as e:
+                # Remove the job that caused the cycle
+                self._jobs.pop(job.job_id, None)
+                raise ValueError(f"Cannot add job {job.job_id}: {e}") from e
+
             logger.info(
                 "[%s] Registered job %s (%s); deps=%s",
                 self.label,
@@ -418,6 +466,11 @@ class _WorkflowManager:
             id(self.pool),
         )
 
+        # Deadlock detection: Track last progress to detect infinite blocking
+        last_progress_time = time.time()
+        last_completed_count = 0
+        DEADLOCK_TIMEOUT = 300  # 5 minutes without progress
+
         while True:
             for job_id, job in list(self._jobs.items()):
                 if job_id in pending:
@@ -497,6 +550,28 @@ class _WorkflowManager:
                     self._event.clear()
                     continue
 
+                # Deadlock detection: Check if we're stuck with pending jobs but no progress
+                current_completed_count = len(self._completed) + len(self._failed) + len(self._skipped)
+                if current_completed_count > last_completed_count:
+                    # Progress made - reset timeout
+                    last_progress_time = time.time()
+                    last_completed_count = current_completed_count
+                elif time.time() - last_progress_time > DEADLOCK_TIMEOUT:
+                    # No progress for DEADLOCK_TIMEOUT seconds and jobs are blocked
+                    logger.error(
+                        "[%s] DEADLOCK DETECTED: %d jobs blocked for %.1f minutes without progress. "
+                        "Blocked jobs: %s. Aborting workflow to prevent infinite hang.",
+                        self.label,
+                        len(blocked),
+                        (time.time() - last_progress_time) / 60,
+                        blocked,
+                    )
+                    # Mark all blocked jobs as skipped to cleanly exit
+                    for job_id, missing in blocked.items():
+                        self._mark_skipped(job_id, missing or ['deadlock - timeout waiting for dependencies'])
+                        pending.pop(job_id, None)
+                    break
+
                 for job_id, missing in blocked.items():
                     self._mark_skipped(job_id, missing or ['unresolved dependency'])
                     pending.pop(job_id, None)
@@ -538,6 +613,7 @@ class _WorkflowManager:
 
             allocations, caps = self._plan_core_allocations(ready, status)
 
+            jobs_submitted_this_round = 0
             for job in ready:
                 if job.job_id not in allocations:
                     # Not enough cores to start this job in the current packing round
@@ -558,6 +634,11 @@ class _WorkflowManager:
                     lock_to_forced=caps.get(job.job_id, False),
                 )
                 pending.pop(job.job_id, None)
+                jobs_submitted_this_round += 1
+
+            # Deadlock detection: Reset progress timer when jobs are submitted
+            if jobs_submitted_this_round > 0:
+                last_progress_time = time.time()
 
             # After submitting ready jobs, wait briefly for state changes
             # This allows the loop to react immediately when dependencies are fulfilled

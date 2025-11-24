@@ -36,34 +36,41 @@ logger = get_logger(__name__)
 # Global lock guarding process-wide cwd changes
 _cwd_lock = threading.RLock()
 
+# Global lock preventing concurrent geometry file writes (prevents race conditions)
+_geometry_lock = threading.Lock()
+
 _OK_MARKER = "ORCA TERMINATED NORMALLY"
 _MIN_OK_FILESIZE = 100
 
 
 def _fallback_propagate_geometry(folder_name: str, folder_path: Path) -> None:
-    """Best-effort propagation when OCCUPIER.txt is missing."""
+    """Best-effort propagation when OCCUPIER.txt is missing.
+
+    Thread-safe: Uses _geometry_lock to prevent concurrent file writes.
+    """
     dest_label = folder_name.replace("_OCCUPIER", "")
     if not dest_label:
         return
 
-    dest_xyz = folder_path.parent / f"{dest_label}.xyz"
-    src_xyz = folder_path / "input.xyz"
-    if src_xyz.exists():
-        try:
-            shutil.copyfile(src_xyz, dest_xyz)
-            logger.warning("[%s] Fallback propagated %s to %s (no OCCUPIER summary)", folder_name, src_xyz, dest_xyz)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("[%s] Failed to propagate fallback geometry %s → %s: %s", folder_name, src_xyz, dest_xyz, exc)
-    else:
-        logger.error("[%s] Cannot apply fallback – missing %s", folder_name, src_xyz)
+    with _geometry_lock:
+        dest_xyz = folder_path.parent / f"{dest_label}.xyz"
+        src_xyz = folder_path / "input.xyz"
+        if src_xyz.exists():
+            try:
+                shutil.copyfile(src_xyz, dest_xyz)
+                logger.warning("[%s] Fallback propagated %s to %s (no OCCUPIER summary)", folder_name, src_xyz, dest_xyz)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[%s] Failed to propagate fallback geometry %s → %s: %s", folder_name, src_xyz, dest_xyz, exc)
+        else:
+            logger.error("[%s] Cannot apply fallback – missing %s", folder_name, src_xyz)
 
-    src_gbw = folder_path / "input.gbw"
-    dest_gbw = folder_path.parent / f"input_{folder_name}.gbw"
-    if src_gbw.exists():
-        try:
-            shutil.copyfile(src_gbw, dest_gbw)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[%s] Failed to propagate fallback GBW %s → %s: %s", folder_name, src_gbw, dest_gbw, exc)
+        src_gbw = folder_path / "input.gbw"
+        dest_gbw = folder_path.parent / f"input_{folder_name}.gbw"
+        if src_gbw.exists():
+            try:
+                shutil.copyfile(src_gbw, dest_gbw)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[%s] Failed to propagate fallback GBW %s → %s: %s", folder_name, src_gbw, dest_gbw, exc)
 
 
 def _has_ok_marker(path: Path) -> bool:
@@ -229,20 +236,22 @@ def _update_runtime_cache(
     log_suffix = f", gbw={gbw_path}" if gbw_path else ""
     logger.info("[%s] Registered preferred OCCUPIER geometry (index=%s%s)", folder_name, preferred_index, log_suffix)
 
+    # Thread-safe geometry propagation with _geometry_lock
     if preferred_index is not None:
-        src_candidate = folder_path / ("input.xyz" if preferred_index == 1 else f"input{preferred_index}.xyz")
-        if not src_candidate.exists():
-            fallback_src = folder_path / "input.xyz"
-            src_candidate = fallback_src if fallback_src.exists() else src_candidate
+        with _geometry_lock:
+            src_candidate = folder_path / ("input.xyz" if preferred_index == 1 else f"input{preferred_index}.xyz")
+            if not src_candidate.exists():
+                fallback_src = folder_path / "input.xyz"
+                src_candidate = fallback_src if fallback_src.exists() else src_candidate
 
-        dest_name = folder_name.replace("_OCCUPIER", "")
-        if dest_name:
-            dest_path = folder_path.parent / f"{dest_name}.xyz"
-            try:
-                shutil.copyfile(src_candidate, dest_path)
-                logger.info("[%s] Propagated best geometry to %s", folder_name, dest_path)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[%s] Could not propagate geometry to %s: %s", folder_name, dest_path, exc)
+            dest_name = folder_name.replace("_OCCUPIER", "")
+            if dest_name:
+                dest_path = folder_path.parent / f"{dest_name}.xyz"
+                try:
+                    shutil.copyfile(src_candidate, dest_path)
+                    logger.info("[%s] Propagated best geometry to %s", folder_name, dest_path)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[%s] Could not propagate geometry to %s: %s", folder_name, dest_path, exc)
 
 
 def _create_occupier_fob_jobs(
