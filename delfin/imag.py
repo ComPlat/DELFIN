@@ -753,8 +753,30 @@ def _execute_sp_candidates(
             allocated = status.get("allocated_cores", 0)
             queued = status.get("queued_jobs", 0)
             running = status.get("running_jobs", 0)
-            if total and (total - allocated) > 0 and queued == 0 and running < pool.max_concurrent_jobs:
+            available = total - allocated if total else 0
+
+            # Conservative approach to avoid deadlock:
+            # Only use pool if we have enough FREE cores to run all IMAG jobs in parallel
+            # without blocking. This prevents deadlock when IMAG is called from within a pool job.
+            # We need: available cores >= (number of jobs × cores per job)
+            cores_needed = len(jobs) * core_allocation
+
+            # Additionally, require some headroom (at least 25% of total cores free)
+            # to ensure we're not competing for resources with the parent job
+            min_available = max(cores_needed, total // 4) if total else cores_needed
+
+            if available >= min_available and running < pool.max_concurrent_jobs:
                 use_pool = True
+                logging.debug(
+                    f"[IMAG] Using pool for {len(jobs)} SP calculations: {available}/{total} cores available, "
+                    f"{cores_needed} cores needed, {running}/{pool.max_concurrent_jobs} jobs running"
+                )
+            else:
+                logging.debug(
+                    f"[IMAG] Falling back to sequential execution to avoid deadlock: "
+                    f"{available}/{total} cores available, {cores_needed} cores needed for {len(jobs)} jobs, "
+                    f"{running}/{pool.max_concurrent_jobs} jobs running, {queued} jobs queued"
+                )
         else:
             use_pool = True
     if not use_pool:
