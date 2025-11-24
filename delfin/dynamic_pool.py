@@ -652,9 +652,9 @@ class DynamicCorePool:
         stuck_jobs = []
         jobs_to_kill = []
 
-        # Based on real data from Fe4_Co_8: max observed runtime = 2.9h
-        # Jobs running > 2× max observed (5.8h = 21000s) are DEFINITELY stuck
-        stuck_kill_threshold = 21000  # 5.8 hours
+        # Maximum allowed runtime before auto-termination
+        # Set to 10h to accommodate very long jobs while preventing indefinite hangs
+        stuck_kill_threshold = 36000  # 10 hours
 
         for job_id, job in self._running_jobs.items():
             if job.actual_start_time is None:
@@ -674,12 +674,11 @@ class DynamicCorePool:
                 stuck_jobs.append((job_id, runtime, max_duration))
 
                 # Check if job is WAY over limit → AUTO-TERMINATE
-                # Use absolute threshold based on real data (21000s = 5.8h)
-                # This is 2× the maximum ever observed runtime
+                # Jobs running > 10h are terminated to prevent indefinite hangs
                 if runtime > stuck_kill_threshold:
                     logger.error(
                         f"Job {job_id} is severely stuck: running for {runtime/3600:.1f}h, "
-                        f"exceeds kill threshold of {stuck_kill_threshold/3600:.1f}h. "
+                        f"exceeds maximum allowed runtime of {stuck_kill_threshold/3600:.1f}h. "
                         f"AUTO-TERMINATING to free resources."
                     )
                     jobs_to_kill.append((job_id, job))
