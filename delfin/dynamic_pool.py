@@ -286,6 +286,9 @@ class DynamicCorePool:
                             f"Parent-child accounting mismatch: {job_id} shows {job.lent_cores} lent, "
                             f"but children have {actual_borrowed} borrowed"
                         )
+                        # ROBUSTNESS: Auto-correct stale lending counters to avoid repeated noise and
+                        # overly conservative scheduling when children already returned cores.
+                        job.lent_cores = actual_borrowed
 
         except Exception as e:
             logger.debug(f"Resource validation error (non-critical): {e}")
