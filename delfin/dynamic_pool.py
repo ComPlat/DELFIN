@@ -653,8 +653,9 @@ class DynamicCorePool:
         jobs_to_kill = []
 
         # Maximum allowed runtime before auto-termination
-        # Set to 10h to accommodate very long jobs while preventing indefinite hangs
-        stuck_kill_threshold = 36000  # 10 hours
+        # Set to 24h to accommodate very long frequency calculations
+        # Real data: Pacman_NiFeCl freq jobs can take up to 22.8h
+        stuck_kill_threshold = 86400  # 24 hours
 
         for job_id, job in self._running_jobs.items():
             if job.actual_start_time is None:
@@ -674,7 +675,8 @@ class DynamicCorePool:
                 stuck_jobs.append((job_id, runtime, max_duration))
 
                 # Check if job is WAY over limit → AUTO-TERMINATE
-                # Jobs running > 10h are terminated to prevent indefinite hangs
+                # Jobs running > 24h are terminated to prevent indefinite hangs
+                # This accommodates long frequency calculations (up to 22.8h observed)
                 if runtime > stuck_kill_threshold:
                     logger.error(
                         f"Job {job_id} is severely stuck: running for {runtime/3600:.1f}h, "
