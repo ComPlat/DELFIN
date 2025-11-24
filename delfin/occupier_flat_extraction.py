@@ -733,9 +733,10 @@ def _create_occupier_fob_jobs(
         work=make_best_selector(),
         description=f"{folder_name} best FoB selection",
         dependencies=all_fob_ids,
-        cores_min=1,
-        cores_optimal=1,
-        cores_max=1,
+        cores_min=0,
+        cores_optimal=0,
+        cores_max=0,
+        inline=True,
     )
     jobs.append(best_job)
 

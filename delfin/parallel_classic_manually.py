@@ -53,6 +53,7 @@ class WorkflowJob:
     priority: JobPriority = JobPriority.NORMAL
     memory_mb: Optional[int] = None
     estimated_duration: float = 3600.0
+    inline: bool = False  # Run inline without reserving pool cores
 
     # Cache original core preferences so dynamic scheduling can adjust per run.
     base_cores_min: int = field(init=False, repr=False)
@@ -176,19 +177,25 @@ class _WorkflowManager:
             deps = set(job.dependencies)
             job.dependencies = deps
 
-            job.cores_min = max(1, min(job.cores_min, self.total_cores))
-            job.cores_max = max(job.cores_min, min(job.cores_max, self.total_cores))
-            job.cores_optimal = max(job.cores_min, min(job.cores_optimal, job.cores_max))
+            if job.inline:
+                # Zero-cost jobs: no pool cores reserved, keep metadata at 0
+                job.cores_min = job.cores_optimal = job.cores_max = 0
+                job.base_cores_min = job.base_cores_optimal = job.base_cores_max = 0
+                job.memory_mb = 0
+            else:
+                job.cores_min = max(1, min(job.cores_min, self.total_cores))
+                job.cores_max = max(job.cores_min, min(job.cores_max, self.total_cores))
+                job.cores_optimal = max(job.cores_min, min(job.cores_optimal, job.cores_max))
 
-            # Remember the original preferences so we can recompute dynamic allocations per dispatch.
-            job.base_cores_min = job.cores_min
-            job.base_cores_optimal = job.cores_optimal
-            job.base_cores_max = job.cores_max
+                # Remember the original preferences so we can recompute dynamic allocations per dispatch.
+                job.base_cores_min = job.cores_min
+                job.base_cores_optimal = job.cores_optimal
+                job.base_cores_max = job.cores_max
 
-            self._auto_tune_job(job)
+                self._auto_tune_job(job)
 
-            if job.memory_mb is None:
-                job.memory_mb = job.cores_optimal * self.maxcore_mb
+                if job.memory_mb is None:
+                    job.memory_mb = job.cores_optimal * self.maxcore_mb
 
             self._jobs[job.job_id] = job
             logger.info(
@@ -512,6 +519,16 @@ class _WorkflowManager:
                 sorted(self._completed),
             )
 
+            inline_ready = [job for job in ready if job.inline]
+            if inline_ready:
+                for job in inline_ready:
+                    self._submit(job)
+                    pending.pop(job.job_id, None)
+                ready = [job for job in ready if not job.inline]
+                if not ready:
+                    # Inline jobs finished; loop will pick up newly ready work immediately.
+                    continue
+
             # Check for exclusive bottleneck that should run alone
             if self._should_wait_for_exclusive_bottleneck(ready, status):
                 # Wait for running jobs to finish before starting exclusive bottleneck
@@ -585,6 +602,27 @@ class _WorkflowManager:
         *,
         lock_to_forced: bool = False,
     ) -> None:
+        if job.inline:
+            start_time = time.time()
+            logger.info(
+                "[%s] Running %s inline (zero-cost; %s)",
+                self.label,
+                job.job_id,
+                job.description,
+            )
+            with self._lock:
+                self._job_start_times[job.job_id] = start_time
+            try:
+                job.work(0)
+            except Exception as exc:  # noqa: BLE001
+                self._mark_failed(job.job_id, exc)
+                raise
+            else:
+                duration = time.time() - start_time
+                self._record_duration(job, duration)
+                self._mark_completed(job.job_id)
+            return
+
         # Check if this is an exclusive bottleneck and boost cores
         if forced_cores is None:
             forced_cores = self._check_exclusive_bottleneck_boost(job)
@@ -705,6 +743,8 @@ class _WorkflowManager:
         return min(self.total_cores, share)
 
     def _auto_tune_job(self, job: WorkflowJob) -> None:
+        if job.inline:
+            return
         if not self._parallel_enabled:
             job.cores_min = job.cores_max = job.cores_optimal = self.total_cores
             job.memory_mb = job.cores_optimal * self.maxcore_mb

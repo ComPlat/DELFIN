@@ -744,6 +744,7 @@ def _execute_sp_candidates(
         return []
     use_pool = False
     parent_job_id = None
+    effective_core_allocation = core_allocation
 
     if pool is not None:
         # Check if we're running within a pool job (potential parent for borrowing)
@@ -766,19 +767,27 @@ def _execute_sp_candidates(
             # If we have a parent job, IMAG child jobs can borrow cores from parent
             # This makes parallel execution much more viable
             if parent_job_id is not None:
-                # Parent exists - child jobs can borrow cores
-                # Use a more relaxed condition since borrowing prevents deadlock
-                if available > 0 and running < pool.max_concurrent_jobs:
-                    use_pool = True
-                    logging.debug(
-                        f"[IMAG] Using pool with parent-child borrowing for {len(jobs)} SP jobs: "
-                        f"parent_job={parent_job_id}, {available}/{total} pool cores available"
-                    )
-                else:
+                # If nothing is free, run sequential to avoid deadlock on the parent's pool slot
+                if available <= 0:
                     logging.debug(
                         f"[IMAG] Falling back to sequential (parent={parent_job_id}): "
-                        f"{available}/{total} cores, {running}/{pool.max_concurrent_jobs} running"
+                        f"0/{total} cores available for {len(jobs)} SP jobs"
                     )
+                else:
+                    # Parent exists - child jobs can borrow cores. Cap to available so we start instead of hanging.
+                    effective_core_allocation = max(1, min(core_allocation, available))
+                    if running < pool.max_concurrent_jobs:
+                        use_pool = True
+                        logging.debug(
+                            f"[IMAG] Using pool with parent-child borrowing for {len(jobs)} SP jobs: "
+                            f"parent_job={parent_job_id}, {available}/{total} pool cores available, "
+                            f"alloc_per_job={effective_core_allocation}"
+                        )
+                    else:
+                        logging.debug(
+                            f"[IMAG] Falling back to sequential (parent={parent_job_id}): "
+                            f"{available}/{total} cores, {running}/{pool.max_concurrent_jobs} running"
+                        )
             else:
                 # No parent job - use conservative approach to avoid deadlock
                 # Require significant headroom (at least 25% of total cores)
@@ -804,7 +813,7 @@ def _execute_sp_candidates(
     return _run_sp_candidates_parallel(
         jobs,
         pool,
-        core_allocation=core_allocation,
+        core_allocation=effective_core_allocation,
         maxcore_value=maxcore_value,
     )
 
