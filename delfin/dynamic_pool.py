@@ -49,6 +49,7 @@ class PoolJob:
     args: tuple
     kwargs: dict
     estimated_duration: float = 3600.0  # Default 1 hour
+    max_duration: Optional[float] = None  # Max allowed duration (None = 3× estimated)
     actual_start_time: Optional[float] = None
     allocated_cores: int = 0
     retry_count: int = 0
@@ -60,6 +61,7 @@ class PoolJob:
     child_jobs: List[str] = field(default_factory=list)  # IDs of child jobs spawned by this job
     borrowed_cores: int = 0  # Cores borrowed from parent job
     lent_cores: int = 0  # Cores lent to child jobs
+    last_progress_time: Optional[float] = None  # Last time job showed progress
 
 
 class DynamicCorePool:
@@ -138,6 +140,8 @@ class DynamicCorePool:
     def try_borrow_cores_from_parent(self, child_job: PoolJob, requested_cores: int) -> int:
         """Try to borrow cores from parent job for a child job.
 
+        Includes circular borrowing prevention and validation.
+
         Args:
             child_job: The child job requesting cores
             requested_cores: Number of cores requested
@@ -158,18 +162,45 @@ class DynamicCorePool:
 
             parent_job = self._running_jobs[parent_job_id]
 
+            # ROBUSTNESS: Prevent circular borrowing (A borrows from B, B borrows from C, C borrows from A)
+            if parent_job.borrowed_cores > 0:
+                logger.warning(
+                    f"Circular borrowing prevented: Parent {parent_job_id} itself has borrowed cores. "
+                    f"Child {child_job.job_id} cannot borrow from a borrower."
+                )
+                return 0
+
+            # ROBUSTNESS: Validate parent state
+            if parent_job.allocated_cores <= 0:
+                logger.error(
+                    f"Invalid parent state: {parent_job_id} has {parent_job.allocated_cores} allocated cores"
+                )
+                return 0
+
             # Calculate how many cores the parent can lend
             # Parent must keep at least cores_min for itself
             available_to_lend = parent_job.allocated_cores - parent_job.lent_cores - parent_job.cores_min
             cores_to_lend = min(requested_cores, max(0, available_to_lend))
 
+            # ROBUSTNESS: Validate lending won't cause negative cores
             if cores_to_lend > 0:
+                if parent_job.lent_cores + cores_to_lend > parent_job.allocated_cores - parent_job.cores_min:
+                    logger.error(
+                        f"Lending validation failed: Would lend too many cores. "
+                        f"Parent {parent_job_id} allocated={parent_job.allocated_cores}, "
+                        f"lent={parent_job.lent_cores}, trying to lend={cores_to_lend}"
+                    )
+                    return 0
+
                 parent_job.lent_cores += cores_to_lend
                 child_job.borrowed_cores = cores_to_lend
                 logger.debug(
                     f"Job {child_job.job_id} borrowed {cores_to_lend} cores from parent {parent_job_id} "
                     f"(parent has {parent_job.allocated_cores - parent_job.lent_cores} cores remaining)"
                 )
+
+                # ROBUSTNESS: Validate accounting after lending
+                self._validate_resource_accounting()
 
             return cores_to_lend
 
@@ -184,14 +215,72 @@ class DynamicCorePool:
                 return
 
             parent_job_id = child_job.parent_job_id
+            cores_to_return = child_job.borrowed_cores
+
             if parent_job_id in self._running_jobs:
                 parent_job = self._running_jobs[parent_job_id]
-                parent_job.lent_cores -= child_job.borrowed_cores
+
+                # ROBUSTNESS: Validate parent has enough lent cores
+                if parent_job.lent_cores < cores_to_return:
+                    logger.error(
+                        f"Accounting error: Child {child_job.job_id} trying to return {cores_to_return} cores, "
+                        f"but parent {parent_job_id} only has {parent_job.lent_cores} lent. "
+                        f"Correcting to prevent negative lent_cores."
+                    )
+                    cores_to_return = parent_job.lent_cores
+
+                parent_job.lent_cores -= cores_to_return
                 logger.debug(
-                    f"Job {child_job.job_id} returned {child_job.borrowed_cores} cores to parent {parent_job_id}"
+                    f"Job {child_job.job_id} returned {cores_to_return} cores to parent {parent_job_id}"
+                )
+
+                # ROBUSTNESS: Validate lent_cores doesn't go negative
+                if parent_job.lent_cores < 0:
+                    logger.error(f"BUG: Parent {parent_job_id} lent_cores went negative! Forcing to 0.")
+                    parent_job.lent_cores = 0
+            else:
+                # Parent no longer running - child was orphaned
+                logger.debug(
+                    f"Child {child_job.job_id} returning cores but parent {parent_job_id} no longer running (orphaned)"
                 )
 
             child_job.borrowed_cores = 0
+
+    def _validate_resource_accounting(self):
+        """Validate resource accounting consistency (debug/robustness check).
+
+        Checks:
+        - allocated_cores matches sum of running job allocations
+        - parent lent_cores matches sum of children borrowed_cores
+        - no negative values
+        """
+        try:
+            total_allocated = sum(job.allocated_cores for job in self._running_jobs.values() if job.borrowed_cores == 0)
+
+            if total_allocated != self._allocated_cores:
+                logger.warning(
+                    f"Resource accounting mismatch: Pool shows {self._allocated_cores} allocated, "
+                    f"but running jobs sum to {total_allocated}. Difference: {self._allocated_cores - total_allocated}"
+                )
+
+            # Validate parent-child accounting
+            for job_id, job in self._running_jobs.items():
+                if job.lent_cores > 0:
+                    # Calculate actual borrowed by children
+                    actual_borrowed = sum(
+                        child.borrowed_cores
+                        for child_id in job.child_jobs
+                        if child_id in self._running_jobs
+                        for child in [self._running_jobs[child_id]]
+                    )
+                    if actual_borrowed != job.lent_cores:
+                        logger.warning(
+                            f"Parent-child accounting mismatch: {job_id} shows {job.lent_cores} lent, "
+                            f"but children have {actual_borrowed} borrowed"
+                        )
+
+        except Exception as e:
+            logger.debug(f"Resource validation error (non-critical): {e}")
 
     def _calculate_optimal_allocation(self, job: PoolJob) -> Optional[int]:
         """Calculate optimal core allocation for a job.
@@ -361,7 +450,10 @@ class DynamicCorePool:
             future.add_done_callback(lambda f: self._job_completed(job.job_id, f))
 
     def _job_completed(self, job_id: str, future: Future):
-        """Handle job completion and resource release."""
+        """Handle job completion and resource release.
+
+        Includes orphaned child handling and resource cleanup validation.
+        """
         with self._lock:
             if job_id not in self._running_jobs:
                 return
@@ -369,9 +461,22 @@ class DynamicCorePool:
             job = self._running_jobs.pop(job_id)
             self._futures.pop(job_id, None)
 
+            # Handle orphaned children if parent is completing
+            if job.child_jobs:
+                self._handle_orphaned_children(job)
+
             # Return borrowed cores to parent if applicable
             if job.borrowed_cores > 0:
                 self.return_borrowed_cores(job)
+
+            # Validate that all lent cores have been returned
+            if job.lent_cores > 0:
+                logger.warning(
+                    f"Job {job_id} completing with {job.lent_cores} cores still lent to children. "
+                    f"This indicates children didn't properly return cores. Forcing cleanup."
+                )
+                # Force cleanup to prevent core leak
+                job.lent_cores = 0
 
             # Release pool resources only if job was using pool cores
             if job.borrowed_cores == 0:
@@ -396,6 +501,33 @@ class DynamicCorePool:
         # Try to start waiting jobs now that resources are free
         self._try_rebalance_resources()
         self._signal_state_change()
+
+    def _handle_orphaned_children(self, parent_job: PoolJob):
+        """Handle children whose parent is completing/dying.
+
+        Converts borrowed cores to pool-allocated cores for orphaned children
+        to prevent resource accounting errors.
+        """
+        orphaned_count = 0
+        for child_id in parent_job.child_jobs:
+            if child_id in self._running_jobs:
+                child = self._running_jobs[child_id]
+                if child.borrowed_cores > 0:
+                    # Child is orphaned with borrowed cores
+                    # Convert borrowed cores to pool allocation
+                    logger.warning(
+                        f"Child job {child_id} orphaned by parent {parent_job.job_id}. "
+                        f"Converting {child.borrowed_cores} borrowed cores to pool allocation."
+                    )
+
+                    # Allocate from pool to replace borrowed cores
+                    self._allocated_cores += child.borrowed_cores
+                    child.borrowed_cores = 0
+                    child.parent_job_id = None  # Orphan the child
+                    orphaned_count += 1
+
+        if orphaned_count > 0:
+            logger.info(f"Handled {orphaned_count} orphaned children from parent {parent_job.job_id}")
 
     def drain_completed_jobs(self) -> List[str]:
         """Return and clear list of recently completed job ids."""
@@ -459,7 +591,10 @@ class DynamicCorePool:
                            f"(now {job.allocated_cores} cores)")
 
     def _resource_monitor(self):
-        """Background thread to monitor and optimize resource usage."""
+        """Background thread to monitor and optimize resource usage.
+
+        Also detects stuck jobs and handles timeouts.
+        """
         while not self._shutdown:
             try:
                 # Wake periodically or when state changes
@@ -474,11 +609,55 @@ class DynamicCorePool:
                         logger.debug(f"Pool status: {utilization:.1f}% cores used, "
                                    f"{len(self._running_jobs)} jobs, avg {avg_cores:.1f} cores/job")
 
+                    # ROBUSTNESS: Detect stuck/timeout jobs
+                    self._detect_stuck_jobs()
+
                 # Try to optimize resource allocation
                 self._try_rebalance_resources()
 
             except Exception as e:
                 logger.error(f"Resource monitor error: {e}")
+
+    def _detect_stuck_jobs(self):
+        """Detect and handle stuck or timed-out jobs.
+
+        Called by resource monitor (expects lock is held).
+        """
+        now = time.time()
+        stuck_jobs = []
+
+        for job_id, job in self._running_jobs.items():
+            if job.actual_start_time is None:
+                continue
+
+            runtime = now - job.actual_start_time
+
+            # Calculate max allowed duration
+            max_duration = job.max_duration if job.max_duration is not None else (job.estimated_duration * 3)
+
+            # Check if job exceeded max duration
+            if runtime > max_duration:
+                logger.warning(
+                    f"Job {job_id} exceeded max duration: running for {runtime:.0f}s, "
+                    f"max allowed {max_duration:.0f}s (estimated {job.estimated_duration:.0f}s)"
+                )
+                stuck_jobs.append((job_id, runtime, max_duration))
+
+                # Check if job is WAY over limit (5× estimated)
+                if runtime > job.estimated_duration * 5:
+                    logger.error(
+                        f"Job {job_id} is severely stuck (5× estimated duration). "
+                        f"This likely indicates a hung ORCA process or deadlock."
+                    )
+
+        # Log summary if any stuck jobs found
+        if stuck_jobs:
+            logger.warning(
+                f"Detected {len(stuck_jobs)} potentially stuck jobs. "
+                f"Consider investigating or manually terminating these jobs."
+            )
+            for job_id, runtime, max_dur in stuck_jobs:
+                logger.warning(f"  - {job_id}: {runtime:.0f}s / {max_dur:.0f}s")
 
     def wait_for_completion(self, timeout: Optional[float] = None) -> bool:
         """Wait for all jobs to complete."""
