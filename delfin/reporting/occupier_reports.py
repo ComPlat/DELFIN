@@ -692,11 +692,16 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
         metal_basis_print = ""
 
     lowest_str = f"{fmt_truncate(min_fspe_value, prec)} (H)" if min_fspe_value is not None else "No valid FSPE values found"
+    spin_note = (
+        "NOTE: Check spin contamination; unrestricted and BS solutions may describe the same state, "
+        "so mixing them in a Boltzmann distribution can be invalid."
+    )
     info_block = ""
     if boltzmann_context:
         info_block += f"{boltzmann_context}\n"
     if boltzmann_warning:
         info_block += f"{boltzmann_warning}\n"
+    info_block += f"{spin_note}\n"
     warning_block = f"{info_block}\n" if info_block else "\n\n"
 
     # ----------------------- write report --------------------------------------
@@ -1204,11 +1209,16 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
         metal_basis_print = ""
 
     lowest_str = f"{fmt_truncate(min_fspe_value, prec)} (H)" if min_fspe_value is not None else "No valid FSPE values found"
+    spin_note = (
+        "NOTE: Check spin contamination; unrestricted and BS solutions may describe the same state, "
+        "so mixing them in a Boltzmann distribution can be invalid."
+    )
     info_block = ""
     if boltzmann_context:
         info_block += f"{boltzmann_context}\n"
     if boltzmann_warning:
         info_block += f"{boltzmann_warning}\n"
+    info_block += f"{spin_note}\n"
     warning_block = f"{info_block}\n" if info_block else "\n\n"
 
     # ----------------------- write report --------------------------------------
