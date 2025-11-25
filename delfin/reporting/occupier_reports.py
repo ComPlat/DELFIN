@@ -2,6 +2,7 @@
 # OCCUPIER-specific report generation functions
 
 from decimal import Decimal, ROUND_DOWN
+import math
 from pathlib import Path
 from typing import Optional
 import os, re
@@ -327,6 +328,12 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
         d = get_dev(idx)
         return (d is None) or (d <= dev_max)
 
+    def _parse_temperature() -> float:
+        try:
+            return float(config.get("temperature", 298.15))
+        except Exception:
+            return 298.15
+
     # ----------------------- energy band ---------------------------------------
     valid_all = [(e["index"], f) for e, f in zip(sequence, fspe_values) if f is not None]
     valid = [pair for pair in valid_all if within_dev_limit(pair[0])] or valid_all
@@ -546,6 +553,29 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
                 min_fspe_index = best_idx
                 min_fspe_value = best_energy
 
+    # ----------------------- Boltzmann distribution ----------------------------
+    temperature = _parse_temperature()
+    boltzmann_weights: dict[int, float] = {}
+    boltzmann_warning = ""
+    boltzmann_context = ""
+    k_b_ha_per_k = 3.166811563e-6  # Boltzmann constant in Hartree/K
+    kbt = k_b_ha_per_k * temperature
+    if kbt > 0 and valid_all:
+        min_energy = min(f for _, f in valid_all)
+        raw_weights = [(i, math.exp(-(f - min_energy) / kbt)) for i, f in valid_all]
+        total_w = sum(w for _, w in raw_weights)
+        if total_w > 0 and math.isfinite(total_w):
+            boltzmann_weights = {i: w / total_w for i, w in raw_weights if math.isfinite(w)}
+    if boltzmann_weights:
+        if use_gibbs:
+            boltzmann_context = "Boltzmann weights derived from Gibbs free energies (frequency_calculation_OCCUPIER=yes)."
+        else:
+            boltzmann_context = "Electronic Energy Boltzmann Approximation (uses FINAL SINGLE POINT ENERGY)."
+            boltzmann_warning = (
+                "WARNING: Boltzmann weights use FINAL SINGLE POINT ENERGY (coarse approximation). "
+                "Set frequency_calculation_OCCUPIER=yes to compare Gibbs free energies."
+            )
+
     if occ_method == "auto" and min_fspe_index is not None:
         try:
             delta_value = infer_species_delta()
@@ -634,6 +664,10 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
             fspe_lines += _kv("J(Yamaguchi)", j3_str) + "\n"
         if alpha_cnt is not None and beta_cnt is not None:
             fspe_lines += _kv("Unpaired e⁻ (α|β-spin)", f"{alpha_cnt:2d} | {beta_cnt:<2d}") + "\n"
+        if boltzmann_weights:
+            w = boltzmann_weights.get(idx)
+            weight_str = "N/A" if w is None else f"{w * 100:.2f} %"
+            fspe_lines += _kv(f"Boltzmann weight @ {temperature:.2f} K", weight_str) + "\n"
         fspe_lines += "----------------------------------------------------------------\n"
 
     # ----------------------- method line / metals block ------------------------
@@ -658,6 +692,12 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
         metal_basis_print = ""
 
     lowest_str = f"{fmt_truncate(min_fspe_value, prec)} (H)" if min_fspe_value is not None else "No valid FSPE values found"
+    info_block = ""
+    if boltzmann_context:
+        info_block += f"{boltzmann_context}\n"
+    if boltzmann_warning:
+        info_block += f"{boltzmann_warning}\n"
+    warning_block = f"{info_block}\n" if info_block else "\n\n"
 
     # ----------------------- write report --------------------------------------
     banner = build_occupier_banner(header_indent=6, info_indent=6)
@@ -669,7 +709,8 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
             f"        {', '.join(metals)} {metal_basis_print}\n\n"
             f"Charge: {charge}\n"
             f"-------------\n"
-            f"{fspe_lines}\n\n"
+            f"{fspe_lines}\n"
+            f"{warning_block}"
             f"TOTAL RUN TIME: {duration_format}\n\n"
             f"{lowest_label} {lowest_str}\n\n"
             f"(Selection: {method}, APmethod {ap_str}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})\n"
@@ -949,6 +990,12 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
         d = get_dev(idx)
         return (d is None) or (d <= dev_max)
 
+    def _parse_temperature() -> float:
+        try:
+            return float(config.get("temperature", 298.15))
+        except Exception:
+            return 298.15
+
     # ----------------------- energy band ---------------------------------------
     valid_all = [(e["index"], f) for e, f in zip(sequence, fspe_values) if f is not None]
     valid = [pair for pair in valid_all if within_dev_limit(pair[0])] or valid_all
@@ -1056,6 +1103,28 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
         min_fspe_index = pick_i
         min_fspe_value = pick_E
 
+    # ----------------------- Boltzmann distribution ----------------------------
+    temperature = _parse_temperature()
+    boltzmann_weights: dict[int, float] = {}
+    boltzmann_warning = ""
+    k_b_ha_per_k = 3.166811563e-6  # Boltzmann constant in Hartree/K
+    kbt = k_b_ha_per_k * temperature
+    if kbt > 0 and valid_all:
+        min_energy = min(f for _, f in valid_all)
+        raw_weights = [(i, math.exp(-(f - min_energy) / kbt)) for i, f in valid_all]
+        total_w = sum(w for _, w in raw_weights)
+        if total_w > 0 and math.isfinite(total_w):
+            boltzmann_weights = {i: w / total_w for i, w in raw_weights if math.isfinite(w)}
+    if boltzmann_weights:
+        if use_gibbs:
+            boltzmann_context = "Boltzmann weights derived from Gibbs free energies (frequency_calculation_OCCUPIER=yes)."
+        else:
+            boltzmann_context = "Electronic Energy Boltzmann Approximation (uses FINAL SINGLE POINT ENERGY)."
+            boltzmann_warning = (
+                "WARNING: Boltzmann weights use FINAL SINGLE POINT ENERGY (coarse approximation). "
+                "Set frequency_calculation_OCCUPIER=yes to compare Gibbs free energies."
+            )
+
     if occ_method == "auto" and min_fspe_index is not None:
         try:
             delta_value = infer_species_delta()
@@ -1107,6 +1176,10 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
             j3_val = get_j3(idx, True)
             j3_str = "N/A" if j3_val is None else f"{j3_val:.2f} cm⁻¹"
             fspe_lines += f"J(Yamaguchi)=-(E[HS]-E[BS])/(⟨S²⟩HS-⟨S²⟩BS) : {j3_str}\n"
+        if boltzmann_weights:
+            w = boltzmann_weights.get(idx)
+            weight_str = "N/A" if w is None else f"{w * 100:.2f} %"
+            fspe_lines += f"Boltzmann weight @ {temperature:.2f} K: {weight_str}\n"
         fspe_lines += "----------------------------------------------------------------\n"
 
     # ----------------------- method line / metals block ------------------------
@@ -1131,6 +1204,12 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
         metal_basis_print = ""
 
     lowest_str = f"{fmt_truncate(min_fspe_value, prec)} (H)" if min_fspe_value is not None else "No valid FSPE values found"
+    info_block = ""
+    if boltzmann_context:
+        info_block += f"{boltzmann_context}\n"
+    if boltzmann_warning:
+        info_block += f"{boltzmann_warning}\n"
+    warning_block = f"{info_block}\n" if info_block else "\n\n"
 
     # ----------------------- write report --------------------------------------
     banner = build_occupier_banner(header_indent=6, info_indent=6)
@@ -1142,7 +1221,8 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
             f"        {', '.join(metals)} {metal_basis_print}\n\n"
             f"Charge: {charge}\n"
             f"-------------\n"
-            f"{fspe_lines}\n\n"
+            f"{fspe_lines}\n"
+            f"{warning_block}"
             f"TOTAL RUN TIME: {duration_format}\n\n"
             f"{lowest_label} {lowest_str}\n\n"
             f"(Selection: {method}, APmethod {ap_str}, precision={prec}, epsilon={epsilon if method=='tolerance' else 'n/a'})\n"
