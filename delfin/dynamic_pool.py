@@ -113,6 +113,9 @@ class DynamicCorePool:
         self._shutdown = False
         self._resource_event = threading.Event()
 
+        # Track warnings for stuck jobs: job_id -> {warned_exceeded, warned_near_shutdown}
+        self._stuck_job_warnings: Dict[str, Dict[str, bool]] = {}
+
         # Start resource monitor
         self._monitor_thread = threading.Thread(target=self._resource_monitor, daemon=True)
         self._monitor_thread.start()
@@ -534,6 +537,9 @@ class DynamicCorePool:
             job = self._running_jobs.pop(job_id)
             self._futures.pop(job_id, None)
 
+            # Cleanup warning tracker for this job
+            self._stuck_job_warnings.pop(job_id, None)
+
             # Handle orphaned children if parent is completing
             if job.child_jobs:
                 self._handle_orphaned_children(job)
@@ -801,9 +807,12 @@ class DynamicCorePool:
         Called by resource monitor (expects lock is held).
         Automatically terminates jobs that are severely stuck.
         Uses configurable timeouts based on job type.
+
+        Warns only twice per job:
+        1. When job first exceeds max_duration (3× estimated)
+        2. One hour before auto-terminate threshold
         """
         now = time.time()
-        stuck_jobs = []
         jobs_to_kill = []
 
         for job_id, job in self._running_jobs.items():
@@ -818,31 +827,38 @@ class DynamicCorePool:
             # Calculate max allowed duration
             max_duration = job.max_duration if job.max_duration is not None else (job.estimated_duration * 3)
 
-            # Check if job exceeded max duration
-            if runtime > max_duration:
+            # Initialize warning tracker for this job
+            if job_id not in self._stuck_job_warnings:
+                self._stuck_job_warnings[job_id] = {'warned_exceeded': False, 'warned_near_shutdown': False}
+
+            warnings = self._stuck_job_warnings[job_id]
+
+            # Warning 1: Job exceeded max duration (first time only)
+            if runtime > max_duration and not warnings['warned_exceeded']:
                 logger.warning(
                     f"Job {job_id} exceeded max duration: running for {runtime:.0f}s, "
-                    f"max allowed {max_duration:.0f}s (estimated {job.estimated_duration:.0f}s)"
+                    f"max allowed {max_duration:.0f}s (estimated {job.estimated_duration:.0f}s). "
+                    f"Will auto-terminate at {stuck_kill_threshold/3600:.1f}h."
                 )
-                stuck_jobs.append((job_id, runtime, max_duration))
+                warnings['warned_exceeded'] = True
 
-                # Check if job is WAY over limit → AUTO-TERMINATE
-                # Use job-type-specific timeout threshold
-                if runtime > stuck_kill_threshold:
-                    logger.error(
-                        f"Job {job_id} is severely stuck: running for {runtime/3600:.1f}h, "
-                        f"exceeds maximum allowed runtime of {stuck_kill_threshold/3600:.1f}h. "
-                        f"AUTO-TERMINATING to free resources."
-                    )
-                    jobs_to_kill.append((job_id, job))
+            # Warning 2: One hour before auto-terminate (first time only)
+            time_until_shutdown = stuck_kill_threshold - runtime
+            if time_until_shutdown <= 3600 and time_until_shutdown > 0 and not warnings['warned_near_shutdown']:
+                logger.warning(
+                    f"Job {job_id} will be auto-terminated in {time_until_shutdown/60:.0f} minutes "
+                    f"(running {runtime/3600:.1f}h / max {stuck_kill_threshold/3600:.1f}h)"
+                )
+                warnings['warned_near_shutdown'] = True
 
-        # Log summary if any stuck jobs found
-        if stuck_jobs:
-            logger.warning(
-                f"Detected {len(stuck_jobs)} potentially stuck jobs."
-            )
-            for job_id, runtime, max_dur in stuck_jobs:
-                logger.warning(f"  - {job_id}: {runtime:.0f}s / {max_dur:.0f}s")
+            # Check if job is WAY over limit → AUTO-TERMINATE
+            if runtime > stuck_kill_threshold:
+                logger.error(
+                    f"Job {job_id} is severely stuck: running for {runtime/3600:.1f}h, "
+                    f"exceeds maximum allowed runtime of {stuck_kill_threshold/3600:.1f}h. "
+                    f"AUTO-TERMINATING to free resources."
+                )
+                jobs_to_kill.append((job_id, job))
 
         # Kill severely stuck jobs
         if jobs_to_kill:
