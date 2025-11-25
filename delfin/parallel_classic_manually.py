@@ -900,6 +900,21 @@ class _WorkflowManager:
                 )
             blocked_other = max(0, len(unfinished) - ready_count)
             job = ready_jobs[0]
+
+            # If this job is an exclusive bottleneck (all pending depend on it), give it max cores.
+            forced_exclusive = self._check_exclusive_bottleneck_boost(job)
+            if forced_exclusive is not None:
+                target = max(job.cores_min, min(available, job.cores_max, forced_exclusive))
+                cap = False
+                logger.debug(
+                    "[%s] Exclusive bottleneck %s (%s) → %d cores (all pending depend on it)",
+                    self.label,
+                    job.job_id,
+                    job.description,
+                    target,
+                )
+                return {job.job_id: target}, {job.job_id: cap}
+
             base_target = max(job.cores_min, min(job.cores_optimal, available))
             nothing_else_runnable = (
                 blocked_other == 0 and running_jobs == 0 and queued_jobs == 0

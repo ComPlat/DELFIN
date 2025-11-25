@@ -67,6 +67,41 @@ def create_state_input(
     metal_basisset: str,
     config: Dict[str, Any],
 ) -> str:
+    """Generate ORCA input for a state, respecting ESD_modus (deltaSCF|TDDFT)."""
+    mode = str(config.get("ESD_modus", "deltaSCF")).strip().lower()
+    if mode == "tddft":
+        return _create_state_input_tddft(
+            state=state,
+            esd_dir=esd_dir,
+            charge=charge,
+            solvent=solvent,
+            metals=metals,
+            main_basisset=main_basisset,
+            metal_basisset=metal_basisset,
+            config=config,
+        )
+    return _create_state_input_delta_scf(
+        state=state,
+        esd_dir=esd_dir,
+        charge=charge,
+        solvent=solvent,
+        metals=metals,
+        main_basisset=main_basisset,
+        metal_basisset=metal_basisset,
+        config=config,
+    )
+
+
+def _create_state_input_delta_scf(
+    state: str,
+    esd_dir: Path,
+    charge: int,
+    solvent: str,
+    metals: List[str],
+    main_basisset: str,
+    metal_basisset: str,
+    config: Dict[str, Any],
+) -> str:
     """Generate ORCA input file for electronic state calculation.
 
     Args:
@@ -98,7 +133,7 @@ def create_state_input(
         xyz_file = "initial.xyz"
         moinp_gbw = None
         use_deltascf = False
-    elif state_upper == "S1":
+    elif state_upper in {"S1", "S2"}:
         xyz_file = "S0.xyz"
         moinp_gbw = "S0.gbw"
         use_deltascf = True
@@ -109,6 +144,10 @@ def create_state_input(
     elif state_upper == "T2":
         xyz_file = "S0.xyz"
         moinp_gbw = "T1.gbw"
+        use_deltascf = True
+    elif state_upper == "T3":
+        xyz_file = "S0.xyz"
+        moinp_gbw = "T2.gbw"
         use_deltascf = True
     else:
         raise ValueError(f"Unknown state: {state}")
@@ -276,6 +315,261 @@ def create_state_input(
             logger.info(f"Added TDDFT check job to S0 input for state identification")
 
     logger.info(f"Created ESD state input: {input_file}")
+    return str(input_file)
+
+
+def _create_state_input_tddft(
+    state: str,
+    esd_dir: Path,
+    charge: int,
+    solvent: str,
+    metals: List[str],
+    main_basisset: str,
+    metal_basisset: str,
+    config: Dict[str, Any],
+) -> str:
+    """Generate ORCA input for TDDFT-driven ESD mode."""
+    state_upper = state.upper()
+    input_file = esd_dir / f"{state_upper}.inp"
+
+    functional = config.get("functional", "PBE0")
+    disp_corr = config.get("disp_corr", "D4")
+    ri_jkx = config.get("ri_jkx", "RIJCOSX")
+    aux_jk = config.get("aux_jk", "def2/J")
+    implicit_solvation = config.get("implicit_solvation_model", "CPCM")
+    geom_token = str(config.get("geom_opt", "OPT")).strip()
+    pal = config.get("PAL", 12)
+    maxcore = config.get("maxcore", 6000)
+    nroots = config.get("NROOTS", 15)
+    tda_flag = str(config.get("TDA", "FALSE")).upper()
+    maxdim = max(5, int(nroots / 2))
+
+    def _join_keywords(parts: List[str]) -> str:
+        """Join keyword fragments while skipping empty entries."""
+        return " ".join(str(p) for p in parts if str(p).strip())
+
+    # Coordinate source
+    if state_upper == "S0":
+        xyz_path = Path("input.txt")
+        skip_lines = 0
+    else:
+        xyz_path = esd_dir / "S0.xyz"
+        skip_lines = 2
+
+    try:
+        with open(xyz_path, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+            coord_lines = all_lines[skip_lines:]
+    except FileNotFoundError:
+        logger.error(f"Coordinate file not found: {xyz_path}")
+        raise
+
+    def _write_tddft_block(fh, iroot: int, irootmult: str) -> None:
+        fh.write("%tddft\n")
+        fh.write(f"  nroots {nroots}\n")
+        fh.write(f"  maxdim {maxdim}\n")
+        fh.write(f"  tda {tda_flag}\n")
+        fh.write(f"  iroot {iroot}\n")
+        fh.write(f"  irootmult {irootmult}\n")
+        fh.write("  followiroot true\n")
+        fh.write("end\n")
+
+    with open(input_file, "w", encoding="utf-8") as f:
+        if state_upper == "S0":
+            keywords = [
+                functional,
+                "RKS",
+                main_basisset,
+                disp_corr,
+                ri_jkx,
+                aux_jk,
+                f"{implicit_solvation}({solvent})",
+            ]
+            if geom_token:
+                keywords.append(geom_token)
+            keywords.append("numFREQ")
+            f.write("! " + " ".join(keywords) + "\n")
+            f.write('%base "S0"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n\n")
+
+            f.write("$new_job\n")
+            f.write("! " + " ".join(keywords[:-1]) + "\n")
+            f.write('%base "S0_TDDFT_check"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            f.write("%tddft\n")
+            f.write(f"  nroots {nroots}\n")
+            f.write(f"  maxdim {maxdim}\n")
+            f.write(f"  tda {tda_flag}\n")
+            f.write("  triplets true\n")
+            f.write("end\n")
+            f.write("\n")
+            f.write(f"* xyzfile {charge} 1 S0.xyz\n")
+        elif state_upper == "S1":
+            f.write(
+                "! "
+                + _join_keywords(
+                    [
+                        functional,
+                        "RKS",
+                        main_basisset,
+                        disp_corr,
+                        ri_jkx,
+                        aux_jk,
+                        f"{implicit_solvation}({solvent})",
+                        geom_token,
+                    ]
+                )
+                + "\n"
+            )
+            f.write('%base "S1"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            f.write("\n")
+            _write_tddft_block(f, iroot=1, irootmult="singlet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n\n")
+
+            f.write("$new_job\n")
+            f.write(
+                "! "
+                + " ".join(
+                    [
+                        functional,
+                        "RKS",
+                        main_basisset,
+                        disp_corr,
+                        ri_jkx,
+                        aux_jk,
+                        f"{implicit_solvation}({solvent})",
+                        "FREQ",
+                    ]
+                )
+                + "\n"
+            )
+            f.write('%base "S1_TDDFT_freq"\n')
+            f.write('%moinp "S1.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_tddft_block(f, iroot=1, irootmult="singlet")
+            f.write(f"\n* xyzfile {charge} 1 S1.xyz\n")
+            f.write("*\n")
+        elif state_upper == "T1":
+            f.write(
+                "! "
+                + _join_keywords(
+                    [
+                        functional,
+                        "RKS",
+                        main_basisset,
+                        disp_corr,
+                        ri_jkx,
+                        aux_jk,
+                        f"{implicit_solvation}({solvent})",
+                        geom_token,
+                    ]
+                )
+                + "\n"
+            )
+            f.write('%base "T1_TDDFT"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_tddft_block(f, iroot=1, irootmult="triplet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n")
+        elif state_upper == "T2":
+            f.write(
+                "! "
+                + _join_keywords(
+                    [
+                        functional,
+                        "RKS",
+                        main_basisset,
+                        disp_corr,
+                        ri_jkx,
+                        aux_jk,
+                        f"{implicit_solvation}({solvent})",
+                        geom_token,
+                    ]
+                )
+                + "\n"
+            )
+            f.write('%base "T2_TDDFT"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_tddft_block(f, iroot=2, irootmult="triplet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n")
+        elif state_upper == "S2":
+            f.write(
+                "! "
+                + _join_keywords(
+                    [
+                        functional,
+                        "RKS",
+                        main_basisset,
+                        disp_corr,
+                        ri_jkx,
+                        aux_jk,
+                        f"{implicit_solvation}({solvent})",
+                        geom_token,
+                    ]
+                )
+                + "\n"
+            )
+            f.write('%base "S2"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_tddft_block(f, iroot=2, irootmult="singlet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n")
+        elif state_upper == "T3":
+            f.write(
+                "! "
+                + _join_keywords(
+                    [
+                        functional,
+                        "RKS",
+                        main_basisset,
+                        disp_corr,
+                        ri_jkx,
+                        aux_jk,
+                        f"{implicit_solvation}({solvent})",
+                        geom_token,
+                    ]
+                )
+                + "\n"
+            )
+            f.write('%base "T3_TDDFT"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_tddft_block(f, iroot=3, irootmult="triplet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n")
+        else:
+            raise ValueError(f"Unknown state: {state}")
+
+    logger.info(f"Created ESD TDDFT state input: {input_file}")
     return str(input_file)
 
 

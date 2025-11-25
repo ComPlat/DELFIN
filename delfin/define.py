@@ -100,6 +100,7 @@ deltaSCF_keepinitialref=true
 deltaSCF_SOSCFHESSUP=LBFGS
 ----------------
 ESD_modul=no
+ESD_modus=TDDFT|deltaSCF
 states=S0,S1,T1,T2
 ISCs=S1>T1,T1>S1,S1>T2,T2>S1
 ICs=S1>S0,T2>T1
@@ -205,12 +206,12 @@ OWN_progressive_from: Sequential pure states (yes) or all parallel (no, default)
   - no  -> All pure states start from "from": 0 (maximum parallelization)
   - yes -> Pure states build sequentially: m=1 -> m=3 -> m=5 (safer but slower)
 -------------------------------------------------
-ESD MODULE (Excited State Dynamics):
-ESD_modul: yes/no - Enable ESD calculations in separate ESD/ directory
+ESD (Excited State Dynamics):
+ESD_MODUL: yes/no - Enable ESD calculations in separate ESD/ directory
 states: Comma-separated list of states to calculate (S0, S1, T1, T2)
 ISCs: Comma-separated list of intersystem crossings (e.g., S1>T1, T1>S1)
 ICs: Comma-separated list of internal conversions (e.g., S1>S0, T1>T2)
-All states use multiplicity M=1 and charge from CONTROL
+
 -------------------------------------------------
 """
 # -------------------------------------------------------------------------------------------------------

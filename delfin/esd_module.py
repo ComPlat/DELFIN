@@ -118,12 +118,16 @@ def _populate_state_jobs(
         metal_basisset: Metal basis set
         config: Configuration dictionary
     """
+    esd_modus = str(config.get("ESD_modus", "deltaSCF")).strip().lower()
+
     # Define dependencies between states
     state_deps: Dict[str, Set[str]] = {
         "S0": set(),
         "S1": {"esd_S0"},
+        "S2": {"esd_S1"},
         "T1": {"esd_S0"},
         "T2": {"esd_T1"},
+        "T3": {"esd_T2"},
     }
 
     for state in states:
@@ -140,7 +144,10 @@ def _populate_state_jobs(
                 manager._completed.add("esd_S0")
                 continue
 
-        deps = state_deps.get(state_upper, set())
+        deps = set(state_deps.get(state_upper, set()))
+        # In TDDFT mode, all excited states read S0.xyz; enforce dependency on S0 unless already present
+        if esd_modus == "tddft" and state_upper != "S0" and "esd_S0" not in deps:
+            deps.add("esd_S0")
 
         def make_state_work(st: str) -> Callable[[int], None]:
             """Create work function for state calculation."""
@@ -198,16 +205,15 @@ def _populate_state_jobs(
 
             return work
 
-        cores_min, cores_opt, cores_max = manager.derive_core_bounds()
         manager.add_job(
             WorkflowJob(
                 job_id=f"esd_{state_upper}",
                 work=make_state_work(state_upper),
                 description=f"ESD {state_upper} optimization",
                 dependencies=deps,
-                cores_min=cores_min,
-                cores_optimal=cores_opt,
-                cores_max=cores_max,
+                cores_min=manager.total_cores,
+                cores_optimal=manager.total_cores,
+                cores_max=manager.total_cores,
             )
         )
 
@@ -296,21 +302,15 @@ def _populate_isc_jobs(
 
             return work
 
-        preferred = max(1, manager.total_cores // 2) if manager.total_cores > 1 else 1
-        cores_min, cores_opt, cores_max = manager.derive_core_bounds(
-            preferred_opt=preferred,
-            hint="esd_transition",
-        )
-
         manager.add_job(
             WorkflowJob(
                 job_id=job_id,
                 work=make_isc_work(isc),
                 description=f"ISC {initial_state}→{final_state}",
                 dependencies=deps,
-                cores_min=cores_min,
-                cores_optimal=cores_opt,
-                cores_max=cores_max,
+                cores_min=manager.total_cores,
+                cores_optimal=manager.total_cores,
+                cores_max=manager.total_cores,
             )
         )
 
@@ -399,21 +399,15 @@ def _populate_ic_jobs(
 
             return work
 
-        preferred = max(1, manager.total_cores // 2) if manager.total_cores > 1 else 1
-        cores_min, cores_opt, cores_max = manager.derive_core_bounds(
-            preferred_opt=preferred,
-            hint="esd_transition",
-        )
-
         manager.add_job(
             WorkflowJob(
                 job_id=job_id,
                 work=make_ic_work(ic),
                 description=f"IC {initial_state}→{final_state}",
                 dependencies=deps,
-                cores_min=cores_min,
-                cores_optimal=cores_opt,
-                cores_max=cores_max,
+                cores_min=manager.total_cores,
+                cores_optimal=manager.total_cores,
+                cores_max=manager.total_cores,
             )
         )
 

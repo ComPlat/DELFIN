@@ -194,6 +194,11 @@ def _parse_control_file(file_path: str, *, keep_steps_literal: bool, content: Op
         line = lines[idx]
         stripped = line.strip()
 
+        upper = stripped.upper()
+        if upper.startswith("INFOS:") or upper.startswith("ESD MODULE"):
+            # Stop parsing before template/documentation blocks to avoid overriding user values.
+            break
+
         # Skip comments / separators / blanks
         if not stripped or stripped.startswith('#') or stripped.startswith('---') or stripped.startswith('***'):
             idx += 1
