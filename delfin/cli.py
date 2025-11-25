@@ -544,6 +544,8 @@ def main(argv: list[str] | None = None) -> int:
             'FOLLOWIROOT': 'TRUE',
             'IROOT': '1',
             'NROOTS': '15',
+            'TDDFT_maxiter': None,
+            'ESD_TDDFT_maxiter': None,
             'TDA': 'FALSE',
             'NACME': 'TRUE',
             'ETF': 'TRUE',

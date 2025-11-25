@@ -12,11 +12,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from delfin.common.logging import get_logger
+from delfin.common.orca_blocks import resolve_maxiter
 
 logger = get_logger(__name__)
 
 # Conversion factor: Hartree to cm^-1
 HARTREE_TO_CM1 = 219474.63
+
+
+def _resolve_tddft_maxiter(config: Dict[str, Any]) -> Optional[int]:
+    """Prefer an ESD-specific TDDFT maxiter override, then fall back to global."""
+    esd_override = resolve_maxiter(config, key="ESD_TDDFT_maxiter")
+    if esd_override is not None:
+        return esd_override
+    return resolve_maxiter(config, key="TDDFT_maxiter")
 
 
 def calculate_dele_cm1(state1_file: str, state2_file: str) -> Optional[float]:
@@ -133,16 +142,20 @@ def _create_state_input_delta_scf(
         xyz_file = "initial.xyz"
         moinp_gbw = None
         use_deltascf = False
-    elif state_upper in {"S1", "S2"}:
+    elif state_upper == "S1":
         xyz_file = "S0.xyz"
         moinp_gbw = "S0.gbw"
+        use_deltascf = True
+    elif state_upper == "S2":
+        xyz_file = "S1.xyz"
+        moinp_gbw = "S1.gbw"
         use_deltascf = True
     elif state_upper == "T1":
         xyz_file = "S0.xyz"
         moinp_gbw = "S0.gbw"
         use_deltascf = False
     elif state_upper == "T2":
-        xyz_file = "S0.xyz"
+        xyz_file = "T1.xyz"
         moinp_gbw = "T1.gbw"
         use_deltascf = True
     elif state_upper == "T3":
@@ -208,6 +221,9 @@ def _create_state_input_delta_scf(
     # Maxcore
     maxcore = config.get('maxcore', 6000)
     blocks.append(f"%maxcore {maxcore}")
+
+    # Optional TDDFT iteration limit for follow-up TDDFT checks
+    tddft_maxiter = _resolve_tddft_maxiter(config)
 
     # SCF settings for deltaSCF
     if use_deltascf:
@@ -305,6 +321,8 @@ def _create_state_input_delta_scf(
             f.write(f"  nroots {nroots}\n")
             f.write(f"  maxdim {maxdim}\n")
             f.write(f"  tda {tda_flag}\n")
+            if tddft_maxiter is not None:
+                f.write(f"  maxiter {tddft_maxiter}\n")
             f.write("  triplets true\n")
             f.write("end\n")
 
@@ -343,6 +361,7 @@ def _create_state_input_tddft(
     nroots = config.get("NROOTS", 15)
     tda_flag = str(config.get("TDA", "FALSE")).upper()
     maxdim = max(5, int(nroots / 2))
+    tddft_maxiter = _resolve_tddft_maxiter(config)
 
     def _join_keywords(parts: List[str]) -> str:
         """Join keyword fragments while skipping empty entries."""
@@ -352,6 +371,21 @@ def _create_state_input_tddft(
     if state_upper == "S0":
         xyz_path = Path("input.txt")
         skip_lines = 0
+    elif state_upper == "S1":
+        xyz_path = esd_dir / "S0.xyz"
+        skip_lines = 2
+    elif state_upper == "T1":
+        xyz_path = esd_dir / "S0.xyz"
+        skip_lines = 2
+    elif state_upper == "T2":
+        xyz_path = esd_dir / "T1.xyz"
+        skip_lines = 2
+    elif state_upper == "S2":
+        xyz_path = esd_dir / "S1.xyz"
+        skip_lines = 2
+    elif state_upper == "T3":
+        xyz_path = esd_dir / "T2.xyz"
+        skip_lines = 2
     else:
         xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
@@ -364,14 +398,27 @@ def _create_state_input_tddft(
         logger.error(f"Coordinate file not found: {xyz_path}")
         raise
 
-    def _write_tddft_block(fh, iroot: int, irootmult: str) -> None:
+    def _write_tddft_block(
+        fh,
+        iroot: Optional[int] = None,
+        irootmult: Optional[str] = None,
+        *,
+        triplets: bool = False,
+    ) -> None:
         fh.write("%tddft\n")
         fh.write(f"  nroots {nroots}\n")
         fh.write(f"  maxdim {maxdim}\n")
         fh.write(f"  tda {tda_flag}\n")
-        fh.write(f"  iroot {iroot}\n")
-        fh.write(f"  irootmult {irootmult}\n")
-        fh.write("  followiroot true\n")
+        if tddft_maxiter is not None:
+            fh.write(f"  maxiter {tddft_maxiter}\n")
+        if triplets:
+            fh.write("  triplets true\n")
+        if iroot is not None:
+            fh.write(f"  iroot {iroot}\n")
+        if irootmult:
+            fh.write(f"  irootmult {irootmult}\n")
+        if iroot is not None:
+            fh.write("  followiroot true\n")
         fh.write("end\n")
 
     with open(input_file, "w", encoding="utf-8") as f:
@@ -402,12 +449,7 @@ def _create_state_input_tddft(
             f.write('%base "S0_TDDFT_check"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
-            f.write("%tddft\n")
-            f.write(f"  nroots {nroots}\n")
-            f.write(f"  maxdim {maxdim}\n")
-            f.write(f"  tda {tda_flag}\n")
-            f.write("  triplets true\n")
-            f.write("end\n")
+            _write_tddft_block(f, triplets=True)
             f.write("\n")
             f.write(f"* xyzfile {charge} 1 S0.xyz\n")
         elif state_upper == "S1":
@@ -437,31 +479,6 @@ def _create_state_input_tddft(
             for line in coord_lines:
                 f.write(line)
             f.write("*\n\n")
-
-            f.write("$new_job\n")
-            f.write(
-                "! "
-                + " ".join(
-                    [
-                        functional,
-                        "RKS",
-                        main_basisset,
-                        disp_corr,
-                        ri_jkx,
-                        aux_jk,
-                        f"{implicit_solvation}({solvent})",
-                        "FREQ",
-                    ]
-                )
-                + "\n"
-            )
-            f.write('%base "S1_TDDFT_freq"\n')
-            f.write('%moinp "S1.gbw"\n')
-            f.write(f"%pal nprocs {pal} end\n")
-            f.write(f"%maxcore {maxcore}\n")
-            _write_tddft_block(f, iroot=1, irootmult="singlet")
-            f.write(f"\n* xyzfile {charge} 1 S1.xyz\n")
-            f.write("*\n")
         elif state_upper == "T1":
             f.write(
                 "! "
@@ -506,7 +523,7 @@ def _create_state_input_tddft(
                 + "\n"
             )
             f.write('%base "T2_TDDFT"\n')
-            f.write('%moinp "S0.gbw"\n')
+            f.write('%moinp "T1.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_tddft_block(f, iroot=2, irootmult="triplet")
@@ -532,7 +549,7 @@ def _create_state_input_tddft(
                 + "\n"
             )
             f.write('%base "S2"\n')
-            f.write('%moinp "S0.gbw"\n')
+            f.write('%moinp "S1.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_tddft_block(f, iroot=2, irootmult="singlet")
@@ -645,14 +662,19 @@ def create_isc_input(
     nroots = config.get('ESD_ISC_NROOTS', config.get('NROOTS', 10))  # Increased default to 10
     trootssl = str(config.get('TROOTSSL', '0')).strip()
     dosoc_flag = "TRUE"
+    tddft_maxiter = _resolve_tddft_maxiter(config)
     tddft_block = [
         f"%TDDFT  NROOTS  {int(nroots):>2}",
         "        SROOT   1",
         "        TROOT   1",
         f"        TROOTSSL {trootssl}",
         f"        DOSOC   {dosoc_flag}",
-        "END",
     ]
+    if tddft_maxiter is not None:
+        tddft_block.append(f"        maxiter {tddft_maxiter}")
+    tddft_block.append(
+        "END",
+    )
     blocks.append("\n".join(tddft_block))
 
     # ESD block
@@ -778,6 +800,9 @@ def create_ic_input(
         f"  ETF      {etf_flag}",
         "END",
     ]
+    tddft_maxiter = _resolve_tddft_maxiter(config)
+    if tddft_maxiter is not None:
+        tddft_block.insert(-1, f"  maxiter  {tddft_maxiter}")
     blocks.append("\n".join(tddft_block))
 
     # ESD block
