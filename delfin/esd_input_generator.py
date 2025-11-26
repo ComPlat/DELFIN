@@ -193,7 +193,7 @@ def _create_state_input_delta_scf(
 
     if geom_token:
         keywords.append(geom_token)
-    keywords.append("FREQ")
+    keywords.append("numFREQ")
 
     if use_deltascf:
         keywords.append("deltaSCF")
@@ -307,16 +307,18 @@ def _create_state_input_delta_scf(
             f.write("! " + " ".join(tddft_keywords) + "\n")
 
             # Base block for TDDFT check
-            f.write(f'%base "S0_TDDFT_check"\n')
+            f.write(f'%base "S0_TDDFT"\n')
 
             # PAL and maxcore
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
 
             # TDDFT block for both singlets and triplets
-            nroots = config.get('NROOTS', 15)
+            nroots = config.get('ESD_nroots', 15)
             tda_flag = str(config.get('TDA', 'FALSE')).upper()
-            maxdim = max(5, int(nroots / 2))  # Davidson subspace dimension
+            # Use ESD_maxdim if set, otherwise default to nroots/2 (min 5)
+            esd_maxdim = config.get('ESD_maxdim', None)
+            maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
             f.write("\n%tddft\n")
             f.write(f"  nroots {nroots}\n")
             f.write(f"  maxdim {maxdim}\n")
@@ -358,9 +360,11 @@ def _create_state_input_tddft(
     geom_token = str(config.get("geom_opt", "OPT")).strip()
     pal = config.get("PAL", 12)
     maxcore = config.get("maxcore", 6000)
-    nroots = config.get("NROOTS", 15)
+    nroots = config.get("ESD_nroots", 15)
     tda_flag = str(config.get("TDA", "FALSE")).upper()
-    maxdim = max(5, int(nroots / 2))
+    # Use ESD_maxdim if set, otherwise default to nroots/2 (min 5)
+    esd_maxdim = config.get("ESD_maxdim", None)
+    maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
     tddft_maxiter = _resolve_tddft_maxiter(config)
 
     def _join_keywords(parts: List[str]) -> str:
@@ -445,8 +449,8 @@ def _create_state_input_tddft(
             f.write("*\n\n")
 
             f.write("$new_job\n")
-            f.write("! " + " ".join(keywords[:-1]) + "\n")
-            f.write('%base "S0_TDDFT_check"\n')
+            f.write("! " + " ".join(keywords[:-2]) + "\n")
+            f.write('%base "S0_TDDFT"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_tddft_block(f, triplets=True)
@@ -465,6 +469,7 @@ def _create_state_input_tddft(
                         aux_jk,
                         f"{implicit_solvation}({solvent})",
                         geom_token,
+                        "numFREQ",
                     ]
                 )
                 + "\n"
@@ -492,6 +497,7 @@ def _create_state_input_tddft(
                         aux_jk,
                         f"{implicit_solvation}({solvent})",
                         geom_token,
+                        "numFREQ",
                     ]
                 )
                 + "\n"
@@ -518,6 +524,7 @@ def _create_state_input_tddft(
                         aux_jk,
                         f"{implicit_solvation}({solvent})",
                         geom_token,
+                        "numFREQ",
                     ]
                 )
                 + "\n"
@@ -544,6 +551,7 @@ def _create_state_input_tddft(
                         aux_jk,
                         f"{implicit_solvation}({solvent})",
                         geom_token,
+                        "numFREQ",
                     ]
                 )
                 + "\n"
@@ -570,6 +578,7 @@ def _create_state_input_tddft(
                         aux_jk,
                         f"{implicit_solvation}({solvent})",
                         geom_token,
+                        "numFREQ",
                     ]
                 )
                 + "\n"

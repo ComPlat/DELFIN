@@ -829,20 +829,11 @@ class DynamicCorePool:
 
             # Initialize warning tracker for this job
             if job_id not in self._stuck_job_warnings:
-                self._stuck_job_warnings[job_id] = {'warned_exceeded': False, 'warned_near_shutdown': False}
+                self._stuck_job_warnings[job_id] = {'warned_near_shutdown': False}
 
             warnings = self._stuck_job_warnings[job_id]
 
-            # Warning 1: Job exceeded max duration (first time only)
-            if runtime > max_duration and not warnings['warned_exceeded']:
-                logger.warning(
-                    f"Job {job_id} exceeded max duration: running for {runtime:.0f}s, "
-                    f"max allowed {max_duration:.0f}s (estimated {job.estimated_duration:.0f}s). "
-                    f"Will auto-terminate at {stuck_kill_threshold/3600:.1f}h."
-                )
-                warnings['warned_exceeded'] = True
-
-            # Warning 2: One hour before auto-terminate (first time only)
+            # Warning: One hour before auto-terminate (first time only)
             time_until_shutdown = stuck_kill_threshold - runtime
             if time_until_shutdown <= 3600 and time_until_shutdown > 0 and not warnings['warned_near_shutdown']:
                 logger.warning(

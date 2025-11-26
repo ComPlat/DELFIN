@@ -160,6 +160,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("OWN_progressive_from", _as_yes_no, default="no"),
     FieldSpec("OWN_TREE_PURE_WINDOW", _as_int, default=None, allow_none=True),
     FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),
+    FieldSpec("ESD_nroots", _as_int, default=15),
+    FieldSpec("ESD_maxdim", _as_int, default=None, allow_none=True),
 )
 
 
