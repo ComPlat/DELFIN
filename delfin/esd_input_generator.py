@@ -77,7 +77,10 @@ def create_state_input(
     config: Dict[str, Any],
 ) -> str:
     """Generate ORCA input for a state, respecting ESD_modus (deltaSCF|TDDFT)."""
-    mode = str(config.get("ESD_modus", "deltaSCF")).strip().lower()
+    mode = str(config.get("ESD_modus", "TDDFT")).strip().lower()
+    # If pipe-separated options (e.g., "TDDFT|deltaSCF"), take first as default
+    if "|" in mode:
+        mode = mode.split("|")[0].strip()
     if mode == "tddft":
         return _create_state_input_tddft(
             state=state,
@@ -415,6 +418,7 @@ def _create_state_input_tddft(
         fh.write(f"  tda {tda_flag}\n")
         if tddft_maxiter is not None:
             fh.write(f"  maxiter {tddft_maxiter}\n")
+
         if triplets:
             fh.write("  triplets true\n")
         if iroot is not None:

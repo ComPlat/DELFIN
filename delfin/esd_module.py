@@ -118,7 +118,10 @@ def _populate_state_jobs(
         metal_basisset: Metal basis set
         config: Configuration dictionary
     """
-    esd_modus = str(config.get("ESD_modus", "deltaSCF")).strip().lower()
+    esd_modus = str(config.get("ESD_modus", "TDDFT")).strip().lower()
+    # If pipe-separated options (e.g., "TDDFT|deltaSCF"), take first as default
+    if "|" in esd_modus:
+        esd_modus = esd_modus.split("|")[0].strip()
 
     # Define dependencies between states
     state_deps: Dict[str, Set[str]] = {
