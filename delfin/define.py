@@ -101,9 +101,9 @@ deltaSCF_SOSCFHESSUP=LBFGS
 ----------------
 ESD_modul=no
 ESD_modus=TDDFT|deltaSCF
-ESD_TDDFT_maxiter=500
+ESD_TDDFT_maxiter=1000
 ESD_nroots=15
-ESD_maxdim=
+ESD_maxdim=30
 states=S0,S1,T1,T2
 ISCs=S1>T1,T1>S1,S1>T2,T2>S1
 ICs=S1>S0,T2>T1

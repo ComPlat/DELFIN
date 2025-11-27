@@ -506,7 +506,7 @@ def _create_state_input_tddft(
                 )
                 + "\n"
             )
-            f.write('%base "T1_TDDFT"\n')
+            f.write('%base "T1"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
@@ -533,7 +533,7 @@ def _create_state_input_tddft(
                 )
                 + "\n"
             )
-            f.write('%base "T2_TDDFT"\n')
+            f.write('%base "T2"\n')
             f.write('%moinp "T1.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
@@ -587,7 +587,7 @@ def _create_state_input_tddft(
                 )
                 + "\n"
             )
-            f.write('%base "T3_TDDFT"\n')
+            f.write('%base "T3"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
