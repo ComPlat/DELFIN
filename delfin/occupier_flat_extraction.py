@@ -514,134 +514,124 @@ def _create_occupier_fob_jobs(
                     completion_check=_source_completed_closure,
                 )
 
-                # Change to target directory only while holding the lock
-                with _cwd_lock:
-                    prev_cwd = os.getcwd()
-                    os.chdir(target_folder)
+                # Work with absolute paths to avoid race conditions with cwd
+                # No chdir needed - all file operations use absolute paths
+                logger.info("[%s] FoB %d starting with %d cores", folder_name, _idx, cores)
 
-                # Release lock immediately after chdir to allow parallel FoB execution
-                try:
-                    logger.info("[%s] FoB %d starting with %d cores", folder_name, _idx, cores)
-
-                    # In RECALC with auto-recovery enabled, prefer latest retry/modified input
-                    reuse_existing_inp = False
-                    source_inp = Path(_inp_name)
-                    if recalc_enabled and auto_recovery_enabled:
-                        retry_candidates = sorted(
-                            target_folder.glob(f"{source_inp.stem}.retry*.inp")
-                        )
-                        best_retry = None
-                        best_attempt = -1
-                        for cand in retry_candidates:
-                            m = re.search(r"\.retry(\d+)\.inp$", cand.name)
-                            if not m:
-                                continue
-                            try:
-                                att = int(m.group(1))
-                            except ValueError:
-                                continue
-                            if att > best_attempt:
-                                best_attempt = att
-                                best_retry = cand
-                        if best_retry and best_retry.exists():
-                            shutil.copy2(best_retry, source_inp)
-                            reuse_existing_inp = True
-                            logger.info(
-                                "[%s] FoB %d: RECALC reuse retry input '%s' -> '%s'",
-                                folder_name,
-                                _idx,
-                                best_retry.name,
-                                source_inp.name,
-                            )
-                        elif source_inp.exists():
-                            reuse_existing_inp = True
-                            logger.info(
-                                "[%s] FoB %d: RECALC reuse existing input '%s' (auto-recovery enabled)",
-                                folder_name,
-                                _idx,
-                                _inp_name,
-                            )
-
-                    gbw_for_moread: Optional[Path] = None
-
-                    if not reuse_existing_inp:
-                        additions: List[str] = []
-                        if pass_wf_enabled:
-                            gbw_candidate = "input.gbw" if _src_idx == 1 else f"input{_src_idx}.gbw"
-                            gbw_path = resolve_path(gbw_candidate)
-                            if gbw_path.exists():
-                                additions.append(f'%moinp "{gbw_path}"')
-                                gbw_for_moread = gbw_path
-                            else:
-                                logger.info(
-                                    "[%s] FoB %d: GBW %s not found, continuing with default guess",
-                                    folder_name,
-                                    _idx,
-                                    gbw_candidate,
-                                )
-
-                        if _bs_token:
-                            scf_lines = [f"  BrokenSym {_bs_token}"]
-                            if not freq_enabled and ap_method:
-                                scf_lines.append(f"  APMethod {ap_method}")
-                            additions.append("%scf\n" + "\n".join(scf_lines) + "\nend")
-
-                        additions_str = "\n".join(additions)
-
-                        read_and_modify_file_OCCUPIER(
-                            _src_idx,
-                            _inp_name,
-                            stage_charge,
-                            _multiplicity,
-                            solvent,
-                            metals,
-                            metal_basisset,
-                            main_basisset,
-                            global_config,
-                            additions_str,
-                        )
-
-                        if not Path(_inp_name).exists():
-                            raise RuntimeError(f"Failed to create OCCUPIER input '{_inp_name}' in {folder_name}")
-
-                    # Prepare input for continuation using latest xyz/gbw if auto-recovery enabled
-                    # This handles: MOREAD injection, GBW backup, geometry updates
-                    if auto_recovery_enabled and Path(_inp_name).exists():
+                # In RECALC with auto-recovery enabled, prefer latest retry/modified input
+                reuse_existing_inp = False
+                source_inp = target_folder / _inp_name
+                if recalc_enabled and auto_recovery_enabled:
+                    retry_candidates = sorted(
+                        target_folder.glob(f"{source_inp.stem}.retry*.inp")
+                    )
+                    best_retry = None
+                    best_attempt = -1
+                    for cand in retry_candidates:
+                        m = re.search(r"\.retry(\d+)\.inp$", cand.name)
+                        if not m:
+                            continue
                         try:
-                            prepare_input_for_continuation(
-                                Path(_inp_name),
-                                always_use_moread=True,
-                                backup_gbw=True,
-                                update_geometry=True,
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            logger.warning(
-                                "[%s] FoB %d: Failed to prepare input for continuation: %s",
-                                folder_name,
-                                _idx,
-                                exc,
-                            )
-
-                    # Always ensure PAL matches current core allocation
-                    _update_pal_block(_inp_name, cores)
-
-                    # Double-check recalc status after preparing input
-                    if recalc_enabled and _has_ok_marker(out_path):
-                        energy = _parse_energy(out_path, use_gibbs)
+                            att = int(m.group(1))
+                        except ValueError:
+                            continue
+                        if att > best_attempt:
+                            best_attempt = att
+                            best_retry = cand
+                    if best_retry and best_retry.exists():
+                        shutil.copy2(best_retry, source_inp)
+                        reuse_existing_inp = True
                         logger.info(
-                            "[%s] FoB %d: RECALC skip after prepare (energy=%s)",
+                            "[%s] FoB %d: RECALC reuse retry input '%s' -> '%s'",
                             folder_name,
                             _idx,
-                            energy,
+                            best_retry.name,
+                            source_inp.name,
                         )
-                        with results_lock:
-                            fspe_results[_idx] = energy
-                        return
+                    elif source_inp.exists():
+                        reuse_existing_inp = True
+                        logger.info(
+                            "[%s] FoB %d: RECALC reuse existing input '%s' (auto-recovery enabled)",
+                            folder_name,
+                            _idx,
+                            _inp_name,
+                        )
 
-                    check_and_warn_competing_processes(_inp_name)
+                gbw_for_moread: Optional[Path] = None
 
-                    # Use intelligent recovery/retry pipeline if enabled in CONTROL.
-                    # This will also reuse existing gbw via MOREAD when appropriate.
+                if not reuse_existing_inp:
+                    additions: List[str] = []
+                    if pass_wf_enabled:
+                        gbw_candidate = "input.gbw" if _src_idx == 1 else f"input{_src_idx}.gbw"
+                        gbw_path = target_folder / gbw_candidate
+                        if gbw_path.exists():
+                            additions.append(f'%moinp "{gbw_path}"')
+                            gbw_for_moread = gbw_path
+                        else:
+                            logger.info(
+                                "[%s] FoB %d: GBW %s not found, continuing with default guess",
+                                folder_name,
+                                _idx,
+                                gbw_candidate,
+                            )
+
+                    if _bs_token:
+                        scf_lines = [f"  BrokenSym {_bs_token}"]
+                        if not freq_enabled and ap_method:
+                            scf_lines.append(f"  APMethod {ap_method}")
+                        additions.append("%scf\n" + "\n".join(scf_lines) + "\nend")
+
+                    additions_str = "\n".join(additions)
+
+                    # Change to target directory only for read_and_modify_file_OCCUPIER
+                    # which expects to work in the target directory
+                    with _cwd_lock:
+                        prev_cwd = os.getcwd()
+                        os.chdir(target_folder)
+                        try:
+                            read_and_modify_file_OCCUPIER(
+                                _src_idx,
+                                _inp_name,
+                                stage_charge,
+                                _multiplicity,
+                                solvent,
+                                metals,
+                                metal_basisset,
+                                main_basisset,
+                                global_config,
+                                additions_str,
+                            )
+                        finally:
+                            os.chdir(prev_cwd)
+
+                    if not inp_path.exists():
+                        raise RuntimeError(f"Failed to create OCCUPIER input '{_inp_name}' in {folder_name}")
+
+                # NOTE: prepare_input_for_continuation() is called internally by
+                # run_orca_with_intelligent_recovery() during retry attempts only.
+                # We do NOT call it here before the first ORCA run.
+
+                # Always ensure PAL matches current core allocation
+                _update_pal_block(str(inp_path), cores)
+
+                # Double-check recalc status after preparing input
+                if recalc_enabled and _has_ok_marker(out_path):
+                    energy = _parse_energy(out_path, use_gibbs)
+                    logger.info(
+                        "[%s] FoB %d: RECALC skip after prepare (energy=%s)",
+                        folder_name,
+                        _idx,
+                        energy,
+                    )
+                    with results_lock:
+                        fspe_results[_idx] = energy
+                    return
+
+                check_and_warn_competing_processes(str(inp_path))
+
+                # Use intelligent recovery/retry pipeline if enabled in CONTROL.
+                # This will also reuse existing gbw via MOREAD when appropriate.
+                try:
                     success = run_orca_with_intelligent_recovery(
                         str(inp_path),
                         str(out_path),
@@ -649,14 +639,10 @@ def _create_occupier_fob_jobs(
                         config=global_config,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    logger.error("[%s] FoB %d preparation failed: %s", folder_name, _idx, exc)
+                    logger.error("[%s] FoB %d failed: %s", folder_name, _idx, exc)
                     with results_lock:
                         fspe_results[_idx] = None
                     raise
-                finally:
-                    # Restore original directory (thread-safe)
-                    with _cwd_lock:
-                        os.chdir(prev_cwd)
                 if not success:
                     logger.error("[%s] FoB %d failed: ORCA execution error (see %s)", folder_name, _idx, _out_name)
                     with results_lock:
