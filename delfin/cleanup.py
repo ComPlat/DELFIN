@@ -11,7 +11,6 @@ from delfin.common.logging import get_logger
 DEFAULT_PATTERNS: Sequence[str] = [
     "*.cpcm",
     "*.cpcm_corr",
-    "*.densitiesinfo",
     "*.tmp",
     "*.tmp*",
     "*.bas*",

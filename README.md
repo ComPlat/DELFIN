@@ -310,7 +310,7 @@ sp_timeout_hours=3
 - Creates GBW backup to prevent ORCA deletion on failure
 - Modifies input with intelligent fixes based on error type
 - Handles transient system errors with exponential backoff (2s, 4s, 8s, ...)
-- Works for 99% of cases (SCF, TRAH, geometry, MPI, memory, disk/network errors)
+- Works for many cases (SCF, TRAH, geometry, MPI, memory, disk/network errors)
 
 💡 **Timeout Management**:
 - Set `enable_job_timeouts=no` for difficult systems requiring >24h runtime
