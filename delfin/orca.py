@@ -19,6 +19,14 @@ except ImportError:
 from delfin.common.logging import get_logger
 from delfin.common.paths import get_runtime_dir
 from delfin.global_manager import get_global_manager
+from delfin.orca_recovery import (
+    OrcaErrorDetector,
+    OrcaErrorType,
+    OrcaInputModifier,
+    RecoveryStrategy,
+    RetryStateTracker,
+    prepare_input_for_continuation,
+)
 
 logger = get_logger(__name__)
 
@@ -37,18 +45,6 @@ ORCA_PLOT_INPUT_TEMPLATE = (
 
 _RUN_SCRATCH_DIR: Optional[Path] = None
 
-# Transient error patterns that should trigger retry
-TRANSIENT_ERROR_PATTERNS = [
-    "cannot create temporary file",
-    "no space left on device",
-    "disk quota exceeded",
-    "stale file handle",
-    "connection timed out",
-    "cannot allocate memory",
-    "broken pipe",
-    "input/output error",
-    "resource temporarily unavailable",
-]
 
 
 def _ensure_openmpi_subdir(base_path: Path) -> None:
@@ -560,7 +556,9 @@ def run_orca(
     return False
 
 
-def run_orca_with_retry(
+
+
+def run_orca_with_intelligent_recovery(
     input_file_path: str,
     output_log: str,
     timeout: Optional[int] = None,
@@ -569,91 +567,183 @@ def run_orca_with_retry(
     working_dir: Optional[Path] = None,
     config: Optional[Dict] = None,
 ) -> bool:
-    """Execute ORCA calculation with transient error retry logic.
+    """Execute ORCA with intelligent error detection and automatic recovery.
 
-    Wraps run_orca() with automatic retry for transient errors
-    (disk full, network glitches, temporary memory issues, etc.).
+    This function combines transient error retry logic with intelligent
+    error-specific recovery strategies. It detects specific ORCA failures
+    (SCF convergence, TRAH crashes, etc.) and automatically modifies the
+    input file with appropriate fixes, using MOREAD to continue from the
+    last successful state.
+
+    Recovery features:
+    - Automatic error classification (SCF, TRAH, geometry, MPI, etc.)
+    - Progressive escalation of fixes across retry attempts
+    - MOREAD-based continuation from last .gbw state
+    - Preservation of basis sets and geometry
+    - State tracking to prevent infinite loops
 
     Args:
         input_file_path: Path to ORCA input file (.inp)
         output_log: Path for ORCA output file (.out)
-        timeout: Optional timeout in seconds for ORCA calculation
+        timeout: Optional timeout in seconds
         scratch_subdir: Optional scratch subdirectory
         working_dir: Optional working directory
-        config: Configuration dict containing retry settings
+        config: Configuration dict with recovery settings
 
     Returns:
-        bool: True if ORCA completed successfully (possibly after retries), False otherwise
+        bool: True if ORCA completed successfully, False otherwise
+
+    Configuration options (in CONTROL.txt):
+        enable_auto_recovery: Enable intelligent error recovery (yes/no, default: yes)
+        max_recovery_attempts: Maximum recovery attempts per error type (default: 2)
     """
-    # Get retry settings from config
     config = config or {}
-    retry_enabled = _parse_bool_config(config.get('orca_retry_enabled', 'no'))
-    max_attempts = int(config.get('orca_retry_max_attempts', 2))
 
-    # If retry disabled, just run once
-    if not retry_enabled:
-        return run_orca(input_file_path, output_log, timeout,
-                       scratch_subdir=scratch_subdir, working_dir=working_dir)
+    # Check if intelligent recovery is enabled
+    # Support both new and old config parameter names for backward compatibility
+    recovery_enabled = (
+        _parse_bool_config(config.get('enable_auto_recovery', 'no'))
+        or _parse_bool_config(config.get('orca_retry_enabled', 'no'))  # Old parameter
+    )
 
-    # Retry logic enabled
-    output_path = Path(output_log)
+    manager = get_global_manager()
 
-    for attempt in range(max_attempts):
-        success = run_orca(input_file_path, output_log, timeout,
-                          scratch_subdir=scratch_subdir, working_dir=working_dir)
+    def _shutdown_requested() -> bool:
+        try:
+            return bool(getattr(manager, "_shutdown_requested", None) and manager._shutdown_requested.is_set())
+        except Exception:
+            return False
+
+    if not recovery_enabled:
+        # Fall back to direct ORCA execution (no retry, no recovery)
+        return run_orca(
+            input_file_path,
+            output_log,
+            timeout,
+            scratch_subdir=scratch_subdir,
+            working_dir=working_dir,
+        )
+
+    # Intelligent recovery is enabled
+    inp_path = Path(input_file_path)
+    out_path = Path(output_log)
+    work_dir = working_dir or inp_path.parent
+
+    # Initialize recovery components
+    detector = OrcaErrorDetector()
+    state_file = work_dir / ".delfin_recovery_state.json"
+    tracker = RetryStateTracker(state_file)
+
+    # Support both new and old config parameter names
+    max_recovery_attempts = int(
+        config.get('max_recovery_attempts')
+        or config.get('orca_retry_max_attempts', 3)  # Old parameter
+    )
+
+    job_name = inp_path.stem
+    current_inp = inp_path
+
+    logger.info(f"Starting ORCA with intelligent recovery enabled for {job_name}")
+
+    # Track all attempted error types to prevent loops
+    attempted_errors = set()
+
+    for overall_attempt in range(1, max_recovery_attempts + 2):  # +1 for initial attempt
+        if _shutdown_requested():
+            logger.warning("Shutdown requested; aborting recovery for %s", job_name)
+            raise KeyboardInterrupt
+
+        # Run ORCA
+        success = run_orca(
+            str(current_inp),
+            output_log,
+            timeout,
+            scratch_subdir=scratch_subdir,
+            working_dir=working_dir,
+        )
 
         if success:
-            if attempt > 0:
-                logger.info(f"ORCA succeeded on attempt {attempt + 1}/{max_attempts}")
+            if overall_attempt > 1:
+                logger.info(
+                    f"✓ ORCA succeeded after {overall_attempt - 1} recovery attempt(s) for {job_name}"
+                )
             return True
 
-        # Check if error is transient by examining output log
-        if attempt < max_attempts - 1:  # Not the last attempt
-            if _is_transient_error(output_path):
-                delay = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s, ...
-                logger.warning(
-                    f"Transient ORCA error detected in '{output_log}'. "
-                    f"Retry {attempt + 1}/{max_attempts} after {delay}s..."
-                )
-                time.sleep(delay)
-                continue  # Retry
-            else:
-                # Permanent error, don't retry
-                logger.error(f"ORCA failed with permanent error (no retry)")
-                return False
+        # Job failed - analyze error
+        if _shutdown_requested():
+            logger.warning("Shutdown requested after failure; aborting recovery for %s", job_name)
+            raise KeyboardInterrupt
 
-    # All retries exhausted
-    logger.error(f"ORCA failed after {max_attempts} attempts")
+        error_type = detector.analyze_output(out_path)
+
+        if not error_type or error_type == OrcaErrorType.UNKNOWN:
+            logger.error(f"ORCA failed with unrecoverable error for {job_name}")
+            return False
+
+        # Check if we've already tried to recover from this error type
+        error_key = f"{job_name}_{error_type.value}"
+        if error_key in attempted_errors:
+            logger.error(
+                f"Error type {error_type.value} persists after recovery attempt for {job_name}"
+            )
+            return False
+
+        # Check if we should attempt recovery
+        if not tracker.should_retry(job_name, error_type, max_recovery_attempts):
+            logger.error(
+                f"Max recovery attempts ({max_recovery_attempts}) reached "
+                f"for {error_type.value} in {job_name}"
+            )
+            return False
+
+        # Get recovery strategy
+        attempt = tracker.get_attempt(job_name, error_type) + 1
+        strategy = RecoveryStrategy(error_type, attempt, config)
+
+        # Get modifications to check for backoff delay
+        mods = strategy.get_modifications()
+
+        logger.warning(
+            f"⚠ ORCA failed with {error_type.value} for {job_name}. "
+            f"Applying recovery strategy (attempt {attempt}/{max_recovery_attempts})..."
+        )
+
+        # Handle exponential backoff for transient errors
+        if "backoff_delay" in mods:
+            delay = mods["backoff_delay"]
+            logger.warning(
+                f"Transient system error detected. Waiting {delay}s before retry (exponential backoff)..."
+            )
+            time.sleep(delay)
+
+        # Modify input file
+        modifier = OrcaInputModifier(current_inp, config)
+        new_inp = modifier.apply_recovery(strategy)
+
+        if new_inp == current_inp:
+            logger.error(f"Failed to create recovery input for {job_name}")
+            return False
+
+        # Prepare the new input for continuation (update geometry from xyz, ensure GBW backup)
+        # This is already done by OrcaInputModifier, but we ensure it's applied
+        # Note: The modifier already calls _update_geometry_from_xyz and _add_moread internally
+
+        # Update tracking
+        tracker.increment_attempt(job_name, error_type)
+        attempted_errors.add(error_key)
+
+        # Use modified input for next attempt
+        current_inp = new_inp
+
+        logger.info(f"Retrying with recovery input: {new_inp.name}")
+
+    # All recovery attempts exhausted
+    logger.error(
+        f"ORCA failed after {max_recovery_attempts} recovery attempts for {job_name}"
+    )
     return False
 
 
-def _is_transient_error(output_path: Path) -> bool:
-    """Check if ORCA output contains transient error patterns.
-
-    Args:
-        output_path: Path to ORCA output file
-
-    Returns:
-        True if output contains transient error patterns, False otherwise
-    """
-    if not output_path.exists():
-        return False
-
-    try:
-        with output_path.open('r', encoding='utf-8', errors='replace') as f:
-            # Read last 5000 lines to check for errors
-            lines = f.readlines()[-5000:]
-            content = '\n'.join(lines).lower()
-
-            for pattern in TRANSIENT_ERROR_PATTERNS:
-                if pattern in content:
-                    logger.debug(f"Found transient error pattern: '{pattern}'")
-                    return True
-
-    except Exception as e:
-        logger.debug(f"Could not check for transient errors in {output_path}: {e}")
-
-    return False
 
 
 def _parse_bool_config(value) -> bool:

@@ -1,5 +1,5 @@
 # Ignore PDFs in docs folder
-docs/*.pdf
+docs/*
 
 # Ignore build artifacts
 dist/

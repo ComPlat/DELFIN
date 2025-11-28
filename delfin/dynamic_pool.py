@@ -4,12 +4,14 @@ import threading
 import time
 import queue
 from concurrent.futures import ThreadPoolExecutor, Future
+from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from itertools import count
 
 from delfin.common.logging import get_logger
+from delfin.cleanup import _collect_orca_processes, _terminate_process_groups
 
 logger = get_logger(__name__)
 
@@ -81,6 +83,7 @@ class DynamicCorePool:
         self.config = config or {}
 
         # Configurable timeouts (in seconds)
+        self.enable_job_timeouts = self._parse_bool(self.config.get('enable_job_timeouts', 'yes'))
         self.job_timeout_default = int(self.config.get('job_timeout_hours', 24)) * 3600
         self.opt_timeout = int(self.config.get('opt_timeout_hours', 12)) * 3600
         self.frequency_timeout = int(self.config.get('frequency_timeout_hours', 36)) * 3600
@@ -113,8 +116,11 @@ class DynamicCorePool:
         self._shutdown = False
         self._resource_event = threading.Event()
 
-        # Track warnings for stuck jobs: job_id -> {warned_exceeded, warned_near_shutdown}
+        # Track warnings for stuck jobs: job_id -> {warned_near_shutdown}
         self._stuck_job_warnings: Dict[str, Dict[str, bool]] = {}
+
+        # Track termination attempts: job_id -> {soft_kill_time, warned_before_hard_kill}
+        self._termination_state: Dict[str, Dict] = {}
 
         # Start resource monitor
         self._monitor_thread = threading.Thread(target=self._resource_monitor, daemon=True)
@@ -537,8 +543,9 @@ class DynamicCorePool:
             job = self._running_jobs.pop(job_id)
             self._futures.pop(job_id, None)
 
-            # Cleanup warning tracker for this job
+            # Cleanup warning and termination trackers for this job
             self._stuck_job_warnings.pop(job_id, None)
+            self._termination_state.pop(job_id, None)
 
             # Handle orphaned children if parent is completing
             if job.child_jobs:
@@ -780,15 +787,19 @@ class DynamicCorePool:
             except Exception as e:
                 logger.error(f"Resource monitor error: {e}")
 
-    def _get_job_timeout(self, job_id: str) -> float:
+    def _get_job_timeout(self, job_id: str) -> Optional[float]:
         """Determine timeout for a job based on its type.
 
         Args:
             job_id: The job identifier
 
         Returns:
-            Timeout in seconds
+            Timeout in seconds, or None if timeouts are disabled
         """
+        # If timeouts are globally disabled, return None (no timeout)
+        if not self.enable_job_timeouts:
+            return None
+
         job_id_lower = job_id.lower()
 
         # Check job type and return appropriate timeout
@@ -824,6 +835,10 @@ class DynamicCorePool:
             # Get job-type-specific timeout
             stuck_kill_threshold = self._get_job_timeout(job_id)
 
+            # Skip timeout checks if timeouts are disabled
+            if stuck_kill_threshold is None:
+                continue
+
             # Calculate max allowed duration
             max_duration = job.max_duration if job.max_duration is not None else (job.estimated_duration * 3)
 
@@ -842,29 +857,58 @@ class DynamicCorePool:
                 )
                 warnings['warned_near_shutdown'] = True
 
-            # Check if job is WAY over limit → AUTO-TERMINATE
+            # Check if job exceeded timeout → Start staged termination
             if runtime > stuck_kill_threshold:
-                logger.error(
-                    f"Job {job_id} is severely stuck: running for {runtime/3600:.1f}h, "
-                    f"exceeds maximum allowed runtime of {stuck_kill_threshold/3600:.1f}h. "
-                    f"AUTO-TERMINATING to free resources."
-                )
-                jobs_to_kill.append((job_id, job))
+                # Initialize termination state if not exists
+                if job_id not in self._termination_state:
+                    self._termination_state[job_id] = {
+                        'soft_kill_time': now,
+                        'warned_before_hard_kill': False
+                    }
+                    logger.error(
+                        f"Job {job_id} exceeded timeout: running for {runtime/3600:.1f}h, "
+                        f"max allowed {stuck_kill_threshold/3600:.1f}h. "
+                        f"Sending SIGTERM (soft kill), will hard-kill after 1h grace period."
+                    )
+                    jobs_to_kill.append((job_id, job, 'soft'))
+                else:
+                    # Check grace period (1 hour = 3600 seconds)
+                    term_state = self._termination_state[job_id]
+                    time_since_soft_kill = now - term_state['soft_kill_time']
+                    grace_period = 3600  # 1 hour
 
-        # Kill severely stuck jobs
+                    if time_since_soft_kill >= grace_period:
+                        # Grace period expired → HARD KILL
+                        logger.error(
+                            f"Job {job_id} did not terminate after 1h grace period. "
+                            f"Sending SIGKILL (hard kill) to force termination."
+                        )
+                        jobs_to_kill.append((job_id, job, 'hard'))
+                    elif time_since_soft_kill >= grace_period - 600 and not term_state['warned_before_hard_kill']:
+                        # Warn 10 minutes before hard kill
+                        logger.warning(
+                            f"Job {job_id} will be force-killed in {(grace_period - time_since_soft_kill)/60:.0f} minutes "
+                            f"if it does not terminate gracefully."
+                        )
+                        term_state['warned_before_hard_kill'] = True
+
+        # Terminate stuck jobs (soft or hard)
         if jobs_to_kill:
-            logger.error(
-                f"Auto-terminating {len(jobs_to_kill)} severely stuck job(s) "
-                f"to prevent indefinite resource blocking."
-            )
-            for job_id, job in jobs_to_kill:
-                self._terminate_stuck_job(job_id, job)
+            for job_id, job, kill_type in jobs_to_kill:
+                self._terminate_stuck_job(job_id, job, force=kill_type == 'hard')
 
-    def _terminate_stuck_job(self, job_id: str, job: PoolJob):
+    def _terminate_stuck_job(self, job_id: str, job: PoolJob, force: bool = False):
         """Terminate a stuck job and cleanup its resources.
 
         Called when job exceeds the stuck kill threshold.
-        Attempts to cancel the future and force cleanup if needed.
+
+        Args:
+            job_id: Job identifier
+            job: PoolJob instance
+            force: If True, use SIGKILL (hard kill). If False, use SIGTERM (soft kill).
+
+        Soft kill (force=False): Sends SIGTERM, allows graceful shutdown
+        Hard kill (force=True): Sends SIGKILL, forceful termination
         """
         # Get the future for this job
         future = self._futures.get(job_id)
@@ -880,15 +924,44 @@ class DynamicCorePool:
                 logger.info(f"Successfully cancelled stuck job {job_id}")
             else:
                 # Job is already running and can't be cancelled
-                # The ThreadPoolExecutor will still call done_callback when it finishes
-                # We just log that it couldn't be cancelled
+                kill_type = "SIGKILL (hard)" if force else "SIGTERM (soft)"
                 logger.warning(
                     f"Could not cancel stuck job {job_id} (already running). "
-                    f"Cleanup will occur when job naturally completes."
+                    f"Attempting {kill_type} on ORCA processes."
                 )
 
         except Exception as e:
             logger.error(f"Error attempting to terminate stuck job {job_id}: {e}")
+            return
+
+        # If we could not cancel, terminate ORCA processes
+        # Soft kill (force=False): SIGTERM only (graceful, allows 1h grace period)
+        # Hard kill (force=True): SIGTERM → wait → SIGKILL (forceful after grace period)
+        if not cancelled:
+            try:
+                roots = [Path.cwd()]
+                procs = _collect_orca_processes(roots)
+                if not procs:
+                    logger.debug("No ORCA processes found to terminate for %s", job_id)
+                    return
+
+                if force:
+                    # Hard kill: Full termination sequence (SIGTERM → SIGKILL)
+                    summaries = _terminate_process_groups(procs)
+                    logger.info("Force-terminated (SIGKILL) ORCA processes for %s: %s", job_id, summaries)
+                else:
+                    # Soft kill: Only SIGTERM, no escalation
+                    # This allows the job to gracefully shutdown during the 1h grace period
+                    import signal
+                    for proc in procs:
+                        try:
+                            proc.send_signal(signal.SIGTERM)
+                            logger.info(f"Sent SIGTERM to PID {proc.pid} ({proc.info.get('name', 'unknown')}) for job {job_id}")
+                        except Exception as exc:
+                            logger.warning(f"Failed to send SIGTERM to PID {proc.pid}: {exc}")
+
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to terminate processes for %s: %s", job_id, exc)
 
     def _prevent_starvation(self):
         """Boost priority of jobs waiting too long in queue to prevent starvation.

@@ -132,12 +132,15 @@ PAL=12
 maxcore=6000
 parallel_workflows=yes
 pal_jobs=4
+enable_job_timeouts=yes
 job_timeout_hours=24
 opt_timeout_hours=14
 frequency_timeout_hours=36
 sp_timeout_hours=3
-orca_retry_enabled=yes
-orca_retry_max_attempts=2
+------------------------------------
+Automatic Error Recovery & Retry:
+enable_auto_recovery=yes
+max_recovery_attempts=1
 enable_adaptive_parallelism=yes
 enable_performance_metrics=yes
 ------------------------------------
@@ -215,6 +218,53 @@ states: Comma-separated list of states to calculate (S0, S1, T1, T2)
 ISCs: Comma-separated list of intersystem crossings (e.g., S1>T1, T1>S1)
 ICs: Comma-separated list of internal conversions (e.g., S1>S0, T1>T2)
 
+-------------------------------------------------
+Automatic Error Recovery & Retry System:
+
+⭐ Intelligent Error Recovery (Merged Retry + Recovery):
+enable_auto_recovery: yes/no - Enable intelligent error detection and recovery (default: yes)
+  NOTE: Old parameter 'orca_retry_enabled' still supported for backward compatibility
+max_recovery_attempts: Number of retries after initial failure (default: 1)
+  NOTE: Old parameter 'orca_retry_max_attempts' still supported for backward compatibility
+  → 1 = try once more (2 runs total), 2 = try twice more (3 runs total), etc.
+  → Handles BOTH ORCA-specific errors AND transient system errors
+  → Uses MOREAD to continue from last .gbw (no restart from scratch!)
+  → Automatically updates geometry from latest .xyz file
+  → Creates GBW backup to prevent ORCA deletion on failure
+
+⏱️ Job Lifetime Management:
+enable_job_timeouts: yes/no - Enable job timeout limits (default: yes)
+  → When yes: Jobs are terminated after timeout (job_timeout_hours, opt_timeout_hours, etc.)
+  → When no: Jobs run indefinitely until completion or error
+  → Disable for difficult systems that need >24h runtime
+  → Individual timeout settings still configurable via job_timeout_hours, opt_timeout_hours, etc.
+
+📊 Performance Monitoring:
+enable_adaptive_parallelism: yes/no - Dynamically adjust core count based on job requirements
+enable_performance_metrics: yes/no - Track and log job performance statistics
+
+How auto_recovery works:
+1. ORCA runs with your input file
+2. If it fails, DELFIN detects the specific error type:
+   a) ORCA-specific errors (SCF, TRAH, geometry, etc.)
+   b) Transient system errors (disk full, network timeout, etc.)
+3. Automatically modifies input file with appropriate fixes (MOREAD, NoAutoTRAH, etc.)
+4. For transient errors: Applies exponential backoff (2s, 4s, 8s, ...) before retry
+5. Continues from last .gbw state (no restart from scratch!)
+6. Progressively escalates fixes if problem persists
+7. Tracks state to prevent infinite loops
+
+Supported error types:
+- SCF convergence failures → SlowConv/VerySlowConv, KDIIS, SOSCF, high damping
+- TRAH segmentation faults → NoAutoTRAH
+- DIIS errors → KDIIS, SOSCF (second-order SCF)
+- Geometry convergence → Fixed trust radius (negative), Hessian recalculation
+- MPI crashes → Reduced parallelism, different MPI transport
+- Memory errors → Reduced maxcore/PAL
+- Frequency failures → NumFreq or skip
+- Transient system errors → Exponential backoff retry (disk full, network, I/O)
+
+See docs/RECOVERY_STRATEGIES_DETAILED.txt for all settings and ORCA Manual references
 -------------------------------------------------
 """
 # -------------------------------------------------------------------------------------------------------

@@ -266,6 +266,113 @@ This architecture ensures:
 - Proper coordination between main process and OCCUPIER subprocesses
 - Efficient utilization of cluster resources without exceeding allocation
 
+---
+
+## 🔧 Automatic Error Recovery & Retry System
+
+**NEW**: DELFIN now includes an intelligent error recovery system that automatically detects and fixes common ORCA calculation failures.
+
+### Features
+
+- **Automatic Error Detection**: Identifies specific failure types (SCF convergence, TRAH crashes, geometry issues, etc.)
+- **MOREAD-Based Continuation**: Uses last `.gbw` file to continue from last successful state (no restart from scratch!)
+- **Progressive Escalation**: Applies increasingly aggressive fixes across retry attempts
+- **Zero Manual Intervention**: Fully automatic recovery process
+- **State Tracking**: Prevents infinite loops, tracks recovery history
+
+### Quick Enable
+
+**For 99% of users** - just enable this in your `CONTROL.txt`:
+
+```ini
+------------------------------------
+Automatic Error Recovery & Retry:
+enable_auto_recovery=yes            # ⭐ Intelligent recovery (RECOMMENDED!)
+max_recovery_attempts=1             # Retry once (2 runs total)
+------------------------------------
+```
+
+**Note**: Old parameter names (`orca_retry_enabled`, `orca_retry_max_attempts`) are still supported for backward compatibility.
+
+**Advanced** - Optional configurations:
+```ini
+# Job timeout control:
+enable_job_timeouts=yes             # Set to 'no' for unlimited runtime
+job_timeout_hours=24
+opt_timeout_hours=14
+frequency_timeout_hours=36
+sp_timeout_hours=3
+```
+
+💡 **What `auto_recovery` does**:
+- Uses MOREAD to continue from last state (not from scratch!)
+- Automatically updates geometry from latest .xyz file
+- Creates GBW backup to prevent ORCA deletion on failure
+- Modifies input with intelligent fixes based on error type
+- Handles transient system errors with exponential backoff (2s, 4s, 8s, ...)
+- Works for 99% of cases (SCF, TRAH, geometry, MPI, memory, disk/network errors)
+
+💡 **Timeout Management**:
+- Set `enable_job_timeouts=no` for difficult systems requiring >24h runtime
+- Jobs will run indefinitely until completion or error
+- Useful for highly correlated calculations or large systems
+
+### Supported Error Types
+
+| Error | Automatic Fix |
+|-------|--------------|
+| **SCF not converged** | SloppyConv → VerySloppyConv + KDIIS → Direct SCF |
+| **TRAH segfault** | NoAutoTRAH + relaxed convergence |
+| **DIIS errors** | Switch to KDIIS or Direct SCF |
+| **Geometry not converged** | Smaller trust radius → Recalc Hessian → Loose criteria |
+| **MPI crashes** | Reduce cores, disable vader transport |
+| **Memory errors** | Reduce maxcore and PAL |
+| **Frequency failures** | Alternative methods or skip |
+| **Transient system errors** | Exponential backoff retry (disk full, network timeout, I/O errors) |
+
+### How It Works
+
+```
+ORCA fails → Detect error type → Modify input with fixes → Continue from last .gbw → Retry
+```
+
+**Example Recovery**:
+```
+Original:  complex.inp (SCF not converged)
+    ↓
+Recovery:  complex.retry1.inp (adds MOREAD + SloppyConv)
+    ↓
+Success:   Converges using last wavefunction!
+```
+
+### Detailed Documentation
+
+See **[docs/RETRY_LOGIC.md](docs/RETRY_LOGIC.md)** for:
+- Complete configuration guide
+- Recovery strategies for each error type
+- Examples and troubleshooting
+- Best practices
+
+### When to Use
+
+✅ **Enable auto_recovery when:**
+- Running difficult systems (high spin, heavy metals, high redox states)
+- Batch processing multiple jobs
+- Using OCCUPIER or --recalc mode (automatically uses latest xyz/gbw)
+- Geometry optimizations (automatically continues from last optimized structure)
+
+✅ **Disable job_timeouts when:**
+- Running very long calculations (>24h)
+- Highly correlated methods (CCSD(T), NEVPT2, etc.)
+- Large systems with slow SCF convergence
+
+❌ **Disable auto_recovery when:**
+- Testing new methods
+- Need strict convergence criteria
+- Publication-quality results requiring manual verification
+
+---
+
 ## Troubleshooting
 
 * **`CONTROL.txt` not found**
