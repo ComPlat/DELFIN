@@ -46,7 +46,7 @@ class DelfinConfig:
     occupier_epsilon: float = 5e-4
 
     # Clean preference parameters (new)
-    clean_override_window_h: float = 0.004
+    clean_override_window_h: float = 0.001
     clean_quality_improvement: float = 0.05
     clean_quality_good: float = 0.05
     clean_bias_window_h: float = 0.004

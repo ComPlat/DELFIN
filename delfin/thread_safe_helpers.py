@@ -225,13 +225,14 @@ def prepare_occ_folder_2_threadsafe(folder_name: str, source_occ_folder: str,
 
 def read_occupier_file_threadsafe(folder_path: Path, file_name: str,
                                  p1, p2, p3, config: Dict[str, Any],
-                                 *, verbose: bool = True):
+                                 *, verbose: bool = True, preferred_index_override=None):
     """Thread-safe version of read_occupier_file without global chdir."""
     if not folder_path.exists():
         logger.error(f"Folder '{folder_path}' not found")
         return None
 
-    return read_occupier_file(folder_path, file_name, p1, p2, p3, config, verbose=verbose)
+    return read_occupier_file(folder_path, file_name, p1, p2, p3, config, verbose=verbose,
+                              preferred_index_override=preferred_index_override)
 
 
 def _print_preferred_settings(folder: Path, multiplicity, additions, min_fspe_index, config: Dict[str, Any]) -> None:

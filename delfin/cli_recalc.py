@@ -1,13 +1,16 @@
 # cli_recalc.py
 # Recalc mode wrapper functions for DELFIN CLI
 
+from pathlib import Path
+from typing import Optional, Set
+
 from delfin.common.logging import get_logger
 from delfin.common.paths import resolve_path, scratch_path
 
 logger = get_logger(__name__)
 
 
-def setup_recalc_mode():
+def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
     """Set up recalc mode wrappers for computational functions.
 
     Returns:
@@ -20,6 +23,8 @@ def setup_recalc_mode():
     OK_MARKER = "ORCA TERMINATED NORMALLY"
 
     def _run_orca_wrapper(inp_file, out_file, *args, **kwargs):
+        force_targets = {resolve_path(p).resolve() for p in (force_outputs or set())}
+
         def _check_completion(path):
             """Check if output file is complete with proper error handling."""
             if not path.exists():
@@ -36,16 +41,29 @@ def setup_recalc_mode():
                 return False
 
         out_path = resolve_path(out_file)
+        out_resolved = out_path.resolve() if out_path.exists() else out_path
+        force_run = out_resolved in force_targets
 
         # First check
-        if _check_completion(out_path):
+        if not force_run and _check_completion(out_path):
             logger.info("[recalc] skipping ORCA; %s appears complete.", out_file)
             return True  # Already complete = success
 
-        logger.info("[recalc] (re)running ORCA for %s", out_file)
+        if force_run:
+            logger.info("[recalc] forcing ORCA rerun for %s (--occupier-override)", out_file)
+            # Remove the existing OUT file to force a complete re-run
+            # This is important because the override may have changed the input geometry/wavefunction
+            if out_path.exists():
+                try:
+                    out_path.unlink()
+                    logger.info("[recalc] removed existing %s to force clean re-run", out_file)
+                except Exception as exc:
+                    logger.warning("[recalc] could not remove %s: %s (will overwrite)", out_file, exc)
+        else:
+            logger.info("[recalc] (re)running ORCA for %s", out_file)
 
         # Second check right before execution (race condition protection)
-        if _check_completion(out_path):
+        if not force_run and _check_completion(out_path):
             logger.info("[recalc] skipping ORCA; %s completed by another process.", out_file)
             return True  # Already complete = success
 

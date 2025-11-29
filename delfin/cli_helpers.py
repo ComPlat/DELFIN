@@ -136,6 +136,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only (re)run external jobs whose .out files are missing or incomplete."
     )
     p.add_argument(
+        "--occupier-override",
+        action="append",
+        default=[],
+        metavar="STAGE=INDEX",
+        help="In --recalc mode, force OCCUPIER Preferred Index for a stage (e.g., red_step_2_OCCUPIER=2). Can be passed multiple times."
+    )
+    p.add_argument(
         "--report",
         action="store_true",
         help="Recompute redox potentials from existing output files without running calculations."

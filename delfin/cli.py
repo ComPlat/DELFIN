@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, time, sys, argparse, shutil, fnmatch
+import os, time, sys, argparse, shutil, fnmatch, re
 from pathlib import Path
 
 from dataclasses import asdict
@@ -34,7 +34,7 @@ from .pipeline import (
     run_occuper_phase,
     run_esd_phase,
 )
-from .copy_helpers import extract_preferred_spin
+from .copy_helpers import extract_preferred_spin, read_occupier_file
 
 logger = get_logger(__name__)
 
@@ -137,6 +137,137 @@ _SAFE_DIR_PATTERNS: tuple[str, ...] = (
     "*_OCCUPIER",
     "*_IMAG",
 )
+
+_PREFERRED_INDEX_RE = re.compile(r"(Preferred Index:\s*)(\d+)", re.IGNORECASE)
+
+
+def _parse_occupier_overrides(raw_tokens: list[str]) -> dict[str, int]:
+    """Parse --occupier-override tokens into a mapping of folder -> preferred index."""
+    overrides: dict[str, int] = {}
+    for raw in raw_tokens:
+        token_str = str(raw or "").strip()
+        if not token_str:
+            continue
+        for entry in token_str.split(","):
+            candidate = entry.strip()
+            if not candidate:
+                continue
+            if "=" not in candidate:
+                raise ValueError(f"Invalid --occupier-override entry '{candidate}' (expected <stage>=<index>).")
+            folder, value = candidate.split("=", 1)
+            folder = folder.strip()
+            if not folder:
+                raise ValueError("Missing OCCUPIER folder name in --occupier-override.")
+            if not folder.endswith("_OCCUPIER"):
+                folder = f"{folder}_OCCUPIER"
+            try:
+                idx = int(value.strip())
+            except ValueError:
+                raise ValueError(f"Invalid preferred index '{value}' for {folder} (must be an integer).") from None
+            if idx <= 0:
+                raise ValueError(f"Preferred index for {folder} must be positive.")
+            overrides[folder] = idx
+    return overrides
+
+
+def _override_output_path(folder_name: str, workspace_root: Path) -> Path:
+    base = folder_name[:-len("_OCCUPIER")] if folder_name.endswith("_OCCUPIER") else folder_name
+    return (workspace_root / f"{base}.out").resolve()
+
+
+def _apply_occupier_overrides(
+    overrides: dict[str, int],
+    workspace_root: Path,
+    config: dict,
+    force_outputs: set[Path],
+) -> bool:
+    """Rewrite OCCUPIER preferred indices and refresh propagated files."""
+    if not overrides:
+        return True
+
+    ok = True
+    override_map = config.setdefault("_occ_preferred_override", {})
+    cache = config.get('_occ_results_runtime')
+    for folder_name, preferred_index in overrides.items():
+        folder_path = workspace_root / folder_name
+        occ_path = folder_path / "OCCUPIER.txt"
+        forced_out_path = _override_output_path(folder_name, workspace_root)
+
+        if not occ_path.exists():
+            logger.error("Cannot apply --occupier-override: missing %s", occ_path)
+            ok = False
+            continue
+
+        try:
+            content = occ_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to read %s: %s", occ_path, exc)
+            ok = False
+            continue
+
+        new_content, count = _PREFERRED_INDEX_RE.subn(rf"\g<1>{preferred_index}", content, count=1)
+        if count == 0:
+            logger.error("Preferred Index line not found in %s; override skipped.", occ_path)
+            ok = False
+        else:
+            try:
+                if new_content != content:
+                    occ_path.write_text(new_content, encoding="utf-8")
+                logger.info("[recalc] Set Preferred Index in %s to %d (--occupier-override)", folder_name, preferred_index)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not rewrite %s (will still force override at runtime): %s", occ_path, exc)
+
+        if isinstance(cache, dict):
+            cache.pop(folder_name, None)
+
+        try:
+            result = read_occupier_file(
+                str(folder_path),
+                "OCCUPIER.txt",
+                None,
+                None,
+                None,
+                config,
+                verbose=False,
+                preferred_index_override=preferred_index,
+                skip_file_copy=True,  # In recalc mode, preserve existing geometries
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to refresh OCCUPIER artifacts for %s: %s", folder_name, exc)
+            force_outputs.discard(forced_out_path)
+            ok = False
+            continue
+
+        if not result or len(result) < 3 or result[2] is None:
+            logger.error(
+                "Override for %s did not yield a valid preferred entry (index %s).",
+                folder_name,
+                preferred_index,
+            )
+            ok = False
+            continue
+
+        force_outputs.add(forced_out_path)
+        try:
+            override_map[folder_name] = int(preferred_index)
+        except Exception:
+            override_map[folder_name] = preferred_index
+
+        # Remove existing INP file to force regeneration with new multiplicity/BrokenSym
+        base_name = folder_name.replace("_OCCUPIER", "") if folder_name.endswith("_OCCUPIER") else folder_name
+        inp_path = workspace_root / f"{base_name}.inp"
+        if inp_path.exists():
+            try:
+                inp_path.unlink()
+                logger.info("[recalc] Removed existing %s to force regeneration with override", inp_path.name)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[recalc] Could not remove %s: %s (will be overwritten)", inp_path.name, exc)
+
+    # Store overrides for post-OCCUPIER reapplication
+    if overrides:
+        config["_occ_overrides_pending_rewrite"] = dict(overrides)
+
+    return ok
 
 _DIR_SIGNATURES: tuple[tuple[str, ...], ...] = (
     ("XTB.inp", "output_XTB.out", "XTB.xyz"),
@@ -402,14 +533,31 @@ def main(argv: list[str] | None = None) -> int:
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
     args, _ = parser.parse_known_args(arg_list)
+
+    try:
+        occupier_overrides = _parse_occupier_overrides(getattr(args, "occupier_override", []) or [])
+    except ValueError as exc:
+        logger.error(str(exc))
+        return 2
+
     RECALC_MODE = bool(getattr(args, "recalc", False))
+    control_file_path = resolve_path(args.control)
+    workspace_root = control_file_path.parent
+    force_rerun_outputs: set[Path] = {
+        _override_output_path(name, workspace_root) for name in occupier_overrides
+    } if RECALC_MODE else set()
+
+    if occupier_overrides and not RECALC_MODE:
+        logger.error("--occupier-override requires --recalc.")
+        return 2
+
     os.environ["DELFIN_RECALC"] = "1" if RECALC_MODE else "0"
 
     if RECALC_MODE:
         # IMPORTANT: override the global bindings so all call sites use the wrappers
         global run_orca, XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
 
-        wrappers, reals = setup_recalc_mode()
+        wrappers, reals = setup_recalc_mode(force_outputs=force_rerun_outputs)
 
         # Swap in wrappers in THIS module
         run_orca = wrappers['run_orca']
@@ -424,17 +572,15 @@ def main(argv: list[str] | None = None) -> int:
 
     # Only define template and exit
     if args.define:
-        create_control_file(filename=str(resolve_path(args.control)),
+        create_control_file(filename=str(control_file_path),
                             input_file=args.define,
                             overwrite=args.overwrite)
         return 0
 
     if getattr(args, "purge", False):
-        control_path = resolve_path(args.control)
-        workspace_root = control_path.parent
-        keep = _safe_keep_set(control_path)
+        keep = _safe_keep_set(control_file_path)
         # Ensure CONTROL itself is preserved even if named differently
-        keep.add(control_path.name)
+        keep.add(control_file_path.name)
 
         if not _confirm_purge(workspace_root):
             print("Purge aborted.")
@@ -456,7 +602,9 @@ def main(argv: list[str] | None = None) -> int:
         print("Cleanup done.")
         return 0
 
-    control_file_path = resolve_path(args.control)
+    if occupier_overrides and (getattr(args, "report", False) or getattr(args, "imag", False)):
+        logger.error("--occupier-override is only supported for normal --recalc runs (not with --report/--imag).")
+        return 2
 
     # Handle --report mode: recompute potentials from existing outputs
     if getattr(args, "report", False):
@@ -520,8 +668,16 @@ def main(argv: list[str] | None = None) -> int:
 
         if not args.no_cleanup:
             cleanup_all(str(get_runtime_dir()))
-        cleanup_orca_scratch_dir()
+            cleanup_orca_scratch_dir()
         return exit_code
+
+    if RECALC_MODE and occupier_overrides:
+        if not _apply_occupier_overrides(occupier_overrides, workspace_root, config, force_rerun_outputs):
+            return _finalize(1)
+
+    # Store force_rerun_outputs in config so parallel_occupier.py can access it
+    if RECALC_MODE and force_rerun_outputs:
+        config["_recalc_force_outputs"] = force_rerun_outputs
 
     # Populate optional flags with safe defaults so reduced CONTROL files remain usable
     try:
@@ -751,6 +907,24 @@ def main(argv: list[str] | None = None) -> int:
             if not run_occuper_phase(pipeline_ctx):
                 return _finalize(1)
             _sync_occupier_spin_metadata(pipeline_ctx, config)
+
+            # Reapply overrides after OCCUPIER completes (in case OCCUPIER rewrote OCCUPIER.txt)
+            pending_rewrites = config.get("_occ_overrides_pending_rewrite")
+            if isinstance(pending_rewrites, dict) and pending_rewrites:
+                logger.info("[recalc] Reapplying %d OCCUPIER override(s) after OCCUPIER phase", len(pending_rewrites))
+                for folder_name, preferred_index in pending_rewrites.items():
+                    folder_path = workspace_root / folder_name
+                    occ_path = folder_path / "OCCUPIER.txt"
+                    if occ_path.exists():
+                        try:
+                            content = occ_path.read_text(encoding="utf-8", errors="ignore")
+                            new_content, count = _PREFERRED_INDEX_RE.subn(rf"\g<1>{preferred_index}", content, count=1)
+                            if count > 0 and new_content != content:
+                                occ_path.write_text(new_content, encoding="utf-8")
+                                logger.info("[recalc] Re-set Preferred Index in %s to %d (post-OCCUPIER)", folder_name, preferred_index)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("[recalc] Could not rewrite %s after OCCUPIER: %s", occ_path, exc)
+                config.pop("_occ_overrides_pending_rewrite", None)
     
         # ------------------- classic --------------------
         if method_token == "classic":

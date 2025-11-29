@@ -85,6 +85,8 @@ python -m delfin
   removes DELFIN-generated artifacts (OCCUPIER folders, ORCA inputs/outputs, logs) after confirmation while keeping CONTROL.txt, the configured input file, and any unrelated files.
 - `delfin --recalc`
   re-parses existing results and only restarts missing or incomplete jobs.
+- `delfin --recalc WORKSPACE --occupier-override STAGE=INDEX`
+  forces a specific OCCUPIER index for a stage during recalc (e.g., `--occupier-override red_step_2=1` uses index 1 for red_step_2_OCCUPIER instead of the automatically selected preferred index). Can be passed multiple times for different stages.
 - `delfin --report`
   re-calculates redox potentials from existing output files without launching new calculations.
 - `delfin --imag`

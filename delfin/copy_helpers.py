@@ -35,7 +35,17 @@ def _count_xyz_coord_lines(lines) -> int:
     return sum(1 for line in lines if _XYZ_COORD_LINE_RE.match(line))
 
 # -------------------------------------------------------------------------------------------------------
-def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe_index, config, verbose: bool = True):
+def read_occupier_file(
+    folder_name,
+    file_name,
+    multiplicity,
+    additions,
+    min_fspe_index,
+    config,
+    verbose: bool = True,
+    preferred_index_override: Optional[int] = None,
+    skip_file_copy: bool = False,
+):
     folder = Path(folder_name)
     if not folder.is_dir():
         if verbose:
@@ -52,15 +62,16 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
         if verbose:
             print("File does not have enough lines.")
         return None, None, None
-    min_fspe_index = None
-    last_but_one_line = lines[-2].strip().replace("(", "").replace(")", "")
-    if "Preferred Index:" in last_but_one_line:
-        try:
-            min_fspe_index = int(last_but_one_line.split(':')[-1].strip())
-        except ValueError:
-            if verbose:
-                print("Error parsing min_fspe_index.")
-            return None, None, None
+    min_fspe_index = preferred_index_override
+    if min_fspe_index is None:
+        last_but_one_line = lines[-2].strip().replace("(", "").replace(")", "")
+        if "Preferred Index:" in last_but_one_line:
+            try:
+                min_fspe_index = int(last_but_one_line.split(':')[-1].strip())
+            except ValueError:
+                if verbose:
+                    print("Error parsing min_fspe_index.")
+                return None, None, None
     parity = None
     last_line = lines[-1].strip().replace("(", "").replace(")", "")
     if "Electron number:" in last_line:
@@ -96,27 +107,33 @@ def read_occupier_file(folder_name, file_name, multiplicity, additions, min_fspe
     source_file = folder / input_filename
     parent_folder = folder.parent
     destination_file = parent_folder / f"input_{folder.name}.xyz"
-    if source_file.is_file():
-        shutil.copy(source_file, destination_file)
-        if verbose:
-            print(f"File {source_file} was successfully copied to {destination_file}.")
-    else:
-        if verbose:
-            print(f"Source file {source_file} not found.")
 
-    # Also copy the corresponding GBW file for wavefunction reuse
-    gbw_filename = "input.gbw" if min_fspe_index == 1 else f"input{min_fspe_index}.gbw"
-    source_gbw = folder / gbw_filename
-    destination_gbw = parent_folder / f"input_{folder.name}.gbw"
-    if source_gbw.is_file():
-        shutil.copy(source_gbw, destination_gbw)
-        if verbose:
-            print(f"File {source_gbw} was successfully copied to {destination_gbw}.")
+    if not skip_file_copy:
+        if source_file.is_file():
+            shutil.copy(source_file, destination_file)
+            if verbose:
+                print(f"File {source_file} was successfully copied to {destination_file}.")
+        else:
+            if verbose:
+                print(f"Source file {source_file} not found.")
+
+        # Also copy the corresponding GBW file for wavefunction reuse
+        gbw_filename = "input.gbw" if min_fspe_index == 1 else f"input{min_fspe_index}.gbw"
+        source_gbw = folder / gbw_filename
+        destination_gbw = parent_folder / f"input_{folder.name}.gbw"
+        if source_gbw.is_file():
+            shutil.copy(source_gbw, destination_gbw)
+            if verbose:
+                print(f"File {source_gbw} was successfully copied to {destination_gbw}.")
+        else:
+            if verbose:
+                print(f"GBW file {source_gbw} not found (will use standard guess).")
     else:
         if verbose:
-            print(f"GBW file {source_gbw} not found (will use standard guess).")
+            print(f"[recalc] Skipping file copy for {folder.name} (preserving existing geometries).")
 
     # Return GBW path as well (for wavefunction reuse in Classic/Manually)
+    destination_gbw = parent_folder / f"input_{folder.name}.gbw"
     gbw_path = destination_gbw if destination_gbw.exists() else None
 
     if verbose:

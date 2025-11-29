@@ -801,6 +801,30 @@ def _create_occupier_fob_jobs(
                     raise RuntimeError(f"OCCUPIER.txt missing after summary generation for {folder_name}")
 
             logger.info("[%s] Best FoB selection completed", folder_name)
+
+            # Apply occupier-override BEFORE updating cache (so geometry propagation uses correct index)
+            override_map = global_config.get("_occ_preferred_override")
+            if isinstance(override_map, dict):
+                override_index = override_map.get(folder_name)
+                if override_index is not None:
+                    report_target = folder_dir / "OCCUPIER.txt"
+                    if report_target.exists():
+                        try:
+                            import re
+                            content = report_target.read_text(encoding="utf-8", errors="ignore")
+                            PREFERRED_INDEX_RE = re.compile(r"(Preferred Index:\s*)(\d+)", re.IGNORECASE)
+                            new_content, count = PREFERRED_INDEX_RE.subn(rf"\g<1>{override_index}", content, count=1)
+                            if count > 0 and new_content != content:
+                                report_target.write_text(new_content, encoding="utf-8")
+                                logger.info(
+                                    "[%s] Applied --occupier-override: Preferred Index set to %d (before cache update)",
+                                    folder_name,
+                                    override_index
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("[%s] Could not apply occupier-override: %s", folder_name, exc)
+
+            # Update cache AFTER override has been applied (geometry propagation will use overridden index)
             _update_runtime_cache(folder_name, folder_dir, global_config, occ_results)
 
         return _select_best

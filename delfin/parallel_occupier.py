@@ -650,7 +650,27 @@ def build_occupier_jobs(
                 f"Required OCCUPIER results for '{folder}' not available (missing OCCUPIER.txt)."
             )
 
-        result = read_occupier_file(folder, "OCCUPIER.txt", None, None, None, config, verbose=False)
+        preferred_override = None
+        override_map = config.get("_occ_preferred_override")
+        if isinstance(override_map, dict):
+            preferred_override = override_map.get(folder)
+            if preferred_override:
+                logger.info(
+                    "[occupier] Applying Preferred Index override for %s: %s",
+                    folder,
+                    preferred_override,
+                )
+
+        result = read_occupier_file(
+            folder,
+            "OCCUPIER.txt",
+            None,
+            None,
+            None,
+            config,
+            verbose=False,
+            preferred_index_override=preferred_override,
+        )
         if not result:
             raise RuntimeError(
                 f"Unable to read OCCUPIER results for '{folder}'."
@@ -733,29 +753,34 @@ def build_occupier_jobs(
                             geom_source,
                         )
 
-                read_xyz_and_create_input3(
-                    str(geom_source),
-                    str(workspace_root / "initial.inp"),
-                    base_charge,
-                    mult_val,
-                    solvent,
-                    metals,
-                    metal_basis,
-                    main_basis,
-                    config,
-                    adds_val,
-                )
-                _update_pal_block(str(workspace_root / "initial.inp"), cores)
+                inp_initial = workspace_root / "initial.inp"
+                out_initial = workspace_root / "initial.out"
 
-                # Add %moinp block to reuse OCCUPIER wavefunction
-                gbw_initial = workspace_root / "input_initial_OCCUPIER.gbw"
-                if not xtb_solvator_enabled and gbw_initial.exists():
-                    _add_moinp_block(str(workspace_root / "initial.inp"), str(gbw_initial))
-                    logger.info("[occupier_initial] Using GBW from OCCUPIER: %s", gbw_initial)
-                elif xtb_solvator_enabled:
-                    logger.debug("[occupier_initial] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled")
+                # In recalc mode, only regenerate .inp if this job is being forced
+                if _should_regenerate_inp(inp_initial, out_initial, config):
+                    read_xyz_and_create_input3(
+                        str(geom_source),
+                        str(inp_initial),
+                        base_charge,
+                        mult_val,
+                        solvent,
+                        metals,
+                        metal_basis,
+                        main_basis,
+                        config,
+                        adds_val,
+                    )
+                    _update_pal_block(str(inp_initial), cores)
 
-                if not run_orca(str(workspace_root / "initial.inp"), str(workspace_root / "initial.out")):
+                    # Add %moinp block to reuse OCCUPIER wavefunction
+                    gbw_initial = workspace_root / "input_initial_OCCUPIER.gbw"
+                    if not xtb_solvator_enabled and gbw_initial.exists():
+                        _add_moinp_block(str(inp_initial), str(gbw_initial))
+                        logger.info("[occupier_initial] Using GBW from OCCUPIER: %s", gbw_initial)
+                    elif xtb_solvator_enabled:
+                        logger.debug("[occupier_initial] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled")
+
+                if not run_orca(str(inp_initial), str(out_initial)):
                     raise RuntimeError("ORCA terminated abnormally for initial.out")
                 run_IMAG(
                     str(workspace_root / "initial.out"),
@@ -1096,31 +1121,34 @@ def build_occupier_jobs(
     
                     # Use absolute path for inp to avoid race conditions with CWD changes
                     inp_abs = root_dir / inp
-                    read_xyz_and_create_input3(
-                        str(geom_path),
-                        str(inp_abs),
-                        charge_value,
-                        dyn_mult,
-                        solvent,
-                        metals,
-                        metal_basis,
-                        main_basis,
-                        config,
-                        dyn_adds,
-                    )
-                    if not inp_abs.exists():
-                        raise RuntimeError(f"Failed to create {inp_abs}")
-                    _update_pal_block(str(inp_abs), cores)
-
-                    # Add %moinp block to reuse OCCUPIER wavefunction
-                    gbw_ox = root_dir / f"input_ox_step_{idx}_OCCUPIER.gbw"
-                    if not xtb_solvator_enabled and gbw_ox.exists():
-                        _add_moinp_block(str(inp_abs), str(gbw_ox))
-                        logger.info("[occupier_ox%d] Using GBW from OCCUPIER: %s", idx, gbw_ox)
-                    elif xtb_solvator_enabled and gbw_ox.exists():
-                        logger.debug("[occupier_ox%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
-
                     out_abs = root_dir / out
+
+                    # In recalc mode, only regenerate .inp if this job is being forced
+                    if _should_regenerate_inp(inp_abs, out_abs, config):
+                        read_xyz_and_create_input3(
+                            str(geom_path),
+                            str(inp_abs),
+                            charge_value,
+                            dyn_mult,
+                            solvent,
+                            metals,
+                            metal_basis,
+                            main_basis,
+                            config,
+                            dyn_adds,
+                        )
+                        if not inp_abs.exists():
+                            raise RuntimeError(f"Failed to create {inp_abs}")
+                        _update_pal_block(str(inp_abs), cores)
+
+                        # Add %moinp block to reuse OCCUPIER wavefunction
+                        gbw_ox = root_dir / f"input_ox_step_{idx}_OCCUPIER.gbw"
+                        if not xtb_solvator_enabled and gbw_ox.exists():
+                            _add_moinp_block(str(inp_abs), str(gbw_ox))
+                            logger.info("[occupier_ox%d] Using GBW from OCCUPIER: %s", idx, gbw_ox)
+                        elif xtb_solvator_enabled and gbw_ox.exists():
+                            logger.debug("[occupier_ox%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
+
                     if not run_orca(str(inp_abs), str(out_abs)):
                         raise RuntimeError(f"ORCA terminated abnormally for {out_abs}")
                     run_IMAG(
@@ -1255,31 +1283,34 @@ def build_occupier_jobs(
     
                     # Use absolute path for inp to avoid race conditions with CWD changes
                     inp_abs = root_dir / inp
-                    read_xyz_and_create_input3(
-                        str(geom_path),
-                        str(inp_abs),
-                        charge_value,
-                        dyn_mult,
-                        solvent,
-                        metals,
-                        metal_basis,
-                        main_basis,
-                        config,
-                        dyn_adds,
-                    )
-                    if not inp_abs.exists():
-                        raise RuntimeError(f"Failed to create {inp_abs}")
-                    _update_pal_block(str(inp_abs), cores)
-
-                    # Add %moinp block to reuse OCCUPIER wavefunction
-                    gbw_red = root_dir / f"input_red_step_{idx}_OCCUPIER.gbw"
-                    if not xtb_solvator_enabled and gbw_red.exists():
-                        _add_moinp_block(str(inp_abs), str(gbw_red))
-                        logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
-                    elif xtb_solvator_enabled and gbw_red.exists():
-                        logger.debug("[occupier_red%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
-
                     out_abs = root_dir / out
+
+                    # In recalc mode, only regenerate .inp if this job is being forced
+                    if _should_regenerate_inp(inp_abs, out_abs, config):
+                        read_xyz_and_create_input3(
+                            str(geom_path),
+                            str(inp_abs),
+                            charge_value,
+                            dyn_mult,
+                            solvent,
+                            metals,
+                            metal_basis,
+                            main_basis,
+                            config,
+                            dyn_adds,
+                        )
+                        if not inp_abs.exists():
+                            raise RuntimeError(f"Failed to create {inp_abs}")
+                        _update_pal_block(str(inp_abs), cores)
+
+                        # Add %moinp block to reuse OCCUPIER wavefunction
+                        gbw_red = root_dir / f"input_red_step_{idx}_OCCUPIER.gbw"
+                        if not xtb_solvator_enabled and gbw_red.exists():
+                            _add_moinp_block(str(inp_abs), str(gbw_red))
+                            logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
+                        elif xtb_solvator_enabled and gbw_red.exists():
+                            logger.debug("[occupier_red%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
+
                     if not run_orca(str(inp_abs), str(out_abs)):
                         raise RuntimeError(f"ORCA terminated abnormally for {out_abs}")
                     run_IMAG(
@@ -2501,6 +2532,42 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
     return combined_jobs
 def _recalc_enabled() -> bool:
     return str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+
+
+def _should_regenerate_inp(inp_path: Path, out_path: Path, config: Dict[str, Any]) -> bool:
+    """Check if .inp file should be regenerated in recalc mode.
+
+    Returns:
+        True if .inp should be regenerated, False if existing .inp should be preserved.
+    """
+    if not _recalc_enabled():
+        return True  # Always regenerate in normal mode
+
+    # In recalc mode, only regenerate if this specific job is being forced
+    if not inp_path.exists():
+        return True  # Must create it
+
+    # Check if this output is in the force list
+    force_outputs = config.get("_recalc_force_outputs", set())
+    if not force_outputs:
+        # No force list - preserve existing .inp files
+        logger.debug("[recalc] No force list; preserving existing %s", inp_path.name)
+        return False
+
+    # Check if this specific output is forced
+    out_resolved = out_path.resolve() if out_path.exists() else out_path
+    is_forced = any(
+        out_resolved == (p.resolve() if hasattr(p, 'resolve') else Path(p).resolve())
+        for p in force_outputs
+    )
+
+    if is_forced:
+        logger.info("[recalc] Regenerating %s (output %s is forced)", inp_path.name, out_path.name)
+        return True
+
+    # Not forced - preserve existing .inp
+    logger.debug("[recalc] Preserving existing %s (not forced)", inp_path.name)
+    return False
 
 
 def _restore_occ_geometry(stage: str, idx: int) -> Optional[Path]:
