@@ -54,6 +54,7 @@ class WorkflowJob:
     memory_mb: Optional[int] = None
     estimated_duration: float = 3600.0
     inline: bool = False  # Run inline without reserving pool cores
+    preserve_cores_optimal: bool = False  # Skip auto-tuning for explicit core allocations
 
     # Cache original core preferences so dynamic scheduling can adjust per run.
     base_cores_min: int = field(init=False, repr=False)
@@ -125,6 +126,10 @@ class _WorkflowManager:
         self._event = threading.Event()
         self._completion_listeners: List[Callable[[str], None]] = []
         self._parent_manager: Optional['_WorkflowManager'] = None
+
+        # Batch logging: accumulate jobs for consolidated output
+        self._pending_job_registrations: List[str] = []
+        self._last_registration_log_time: float = 0.0
 
         # Register this manager globally for nested workflow coordination
         # If there's already a manager registered, this is a nested workflow
@@ -246,7 +251,11 @@ class _WorkflowManager:
                 self._jobs.pop(job.job_id, None)
                 raise ValueError(f"Cannot add job {job.job_id}: {e}") from e
 
-            logger.info(
+            # Accumulate job registration for batch logging
+            self._pending_job_registrations.append(job.job_id)
+
+            # Detailed per-job logging only in DEBUG mode
+            logger.debug(
                 "[%s] Registered job %s (%s); deps=%s",
                 self.label,
                 job.job_id,
@@ -254,8 +263,45 @@ class _WorkflowManager:
                 ",".join(sorted(job.dependencies)) or "none",
             )
 
+            # Flush if we haven't logged in a while (500ms threshold)
+            # This ensures quick feedback while still batching rapid additions
+            time_since_last_log = time.time() - self._last_registration_log_time
+            if time_since_last_log > 0.5:
+                self._flush_pending_registrations()
+
             # Wake up scheduler to process new job
             self._event.set()
+
+    def _flush_pending_registrations(self) -> None:
+        """Log accumulated job registrations in a consolidated message."""
+        if not self._pending_job_registrations:
+            return
+
+        job_count = len(self._pending_job_registrations)
+        if job_count == 1:
+            # Single job - log with details
+            job_id = self._pending_job_registrations[0]
+            job = self._jobs[job_id]
+            logger.info(
+                "[%s] Registered 1 job: %s (%s)",
+                self.label,
+                job_id,
+                job.description,
+            )
+        else:
+            # Multiple jobs - show compact summary
+            job_names = ", ".join(self._pending_job_registrations[:5])
+            if job_count > 5:
+                job_names += f", ... (+{job_count - 5} more)"
+            logger.info(
+                "[%s] Registered %d jobs: %s",
+                self.label,
+                job_count,
+                job_names,
+            )
+
+        self._pending_job_registrations.clear()
+        self._last_registration_log_time = time.time()
 
     def register_completion_listener(self, listener: Callable[[str], None]) -> None:
         with self._lock:
@@ -449,6 +495,9 @@ class _WorkflowManager:
         return False
 
     def run(self) -> None:
+        # Flush any pending job registrations before starting
+        self._flush_pending_registrations()
+
         if not self._jobs:
             logger.info("[%s] No jobs to schedule", self.label)
             return
@@ -649,15 +698,38 @@ class _WorkflowManager:
 
         self.pool.wait_for_completion()
 
+        # Summary logging
+        total_jobs = len(self._jobs)
+        completed_count = len(self._completed)
+        failed_count = len(self._failed)
+        skipped_count = len(self._skipped)
+
+        if failed_count == 0 and skipped_count == 0:
+            logger.info(
+                "[%s] ✓ Workflow completed successfully: %d/%d jobs",
+                self.label,
+                completed_count,
+                total_jobs,
+            )
+        else:
+            logger.info(
+                "[%s] Workflow finished: %d completed, %d failed, %d skipped (total: %d)",
+                self.label,
+                completed_count,
+                failed_count,
+                skipped_count,
+                total_jobs,
+            )
+
         if self._failed:
             logger.warning(
-                "[%s] Workflow encountered failures: %s",
+                "[%s] Failed jobs: %s",
                 self.label,
                 ", ".join(f"{job_id} ({msg})" for job_id, msg in self._failed.items()),
             )
         if self._skipped:
             logger.warning(
-                "[%s] Workflow skipped jobs due to unmet dependencies: %s",
+                "[%s] Skipped jobs: %s",
                 self.label,
                 ", ".join(
                     f"{job_id} (missing {', '.join(deps) if deps else 'unknown'})"
@@ -722,14 +794,24 @@ class _WorkflowManager:
                     usage_suffix = ""
                 else:
                     usage_suffix = f"; {used_int}/{total_int} cores used"
-            logger.info(
-                "[%s] Starting %s with %d cores (%s%s)",
-                self.label,
-                job.job_id,
-                cores,
-                job.description,
-                usage_suffix,
-            )
+
+            # Only log start for non-inline jobs or in DEBUG mode
+            if not job.inline:
+                logger.info(
+                    "[%s] Starting %s with %d cores (%s%s)",
+                    self.label,
+                    job.job_id,
+                    cores,
+                    job.description,
+                    usage_suffix,
+                )
+            else:
+                logger.debug(
+                    "[%s] Starting %s (inline, zero-cost)",
+                    self.label,
+                    job.job_id,
+                )
+
             try:
                 job.work(cores)
             except Exception as exc:  # noqa: BLE001
@@ -738,7 +820,14 @@ class _WorkflowManager:
             else:
                 duration = time.time() - start_time
                 self._record_duration(job, duration)
-                logger.info("[%s] Job %s completed", self.label, job.job_id)
+
+                # Only log completion for jobs that took significant time (>5s) or failed/inline
+                # This reduces noise from quick recalc jobs
+                if duration > 5.0 or job.inline:
+                    logger.debug("[%s] Job %s completed (%.1fs)", self.label, job.job_id, duration)
+                else:
+                    logger.debug("[%s] Job %s completed", self.label, job.job_id)
+
                 self._mark_completed(job.job_id)
 
         pool_job = PoolJob(
@@ -826,6 +915,18 @@ class _WorkflowManager:
     def _auto_tune_job(self, job: WorkflowJob) -> None:
         if job.inline:
             return
+
+        # Skip auto-tuning for jobs with explicit core allocations (e.g., weighted FoB jobs)
+        # This must come BEFORE parallel check to preserve asymmetric allocations
+        if job.preserve_cores_optimal:
+            logger.debug(
+                "[%s] Preserving FoB weight-based allocation: %s=%d cores",
+                self.label,
+                job.job_id,
+                job.cores_optimal,
+            )
+            return
+
         if not self._parallel_enabled:
             job.cores_min = job.cores_max = job.cores_optimal = self.total_cores
             job.memory_mb = job.cores_optimal * self.maxcore_mb
@@ -953,35 +1054,51 @@ class _WorkflowManager:
             available = max(ready_count, self._base_share() * ready_count)
             available = min(total, available)
 
-        # Derive relative weights from past runtimes (longer jobs → höhere Priorität)
-        weights: Dict[str, float] = {}
-        weight_sum = 0.0
-        for job in ready_jobs:
-            duration = self._get_duration_hint(job)
-            weight = max(1.0, math.sqrt(duration / 300.0)) if duration else 1.0
-            weights[job.job_id] = weight
-            weight_sum += weight
-
-        per_job = max(1, available // ready_count)
-        remainder = max(0, available - per_job * ready_count)
+        # For jobs with preserve_cores_optimal (e.g., weighted FoB jobs),
+        # use their explicit cores_optimal instead of runtime-based weights
+        allocations: Dict[str, int] = {}
         allocation_pool = available
 
-        allocations: Dict[str, int] = {}
-        for idx, job in enumerate(ready_jobs):
-            base = per_job
-            if remainder > 0:
-                base += 1
-                remainder -= 1
+        # First pass: assign preserved allocations
+        preserved_jobs = [job for job in ready_jobs if job.preserve_cores_optimal]
+        dynamic_jobs = [job for job in ready_jobs if not job.preserve_cores_optimal]
 
-            share = base
-            if weight_sum > 0:
-                proportional = int(round(available * (weights[job.job_id] / weight_sum)))
-                share = max(base, proportional)
-
-            # Respect job's core limits: min <= share <= max
-            share = max(job.cores_min, min(share, job.cores_max, total))
+        for job in preserved_jobs:
+            # Use the explicit core allocation from FoB weights
+            share = max(job.cores_min, min(job.cores_optimal, job.cores_max, total, available))
             allocations[job.job_id] = share
             allocation_pool -= share
+
+        if allocation_pool < 0:
+            allocation_pool = 0
+
+        # Second pass: distribute remaining cores to dynamic jobs using runtime weights
+        if dynamic_jobs:
+            weights: Dict[str, float] = {}
+            weight_sum = 0.0
+            for job in dynamic_jobs:
+                duration = self._get_duration_hint(job)
+                weight = max(1.0, math.sqrt(duration / 300.0)) if duration else 1.0
+                weights[job.job_id] = weight
+                weight_sum += weight
+
+            per_job = max(1, allocation_pool // len(dynamic_jobs)) if allocation_pool > 0 else 1
+            remainder = max(0, allocation_pool - per_job * len(dynamic_jobs))
+
+            for idx, job in enumerate(dynamic_jobs):
+                base = per_job
+                if remainder > 0:
+                    base += 1
+                    remainder -= 1
+
+                share = base
+                if weight_sum > 0 and allocation_pool > 0:
+                    proportional = int(round(allocation_pool * (weights[job.job_id] / weight_sum)))
+                    share = max(base, proportional)
+
+                # Respect job's core limits: min <= share <= max
+                share = max(job.cores_min, min(share, job.cores_max, total))
+                allocations[job.job_id] = share
 
         # Distribute remaining cores to jobs that can use more (up to their max)
         if allocation_pool > 0 and allocations:
@@ -1037,6 +1154,39 @@ class _WorkflowManager:
             target = max(job.cores_min, min(target, job.cores_max, self.total_cores))
             targets[job.job_id] = target
 
+        # First, try to fit all jobs with their target allocations (preserves asymmetric weights)
+        total_target_cores = sum(targets[job.job_id] for job in jobs_sorted)
+
+        if total_target_cores <= available:
+            # We have enough cores to give everyone their target allocation
+            # This preserves the asymmetric FoB weight-based allocation
+            allocations = {job.job_id: targets[job.job_id] for job in jobs_sorted}
+
+            # Cap jobs with preserve_cores_optimal to enforce asymmetric allocation
+            # Otherwise dynamic pool might expand them
+            caps = {
+                job.job_id: job.preserve_cores_optimal
+                for job in jobs_sorted
+            }
+
+            logger.info(
+                "[%s] ✓ Using asymmetric allocations: %s (total: %d/%d cores)",
+                self.label,
+                allocations,
+                total_target_cores,
+                available,
+            )
+
+            return allocations, caps
+
+        # Not enough cores for all targets - distribute evenly (simpler management)
+        logger.debug(
+            "[%s] Insufficient cores for targets (%d < %d), using even distribution",
+            self.label,
+            available,
+            total_target_cores,
+        )
+
         selected: List[WorkflowJob] = []
         remaining = available
         for job in jobs_sorted:
@@ -1047,30 +1197,19 @@ class _WorkflowManager:
         if not selected:
             return {}, {}
 
-        allocations: Dict[str, int] = {
-            job.job_id: job.cores_min for job in selected
-        }
-        remaining = available - sum(allocations.values())
+        # Distribute available cores evenly across selected jobs
+        per_job = max(1, available // len(selected))
+        remainder = available - (per_job * len(selected))
 
-        # Fill towards targets while respecting remaining capacity
-        while remaining > 0:
-            gaps = [
-                (job, targets[job.job_id] - allocations[job.job_id])
-                for job in selected
-                if targets[job.job_id] > allocations[job.job_id]
-            ]
-            if not gaps:
-                break
+        allocations: Dict[str, int] = {}
+        for idx, job in enumerate(selected):
+            share = per_job
+            if idx < remainder:
+                share += 1  # Distribute remainder to first N jobs
 
-            gaps.sort(key=lambda item: (-item[1], self._job_order_key(item[0])))
-            for job, gap in gaps:
-                if remaining <= 0:
-                    break
-                step = min(gap, max(1, remaining // max(1, len(gaps))))
-                if step <= 0:
-                    continue
-                allocations[job.job_id] += step
-                remaining -= step
+            # Respect job's core limits
+            share = max(job.cores_min, min(share, job.cores_max, self.total_cores))
+            allocations[job.job_id] = share
 
         # Cap when we had to pack tightly (either we deferred jobs or could not reach targets)
         could_not_reach_targets = any(

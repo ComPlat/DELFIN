@@ -369,13 +369,17 @@ def _create_occupier_fob_jobs(
 
     # Asymmetric core allocation for FoB pairs based on multiplicity
     # Higher multiplicities typically take longer, so allocate more cores
+    # Configurable via fob_weight_factor in CONTROL.txt
+    # Default: weight = 1.0 + (m - 1) * 0.3
+    # Examples: m=1 → 1.0, m=2 → 1.3, m=3 → 1.6, m=5 → 2.2
+    fob_weight_factor = float(global_config.get("fob_weight_factor", 0.3))
+
     multiplicity_weights = {}
     total_weight = 0
     for entry in sequence:
         mult = entry["m"]
         # Weight scales with multiplicity (higher m = more cores)
-        # m=1: weight 1, m=2: weight 1.2, m=3: weight 1.5, m=4: weight 2.0
-        weight = 1.0 + (mult - 1) * 0.3
+        weight = 1.0 + (mult - 1) * fob_weight_factor
         multiplicity_weights[int(entry["index"])] = weight
         total_weight += weight
 
@@ -684,6 +688,7 @@ def _create_occupier_fob_jobs(
             cores_min=cores_min,
             cores_optimal=job_cores_optimal,
             cores_max=cores_max,
+            preserve_cores_optimal=True,  # Preserve weighted allocation
         )
         jobs.append(job)
 
