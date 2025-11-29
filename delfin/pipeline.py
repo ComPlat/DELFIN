@@ -801,6 +801,17 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
         input_path = resolve_path(entry_path)
     else:
         input_path = resolve_path(control_path.parent / entry_path)
+
+    # Check if input contains SMILES
+    from .smiles_converter import is_smiles_string, smiles_to_xyz
+
+    is_smiles = False
+    try:
+        content = input_path.read_text(encoding='utf-8', errors='ignore')
+        is_smiles = is_smiles_string(content)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not check for SMILES in '%s': %s", input_path, exc)
+
     if input_path.suffix.lower() == '.xyz':
         target = input_path.with_suffix('.txt')
         from .define import convert_xyz_to_input_txt
@@ -811,13 +822,50 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
         result_path = input_path
 
     start_path = result_path.parent / 'start.txt'
-    try:
-        if result_path.resolve() != start_path.resolve():
-            shutil.copyfile(result_path, start_path)
-        elif not start_path.exists():
-            shutil.copyfile(result_path, start_path)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Could not create geometry backup '%s': %s", start_path, exc)
+
+    # Handle SMILES conversion: write XYZ directly to start.txt, keep input.txt unchanged
+    if is_smiles:
+        smiles_line = None
+        for line in content.split('\n'):
+            line = line.strip()
+            if line and not line.startswith('#') and not line.startswith('*'):
+                smiles_line = line
+                break
+
+        if smiles_line:
+            logger.info("Detected SMILES in %s: %s", input_path.name, smiles_line)
+            xyz_content, error = smiles_to_xyz(smiles_line)
+
+            if error:
+                logger.error("SMILES conversion failed: %s", error)
+                raise ValueError(f"SMILES conversion failed: {error}")
+
+            # Write converted XYZ to start.txt
+            try:
+                start_path.write_text(xyz_content, encoding='utf-8')
+                logger.info("Converted SMILES to XYZ coordinates in %s (input.txt unchanged)", start_path.name)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Could not write converted coordinates to '%s': %s", start_path, exc)
+                raise ValueError(f"Could not write converted coordinates: {exc}") from exc
+        else:
+            logger.warning("SMILES format detected but no valid SMILES string found")
+            # Fallback to normal copy
+            try:
+                if result_path.resolve() != start_path.resolve():
+                    shutil.copyfile(result_path, start_path)
+                elif not start_path.exists():
+                    shutil.copyfile(result_path, start_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not create geometry backup '%s': %s", start_path, exc)
+    else:
+        # Normal case: copy input.txt to start.txt
+        try:
+            if result_path.resolve() != start_path.resolve():
+                shutil.copyfile(result_path, start_path)
+            elif not start_path.exists():
+                shutil.copyfile(result_path, start_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not create geometry backup '%s': %s", start_path, exc)
 
     work_path = start_path if start_path.exists() else result_path
 
