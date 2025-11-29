@@ -102,6 +102,7 @@ class GlobalJobManager:
             self._atexit_registered = True
 
         self._install_signal_handler()
+        self._install_sigterm_handler()
         logger.info("Global job manager singleton created")
 
     def initialize(self, config: Dict[str, Any]) -> None:
@@ -341,15 +342,38 @@ class GlobalJobManager:
         if self._signal_handler_installed:
             return
         if threading.current_thread() is not threading.main_thread():
-            logger.debug("Skipping SIGINT handler installation (not main thread)")
+            logger.warning("Skipping SIGINT handler installation (not main thread) - Ctrl+C may not work properly!")
             return
         try:
             self._previous_sigint_handler = signal.getsignal(signal.SIGINT)
             signal.signal(signal.SIGINT, self._handle_sigint)
             self._signal_handler_installed = True
-            logger.debug("Registered GlobalJobManager SIGINT handler")
+            logger.info("✓ Registered SIGINT handler - Ctrl+C will terminate ORCA processes")
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to install SIGINT handler: %s", exc)
+            logger.error("Failed to install SIGINT handler: %s - Ctrl+C may not work!", exc)
+
+    def _install_sigterm_handler(self) -> None:
+        """Install SIGTERM handler for tmux/screen compatibility.
+
+        When DELFIN runs in tmux/screen, Ctrl+C often sends SIGTERM instead of SIGINT.
+        This handler ensures ORCA processes are killed in that case too.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            return
+        try:
+            signal.signal(signal.SIGTERM, self._handle_sigterm)
+            logger.info("✓ Registered SIGTERM handler - tmux/screen Ctrl+C will terminate ORCA processes")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to install SIGTERM handler: %s", exc)
+
+    def _handle_sigterm(self, signum, frame) -> None:  # noqa: ANN001
+        """Handle SIGTERM (sent by tmux/screen on Ctrl+C)."""
+        logger.warning("SIGTERM received - terminating all ORCA processes...")
+        self._shutdown_requested.set()
+        self._perform_interrupt_shutdown(signum)
+        # Exit cleanly after cleanup
+        import sys
+        sys.exit(143)  # 128 + 15 (SIGTERM)
 
     def _handle_sigint(self, signum, frame) -> None:  # noqa: ANN001
         if self._shutdown_requested.is_set():
@@ -377,13 +401,61 @@ class GlobalJobManager:
 
     def _perform_interrupt_shutdown(self, signum: int) -> None:
         reason = f"signal {signum}"
+        logger.warning("Interrupt signal received - killing all ORCA processes immediately")
+
+        # CRITICAL: Terminate ORCA processes FIRST before pool shutdown
+        # This ensures MPI workers are killed even if worker threads are blocked
         self._terminate_all_processes(reason=reason)
+
+        # Give processes a moment to die, then check for stragglers
+        time.sleep(0.5)
+
+        # Kill any remaining ORCA processes that might have been spawned
+        self._kill_straggler_orca_processes()
+
         if self.pool is not None:
             try:
                 # On interrupt: don't wait for jobs, cancel pending
                 self.pool.shutdown(wait=False, cancel_pending=True)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Error while shutting down core pool after SIGINT: %s", exc)
+
+    def _kill_straggler_orca_processes(self) -> None:
+        """Kill any ORCA processes that were not tracked but are still running."""
+        try:
+            import psutil
+            current_user = os.getenv('USER', '')
+            killed_count = 0
+
+            for proc in psutil.process_iter(['pid', 'name', 'username', 'cmdline']):
+                try:
+                    if proc.info['username'] != current_user:
+                        continue
+
+                    name = proc.info['name'] or ''
+                    cmdline = proc.info['cmdline'] or []
+                    cmdline_str = ' '.join(cmdline)
+
+                    # Check if this is an ORCA process
+                    if 'orca' in name.lower() or any('orca' in arg.lower() for arg in cmdline):
+                        # Check if it's our process (has DELFIN workspace path)
+                        if any('ComPlat' in arg or 'DELFIN' in arg for arg in cmdline):
+                            try:
+                                proc.kill()
+                                killed_count += 1
+                                logger.debug("Killed straggler ORCA process: PID %s", proc.info['pid'])
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                pass
+                except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
+                    continue
+
+            if killed_count > 0:
+                logger.warning("Killed %d straggler ORCA process(es)", killed_count)
+
+        except ImportError:
+            logger.debug("psutil not available - cannot kill straggler ORCA processes")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Error while killing straggler ORCA processes: %s", exc)
 
     def register_subprocess(self, process: Any, *, label: str = "", cwd: Optional[str] = None) -> Optional[str]:
         """Register a subprocess for signal-triggered cleanup."""
@@ -448,42 +520,44 @@ class GlobalJobManager:
 
         pgid = record.pgid
         label = record.label or f"pid {record.pid}"
-        try:
-            if pgid is not None and hasattr(os, "killpg"):
-                os.killpg(pgid, signal.SIGTERM)
-                logger.info("Sent SIGTERM to process group %s (%s)", pgid, label)
-            else:
-                process.terminate()
-                logger.info("Sent terminate signal to %s", label)
-        except ProcessLookupError:
-            logger.debug("Process %s already exited before termination", label)
-            self.unregister_subprocess(record.token)
-            return
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to send SIGTERM to %s: %s", label, exc)
 
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            if pgid is not None and hasattr(os, "killpg"):
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                    logger.warning("Sent SIGKILL to process group %s (%s)", pgid, label)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Failed to SIGKILL %s: %s", label, exc)
-            else:
+        # On interrupt: be aggressive - use SIGKILL immediately for process groups
+        # ORCA MPI processes often don't respond to SIGTERM in a timely manner
+        if pgid is not None and hasattr(os, "killpg"):
+            try:
+                # Send SIGKILL directly to entire process group (including all MPI workers)
+                os.killpg(pgid, signal.SIGKILL)
+                logger.warning("Sent SIGKILL to process group %s (%s)", pgid, label)
+            except ProcessLookupError:
+                logger.debug("Process group %s already exited", pgid)
+                self.unregister_subprocess(record.token)
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to SIGKILL process group %s: %s", pgid, exc)
+                # Fallback: try to kill the main process
                 try:
                     process.kill()
-                    logger.warning("Force-killed %s", label)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Failed to force-kill %s: %s", label, exc)
-
+                except Exception:  # noqa: BLE001
+                    pass
+        else:
+            # No process group support - kill main process only
             try:
-                process.wait(timeout=2)
-            except Exception:  # noqa: BLE001
-                logger.debug("Process %s did not exit after SIGKILL", label, exc_info=True)
+                process.kill()
+                logger.warning("Sent SIGKILL to %s", label)
+            except ProcessLookupError:
+                logger.debug("Process %s already exited", label)
+                self.unregister_subprocess(record.token)
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to kill %s: %s", label, exc)
+
+        # Wait briefly for process to exit
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            logger.debug("Process %s did not exit after SIGKILL (zombie?)", label)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Error while waiting for %s termination: %s", label, exc)
+            logger.debug("Error while waiting for %s termination: %s", label, exc)
 
         self.unregister_subprocess(record.token)
 
