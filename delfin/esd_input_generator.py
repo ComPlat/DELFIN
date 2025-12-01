@@ -726,7 +726,6 @@ def create_isc_input(
     maxcore = config.get('maxcore', 6000)
     blocks.append(f"%pal nprocs {pal} end")
     blocks.append(f"%maxcore {maxcore}")
-    blocks.extend(collect_output_blocks(config, allow=True))
 
     # Geometry - read coordinates (XYZ format with header)
     xyz_path = esd_dir / xyz_file
@@ -851,7 +850,6 @@ def create_ic_input(
     maxcore = config.get('maxcore', 6000)
     blocks.append(f"%pal nprocs {pal} end")
     blocks.append(f"%maxcore {maxcore}")
-    blocks.extend(collect_output_blocks(config, allow=True))
 
     # Geometry - read coordinates (XYZ format with header)
     xyz_path = esd_dir / xyz_file
