@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, time, sys, argparse, shutil, fnmatch, re
+import os, time, sys, argparse, shutil, fnmatch, re, signal
 from pathlib import Path
 
 from dataclasses import asdict
@@ -378,6 +378,195 @@ def _run_cleanup_subcommand(argv: list[str]) -> int:
     return 0
 
 
+def _iter_delfin_procs(workspace: Path) -> list[dict]:
+    """Return DELFIN processes whose cwd matches workspace."""
+    procs: list[dict] = []
+    try:
+        ws = workspace.resolve()
+    except Exception:
+        ws = workspace
+
+    proc_root = Path("/proc")
+    for pid_dir in proc_root.iterdir():
+        if not pid_dir.name.isdigit():
+            continue
+        try:
+            pid = int(pid_dir.name)
+        except ValueError:
+            continue
+        try:
+            cwd = Path(os.readlink(pid_dir / "cwd")).resolve()
+        except Exception:
+            continue
+        if cwd != ws:
+            continue
+
+        try:
+            raw_cmd = (pid_dir / "cmdline").read_bytes()
+            if not raw_cmd:
+                continue
+            tokens = [tok for tok in raw_cmd.split(b"\0") if tok]
+            text_tokens = [tok.decode(errors="ignore") for tok in tokens]
+        except Exception:
+            continue
+
+        joined = " ".join(text_tokens).lower()
+        if "delfin" not in joined:
+            continue
+
+        try:
+            pgid = os.getpgid(pid)
+        except Exception:
+            pgid = None
+
+        procs.append({
+            "pid": pid,
+            "pgid": pgid,
+            "cmd": " ".join(text_tokens),
+            "cwd": str(cwd),
+        })
+    return procs
+
+
+def _run_stop_subcommand(argv: list[str]) -> int:
+    """Handle `delfin stop` invocations."""
+    parser = argparse.ArgumentParser(
+        prog="delfin stop",
+        description="Send a signal to running DELFIN processes in a workspace (graceful stop).",
+    )
+    parser.add_argument(
+        "--workspace",
+        default=".",
+        help="Workspace directory (default: current directory).",
+    )
+    parser.add_argument(
+        "--signal",
+        default="INT",
+        choices=["INT", "TERM", "KILL"],
+        help="Signal to send (default: INT).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show matching processes without signaling.",
+    )
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="After signaling, run DELFIN cleanup in the workspace (remove scratch/OCCUPIER artifacts).",
+    )
+    parser.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=3.0,
+        help="Seconds to wait for processes to exit before cleanup when --cleanup is set (default: 3).",
+    )
+    args = parser.parse_args(argv)
+
+    workspace = resolve_path(args.workspace)
+    self_pid = os.getpid()
+    try:
+        self_pgid = os.getpgid(self_pid)
+    except Exception:
+        self_pgid = None
+    procs = _iter_delfin_procs(workspace)
+    if not procs:
+        print(f"No DELFIN process found in {workspace}")
+        return 1
+
+    sig_map = {
+        "INT": signal.SIGINT,
+        "TERM": signal.SIGTERM,
+        "KILL": signal.SIGKILL,
+    }
+    sig = sig_map[args.signal]
+
+    signaled: list[tuple[int, Optional[int], str]] = []
+    for proc in procs:
+        pid = proc["pid"]
+        pgid = proc["pgid"]
+        # Avoid signaling the stop command itself
+        if pid == self_pid or (self_pgid is not None and pgid == self_pgid):
+            continue
+        label = f"pid={pid}, pgid={pgid}, cmd={proc['cmd']}"
+        print(f"Found DELFIN: {label}")
+        if args.dry_run:
+            continue
+        try:
+            if pgid is not None and hasattr(os, "killpg"):
+                os.killpg(pgid, sig)
+                print(f"  Sent {args.signal} to process group {pgid}")
+            else:
+                os.kill(pid, sig)
+                print(f"  Sent {args.signal} to pid {pid}")
+            signaled.append((pid, pgid, label))
+        except ProcessLookupError:
+            print("  Process already exited")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  Failed to send signal: {exc}")
+
+    # Optional escalation if processes ignore SIGINT/TERM
+    def _still_alive(items: list[tuple[int, Optional[int], str]]) -> list[tuple[int, Optional[int], str]]:
+        return [(pid, pgid, lbl) for pid, pgid, lbl in items if Path(f"/proc/{pid}").exists()]
+
+    def _send(sig_to_send: int, entries: list[tuple[int, Optional[int], str]], label: str) -> None:
+        for pid, pgid, lbl in entries:
+            try:
+                if pgid is not None and hasattr(os, "killpg"):
+                    os.killpg(pgid, sig_to_send)
+                    print(f"  {label}: sent {signal.strsignal(sig_to_send)} to pgid {pgid} ({lbl})")
+                else:
+                    os.kill(pid, sig_to_send)
+                    print(f"  {label}: sent {signal.strsignal(sig_to_send)} to pid {pid} ({lbl})")
+            except ProcessLookupError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                print(f"  {label}: failed to signal {lbl}: {exc}")
+
+    if not args.dry_run and signaled:
+        if args.wait_seconds > 0:
+            deadline = time.time() + args.wait_seconds
+            while time.time() < deadline:
+                remaining = _still_alive(signaled)
+                if not remaining:
+                    break
+                time.sleep(0.2)
+        remaining = _still_alive(signaled)
+        if remaining and args.signal == "INT":
+            _send(signal.SIGTERM, remaining, "escalate")
+            time.sleep(1.0)
+            remaining = _still_alive(remaining)
+        if remaining:
+            _send(signal.SIGKILL, remaining, "force-kill")
+
+    if args.cleanup and not args.dry_run:
+        scratch = get_runtime_dir() if args.workspace == "." else workspace
+        try:
+            report = cleanup_orca(workspace, scratch_root=scratch, dry_run=False)
+            print(f"Workspace: {report['workspace']}")
+            print(f"Scratch:   {report['scratch_root']}")
+            print(f"ORCA processes detected: {report['processes_found']}")
+            for entry in report["terminated_groups"]:
+                print(f"  pgid {entry['pgid']}: {entry['status']} (pids={entry['pids']})")
+            if report["occuper_dirs_removed"]:
+                print("Removed OCCUPIER folders:")
+                for path in report["occuper_dirs_removed"]:
+                    print(f"  {path}")
+            if report["scratch_dirs_removed"]:
+                print("Removed ORCA scratch directories:")
+                for path in report["scratch_dirs_removed"]:
+                    print(f"  {path}")
+            print(f"Deleted {report['files_removed']} temporary file(s).")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Cleanup after stop failed: {exc}")
+        try:
+            removed = cleanup_all(str(scratch), dry_run=False)
+            print(f"Removed {removed} temporary file(s) under {scratch}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Cleanup_all failed: {exc}")
+    return 0
+
+
 def _normalize_input_file(config, control_path: Path) -> str:
     return normalize_input_file(config, control_path)
 
@@ -530,6 +719,8 @@ def main(argv: list[str] | None = None) -> int:
     arg_list = list(argv if argv is not None else sys.argv[1:])
     if arg_list and arg_list[0] == "cleanup":
         return _run_cleanup_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "stop":
+        return _run_stop_subcommand(arg_list[1:])
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
     args, _ = parser.parse_known_args(arg_list)
@@ -656,6 +847,20 @@ def main(argv: list[str] | None = None) -> int:
     # Initialize global job manager with configuration
     global_mgr = get_global_manager()
     global_mgr.initialize(config)
+    # Double-check signal handlers are active so Ctrl+C triggers cleanup
+    global_mgr.ensure_signal_handlers()
+    try:
+        current_sigint = signal.getsignal(signal.SIGINT)
+        if current_sigint != global_mgr._handle_sigint:
+            logger.warning(
+                "SIGINT handler mismatch (%s) - reinstalling DELFIN handler",
+                current_sigint,
+            )
+            global_mgr._install_signal_handler()
+            current_sigint = signal.getsignal(signal.SIGINT)
+        logger.info("Active SIGINT handler: %s", current_sigint)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not verify SIGINT handler: %s", exc, exc_info=True)
     logger.info("Global job manager initialized")
 
     def _finalize(exit_code: int) -> int:

@@ -258,11 +258,11 @@ def _create_state_input_delta_scf(
         scf_block.append("end")
         blocks.append("\n".join(scf_block))
 
-    # Geometry - read from input.txt or xyz file
+    # Geometry - read from start.txt or xyz file
     if xyz_file == "initial.xyz":
-        # For S0: read from input.txt in main directory
-        xyz_path = Path("input.txt")
-        skip_lines = 0  # input.txt has no header
+        # For S0: read from start.txt in main directory (contains converted XYZ coords)
+        xyz_path = Path("start.txt")
+        skip_lines = 0  # start.txt has no header
     else:
         # For S1, T1, T2: read from ESD directory (XYZ format with header)
         xyz_path = esd_dir / xyz_file
@@ -376,7 +376,7 @@ def _create_state_input_tddft(
 
     # Coordinate source
     if state_upper == "S0":
-        xyz_path = Path("input.txt")
+        xyz_path = Path("start.txt")
         skip_lines = 0
     elif state_upper == "S1":
         xyz_path = esd_dir / "S0.xyz"

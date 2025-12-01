@@ -10,7 +10,13 @@ def normalize_bang(bang: str) -> str:
 
 
 def collect_output_blocks(config: Dict[str, Any], *, allow: bool = False) -> List[str]:
-    """Build optional %output blocks based on configuration flags."""
+    """Build optional %output blocks based on configuration flags.
+
+    Args:
+        config: Configuration dictionary
+        allow: If True, include %output blocks based on config flags (default: False).
+               Typically enabled only for initial.inp and redox step files.
+    """
     if not allow:
         return []
     blocks: List[str] = []

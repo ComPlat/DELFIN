@@ -16,6 +16,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """Build and configure the DELFIN command line argument parser."""
     description = (
         "DELFIN – DFT-based automated prediction of preferred spin states and associated redox potentials pipeline\n\n"
+        "Subcommands: `cleanup` (use `delfin cleanup --help` for options like --orca).\n\n"
         "Prerequisites:\n"
         "  • ORCA 6.1.0 installed and available in PATH (academic license required)\n"
         "  • Recommended for some workflows: XTB and CREST available in PATH\n"

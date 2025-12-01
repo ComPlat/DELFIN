@@ -228,6 +228,12 @@ def _run_orca_subprocess(
     manager = None
     registration_token: Optional[str] = None
 
+    # Get manager early so we can check shutdown status
+    try:
+        manager = get_global_manager()
+    except Exception:
+        logger.debug("Failed to get global manager", exc_info=True)
+
     try:
         with open(output_log, "w") as output_file:
             # Use Popen with process group to ensure all child processes can be killed
@@ -241,19 +247,20 @@ def _run_orca_subprocess(
                 cwd=str(working_dir) if working_dir is not None else None,
             )
 
-            try:
-                manager = get_global_manager()
+            # Register subprocess for signal-based cleanup
+            if manager:
                 try:
-                    cwd_hint = Path(input_file_path).resolve().parent
+                    try:
+                        cwd_hint = Path(input_file_path).resolve().parent
+                    except Exception:
+                        cwd_hint = Path.cwd()
+                    registration_token = manager.register_subprocess(
+                        process,
+                        label=input_file_path,
+                        cwd=str(cwd_hint),
+                    )
                 except Exception:
-                    cwd_hint = Path.cwd()
-                registration_token = manager.register_subprocess(
-                    process,
-                    label=input_file_path,
-                    cwd=str(cwd_hint),
-                )
-            except Exception:
-                logger.debug("Failed to register ORCA subprocess for tracking", exc_info=True)
+                    logger.debug("Failed to register ORCA subprocess for tracking", exc_info=True)
 
             # Start progress monitoring thread
             input_name = Path(input_file_path).stem
@@ -264,8 +271,34 @@ def _run_orca_subprocess(
             )
             monitor_thread.start()
 
-            # Wait for completion
-            return_code = process.wait(timeout=timeout)
+            # Wait for completion (check for shutdown request periodically)
+            # This allows Ctrl+C to interrupt even when waiting for ORCA
+            shutdown_check_interval = 0.5  # Check every 500ms
+            remaining_timeout = timeout if timeout else float('inf')
+            start_time = time.time()
+
+            while True:
+                try:
+                    # Check if shutdown was requested (e.g., Ctrl+C)
+                    if manager and manager._shutdown_requested.is_set():
+                        logger.info("Shutdown requested - terminating ORCA process")
+                        _kill_process_group(process)
+                        raise KeyboardInterrupt("Shutdown requested")
+
+                    # Wait for process with short timeout
+                    wait_timeout = min(shutdown_check_interval, remaining_timeout) if timeout else shutdown_check_interval
+                    return_code = process.wait(timeout=wait_timeout)
+                    break  # Process finished
+                except subprocess.TimeoutExpired:
+                    # Process still running, check if we should keep waiting
+                    if timeout:
+                        elapsed = time.time() - start_time
+                        remaining_timeout = timeout - elapsed
+                        if remaining_timeout <= 0:
+                            # Overall timeout expired
+                            raise
+                    # Otherwise, loop and check again
+                    continue
 
             # Stop progress monitor
             stop_event.set()
@@ -287,7 +320,6 @@ def _run_orca_subprocess(
             # BUGFIX: Ensure all MPI child processes are terminated
             # ORCA sometimes leaves MPI workers running even after main process exits
             # Give them a short grace period, then force cleanup
-            import time
             time.sleep(0.5)  # Brief grace period for clean MPI shutdown
             try:
                 _ensure_process_group_terminated(process, grace_timeout=2.0)

@@ -30,6 +30,61 @@ logger = get_logger(__name__)
 _input_generation_lock = threading.Lock()
 
 
+def _convert_start_to_xyz(start_txt: Path, output_xyz: Path) -> None:
+    """Convert start.txt (DELFIN format) to XYZ format with header.
+
+    DELFIN format (start.txt): element x y z (no header)
+    XYZ format: atom_count, comment line, then element x y z
+
+    Args:
+        start_txt: Path to start.txt file
+        output_xyz: Path to output XYZ file
+    """
+    # Read start.txt
+    with open(start_txt, 'r', encoding='utf-8') as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    # Count atoms
+    atom_count = len(lines)
+
+    # Write XYZ format
+    with open(output_xyz, 'w', encoding='utf-8') as f:
+        f.write(f"{atom_count}\n")
+        f.write("Converted from start.txt\n")
+        for line in lines:
+            f.write(f"{line}\n")
+
+
+def _run_xtb_goat_if_needed(config: Dict[str, Any], charge: int) -> None:
+    """Run xTB optimization and/or GOAT if enabled in config.
+
+    This is called before ESD calculations to ensure we use optimized geometries.
+    Updates start.txt in-place with optimized coordinates.
+
+    Args:
+        config: DELFIN configuration dictionary
+        charge: Molecular charge
+    """
+    from delfin.xtb_crest import XTB, XTB_GOAT
+
+    # Determine multiplicity (for ESD, typically singlet S0)
+    multiplicity = 1  # Default for ground state S0
+
+    if config.get('XTB_OPT') == 'yes':
+        logger.info("Running xTB optimization before ESD calculations")
+        try:
+            XTB(multiplicity, charge, config)
+        except Exception as exc:
+            logger.warning(f"xTB optimization failed: {exc}")
+
+    if config.get('XTB_GOAT') == 'yes':
+        logger.info("Running GOAT optimization before ESD calculations")
+        try:
+            XTB_GOAT(multiplicity, charge, config)
+        except Exception as exc:
+            logger.warning(f"GOAT optimization failed: {exc}")
+
+
 def parse_esd_config(config: Dict[str, Any]) -> tuple[bool, List[str], List[str], List[str]]:
     """Parse ESD module configuration from control file.
 
@@ -92,6 +147,16 @@ def setup_esd_directory(esd_dir: Path, states: List[str]) -> None:
                     logger.info(f"Copied {src} → {dst}")
                 except Exception as exc:
                     logger.warning(f"Failed to copy {src} to {dst}: {exc}")
+
+        # Convert start.txt to S0.xyz (XYZ format with header)
+        start_txt = Path("start.txt")
+        s0_xyz = esd_dir / "S0.xyz"
+        if start_txt.exists() and not s0_xyz.exists():
+            try:
+                _convert_start_to_xyz(start_txt, s0_xyz)
+                logger.info(f"Converted {start_txt} → {s0_xyz}")
+            except Exception as exc:
+                logger.warning(f"Failed to convert {start_txt} to {s0_xyz}: {exc}")
 
 
 def _populate_state_jobs(
@@ -500,6 +565,9 @@ def run_esd_phase(
         return WorkflowRunResult()
 
     logger.info("Starting ESD module calculations")
+
+    # Run xTB/GOAT optimization if enabled (before ESD calculations)
+    _run_xtb_goat_if_needed(config, charge)
 
     # Setup ESD directory (use absolute path to avoid chdir issues in parallel jobs)
     esd_dir = Path("ESD").resolve()

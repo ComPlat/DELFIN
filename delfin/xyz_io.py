@@ -858,7 +858,7 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
         qmmm_method=qmmm_token,
     )
 
-    output_blocks = collect_output_blocks(config)
+    output_blocks = collect_output_blocks(config, allow=True)
     builder = OrcaInputBuilder(bang)
     builder.add_resources(config['maxcore'], config['PAL'], resolve_maxiter(config))
     builder.add_additions(additions)

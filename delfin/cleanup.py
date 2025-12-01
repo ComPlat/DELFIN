@@ -27,13 +27,18 @@ class ProcessInfo(NamedTuple):
     cwd: Path
 
 
-ORCA_PROCESS_KEYWORDS: Sequence[str] = (
+_ORCA_BIN_NAMES: set[str] = {
     "orca",
+    "orca.exe",
     "orca_main",
+    "orca_scfgrad",
+    "orca_scfgrad_mpi",
+    "orca_leanscf",
+    "orca_leanscf_mpi",
+    "orca_plot",
     "mpirun",
     "orterun",
-    "orca_leanscf",
-)
+}
 
 OCCUPIER_DIR_PATTERNS: Sequence[str] = (
     "initial_OCCUPIER",
@@ -123,11 +128,9 @@ def _collect_orca_processes(target_roots: Iterable[Path]) -> list[ProcessInfo]:
         cmd_fragment = parts[2]
         args_fragment = parts[3] if len(parts) > 3 else ""
         cmdline = f"{cmd_fragment} {args_fragment}".strip()
-        cmd_lower = cmdline.lower()
 
-        if "orca_plot" in cmd_lower:
-            continue
-        if not any(keyword in cmd_lower for keyword in ORCA_PROCESS_KEYWORDS):
+        # Avoid self-termination and avoid matching flag names like "--orca"
+        if not _looks_like_orca_process(cmd_fragment, args_fragment):
             continue
 
         cwd = _read_process_cwd(pid)
@@ -282,3 +285,20 @@ def cleanup_orca(workspace: str | Path = ".",
         "workspace": str(workspace_path),
         "scratch_root": str(scratch_path),
     }
+def _looks_like_orca_process(cmd_fragment: str, args_fragment: str) -> bool:
+    """Return True only for actual ORCA/MPI workers, not for CLI flags like '--orca'."""
+    tokens = []
+    if cmd_fragment:
+        tokens.append(cmd_fragment.lower())
+    if args_fragment:
+        tokens.extend(part.lower() for part in args_fragment.split())
+
+    for tok in tokens:
+        # Skip pure option tokens (avoids matching '--orca')
+        if tok.startswith("-"):
+            continue
+
+        base = tok.rsplit("/", 1)[-1]
+        if base in _ORCA_BIN_NAMES:
+            return True
+    return False

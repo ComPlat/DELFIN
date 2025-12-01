@@ -84,8 +84,17 @@ def is_smiles_string(content: str) -> bool:
     # Check for numbered ring closures (like 1 in c1ccccc1)
     has_ring_numbers = bool(re.search(r'\d', first_line))
 
-    # SMILES if: (has special chars OR aromatic OR ring numbers) AND has organic elements
-    return (has_smiles_chars or has_aromatic or has_ring_numbers) and has_organic
+    # Simple SMILES without aromatic/lone symbols (e.g., "CC") – single token, no spaces/numbers
+    simple_token = (
+        len(lines) == 1
+        and ' ' not in first_line
+        and not any(ch.isdigit() for ch in first_line)
+        and first_line.isalnum()
+        and all(ch.isalpha() for ch in first_line)
+    )
+
+    # SMILES if: (special chars OR aromatic OR ring numbers OR simple token) AND has organic elements
+    return (has_smiles_chars or has_aromatic or has_ring_numbers or simple_token) and has_organic
 
 
 def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
