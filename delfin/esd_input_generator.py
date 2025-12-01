@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from delfin.common.logging import get_logger
-from delfin.common.orca_blocks import resolve_maxiter
+from delfin.common.orca_blocks import resolve_maxiter, collect_output_blocks
 
 logger = get_logger(__name__)
 
@@ -228,6 +228,9 @@ def _create_state_input_delta_scf(
     # Optional TDDFT iteration limit for follow-up TDDFT checks
     tddft_maxiter = _resolve_tddft_maxiter(config)
 
+    # Optional output blocks (e.g., print_MOs)
+    blocks.extend(collect_output_blocks(config, allow=True))
+
     # SCF settings for deltaSCF
     if use_deltascf:
         domom = str(config.get('deltaSCF_DOMOM', 'true')).lower()  # Changed default to true
@@ -369,6 +372,7 @@ def _create_state_input_tddft(
     esd_maxdim = config.get("ESD_maxdim", None)
     maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
     tddft_maxiter = _resolve_tddft_maxiter(config)
+    output_blocks = collect_output_blocks(config, allow=True)
 
     def _join_keywords(parts: List[str]) -> str:
         """Join keyword fragments while skipping empty entries."""
@@ -429,6 +433,10 @@ def _create_state_input_tddft(
             fh.write("  followiroot true\n")
         fh.write("end\n")
 
+    def _write_output_blocks(fh) -> None:
+        for block in output_blocks:
+            fh.write(block if block.endswith("\n") else block + "\n")
+
     with open(input_file, "w", encoding="utf-8") as f:
         if state_upper == "S0":
             keywords = [
@@ -447,6 +455,7 @@ def _create_state_input_tddft(
             f.write('%base "S0"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
             f.write(f"\n* xyz {charge} 1\n")
             for line in coord_lines:
                 f.write(line)
@@ -457,6 +466,7 @@ def _create_state_input_tddft(
             f.write('%base "S0_TDDFT"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
             _write_tddft_block(f, triplets=True)
             f.write("\n")
             f.write(f"* xyzfile {charge} 1 S0.xyz\n")
@@ -482,6 +492,7 @@ def _create_state_input_tddft(
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
             f.write("\n")
             _write_tddft_block(f, iroot=1, irootmult="singlet")
             f.write(f"\n* xyz {charge} 1\n")
@@ -510,6 +521,7 @@ def _create_state_input_tddft(
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
             _write_tddft_block(f, iroot=1, irootmult="triplet")
             f.write(f"\n* xyz {charge} 1\n")
             for line in coord_lines:
@@ -537,6 +549,7 @@ def _create_state_input_tddft(
             f.write('%moinp "T1.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
             _write_tddft_block(f, iroot=2, irootmult="triplet")
             f.write(f"\n* xyz {charge} 1\n")
             for line in coord_lines:
@@ -564,6 +577,7 @@ def _create_state_input_tddft(
             f.write('%moinp "S1.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
             _write_tddft_block(f, iroot=2, irootmult="singlet")
             f.write(f"\n* xyz {charge} 1\n")
             for line in coord_lines:
@@ -591,6 +605,7 @@ def _create_state_input_tddft(
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
             _write_tddft_block(f, iroot=3, irootmult="triplet")
             f.write(f"\n* xyz {charge} 1\n")
             for line in coord_lines:
@@ -711,6 +726,7 @@ def create_isc_input(
     maxcore = config.get('maxcore', 6000)
     blocks.append(f"%pal nprocs {pal} end")
     blocks.append(f"%maxcore {maxcore}")
+    blocks.extend(collect_output_blocks(config, allow=True))
 
     # Geometry - read coordinates (XYZ format with header)
     xyz_path = esd_dir / xyz_file
@@ -835,6 +851,7 @@ def create_ic_input(
     maxcore = config.get('maxcore', 6000)
     blocks.append(f"%pal nprocs {pal} end")
     blocks.append(f"%maxcore {maxcore}")
+    blocks.extend(collect_output_blocks(config, allow=True))
 
     # Geometry - read coordinates (XYZ format with header)
     xyz_path = esd_dir / xyz_file
