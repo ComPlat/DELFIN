@@ -88,6 +88,7 @@ metal_basisset_rel=SARC-ZORA-TZVP
 first_coordination_sphere_metal_basisset=no
 first_coordination_sphere_scale=1.3
 geom_opt=OPT
+freq_type=FREQ
 initial_guess=PModel
 temperature=298.15
 maxiter=125
@@ -197,6 +198,7 @@ Available IMPLICIT SOLVATION MODELS: CPCM ; CPCMC ; SMD
 Available dispersion corrections DISP_CORR: D4 ; D3 ; D3BJ ; D3ZERO ; NONE
 Available EXCITATIONS: s (singulet) ; t (triplet) (s is more difficult to converge, there may be no convergence).
 Available qmmm_option: QM/XTB ; QM/PBEH-3C ; QM/HF-3C ; QM/r2SCAN-3C (for QM/MM calculations)
+Available freq_type: FREQ (analytic, default) ; NUMFREQ (numerical, required for WB97X-V and other DFT-NL functionals)
 E_00 can only be calculated for closed shell systems (use classic or manually!)
 EXPLICIT SOLVATION MODEL IS VERY EXPENSIVE!!!!!
 IMAG_option:

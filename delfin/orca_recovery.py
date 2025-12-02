@@ -161,8 +161,22 @@ class OrcaErrorDetector:
         Returns:
             OrcaErrorType if an error is detected, None if calculation succeeded
         """
-        if not output_file.exists():
-            logger.warning(f"Output file does not exist: {output_file}")
+        import time
+
+        # Wait for output file with retry logic (race condition fix)
+        max_wait_attempts = 10
+        wait_interval = 0.5  # seconds
+
+        for attempt in range(max_wait_attempts):
+            if output_file.exists():
+                # File exists, give it a moment to be fully written
+                time.sleep(0.2)
+                break
+            if attempt < max_wait_attempts - 1:
+                time.sleep(wait_interval)
+        else:
+            # File still doesn't exist after all retries
+            logger.warning(f"Output file does not exist after {max_wait_attempts * wait_interval}s: {output_file}")
             return None
 
         try:

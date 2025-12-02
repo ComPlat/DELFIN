@@ -156,6 +156,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("initial_guess", _as_str, default="PModel"),
     FieldSpec("relativity", _as_str, default="none"),
     FieldSpec("geom_opt", _as_str, default="OPT"),
+    FieldSpec("freq_type", _as_str, default="FREQ"),
     FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
     FieldSpec("IMAG_option", _as_imag_option, default=2),

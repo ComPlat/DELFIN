@@ -442,7 +442,7 @@ def _build_bang_line(config, rel_token, main_basis, aux_jk, implicit,
                      include_freq=False, geom_key="geom_opt", qmmm_method: Optional[str] = None):
     """
     Construct the ORCA '!' line according to new CONTROL keys.
-    include_freq=True adds the 'FREQ' keyword.
+    include_freq=True adds the frequency keyword (FREQ or NUMFREQ based on freq_type).
     geom_key selects which geometry token to use (e.g., 'geom_opt' or 'geom_opt_OCCUPIER').
     """
     ri_jkx = str(config.get("ri_jkx", "")).strip()
@@ -468,7 +468,10 @@ def _build_bang_line(config, rel_token, main_basis, aux_jk, implicit,
     if geom:
         tokens.append(geom)
     if include_freq:
-        tokens.append("FREQ")
+        freq_type = str(config.get("freq_type", "FREQ")).strip().upper()
+        if freq_type not in ["FREQ", "NUMFREQ"]:
+            freq_type = "FREQ"
+        tokens.append(freq_type)
     tokens.append(initg)
 
     # normalize spacing
@@ -630,12 +633,15 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
         qmmm_method=qmmm_token,
     )
 
-    # Fallback guard: ensure 'FREQ' really present (in case _build_bang_line ignores the flag)
-    if "FREQ" not in bang.upper():
+    # Fallback guard: ensure freq keyword really present (in case _build_bang_line ignores the flag)
+    freq_type = str(config.get("freq_type", "FREQ")).strip().upper()
+    if freq_type not in ["FREQ", "NUMFREQ"]:
+        freq_type = "FREQ"
+    if freq_type not in bang.upper():
         if bang.endswith("\n"):
-            bang = bang.rstrip("\n") + " FREQ\n"
+            bang = bang.rstrip("\n") + f" {freq_type}\n"
         else:
-            bang = bang + " FREQ"
+            bang = bang + f" {freq_type}"
 
     output_blocks = collect_output_blocks(config, allow=True)
     builder = OrcaInputBuilder(bang)
