@@ -428,6 +428,83 @@ def _iter_delfin_procs(workspace: Path) -> list[dict]:
     return procs
 
 
+def _run_co2_subcommand(argv: list[str]) -> int:
+    """Handle `delfin co2` invocations."""
+    parser = argparse.ArgumentParser(
+        prog="delfin co2",
+        description="CO2 Coordinator - Align complex, place CO2, and run orientation/distance scans.",
+    )
+    parser.add_argument(
+        "--define",
+        action="store_true",
+        help="Generate CONTROL.txt and co2.xyz templates and exit.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing files when using --define.",
+    )
+    parser.add_argument(
+        "--charge",
+        type=int,
+        help="Charge for the system (replaces [CHARGE] in template).",
+    )
+    parser.add_argument(
+        "--multiplicity",
+        type=int,
+        help="Multiplicity for the system (replaces [MULTIPLICITY] in template).",
+    )
+    parser.add_argument(
+        "--solvent",
+        type=str,
+        help="Solvent for the system (replaces [SOLVENT] in template), e.g., DMF.",
+    )
+    parser.add_argument(
+        "--metal",
+        type=str,
+        help="Metal symbol (replaces [METAL] in template), e.g., Fe.",
+    )
+    parser.add_argument(
+        "--additions",
+        type=str,
+        help="Additional ORCA keywords (e.g., '%%SCF BrokenSym 5,5 END' for broken symmetry).",
+    )
+    args = parser.parse_args(argv)
+
+    # Import CO2_Coordinator6 main function
+    try:
+        from delfin.co2.CO2_Coordinator6 import main as co2_main, write_default_files
+    except ImportError as exc:
+        print(f"Error: Could not import CO2 Coordinator module: {exc}")
+        return 1
+
+    # Handle --define mode
+    if args.define:
+        try:
+            write_default_files(
+                charge=args.charge,
+                multiplicity=args.multiplicity,
+                solvent=args.solvent,
+                metal=args.metal,
+                additions=args.additions,
+                overwrite=args.force,
+            )
+            return 0
+        except Exception as exc:
+            print(f"Error during CO2 template generation: {exc}")
+            return 1
+
+    # Normal run mode - execute CO2 coordinator workflow
+    try:
+        co2_main()
+        return 0
+    except Exception as exc:
+        print(f"Error during CO2 Coordinator execution: {exc}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
 def _run_stop_subcommand(argv: list[str]) -> int:
     """Handle `delfin stop` invocations."""
     parser = argparse.ArgumentParser(
@@ -721,6 +798,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_cleanup_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "stop":
         return _run_stop_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "co2":
+        return _run_co2_subcommand(arg_list[1:])
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
     args, _ = parser.parse_known_args(arg_list)

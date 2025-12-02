@@ -13,7 +13,11 @@ license = "LGPL-3.0-or-later"
 urls = { "Homepage" = "https://github.com/ComPlat/DELFIN", "Repository" = "https://github.com/ComPlat/DELFIN" }
 dependencies = [
     "mendeleev>=0.14",
-    "psutil"
+    "psutil",
+    "ase>=3.22.0",
+    "numpy>=1.19.5",
+    "scipy>=1.6.0",
+    "matplotlib>=3.3.4"
 ]
 
 [project.optional-dependencies]
