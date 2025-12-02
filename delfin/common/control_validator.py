@@ -86,8 +86,12 @@ def _as_occupier_method(value: Any) -> str:
 
 
 def _as_occupier_tree(value: Any) -> str:
-    """Coerce user value into a known tree token (flat, deep2, deep3, deep)."""
-    text = str(value or "deep").strip().lower()
+    """Coerce user value into a known tree token (flat, deep2, deep3, deep, own)."""
+    # If empty/None, use default "deep"
+    if not value or str(value).strip() == "":
+        return "deep"
+
+    text = str(value).strip().lower()
     if text in {"deep", "tree"}:
         return "deep"
     if text in {"flat", "flatt", "legacy"}:
@@ -103,8 +107,8 @@ def _as_occupier_tree(value: Any) -> str:
     # Legacy aliases for backwards compatibility - map to "deep"
     if text in {"deep5", "dee5", "deep6", "dee6"}:
         return "deep"
-    # Default to "deep" for invalid values
-    return "deep"
+    # Default to "own" for invalid/unrecognized values (including multi-value syntax like "deep|flat|own")
+    return "own"
 
 
 def _as_ap_method(value: Any) -> int | None:
