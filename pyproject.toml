@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "delfin-complat"
-version = "1.0.7"
+version = "1.0.8"
 description = "Automated ORCA, xTB and CREST workflow for predicting preferred spin states and associated redox potentials."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
