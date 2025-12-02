@@ -415,7 +415,7 @@ class GlobalJobManager:
         if self._stdin_monitor_started:
             return
         if os.environ.get("DELFIN_DISABLE_STDIN_MONITOR"):
-            logger.info("DELFIN_DISABLE_STDIN_MONITOR set – skipping stdin interrupt monitor")
+            logger.debug("DELFIN_DISABLE_STDIN_MONITOR set – skipping stdin interrupt monitor")
             return
         try:
             import sys
@@ -552,7 +552,7 @@ class GlobalJobManager:
                     time.sleep(2.0)
 
         if os.environ.get("DELFIN_DISABLE_SIGINT_WATCHDOG"):
-            logger.info("DELFIN_DISABLE_SIGINT_WATCHDOG set – skipping SIGINT handler watchdog")
+            logger.debug("DELFIN_DISABLE_SIGINT_WATCHDOG set – skipping SIGINT handler watchdog")
             return
 
         t = threading.Thread(target=_watch, daemon=True)

@@ -858,7 +858,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             global_mgr._install_signal_handler()
             current_sigint = signal.getsignal(signal.SIGINT)
-        logger.info("Active SIGINT handler: %s", current_sigint)
+        logger.debug("Active SIGINT handler: %s", current_sigint)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not verify SIGINT handler: %s", exc, exc_info=True)
     logger.info("Global job manager initialized")

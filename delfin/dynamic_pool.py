@@ -119,6 +119,9 @@ class DynamicCorePool:
         # Track warnings for stuck jobs: job_id -> {warned_near_shutdown}
         self._stuck_job_warnings: Dict[str, Dict[str, bool]] = {}
 
+        # Track accounting mismatch warnings to avoid spam: job_id -> last_warning_time
+        self._accounting_warnings: Dict[str, float] = {}
+
         # Track termination attempts: job_id -> {soft_kill_time, warned_before_hard_kill}
         self._termination_state: Dict[str, Dict] = {}
 
@@ -266,10 +269,17 @@ class DynamicCorePool:
 
                 # ROBUSTNESS: Validate parent has enough lent cores
                 if parent_job.lent_cores < cores_to_return:
-                    logger.error(
-                        f"Accounting error: Child {child_job.job_id} trying to return {cores_to_return} cores, "
-                        f"but parent {parent_job_id} only has {parent_job.lent_cores} lent. "
-                        f"Correcting to prevent negative lent_cores."
+                    # This can happen transiently if validation thread corrected parent but child not yet synced
+                    if parent_job.lent_cores == 0:
+                        # Parent already corrected to 0 - child should skip return (no-op)
+                        logger.debug(
+                            f"Child {child_job.job_id} skipping core return: parent {parent_job_id} already corrected to 0 lent"
+                        )
+                        child_job.borrowed_cores = 0
+                        return
+                    logger.warning(
+                        f"Accounting mismatch: Child {child_job.job_id} returning {cores_to_return} cores, "
+                        f"but parent {parent_job_id} only has {parent_job.lent_cores} lent. Auto-correcting."
                     )
                     cores_to_return = parent_job.lent_cores
 
@@ -345,10 +355,15 @@ class DynamicCorePool:
                         for child in [self._running_jobs[child_id]]
                     )
                     if actual_borrowed != job.lent_cores:
-                        logger.warning(
-                            f"Parent-child accounting mismatch: {job_id} shows {job.lent_cores} lent, "
-                            f"but children have {actual_borrowed} borrowed. Auto-correcting."
-                        )
+                        # Only log warning once every 10 seconds to avoid spam
+                        now = time.time()
+                        last_warned = self._accounting_warnings.get(job_id, 0)
+                        if now - last_warned > 10.0:
+                            logger.warning(
+                                f"Parent-child accounting mismatch: {job_id} shows {job.lent_cores} lent, "
+                                f"but children have {actual_borrowed} borrowed. Auto-correcting."
+                            )
+                            self._accounting_warnings[job_id] = now
                         # ROBUSTNESS: Auto-correct stale lending counters to avoid repeated noise and
                         # overly conservative scheduling when children already returned cores.
                         job.lent_cores = actual_borrowed
@@ -546,6 +561,7 @@ class DynamicCorePool:
             # Cleanup warning and termination trackers for this job
             self._stuck_job_warnings.pop(job_id, None)
             self._termination_state.pop(job_id, None)
+            self._accounting_warnings.pop(job_id, None)
 
             # Handle orphaned children if parent is completing
             if job.child_jobs:
