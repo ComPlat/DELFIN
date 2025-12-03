@@ -325,11 +325,11 @@ sp_timeout_hours=3
 
 | Error | Automatic Fix |
 |-------|--------------|
-| **SCF not converged** | SlowConv → VerySlowConv + KDIIS → Direct SCF |
-| **TRAH segfault** | NoAutoTRAH + relaxed convergence |
-| **DIIS errors** | Switch to KDIIS or Direct SCF |
-| **Geometry not converged** | Smaller trust radius → Recalc Hessian → Loose criteria |
-| **MPI crashes** | Reduce cores, disable vader transport |
+| **SCF not converged** | SlowConv → VerySlowConv + KDIIS|
+| **TRAH segfault** | NoAutoTRAH |
+| **DIIS errors** | Switch to KDIIS |
+| **Geometry not converged** | Smaller trust radius → Loose criteria |
+| **MPI crashes** | Reduce cores |
 | **Memory errors** | Reduce maxcore and PAL |
 | **Frequency failures** | Alternative methods or skip |
 | **Transient system errors** | Exponential backoff retry (disk full, network timeout, I/O errors) |
@@ -337,7 +337,7 @@ sp_timeout_hours=3
 ### How It Works
 
 ```
-ORCA fails → Detect error type → Modify input with fixes → Continue from last .gbw → Retry
+ORCA fails → Detect error type → Modify input with fixes → Continue from last .gbw and xyz → Retry
 ```
 
 **Example Recovery**:
@@ -346,7 +346,7 @@ Original:  complex.inp (SCF not converged)
     ↓
 Recovery:  complex.retry1.inp (adds MOREAD + SlowConv)
     ↓
-Success:   Converges using last wavefunction!
+Success:   Converges using last wavefunction and xyz!
 ```
 
 ### Detailed Documentation
