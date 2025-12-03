@@ -106,8 +106,62 @@ class ControlAssistantV2:
 
         # Step 2: Solvent
         print("\n━━━ Step 2: Solvent ━━━")
-        solvent_data = self._ask_step("solvent", STEP_SCHEMAS["solvent"],
-                                       "What solvation model and solvent do you want to use?")
+
+        # Ask for solvation model
+        print("Select solvation model:")
+        print("  1) CPCM - Conductor-like Polarizable Continuum Model (general-purpose, reliable)")
+        print("  2) SMD - Solvation Model based on Density (more accurate, slower)")
+        print("  3) ALPB - Analytical Linearized Poisson-Boltzmann (fast, compatible with xTB)")
+        print()
+
+        solvation_choice = self._ask_user_direct_choice(
+            prompt="Select solvation model [1-3]: ",
+            choices={
+                "1": "CPCM",
+                "2": "SMD",
+                "3": "ALPB",
+            },
+            explanations={
+                "1": "CPCM: Best general-purpose choice, well-tested, reliable",
+                "2": "SMD: Higher accuracy for polar solvents, but computationally more expensive",
+                "3": "ALPB: Fast, works well with xTB pre-optimization",
+            }
+        )
+
+        # Ask for solvent
+        print("\nSelect solvent:")
+        print("Common solvents:")
+        print("  1) Water         2) MeCN (Acetonitrile)    3) DMF")
+        print("  4) DMSO          5) Acetone                6) THF")
+        print("  7) DCM           8) Chloroform             9) Toluene")
+        print(" 10) Methanol     11) Ethanol               12) other")
+        print()
+
+        solvent_map = {
+            "1": "Water", "2": "MeCN", "3": "DMF", "4": "DMSO",
+            "5": "Acetone", "6": "THF", "7": "DCM", "8": "Chloroform",
+            "9": "Toluene", "10": "Methanol", "11": "Ethanol",
+        }
+
+        solvent_input = input("Select solvent [1-12]: ").strip()
+
+        if solvent_input == "12":
+            # User wants to enter custom solvent
+            print("\nAvailable solvents: Water, MeCN, DMF, DMSO, Acetone, THF, DCM,")
+            print("Chloroform, Toluene, Benzene, Hexane, Methanol, Ethanol, DiethylEther")
+            solvent = input("Enter solvent name: ").strip()
+        elif solvent_input in solvent_map:
+            solvent = solvent_map[solvent_input]
+        else:
+            print(f"Invalid choice, defaulting to Water")
+            solvent = "Water"
+
+        print(f"✓ Solvation: {solvation_choice} with {solvent}")
+
+        solvent_data = {
+            "implicit_solvation_model": solvation_choice,
+            "solvent": solvent
+        }
         self.collected_data.update(solvent_data)
 
         # Step 3: Structure quality / XTB optimization
@@ -151,14 +205,64 @@ class ControlAssistantV2:
 
         # Step 4: Imaginary frequencies
         print("\n━━━ Step 4: Imaginary Frequencies ━━━")
-        imag_data = self._ask_step("imag", STEP_SCHEMAS["imag"],
-                                    "Do you want to check for and eliminate imaginary frequencies? "
-                                    "Imaginary frequencies indicate transition states (not stable minima), "
-                                    "which can cause incorrect energies. IMAG_option=2 is recommended.")
-        self.collected_data.update(imag_data)
-        if imag_data.get("IMAG") == "yes":
+        print("Do you want to check for and eliminate imaginary frequencies?")
+        print()
+        print("What are imaginary frequencies?")
+        print("  Imaginary frequencies indicate that your structure is NOT a stable minimum,")
+        print("  but rather a transition state (saddle point on the potential energy surface).")
+        print("  This leads to INCORRECT energies and can cause calculation failures.")
+        print()
+        print("Why eliminate them?")
+        print("  IMAG mode distorts the structure along imaginary modes and reoptimizes")
+        print("  to find the nearest TRUE minimum energy structure.")
+        print()
+        print("Options:")
+        print("  1) yes - Check and eliminate imaginary frequencies (RECOMMENDED)")
+        print("  2) no  - Skip this step (only if you're sure structure is already optimized)")
+        print()
+
+        imag_choice = self._ask_user_direct_choice(
+            prompt="Check for imaginary frequencies? [1-2]: ",
+            choices={
+                "1": "yes",
+                "2": "no",
+            },
+            explanations={
+                "1": "RECOMMENDED: Ensures your structure is a true minimum, prevents wrong energies",
+                "2": "Skip if structure is already well-optimized (e.g., from previous DFT calc)",
+            }
+        )
+
+        if imag_choice == "yes":
+            print("\nSelect IMAG elimination method:")
+            print("  1) IMAG_option=1 - Simple mode distortion")
+            print("  2) IMAG_option=2 - Distortion + reoptimization (RECOMMENDED)")
+            print("  3) IMAG_option=3 - Multiple distortions and reoptimizations")
+            print()
+
+            imag_option = self._ask_user_direct_choice(
+                prompt="Select IMAG_option [1-3]: ",
+                choices={
+                    "1": "1",
+                    "2": "2",
+                    "3": "3",
+                },
+                explanations={
+                    "1": "Fastest, but may not eliminate all imaginary frequencies",
+                    "2": "RECOMMENDED: Good balance between speed and thoroughness",
+                    "3": "Most thorough, but slowest (use for difficult cases)",
+                }
+            )
+
             self.collected_data["imag"] = "yes"
-            self.collected_data["imag_option"] = imag_data.get("IMAG_option", "2")
+            self.collected_data["IMAG"] = "yes"
+            self.collected_data["imag_option"] = imag_option
+            self.collected_data["IMAG_option"] = imag_option
+            print(f"✓ IMAG check enabled with option {imag_option}")
+        else:
+            self.collected_data["imag"] = "no"
+            self.collected_data["IMAG"] = "no"
+            print("✓ IMAG check disabled")
 
         # Step 5: Redox potentials setup
         print("\n━━━ Step 5: Redox Potentials Setup ━━━")
@@ -311,7 +415,10 @@ Remember: DELFIN users are computational chemists. Be professional, accurate, an
             elif confirm == 'edit':
                 # Manual editing
                 return self._manual_edit(response.data, schema)
-            elif confirm == '?' or confirm == 'help' or confirm.startswith('what') or confirm.startswith('explain'):
+            elif (confirm == '?' or confirm == 'help' or
+                  confirm.startswith('what') or confirm.startswith('explain') or
+                  confirm.startswith('warum') or confirm.startswith('why') or
+                  'why' in confirm.lower() or 'warum' in confirm.lower() or 'what' in confirm.lower()):
                 # User wants explanation
                 self.conversation_history.append(Message(
                     role="assistant",
@@ -319,7 +426,7 @@ Remember: DELFIN users are computational chemists. Be professional, accurate, an
                 ))
                 self.conversation_history.append(Message(
                     role="user",
-                    content=f"Please explain these parameters: {confirm}"
+                    content=f"Please explain: {confirm}"
                 ))
                 # Get explanation from AI
                 explanation_response = self.provider.chat(
@@ -348,19 +455,19 @@ Remember: DELFIN users are computational chemists. Be professional, accurate, an
     def _ask_user_direct_choice(
         self,
         prompt: str,
-        choices: Dict[str, Dict[str, Any]],
+        choices: Dict[str, Any],  # Can be Dict[str, str] or Dict[str, Dict]
         explanations: Dict[str, str] = None
-    ) -> Dict[str, Any]:
+    ):
         """
         Ask user to directly select from numbered choices (no AI inference).
 
         Args:
             prompt: Input prompt to display
-            choices: Dict mapping choice number to result data
+            choices: Dict mapping choice number to result data (can be string or dict)
             explanations: Optional dict mapping choice number to explanation
 
         Returns:
-            Selected choice data
+            Selected choice data (string or dict)
         """
         while True:
             user_input = input(prompt).strip()
@@ -379,7 +486,10 @@ Remember: DELFIN users are computational chemists. Be professional, accurate, an
             # Validate choice
             if user_input in choices:
                 result = choices[user_input]
-                print(f"✓ Selected: {result}")
+                if isinstance(result, dict):
+                    print(f"✓ Selected: {result}")
+                else:
+                    print(f"✓ Selected: {result}")
                 return result
             else:
                 print(f"Invalid choice '{user_input}'. Please select from: {', '.join(choices.keys())}")
