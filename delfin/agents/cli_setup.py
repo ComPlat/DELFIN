@@ -40,6 +40,16 @@ def run_setup_command(argv: list[str] = None) -> int:
         help="Model name (default: provider-specific default)"
     )
     parser.add_argument(
+        "--api-key",
+        type=str,
+        help="API key for the provider (can also use environment variables)"
+    )
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        help="Base URL for OpenAI-compatible APIs (e.g., https://api.your-provider.com/v1)"
+    )
+    parser.add_argument(
         "--output", "-o",
         type=str,
         default="CONTROL.txt",
@@ -61,9 +71,17 @@ def run_setup_command(argv: list[str] = None) -> int:
     # Interactive setup
     if args.interactive:
         try:
+            # Build kwargs for provider
+            provider_kwargs = {}
+            if args.api_key:
+                provider_kwargs["api_key"] = args.api_key
+            if args.base_url:
+                provider_kwargs["base_url"] = args.base_url
+
             provider = create_provider(
                 provider_name=args.provider,
-                model=args.model
+                model=args.model,
+                **provider_kwargs
             )
 
             assistant = ControlAssistantV2(provider)
