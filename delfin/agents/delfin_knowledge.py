@@ -216,19 +216,37 @@ Example even_seq (for Fe²⁺, d6 system):
 
 ## ESD Module (Excited State Dynamics)
 
-Enable with: ESD_modul=yes
+**What is ESD_modul?**
+ESD_modul calculates rates and pathways for excited state dynamics:
+- Intersystem Crossing (ISC): Transition between different spin states (e.g., S1→T1, S1→T2)
+- Internal Conversion (IC): Transition within same spin manifold (e.g., S2→S1, T2→T1)
+- Spin-Orbit Coupling (SOC): The physical mechanism enabling ISC
 
-Calculates:
-- ISC rates: Intersystem crossing (e.g., S1→T1)
-- IC rates: Internal conversion (e.g., S1→S0)
-- Spin-orbit coupling matrix elements
+**Enable with:** ESD_modul=yes
 
-Configuration:
-- ESD_modus: "TDDFT" or "deltaSCF"
-- states: e.g., "S0,S1,T1,T2"
-- ISCs: e.g., "S1>T1,T1>S1"
-- ICs: e.g., "S1>S0,T2>T1"
-- DOSOC=TRUE: Calculate spin-orbit coupling
+**Configuration Parameters:**
+- ESD_modus: "TDDFT" (recommended) or "deltaSCF"
+- states: List of states to consider, e.g., "S0,S1,S2,T1,T2"
+  → DELFIN will calculate ALL these states
+- ISCs: Define ISC transitions, e.g., "S1>T1,S1>T2,T1>S1"
+  → Format: "Initial>Final" for each transition
+- ICs: Define IC transitions, e.g., "S2>S1,T2>T1"
+- DOSOC=TRUE: Calculate spin-orbit coupling (required for ISC rates)
+
+**Example for TADF with S1→T2 ISC:**
+```
+ESD_modul=yes
+ESD_modus=TDDFT
+states=S0,S1,T1,T2
+ISCs=S1>T2,T2>S1,S1>T1
+ICs=S2>S1,T2>T1
+DOSOC=TRUE
+```
+
+**Important Notes:**
+- ISC calculations require CLOSED-SHELL ground state (method=classic)
+- Use functional with good excited state performance (wB97X-V, M06-2X)
+- ESD is computationally expensive - ensure sufficient resources
 
 ## Common Calculation Types
 

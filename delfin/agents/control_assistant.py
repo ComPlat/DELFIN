@@ -76,8 +76,24 @@ class ControlAssistantV2:
         if user_goal:
             self.conversation_history.append(Message(
                 role="user",
-                content=f"I want to calculate: {user_goal}. Give me brief recommendations "
-                        f"(charge, solvent, method, level of theory). Keep it SHORT (max 5-7 lines)."
+                content=f"""User goal: {user_goal}
+
+Please provide:
+1. BRIEF recommendation of key parameters (charge, solvent, method, functional)
+2. DETAILED explanation of special requirements (e.g., if they mention ISC/IC, E_00, spin states)
+3. What DELFIN modules to enable (ESD_modul, E_00, OCCUPIER, etc.) and WHY
+4. Any important caveats or requirements
+
+Format your answer in 2 sections:
+**Quick Setup:**
+- charge: ...
+- method: ...
+- functional: ...
+
+**Detailed Explanation:**
+[Explain the special requirements and how DELFIN handles them]
+
+Keep total length under 15 lines."""
             ))
             # Get AI recommendations
             try:
