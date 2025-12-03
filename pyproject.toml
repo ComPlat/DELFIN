@@ -17,7 +17,9 @@ dependencies = [
     "ase>=3.22.0",
     "numpy>=1.19.5",
     "scipy>=1.6.0",
-    "matplotlib>=3.3.4"
+    "matplotlib>=3.3.4",
+    "rdkit>=2023.3.1",
+    "openbabel-wheel>=3.1.0"
 ]
 
 [project.optional-dependencies]
@@ -26,9 +28,6 @@ dev = [
     "pytest-cov",
     "black",
     "flake8",
-]
-smiles = [
-    "rdkit>=2023.3.1",
 ]
 
 [project.scripts]
