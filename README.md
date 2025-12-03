@@ -3,7 +3,6 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17208145.svg)](https://doi.org/10.5281/zenodo.17208145)
 [![PyPI version](https://img.shields.io/pypi/v/delfin-complat.svg)](https://pypi.org/project/delfin-complat/)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/delfin-complat.svg)](https://pypistats.org/packages/delfin-complat)
-[![Python Version](https://img.shields.io/pypi/pyversions/delfin-complat.svg)](https://pypi.org/project/delfin-complat/)
 
 > 📄 **Preprint**: *Hartmann, M. et al. “DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials”*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
 
@@ -17,12 +16,12 @@ pip install delfin-complat
 
 **Requirements:**
 - **Python 3.10+**
-- **ORCA 6.1.0** in your `PATH` ([free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal))
+- **ORCA 6.1.1** in your `PATH` ([free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal))
 - **Optional:** CREST, xTB (for extended workflows)
 
 > **Prereqs**
 >
-> * ORCA **6.1.0** in your `PATH` (`orca` and `orca_pltvib`)
+> * ORCA **6.1.1** in your `PATH` (`orca` and `orca_pltvib`)
 > * Optional: `crest` (for CREST workflow), **xTB** if used (`xtb` and `crest` in `PATH`)
 > * Python **3.10+** required
 
@@ -326,7 +325,7 @@ sp_timeout_hours=3
 
 | Error | Automatic Fix |
 |-------|--------------|
-| **SCF not converged** | SloppyConv → VerySloppyConv + KDIIS → Direct SCF |
+| **SCF not converged** | SlowConv → VerySlowConv + KDIIS → Direct SCF |
 | **TRAH segfault** | NoAutoTRAH + relaxed convergence |
 | **DIIS errors** | Switch to KDIIS or Direct SCF |
 | **Geometry not converged** | Smaller trust radius → Recalc Hessian → Loose criteria |
@@ -345,7 +344,7 @@ ORCA fails → Detect error type → Modify input with fixes → Continue from l
 ```
 Original:  complex.inp (SCF not converged)
     ↓
-Recovery:  complex.retry1.inp (adds MOREAD + SloppyConv)
+Recovery:  complex.retry1.inp (adds MOREAD + SlowConv)
     ↓
 Success:   Converges using last wavefunction!
 ```
@@ -429,10 +428,10 @@ given in the manual.
 **DISCLAIMER: DELFIN is a workflow tool that interfaces with external quantum chemistry software. Users are responsible for obtaining proper licenses for all required software.**
 
 ## ORCA Requirements
-To use DELFIN, you must be authorized to use ORCA 6.1.0. You can download the latest version of ORCA here:
+To use DELFIN, you must be authorized to use ORCA 6.1.1. You can download the latest version of ORCA here:
 https://orcaforum.kofo.mpg.de/app.php/portal
 
-***IMPORTANT: ORCA 6.1.0 requires a valid license and registration. Academic users can obtain free access, but commercial use requires a commercial license. Please carefully review and comply with ORCA's license terms before use.***
+***IMPORTANT: ORCA 6.1.1 requires a valid license and registration. Academic users can obtain free access, but commercial use requires a commercial license. Please carefully review and comply with ORCA's license terms before use.***
 https://www.faccts.de/
 
 **ORCA License Requirements:**
