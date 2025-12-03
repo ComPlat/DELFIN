@@ -112,10 +112,37 @@ class ControlAssistantV2:
 
         # Step 3: Structure quality / XTB optimization
         print("\n━━━ Step 3: Structure Quality ━━━")
-        structure_data = self._ask_step("structure_quality", STEP_SCHEMAS["structure_quality"],
-                                         "Where does the input structure come from? "
-                                         "For ChemDraw/SMILES → recommend XTB_OPT=yes and XTB_GOAT=yes. "
-                                         "For XRD/DFT_optimized → recommend XTB_OPT=no and XTB_GOAT=no.")
+        print("Where does the input structure come from?")
+        print("  1) ChemDraw - 2D drawing converted to 3D")
+        print("  2) SMILES - String notation converted to 3D")
+        print("  3) GFN-xTB / GFN2-xTB - Semi-empirical optimization")
+        print("  4) PM6 / PM7 - Semi-empirical optimization")
+        print("  5) XRD - X-ray diffraction structure")
+        print("  6) DFT_optimized - Already optimized with DFT")
+        print("  7) other_semi_empirical - Other semi-empirical method")
+        print()
+
+        structure_data = self._ask_user_direct_choice(
+            prompt="Select structure source [1-7]: ",
+            choices={
+                "1": {"structure_source": "ChemDraw", "XTB_OPT": "yes", "XTB_GOAT": "yes"},
+                "2": {"structure_source": "SMILES", "XTB_OPT": "yes", "XTB_GOAT": "yes"},
+                "3": {"structure_source": "GFN-xTB", "XTB_OPT": "yes", "XTB_GOAT": "yes"},
+                "4": {"structure_source": "PM6", "XTB_OPT": "yes", "XTB_GOAT": "yes"},
+                "5": {"structure_source": "XRD", "XTB_OPT": "no", "XTB_GOAT": "no"},
+                "6": {"structure_source": "DFT_optimized", "XTB_OPT": "no", "XTB_GOAT": "no"},
+                "7": {"structure_source": "other_semi_empirical", "XTB_OPT": "yes", "XTB_GOAT": "yes"},
+            },
+            explanations={
+                "1": "ChemDraw structures need XTB pre-optimization (unrealistic bond lengths)",
+                "2": "SMILES structures need XTB pre-optimization (converted from string)",
+                "3": "GFN-xTB optimized but may benefit from GOAT for robustness",
+                "4": "PM6/PM7 optimized but may benefit from XTB refinement",
+                "5": "XRD structures are high-quality experimental data (no pre-opt needed)",
+                "6": "DFT optimized structures are already high-quality (no pre-opt needed)",
+                "7": "Other semi-empirical methods may need XTB refinement",
+            }
+        )
         self.collected_data.update(structure_data)
 
         # Store XTB options
@@ -317,6 +344,46 @@ Remember: DELFIN users are computational chemists. Be professional, accurate, an
                     content=f"Please adjust: {confirm}"
                 ))
                 return self._ask_step(step_name, schema, prompt)
+
+    def _ask_user_direct_choice(
+        self,
+        prompt: str,
+        choices: Dict[str, Dict[str, Any]],
+        explanations: Dict[str, str] = None
+    ) -> Dict[str, Any]:
+        """
+        Ask user to directly select from numbered choices (no AI inference).
+
+        Args:
+            prompt: Input prompt to display
+            choices: Dict mapping choice number to result data
+            explanations: Optional dict mapping choice number to explanation
+
+        Returns:
+            Selected choice data
+        """
+        while True:
+            user_input = input(prompt).strip()
+
+            # Check for help/explanation request
+            if user_input == '?' or user_input.lower() == 'help':
+                if explanations:
+                    print("\nExplanations:")
+                    for num, explanation in explanations.items():
+                        print(f"  {num}) {explanation}")
+                    print()
+                else:
+                    print("No detailed explanations available.\n")
+                continue
+
+            # Validate choice
+            if user_input in choices:
+                result = choices[user_input]
+                print(f"✓ Selected: {result}")
+                return result
+            else:
+                print(f"Invalid choice '{user_input}'. Please select from: {', '.join(choices.keys())}")
+                print("Type '?' for explanations.\n")
 
     def _manual_edit(self, data: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any]:
         """Allow manual editing of parameters"""
