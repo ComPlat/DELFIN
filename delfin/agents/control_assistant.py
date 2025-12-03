@@ -48,8 +48,8 @@ class ControlAssistantV2:
         print("╚══════════════════════════════════════════════════════════╝")
         print()
 
-        # Step 0: Ask what user wants to calculate
-        print("━━━ What do you want to calculate? ━━━")
+        # Step 0: Optional AI consultation
+        print("━━━ AI Consultation (Optional) ━━━")
         print()
         print("DELFIN can calculate:")
         print("  • Redox potentials (oxidation/reduction)")
@@ -58,7 +58,11 @@ class ControlAssistantV2:
         print("  • Intersystem crossing (ISC) and internal conversion (IC)")
         print("  • Ground state optimizations")
         print()
-        user_goal = input("Tell me what you want to calculate (or press Enter to skip): ").strip()
+        print("Would you like recommendations from the AI assistant?")
+        print("Example: 'I need redox potentials for an iron complex'")
+        print("         'Carbazole excited states and E_00'")
+        print()
+        user_goal = input("Describe your calculation goal (or press Enter to skip): ").strip()
 
         # Create system prompt with DELFIN knowledge
         system_prompt = self._create_system_prompt()
@@ -72,21 +76,26 @@ class ControlAssistantV2:
         if user_goal:
             self.conversation_history.append(Message(
                 role="user",
-                content=f"I want to calculate: {user_goal}. Please help me set up DELFIN accordingly."
+                content=f"I want to calculate: {user_goal}. Give me brief recommendations "
+                        f"(charge, solvent, method, level of theory). Keep it SHORT (max 5-7 lines)."
             ))
-            # Let AI understand the goal
+            # Get AI recommendations
             try:
                 response = self.provider.chat(
                     messages=self.conversation_history,
                     temperature=0.0
                 )
-                print(f"\n💡 AI: {response.data.get('text', 'Understood!')}\n")
+                print(f"\n💡 AI Recommendations:\n{response.data.get('text', 'No recommendations')}\n")
+                print("━" * 60)
+                print("Now let's set up your CONTROL file step by step.")
+                print("━" * 60)
                 self.conversation_history.append(Message(
                     role="assistant",
-                    content=response.data.get('text', 'Understood!')
+                    content=response.data.get('text', '')
                 ))
-            except Exception:
-                pass  # Continue even if this fails
+            except Exception as e:
+                print(f"Note: AI consultation failed ({e}), continuing with manual setup...")
+                pass
 
         # === NEW WORKFLOW ===
 
@@ -340,6 +349,15 @@ class ControlAssistantV2:
         self._write_control_file(output_path)
 
         print(f"\n✓ CONTROL file created: {output_path}")
+
+        # AI Review of CONTROL file
+        print("\n━━━ AI Review of CONTROL File ━━━")
+        print("Let the AI check your CONTROL file for errors and optimization suggestions...")
+        try:
+            self._ai_review_control_file(output_path)
+        except Exception as e:
+            print(f"Note: AI review failed ({e}), but CONTROL file was created successfully.")
+
         print(f"\n✓ You can now run: delfin")
 
         return self.collected_data
@@ -558,6 +576,50 @@ Remember: DELFIN users are computational chemists. Be professional, accurate, an
                 manually_data[f"additions_red{i}"] = input(f"  additions_red{i}: ").strip()
 
         return manually_data
+
+    def _ai_review_control_file(self, control_file_path: str):
+        """
+        AI reviews the generated CONTROL file for errors and suggests optimizations.
+        """
+        # Read the generated CONTROL file
+        control_content = Path(control_file_path).read_text()
+
+        # Ask AI to review
+        review_prompt = f"""Review this DELFIN CONTROL file for errors and optimization opportunities.
+
+CONTROL file:
+```
+{control_content}
+```
+
+Please check for:
+1. **Critical Errors**: Missing parameters, incompatible settings, wrong syntax
+2. **Warnings**: Suboptimal choices that may cause problems
+3. **Optimization Suggestions**: Better settings for this calculation type
+
+Provide a CONCISE review (max 10 lines). Format:
+✓ OK: [things that look good]
+⚠ Warning: [potential issues]
+💡 Suggestion: [optimizations]
+"""
+
+        self.conversation_history.append(Message(
+            role="user",
+            content=review_prompt
+        ))
+
+        response = self.provider.chat(
+            messages=self.conversation_history,
+            temperature=0.0
+        )
+
+        review_text = response.data.get('text', 'No review available')
+        print(f"\n{review_text}\n")
+
+        self.conversation_history.append(Message(
+            role="assistant",
+            content=review_text
+        ))
 
     def _write_control_file(self, output_path: str):
         """Write collected data to CONTROL file using template"""
