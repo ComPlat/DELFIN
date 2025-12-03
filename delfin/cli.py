@@ -809,6 +809,9 @@ def main(argv: list[str] | None = None) -> int:
         return _run_stop_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "co2":
         return _run_co2_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "setup":
+        from .agents.cli_setup import run_setup_command
+        return run_setup_command(arg_list[1:])
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
     args, _ = parser.parse_known_args(arg_list)
