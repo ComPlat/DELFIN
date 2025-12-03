@@ -165,92 +165,78 @@ Keep total length under 15 lines."""
 
         # Step 3: Structure quality / XTB optimization
         print("\n━━━ Step 3: Structure Quality ━━━")
-        print("Where does the input structure come from?")
-        print("  1) ChemDraw - 2D drawing converted to 3D")
-        print("  2) SMILES - String notation converted to 3D")
-        print("  3) GFN-xTB / GFN2-xTB - Semi-empirical optimization")
-        print("  4) PM6 / PM7 - Semi-empirical optimization")
-        print("  5) XRD - X-ray diffraction structure")
-        print("  6) DFT_optimized - Already optimized with DFT")
-        print("  7) other_semi_empirical - Other semi-empirical method")
+        print("Where does your structure come from?")
+        print("Examples: ChemDraw, SMILES, XRD, DFT_optimized, GFN-xTB, PM6")
+        print("Type '?' for help")
         print()
 
-        structure_data = self._ask_user_direct_choice(
-            prompt="Select structure source [1-7]: ",
-            choices={
-                "1": {"structure_source": "ChemDraw", "XTB_OPT": "yes", "XTB_GOAT": "yes"},
-                "2": {"structure_source": "SMILES", "XTB_OPT": "yes", "XTB_GOAT": "yes"},
-                "3": {"structure_source": "GFN-xTB", "XTB_OPT": "yes", "XTB_GOAT": "yes"},
-                "4": {"structure_source": "PM6", "XTB_OPT": "yes", "XTB_GOAT": "yes"},
-                "5": {"structure_source": "XRD", "XTB_OPT": "no", "XTB_GOAT": "no"},
-                "6": {"structure_source": "DFT_optimized", "XTB_OPT": "no", "XTB_GOAT": "no"},
-                "7": {"structure_source": "other_semi_empirical", "XTB_OPT": "yes", "XTB_GOAT": "yes"},
-            },
-            explanations={
-                "1": "ChemDraw structures need XTB pre-optimization (unrealistic bond lengths)",
-                "2": "SMILES structures need XTB pre-optimization (converted from string)",
-                "3": "GFN-xTB optimized but may benefit from GOAT for robustness",
-                "4": "PM6/PM7 optimized but may benefit from XTB refinement",
-                "5": "XRD structures are high-quality experimental data (no pre-opt needed)",
-                "6": "DFT optimized structures are already high-quality (no pre-opt needed)",
-                "7": "Other semi-empirical methods may need XTB refinement",
-            }
+        structure_source = self._ask_with_ai_help(
+            prompt="Structure source: ",
+            value_type="string",
+            help_context="structure sources (ChemDraw/SMILES/XRD/DFT), quality assessment, and when XTB pre-optimization is needed"
         )
-        self.collected_data.update(structure_data)
+        self.collected_data["structure_source"] = structure_source
 
-        # Store XTB options
-        self.collected_data["xtb_opt"] = structure_data.get("XTB_OPT", "no")
-        self.collected_data["xtb_goat"] = structure_data.get("XTB_GOAT", "no")
+        print()
+        print("Do you want XTB pre-optimization?")
+        print("Recommended: yes for ChemDraw/SMILES, no for XRD/DFT_optimized")
+        print("Type '?' for help or enter yes/no")
+        print()
+
+        xtb_opt = self._ask_with_ai_help(
+            prompt="XTB_OPT [yes/no]: ",
+            value_type="choice",
+            allowed_values=["yes", "no"],
+            help_context="XTB pre-optimization, when it's needed, and XTB_GOAT optimizer"
+        )
+        self.collected_data["xtb_opt"] = xtb_opt
+        self.collected_data["XTB_OPT"] = xtb_opt
+
+        if xtb_opt == "yes":
+            print()
+            xtb_goat = self._ask_with_ai_help(
+                prompt="XTB_GOAT (robust optimizer) [yes/no]: ",
+                value_type="choice",
+                allowed_values=["yes", "no"],
+                help_context="XTB GOAT optimizer for difficult geometries"
+            )
+            self.collected_data["xtb_goat"] = xtb_goat
+            self.collected_data["XTB_GOAT"] = xtb_goat
+        else:
+            self.collected_data["xtb_goat"] = "no"
+            self.collected_data["XTB_GOAT"] = "no"
+
+        print(f"✓ Structure: {structure_source}, XTB_OPT={xtb_opt}")
 
         # Step 4: Imaginary frequencies
         print("\n━━━ Step 4: Imaginary Frequencies ━━━")
-        print("Do you want to check for and eliminate imaginary frequencies?")
-        print()
-        print("What are imaginary frequencies?")
-        print("  Imaginary frequencies indicate that your structure is NOT a stable minimum,")
-        print("  but rather a transition state (saddle point on the potential energy surface).")
-        print("  This leads to INCORRECT energies and can cause calculation failures.")
-        print()
-        print("Why eliminate them?")
-        print("  IMAG mode distorts the structure along imaginary modes and reoptimizes")
-        print("  to find the nearest TRUE minimum energy structure.")
-        print()
-        print("Options:")
-        print("  1) yes - Check and eliminate imaginary frequencies (RECOMMENDED)")
-        print("  2) no  - Skip this step (only if you're sure structure is already optimized)")
+        print("Check for imaginary frequencies (transition states)?")
+        print("Imaginary frequencies = NOT a stable minimum → wrong energies")
+        print("IMAG mode finds the nearest true minimum structure")
+        print("Type '?' for detailed explanation")
         print()
 
-        imag_choice = self._ask_user_direct_choice(
-            prompt="Check for imaginary frequencies? [1-2]: ",
-            choices={
-                "1": "yes",
-                "2": "no",
-            },
-            explanations={
-                "1": "RECOMMENDED: Ensures your structure is a true minimum, prevents wrong energies",
-                "2": "Skip if structure is already well-optimized (e.g., from previous DFT calc)",
-            }
+        imag_check = self._ask_with_ai_help(
+            prompt="Check for imaginary frequencies? [yes/no]: ",
+            value_type="choice",
+            allowed_values=["yes", "no"],
+            help_context="imaginary frequencies, why they cause problems, and how IMAG fixes them"
         )
 
-        if imag_choice == "yes":
-            print("\nSelect IMAG elimination method:")
-            print("  1) IMAG_option=1 - Simple mode distortion")
-            print("  2) IMAG_option=2 - Distortion + reoptimization (RECOMMENDED)")
-            print("  3) IMAG_option=3 - Multiple distortions and reoptimizations")
+        if imag_check == "yes":
+            print()
+            print("IMAG elimination method:")
+            print("  1 = Simple distortion (fastest)")
+            print("  2 = Distortion + reoptimization (recommended)")
+            print("  3 = Multiple attempts (most thorough)")
+            print("Type '?' for help")
             print()
 
-            imag_option = self._ask_user_direct_choice(
-                prompt="Select IMAG_option [1-3]: ",
-                choices={
-                    "1": "1",
-                    "2": "2",
-                    "3": "3",
-                },
-                explanations={
-                    "1": "Fastest, but may not eliminate all imaginary frequencies",
-                    "2": "RECOMMENDED: Good balance between speed and thoroughness",
-                    "3": "Most thorough, but slowest (use for difficult cases)",
-                }
+            imag_option = self._ask_with_ai_help(
+                prompt="IMAG_option [1/2/3]: ",
+                value_type="choice",
+                allowed_values=["1", "2", "3"],
+                help_context="IMAG elimination methods, their thoroughness and computational cost"
             )
 
             self.collected_data["imag"] = "yes"
@@ -265,22 +251,71 @@ Keep total length under 15 lines."""
 
         # Step 5: Redox potentials setup
         print("\n━━━ Step 5: Redox Potentials Setup ━━━")
-        redox_setup = self._ask_step("redox_setup", STEP_SCHEMAS["redox_setup"],
-                                      "Which redox states do you want to calculate? "
-                                      "For example: oxidation_steps='1,2,3' means three oxidation steps.")
-        self.collected_data.update(redox_setup)
+        print("Do you want to calculate redox potentials?")
+        print("Type '?' for help")
+        print()
+
+        calc_redox = self._ask_with_ai_help(
+            prompt="Calculate redox potentials? [yes/no]: ",
+            value_type="choice",
+            allowed_values=["yes", "no"],
+            help_context="redox potentials, oxidation and reduction, and how they're calculated"
+        )
+
+        if calc_redox == "yes":
+            self.collected_data["calc_initial"] = "yes"
+
+            print()
+            print("Oxidation steps (e.g., '1,2' for two steps, or leave empty)")
+            print("Type '?' for help")
+            print()
+
+            ox_steps = self._ask_with_ai_help(
+                prompt="Oxidation steps (comma-separated or empty): ",
+                value_type="string",
+                help_context="oxidation steps, how many to calculate, and notation"
+            )
+            self.collected_data["oxidation_steps"] = ox_steps.strip()
+
+            print()
+            print("Reduction steps (e.g., '1,2' for two steps, or leave empty)")
+            print("Type '?' for help")
+            print()
+
+            red_steps = self._ask_with_ai_help(
+                prompt="Reduction steps (comma-separated or empty): ",
+                value_type="string",
+                help_context="reduction steps, how many to calculate, and notation"
+            )
+            self.collected_data["reduction_steps"] = red_steps.strip()
+
+            print(f"✓ Redox: ox={ox_steps if ox_steps else 'none'}, red={red_steps if red_steps else 'none'}")
+        else:
+            self.collected_data["calc_initial"] = "yes"
+            self.collected_data["oxidation_steps"] = ""
+            self.collected_data["reduction_steps"] = ""
+            print("✓ No redox calculations")
 
         # Step 6: Method selection
         print("\n━━━ Step 6: Method Selection ━━━")
-        method_data = self._ask_step("method", STEP_SCHEMAS["method"],
-                                      "What type of system are you calculating? "
-                                      "For transition metal complexes → OCCUPIER (spin states are non-trivial). "
-                                      "For TADF organic molecules → classic. "
-                                      "For expert control → manually (define spin states and broken-symmetry yourself).")
-        self.collected_data.update(method_data)
+        print("Which method for spin state determination?")
+        print("  classic = Known spin state (organic molecules)")
+        print("  OCCUPIER = Automatic spin exploration (metal complexes)")
+        print("  manually = Expert manual control")
+        print("Type '?' for help")
+        print()
+
+        method = self._ask_with_ai_help(
+            prompt="Method [classic/OCCUPIER/manually]: ",
+            value_type="choice",
+            allowed_values=["classic", "OCCUPIER", "manually"],
+            help_context="calculation methods: classic vs OCCUPIER vs manually, when to use which"
+        )
+        self.collected_data["method"] = method
+        print(f"✓ Method: {method}")
 
         # Step 7: MANUALLY configuration (if method=manually)
-        if method_data.get("method") == "manually":
+        if method == "manually":
             print("\n━━━ Step 7: MANUALLY Configuration ━━━")
             print("You selected 'manually' method. Let's configure the electronic structure for each redox state.")
             print("You need to specify multiplicity and additional ORCA keywords (e.g., BrokenSym flags) for each state.")
@@ -291,48 +326,111 @@ Keep total length under 15 lines."""
 
         # Step 8: Excited states / E_00
         print("\n━━━ Step 8: Excited State Calculations ━━━")
-        excited_data = self._ask_step("excited_states", STEP_SCHEMAS["excited_states"],
-                                       "Do you want to calculate E_00 energies or excited state redox potentials? "
-                                       "NOTE: This is only available for closed-shell systems. "
-                                       "You can calculate singlet E_00, triplet E_00, or both.")
-        self.collected_data.update(excited_data)
+        print("Calculate excited states (E_00, TDDFT)?")
+        print("Note: Only for closed-shell ground states")
+        print("Type '?' for help")
+        print()
 
-        if excited_data.get("calculate_excited_states") == "yes":
-            self.collected_data["e_00"] = excited_data.get("E_00", "yes")
-            self.collected_data["excitation"] = excited_data.get("excitation", "s")
-            self.collected_data["absorption_spec"] = excited_data.get("absorption_spec", "no")
-            self.collected_data["emission_spec"] = excited_data.get("emission_spec", "no")
+        calc_excited = self._ask_with_ai_help(
+            prompt="Calculate excited states? [yes/no]: ",
+            value_type="choice",
+            allowed_values=["yes", "no"],
+            help_context="excited states, E_00 energies, TDDFT, and when they're applicable"
+        )
+
+        if calc_excited == "yes":
+            self.collected_data["calculate_excited_states"] = "yes"
+            self.collected_data["e_00"] = "yes"
+            self.collected_data["E_00"] = "yes"
+
+            print()
+            print("Excitation type: s (singlet), t (triplet), or s,t (both)")
+            print("Type '?' for help")
+            print()
+
+            excitation = self._ask_with_ai_help(
+                prompt="Excitation [s/t/s,t]: ",
+                value_type="string",
+                help_context="singlet vs triplet excitations, and when to calculate both"
+            )
+            self.collected_data["excitation"] = excitation
+
+            print()
+            print("Calculate ESD (ISC/IC rates)?")
+            print()
+
+            esd = self._ask_with_ai_help(
+                prompt="ESD_modul [yes/no]: ",
+                value_type="choice",
+                allowed_values=["yes", "no"],
+                help_context="ESD module for ISC and IC rate calculations"
+            )
+            self.collected_data["ESD_modul"] = esd
+
+            print(f"✓ Excited states: excitation={excitation}, ESD={esd}")
+        else:
+            self.collected_data["calculate_excited_states"] = "no"
+            self.collected_data["e_00"] = "no"
+            self.collected_data["E_00"] = "no"
+            print("✓ No excited state calculations")
 
         # Step 9: Level of theory
         print("\n━━━ Step 9: Level of Theory ━━━")
-        theory_data = self._ask_step("level_of_theory", STEP_SCHEMAS["level_of_theory"],
-                                      f"What level of theory do you want? "
-                                      f"System type: {method_data.get('system_type', 'unknown')}. "
-                                      f"I can recommend functional, basis sets, dispersion correction, and relativistic treatment.")
-        self.collected_data.update(theory_data)
+        print("DFT functional (e.g., PBE0, wB97X-V, B3LYP)")
+        print("Type '?' for help")
+        print()
 
-        # Step 10: Additional analysis
-        print("\n━━━ Step 10: Additional Analysis ━━━")
-        analysis_data = self._ask_step("analysis", STEP_SCHEMAS["analysis"],
-                                        "Do you want to plot MOs or perform Loewdin population analysis? "
-                                        "These help understand electron distribution and bonding.")
-        self.collected_data.update(analysis_data)
+        functional = self._ask_with_ai_help(
+            prompt="Functional: ",
+            value_type="string",
+            help_context="DFT functionals, which to use for different systems (metal complexes, organics, excited states)"
+        )
+        self.collected_data["functional"] = functional
 
-        # Step 11: Computational resources
-        print("\n━━━ Step 11: Computational Resources ━━━")
-        resources_data = self._ask_step("resources", STEP_SCHEMAS["resources"],
-                                         "How many CPU cores (PAL) and how much memory per core (maxcore in MB) are available? "
-                                         "Total memory = PAL × maxcore. "
-                                         "You can also enable parallel workflows to run multiple jobs simultaneously.")
-        self.collected_data.update(resources_data)
+        print()
+        print("Basis set (e.g., def2-TZVP, def2-SVP)")
+        print()
 
-        # Step 12: Auto recovery
-        print("\n━━━ Step 12: Automatic Error Recovery ━━━")
-        recovery_data = self._ask_step("auto_recovery", STEP_SCHEMAS["auto_recovery"],
-                                        "Do you want to enable automatic error recovery? "
-                                        "This automatically retries failed calculations with adjusted settings. "
-                                        "Job timeouts prevent stuck calculations from running forever.")
-        self.collected_data.update(recovery_data)
+        basisset = self._ask_with_ai_help(
+            prompt="Basis set: ",
+            value_type="string",
+            help_context="basis sets, size vs accuracy tradeoff"
+        )
+        self.collected_data["main_basisset"] = basisset
+        self.collected_data["metal_basisset"] = basisset
+
+        print(f"✓ Theory: {functional}/{basisset}")
+
+        # Step 10: Computational resources
+        print("\n━━━ Step 10: Computational Resources ━━━")
+        print("How many CPU cores to use?")
+        print()
+
+        pal = self._ask_with_ai_help(
+            prompt="PAL (CPU cores): ",
+            value_type="integer",
+            help_context="parallel calculations, number of CPU cores"
+        )
+        self.collected_data["PAL"] = pal
+
+        print()
+        print("Memory per core in MB (total memory = PAL × maxcore)")
+        print()
+
+        maxcore = self._ask_with_ai_help(
+            prompt="maxcore (MB per core): ",
+            value_type="integer",
+            help_context="memory allocation per CPU core"
+        )
+        self.collected_data["maxcore"] = maxcore
+
+        print(f"✓ Resources: {pal} cores, {maxcore} MB/core (total: {pal*maxcore} MB)")
+
+        # Step 11: Auto recovery (optional - skip for now, use defaults)
+        print("\n━━━ Skipping optional advanced settings ━━━")
+        print("(Auto-recovery, parallel workflows, etc. - using defaults)")
+        self.collected_data["auto_recovery"] = "yes"
+        self.collected_data["enable_job_timeouts"] = "yes"
 
         # Generate CONTROL file
         print("\n━━━ Generating CONTROL file... ━━━")
