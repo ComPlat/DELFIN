@@ -113,14 +113,14 @@ class ControlAssistantV2:
         # Step 3: Structure quality / XTB optimization
         print("\n━━━ Step 3: Structure Quality ━━━")
         structure_data = self._ask_step("structure_quality", STEP_SCHEMAS["structure_quality"],
-                                         "Is the input structure an approximation, or is it a reliable geometry? "
-                                         "If approximation, I recommend XTB_OPT=yes and XTB_GOAT=yes for pre-optimization.")
+                                         "Where does the input structure come from? "
+                                         "For ChemDraw/SMILES → recommend XTB_OPT=yes and XTB_GOAT=yes. "
+                                         "For XRD/DFT_optimized → recommend XTB_OPT=no and XTB_GOAT=no.")
         self.collected_data.update(structure_data)
 
-        # Auto-set XTB options if structure is approximation
-        if structure_data.get("is_approximation") == "yes":
-            self.collected_data["xtb_opt"] = structure_data.get("XTB_OPT", "yes")
-            self.collected_data["xtb_goat"] = structure_data.get("XTB_GOAT", "yes")
+        # Store XTB options
+        self.collected_data["xtb_opt"] = structure_data.get("XTB_OPT", "no")
+        self.collected_data["xtb_goat"] = structure_data.get("XTB_GOAT", "no")
 
         # Step 4: Imaginary frequencies
         print("\n━━━ Step 4: Imaginary Frequencies ━━━")
@@ -262,7 +262,7 @@ Remember: DELFIN users are computational chemists. Be professional, accurate, an
             print(f"  {key:35s} = {value}")
 
         while True:
-            confirm = input("\nAccept these values? [y/n/edit]: ").lower().strip()
+            confirm = input("\nAccept these values? [y/n/edit/?]: ").lower().strip()
             if confirm == 'y' or confirm == '':
                 self.conversation_history.append(Message(
                     role="assistant",
@@ -284,6 +284,39 @@ Remember: DELFIN users are computational chemists. Be professional, accurate, an
             elif confirm == 'edit':
                 # Manual editing
                 return self._manual_edit(response.data, schema)
+            elif confirm == '?' or confirm == 'help' or confirm.startswith('what') or confirm.startswith('explain'):
+                # User wants explanation
+                self.conversation_history.append(Message(
+                    role="assistant",
+                    content=f"Suggested: {response.data}"
+                ))
+                self.conversation_history.append(Message(
+                    role="user",
+                    content=f"Please explain these parameters: {confirm}"
+                ))
+                # Get explanation from AI
+                explanation_response = self.provider.chat(
+                    messages=self.conversation_history,
+                    temperature=0.0
+                )
+                print(f"\n💡 AI: {explanation_response.data.get('text', 'No explanation available')}\n")
+                self.conversation_history.append(Message(
+                    role="assistant",
+                    content=explanation_response.data.get('text', 'No explanation available')
+                ))
+                # Continue the loop - ask again if they accept
+                continue
+            else:
+                # If user types anything else, treat it as feedback for changes
+                self.conversation_history.append(Message(
+                    role="assistant",
+                    content=f"Suggested: {response.data}"
+                ))
+                self.conversation_history.append(Message(
+                    role="user",
+                    content=f"Please adjust: {confirm}"
+                ))
+                return self._ask_step(step_name, schema, prompt)
 
     def _manual_edit(self, data: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any]:
         """Allow manual editing of parameters"""

@@ -121,10 +121,10 @@ STEP_SCHEMAS = {
     "structure_quality": {
         "type": "object",
         "properties": {
-            "is_approximation": {
+            "structure_source": {
                 "type": "string",
-                "enum": ["yes", "no"],
-                "description": "Is this structure an approximation?"
+                "enum": ["ChemDraw", "SMILES", "GFN-xTB", "GFN2-xTB", "PM6", "PM7", "other_semi_empirical", "XRD", "DFT_optimized", "high_level_optimized"],
+                "description": "Where does the structure come from?"
             },
             "XTB_OPT": {
                 "type": "string",
@@ -137,7 +137,7 @@ STEP_SCHEMAS = {
                 "description": "Use xTB GOAT optimizer"
             }
         },
-        "required": ["is_approximation"]
+        "required": ["structure_source", "XTB_OPT", "XTB_GOAT"]
     },
 
     # Step 4: Imaginary frequencies

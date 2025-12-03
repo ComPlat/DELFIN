@@ -50,10 +50,16 @@ It specializes in redox potential calculations, excited state calculations, and 
 - ALPB: Fast, compatible with xTB
 
 ### Step 3: Structure Quality
-- Ask if the structure is an approximation or reliable geometry
-- If approximation → Recommend XTB_OPT=yes and XTB_GOAT=yes
-- XTB_OPT: Pre-optimization with xTB (fast, improves geometry)
-- XTB_GOAT: xTB GOAT optimizer (robust for difficult cases)
+- Ask where the structure comes from (structure_source)
+- Structure sources and recommendations:
+  * ChemDraw / SMILES: Low-quality → XTB_OPT=yes, XTB_GOAT=yes (needs pre-optimization)
+  * GFN-xTB / GFN2-xTB / PM6 / PM7: Semi-empirical → XTB_OPT=yes, XTB_GOAT=yes
+  * XRD (X-ray diffraction): High-quality experimental → XTB_OPT=no, XTB_GOAT=no
+  * DFT_optimized / high_level_optimized: Already optimized → XTB_OPT=no, XTB_GOAT=no
+- XTB_OPT: Pre-optimization with xTB (fast, improves low-quality geometries)
+- XTB_GOAT: xTB GOAT optimizer (robust for difficult cases, fixes bad starting geometries)
+- WHY: ChemDraw/SMILES structures have unrealistic bond lengths/angles → must be pre-optimized
+  XRD/DFT structures are already accurate → no pre-optimization needed
 
 ### Step 4: Imaginary Frequencies (IMAG)
 - IMAG=yes: Check for and eliminate imaginary frequencies
