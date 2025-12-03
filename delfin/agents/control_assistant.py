@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional, List
 
 from .base_provider import BaseLLMProvider, Message
 from .control_schemas import CONTROL_SCHEMA, STEP_SCHEMAS
+from .control_examples import format_example_for_prompt
 from ..define import create_control_file
 
 
@@ -47,10 +48,6 @@ class ControlAssistant:
         print("╚══════════════════════════════════════════════════════════╝")
         print()
 
-        # System prompt
-        system_prompt = self._create_system_prompt()
-        self.conversation_history.append(Message(role="system", content=system_prompt))
-
         # Step 0: Ask what user wants to calculate
         print("━━━ What do you want to calculate? ━━━")
         print()
@@ -62,6 +59,15 @@ class ControlAssistant:
         print("  • Ground state optimizations")
         print()
         user_goal = input("Tell me what you want to calculate (or press Enter to skip): ").strip()
+
+        # Create system prompt with relevant example
+        system_prompt = self._create_system_prompt()
+        if user_goal:
+            # Add relevant CONTROL example based on user goal
+            example_prompt = format_example_for_prompt(user_goal)
+            system_prompt += "\n\n" + example_prompt
+
+        self.conversation_history.append(Message(role="system", content=system_prompt))
 
         if user_goal:
             self.conversation_history.append(Message(
@@ -81,6 +87,9 @@ class ControlAssistant:
                 ))
             except Exception:
                 pass  # Continue even if this fails
+        else:
+            # No specific goal - add generic system prompt
+            self.conversation_history.append(Message(role="system", content=system_prompt))
 
         # Step 1: Basic information
         print("━━━ Step 1: Basic Information ━━━")
