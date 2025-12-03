@@ -90,11 +90,19 @@ class ControlAssistantV2:
 
         # === NEW WORKFLOW ===
 
-        # Step 1: Charge
+        # Step 1: Charge (direct input, no AI suggestion)
         print("\n━━━ Step 1: Charge ━━━")
-        charge_data = self._ask_step("charge", STEP_SCHEMAS["charge"],
-                                      "What is the total charge of your molecule?")
-        self.collected_data.update(charge_data)
+        print("What is the total charge of your molecule?")
+        print("Examples: 0 (neutral), +1 (cation), +2 (dication), -1 (anion)")
+        while True:
+            charge_input = input("Charge: ").strip()
+            try:
+                charge = int(charge_input)
+                self.collected_data["charge"] = str(charge)
+                print(f"✓ Charge set to {charge}")
+                break
+            except ValueError:
+                print(f"Error: '{charge_input}' is not a valid integer. Please enter a number (e.g., 0, +1, -1).")
 
         # Step 2: Solvent
         print("\n━━━ Step 2: Solvent ━━━")

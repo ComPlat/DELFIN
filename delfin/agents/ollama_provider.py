@@ -137,6 +137,18 @@ class OllamaProvider(BaseLLMProvider):
         if "properties" not in schema:
             return fixed
 
+        # Common field name mappings that local LLMs might use incorrectly
+        field_mappings = {
+            "solvation_model": "implicit_solvation_model",
+            "implicit_solvation": "implicit_solvation_model",
+        }
+
+        # Fix field names first
+        for wrong_name, correct_name in field_mappings.items():
+            if wrong_name in fixed and correct_name in schema["properties"]:
+                fixed[correct_name] = fixed.pop(wrong_name)
+
+        # Type coercion
         for key, prop_schema in schema["properties"].items():
             if key not in fixed:
                 continue
