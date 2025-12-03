@@ -51,6 +51,37 @@ class ControlAssistant:
         system_prompt = self._create_system_prompt()
         self.conversation_history.append(Message(role="system", content=system_prompt))
 
+        # Step 0: Ask what user wants to calculate
+        print("━━━ What do you want to calculate? ━━━")
+        print()
+        print("DELFIN can calculate:")
+        print("  • Redox potentials (oxidation/reduction)")
+        print("  • Excited states (absorption/emission)")
+        print("  • E_00 energies")
+        print("  • Intersystem crossing (ISC) and internal conversion (IC)")
+        print("  • Ground state optimizations")
+        print()
+        user_goal = input("Tell me what you want to calculate (or press Enter to skip): ").strip()
+
+        if user_goal:
+            self.conversation_history.append(Message(
+                role="user",
+                content=f"I want to calculate: {user_goal}. Please help me set up DELFIN accordingly."
+            ))
+            # Let AI understand the goal
+            try:
+                response = self.provider.chat(
+                    messages=self.conversation_history,
+                    temperature=0.0
+                )
+                print(f"\n💡 AI: {response.data.get('text', 'Understood!')}\n")
+                self.conversation_history.append(Message(
+                    role="assistant",
+                    content=response.data.get('text', 'Understood!')
+                ))
+            except Exception:
+                pass  # Continue even if this fails
+
         # Step 1: Basic information
         print("━━━ Step 1: Basic Information ━━━")
         basic_info = self._ask_step("basic_info", STEP_SCHEMAS["basic_info"])
@@ -87,24 +118,34 @@ class ControlAssistant:
 
     def _create_system_prompt(self) -> str:
         """Create system prompt with strict rules"""
-        return """You are DELFIN Control Assistant, an expert in computational chemistry.
+        return """You are DELFIN Control Assistant, an expert in computational chemistry and the DELFIN software.
 
-Your task is to help users create CONTROL files for DELFIN calculations.
+DELFIN is a workflow manager for ORCA, xTB, and CREST that can:
+- Calculate redox potentials (E_ox, E_red) using OCCUPIER method
+- Optimize geometries and find preferred electron configurations
+- Calculate excited states (S0, S1, T1, T2) and E_00 energies
+- Compute absorption and emission spectra
+- Calculate intersystem crossing (ISC) and internal conversion (IC) rates
+- Handle spin states automatically with the OCCUPIER method
 
 CRITICAL RULES:
-1. You MUST use ONLY values from the provided schema
-2. You MUST NOT invent or guess values
-3. If unsure, ASK the user for clarification
-4. Explain options clearly but concisely
-5. Use structured output with the exact schema provided
+1. LISTEN to what the user wants to calculate FIRST
+2. You MUST use ONLY values from the provided schema
+3. You MUST NOT invent or guess values
+4. If the user mentions ISC, IC, or excited states, you should enable:
+   - ESD_modul=yes
+   - absorption_spec and/or emission_spec
+   - E_00=yes for E_00 energies
+5. For redox calculations, recommend OCCUPIER method (automatic spin states)
+6. Explain options clearly but concisely
+7. Use structured output with the exact schema provided
 
-When asking for input:
-- Explain what the parameter means
-- Suggest reasonable defaults for common cases
-- List available options clearly
-- Be helpful but precise
+When the user describes their calculation goal:
+- Understand what DELFIN features they need
+- Adjust your suggestions accordingly
+- Explain why you're recommending certain settings
 
-Remember: DELFIN users are computational chemists. Be professional and accurate."""
+Remember: DELFIN users are computational chemists. Be professional, accurate, and helpful."""
 
     def _ask_step(self, step_name: str, schema: Dict[str, Any]) -> Dict[str, Any]:
         """

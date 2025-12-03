@@ -186,6 +186,13 @@ CONTROL_SCHEMA = {
             "minimum": 1,
             "maximum": 50,
             "description": "Number of excited states"
+        },
+
+        # ESD module
+        "ESD_modul": {
+            "type": "string",
+            "enum": ["yes", "no"],
+            "description": "Enable Excited State Dynamics module (ISC/IC)"
         }
     },
     "required": ["charge", "functional", "main_basisset", "method"]
