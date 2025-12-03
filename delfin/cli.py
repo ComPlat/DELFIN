@@ -445,6 +445,11 @@ def _run_co2_subcommand(argv: list[str]) -> int:
         help="Overwrite existing files when using --define.",
     )
     parser.add_argument(
+        "--recalc",
+        action="store_true",
+        help="Recalculate only incomplete or missing orientation scan calculations.",
+    )
+    parser.add_argument(
         "--charge",
         type=int,
         help="Charge for the system (replaces [CHARGE] in template).",
@@ -496,6 +501,10 @@ def _run_co2_subcommand(argv: list[str]) -> int:
 
     # Normal run mode - execute CO2 coordinator workflow
     try:
+        # Set recalc mode environment variable if needed
+        import os
+        if args.recalc:
+            os.environ["DELFIN_CO2_RECALC"] = "1"
         co2_main()
         return 0
     except Exception as exc:

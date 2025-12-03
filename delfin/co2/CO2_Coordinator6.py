@@ -20,6 +20,8 @@ from typing import Optional, Tuple, List, Dict, Sequence
 from ase.io import read, write
 from ase.data import covalent_radii
 import matplotlib.pyplot as plt
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
 
 # === Templates erzeugen (--define) ===========================================
 def write_default_files(control_path="CONTROL.txt", co2_path="co2.xyz",
@@ -91,10 +93,22 @@ no_place_co2=false
 PAL=12
 maxcore=3800
 
+# Parallelization (orientation scan only)
+------------------------------------
+parallel_orientation_scan=true
+max_workers=4
+
 # Alternative keywords (commented examples)
 # orientation_job=GFN2-XTB
 # scan_job=GFN2-XTB OPT
 # additions=%SCF BrokenSym M,N END
+#
+# Parallelization notes:
+# - Each worker uses PAL cores for ORCA
+# - max_workers is auto-calculated as: total_cores / PAL
+# - Example: 32 cores with PAL=32 → 1 worker (sequential)
+# - Example: 32 cores with PAL=8 → 4 workers (parallel)
+# - Set max_workers explicitly to override (but stay within limits!)
 """
 
     # Platzhalter optional ersetzen (sonst bleiben sie wie im Template)
@@ -707,6 +721,21 @@ def place_co2_general(complex_path, co2_path, out_path, distance=5.0, place_axis
     return out_path, combined, co2_indices, co2_c_index_combined, final_qm_count
 
 # === ORCA Helpers ===
+def _is_orca_calculation_complete(out_path):
+    """Check if ORCA calculation is complete by looking for termination marker."""
+    if not os.path.exists(out_path):
+        return False
+    try:
+        # Check file size to avoid reading incomplete files
+        if os.path.getsize(out_path) < 100:
+            return False
+        with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+            return "ORCA TERMINATED NORMALLY" in content
+    except Exception:
+        return False
+
+
 def parse_orca_energy(out_path):
     """
     Liefert Energie in Hartree. Sucht robust nach:
@@ -971,81 +1000,144 @@ def plot_orientation_result(csv_path, png_path):
     plt.close()
     print(f"[OK] Orientation plot saved: {png_path}")
 
+def _calculate_single_angle(ang, base_atoms, co2_indices, charge, multiplicity, PAL, maxcore,
+                           orca_keywords, additions, metal_symbol, metal_basis, control_args,
+                           qmmm_range, qm_separator, recalc_mode=False):
+    """
+    Worker function to calculate energy for a single angle.
+    Returns (angle_deg, energy_Eh, xyz_path) or (angle_deg, np.nan, None) on failure.
+    """
+    atoms = base_atoms.copy()
+    R = Rz(ang)
+    pos = atoms.positions.copy()
+    pos[co2_indices] = (pos[co2_indices] @ R.T)  # rotiere nur CO2
+    atoms.positions = pos
+
+    ang_dir = os.path.join("orientation_scan", f"ang_{ang:03d}")
+    os.makedirs(ang_dir, exist_ok=True)
+    xyz_path = os.path.join(ang_dir, "structure.xyz")
+    qm_count = (qmmm_range[1] + 1) if qmmm_range else None
+    separator_line = (qm_separator or "$").strip() or "$"
+    _write_xyz_with_separator(atoms, xyz_path, qm_count, separator=separator_line, insert_separator=False)
+
+    out_path = os.path.join(ang_dir, "calc.out")
+
+    # Check if calculation is already complete (recalc mode)
+    if recalc_mode and _is_orca_calculation_complete(out_path):
+        print(f"[recalc] Skipping angle {ang}° - already complete")
+        try:
+            E = parse_orca_energy(out_path)
+            return (ang, E, xyz_path)
+        except Exception as e:
+            print(f"[WARN] Angle {ang}°: existing calc found but energy parse failed: {e}")
+            # Fall through to re-run calculation
+
+    out_path = write_orca_sp_input_and_run(
+        atoms,
+        xyz_path,
+        ang_dir,
+        orca_keywords=orca_keywords,
+        additions=additions,
+        charge=charge, multiplicity=multiplicity,
+        PAL=PAL, maxcore=maxcore, tag="calc",
+        metal_symbol=metal_symbol, metal_basis=metal_basis,
+        control_args=control_args, qmmm_range=qmmm_range
+    )
+    try:
+        E = parse_orca_energy(out_path)  # Hartree
+        print(f"[INFO] angle {ang:3d}° → E = {E:.10f} Eh")
+        return (ang, E, xyz_path)
+    except Exception as e:
+        print(f"[WARN] Angle {ang}°: energy parse failed: {e}")
+        return (ang, np.nan, None)
+
+
 # === Orientation scan (0–180°, SPs) ===
 def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indices, charge, multiplicity,
                                        PAL, maxcore, orca_keywords, additions,
                                        angle_step_deg=10, angle_range_deg=180,
                                        metal_symbol=None, metal_basis=None,
-                                       control_args=None, qmmm_range=None, qm_separator="$"):
+                                       control_args=None, qmmm_range=None, qm_separator="$",
+                                       parallel=True, max_workers=None):
     """
     Dreht NUR die CO2-Atome um die z-Achse (durch den Ursprung) auf ihrer Position (z=const),
     macht für jeden Winkel eine SP-Rechnung und liefert die beste Geometrie zurück.
+
+    Args:
+        parallel: If True, run angle calculations in parallel (default: True)
+        max_workers: Maximum number of parallel workers (default: auto-detect)
     """
     base_atoms = base_atoms.copy() if base_atoms is not None else _read_xyz_robust(combined_xyz_path)
     os.makedirs("orientation_scan", exist_ok=True)
 
+    # Check recalc mode
+    recalc_mode = os.environ.get("DELFIN_CO2_RECALC") == "1"
+    if recalc_mode:
+        print("[INFO] CO2 recalc mode enabled - skipping completed calculations")
+
     # Winkel-Liste 0..angle_range_deg inkl. Endpunkt
     angles = list(range(0, angle_range_deg + 1, angle_step_deg))
-    results = []  # (angle_deg, energy_Eh, energy_kcal)
+    results = []  # (angle_deg, energy_Eh, xyz_path)
 
+    if parallel:
+        # Parallel execution
+        print(f"[INFO] Running orientation scan in parallel with {max_workers or 'auto'} workers")
+        worker_func = partial(_calculate_single_angle,
+                            base_atoms=base_atoms, co2_indices=co2_indices,
+                            charge=charge, multiplicity=multiplicity,
+                            PAL=PAL, maxcore=maxcore,
+                            orca_keywords=orca_keywords, additions=additions,
+                            metal_symbol=metal_symbol, metal_basis=metal_basis,
+                            control_args=control_args, qmmm_range=qmmm_range,
+                            qm_separator=qm_separator, recalc_mode=recalc_mode)
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_to_angle = {executor.submit(worker_func, ang): ang for ang in angles}
+            for future in as_completed(future_to_angle):
+                ang, E, xyz_path = future.result()
+                results.append((ang, E, xyz_path))
+    else:
+        # Sequential execution (original behavior)
+        print("[INFO] Running orientation scan sequentially")
+        qm_count = (qmmm_range[1] + 1) if qmmm_range else None
+        separator_line = (qm_separator or "$").strip() or "$"
+
+        for ang in angles:
+            ang, E, xyz_path = _calculate_single_angle(
+                ang, base_atoms, co2_indices, charge, multiplicity, PAL, maxcore,
+                orca_keywords, additions, metal_symbol, metal_basis, control_args,
+                qmmm_range, qm_separator, recalc_mode
+            )
+            results.append((ang, E, xyz_path))
+
+    # Sort results by angle
+    results.sort(key=lambda x: x[0])
+
+    # Find best geometry
     best_energy = None
     best_angle = None
     best_xyz = None
 
-    qm_count = (qmmm_range[1] + 1) if qmmm_range else None
-    separator_line = (qm_separator or "$").strip() or "$"
-
-    for ang in angles:
-        atoms = base_atoms.copy()
-        R = Rz(ang)
-        pos = atoms.positions.copy()
-        pos[co2_indices] = (pos[co2_indices] @ R.T)  # rotiere nur CO2
-        atoms.positions = pos
-
-        ang_dir = os.path.join("orientation_scan", f"ang_{ang:03d}")
-        os.makedirs(ang_dir, exist_ok=True)
-        xyz_path = os.path.join(ang_dir, "structure.xyz")
-        _write_xyz_with_separator(atoms, xyz_path, qm_count, separator=separator_line, insert_separator=False)
-
-        out_path = write_orca_sp_input_and_run(
-            atoms,
-            xyz_path,
-            ang_dir,
-            orca_keywords=orca_keywords,
-            additions=additions,
-            charge=charge, multiplicity=multiplicity,
-            PAL=PAL, maxcore=maxcore, tag="calc",
-            metal_symbol=metal_symbol, metal_basis=metal_basis,
-            control_args=control_args, qmmm_range=qmmm_range
-        )
-        try:
-            E = parse_orca_energy(out_path)  # Hartree
-        except Exception as e:
-            print(f"[WARN] Angle {ang}°: energy parse failed: {e}")
-            E = np.nan
-
-        kcal = E * 627.509 if np.isfinite(E) else np.nan
-        results.append((ang, E, kcal))
-
+    for ang, E, xyz_path in results:
         if np.isfinite(E) and (best_energy is None or E < best_energy):
             best_energy = E
             best_angle = ang
             best_xyz = xyz_path
 
-        if np.isfinite(E):
-            print(f"[INFO] angle {ang:3d}° → E = {E:.10f} Eh")
-        else:
-            print(f"[INFO] angle {ang:3d}° → E = NaN")
-
     # Save CSV
     csv_path = os.path.join("orientation_scan", "orientation_scan.csv")
     with open(csv_path, "w") as f:
         f.write("angle_deg,energy_Eh,relative_kcal_per_mol\n")
-        finite_kcal = [k for _, _, k in results if np.isfinite(k)]
-        ref = min(finite_kcal) if finite_kcal else np.nan
-        for ang, E, kcal in results:
-            rel = (kcal - ref) if (np.isfinite(kcal) and np.isfinite(ref)) else np.nan
-            f.write(f"{ang},{E if np.isfinite(E) else ''},{rel if np.isfinite(rel) else ''}\n")
+        finite_energies = [(ang, E) for ang, E, _ in results if np.isfinite(E)]
+        if finite_energies:
+            ref = min(E for _, E in finite_energies)
+            for ang, E, _ in results:
+                if np.isfinite(E):
+                    kcal = E * 627.509
+                    rel = (kcal - ref * 627.509)
+                    f.write(f"{ang},{E},{rel}\n")
+                else:
+                    f.write(f"{ang},,\n")
 
     plot_orientation_result(csv_path, os.path.join("orientation_scan", "orientation_relative.png"))
 
@@ -1182,6 +1274,45 @@ def main():
     orientation_flag = args.get("perform_orientation_scan")
     perform_orientation_scan = True if orientation_flag is None else _is_enabled(orientation_flag)
 
+    # Parallelization settings
+    parallel_flag = args.get("parallel_orientation_scan")
+    parallel_orientation = True if parallel_flag is None else _is_enabled(parallel_flag)
+    max_workers = args.get("max_workers")
+    if max_workers is not None and max_workers != "":
+        try:
+            max_workers = int(max_workers)
+        except (ValueError, TypeError):
+            print(f"[WARN] Invalid max_workers value '{max_workers}', using auto-detect")
+            max_workers = None
+
+    # Calculate safe max_workers to avoid exceeding total cores
+    # Each worker will use PAL cores, so total_cores / PAL = safe_workers
+    if parallel_orientation and max_workers is None:
+        try:
+            import multiprocessing
+            total_cores = multiprocessing.cpu_count()
+            safe_workers = max(1, total_cores // PAL)
+            max_workers = safe_workers
+            print(f"[INFO] Auto-detected parallelization: {max_workers} workers (each using {PAL} cores = {max_workers * PAL}/{total_cores} total cores)")
+        except Exception:
+            max_workers = 1
+            print(f"[WARN] Could not detect CPU count, using 1 worker")
+    elif parallel_orientation and max_workers is not None:
+        # User specified max_workers - check if it's safe
+        try:
+            import multiprocessing
+            total_cores = multiprocessing.cpu_count()
+            required_cores = max_workers * PAL
+            if required_cores > total_cores:
+                safe_workers = max(1, total_cores // PAL)
+                print(f"[WARN] max_workers={max_workers} × PAL={PAL} = {required_cores} cores exceeds available {total_cores} cores")
+                print(f"[WARN] Reducing max_workers to {safe_workers} to stay within limits")
+                max_workers = safe_workers
+            else:
+                print(f"[INFO] Using {max_workers} workers × {PAL} cores = {required_cores}/{total_cores} total cores")
+        except Exception:
+            print(f"[INFO] Using user-specified max_workers={max_workers}")
+
     if perform_orientation_scan:
         best_xyz_path, best_angle_deg, best_E = orientation_scan_at_fixed_distance(
             combined_atoms,
@@ -1197,7 +1328,9 @@ def main():
             metal_basis=metal_basis,
             control_args=args,
             qmmm_range=qmmm_range,
-            qm_separator=qm_separator
+            qm_separator=qm_separator,
+            parallel=parallel_orientation,
+            max_workers=max_workers
         )
     else:
         print("[INFO] Orientation scan disabled via CONTROL (perform_orientation_scan=false).")
