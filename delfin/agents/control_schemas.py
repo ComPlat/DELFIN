@@ -1,5 +1,5 @@
 """
-JSON Schemas for DELFIN CONTROL file parameters
+JSON Schemas for DELFIN CONTROL file parameters (Complete Version)
 
 These schemas define the EXACT allowed values for each parameter.
 LLMs CANNOT hallucinate values outside these schemas.
@@ -9,18 +9,20 @@ LLMs CANNOT hallucinate values outside these schemas.
 FUNCTIONALS = [
     "PBE0", "B3LYP", "WB97X", "WB97X-V", "WB97X-D3", "WB97M-V",
     "TPSS", "TPSSh", "M06", "M06-2X", "M06-L", "M06-HF",
-    "B97M-V", "B97-3c", "r2SCAN", "r2SCAN-3c", "ωB97X-V"
+    "B97M-V", "B97-3c", "r2SCAN", "r2SCAN-3c", "ωB97X-V", "wB97X-V"
 ]
 
 # Basis sets
 MAIN_BASISSETS = [
     "def2-SVP", "def2-SVPD", "def2-TZVP", "def2-TZVPP", "def2-TZVPD",
     "def2-QZVP", "def2-QZVPP", "cc-pVDZ", "cc-pVTZ", "cc-pVQZ",
-    "ma-def2-SVP", "ma-def2-TZVP", "ma-def2-TZVPP"
+    "ma-def2-SVP", "ma-def2-TZVP", "ma-def2-TZVPP",
+    "ZORA-def2-SVP", "ZORA-def2-TZVP", "ZORA-def2-QZVP"
 ]
 
 METAL_BASISSETS = MAIN_BASISSETS + [
-    "SARC-ZORA-TZVP", "SARC-ZORA-TZVPP", "SARC-DKH-TZVP"
+    "SARC-ZORA-TZVP", "SARC-ZORA-TZVPP", "SARC-DKH-TZVP",
+    "SARC-ZORA-SVP"
 ]
 
 # Dispersion corrections
@@ -38,210 +40,376 @@ SOLVATION_MODELS = ["CPCM", "SMD", "ALPB"]
 # Common solvents
 SOLVENTS = [
     "Water", "MeCN", "DMF", "DMSO", "Acetone", "THF", "DCM", "Chloroform",
-    "Toluene", "Benzene", "Hexane", "Methanol", "Ethanol", "DiethylEther"
+    "Toluene", "Benzene", "Hexane", "Methanol", "Ethanol", "DiethylEther",
+    "Dichloromethane", "ChloroForm", "CCl4"
 ]
 
 # Methods
 METHODS = ["classic", "manually", "OCCUPIER"]
 
 # XTB methods
-XTB_METHODS = ["GFN1-XTB", "GFN2-XTB", "GFN-FF"]
+XTB_METHODS = ["GFN1-XTB", "GFN2-XTB", "XTB2", "GFN-FF"]
 
+# OCCUPIER trees
+OCCUPIER_TREES = ["deep", "deep2", "deep3", "flat", "own"]
 
-# Main CONTROL schema
-CONTROL_SCHEMA = {
-    "type": "object",
-    "properties": {
-        # Basic properties
-        "charge": {
-            "type": "integer",
-            "minimum": -10,
-            "maximum": 10,
-            "description": "Total molecular charge"
-        },
-        "multiplicity": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 9,
-            "description": "Spin multiplicity (2S+1)"
-        },
+# OCCUPIER methods
+OCCUPIER_METHODS = ["auto", "manually"]
 
-        # Level of theory
-        "functional": {
-            "type": "string",
-            "enum": FUNCTIONALS,
-            "description": "DFT functional"
-        },
-        "main_basisset": {
-            "type": "string",
-            "enum": MAIN_BASISSETS,
-            "description": "Main basis set for light atoms"
-        },
-        "metal_basisset": {
-            "type": "string",
-            "enum": METAL_BASISSETS,
-            "description": "Basis set for metal atoms"
-        },
-        "disp_corr": {
-            "type": "string",
-            "enum": DISP_CORR,
-            "description": "Dispersion correction"
-        },
-        "ri_jkx": {
-            "type": "string",
-            "enum": RI_JKX,
-            "description": "RI approximation for Coulomb/exchange"
-        },
-        "relativity": {
-            "type": "string",
-            "enum": RELATIVITY,
-            "description": "Relativistic treatment"
-        },
+# OCCUPIER selection
+OCCUPIER_SELECTIONS = ["tolerance", "truncation", "rounding"]
 
-        # Solvation
-        "implicit_solvation_model": {
-            "type": "string",
-            "enum": SOLVATION_MODELS,
-            "description": "Implicit solvation model"
-        },
-        "solvent": {
-            "type": "string",
-            "enum": SOLVENTS,
-            "description": "Solvent name"
-        },
+# Yes/No options
+YES_NO = ["yes", "no"]
 
-        # Method
-        "method": {
-            "type": "string",
-            "enum": METHODS,
-            "description": "DELFIN calculation method"
-        },
+# Boolean options
+TRUE_FALSE = ["TRUE", "FALSE", "true", "false"]
 
-        # Redox steps
-        "calc_initial": {
-            "type": "string",
-            "enum": ["yes", "no"],
-            "description": "Calculate initial state"
-        },
-        "oxidation_steps": {
-            "type": "string",
-            "pattern": "^[0-9,]*$",
-            "description": "Oxidation steps (e.g., '1,2,3')"
-        },
-        "reduction_steps": {
-            "type": "string",
-            "pattern": "^[0-9,]*$",
-            "description": "Reduction steps (e.g., '1,2,3')"
-        },
+# Excitation types
+EXCITATION_TYPES = ["s", "t", "s,t"]
 
-        # Resources
-        "PAL": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 512,
-            "description": "Number of CPU cores for ORCA"
-        },
-        "maxcore": {
-            "type": "integer",
-            "minimum": 100,
-            "maximum": 100000,
-            "description": "Memory per core in MB"
-        },
+# S1 optimization methods
+S1_OPT_METHODS = ["TDDFT", "deltaSCF"]
 
-        # Geometry optimization
-        "XTB_OPT": {
-            "type": "string",
-            "enum": ["yes", "no"],
-            "description": "Pre-optimize with XTB"
-        },
-        "XTB_GOAT": {
-            "type": "string",
-            "enum": ["yes", "no"],
-            "description": "Use XTB GOAT optimizer"
-        },
-        "CREST": {
-            "type": "string",
-            "enum": ["yes", "no"],
-            "description": "Use CREST conformer search"
-        },
+# ESD modus
+ESD_MODUS = ["TDDFT", "deltaSCF"]
 
-        # Excited states
-        "absorption_spec": {
-            "type": "string",
-            "enum": ["yes", "no"],
-            "description": "Calculate absorption spectrum"
-        },
-        "emission_spec": {
-            "type": "string",
-            "enum": ["yes", "no"],
-            "description": "Calculate emission spectrum"
-        },
-        "E_00": {
-            "type": "string",
-            "enum": ["yes", "no"],
-            "description": "Calculate E_00 energy"
-        },
-        "NROOTS": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 50,
-            "description": "Number of excited states"
-        },
+# Geometry optimization
+GEOM_OPT = ["OPT", "COPT", "TIGHTOPT"]
 
-        # ESD module
-        "ESD_modul": {
-            "type": "string",
-            "enum": ["yes", "no"],
-            "description": "Enable Excited State Dynamics module (ISC/IC)"
-        }
-    },
-    "required": ["charge", "functional", "main_basisset", "method"]
-}
+# Frequency types
+FREQ_TYPES = ["FREQ", "NUMFREQ", "ANFREQ"]
 
+# ============================================================================
+# Step-by-step schemas for interactive workflow
+# ============================================================================
 
-# Simplified schema for step-by-step questioning
 STEP_SCHEMAS = {
-    "basic_info": {
+    # Step 1: Charge
+    "charge": {
         "type": "object",
         "properties": {
-            "charge": CONTROL_SCHEMA["properties"]["charge"],
-            "multiplicity": CONTROL_SCHEMA["properties"]["multiplicity"],
+            "charge": {
+                "type": "integer",
+                "minimum": -5,
+                "maximum": 5,
+                "description": "Total molecular charge"
+            }
         },
-        "required": ["charge", "multiplicity"]
+        "required": ["charge"]
     },
-    "level_of_theory": {
+
+    # Step 2: Solvent
+    "solvent": {
         "type": "object",
         "properties": {
-            "functional": CONTROL_SCHEMA["properties"]["functional"],
-            "main_basisset": CONTROL_SCHEMA["properties"]["main_basisset"],
-            "metal_basisset": CONTROL_SCHEMA["properties"]["metal_basisset"],
-        },
-        "required": ["functional", "main_basisset", "metal_basisset"]
-    },
-    "solvation": {
-        "type": "object",
-        "properties": {
-            "implicit_solvation_model": CONTROL_SCHEMA["properties"]["implicit_solvation_model"],
-            "solvent": CONTROL_SCHEMA["properties"]["solvent"],
+            "implicit_solvation_model": {
+                "type": "string",
+                "enum": SOLVATION_MODELS,
+                "description": "Solvation model"
+            },
+            "solvent": {
+                "type": "string",
+                "enum": SOLVENTS,
+                "description": "Solvent name"
+            }
         },
         "required": ["implicit_solvation_model", "solvent"]
     },
-    "redox": {
+
+    # Step 3: Structure quality / XTB optimization
+    "structure_quality": {
         "type": "object",
         "properties": {
-            "method": CONTROL_SCHEMA["properties"]["method"],
-            "calc_initial": CONTROL_SCHEMA["properties"]["calc_initial"],
-            "oxidation_steps": CONTROL_SCHEMA["properties"]["oxidation_steps"],
-            "reduction_steps": CONTROL_SCHEMA["properties"]["reduction_steps"],
+            "is_approximation": {
+                "type": "string",
+                "enum": ["yes", "no"],
+                "description": "Is this structure an approximation?"
+            },
+            "XTB_OPT": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Pre-optimize with xTB"
+            },
+            "XTB_GOAT": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Use xTB GOAT optimizer"
+            }
+        },
+        "required": ["is_approximation"]
+    },
+
+    # Step 4: Imaginary frequencies
+    "imag": {
+        "type": "object",
+        "properties": {
+            "IMAG": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Check and eliminate imaginary frequencies"
+            },
+            "IMAG_option": {
+                "type": "string",
+                "enum": ["1", "2", "3"],
+                "description": "IMAG elimination method (2=recommended)"
+            }
+        },
+        "required": ["IMAG"]
+    },
+
+    # Step 5: Redox potentials
+    "redox_setup": {
+        "type": "object",
+        "properties": {
+            "calc_initial": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Calculate initial state"
+            },
+            "oxidation_steps": {
+                "type": "string",
+                "pattern": "^[0-9,]*$",
+                "description": "Oxidation steps (e.g., '1,2,3')"
+            },
+            "reduction_steps": {
+                "type": "string",
+                "pattern": "^[0-9,]*$",
+                "description": "Reduction steps (e.g., '1,2')"
+            }
+        },
+        "required": ["calc_initial"]
+    },
+
+    # Step 6: Method selection
+    "method": {
+        "type": "object",
+        "properties": {
+            "system_type": {
+                "type": "string",
+                "enum": ["transition_metal_complex", "tadf_organic", "organic_closed_shell", "radical", "other"],
+                "description": "What type of system are you calculating?"
+            },
+            "method": {
+                "type": "string",
+                "enum": METHODS,
+                "description": "Calculation method"
+            }
         },
         "required": ["method"]
     },
+
+    # Step 7: MANUALLY configuration (if method=manually)
+    "manually_config": {
+        "type": "object",
+        "properties": {
+            "multiplicity_0": {
+                "type": "string",
+                "description": "Initial state multiplicity"
+            },
+            "additions_0": {
+                "type": "string",
+                "description": "Additional ORCA keywords for initial state"
+            },
+            "multiplicity_ox1": {
+                "type": "string",
+                "description": "Oxidation +1 multiplicity"
+            },
+            "additions_ox1": {
+                "type": "string",
+                "description": "Additional ORCA keywords for ox1"
+            },
+            "multiplicity_ox2": {
+                "type": "string",
+                "description": "Oxidation +2 multiplicity"
+            },
+            "additions_ox2": {
+                "type": "string",
+                "description": "Additional ORCA keywords for ox2"
+            },
+            "multiplicity_ox3": {
+                "type": "string",
+                "description": "Oxidation +3 multiplicity"
+            },
+            "additions_ox3": {
+                "type": "string",
+                "description": "Additional ORCA keywords for ox3"
+            },
+            "multiplicity_red1": {
+                "type": "string",
+                "description": "Reduction -1 multiplicity"
+            },
+            "additions_red1": {
+                "type": "string",
+                "description": "Additional ORCA keywords for red1"
+            },
+            "multiplicity_red2": {
+                "type": "string",
+                "description": "Reduction -2 multiplicity"
+            },
+            "additions_red2": {
+                "type": "string",
+                "description": "Additional ORCA keywords for red2"
+            },
+            "multiplicity_red3": {
+                "type": "string",
+                "description": "Reduction -3 multiplicity"
+            },
+            "additions_red3": {
+                "type": "string",
+                "description": "Additional ORCA keywords for red3"
+            },
+            "additions_TDDFT": {
+                "type": "string",
+                "description": "Additional keywords for TDDFT"
+            },
+            "additions_T1": {
+                "type": "string",
+                "description": "Additional keywords for T1"
+            },
+            "additions_S1": {
+                "type": "string",
+                "description": "Additional keywords for S1"
+            }
+        },
+        "required": []
+    },
+
+    # Step 8: Excited states / E_00
+    "excited_states": {
+        "type": "object",
+        "properties": {
+            "calculate_excited_states": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Calculate E_00 or excited state redox potentials?"
+            },
+            "E_00": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Calculate E_00 energies"
+            },
+            "excitation": {
+                "type": "string",
+                "enum": EXCITATION_TYPES,
+                "description": "Singlet (s), triplet (t), or both (s,t)"
+            },
+            "absorption_spec": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Calculate absorption spectrum"
+            },
+            "emission_spec": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Calculate emission spectrum"
+            }
+        },
+        "required": ["calculate_excited_states"]
+    },
+
+    # Step 9: Level of theory
+    "level_of_theory": {
+        "type": "object",
+        "properties": {
+            "functional": {
+                "type": "string",
+                "enum": FUNCTIONALS,
+                "description": "DFT functional"
+            },
+            "main_basisset": {
+                "type": "string",
+                "enum": MAIN_BASISSETS,
+                "description": "Basis set for light atoms"
+            },
+            "metal_basisset": {
+                "type": "string",
+                "enum": METAL_BASISSETS,
+                "description": "Basis set for metal atoms"
+            },
+            "disp_corr": {
+                "type": "string",
+                "enum": DISP_CORR,
+                "description": "Dispersion correction"
+            },
+            "ri_jkx": {
+                "type": "string",
+                "enum": RI_JKX,
+                "description": "RI approximation"
+            },
+            "relativity": {
+                "type": "string",
+                "enum": RELATIVITY,
+                "description": "Relativistic treatment"
+            }
+        },
+        "required": ["functional", "main_basisset"]
+    },
+
+    # Step 10: Additional analysis
+    "analysis": {
+        "type": "object",
+        "properties": {
+            "print_MOs": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Generate MO diagrams"
+            },
+            "print_Loewdin_population_analysis": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Print Loewdin population analysis"
+            }
+        },
+        "required": []
+    },
+
+    # Step 11: Computational resources
     "resources": {
         "type": "object",
         "properties": {
-            "PAL": CONTROL_SCHEMA["properties"]["PAL"],
-            "maxcore": CONTROL_SCHEMA["properties"]["maxcore"],
+            "PAL": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 512,
+                "description": "Number of CPU cores"
+            },
+            "maxcore": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 100000,
+                "description": "Memory per core in MB"
+            },
+            "parallel_workflows": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Run multiple calculations in parallel"
+            },
+            "pal_jobs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16,
+                "description": "Number of parallel jobs"
+            }
         },
         "required": ["PAL", "maxcore"]
+    },
+
+    # Step 12: Auto recovery
+    "auto_recovery": {
+        "type": "object",
+        "properties": {
+            "enable_auto_recovery": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Enable automatic error recovery"
+            },
+            "enable_job_timeouts": {
+                "type": "string",
+                "enum": YES_NO,
+                "description": "Enable job timeouts"
+            }
+        },
+        "required": []
     }
 }

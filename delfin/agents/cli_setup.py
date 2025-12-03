@@ -6,7 +6,7 @@ import argparse
 import sys
 
 from .provider_factory import create_provider, list_available_providers
-from .control_assistant import ControlAssistant
+from .control_assistant import ControlAssistantV2
 
 
 def run_setup_command(argv: list[str] = None) -> int:
@@ -66,7 +66,7 @@ def run_setup_command(argv: list[str] = None) -> int:
                 model=args.model
             )
 
-            assistant = ControlAssistant(provider)
+            assistant = ControlAssistantV2(provider)
             assistant.create_control_interactive(output_path=args.output)
             return 0
 
