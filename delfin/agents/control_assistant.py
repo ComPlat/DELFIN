@@ -115,76 +115,50 @@ Keep total length under 15 lines."""
 
         # === NEW WORKFLOW ===
 
-        # Step 1: Charge (direct input, no AI suggestion)
+        # Step 1: Charge (direct input, with optional AI help)
         print("\n━━━ Step 1: Charge ━━━")
         print("What is the total charge of your molecule?")
         print("Examples: 0 (neutral), +1 (cation), +2 (dication), -1 (anion)")
-        while True:
-            charge_input = input("Charge: ").strip()
-            try:
-                charge = int(charge_input)
-                self.collected_data["charge"] = str(charge)
-                print(f"✓ Charge set to {charge}")
-                break
-            except ValueError:
-                print(f"Error: '{charge_input}' is not a valid integer. Please enter a number (e.g., 0, +1, -1).")
+        print("Type '?' for help or enter a number")
+        print()
+
+        charge = self._ask_with_ai_help(
+            prompt="Charge: ",
+            value_type="integer",
+            help_context="molecular charge, oxidation states, and why it matters for calculations"
+        )
+        self.collected_data["charge"] = str(charge)
+        print(f"✓ Charge set to {charge}")
 
         # Step 2: Solvent
         print("\n━━━ Step 2: Solvent ━━━")
-
-        # Ask for solvation model
-        print("Select solvation model:")
-        print("  1) CPCM - Conductor-like Polarizable Continuum Model (general-purpose, reliable)")
-        print("  2) SMD - Solvation Model based on Density (more accurate, slower)")
-        print("  3) ALPB - Analytical Linearized Poisson-Boltzmann (fast, compatible with xTB)")
+        print("Solvation model: CPCM (default), SMD, or ALPB")
+        print("Type '?' for help or enter model name")
         print()
 
-        solvation_choice = self._ask_user_direct_choice(
-            prompt="Select solvation model [1-3]: ",
-            choices={
-                "1": "CPCM",
-                "2": "SMD",
-                "3": "ALPB",
-            },
-            explanations={
-                "1": "CPCM: Best general-purpose choice, well-tested, reliable",
-                "2": "SMD: Higher accuracy for polar solvents, but computationally more expensive",
-                "3": "ALPB: Fast, works well with xTB pre-optimization",
-            }
+        solvation_model = self._ask_with_ai_help(
+            prompt="Solvation model [CPCM/SMD/ALPB]: ",
+            value_type="choice",
+            allowed_values=["CPCM", "SMD", "ALPB", "cpcm", "smd", "alpb"],
+            help_context="solvation models (CPCM vs SMD vs ALPB), their accuracy and computational cost"
+        ).upper()
+
+        print(f"✓ Solvation model: {solvation_model}")
+        print()
+        print("Common solvents: Water, MeCN, DMF, DMSO, Acetone, THF, DCM, Toluene")
+        print("Type '?' for help or enter solvent name")
+        print()
+
+        solvent = self._ask_with_ai_help(
+            prompt="Solvent: ",
+            value_type="string",
+            help_context="solvent selection, polarity effects, and common solvents for your calculation"
         )
 
-        # Ask for solvent
-        print("\nSelect solvent:")
-        print("Common solvents:")
-        print("  1) Water         2) MeCN (Acetonitrile)    3) DMF")
-        print("  4) DMSO          5) Acetone                6) THF")
-        print("  7) DCM           8) Chloroform             9) Toluene")
-        print(" 10) Methanol     11) Ethanol               12) other")
-        print()
-
-        solvent_map = {
-            "1": "Water", "2": "MeCN", "3": "DMF", "4": "DMSO",
-            "5": "Acetone", "6": "THF", "7": "DCM", "8": "Chloroform",
-            "9": "Toluene", "10": "Methanol", "11": "Ethanol",
-        }
-
-        solvent_input = input("Select solvent [1-12]: ").strip()
-
-        if solvent_input == "12":
-            # User wants to enter custom solvent
-            print("\nAvailable solvents: Water, MeCN, DMF, DMSO, Acetone, THF, DCM,")
-            print("Chloroform, Toluene, Benzene, Hexane, Methanol, Ethanol, DiethylEther")
-            solvent = input("Enter solvent name: ").strip()
-        elif solvent_input in solvent_map:
-            solvent = solvent_map[solvent_input]
-        else:
-            print(f"Invalid choice, defaulting to Water")
-            solvent = "Water"
-
-        print(f"✓ Solvation: {solvation_choice} with {solvent}")
+        print(f"✓ Solvent: {solvent}")
 
         solvent_data = {
-            "implicit_solvation_model": solvation_choice,
+            "implicit_solvation_model": solvation_model,
             "solvent": solvent
         }
         self.collected_data.update(solvent_data)
@@ -485,6 +459,85 @@ Remember: DELFIN users are computational chemists. Be professional, accurate, an
                     content=f"Please adjust: {confirm}"
                 ))
                 return self._ask_step(step_name, schema, prompt)
+
+    def _ask_with_ai_help(
+        self,
+        prompt: str,
+        value_type: str = "string",
+        help_context: str = "",
+        allowed_values: List[str] = None
+    ):
+        """
+        Ask user for input with optional AI help.
+
+        User can:
+        - Enter a value directly
+        - Type '?' or a question to get AI explanation
+        - After AI response, enter the value
+
+        Args:
+            prompt: Input prompt
+            value_type: "integer", "string", "choice"
+            help_context: Context for AI to explain
+            allowed_values: For choice type, list of allowed values
+
+        Returns:
+            User's input (converted to appropriate type)
+        """
+        while True:
+            user_input = input(prompt).strip()
+
+            # Check if user wants help
+            if (user_input == '?' or user_input.lower() == 'help' or
+                'warum' in user_input.lower() or 'why' in user_input.lower() or
+                'what' in user_input.lower() or 'wie' in user_input.lower() or
+                'how' in user_input.lower() or user_input.endswith('?')):
+
+                # Get AI explanation
+                question = user_input if user_input not in ['?', 'help'] else f"Explain {help_context}"
+                self.conversation_history.append(Message(
+                    role="user",
+                    content=f"User question about {help_context}: {question}. "
+                            f"Provide a SHORT explanation (max 5 lines)."
+                ))
+
+                try:
+                    response = self.provider.chat(
+                        messages=self.conversation_history,
+                        temperature=0.0
+                    )
+                    print(f"\n💡 AI: {response.data.get('text', 'No explanation available')}\n")
+                    self.conversation_history.append(Message(
+                        role="assistant",
+                        content=response.data.get('text', '')
+                    ))
+                except Exception as e:
+                    print(f"AI help not available: {e}\n")
+
+                # Ask again for the actual value
+                continue
+
+            # Validate and return the input
+            if value_type == "integer":
+                try:
+                    return int(user_input)
+                except ValueError:
+                    print(f"Error: '{user_input}' is not a valid integer. Please enter a number.\n")
+                    continue
+
+            elif value_type == "choice" and allowed_values:
+                if user_input in allowed_values:
+                    return user_input
+                else:
+                    print(f"Error: Please choose from: {', '.join(allowed_values)}\n")
+                    continue
+
+            else:  # string
+                if user_input:
+                    return user_input
+                else:
+                    print("Error: Please enter a value.\n")
+                    continue
 
     def _ask_user_direct_choice(
         self,
