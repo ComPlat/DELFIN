@@ -95,28 +95,37 @@ PARAGRAPH 1 - Method and Software:
 - Include full computational method with all technical details (functional, basis set, auxiliary basis, dispersion, integration method, solvation)
 - Mention any special basis sets for specific atoms
 
-PARAGRAPH 2 - Energies and Electronic Structure:
+PARAGRAPH 2 - Electronic Configuration and Spin State Analysis:
+- Report that OCCUPIER tested multiple spin states (multiplicities)
+- List ALL multiplicities tested with their energies
+- State which multiplicity was selected as preferred and WHY (lowest energy, spin contamination)
+- Report unpaired electrons for preferred state
+- Include Boltzmann populations at 298.15 K if available
+- Discuss spin contamination values
+- Example: "The OCCUPIER module evaluated three spin states (M = 2, 4, and 6). The quartet state (M = 4) was identified as the energetically preferred configuration with an energy of −3056.472 Eh and minimal spin contamination (⟨S²⟩ − S(S+1) = 0.012), corresponding to three unpaired electrons."
+
+PARAGRAPH 3 - Energies and Orbitals:
 - Report final single-point energy in BOTH eV and Hartree with full precision
 - Report HOMO energy, LUMO energy, and HOMO-LUMO gap
 - Use proper formatting: "The final single-point energy of the optimized structure was determined to be −X.XX eV (−X.XXXXXX Eh)."
 
-PARAGRAPH 3 - Vibrational Analysis:
+PARAGRAPH 4 - Vibrational Analysis:
 - List ALL most intense vibrational modes with frequencies
 - Describe the character of each mode (e.g., "in-plane symmetric vibration", "C=O stretching")
 - Explicitly state: "No imaginary (negative) frequencies were observed, confirming that the optimized structure corresponds to a local minimum on the potential energy surface" OR report imaginary frequencies if present
 
-PARAGRAPH 4 - Excited States (if available):
+PARAGRAPH 5 - Excited States (if available):
 - Total number of transitions and state types (singlet/triplet)
 - ALL intense absorption peaks with wavelengths in nm
 - S₀ → S₁ and S₀ → T₁ vertical excitation energies with both eV and nm
 - Emission energies (S₁ → S₀ fluorescence and T₁ → S₀ phosphorescence)
 - E00 energy if available
 
-PARAGRAPH 5 - Redox Properties (if available):
+PARAGRAPH 6 - Redox Properties (if available):
 - All redox potentials with reference electrode
 - Format: "E_red = −X.XXX V (vs. Fc⁺/Fc)"
 
-PARAGRAPH 6 - Calculation Status (if errors/warnings present):
+PARAGRAPH 7 - Calculation Status (if errors/warnings present):
 - Note convergence status
 - Mention any significant errors or warnings
 
@@ -281,14 +290,29 @@ class ReportAssistant:
             if data.orbitals.gap_ev is not None:
                 lines.append(f"HOMO-LUMO gap: {data.orbitals.gap_ev:.2f} eV")
 
-            # OCCUPIER preferred configuration
+            # OCCUPIER preferred configuration and all tests
             if data.orbitals.preferred_multiplicity is not None:
-                lines.append(f"\nPreferred electron configuration (OCCUPIER):")
-                lines.append(f"  Multiplicity: {data.orbitals.preferred_multiplicity}")
+                lines.append(f"\nOCCUPIER electron configuration analysis:")
+                lines.append(f"  Preferred multiplicity: {data.orbitals.preferred_multiplicity}")
+                if data.orbitals.unpaired_electrons is not None:
+                    lines.append(f"  Unpaired electrons: {data.orbitals.unpaired_electrons}")
                 if data.orbitals.preferred_brokensym:
                     lines.append(f"  Broken symmetry: {data.orbitals.preferred_brokensym}")
                 if data.orbitals.spin_contamination is not None:
                     lines.append(f"  Spin contamination: {data.orbitals.spin_contamination:.3f}")
+
+            # All multiplicity tests
+            if data.orbitals.all_multiplicities_tested:
+                lines.append(f"\nAll multiplicity states tested:")
+                for test in data.orbitals.all_multiplicities_tested:
+                    pref_marker = " ← PREFERRED" if test['is_preferred'] else ""
+                    lines.append(f"  M={test['multiplicity']}: E = {test['energy_hartree']:.6f} Eh, S² contamination = {test['spin_contamination']:.3f if test['spin_contamination'] is not None else 'N/A'}{pref_marker}")
+
+            # Boltzmann populations
+            if data.orbitals.boltzmann_populations:
+                lines.append(f"\nBoltzmann populations at 298.15 K:")
+                for mult, pop in sorted(data.orbitals.boltzmann_populations.items()):
+                    lines.append(f"  M={mult}: {pop:.1f}%")
 
         # Vibrational frequencies
         if data.frequencies:

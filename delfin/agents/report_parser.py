@@ -623,6 +623,12 @@ class ReportParser:
                 report_data.orbitals.preferred_brokensym = occupier_data['preferred_brokensym']
             if 'spin_contamination' in occupier_data:
                 report_data.orbitals.spin_contamination = occupier_data['spin_contamination']
+            if 'unpaired_electrons' in occupier_data:
+                report_data.orbitals.unpaired_electrons = occupier_data['unpaired_electrons']
+            if 'all_multiplicities_tested' in occupier_data:
+                report_data.orbitals.all_multiplicities_tested = occupier_data['all_multiplicities_tested']
+            if 'boltzmann_populations' in occupier_data:
+                report_data.orbitals.boltzmann_populations = occupier_data['boltzmann_populations']
             if 'final_energy_ev' in occupier_data:
                 report_data.geometry.final_energy_ev = occupier_data['final_energy_ev']
             if 'final_energy_hartree' in occupier_data:
