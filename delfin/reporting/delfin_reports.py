@@ -119,19 +119,34 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
         f"{config.get('geom_opt','OPT')} FREQ PAL{config.get('PAL','')} MAXCORE({config.get('maxcore','')})"
     ).replace("  ", " ").strip()
 
-    # TDDFT method block (shown if ESD module is enabled)
+    # ESD method block (shown if ESD module is enabled)
     from delfin.esd_module import parse_esd_config
     esd_enabled, _, _, _ = parse_esd_config(config)
     if esd_enabled:
-        method_tddft_block = (
-            f"Method ESD/TDDFT: {config['functional']} {rel_token} {main_basisset} "
-            f"{implicit_token()} {config.get('ri_soc','')} "
-            f"PAL{config['PAL']} NROOTS {config.get('NROOTS', config.get('ESD_nroots', 15))} "
-            f"DOSOC {config.get('DOSOC', 'FALSE')} TDA {config.get('TDA', 'FALSE')} MAXCORE({config['maxcore']})\n"
-            f"        {', '.join(metals)} {metal_basisset if metal_basisset else ''}"
-        ).replace("  ", " ").strip()
+        esd_modus = str(config.get('ESD_modus', 'TDDFT')).strip().lower()
+
+        if esd_modus == 'deltascf':
+            # deltaSCF mode: show deltaSCF-specific keywords (no relativity, no RI-SOMF, no RI-J)
+            # Note: deltaSCF uses exact same keywords as initial calculation but adds deltaSCF
+            method_esd_block = (
+                f"Method ESD (deltaSCF): {config['functional']} {main_basisset} {config.get('disp_corr','')} "
+                f"{config.get('ri_jkx','')} {aux_jk_token} {implicit_token()} "
+                f"OPT FREQ deltaSCF PAL{config['PAL']} MAXCORE({config['maxcore']})"
+            ).replace("  ", " ").strip()
+        else:
+            # TDDFT mode: show TDDFT-specific keywords
+            method_esd_block = (
+                f"Method ESD (TDDFT): {config['functional']} {rel_token} {main_basisset} "
+                f"{implicit_token()} {config.get('ri_soc','')} "
+                f"PAL{config['PAL']} NROOTS {config.get('NROOTS', config.get('ESD_nroots', 15))} "
+                f"DOSOC {config.get('DOSOC', 'FALSE')} TDA {config.get('TDA', 'FALSE')} MAXCORE({config['maxcore']})"
+            ).replace("  ", " ").strip()
+
+        # Add metals line if present
+        if metals and metal_basisset:
+            method_esd_block += f"\n                       {', '.join(metals)} {metal_basisset}"
     else:
-        method_tddft_block = ""
+        method_esd_block = ""
 
     # ---- blocks formatting -----------------------------------------------------
     def format_block(d):
@@ -211,7 +226,23 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
             esd_lines.append("Final single point energies (Hartree):")
             for state, record in sorted(esd_summary.states.items()):
                 esd_lines.append(f"  {state} = {fmt_hartree(record.fspe)}")
+            # Add Zero Point Energies if available
+            zpe_data = [(state, record.zpe) for state, record in sorted(esd_summary.states.items()) if record.zpe is not None]
+            if zpe_data:
+                esd_lines.append("")  # Empty line
+                esd_lines.append("Zero Point Energies (Hartree):")
+                for state, zpe in zpe_data:
+                    esd_lines.append(f"  {state} = {fmt_hartree(zpe)}")
+            # Add Gibbs Free Energies if available
+            gibbs_data = [(state, record.gibbs) for state, record in sorted(esd_summary.states.items()) if record.gibbs is not None]
+            if gibbs_data:
+                esd_lines.append("")  # Empty line
+                esd_lines.append("Gibbs Free Energies (Hartree):")
+                for state, gibbs in gibbs_data:
+                    esd_lines.append(f"  {state} = {fmt_hartree(gibbs)}")
         if esd_summary.isc:
+            if esd_lines:  # Add empty line before ISC section if there's already content
+                esd_lines.append("")
             esd_lines.append("ISC rate constants (s^-1):")
             for transition, record in sorted(esd_summary.isc.items()):
                 extras: list[str] = []
@@ -233,6 +264,8 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                 detail = f" ({', '.join(extras)})" if extras else ""
                 esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}")
         if esd_summary.ic:
+            if esd_lines:  # Add empty line before IC section if there's already content
+                esd_lines.append("")
             esd_lines.append("IC rate constants (s^-1):")
             for transition, record in sorted(esd_summary.ic.items()):
                 extras: list[str] = []
@@ -254,16 +287,36 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
         multiplicity_display = config.get('_multiplicity_display')
         if not multiplicity_display:
             multiplicity_display = str(multiplicity)
-        file.write(
-            f"{banner}\n\n"
-            f"Compound name (NAME): {name_str}\n\n"
-            f"{method_freq_line}\n"
-            f"        {', '.join(metals)} {metal_basisset if metal_basisset else ''}\n"
-            f"{method_tddft_block}\n\n"
-            f"used Method: {config['method']}\n"
-            f"Charge:        {charge}\n"
-            f"Multiplicity:  {multiplicity_display}\n\n"
-            f"Coordinates:\n{xyz}\n\n"
-            f"{middle}\n\n"
-            f"TOTAL RUN TIME: {duration_format}\n"
-        )
+        # Format metals line for frequency method
+        metals_line = f"                       {', '.join(metals)} {metal_basisset}" if metals and metal_basisset else ""
+
+        # Build output with proper formatting
+        output_parts = [
+            banner,
+            "",
+            f"Compound name (NAME): {name_str}",
+            "",
+            method_freq_line,
+        ]
+
+        if metals_line:
+            output_parts.append(metals_line)
+
+        if method_esd_block:
+            output_parts.append("")
+            output_parts.append(method_esd_block)
+
+        output_parts.extend([
+            "",
+            f"used Method: {config['method']}",
+            f"Charge:        {charge}",
+            f"Multiplicity:  {multiplicity_display}",
+            "",
+            f"Coordinates:\n{xyz}",
+            "",
+            middle,
+            "",
+            f"TOTAL RUN TIME: {duration_format}",
+        ])
+
+        file.write("\n".join(output_parts))
