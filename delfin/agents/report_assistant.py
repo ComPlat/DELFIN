@@ -14,57 +14,120 @@ from .report_parser import DELFINReportData, ReportParser
 
 
 # System prompt for report generation - enforces factual reporting
-REPORT_SYSTEM_PROMPT = """You are a scientific report generator for computational chemistry calculations.
+REPORT_SYSTEM_PROMPT = """You are a scientific report generator for computational chemistry calculations performed with DELFIN.
 
-Your task is to generate a concise, factual summary of DELFIN calculations in academic style.
+Your task is to generate a DETAILED, publication-quality summary of DELFIN calculations in academic style.
 
 CRITICAL RULES:
 1. NEVER hallucinate or invent data
 2. ONLY report values explicitly provided in the input data
 3. If a value is None or missing, DO NOT mention it
-4. Use precise scientific language
-5. Report energies, wavelengths, and other values with appropriate precision
-6. Follow the structure of the example reports provided
+4. Use precise scientific language with full technical detail
+5. Report ALL energies, wavelengths, and values with appropriate precision
+6. ALWAYS mention DELFIN as the automation software
+7. Be comprehensive and thorough - this is for scientific publications
 
-Format guidelines:
-- Start with conformer search if data is available
-- Report the computational method in full detail
-- Report final energies, HOMO/LUMO values with units
-- Report vibrational frequencies and note absence of imaginary modes
-- Report excited states with wavelengths and energies
-- Report E00 energy if available
-- Be concise but complete
+Required structure:
+1. CONFORMER SEARCH (if available): "A total of X conformers were identified following global geometry optimization using the [METHOD] method in combination with the [ALGORITHM] algorithm."
 
-Example opening: "A total of X conformers were identified following global geometry optimization using the GFN2-xTB method..."
+2. SOFTWARE: "All calculations were carried out employing the ORCA, XTB, and DELFIN software packages..."
 
-Always use past tense (were identified, were calculated, was determined).
-Always include units (eV, nm, cm⁻¹, etc.).
+3. METHOD DETAILS: Full specification including:
+   - Functional (e.g., PBE0)
+   - Basis set (e.g., def2-SVP)
+   - Auxiliary basis (e.g., def2/J)
+   - Dispersion correction (e.g., D4)
+   - Integration method (e.g., RIJCOSX)
+   - Solvation model (e.g., CPCM(MeCN))
+   - Any special basis sets for metals
+
+4. ENERGIES: Report with full precision
+   - Final single-point energy in both eV and Hartree
+   - HOMO energy in eV
+   - LUMO energy in eV
+   - HOMO-LUMO gap in eV
+
+5. VIBRATIONAL ANALYSIS:
+   - List ALL most intense vibrational modes with frequencies in cm⁻¹
+   - Describe the character of the modes (in-plane, out-of-plane, symmetric, asymmetric, stretching, bending)
+   - State explicitly if no imaginary frequencies were observed
+   - If imaginary frequencies exist, report them
+
+6. EXCITED STATES (if available):
+   - Total number of electronic transitions calculated
+   - Number of singlet and triplet states
+   - ALL intense absorption peaks with wavelengths in nm and oscillator strengths
+   - S₀ → S₁ vertical excitation energy (eV and nm)
+   - S₀ → T₁ vertical excitation energy (eV and nm)
+   - S₁ → S₀ emission energy (eV and nm)
+   - T₁ → S₀ phosphorescence energy (eV and nm)
+   - E00 energy (eV)
+
+7. REDOX POTENTIALS (if available):
+   - Report all E_ox, E_ox_2, E_red, E_red_2 values
+   - Include reference electrode (vs. Fc+/Fc or vs. SCE)
+
+8. CALCULATION STATUS:
+   - Note SCF and geometry convergence
+   - If errors or warnings occurred, mention them
+
+Style requirements:
+- Use past tense throughout
+- Use subscripts: S₀, S₁, T₁, etc.
+- Include all units: eV, nm, cm⁻¹, V
+- Write in paragraph form, not bullet points
+- Length: 300-500 words for complete dataset
+- Professional academic tone suitable for publication in J. Am. Chem. Soc., Inorg. Chem., etc.
 """
 
 
 # Template for report structure
-REPORT_TEMPLATE = """Generate a scientific report summary based on the following calculation data.
+REPORT_TEMPLATE = """Generate a comprehensive, publication-quality scientific report based on the following calculation data.
 
 CALCULATION DATA:
 {data_section}
 
-Generate a report in academic style following these requirements:
+STRUCTURE YOUR REPORT AS FOLLOWS:
 
-1. If conformer data is available, start with: "A total of X conformers were identified..."
-2. Always state the computational method: "All calculations were carried out employing the [SOFTWARE] at the [FUNCTIONAL/BASIS/SETTINGS] level of theory."
-3. Report the final single-point energy if available
-4. Report HOMO/LUMO energies and gap if available
-5. Report vibrational frequencies (most intense modes) if available
-6. Note absence of imaginary frequencies if confirmed
-7. Report excited state calculations if available (number of states, transitions)
-8. Report absorption peaks with wavelengths and energies
-9. Report S₀→S₁ and S₀→T₁ excitation energies if available
-10. Report emission energies (S₁→S₀ fluorescence, T₁→S₀ phosphorescence) if available
-11. Report E00 energy if available
+PARAGRAPH 1 - Method and Software:
+- Mention conformer search if data available
+- State: "All calculations were carried out employing the ORCA, XTB, and DELFIN software packages"
+- Include full computational method with all technical details (functional, basis set, auxiliary basis, dispersion, integration method, solvation)
+- Mention any special basis sets for specific atoms
 
-IMPORTANT: Only include sections for which data is actually provided. Do not invent or assume values.
+PARAGRAPH 2 - Energies and Electronic Structure:
+- Report final single-point energy in BOTH eV and Hartree with full precision
+- Report HOMO energy, LUMO energy, and HOMO-LUMO gap
+- Use proper formatting: "The final single-point energy of the optimized structure was determined to be −X.XX eV (−X.XXXXXX Eh)."
 
-Keep the report concise (250-400 words) and technical.
+PARAGRAPH 3 - Vibrational Analysis:
+- List ALL most intense vibrational modes with frequencies
+- Describe the character of each mode (e.g., "in-plane symmetric vibration", "C=O stretching")
+- Explicitly state: "No imaginary (negative) frequencies were observed, confirming that the optimized structure corresponds to a local minimum on the potential energy surface" OR report imaginary frequencies if present
+
+PARAGRAPH 4 - Excited States (if available):
+- Total number of transitions and state types (singlet/triplet)
+- ALL intense absorption peaks with wavelengths in nm
+- S₀ → S₁ and S₀ → T₁ vertical excitation energies with both eV and nm
+- Emission energies (S₁ → S₀ fluorescence and T₁ → S₀ phosphorescence)
+- E00 energy if available
+
+PARAGRAPH 5 - Redox Properties (if available):
+- All redox potentials with reference electrode
+- Format: "E_red = −X.XXX V (vs. Fc⁺/Fc)"
+
+PARAGRAPH 6 - Calculation Status (if errors/warnings present):
+- Note convergence status
+- Mention any significant errors or warnings
+
+CRITICAL REQUIREMENTS:
+- Use ALL available data from the input
+- Report values with appropriate precision (energies: 2 decimals in eV, 6 decimals in Eh; potentials: 3 decimals)
+- Use proper subscripts and superscripts (S₀, S₁, T₁, Fc⁺/Fc)
+- Professional academic tone
+- Past tense throughout
+- 300-500 words for full dataset
+- Do NOT invent data - only use provided values
 """
 
 
@@ -214,6 +277,15 @@ class ReportAssistant:
                 lines.append(f"LUMO: {data.orbitals.lumo_ev:.2f} eV")
             if data.orbitals.gap_ev is not None:
                 lines.append(f"HOMO-LUMO gap: {data.orbitals.gap_ev:.2f} eV")
+
+            # OCCUPIER preferred configuration
+            if data.orbitals.preferred_multiplicity is not None:
+                lines.append(f"\nPreferred electron configuration (OCCUPIER):")
+                lines.append(f"  Multiplicity: {data.orbitals.preferred_multiplicity}")
+                if data.orbitals.preferred_brokensym:
+                    lines.append(f"  Broken symmetry: {data.orbitals.preferred_brokensym}")
+                if data.orbitals.spin_contamination is not None:
+                    lines.append(f"  Spin contamination: {data.orbitals.spin_contamination:.3f}")
 
         # Vibrational frequencies
         if data.frequencies:

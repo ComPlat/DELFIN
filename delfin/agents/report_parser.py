@@ -46,6 +46,9 @@ class OrbitalData:
     homo_ev: Optional[float] = None
     lumo_ev: Optional[float] = None
     gap_ev: Optional[float] = None
+    preferred_multiplicity: Optional[int] = None
+    preferred_brokensym: Optional[str] = None
+    spin_contamination: Optional[float] = None
 
 
 @dataclass
@@ -203,6 +206,28 @@ class ReportParser:
 
         if 'homo_ev' in data and 'lumo_ev' in data:
             data['gap_ev'] = data['lumo_ev'] - data['homo_ev']
+
+        # Extract preferred configuration (OCCUPIER selection)
+        preferred_match = re.search(
+            r'FINAL SINGLE POINT ENERGY \(1\)\s*=\s*[-\d.]+\s*\(H\)\s*<-- PREFERRED VALUE\s*\n\s*multiplicity\s*(\d+)(?:,\s*BrokenSym\s*([\d,]+))?',
+            content
+        )
+        if preferred_match:
+            data['preferred_multiplicity'] = int(preferred_match.group(1))
+            if preferred_match.group(2):
+                data['preferred_brokensym'] = preferred_match.group(2)
+
+        # Extract spin contamination for preferred configuration
+        spin_contam_match = re.search(
+            r'FINAL SINGLE POINT ENERGY \(1\).*?<-- PREFERRED VALUE.*?Spin Contamination \(⟨S²⟩ - S\(S\+1\)\)\s*:\s*([-\d.]+|N/A)',
+            content,
+            re.DOTALL
+        )
+        if spin_contam_match and spin_contam_match.group(1) != 'N/A':
+            try:
+                data['spin_contamination'] = float(spin_contam_match.group(1))
+            except ValueError:
+                pass
 
         # Extract final energy - look for PREFERRED VALUE first
         energy_match = re.search(r'FINAL SINGLE POINT ENERGY \(1\)\s*=\s*([-\d.]+)\s*\(H\)\s*<-- PREFERRED VALUE', content)
@@ -475,6 +500,12 @@ class ReportParser:
                 report_data.orbitals.lumo_ev = occupier_data['lumo_ev']
             if 'gap_ev' in occupier_data:
                 report_data.orbitals.gap_ev = occupier_data['gap_ev']
+            if 'preferred_multiplicity' in occupier_data:
+                report_data.orbitals.preferred_multiplicity = occupier_data['preferred_multiplicity']
+            if 'preferred_brokensym' in occupier_data:
+                report_data.orbitals.preferred_brokensym = occupier_data['preferred_brokensym']
+            if 'spin_contamination' in occupier_data:
+                report_data.orbitals.spin_contamination = occupier_data['spin_contamination']
             if 'final_energy_ev' in occupier_data:
                 report_data.geometry.final_energy_ev = occupier_data['final_energy_ev']
             if 'final_energy_hartree' in occupier_data:
