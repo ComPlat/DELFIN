@@ -119,12 +119,15 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
         f"{config.get('geom_opt','OPT')} FREQ PAL{config.get('PAL','')} MAXCORE({config.get('maxcore','')})"
     ).replace("  ", " ").strip()
 
-    # TDDFT method block (only if E_00 requested)
-    if str(config.get("E_00", "")).lower() == "yes":
+    # TDDFT method block (shown if ESD module is enabled)
+    from delfin.esd_module import parse_esd_config
+    esd_enabled, _, _, _ = parse_esd_config(config)
+    if esd_enabled:
         method_tddft_block = (
-            f"Method TDDFT: {config['functional']} {rel_token} {main_basisset} "
+            f"Method ESD/TDDFT: {config['functional']} {rel_token} {main_basisset} "
             f"{implicit_token()} {config.get('ri_soc','')} "
-            f"PAL{config['PAL']} NROOTS {config['NROOTS']} DOSOC {config['DOSOC']} TDA {config['TDA']} MAXCORE({config['maxcore']})\n"
+            f"PAL{config['PAL']} NROOTS {config.get('NROOTS', config.get('ESD_nroots', 15))} "
+            f"DOSOC {config.get('DOSOC', 'FALSE')} TDA {config.get('TDA', 'FALSE')} MAXCORE({config['maxcore']})\n"
             f"        {', '.join(metals)} {metal_basisset if metal_basisset else ''}"
         ).replace("  ", " ").strip()
     else:

@@ -178,7 +178,16 @@ def _create_state_input_delta_scf(
     implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
 
     # Geometry optimization token from CONTROL (fall back to OPT)
-    geom_token = str(config.get('geom_opt', 'OPT')).strip()
+    geom_token_raw = config.get('geom_opt', 'OPT')
+    geom_token = str(geom_token_raw).strip() or "OPT"
+
+    # Frequency calculation type from CONTROL (FREQ or numFREQ)
+    freq_type = str(config.get('freq_type', 'FREQ')).strip().upper()
+    if freq_type not in ('FREQ', 'NUMFREQ'):
+        freq_type = 'FREQ'
+
+    # Initial guess from CONTROL (e.g., PModel)
+    initial_guess = (str(config.get("initial_guess", "")).split() or [""])[0]
 
     # Build simple keyword line
     # S0 is closed-shell (RKS), all other states need UKS
@@ -196,7 +205,7 @@ def _create_state_input_delta_scf(
 
     if geom_token:
         keywords.append(geom_token)
-    keywords.append("numFREQ")
+    keywords.append(freq_type)
 
     if use_deltascf:
         keywords.append("deltaSCF")
@@ -204,6 +213,9 @@ def _create_state_input_delta_scf(
     if moinp_gbw:
         keywords.append("NODIIS")
         keywords.append("MOREAD")
+
+    if initial_guess:
+        keywords.append(initial_guess)
 
     simple_line = "! " + " ".join(keywords)
 
@@ -263,9 +275,13 @@ def _create_state_input_delta_scf(
 
     # Geometry - read from start.txt or xyz file
     if xyz_file == "initial.xyz":
-        # For S0: read from start.txt in main directory (contains converted XYZ coords)
-        xyz_path = Path("start.txt")
-        skip_lines = 0  # start.txt has no header
+        # Prefer optimized initial.xyz; fallback to start.txt
+        if Path("initial.xyz").exists():
+            xyz_path = Path("initial.xyz")
+            skip_lines = 2  # initial.xyz has header
+        else:
+            xyz_path = Path("start.txt")
+            skip_lines = 0  # start.txt has no header
     else:
         # For S1, T1, T2: read from ESD directory (XYZ format with header)
         xyz_path = esd_dir / xyz_file
@@ -363,15 +379,17 @@ def _create_state_input_tddft(
     ri_jkx = config.get("ri_jkx", "RIJCOSX")
     aux_jk = config.get("aux_jk", "def2/J")
     implicit_solvation = config.get("implicit_solvation_model", "CPCM")
-    geom_token = str(config.get("geom_opt", "OPT")).strip()
+    geom_token_raw = config.get("geom_opt", "OPT")
+    geom_token = str(geom_token_raw).strip() or "OPT"
     pal = config.get("PAL", 12)
     maxcore = config.get("maxcore", 6000)
     nroots = config.get("ESD_nroots", 15)
-    tda_flag = str(config.get("TDA", "FALSE")).upper()
+    tda_flag = str(config.get("ESD_TDA", config.get("TDA", "FALSE"))).upper()
     # Use ESD_maxdim if set, otherwise default to nroots/2 (min 5)
     esd_maxdim = config.get("ESD_maxdim", None)
     maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
     tddft_maxiter = _resolve_tddft_maxiter(config)
+    followiroot = str(config.get("ESD_followiroot", "true")).lower() in ("true", "yes", "1", "on")
     output_blocks = collect_output_blocks(config, allow=True)
 
     def _join_keywords(parts: List[str]) -> str:
@@ -380,8 +398,12 @@ def _create_state_input_tddft(
 
     # Coordinate source
     if state_upper == "S0":
-        xyz_path = Path("start.txt")
-        skip_lines = 0
+        if Path("initial.xyz").exists():
+            xyz_path = Path("initial.xyz")
+            skip_lines = 2
+        else:
+            xyz_path = Path("start.txt")
+            skip_lines = 0
     elif state_upper == "S1":
         xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
@@ -429,7 +451,7 @@ def _create_state_input_tddft(
             fh.write(f"  iroot {iroot}\n")
         if irootmult:
             fh.write(f"  irootmult {irootmult}\n")
-        if iroot is not None:
+        if iroot is not None and followiroot:
             fh.write("  followiroot true\n")
         fh.write("end\n")
 

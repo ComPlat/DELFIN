@@ -195,7 +195,10 @@ def _parse_control_file(file_path: str, *, keep_steps_literal: bool, content: Op
         stripped = line.strip()
 
         upper = stripped.upper()
-        if upper.startswith("INFOS:") or upper.startswith("ESD MODULE"):
+        # Stop parsing before the documentation block at the end of CONTROL.txt.
+        # Require the exact "ESD MODULE:" heading so we don't accidentally stop
+        # at the real ESD configuration section ("ESD module (excited state dynamics):").
+        if upper.startswith("INFOS:") or upper.startswith("ESD MODULE:"):
             # Stop parsing before template/documentation blocks to avoid overriding user values.
             break
 

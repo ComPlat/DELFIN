@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
 from delfin.common.logging import get_logger
-from delfin.energies import find_electronic_energy
+from delfin.energies import find_electronic_energy, find_ZPE
 
 logger = get_logger(__name__)
 
@@ -54,6 +54,7 @@ class StateResult:
     """Result information for a single electronic state."""
 
     fspe: Optional[float]
+    zpe: Optional[float]
     source: Path
 
 
@@ -171,10 +172,12 @@ def collect_esd_results(
         output_path = esd_dir / f"{state_key}.out"
         if output_path.exists():
             fspe = find_electronic_energy(str(output_path))
+            zpe = find_ZPE(str(output_path))
         else:
-            logger.info("ESD state output %s missing; skipping FSPE extraction.", output_path)
+            logger.info("ESD state output %s missing; skipping FSPE/ZPE extraction.", output_path)
             fspe = None
-        summary.states[state_key] = StateResult(fspe, output_path)
+            zpe = None
+        summary.states[state_key] = StateResult(fspe, zpe, output_path)
 
     for isc in iscs:
         isc_key = isc.strip().upper()

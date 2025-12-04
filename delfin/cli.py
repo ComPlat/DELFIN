@@ -1230,9 +1230,19 @@ def main(argv: list[str] | None = None) -> int:
     
         # ------------------- ESD (Excited State Dynamics) --------------------
         if esd_enabled:
-            logger.info("Running ESD module...")
-            if not run_esd_phase(pipeline_ctx):
-                logger.warning("ESD module encountered issues, continuing...")
+            if method_token in (None, "classic"):
+                # Check if ESD was already added to classic phase scheduler
+                if pipeline_ctx.extra.get('esd_added_to_classic'):
+                    logger.info("ESD jobs already executed in parallel with classic phase (skipping separate ESD phase)")
+                else:
+                    logger.info("Running ESD module...")
+                    if not run_esd_phase(pipeline_ctx):
+                        logger.warning("ESD module encountered issues, continuing...")
+            else:
+                logger.info(
+                    "ESD module enabled but skipped for method '%s' (only classic/ESD-only supported).",
+                    method_token,
+                )
     
         # Finalize redox and emission summary
         if method_token == "OCCUPIER":

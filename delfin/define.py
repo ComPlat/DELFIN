@@ -37,22 +37,25 @@ reduction_steps=1,2,3
 method=classic|manually|OCCUPIER
 calc_potential_method=2
 ------------------------------------
-E_00=no
-excitation=s|t
-S1_opt=TDDFT|deltaSCF
-triplet_flag=FALSE
-absorption_spec=no
-emission_spec=no
-NROOTS=15
-TDA=FALSE
-NACME=TRUE
-ETF=TRUE
-DONTO=FALSE
-DOSOC=TRUE
-singlet exitation:
-IROOT=1
-FOLLOWIROOT=TRUE
-mcore_E00=10000
+ESD module (excited state dynamics):
+ESD_modul=no
+ESD_modus=TDDFT|deltaSCF
+states=S1,T1,S2,T2
+ISCs=S1>T1,T1>S1
+ICs=S1>S0
+--------------------
+deltaSCF Settings:
+deltaSCF_DOMOM=true
+deltaSCF_PMOM=true
+deltaSCF_keepinitialref=true
+deltaSCF_SOSCFHESSUP=LBFGS
+--------------------
+TDDFT Settings:
+ESD_TDDFT_maxiter=1000
+ESD_nroots=15
+ESD_maxdim=30
+ESD_TDA=FALSE
+ESD_followiroot=true
 ------------------------------------
 MANUALLY:
 multiplicity_0=
@@ -77,7 +80,6 @@ Level of Theory:
 functional=PBE0
 disp_corr=D4
 ri_jkx=RIJCOSX
-ri_soc=RI-SOMF(1X)
 relativity=ZORA
 aux_jk=def2/J
 aux_jk_rel=SARC/J
@@ -93,21 +95,6 @@ initial_guess=PModel
 temperature=298.15
 maxiter=125
 qmmm_option=QM/PBEH-3c
-----------------
-deltaSCF:
-deltaSCF_DOMOM=true
-deltaSCF_PMOM=true
-deltaSCF_keepinitialref=true
-deltaSCF_SOSCFHESSUP=LBFGS
-----------------
-ESD_modul=no
-ESD_modus=TDDFT|deltaSCF
-ESD_TDDFT_maxiter=1000
-ESD_nroots=15
-ESD_maxdim=30
-states=S0,S1,T1,T2
-ISCs=S1>T1,T1>S1,S1>T2,T2>S1
-ICs=S1>S0,T2>T1
 ------------------------------------
 Reference value:
 E_ref=
@@ -196,10 +183,12 @@ Available OX_STEPS: 1 ; 1,2 ; 1,2,3 ; 2 ; 3 ; 2,3 ; 1,3
 Available RED_STEPS: 1 ; 1,2 ; 1,2,3 ; 2 ; 3 ; 2,3 ; 1,3
 Available IMPLICIT SOLVATION MODELS: CPCM ; CPCMC ; SMD
 Available dispersion corrections DISP_CORR: D4 ; D3 ; D3BJ ; D3ZERO ; NONE
-Available EXCITATIONS: s (singulet) ; t (triplet) (s is more difficult to converge, there may be no convergence).
+ESD MODULE: Set ESD_modul=yes and specify states=[S0,S1,T1] for excited state calculations
+Available states: S0, S1, S2, T1, T2, T3
+ISCs: S1>T1, T1>S0, etc. (intersystem crossing rates)
+ICs: S1>S0, S2>S1, etc. (internal conversion rates)
 Available qmmm_option: QM/XTB ; QM/PBEH-3C ; QM/HF-3C ; QM/r2SCAN-3C (for QM/MM calculations)
 Available freq_type: FREQ (analytic, default) ; NUMFREQ (numerical, required for WB97X-V and other DFT-NL functionals)
-E_00 can only be calculated for closed shell systems (use classic or manually!)
 EXPLICIT SOLVATION MODEL IS VERY EXPENSIVE!!!!!
 IMAG_option:
   1 -> red/ox OCCUPIER continues immediately (IMAG and OCCUPIER run in parallel)
@@ -219,6 +208,8 @@ ESD_MODUL: yes/no - Enable ESD calculations in separate ESD/ directory
 states: Comma-separated list of states to calculate (S0, S1, T1, T2)
 ISCs: Comma-separated list of intersystem crossings (e.g., S1>T1, T1>S1)
 ICs: Comma-separated list of internal conversions (e.g., S1>S0, T1>T2)
+ESD_modus: TDDFT (default) or deltaSCF - Method for excited state calculations
+ESD_followiroot: true/false - Follow TDDFT root during geometry optimization (TDDFT mode only, default: true)
 
 -------------------------------------------------
 Automatic Error Recovery & Retry System:
