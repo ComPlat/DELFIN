@@ -133,14 +133,24 @@ PARAGRAPH 5 - Excited States (if available):
 - Emission energies (S₁ → S₀ fluorescence and T₁ → S₀ phosphorescence)
 - E00 energy if available
 
-PARAGRAPH 6 - Redox Properties (if available):
-Write this with electrochemical interpretation:
-- Report potentials with chemical context
-- Example: "The calculated reduction potentials reveal accessible redox chemistry for this complex. The first reduction occurs at E_red = −1.330 V (vs. Fc⁺/Fc), corresponding to a metal-centered reduction. A second reduction is observed at E_red_2 = −1.802 V, indicating formation of a stable doubly-reduced species. The separation of 472 mV between successive reductions suggests moderate electronic coupling..."
-- Compare different redox steps if multiple available
-- Discuss accessibility or significance of potentials
+PARAGRAPH 6 - Redox-Induced Electronic Structure Changes (if OCCUPIER steps available):
+This is CRITICAL - discuss how electronic configuration CHANGES with oxidation state:
+- Compare initial vs red_step_1 vs red_step_2 (or ox_step_1, etc.)
+- Report charge change: "Upon first reduction (initial +2 → red_step_1 +1)..."
+- Report multiplicity changes: "The preferred multiplicity decreased from M=4 to M=3"
+- Report unpaired electron changes: "The number of unpaired electrons changed from 3 to 2"
+- Discuss energy differences between steps in kcal/mol
+- Compare spin contamination across steps
+- Interpret: "This multiplicity change suggests the added electron occupies a metal d-orbital..."
+- Example: "Upon first reduction from the +2 to +1 oxidation state, OCCUPIER analysis reveals a striking change in electronic structure. The preferred multiplicity shifts from M = 4 (quartet, 3 unpaired electrons, E = −3056.472 Eh) to M = 3 (triplet, 2 unpaired electrons, E = −3056.XXX Eh). The reduction thus stabilizes a lower-spin configuration, with the added electron likely pairing with one of the metal d-electrons. The second reduction to the neutral species further reduces the multiplicity to M = 2 (doublet, 1 unpaired electron), indicating progressive spin-pairing upon sequential electron addition."
 
-PARAGRAPH 7 - Calculation Status (if errors/warnings present):
+PARAGRAPH 7 - Redox Potentials (if available):
+Report calculated potentials and connect to electronic structure changes:
+- E_red, E_red_2, E_ox, E_ox_2 with reference electrode
+- Connect to OCCUPIER analysis if available: "The calculated E_red = −1.330 V corresponds to the quartet→triplet transition discussed above"
+- Discuss separation between successive redox events
+
+PARAGRAPH 8 - Calculation Status (if errors/warnings present):
 - Note convergence status
 - Mention any significant errors or warnings
 
@@ -389,6 +399,31 @@ class ReportAssistant:
 
             if data.excited_states.e00_ev is not None:
                 lines.append(f"\nE00 energy: {data.excited_states.e00_ev:.2f} eV")
+
+        # OCCUPIER steps - evolution of electronic structure with oxidation state
+        if data.occupier_steps:
+            lines.append("\n=== OCCUPIER REDOX EVOLUTION ===")
+            lines.append(f"Total redox steps analyzed: {len(data.occupier_steps)}")
+
+            for step in data.occupier_steps:
+                lines.append(f"\n{step.step_name.upper()}:")
+                if step.charge is not None:
+                    lines.append(f"  Charge: {step.charge:+d}")
+                if step.orbitals and step.orbitals.preferred_multiplicity:
+                    lines.append(f"  Preferred multiplicity: {step.orbitals.preferred_multiplicity}")
+                    if step.orbitals.unpaired_electrons is not None:
+                        lines.append(f"  Unpaired electrons: {step.orbitals.unpaired_electrons}")
+                    if step.orbitals.spin_contamination is not None:
+                        lines.append(f"  Spin contamination: {step.orbitals.spin_contamination:.3f}")
+                if step.energy_hartree is not None:
+                    lines.append(f"  Energy: {step.energy_hartree:.6f} Eh ({step.energy_ev:.2f} eV)")
+
+                # Show all tested multiplicities for this step
+                if step.orbitals and step.orbitals.all_multiplicities_tested:
+                    lines.append(f"  Multiplicities tested:")
+                    for test in step.orbitals.all_multiplicities_tested:
+                        marker = " ← PREFERRED" if test['is_preferred'] else ""
+                        lines.append(f"    M={test['multiplicity']}: {test['energy_hartree']:.6f} Eh{marker}")
 
         # Redox potentials
         if data.redox and (data.redox.e_ox is not None or data.redox.e_red is not None):
