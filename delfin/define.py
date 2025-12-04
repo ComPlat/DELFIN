@@ -120,7 +120,7 @@ Resource Settings:
 PAL=12
 maxcore=6000
 parallel_workflows=yes
-pal_jobs=4
+pal_jobs=3
 enable_job_timeouts=no
 job_timeout_hours=36
 opt_timeout_hours=14

@@ -57,6 +57,7 @@ class PoolJob:
     retry_count: int = 0
     next_retry_time: float = 0.0
     suppress_pool_logs: bool = False
+    working_dir: Optional[Path] = None  # Working directory for job-specific process tracking
 
     # Parent-Child Job Tracking for nested jobs
     parent_job_id: Optional[str] = None  # ID of parent job if this is a child
@@ -955,7 +956,17 @@ class DynamicCorePool:
         # Hard kill (force=True): SIGTERM → wait → SIGKILL (forceful after grace period)
         if not cancelled:
             try:
-                roots = [Path.cwd()]
+                roots: List[Path] = []
+                if job.working_dir is not None:
+                    roots.append(Path(job.working_dir).resolve())
+                else:
+                    # Fallback to current working directory if no job-specific path is available
+                    roots.append(Path.cwd())
+                    logger.warning(
+                        "Job %s missing working_dir; falling back to current directory for termination scope",
+                        job_id,
+                    )
+
                 procs = _collect_orca_processes(roots)
                 if not procs:
                     logger.debug("No ORCA processes found to terminate for %s", job_id)
@@ -969,12 +980,17 @@ class DynamicCorePool:
                     # Soft kill: Only SIGTERM, no escalation
                     # This allows the job to gracefully shutdown during the 1h grace period
                     import signal
+                    import os
                     for proc in procs:
                         try:
-                            proc.send_signal(signal.SIGTERM)
-                            logger.info(f"Sent SIGTERM to PID {proc.pid} ({proc.info.get('name', 'unknown')}) for job {job_id}")
+                            # ProcessInfo is a NamedTuple, not a Process object
+                            # Send SIGTERM directly to the process group
+                            os.killpg(proc.pgid, signal.SIGTERM)
+                            logger.info(f"Sent SIGTERM to process group {proc.pgid} (PID {proc.pid}) for job {job_id}")
+                        except ProcessLookupError:
+                            logger.debug(f"Process group {proc.pgid} already exited")
                         except Exception as exc:
-                            logger.warning(f"Failed to send SIGTERM to PID {proc.pid}: {exc}")
+                            logger.warning(f"Failed to send SIGTERM to PGID {proc.pgid}: {exc}")
 
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to terminate processes for %s: %s", job_id, exc)

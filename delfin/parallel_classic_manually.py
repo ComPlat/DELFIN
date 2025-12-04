@@ -50,6 +50,7 @@ class WorkflowJob:
     estimated_duration: float = 3600.0
     inline: bool = False  # Run inline without reserving pool cores
     preserve_cores_optimal: bool = False  # Skip auto-tuning for explicit core allocations
+    working_dir: Optional[Path] = None  # Working directory for job-specific process tracking
 
     # Cache original core preferences so dynamic scheduling can adjust per run.
     base_cores_min: int = field(init=False, repr=False)
@@ -836,6 +837,7 @@ class _WorkflowManager:
             args=(),
             kwargs={},
             estimated_duration=job.estimated_duration,
+            working_dir=job.working_dir,
         )
         pool_job.suppress_pool_logs = True
 
