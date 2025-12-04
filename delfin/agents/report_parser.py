@@ -7,6 +7,7 @@ This module provides FACTUAL data extraction without interpretation.
 
 from __future__ import annotations
 import re
+import math
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, field
@@ -43,6 +44,19 @@ class FrequencyData:
 
 
 @dataclass
+class MultiplicityTest:
+    """Data for a single multiplicity test in OCCUPIER"""
+    index: int
+    multiplicity: int
+    energy_hartree: float
+    spin_contamination: Optional[float] = None
+    brokensym: Optional[str] = None
+    is_preferred: bool = False
+    alpha_electrons: Optional[int] = None
+    beta_electrons: Optional[int] = None
+
+
+@dataclass
 class OrbitalData:
     """Molecular orbital data"""
     homo_ev: Optional[float] = None
@@ -51,6 +65,9 @@ class OrbitalData:
     preferred_multiplicity: Optional[int] = None
     preferred_brokensym: Optional[str] = None
     spin_contamination: Optional[float] = None
+    all_multiplicities_tested: List[MultiplicityTest] = field(default_factory=list)
+    unpaired_electrons: Optional[int] = None
+    boltzmann_populations: Dict[int, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -246,37 +263,80 @@ class ReportParser:
         if 'homo_ev' in data and 'lumo_ev' in data:
             data['gap_ev'] = data['lumo_ev'] - data['homo_ev']
 
-        # Extract preferred configuration (OCCUPIER selection)
-        preferred_match = re.search(
-            r'FINAL SINGLE POINT ENERGY \(1\)\s*=\s*[-\d.]+\s*\(H\)\s*<-- PREFERRED VALUE\s*\n\s*multiplicity\s*(\d+)(?:,\s*BrokenSym\s*([\d,]+))?',
-            content
-        )
-        if preferred_match:
-            data['preferred_multiplicity'] = int(preferred_match.group(1))
-            if preferred_match.group(2):
-                data['preferred_brokensym'] = preferred_match.group(2)
+        # Extract ALL multiplicity tests from OCCUPIER
+        multiplicity_tests = []
+        preferred_index = None
 
-        # Extract spin contamination for preferred configuration
-        spin_contam_match = re.search(
-            r'FINAL SINGLE POINT ENERGY \(1\).*?<-- PREFERRED VALUE.*?Spin Contamination \(⟨S²⟩ - S\(S\+1\)\)\s*:\s*([-\d.]+|N/A)',
-            content,
-            re.DOTALL
-        )
-        if spin_contam_match and spin_contam_match.group(1) != 'N/A':
-            try:
-                data['spin_contamination'] = float(spin_contam_match.group(1))
-            except ValueError:
-                pass
+        # Find preferred index
+        pref_index_match = re.search(r'\(Preferred Index:\s*(\d+)\)', content)
+        if pref_index_match:
+            preferred_index = int(pref_index_match.group(1))
 
-        # Extract final energy - look for PREFERRED VALUE first
-        energy_match = re.search(r'FINAL SINGLE POINT ENERGY \(1\)\s*=\s*([-\d.]+)\s*\(H\)\s*<-- PREFERRED VALUE', content)
-        if not energy_match:
-            # Fallback to any FINAL SINGLE POINT ENERGY
-            energy_match = re.search(r'FINAL SINGLE POINT ENERGY\s*(?:\(\d+\))?\s*=?\s*([-\d.]+)', content)
+        # Extract all FINAL SINGLE POINT ENERGY entries
+        energy_pattern = r'FINAL SINGLE POINT ENERGY \((\d+)\)\s*=\s*([-\d.]+)\s*\(H\)(?:\s*<-- PREFERRED VALUE)?\s*\n\s*multiplicity\s*(\d+)(?:,\s*BrokenSym\s*([\d,]+))?\s*\n\s*Spin Contamination \(⟨S²⟩ - S\(S\+1\)\)\s*:\s*([-\d.]+|N/A)'
 
-        if energy_match:
-            data['final_energy_hartree'] = float(energy_match.group(1))
-            data['final_energy_ev'] = float(energy_match.group(1)) * 27.2114  # Hartree to eV
+        for match in re.finditer(energy_pattern, content, re.MULTILINE):
+            index = int(match.group(1))
+            energy = float(match.group(2))
+            mult = int(match.group(3))
+            brokensym = match.group(4) if match.group(4) else None
+            spin_contam_str = match.group(5)
+
+            spin_contam = None
+            if spin_contam_str and spin_contam_str != 'N/A':
+                try:
+                    spin_contam = float(spin_contam_str)
+                except ValueError:
+                    pass
+
+            is_preferred = (index == preferred_index)
+
+            multiplicity_tests.append({
+                'index': index,
+                'multiplicity': mult,
+                'energy_hartree': energy,
+                'spin_contamination': spin_contam,
+                'brokensym': brokensym,
+                'is_preferred': is_preferred
+            })
+
+            # Store preferred configuration
+            if is_preferred:
+                data['preferred_multiplicity'] = mult
+                if brokensym:
+                    data['preferred_brokensym'] = brokensym
+                if spin_contam is not None:
+                    data['spin_contamination'] = spin_contam
+                data['final_energy_hartree'] = energy
+                data['final_energy_ev'] = energy * 27.2114
+
+        data['all_multiplicities_tested'] = multiplicity_tests
+
+        # Calculate unpaired electrons from preferred multiplicity
+        if 'preferred_multiplicity' in data:
+            data['unpaired_electrons'] = data['preferred_multiplicity'] - 1
+
+        # Calculate Boltzmann populations at 298.15 K
+        if multiplicity_tests:
+            kT = 0.0259  # eV at 298.15 K
+            energies_ev = [m['energy_hartree'] * 27.2114 for m in multiplicity_tests]
+            min_energy = min(energies_ev)
+
+            # Calculate Boltzmann factors
+            boltzmann_factors = []
+            for e_ev in energies_ev:
+                delta_e = e_ev - min_energy
+                boltzmann_factors.append(math.exp(-delta_e / kT) if delta_e < 10 else 0)  # Cutoff at 10 eV
+
+            partition_sum = sum(boltzmann_factors)
+
+            if partition_sum > 0:
+                boltzmann_pops = {}
+                for i, mult_test in enumerate(multiplicity_tests):
+                    population = (boltzmann_factors[i] / partition_sum) * 100
+                    boltzmann_pops[mult_test['multiplicity']] = population
+
+                data['boltzmann_populations'] = boltzmann_pops
 
         return data
 
