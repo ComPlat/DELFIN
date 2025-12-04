@@ -807,6 +807,9 @@ def main(argv: list[str] | None = None) -> int:
     if arg_list and arg_list[0] == "setup":
         from .agents.cli_setup import run_setup_command
         return run_setup_command(arg_list[1:])
+    if arg_list and arg_list[0] == "report-ai":
+        from .cli_report_ai import run_report_ai_command
+        return run_report_ai_command(arg_list[1:])
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
     args, _ = parser.parse_known_args(arg_list)
