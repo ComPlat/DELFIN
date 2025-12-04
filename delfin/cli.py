@@ -70,12 +70,7 @@ def _build_step_bases() -> set[str]:
     bundle = asdict(FileBundle())
     bases: set[str] = {Path(value).stem for value in bundle.values()}
     # Additional artifacts not covered by FileBundle
-    bases.update({
-        "absorption_spec",
-        "emission_t1",
-        "emission_s1",
-        "start",
-    })
+    bases.update({"start"})
     occ_steps = ["initial"]
     occ_steps.extend(f"ox_step_{idx}" for idx in range(1, 4))
     occ_steps.extend(f"red_step_{idx}" for idx in range(1, 4))
@@ -987,9 +982,6 @@ def main(argv: list[str] | None = None) -> int:
             'reduction_steps': '',
             'parallel_workflows': 'yes',
             'pal_jobs': None,
-            'absorption_spec': 'no',
-            'emission_spec': 'no',
-            'E_00': 'no',
             'additions_TDDFT': '',
             'DONTO': 'FALSE',
             'DOSOC': 'TRUE',
@@ -1233,9 +1225,19 @@ def main(argv: list[str] | None = None) -> int:
     
         # ------------------- ESD (Excited State Dynamics) --------------------
         if esd_enabled:
-            logger.info("Running ESD module...")
-            if not run_esd_phase(pipeline_ctx):
-                logger.warning("ESD module encountered issues, continuing...")
+            if method_token in (None, "classic"):
+                # Check if ESD was already added to classic phase scheduler
+                if pipeline_ctx.extra.get('esd_added_to_classic'):
+                    logger.info("ESD jobs already executed in parallel with classic phase (skipping separate ESD phase)")
+                else:
+                    logger.info("Running ESD module...")
+                    if not run_esd_phase(pipeline_ctx):
+                        logger.warning("ESD module encountered issues, continuing...")
+            else:
+                logger.info(
+                    "ESD module enabled but skipped for method '%s' (only classic/ESD-only supported).",
+                    method_token,
+                )
     
         # Finalize redox and emission summary
         if method_token == "OCCUPIER":

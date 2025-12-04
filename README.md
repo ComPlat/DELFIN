@@ -209,8 +209,6 @@ delfin/
 * `calc_initial = yes | no`
 * `oxidation_steps = 1,2,3` (string; steps to compute)
 * `reduction_steps = 1,2,3` (string; steps to compute)
-* `E_00 = yes | no`
-* `absorption_spec = yes | no`
 * `parallel_workflows = yes | no | auto` (parallelization)
 * `pal_jobs = N` (number of parallel PAL processes; auto-detected from cluster if not set)
 * `orca_parallel_strategy = auto | threads | serial` (ORCA parallelization mode)

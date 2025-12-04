@@ -17,11 +17,7 @@ from delfin.occupier_sequences import resolve_sequences_for_delta
 from delfin.imag import run_IMAG
 from delfin.orca import run_orca
 from delfin.occupier_flat_extraction import _cwd_lock
-from delfin.xyz_io import (
-    create_s1_optimization_input,
-    read_xyz_and_create_input2,
-    read_xyz_and_create_input3,
-)
+from delfin.xyz_io import read_xyz_and_create_input3
 from .parallel_classic_manually import (
     WorkflowJob,
     _WorkflowManager,
@@ -815,218 +811,9 @@ def build_occupier_jobs(
             preferred_cores=None,
         ))
 
-    if include_auxiliary and str(config.get('absorption_spec', 'no')).strip().lower() == 'yes':
-        additions_tddft = config.get('additions_TDDFT', '')
-
-        def run_absorption(cores: int, _adds=additions_tddft) -> None:
-            absorption_source = "initial.xyz" if xtb_solvator_enabled else "input_initial_OCCUPIER.xyz"
-            read_xyz_and_create_input2(
-                absorption_source,
-                "absorption_td.inp",
-                base_charge,
-                1,
-                solvent,
-                metals,
-                config,
-                main_basis,
-                metal_basis,
-                _adds,
-            )
-            _update_pal_block("absorption_td.inp", cores)
-            if not run_orca("absorption_td.inp", "absorption_spec.out"):
-                raise RuntimeError("ORCA terminated abnormally for absorption_spec.out")
-            logger.info("TD-DFT absorption spectra calculation complete!")
-
-        absorption_requires: Set[str] = {"initial.out"}
-        if xtb_solvator_enabled:
-            absorption_requires.add("initial.xyz")
-
-        absorption_explicit: Set[str] = {"occupier_initial"}
-        register_descriptor(JobDescriptor(
-            job_id="occupier_absorption",
-            description="absorption spectrum",
-            work=run_absorption,
-            produces={"absorption_spec.out"},
-            requires=absorption_requires,
-            explicit_dependencies=absorption_explicit,
-        ))
-
     excitation_flags = str(config.get('excitation', '')).lower()
-    emission_enabled = str(config.get('emission_spec', 'no')).strip().lower() == 'yes'
-    additions_tddft = config.get('additions_TDDFT', '')
-    xyz_initial = "initial.xyz"
-
-    if include_auxiliary and 't' in excitation_flags and str(config.get('E_00', 'no')).strip().lower() == 'yes':
-        def run_t1_state(cores: int, _adds=additions_tddft) -> None:
-            if not Path(xyz_initial).exists():
-                raise RuntimeError(f"Required geometry '{xyz_initial}' not found")
-            read_xyz_and_create_input3(
-                xyz_initial,
-                "t1_state_opt.inp",
-                base_charge,
-                3,
-                solvent,
-                metals,
-                metal_basis,
-                main_basis,
-                config,
-                _adds,
-            )
-            inp_path = Path("t1_state_opt.inp")
-            if not inp_path.exists():
-                raise RuntimeError("Failed to create t1_state_opt.inp")
-            _update_pal_block(str(inp_path), cores)
-            if not run_orca("t1_state_opt.inp", "t1_state_opt.out"):
-                raise RuntimeError("ORCA terminated abnormally for t1_state_opt.out")
-            logger.info(
-                "%s %s freq & geometry optimization of T_1 complete!",
-                functional,
-                main_basis,
-            )
-
-        t1_job_id = "occupier_t1_state"
-        register_descriptor(JobDescriptor(
-            job_id=t1_job_id,
-            description="triplet state optimization",
-            work=run_t1_state,
-            produces={"t1_state_opt.xyz", "t1_state_opt.out"},
-            requires={"initial.xyz", "initial.out"},
-            explicit_dependencies={"occupier_initial"},
-        ))
-
-        if emission_enabled:
-            def run_t1_emission(cores: int, _adds=additions_tddft) -> None:
-                read_xyz_and_create_input2(
-                    "t1_state_opt.xyz",
-                    "emission_t1.inp",
-                    base_charge,
-                    1,
-                    solvent,
-                    metals,
-                    config,
-                    main_basis,
-                    metal_basis,
-                    _adds,
-                )
-                inp_path = Path("emission_t1.inp")
-                if not inp_path.exists():
-                    raise RuntimeError("Failed to create emission_t1.inp")
-                _update_pal_block(str(inp_path), cores)
-                if not run_orca("emission_t1.inp", "emission_t1.out"):
-                    raise RuntimeError("ORCA terminated abnormally for emission_t1.out")
-                logger.info("TD-DFT T1 emission spectra calculation complete!")
-
-            register_descriptor(JobDescriptor(
-                job_id="occupier_t1_emission",
-                description="triplet emission spectrum",
-                work=run_t1_emission,
-                produces={"emission_t1.out"},
-                requires={"t1_state_opt.xyz", "t1_state_opt.out"},
-                explicit_dependencies={t1_job_id},
-            ))
-
-    if include_auxiliary and 's' in excitation_flags and str(config.get('E_00', 'no')).strip().lower() == 'yes':
-        def run_s1_state(cores: int, _adds=additions_tddft) -> None:
-            if not Path(xyz_initial).exists():
-                raise RuntimeError(f"Required geometry '{xyz_initial}' not found")
-            failed_flag = Path("s1_state_opt.failed")
-            if failed_flag.exists():
-                try:
-                    failed_flag.unlink()
-                except Exception:  # noqa: BLE001
-                    pass
-            create_s1_optimization_input(
-                xyz_initial,
-                "s1_state_opt.inp",
-                base_charge,
-                1,
-                solvent,
-                metals,
-                metal_basis,
-                main_basis,
-                config,
-                _adds,
-            )
-            inp_path = Path("s1_state_opt.inp")
-            if not inp_path.exists():
-                raise RuntimeError("Failed to create s1_state_opt.inp")
-            _update_pal_block(str(inp_path), cores)
-            try:
-                if not run_orca("s1_state_opt.inp", "s1_state_opt.out"):
-                    raise RuntimeError("ORCA terminated abnormally for s1_state_opt.out")
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[occupier] Skipping singlet state optimization; ORCA failed: %s",
-                    exc,
-                )
-                try:
-                    failed_flag.write_text(str(exc))
-                except Exception:  # noqa: BLE001
-                    pass
-                return
-            logger.info(
-                "%s %s freq & geometry optimization of S_1 complete!",
-                functional,
-                main_basis,
-            )
-            if failed_flag.exists():
-                try:
-                    failed_flag.unlink()
-                except Exception:  # noqa: BLE001
-                    pass
-
-        s1_job_id = "occupier_s1_state"
-        register_descriptor(JobDescriptor(
-            job_id=s1_job_id,
-            description="singlet state optimization",
-            work=run_s1_state,
-            produces={"s1_state_opt.xyz", "s1_state_opt.out"},
-            requires={"initial.xyz", "initial.out"},
-            explicit_dependencies={"occupier_initial"},
-        ))
-
-        if emission_enabled:
-            def run_s1_emission(cores: int, _adds=additions_tddft) -> None:
-                failed_flag = Path("s1_state_opt.failed")
-                if failed_flag.exists():
-                    logger.info(
-                        "[occupier] Skipping singlet emission; singlet optimization failed (see %s).",
-                        failed_flag,
-                    )
-                    return
-                if not Path("s1_state_opt.xyz").exists():
-                    logger.info(
-                        "[occupier] Skipping singlet emission; missing geometry 's1_state_opt.xyz'.",
-                    )
-                    return
-                read_xyz_and_create_input2(
-                    "s1_state_opt.xyz",
-                    "emission_s1.inp",
-                    base_charge,
-                    1,
-                    solvent,
-                    metals,
-                    config,
-                    main_basis,
-                    metal_basis,
-                    _adds,
-                )
-                inp_path = Path("emission_s1.inp")
-                if not inp_path.exists():
-                    raise RuntimeError("Failed to create emission_s1.inp")
-                _update_pal_block(str(inp_path), cores)
-                if not run_orca("emission_s1.inp", "emission_s1.out"):
-                    raise RuntimeError("ORCA terminated abnormally for emission_s1.out")
-                logger.info("TD-DFT S1 emission spectra calculation complete!")
-
-            register_descriptor(JobDescriptor(
-                job_id="occupier_s1_emission",
-                description="singlet emission spectrum",
-                work=run_s1_emission,
-                produces={"emission_s1.out"},
-                requires={"s1_state_opt.xyz", "s1_state_opt.out"},
-                explicit_dependencies={s1_job_id},
-            ))
+    # Note: Excited state calculations (E_00, S1, T1) are now handled by the ESD module
+    # Set ESD_modul=yes and states=[S0,S1,T1] in CONTROL.txt to calculate excited states
 
     initial_job_enabled = calc_initial_flag == 'yes'
     oxidation_steps = _parse_step_list(config.get('oxidation_steps'))
@@ -2393,7 +2180,6 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
     occupier_produces = {
         "occ_proc_initial": {"input_initial_OCCUPIER.xyz", "input_initial_OCCUPIER.gbw", "initial.xyz"},
         "occupier_initial": {"initial.out", "initial.xyz"},  # Post-processing outputs
-        "occupier_absorption": {"absorption_spec.out"},
         "occupier_t1_state": {"t1_state_opt.xyz", "t1_state_opt.out"},
         "occupier_t1_emission": {"emission_t1.out"},
         "occupier_s1_state": {"s1_state_opt.xyz", "s1_state_opt.out"},
@@ -2444,8 +2230,6 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
         if job.job_id.startswith("occupier_"):
             # Map to corresponding OCCUPIER process
             if job.job_id == "occupier_initial":
-                new_deps.add("occ_proc_initial")
-            elif job.job_id == "occupier_absorption":
                 new_deps.add("occ_proc_initial")
             elif job.job_id == "occupier_t1_state":
                 new_deps.add("occ_proc_initial")

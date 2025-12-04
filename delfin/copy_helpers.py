@@ -50,18 +50,18 @@ def read_occupier_file(
     if not folder.is_dir():
         if verbose:
             print(f"Folder '{folder}' not found.")
-        return None, None, None
+        return None, None, None, None
     file_path = folder / file_name
     if not file_path.is_file():
         if verbose:
             print(f"File '{file_name}' not found in '{folder}'.")
-        return None, None, None
+        return None, None, None, None
     with file_path.open("r", encoding="utf-8") as file:
         lines = file.readlines()
     if len(lines) < 2:
         if verbose:
             print("File does not have enough lines.")
-        return None, None, None
+        return None, None, None, None
     min_fspe_index = preferred_index_override
     if min_fspe_index is None:
         last_but_one_line = lines[-2].strip().replace("(", "").replace(")", "")
@@ -71,7 +71,7 @@ def read_occupier_file(
             except ValueError:
                 if verbose:
                     print("Error parsing min_fspe_index.")
-                return None, None, None
+                return None, None, None, None
     parity = None
     last_line = lines[-1].strip().replace("(", "").replace(")", "")
     if "Electron number:" in last_line:
@@ -80,7 +80,7 @@ def read_occupier_file(
     if min_fspe_index is None or parity is None:
         if verbose:
             print("Missing values for min_fspe_index or parity.")
-        return None, None, None
+        return None, None, None, None
     stage_config = None
     control_path = folder / "CONTROL.txt"
     if control_path.exists():
@@ -99,7 +99,7 @@ def read_occupier_file(
     if not entry:
         if verbose:
             print(f"No entry with index {min_fspe_index} in {parity}.")
-        return None, None, None
+        return None, None, None, None
     multiplicity = entry["m"]
     bs = entry.get("BS", "")
     additions = f"%scf BrokenSym {bs} end" if bs else ""

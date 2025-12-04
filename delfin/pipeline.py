@@ -15,7 +15,7 @@ from delfin.common.paths import resolve_path
 from delfin.copy_helpers import copy_if_exists, prepare_occ_folder, read_occupier_file
 from delfin.global_scheduler import GlobalOrcaScheduler
 from delfin.parallel_occupier import OccupierExecutionContext, run_occupier_orca_jobs
-from delfin.parallel_classic_manually import execute_classic_workflows, execute_manually_workflows, normalize_parallel_token
+from delfin.parallel_classic_manually import execute_classic_workflows, execute_manually_workflows, normalize_parallel_token, WorkflowRunResult
 from delfin.xtb_crest import XTB, XTB_GOAT, XTB_SOLVATOR, run_crest_workflow
 from delfin.cli_calculations import calculate_redox_potentials, select_final_potentials
 import delfin.thread_safe_helpers as thread_safe_helpers
@@ -447,14 +447,45 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
     allow_parallel = parallel_mode != 'disable'
     mode_label = "parallel" if allow_parallel else "sequential"
     logger.info("[classic] Dispatching workflows to scheduler (%s mode)", mode_label)
+
+    # Check if ESD is enabled - we need to know this before creating the scheduler
+    from delfin.esd_module import parse_esd_config
+    esd_enabled, states, iscs, ics = parse_esd_config(config)
+
     scheduler = GlobalOrcaScheduler(config, label="classic")
     try:
+        # Add ESD jobs to scheduler FIRST (before execute_classic_workflows which calls run())
+        # This allows ESD to run in parallel with ox/red steps after initial completes
+        if esd_enabled and (states or iscs or ics):
+            from delfin.esd_module import add_esd_jobs_to_scheduler
+            add_esd_jobs_to_scheduler(
+                scheduler,
+                config,
+                charge=charge,
+                solvent=ctx.solvent,
+                metals=ctx.metals if isinstance(ctx.metals, list) else [ctx.metals] if ctx.metals else [],
+                main_basisset=ctx.main_basisset,
+                metal_basisset=ctx.metal_basisset,
+                dependency_job_id="classic_initial",
+            )
+
+            # Store ESD configuration in context for later use
+            ctx.extra['esd_added_to_classic'] = esd_enabled
+            ctx.extra['esd_states'] = states
+            ctx.extra['esd_iscs'] = iscs
+            ctx.extra['esd_ics'] = ics
+        else:
+            esd_enabled = False
+
+        # Add classic jobs to scheduler and run all jobs together
+        # execute_classic_workflows will call scheduler.run() internally
         result = execute_classic_workflows(
             config,
             allow_parallel=allow_parallel,
             scheduler=scheduler,
             **classic_kwargs,
         )
+
     finally:
         scheduler.shutdown()
 
@@ -474,6 +505,28 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
 
     ctx.extra['classic_result'] = result
     ctx.extra['ground_multiplicity'] = ground_multiplicity
+
+    # If ESD jobs were added, store ESD results separately for downstream processing
+    if esd_enabled:
+        # Extract ESD-specific results from combined result
+        esd_completed = {job_id for job_id in result.completed if job_id.startswith('esd_')}
+        esd_failed = {job_id: reason for job_id, reason in result.failed.items() if job_id.startswith('esd_')}
+        esd_skipped = {job_id: deps for job_id, deps in result.skipped.items() if job_id.startswith('esd_')}
+
+        ctx.extra['esd_result'] = WorkflowRunResult(
+            completed=esd_completed,
+            failed=esd_failed,
+            skipped=esd_skipped,
+        )
+
+        if esd_failed or esd_skipped:
+            logger.warning(
+                "ESD jobs completed with issues in classic phase. Failed: %s | Skipped: %s",
+                ", ".join(f"{jid} ({reason})" for jid, reason in esd_failed.items()) or "none",
+                ", ".join(f"{jid} (deps: {', '.join(deps)})" for jid, deps in esd_skipped.items()) or "none",
+            )
+        elif esd_completed:
+            logger.info("ESD jobs completed successfully in parallel with classic phase")
     return {'result': result, 'ground_multiplicity': ground_multiplicity}
 
 
@@ -683,82 +736,46 @@ def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
     m1_avg, m2_step, m3_mix, use_flags = calculate_redox_potentials(ctx.config, energies, E_ref)
     E_ox, E_ox_2, E_ox_3, E_red, E_red_2, E_red_3 = select_final_potentials(m1_avg, m2_step, m3_mix, use_flags)
 
-    # Absolutpfade für alle relevanten Ausgabedateien
-    initial_out = working_dir / 'initial.out'
-    t1_out = working_dir / 't1_state_opt.out'
-    s1_out = working_dir / 's1_state_opt.out'
-
-    ZPE_S0 = find_ZPE(str(initial_out))
-    ZPE_T1 = find_ZPE(str(t1_out)) if t1_out.exists() else None
-    ZPE_S1 = find_ZPE(str(s1_out)) if s1_out.exists() else None
-
-    E_0 = find_electronic_energy(str(initial_out))
-    E_T1 = find_electronic_energy(str(t1_out)) if t1_out.exists() else None
-    E_S1 = find_electronic_energy(str(s1_out)) if s1_out.exists() else None
-
+    # E_00 calculation from ESD results (if ESD module is enabled)
     E_00_t1 = None
     E_00_s1 = None
-
-    def _missing_components(components: dict[str, Optional[float]]) -> tuple[list[str], list[str]]:
-        missing: list[str] = []
-        missing_files: list[str] = []
-        for label, value in components.items():
-            if value is not None:
-                continue
-            if '(' in label and label.endswith(')'):
-                filename = label[label.find('(') + 1:-1]
-                file_path = working_dir / filename
-                if not file_path.exists():
-                    # Datei existiert wirklich nicht im Arbeitsverzeichnis
-                    missing_files.append(filename)
-                    continue
-            missing.append(label)
-        return missing, missing_files
-
-    if ctx.config['E_00'] == "yes":
-        excitation_flags = ctx.config.get("excitation", "")
-
-        if "t" in excitation_flags:
-            requirements = {
-                "ZPE(initial.out)": ZPE_S0,
-                "ZPE(t1_state_opt.out)": ZPE_T1,
-                "Energy(initial.out)": E_0,
-                "Energy(t1_state_opt.out)": E_T1,
-            }
-            missing, missing_files = _missing_components(requirements)
-            if not missing and not missing_files:
-                E_00_t1 = ((E_T1 - E_0) + (ZPE_T1 - ZPE_S0)) * 27.211386245988
-                logger.info("E_00_t (eV): %s", E_00_t1)
-            else:
-                if missing:
-                    logger.info(
-                        "Skipping E_00_t calculation (data unavailable: %s)",
-                        ", ".join(missing),
-                    )
-
-        if "s" in excitation_flags:
-            requirements = {
-                "ZPE(initial.out)": ZPE_S0,
-                "ZPE(s1_state_opt.out)": ZPE_S1,
-                "Energy(initial.out)": E_0,
-                "Energy(s1_state_opt.out)": E_S1,
-            }
-            missing, missing_files = _missing_components(requirements)
-            if not missing and not missing_files:
-                E_00_s1 = ((E_S1 - E_0) + (ZPE_S1 - ZPE_S0)) * 27.211386245988
-                logger.info("E_00_s (eV): %s", E_00_s1)
-            else:
-                if missing:
-                    logger.info(
-                        "Skipping E_00_s calculation (data unavailable: %s)",
-                        ", ".join(missing),
-                    )
+    E_00_t2 = None
+    E_00_s2 = None
 
     esd_summary: Optional[ESDSummary] = None
     esd_enabled, esd_states, esd_iscs, esd_ics = parse_esd_config(ctx.config)
     if esd_enabled:
         esd_dir = working_dir / "ESD"
         esd_summary = collect_esd_results(esd_dir, esd_states, esd_iscs, esd_ics)
+
+        # Calculate E_00 energies from ESD state results
+        # E_00 = [E(excited) - E(S0)] + [ZPE(excited) - ZPE(S0)]
+        if esd_summary and esd_summary.states:
+            s0_data = esd_summary.states.get("S0")
+            if s0_data and s0_data.fspe is not None and s0_data.zpe is not None:
+                # E_00 for T1
+                t1_data = esd_summary.states.get("T1")
+                if t1_data and t1_data.fspe is not None and t1_data.zpe is not None:
+                    E_00_t1 = ((t1_data.fspe - s0_data.fspe) + (t1_data.zpe - s0_data.zpe)) * 27.211386245988
+                    logger.info("E_00(T1) from ESD (eV): %s", E_00_t1)
+
+                # E_00 for S1
+                s1_data = esd_summary.states.get("S1")
+                if s1_data and s1_data.fspe is not None and s1_data.zpe is not None:
+                    E_00_s1 = ((s1_data.fspe - s0_data.fspe) + (s1_data.zpe - s0_data.zpe)) * 27.211386245988
+                    logger.info("E_00(S1) from ESD (eV): %s", E_00_s1)
+
+                # E_00 for T2
+                t2_data = esd_summary.states.get("T2")
+                if t2_data and t2_data.fspe is not None and t2_data.zpe is not None:
+                    E_00_t2 = ((t2_data.fspe - s0_data.fspe) + (t2_data.zpe - s0_data.zpe)) * 27.211386245988
+                    logger.info("E_00(T2) from ESD (eV): %s", E_00_t2)
+
+                # E_00 for S2
+                s2_data = esd_summary.states.get("S2")
+                if s2_data and s2_data.fspe is not None and s2_data.zpe is not None:
+                    E_00_s2 = ((s2_data.fspe - s0_data.fspe) + (s2_data.zpe - s0_data.zpe)) * 27.211386245988
+                    logger.info("E_00(S2) from ESD (eV): %s", E_00_s2)
 
     duration = time.time() - ctx.start_time
     return SummaryResults(
