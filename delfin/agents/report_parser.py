@@ -18,6 +18,8 @@ class ConformerData:
     count: int = 0
     method: str = ""
     algorithm: str = ""
+    goat_used: bool = False
+    crest_used: bool = False
 
 
 @dataclass
@@ -131,6 +133,43 @@ class DELFINReportData:
 
 class ReportParser:
     """Parse DELFIN output files to extract data for report generation"""
+
+    @staticmethod
+    def parse_control_txt(file_path: Path) -> Dict[str, Any]:
+        """Parse CONTROL.txt file for method and module information"""
+        data = {}
+
+        if not file_path.exists():
+            return data
+
+        content = file_path.read_text(encoding='utf-8')
+
+        # Extract method line (contains full computational details)
+        method_match = re.search(r'method\s*=\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
+        if method_match:
+            data['method'] = method_match.group(1).strip()
+
+        # Check which modules are enabled
+        data['XTB_GOAT'] = bool(re.search(r'XTB_GOAT\s*=\s*yes', content, re.IGNORECASE))
+        data['CREST'] = bool(re.search(r'CREST\s*=\s*yes', content, re.IGNORECASE))
+        data['XTB_OPT'] = bool(re.search(r'XTB_OPT\s*=\s*yes', content, re.IGNORECASE))
+        data['ESD_modul'] = bool(re.search(r'ESD_modul\s*=\s*yes', content, re.IGNORECASE))
+        data['ESD_frequency'] = bool(re.search(r'ESD_frequency\s*=\s*yes', content, re.IGNORECASE))
+        data['E_00'] = bool(re.search(r'E_00\s*=\s*yes', content, re.IGNORECASE))
+        data['OCCUPIER'] = bool(re.search(r'used_method\s*=\s*OCCUPIER', content, re.IGNORECASE))
+
+        # Extract GOAT settings if enabled
+        if data['XTB_GOAT']:
+            goat_iter_match = re.search(r'GOAT_iterations\s*=\s*(\d+)', content, re.IGNORECASE)
+            if goat_iter_match:
+                data['GOAT_iterations'] = int(goat_iter_match.group(1))
+
+        # Extract solvation model
+        solvent_match = re.search(r'solvent\s*=\s*(\w+)', content, re.IGNORECASE)
+        if solvent_match:
+            data['solvent'] = solvent_match.group(1)
+
+        return data
 
     @staticmethod
     def parse_delfin_txt(file_path: Path) -> Dict[str, Any]:
@@ -437,6 +476,24 @@ class ReportParser:
             DELFINReportData object with all extracted information
         """
         report_data = DELFINReportData()
+
+        # Parse CONTROL.txt first to get method and enabled modules
+        control_txt = working_dir / 'CONTROL.txt'
+        if control_txt.exists():
+            control_data = ReportParser.parse_control_txt(control_txt)
+
+            # Store module usage
+            if control_data.get('XTB_GOAT'):
+                report_data.conformers.goat_used = True
+                report_data.conformers.algorithm = "GOAT"
+            if control_data.get('CREST'):
+                report_data.conformers.crest_used = True
+            if control_data.get('XTB_OPT'):
+                report_data.conformers.method = "GFN2-xTB"
+
+            # Store method if not yet defined
+            if not report_data.geometry.method and control_data.get('method'):
+                report_data.geometry.method = control_data['method']
 
         # Parse DELFIN.txt
         delfin_txt = working_dir / 'DELFIN.txt'

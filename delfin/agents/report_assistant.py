@@ -237,13 +237,16 @@ class ReportAssistant:
             lines.append(f"Multiplicity: {data.multiplicity}")
 
         # Conformer data
-        if data.conformers and data.conformers.count > 0:
+        if data.conformers and (data.conformers.count > 0 or data.conformers.goat_used or data.conformers.crest_used):
             lines.append("\n=== CONFORMER SEARCH ===")
-            lines.append(f"Number of conformers: {data.conformers.count}")
+            if data.conformers.count > 0:
+                lines.append(f"Number of conformers: {data.conformers.count}")
             if data.conformers.method:
                 lines.append(f"Method: {data.conformers.method}")
-            if data.conformers.algorithm:
-                lines.append(f"Algorithm: {data.conformers.algorithm}")
+            if data.conformers.goat_used:
+                lines.append(f"Algorithm: GOAT (Global Optimization with Ansatz Trees)")
+            if data.conformers.crest_used:
+                lines.append("CREST conformer ensemble generation: enabled")
 
         # Geometry optimization
         if data.geometry and data.geometry.method:
