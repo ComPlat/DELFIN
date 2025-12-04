@@ -111,6 +111,16 @@ class CalculationStatus:
 
 
 @dataclass
+class OccupierStepData:
+    """Data for a single OCCUPIER step (initial, red_step_1, etc.)"""
+    step_name: str
+    charge: Optional[int] = None
+    orbitals: Optional[OrbitalData] = None
+    energy_ev: Optional[float] = None
+    energy_hartree: Optional[float] = None
+
+
+@dataclass
 class DELFINReportData:
     """Complete DELFIN calculation data for report generation"""
     # Basic info
@@ -122,10 +132,13 @@ class DELFINReportData:
     conformers: Optional[ConformerData] = None
     geometry: Optional[GeometryData] = None
     frequencies: Optional[FrequencyData] = None
-    orbitals: Optional[OrbitalData] = None
+    orbitals: Optional[OrbitalData] = None  # This is for initial state
     excited_states: Optional[ExcitedStateData] = None
     redox: Optional[RedoxData] = None
     status: Optional[CalculationStatus] = None
+
+    # OCCUPIER steps (initial, red_step_1, red_step_2, ox_step_1, etc.)
+    occupier_steps: List[OccupierStepData] = field(default_factory=list)
 
     # Software info
     software_packages: List[str] = field(default_factory=list)
@@ -603,36 +616,75 @@ class ReportParser:
             else:
                 report_data.redox.reference = "SCE"  # Default
 
-        # Parse OCCUPIER.txt (initial or main)
-        occupier_txt = working_dir / 'OCCUPIER.txt'
-        if not occupier_txt.exists():
-            occupier_txt = working_dir / 'initial_OCCUPIER' / 'OCCUPIER.txt'
+        # Parse ALL OCCUPIER directories (initial, red_step_1, red_step_2, ox_step_1, etc.)
+        occupier_dirs = []
 
-        if occupier_txt.exists():
+        # Check for initial_OCCUPIER
+        if (working_dir / 'initial_OCCUPIER').exists():
+            occupier_dirs.append(('initial', working_dir / 'initial_OCCUPIER'))
+
+        # Check for redox steps
+        for i in range(1, 10):  # Check red_step_1 through red_step_9
+            red_dir = working_dir / f'red_step_{i}_OCCUPIER'
+            if red_dir.exists():
+                occupier_dirs.append((f'red_step_{i}', red_dir))
+
+        for i in range(1, 10):  # Check ox_step_1 through ox_step_9
+            ox_dir = working_dir / f'ox_step_{i}_OCCUPIER'
+            if ox_dir.exists():
+                occupier_dirs.append((f'ox_step_{i}', ox_dir))
+
+        # Parse each OCCUPIER directory
+        for step_name, occ_dir in occupier_dirs:
+            occupier_txt = occ_dir / 'OCCUPIER.txt'
+            if not occupier_txt.exists():
+                continue
+
             occupier_data = ReportParser.parse_occupier_txt(occupier_txt)
 
+            # Extract charge from OCCUPIER.txt
+            content = occupier_txt.read_text(encoding='utf-8')
+            charge_match = re.search(r'Charge:\s*(-?\d+)', content)
+            step_charge = int(charge_match.group(1)) if charge_match else None
+
+            # Create OrbitalData for this step
+            step_orbitals = OrbitalData()
             if 'homo_ev' in occupier_data:
-                report_data.orbitals.homo_ev = occupier_data['homo_ev']
+                step_orbitals.homo_ev = occupier_data['homo_ev']
             if 'lumo_ev' in occupier_data:
-                report_data.orbitals.lumo_ev = occupier_data['lumo_ev']
+                step_orbitals.lumo_ev = occupier_data['lumo_ev']
             if 'gap_ev' in occupier_data:
-                report_data.orbitals.gap_ev = occupier_data['gap_ev']
+                step_orbitals.gap_ev = occupier_data['gap_ev']
             if 'preferred_multiplicity' in occupier_data:
-                report_data.orbitals.preferred_multiplicity = occupier_data['preferred_multiplicity']
+                step_orbitals.preferred_multiplicity = occupier_data['preferred_multiplicity']
             if 'preferred_brokensym' in occupier_data:
-                report_data.orbitals.preferred_brokensym = occupier_data['preferred_brokensym']
+                step_orbitals.preferred_brokensym = occupier_data['preferred_brokensym']
             if 'spin_contamination' in occupier_data:
-                report_data.orbitals.spin_contamination = occupier_data['spin_contamination']
+                step_orbitals.spin_contamination = occupier_data['spin_contamination']
             if 'unpaired_electrons' in occupier_data:
-                report_data.orbitals.unpaired_electrons = occupier_data['unpaired_electrons']
+                step_orbitals.unpaired_electrons = occupier_data['unpaired_electrons']
             if 'all_multiplicities_tested' in occupier_data:
-                report_data.orbitals.all_multiplicities_tested = occupier_data['all_multiplicities_tested']
+                step_orbitals.all_multiplicities_tested = occupier_data['all_multiplicities_tested']
             if 'boltzmann_populations' in occupier_data:
-                report_data.orbitals.boltzmann_populations = occupier_data['boltzmann_populations']
-            if 'final_energy_ev' in occupier_data:
-                report_data.geometry.final_energy_ev = occupier_data['final_energy_ev']
-            if 'final_energy_hartree' in occupier_data:
-                report_data.geometry.final_energy_hartree = occupier_data['final_energy_hartree']
+                step_orbitals.boltzmann_populations = occupier_data['boltzmann_populations']
+
+            # Store as OccupierStepData
+            step_data = OccupierStepData(
+                step_name=step_name,
+                charge=step_charge,
+                orbitals=step_orbitals,
+                energy_ev=occupier_data.get('final_energy_ev'),
+                energy_hartree=occupier_data.get('final_energy_hartree')
+            )
+            report_data.occupier_steps.append(step_data)
+
+            # If this is initial, also populate the main orbitals and geometry fields for backwards compatibility
+            if step_name == 'initial':
+                report_data.orbitals = step_orbitals
+                if occupier_data.get('final_energy_ev'):
+                    report_data.geometry.final_energy_ev = occupier_data['final_energy_ev']
+                if occupier_data.get('final_energy_hartree'):
+                    report_data.geometry.final_energy_hartree = occupier_data['final_energy_hartree']
 
         # Parse ESD directory if it exists
         esd_dir = working_dir / 'ESD'
