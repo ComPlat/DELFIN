@@ -62,6 +62,18 @@ def run_report_ai_command(args: list[str]) -> int:
         help="Enable interactive mode to customize report content"
     )
 
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key for the provider (overrides environment variable)"
+    )
+
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="Base URL for API (for custom OpenAI-compatible endpoints)"
+    )
+
     parsed_args = parser.parse_args(args)
 
     # Resolve directory
@@ -103,9 +115,16 @@ def run_report_ai_command(args: list[str]) -> int:
 
     # Create LLM provider
     try:
+        provider_kwargs = {}
+        if parsed_args.api_key:
+            provider_kwargs['api_key'] = parsed_args.api_key
+        if parsed_args.base_url:
+            provider_kwargs['base_url'] = parsed_args.base_url
+
         provider = create_provider(
             provider_name=parsed_args.provider,
-            model=parsed_args.model
+            model=parsed_args.model,
+            **provider_kwargs
         )
     except Exception as e:
         logger.error(f"Failed to create LLM provider: {e}")
