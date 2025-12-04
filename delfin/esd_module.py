@@ -693,7 +693,10 @@ def add_esd_jobs_to_scheduler(
             manager._jobs["esd_S0"].dependencies.add(dependency_job_id)
             logger.debug("Added dependency: esd_S0 depends on %s", dependency_job_id)
 
-    if iscs:
+    # Check if frequency calculations are enabled (required for ISC/IC)
+    esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
+
+    if iscs and esd_frequency_enabled:
         _populate_isc_jobs(
             manager,
             iscs,
@@ -705,8 +708,10 @@ def add_esd_jobs_to_scheduler(
             metal_basisset,
             config,
         )
+    elif iscs and not esd_frequency_enabled:
+        logger.info("ISC calculations skipped (ESD_frequency=no - ZPE not available)")
 
-    if ics:
+    if ics and esd_frequency_enabled:
         _populate_ic_jobs(
             manager,
             ics,
@@ -718,6 +723,8 @@ def add_esd_jobs_to_scheduler(
             metal_basisset,
             config,
         )
+    elif ics and not esd_frequency_enabled:
+        logger.info("IC calculations skipped (ESD_frequency=no - ZPE not available)")
 
     logger.info("Added %d ESD jobs to scheduler", len([j for j in manager._jobs if j.startswith("esd_")]))
 
@@ -788,7 +795,7 @@ def run_esd_phase(
                 config,
             )
 
-        if iscs:
+        if iscs and esd_frequency_enabled:
             _populate_isc_jobs(
                 manager,
                 iscs,
@@ -800,8 +807,10 @@ def run_esd_phase(
                 metal_basisset,
                 config,
             )
+        elif iscs and not esd_frequency_enabled:
+            logger.info("ISC calculations skipped (ESD_frequency=no - ZPE not available)")
 
-        if ics:
+        if ics and esd_frequency_enabled:
             _populate_ic_jobs(
                 manager,
                 ics,
@@ -813,6 +822,8 @@ def run_esd_phase(
                 metal_basisset,
                 config,
             )
+        elif ics and not esd_frequency_enabled:
+            logger.info("IC calculations skipped (ESD_frequency=no - ZPE not available)")
 
         if not manager.has_jobs():
             logger.info("No ESD jobs to execute")

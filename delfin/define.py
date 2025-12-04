@@ -40,6 +40,7 @@ calc_potential_method=2
 ESD module (excited state dynamics):
 ESD_modul=no
 ESD_modus=TDDFT|deltaSCF
+ESD_frequency=yes
 states=S1,T1,S2,T2
 ISCs=S1>T1,T1>S1
 ICs=S1>S0
@@ -51,7 +52,7 @@ deltaSCF_keepinitialref=true
 deltaSCF_SOSCFHESSUP=LBFGS
 --------------------
 TDDFT Settings:
-ESD_TDDFT_maxiter=1000
+ESD_TDDFT_maxiter=500
 ESD_nroots=15
 ESD_maxdim=30
 ESD_TDA=FALSE
@@ -209,6 +210,11 @@ states: Comma-separated list of states to calculate (S0, S1, T1, T2)
 ISCs: Comma-separated list of intersystem crossings (e.g., S1>T1, T1>S1)
 ICs: Comma-separated list of internal conversions (e.g., S1>S0, T1>T2)
 ESD_modus: TDDFT (default) or deltaSCF - Method for excited state calculations
+ESD_frequency: yes/no - Enable frequency calculations (default: yes)
+  → When 'no': Only geometry optimization (OPT) is performed
+  → ISC/IC calculations are disabled (require ZPE from frequency calculations)
+  → Only Final single point energies are available
+  → Useful for quick tests or when frequencies are not needed
 ESD_followiroot: true/false - Follow TDDFT root during geometry optimization (TDDFT mode only, default: true)
 
 -------------------------------------------------

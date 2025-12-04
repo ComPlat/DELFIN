@@ -181,6 +181,9 @@ def _create_state_input_delta_scf(
     geom_token_raw = config.get('geom_opt', 'OPT')
     geom_token = str(geom_token_raw).strip() or "OPT"
 
+    # Check if frequency calculations are enabled for ESD
+    esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
+
     # Frequency calculation type from CONTROL (FREQ or numFREQ)
     freq_type = str(config.get('freq_type', 'FREQ')).strip().upper()
     if freq_type not in ('FREQ', 'NUMFREQ'):
@@ -205,7 +208,10 @@ def _create_state_input_delta_scf(
 
     if geom_token:
         keywords.append(geom_token)
-    keywords.append(freq_type)
+
+    # Only add FREQ/numFREQ if frequency calculations are enabled
+    if esd_frequency_enabled:
+        keywords.append(freq_type)
 
     if use_deltascf:
         keywords.append("deltaSCF")
@@ -390,11 +396,28 @@ def _create_state_input_tddft(
     maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
     tddft_maxiter = _resolve_tddft_maxiter(config)
     followiroot = str(config.get("ESD_followiroot", "true")).lower() in ("true", "yes", "1", "on")
+    esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
     output_blocks = collect_output_blocks(config, allow=True)
 
     def _join_keywords(parts: List[str]) -> str:
         """Join keyword fragments while skipping empty entries."""
         return " ".join(str(p) for p in parts if str(p).strip())
+
+    def _build_keywords(scf_type: str, with_freq: bool = True) -> List[str]:
+        """Build keyword list with optional frequency calculation."""
+        kw = [
+            functional,
+            scf_type,
+            main_basisset,
+            disp_corr,
+            ri_jkx,
+            aux_jk,
+            f"{implicit_solvation}({solvent})",
+            geom_token,
+        ]
+        if with_freq and esd_frequency_enabled:
+            kw.append("numFREQ")
+        return kw
 
     # Coordinate source
     if state_upper == "S0":
@@ -472,7 +495,8 @@ def _create_state_input_tddft(
             ]
             if geom_token:
                 keywords.append(geom_token)
-            keywords.append("numFREQ")
+            if esd_frequency_enabled:
+                keywords.append("numFREQ")
             f.write("! " + " ".join(keywords) + "\n")
             f.write('%base "S0"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -493,23 +517,7 @@ def _create_state_input_tddft(
             f.write("\n")
             f.write(f"* xyzfile {charge} 1 S0.xyz\n")
         elif state_upper == "S1":
-            f.write(
-                "! "
-                + _join_keywords(
-                    [
-                        functional,
-                        "RKS",
-                        main_basisset,
-                        disp_corr,
-                        ri_jkx,
-                        aux_jk,
-                        f"{implicit_solvation}({solvent})",
-                        geom_token,
-                        "numFREQ",
-                    ]
-                )
-                + "\n"
-            )
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + "\n")
             f.write('%base "S1"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -522,23 +530,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n\n")
         elif state_upper == "T1":
-            f.write(
-                "! "
-                + _join_keywords(
-                    [
-                        functional,
-                        "RKS",
-                        main_basisset,
-                        disp_corr,
-                        ri_jkx,
-                        aux_jk,
-                        f"{implicit_solvation}({solvent})",
-                        geom_token,
-                        "numFREQ",
-                    ]
-                )
-                + "\n"
-            )
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + "\n")
             f.write('%base "T1"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -550,23 +542,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "T2":
-            f.write(
-                "! "
-                + _join_keywords(
-                    [
-                        functional,
-                        "RKS",
-                        main_basisset,
-                        disp_corr,
-                        ri_jkx,
-                        aux_jk,
-                        f"{implicit_solvation}({solvent})",
-                        geom_token,
-                        "numFREQ",
-                    ]
-                )
-                + "\n"
-            )
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + "\n")
             f.write('%base "T2"\n')
             f.write('%moinp "T1.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -578,23 +554,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "S2":
-            f.write(
-                "! "
-                + _join_keywords(
-                    [
-                        functional,
-                        "RKS",
-                        main_basisset,
-                        disp_corr,
-                        ri_jkx,
-                        aux_jk,
-                        f"{implicit_solvation}({solvent})",
-                        geom_token,
-                        "numFREQ",
-                    ]
-                )
-                + "\n"
-            )
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + "\n")
             f.write('%base "S2"\n')
             f.write('%moinp "S1.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -606,23 +566,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "T3":
-            f.write(
-                "! "
-                + _join_keywords(
-                    [
-                        functional,
-                        "RKS",
-                        main_basisset,
-                        disp_corr,
-                        ri_jkx,
-                        aux_jk,
-                        f"{implicit_solvation}({solvent})",
-                        geom_token,
-                        "numFREQ",
-                    ]
-                )
-                + "\n"
-            )
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + "\n")
             f.write('%base "T3"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
