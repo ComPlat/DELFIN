@@ -137,9 +137,12 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
             # TDDFT mode: show TDDFT-specific keywords
             method_esd_block = (
                 f"Method ESD (TDDFT): {config['functional']} {rel_token} {main_basisset} "
-                f"{implicit_token()} {config.get('ri_soc','')} "
-                f"PAL{config['PAL']} NROOTS {config.get('NROOTS', config.get('ESD_nroots', 15))} "
-                f"DOSOC {config.get('DOSOC', 'FALSE')} TDA {config.get('TDA', 'FALSE')} MAXCORE({config['maxcore']})"
+                f"{config.get('disp_corr','')} {config.get('ri_jkx','')} {aux_jk_token} {implicit_token()} "
+                f"{config.get('ri_soc','')} PAL{config['PAL']} "
+                f"NROOTS {config.get('ESD_nroots', config.get('NROOTS', 15))} "
+                f"DOSOC {config.get('DOSOC', 'FALSE')} "
+                f"TDA {config.get('ESD_TDA', config.get('TDA', 'FALSE'))} "
+                f"MAXCORE({config['maxcore']})"
             ).replace("  ", " ").strip()
 
         # Add metals line if present

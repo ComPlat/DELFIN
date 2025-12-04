@@ -17,7 +17,7 @@ from delfin.esd_input_generator import (
     create_isc_input,
     create_state_input,
 )
-from delfin.orca import run_orca
+from delfin.orca import run_orca_with_intelligent_recovery
 from delfin.parallel_classic_manually import (
     WorkflowJob,
     WorkflowRunResult,
@@ -28,6 +28,24 @@ logger = get_logger(__name__)
 
 # Thread lock for input file generation to avoid race conditions
 _input_generation_lock = threading.Lock()
+
+
+def _run_orca_esd(
+    inp_file: Path | str,
+    out_file: Path | str,
+    *,
+    working_dir: Path,
+    config: Dict[str, Any],
+    scratch_subdir: Optional[Path] = None,
+) -> bool:
+    """Run ORCA for ESD with intelligent recovery if enabled."""
+    return run_orca_with_intelligent_recovery(
+        str(inp_file),
+        str(out_file),
+        scratch_subdir=scratch_subdir,
+        working_dir=working_dir,
+        config=config,
+    )
 
 
 def _convert_start_to_xyz(start_txt: Path, output_xyz: Path) -> None:
@@ -243,7 +261,12 @@ def _populate_state_jobs(
                                 # Run only the TDDFT check
                                 tddft_output = esd_dir / "S0_TDDFT.out"
                                 logger.info(f"Running TDDFT check for S0 state identification in {esd_dir}")
-                                if not run_orca(str(tddft_input), str(tddft_output), working_dir=esd_dir):
+                                if not _run_orca_esd(
+                                    tddft_input,
+                                    tddft_output,
+                                    working_dir=esd_dir,
+                                    config=config,
+                                ):
                                     raise RuntimeError("ORCA terminated abnormally for S0 TDDFT check")
 
                                 logger.info(f"State S0 calculation completed (Opt+Freq reused, TDDFT check executed)")
@@ -287,7 +310,12 @@ def _populate_state_jobs(
                         logger.debug("[esd] Could not remove stale output %s", abs_output, exc_info=True)
 
                 # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
-                if not run_orca(str(abs_input), str(abs_output), working_dir=esd_dir):
+                if not _run_orca_esd(
+                    abs_input,
+                    abs_output,
+                    working_dir=esd_dir,
+                    config=config,
+                ):
                     raise RuntimeError(
                         f"ORCA terminated abnormally for {st_upper} state"
                     )
@@ -378,11 +406,12 @@ def _populate_isc_jobs(
 
                 # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
                 scratch_token = Path("scratch") / f"ISC_{init_st}_{fin_st}"
-                if not run_orca(
-                    str(abs_input),
-                    str(output_file.resolve()),
+                if not _run_orca_esd(
+                    abs_input,
+                    output_file.resolve(),
                     scratch_subdir=scratch_token,
                     working_dir=esd_dir,
+                    config=config,
                 ):
                     raise RuntimeError(
                         f"ORCA terminated abnormally for ISC {isc_pair}"
@@ -473,11 +502,12 @@ def _populate_ic_jobs(
 
                 # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
                 scratch_token = Path("scratch") / f"IC_{init_st}_{fin_st}"
-                if not run_orca(
-                    str(abs_input),
-                    str(output_file.resolve()),
+                if not _run_orca_esd(
+                    abs_input,
+                    output_file.resolve(),
                     scratch_subdir=scratch_token,
                     working_dir=esd_dir,
+                    config=config,
                 ):
                     raise RuntimeError(
                         f"ORCA terminated abnormally for IC {ic_pair}"
