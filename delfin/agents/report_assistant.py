@@ -120,9 +120,17 @@ class ReportAssistant:
                 temperature=0.0,  # Deterministic for factual reporting
             )
 
-            report_text = response.data.get('content', '').strip()
+            # Try different keys depending on provider
+            report_text = (
+                response.data.get('content') or
+                response.data.get('text') or
+                ''
+            ).strip()
 
             if not report_text:
+                # Debug: show what we got
+                print(f"DEBUG: Response data keys: {response.data.keys()}")
+                print(f"DEBUG: Response data: {response.data}")
                 report_text = "Error: No report generated."
 
             # Save to file if requested
