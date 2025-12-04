@@ -123,8 +123,14 @@ class InteractiveReportGenerator:
         if data.orbitals and data.orbitals.homo_ev:
             print(f"  • HOMO/LUMO: {data.orbitals.homo_ev:.2f} / {data.orbitals.lumo_ev:.2f} eV")
 
-        if data.redox and (data.redox.e_ox or data.redox.e_red):
-            print(f"  • Redox: E_ox = {data.redox.e_ox:.3f} V, E_red = {data.redox.e_red:.3f} V")
+        if data.redox and (data.redox.e_ox is not None or data.redox.e_red is not None):
+            redox_parts = []
+            if data.redox.e_ox is not None:
+                redox_parts.append(f"E_ox = {data.redox.e_ox:.3f} V")
+            if data.redox.e_red is not None:
+                redox_parts.append(f"E_red = {data.redox.e_red:.3f} V")
+            if redox_parts:
+                print(f"  • Redox: {', '.join(redox_parts)}")
 
         if data.excited_states and data.excited_states.num_states > 0:
             print(f"  • Excited states: {data.excited_states.num_states} transitions")
