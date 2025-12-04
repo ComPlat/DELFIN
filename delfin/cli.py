@@ -70,12 +70,7 @@ def _build_step_bases() -> set[str]:
     bundle = asdict(FileBundle())
     bases: set[str] = {Path(value).stem for value in bundle.values()}
     # Additional artifacts not covered by FileBundle
-    bases.update({
-        "absorption_spec",
-        "emission_t1",
-        "emission_s1",
-        "start",
-    })
+    bases.update({"start"})
     occ_steps = ["initial"]
     occ_steps.extend(f"ox_step_{idx}" for idx in range(1, 4))
     occ_steps.extend(f"red_step_{idx}" for idx in range(1, 4))
@@ -984,9 +979,6 @@ def main(argv: list[str] | None = None) -> int:
             'reduction_steps': '',
             'parallel_workflows': 'yes',
             'pal_jobs': None,
-            'absorption_spec': 'no',
-            'emission_spec': 'no',
-            'E_00': 'no',
             'additions_TDDFT': '',
             'DONTO': 'FALSE',
             'DOSOC': 'TRUE',

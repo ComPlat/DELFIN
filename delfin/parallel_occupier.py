@@ -17,11 +17,7 @@ from delfin.occupier_sequences import resolve_sequences_for_delta
 from delfin.imag import run_IMAG
 from delfin.orca import run_orca
 from delfin.occupier_flat_extraction import _cwd_lock
-from delfin.xyz_io import (
-    create_s1_optimization_input,
-    read_xyz_and_create_input2,
-    read_xyz_and_create_input3,
-)
+from delfin.xyz_io import read_xyz_and_create_input3
 from .parallel_classic_manually import (
     WorkflowJob,
     _WorkflowManager,
@@ -813,42 +809,6 @@ def build_occupier_jobs(
             work=run_initial,
             produces={"initial.out", "initial.xyz"},
             preferred_cores=None,
-        ))
-
-    if include_auxiliary and str(config.get('absorption_spec', 'no')).strip().lower() == 'yes':
-        additions_tddft = config.get('additions_TDDFT', '')
-
-        def run_absorption(cores: int, _adds=additions_tddft) -> None:
-            absorption_source = "initial.xyz" if xtb_solvator_enabled else "input_initial_OCCUPIER.xyz"
-            read_xyz_and_create_input2(
-                absorption_source,
-                "absorption_td.inp",
-                base_charge,
-                1,
-                solvent,
-                metals,
-                config,
-                main_basis,
-                metal_basis,
-                _adds,
-            )
-            _update_pal_block("absorption_td.inp", cores)
-            if not run_orca("absorption_td.inp", "absorption_spec.out"):
-                raise RuntimeError("ORCA terminated abnormally for absorption_spec.out")
-            logger.info("TD-DFT absorption spectra calculation complete!")
-
-        absorption_requires: Set[str] = {"initial.out"}
-        if xtb_solvator_enabled:
-            absorption_requires.add("initial.xyz")
-
-        absorption_explicit: Set[str] = {"occupier_initial"}
-        register_descriptor(JobDescriptor(
-            job_id="occupier_absorption",
-            description="absorption spectrum",
-            work=run_absorption,
-            produces={"absorption_spec.out"},
-            requires=absorption_requires,
-            explicit_dependencies=absorption_explicit,
         ))
 
     excitation_flags = str(config.get('excitation', '')).lower()
@@ -2220,7 +2180,6 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
     occupier_produces = {
         "occ_proc_initial": {"input_initial_OCCUPIER.xyz", "input_initial_OCCUPIER.gbw", "initial.xyz"},
         "occupier_initial": {"initial.out", "initial.xyz"},  # Post-processing outputs
-        "occupier_absorption": {"absorption_spec.out"},
         "occupier_t1_state": {"t1_state_opt.xyz", "t1_state_opt.out"},
         "occupier_t1_emission": {"emission_t1.out"},
         "occupier_s1_state": {"s1_state_opt.xyz", "s1_state_opt.out"},
@@ -2271,8 +2230,6 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
         if job.job_id.startswith("occupier_"):
             # Map to corresponding OCCUPIER process
             if job.job_id == "occupier_initial":
-                new_deps.add("occ_proc_initial")
-            elif job.job_id == "occupier_absorption":
                 new_deps.add("occ_proc_initial")
             elif job.job_id == "occupier_t1_state":
                 new_deps.add("occ_proc_initial")

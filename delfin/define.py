@@ -139,6 +139,7 @@ OCCUPIER_method=auto|manually
 OCCUPIER_tree=own
 OWN_TREE_PURE_WINDOW=3
 OWN_progressive_from=no
+fob_equal_weights=yes
 frequency_calculation_OCCUPIER=no
 occupier_selection=tolerance|truncation|rounding
 occupier_precision=3

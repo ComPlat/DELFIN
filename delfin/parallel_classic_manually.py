@@ -19,12 +19,7 @@ from delfin.dynamic_pool import PoolJob, JobPriority
 from delfin.global_manager import get_global_manager
 from delfin.orca import run_orca
 from delfin.imag import run_IMAG
-from delfin.xyz_io import (
-    create_s1_optimization_input,
-    read_and_modify_file_1,
-    read_xyz_and_create_input2,
-    read_xyz_and_create_input3,
-)
+from delfin.xyz_io import read_and_modify_file_1, read_xyz_and_create_input3
 
 logger = get_logger(__name__)
 
@@ -1894,28 +1889,6 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
 
         initial_job_id = 'manual_initial'
         _add_job(initial_job_id, 'manual initial frequency job', run_initial)
-
-        additions_td = config.get('additions_TDDFT', '')
-
-        def run_absorption(cores: int) -> None:
-            read_xyz_and_create_input2(
-                'initial.xyz',
-                'absorption_td.inp',
-                base_charge,
-                1,
-                solvents,
-                metals,
-                config,
-                main_basis,
-                metal_basis,
-                additions_td,
-            )
-            _update_pal_block('absorption_td.inp', cores)
-            if not run_orca('absorption_td.inp', 'absorption_spec.out'):
-                raise RuntimeError('ORCA terminated abnormally for absorption_spec.out')
-
-        deps_abs = {initial_job_id} if initial_job_id else set()
-        _add_job('manual_absorption', 'manual TD-DFT absorption', run_absorption, deps_abs, preferred_opt=manager.total_cores // 2 or None)
 
         # Note: Excited state calculations (E_00, S1, T1) are now handled by the ESD module
         # Set ESD_modul=yes and states=[S0,S1,T1] in CONTROL.txt to calculate excited states
