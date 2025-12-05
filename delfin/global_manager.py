@@ -49,9 +49,9 @@ def _safe_int(value: Any, default: int) -> int:
 
 def _normalize_parallel_token(value: Any, default: str = "auto") -> str:
     token = str(value).strip().lower() if value not in (None, "") else default
-    if token in {"no", "false", "off", "0", "disable"}:
+    if token in {"no", "false", "off", "0", "disable", "disabled"}:
         return "disable"
-    if token in {"yes", "true", "on", "1", "enable"}:
+    if token in {"yes", "true", "on", "1", "enable", "enabled"}:
         return "enable"
     return "auto"
 
