@@ -469,6 +469,8 @@ class RecoveryStrategy:
         }
 
 
+
+
 class OrcaInputModifier:
     """Modifies ORCA input files by applying recovery strategies."""
 
@@ -750,41 +752,99 @@ class OrcaInputModifier:
     def _add_moread(self, parsed: Dict) -> Dict:
         """Add MOREAD keyword and %moinp block to continue from last state.
 
+        Strategy for RETRY (this is only called during recovery, not initial run):
+        - Always check if a valid GBW exists
+        - If GBW exists: Add/update MOREAD to use it (continue from partial run)
+        - If no GBW: Don't add MOREAD (start from scratch)
+
         Args:
             parsed: Parsed input dict
 
         Returns:
             Modified parsed dict
         """
-        # Find most recent .gbw file
-        gbw_candidates = [
-            self.inp_file.with_suffix('.gbw'),  # Same name
-            *sorted(
-                self.work_dir.glob("*.gbw"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True
-            )
-        ]
+        # Find valid GBW file to use for continuation
+        gbw_file = self._find_valid_gbw()
 
-        latest_gbw = None
-        for gbw in gbw_candidates:
-            if gbw.exists() and gbw.stat().st_size > 0:
-                latest_gbw = gbw
-                break
-
-        if not latest_gbw:
-            logger.warning(f"No valid .gbw file found for MOREAD in {self.work_dir}")
+        if not gbw_file:
+            # No valid GBW found -> Remove MOREAD if present and start from scratch
+            logger.info("No valid GBW found - removing MOREAD (will start from scratch)")
+            parsed["keywords"] = [k for k in parsed["keywords"] if k != "MOREAD"]
+            if "moinp" in parsed["blocks"]:
+                del parsed["blocks"]["moinp"]
             return parsed
 
-        # Add MOREAD to keywords if not present
+        # Valid GBW found -> Use it for continuation
+        logger.info(f"Found valid GBW - using {gbw_file.name} for continuation")
+
+        # Add MOREAD keyword if not present
         if "MOREAD" not in parsed["keywords"]:
             parsed["keywords"].append("MOREAD")
-            logger.info(f"Added MOREAD keyword, using {latest_gbw.name}")
+            logger.info("Added MOREAD keyword")
 
-        # Add %moinp block
-        parsed["blocks"]["moinp"] = f'%moinp "{latest_gbw.name}"'
+        # Add/update %moinp block
+        parsed["blocks"]["moinp"] = f'%moinp "{gbw_file.name}"'
+        logger.info(f"Set %moinp to {gbw_file.name}")
 
         return parsed
+
+    def _find_valid_gbw(self, prefer_job_gbw: bool = True) -> Optional[Path]:
+        """Find a valid GBW file to use for MOREAD.
+
+        Priority order when prefer_job_gbw=True:
+        1. GBW file with same name as input (e.g., T1.gbw for T1.inp) - highest priority
+        2. Other GBW files in directory (sorted by modification time)
+
+        Args:
+            prefer_job_gbw: If True, prioritize job's own GBW over others
+
+        Returns:
+            Path to valid GBW file (backed up to _old.gbw), or None if not found
+        """
+        if prefer_job_gbw:
+            # First check job's own GBW (from partial run)
+            job_gbw = self.inp_file.with_suffix('.gbw')
+            if job_gbw.exists() and job_gbw.stat().st_size > 100_000:
+                gbw_backup = self.work_dir / f"{job_gbw.stem}_old.gbw"
+                try:
+                    shutil.copy2(job_gbw, gbw_backup)
+                    logger.info(f"Found job's own GBW (partial run): {job_gbw.name} -> {gbw_backup.name}")
+                    return gbw_backup
+                except Exception as e:
+                    logger.warning(f"Failed to backup job GBW {job_gbw.name}: {e}")
+
+        # Check other GBW files (e.g., from prerequisite jobs like S0)
+        other_gbw_candidates = sorted(
+            self.work_dir.glob("*.gbw"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )[:10]
+
+        for gbw in other_gbw_candidates:
+            if not gbw.exists():
+                continue
+
+            # Skip job's own GBW if we already checked it
+            if prefer_job_gbw and gbw == self.inp_file.with_suffix('.gbw'):
+                continue
+
+            # Basic sanity checks
+            size = gbw.stat().st_size
+            if size < 100_000:  # Less than 100 KB is suspicious
+                logger.debug(f"Skipping {gbw.name} - too small ({size} bytes)")
+                continue
+
+            # Create backup to prevent ORCA from deleting it on crash
+            gbw_backup = self.work_dir / f"{gbw.stem}_old.gbw"
+            try:
+                shutil.copy2(gbw, gbw_backup)
+                logger.info(f"Found valid GBW: {gbw.name} -> {gbw_backup.name}")
+                return gbw_backup
+            except Exception as e:
+                logger.warning(f"Failed to backup GBW {gbw.name}: {e}")
+                continue
+
+        return None
 
     def _modify_scf_block(self, parsed: Dict, scf_params: Dict) -> Dict:
         """Modify or create %scf block with new parameters.
@@ -1086,22 +1146,18 @@ def prepare_input_for_continuation(
             inp_file.with_suffix('.gbw'),
             *sorted(work_dir.glob(f"{inp_stem}*.gbw"), key=lambda p: p.stat().st_mtime, reverse=True)[:3]
         ]
-        gbw_file = next((f for f in gbw_candidates if f.exists() and f.stat().st_size > 0), None)
+
+        # CRITICAL: Only consider GBW if it's large enough (basic sanity check)
+        gbw_file = None
+        for candidate in gbw_candidates:
+            if candidate.exists() and candidate.stat().st_size > 100_000:
+                gbw_file = candidate
+                break
 
         # If no xyz/gbw found, nothing to prepare
         if not xyz_file and not gbw_file:
             logger.debug(f"No xyz/gbw files found for {inp_file.name}, no preparation needed")
             return True
-
-        # Backup GBW to prevent ORCA from deleting it on failure
-        if backup_gbw and gbw_file:
-            gbw_backup = work_dir / f"{inp_stem}_old.gbw"
-            try:
-                shutil.copy2(gbw_file, gbw_backup)
-                gbw_file = gbw_backup  # Use backup from now on
-                logger.info(f"Created GBW backup: {gbw_backup.name}")
-            except Exception as e:
-                logger.warning(f"Failed to backup GBW {gbw_file.name}: {e}")
 
         # Read and parse input file
         with inp_file.open('r', encoding='utf-8', errors='replace') as f:
@@ -1109,24 +1165,53 @@ def prepare_input_for_continuation(
 
         modified = False
 
-        # Step 1: Add MOREAD keyword if gbw exists and not already present
-        if always_use_moread and gbw_file:
-            bang_line_idx = next((i for i, line in enumerate(lines) if line.strip().startswith('!')), None)
+        # Check if original input already had MOREAD/moinp
+        bang_line_idx = next((i for i, line in enumerate(lines) if line.strip().startswith('!')), None)
+        original_has_moread = bang_line_idx is not None and 'MOREAD' in lines[bang_line_idx].upper()
+        original_has_moinp = any(re.match(r'^\s*%moinp\s+', line, re.IGNORECASE) for line in lines)
+
+        # Strategy: If valid GBW exists, add/update MOREAD; otherwise remove MOREAD
+        if not gbw_file:
+            logger.info(f"{inp_file.name}: No valid GBW found - removing MOREAD if present")
+            # Remove MOREAD keyword if present
+            if bang_line_idx is not None and original_has_moread:
+                lines[bang_line_idx] = lines[bang_line_idx].replace(' MOREAD', '').replace('MOREAD', '')
+                modified = True
+            # Remove %moinp lines
+            moinp_pattern = re.compile(r'^\s*%moinp\s+', re.IGNORECASE)
+            new_lines = [line for line in lines if not moinp_pattern.match(line)]
+            if len(new_lines) != len(lines):
+                lines = new_lines
+                modified = True
+            always_use_moread = False
+        else:
+            logger.info(f"{inp_file.name}: Found valid GBW - ensuring MOREAD is set")
+            always_use_moread = True
+
+        # Step 1: Add MOREAD keyword if needed and not already present
+        if always_use_moread and gbw_file and not original_has_moread:
             if bang_line_idx is not None:
-                bang_line = lines[bang_line_idx]
-                if 'MOREAD' not in bang_line.upper():
-                    lines[bang_line_idx] = bang_line.rstrip() + ' MOREAD\n'
-                    modified = True
-                    logger.info(f"Added MOREAD to {inp_file.name}")
+                lines[bang_line_idx] = lines[bang_line_idx].rstrip() + ' MOREAD\n'
+                modified = True
+                logger.info(f"Added MOREAD to {inp_file.name}")
 
         # Step 2: Ensure %moinp block exists with correct gbw path
         if always_use_moread and gbw_file:
+            # Backup GBW before modifying input
+            if backup_gbw:
+                gbw_backup = work_dir / f"{gbw_file.stem}_old.gbw"
+                try:
+                    shutil.copy2(gbw_file, gbw_backup)
+                    gbw_file = gbw_backup
+                    logger.info(f"Created GBW backup: {gbw_backup.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to backup GBW {gbw_file.name}: {e}")
+
             # Remove any existing %moinp lines
             moinp_pattern = re.compile(r'^\s*%moinp\s+', re.IGNORECASE)
             lines = [line for line in lines if not moinp_pattern.match(line)]
 
             # Find bang line to insert %moinp right after it
-            bang_line_idx = next((i for i, line in enumerate(lines) if line.strip().startswith('!')), None)
             if bang_line_idx is not None:
                 insert_idx = bang_line_idx + 1
                 lines.insert(insert_idx, f'%moinp "{gbw_file.name}"\n')
