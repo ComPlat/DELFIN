@@ -50,6 +50,7 @@ class WorkflowJob:
     estimated_duration: float = 3600.0
     inline: bool = False  # Run inline without reserving pool cores
     preserve_cores_optimal: bool = False  # Skip auto-tuning for explicit core allocations
+    working_dir: Optional[Path] = None  # Working directory for job-specific process tracking
 
     # Cache original core preferences so dynamic scheduling can adjust per run.
     base_cores_min: int = field(init=False, repr=False)
@@ -110,6 +111,15 @@ class _WorkflowManager:
         )
 
         self._sync_parallel_flag()
+
+        # Fallback safety: if user explicitly disabled parallel workflows,
+        # force a single-slot scheduler even if pool/max_jobs suggest otherwise.
+        if normalize_parallel_token(self.config.get('parallel_workflows', 'auto')) == "disable":
+            if self.pool.max_concurrent_jobs != 1 or self.max_jobs != 1:
+                logger.info("[%s] parallel_workflows=disable → enforcing sequential scheduling", self.label)
+            self.pool.max_concurrent_jobs = 1
+            self.max_jobs = 1
+            self._sync_parallel_flag()
 
         self._jobs: Dict[str, WorkflowJob] = {}
         self._completed: Set[str] = set()
@@ -836,6 +846,7 @@ class _WorkflowManager:
             args=(),
             kwargs={},
             estimated_duration=job.estimated_duration,
+            working_dir=job.working_dir,
         )
         pool_job.suppress_pool_logs = True
 
@@ -1389,9 +1400,9 @@ class _WorkflowManager:
 
 def normalize_parallel_token(value: Any, default: str = "auto") -> str:
     token = str(value).strip().lower() if value not in (None, "") else default
-    if token in ("no", "false", "off", "0"):  # explicit disable
+    if token in ("no", "false", "off", "0", "disable", "disabled"):  # explicit disable
         return "disable"
-    if token in ("yes", "true", "on", "1"):  # explicit enable
+    if token in ("yes", "true", "on", "1", "enable", "enabled"):  # explicit enable
         return "enable"
     return "auto"
 

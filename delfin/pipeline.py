@@ -159,8 +159,7 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                     manager.run()
 
                     if manager.failed_jobs:
-                        logger.error("OCCUPIER workflows failed: %s", list(manager.failed_jobs.keys()))
-                        return False
+                        logger.warning("OCCUPIER workflows completed with failures (continuing): %s", list(manager.failed_jobs.keys()))
                 finally:
                     manager.shutdown()
 
@@ -195,7 +194,7 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                     manager.run()
 
                     if manager.failed_jobs:
-                        logger.error("OCCUPIER workflows failed: %s", list(manager.failed_jobs.keys()))
+                        logger.warning("OCCUPIER workflows completed with failures (continuing): %s", list(manager.failed_jobs.keys()))
                 finally:
                     manager.shutdown()
 
@@ -283,8 +282,7 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                         manager.run()
 
                         if manager.failed_jobs:
-                            logger.error("OCCUPIER workflows failed: %s", list(manager.failed_jobs.keys()))
-                            return False
+                            logger.warning("OCCUPIER workflows completed with failures (continuing): %s", list(manager.failed_jobs.keys()))
                     finally:
                         manager.shutdown()
 

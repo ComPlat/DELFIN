@@ -120,7 +120,7 @@ Resource Settings:
 PAL=12
 maxcore=6000
 parallel_workflows=yes
-pal_jobs=4
+pal_jobs=3
 enable_job_timeouts=no
 job_timeout_hours=36
 opt_timeout_hours=14
@@ -159,9 +159,7 @@ even_seq = [
   {"index": 4, "m": 3, "BS": "",    "from": 1},
   {"index": 5, "m": 3, "BS": "3,1", "from": 4},
   {"index": 6, "m": 3, "BS": "4,2", "from": 5},
-  {"index": 7, "m": 5, "BS": "",    "from": 4},
-  {"index": 8, "m": 5, "BS": "5,1", "from": 7},
-  {"index": 9, "m": 5, "BS": "6,2", "from": 8}
+  {"index": 7, "m": 5, "BS": "",    "from": 4}
 ]
 -------------------
 odd electron number:
@@ -172,9 +170,7 @@ odd_seq = [
   {"index": 4, "m": 4, "BS": "",    "from": 1},
   {"index": 5, "m": 4, "BS": "4,1", "from": 4},
   {"index": 6, "m": 4, "BS": "5,2", "from": 5},
-  {"index": 7, "m": 6, "BS": "",    "from": 4},
-  {"index": 8, "m": 6, "BS": "6,1", "from": 7},
-  {"index": 9, "m": 6, "BS": "7,2", "from": 8}
+  {"index": 7, "m": 6, "BS": "",    "from": 4}
 ]
 ]
 

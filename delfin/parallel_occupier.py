@@ -1517,6 +1517,8 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         stage_prefix: str,
         ensure: Callable[[], Path],
         dependencies: Set[str],
+        *,
+        working_dir: Optional[Path] = None,
     ) -> WorkflowJob:
         def _work(cores: int) -> None:
             folder_dir = ensure()
@@ -1530,6 +1532,8 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
                     os.chdir(prev_cwd)
             _update_runtime_cache(folder_name, folder_dir, config, occ_results)
 
+        workdir = (working_dir or Path(folder_name)).resolve()
+
         return WorkflowJob(
             job_id=f"{stage_prefix}_fallback",
             work=_work,
@@ -1538,6 +1542,7 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             cores_min=max(1, min(total_cores, 2)),
             cores_optimal=max(2, min(total_cores, total_cores // 2 or 2)),
             cores_max=total_cores,
+            working_dir=workdir,
         )
 
     def build_stage(spec: _StageSpec) -> tuple[List[WorkflowJob], Optional[str]]:
@@ -1562,7 +1567,13 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
                 "[occupier_flat] No sequence entries for %s – running OCCUPIER sequentially",
                 spec.folder_name,
             )
-            fallback_job = make_fallback_job(spec.folder_name, spec.stage_prefix, spec.ensure_setup, dependencies=set(dependencies))
+            fallback_job = make_fallback_job(
+                spec.folder_name,
+                spec.stage_prefix,
+                spec.ensure_setup,
+                dependencies=set(dependencies),
+                working_dir=spec.folder_path,
+            )
             stage_completion[spec.stage_prefix] = fallback_job.job_id
             if spec.stage_prefix == "initial":
                 stage_completion["initial"] = fallback_job.job_id
@@ -1896,6 +1907,7 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             cores_min=cores_min,
             cores_optimal=cores_optimal_per_job,
             cores_max=cores_max,
+            working_dir=folder_path.resolve(),
         )
 
     imag_enabled = str(config.get('IMAG', 'no')).strip().lower() == 'yes'

@@ -291,6 +291,8 @@ def _create_occupier_fob_jobs(
         len(sequence),
     )
 
+    job_workdir = folder_path.resolve()
+
     parallel_setting = normalize_parallel_token(global_config.get("parallel_workflows", "auto"))
     force_sequential = parallel_setting == "disable"
 
@@ -690,6 +692,7 @@ def _create_occupier_fob_jobs(
             cores_optimal=job_cores_optimal,
             cores_max=cores_max,
             preserve_cores_optimal=True,  # Preserve weighted allocation
+            working_dir=job_workdir,
         )
         jobs.append(job)
 

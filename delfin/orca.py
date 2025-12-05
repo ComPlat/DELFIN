@@ -417,6 +417,23 @@ def _monitor_orca_progress(output_file: str, stop_event: threading.Event, input_
                                 last_log_time = current_time
                                 break
 
+                        # Check for CPHF/POPLE solver progress (numerical frequencies)
+                        elif 'ITERATION' in line and 'done)' in line:
+                            import re
+                            match = re.search(r'ITERATION\s+(\d+):.*?\(\s*[\d.]+\s+sec\s+(\d+)/(\d+)\s+done\)', line)
+                            if match:
+                                iteration, current, total = match.groups()
+                                percent = (int(current) / int(total)) * 100
+                                logger.info(f"[{input_name}] CPHF/POPLE iteration {iteration}: {current}/{total} ({percent:.1f}%)")
+                                last_log_time = current_time
+                                break
+
+                        # Check for optimization convergence
+                        elif 'THE OPTIMIZATION HAS CONVERGED' in line:
+                            logger.info(f"[{input_name}] Geometry optimization converged")
+                            last_log_time = current_time
+                            break
+
                         # Check for geometry optimization
                         elif 'GEOMETRY OPTIMIZATION CYCLE' in line:
                             logger.info(f"[{input_name}] Geometry optimization running...")

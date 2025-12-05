@@ -717,6 +717,7 @@ def _run_sp_candidates_parallel(
             args=(),
             kwargs={},
             estimated_duration=1800.0,
+            working_dir=job.sp_output_path.parent,
         )
         pool_job.suppress_pool_logs = True
         pool.submit_job(pool_job)
