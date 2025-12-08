@@ -493,11 +493,13 @@ def _populate_ic_jobs(
         initial_state = initial_state.strip().upper()
         final_state = final_state.strip().upper()
 
-        # ORCA supports IC reliably only for Sn→S0; skip others with warning
-        if not initial_state.startswith("S") or final_state != "S0":
+        # ORCA IC support: Sn→S0 and Tn→T1 (T1 as SCF ground in triplet multiplicity)
+        allowed_sn = initial_state.startswith("S") and final_state == "S0"
+        allowed_tn = initial_state.startswith("T") and initial_state != "T1" and final_state == "T1"
+        if not (allowed_sn or allowed_tn):
             unsupported_ics.append(ic)
             logger.warning(
-                "Skipping IC %s: ORCA IC support is limited to Sn→S0; calculation not scheduled.",
+                "Skipping IC %s: ORCA IC support is limited to Sn→S0 or Tn→T1; calculation not scheduled.",
                 ic,
             )
             continue

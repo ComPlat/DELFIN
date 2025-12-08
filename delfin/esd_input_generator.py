@@ -654,6 +654,8 @@ def create_isc_input(
 
     # Determine source geometry (use optimized geometry of FINAL state, per ORCA manual)
     xyz_file = f"{final_state}.xyz"
+    # Multiplicity follows final state (triplet -> 3, singlet -> 1)
+    final_multiplicity = 3 if final_type == "T" else 1
 
     # Calculate adiabatic energy difference (DELE) for ISC
     # DELE = E(initial) - E(final) in cm^-1
@@ -749,7 +751,7 @@ def create_isc_input(
         for block in blocks:
             f.write(block + "\n")
         f.write("\n")
-        f.write(f"* xyz {charge} 1\n")
+        f.write(f"* xyz {charge} {final_multiplicity}\n")
         for line in coord_lines:
             f.write(line)
         f.write("*\n")
@@ -786,14 +788,18 @@ def create_ic_input(
     initial_state, final_state = ic_pair.split(">")
     initial_state = initial_state.strip().upper()
     final_state = final_state.strip().upper()
+    init_type, init_root = _parse_state_root(initial_state)
+    final_type, _ = _parse_state_root(final_state)
 
     job_name = f"{initial_state}_{final_state}_IC"
     input_file = esd_dir / f"{job_name}.inp"
 
-    # Determine source geometry (use GROUND STATE geometry for IC, per ORCA manual)
-    # For S1>S0: use S0.xyz
-    # Note: This differs from ISC which uses final state!
+    # Determine source geometry (use lower-state geometry for IC, per ORCA manual)
+    # For S1>S0: use S0.xyz; for Tn>T1: use T1.xyz
     xyz_file = f"{final_state}.xyz"
+    # Multiplicity follows final state (triplet -> 3, singlet -> 1)
+    final_type, _ = _parse_state_root(final_state)
+    final_multiplicity = 3 if final_type == "T" else 1
 
     # Build input (same as ISC but labeled as IC)
     functional = config.get('functional', 'PBE0')
@@ -823,7 +829,7 @@ def create_ic_input(
 
     # TDDFT block tailored for IC calculations
     nroots = config.get('ESD_IC_NROOTS', config.get('NROOTS', 10))  # Increased default to 10
-    iroot = config.get('IROOT', 1)
+    iroot = config.get('IROOT', init_root)
     tda_flag = str(config.get('TDA', 'FALSE')).upper()
     nacme_flag = str(config.get('NACME', 'TRUE')).upper()
     etf_flag = str(config.get('ETF', 'TRUE')).upper()
@@ -877,7 +883,7 @@ def create_ic_input(
         for block in blocks:
             f.write(block + "\n")
         f.write("\n")
-        f.write(f"* xyz {charge} 1\n")
+        f.write(f"* xyz {charge} {final_multiplicity}\n")
         for line in coord_lines:
             f.write(line)
         f.write("*\n")
