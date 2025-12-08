@@ -810,6 +810,9 @@ def run_esd_phase(
     # Create workflow manager
     manager = _WorkflowManager(config, label="esd")
 
+    # Check if frequency calculations are enabled (required for ISC/IC)
+    esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
+
     try:
         # Populate jobs
         if states:
