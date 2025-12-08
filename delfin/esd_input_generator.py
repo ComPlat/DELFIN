@@ -30,6 +30,19 @@ def _format_ms_suffix(trootssl: int) -> str:
         return "ms0"
 
 
+def _parse_state_root(label: str) -> tuple[str, int]:
+    """Return (state_type, root_index) from labels like 'S1', 'T2'. Defaults to 1 on parse errors."""
+    if not label:
+        return "", 1
+    label = label.strip().upper()
+    state_type = label[0]
+    try:
+        root = int(label[1:]) if len(label) > 1 else 1
+    except Exception:
+        root = 1
+    return state_type, root
+
+
 def _resolve_tddft_maxiter(config: Dict[str, Any]) -> Optional[int]:
     """Prefer an ESD-specific TDDFT maxiter override, then fall back to global."""
     esd_override = resolve_maxiter(config, key="ESD_TDDFT_maxiter")
@@ -624,6 +637,8 @@ def create_isc_input(
     initial_state, final_state = isc_pair.split(">")
     initial_state = initial_state.strip().upper()
     final_state = final_state.strip().upper()
+    init_type, init_root = _parse_state_root(initial_state)
+    final_type, final_root = _parse_state_root(final_state)
 
     # Determine TROOTSSL value for this calculation
     if trootssl is None:
@@ -675,12 +690,17 @@ def create_isc_input(
 
     # TDDFT block (aligned with reference layout)
     nroots = config.get('ESD_ISC_NROOTS', config.get('NROOTS', 10))  # Increased default to 10
+
+    # Map roots to correct spin manifolds based on states, per ORCA ESD docs
+    s_root = init_root if init_type == "S" else (final_root if final_type == "S" else 1)
+    t_root = init_root if init_type == "T" else (final_root if final_type == "T" else 1)
+
     dosoc_flag = "TRUE"
     tddft_maxiter = _resolve_tddft_maxiter(config)
     tddft_block = [
         f"%TDDFT  NROOTS  {int(nroots):>2}",
-        "        SROOT   1",
-        "        TROOT   1",
+        f"        SROOT   {int(s_root)}",
+        f"        TROOT   {int(t_root)}",
         f"        TROOTSSL {trootssl_str}",
         f"        DOSOC   {dosoc_flag}",
     ]
