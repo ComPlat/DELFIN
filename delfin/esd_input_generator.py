@@ -654,8 +654,8 @@ def create_isc_input(
 
     # Determine source geometry (use optimized geometry of FINAL state, per ORCA manual)
     xyz_file = f"{final_state}.xyz"
-    # Multiplicity follows final state (triplet -> 3, singlet -> 1)
-    final_multiplicity = 3 if final_type == "T" else 1
+    # Use restricted (closed-shell) reference for SOC; keep multiplicity 1 to avoid UKS
+    final_multiplicity = 1
 
     # Calculate adiabatic energy difference (DELE) for ISC
     # DELE = E(initial) - E(final) in cm^-1
@@ -671,8 +671,9 @@ def create_isc_input(
     aux_jk = config.get('aux_jk', 'def2/J')
     implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
 
-    # Simple keyword line (no RKS/UKS flag - let ORCA decide based on multiplicity)
+    # Simple keyword line (restricted reference)
     keywords = [
+        "RKS",
         functional,
         main_basisset,
         disp_corr,
