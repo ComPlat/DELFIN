@@ -10,6 +10,17 @@ from typing import Dict, Iterable, Optional, Tuple
 from delfin.common.logging import get_logger
 from delfin.energies import find_electronic_energy, find_ZPE, find_gibbs_energy
 
+
+def _format_ms_suffix(trootssl: int) -> str:
+    """Format TROOTSSL value as ms suffix (e.g., -1 -> 'msm1', 0 -> 'ms0', 1 -> 'msp1')."""
+    if trootssl < 0:
+        return f"msm{abs(trootssl)}"
+    elif trootssl > 0:
+        return f"msp{trootssl}"
+    else:
+        return "ms0"
+
+
 logger = get_logger(__name__)
 
 # Regular expressions for parsing ESD outputs
@@ -157,8 +168,17 @@ def collect_esd_results(
     states: Iterable[str],
     iscs: Iterable[str],
     ics: Iterable[str],
+    config: Optional[Dict[str, Any]] = None,
 ) -> ESDSummary:
-    """Collect FSPE values and ISC/IC rate constants from ESD outputs."""
+    """Collect FSPE values and ISC/IC rate constants from ESD outputs.
+
+    Args:
+        esd_dir: ESD working directory
+        states: List of electronic states
+        iscs: List of ISC transitions
+        ics: List of IC transitions
+        config: Configuration dictionary (for TROOTSSL parsing)
+    """
 
     summary = ESDSummary()
 
@@ -182,13 +202,38 @@ def collect_esd_results(
             gibbs = None
         summary.states[state_key] = StateResult(fspe, zpe, gibbs, output_path)
 
+    # Parse TROOTSSL values from config
+    trootssl_values = [0]  # default
+    if config is not None:
+        trootssl_raw = config.get('TROOTSSL', '0')
+
+        # Handle list/tuple directly
+        if isinstance(trootssl_raw, (list, tuple)):
+            trootssl_values = [int(x) for x in trootssl_raw]
+        else:
+            # Handle string format
+            trootssl_str = str(trootssl_raw).strip()
+            # Remove brackets if present (e.g., "['-1', '0', '1']" or "[-1, 0, 1]")
+            trootssl_str = trootssl_str.strip('[]')
+            if ',' in trootssl_str:
+                # Split and clean each value (remove quotes)
+                trootssl_values = [int(x.strip().strip("'\"")) for x in trootssl_str.split(',')]
+            else:
+                trootssl_values = [int(trootssl_str.strip("'\""))]
+
     for isc in iscs:
         isc_key = isc.strip().upper()
         if not isc_key or ">" not in isc_key:
             continue
         init_state, final_state = (part.strip() for part in isc_key.split(">", 1))
-        filename = esd_dir / f"{init_state}_{final_state}_ISC.out"
-        summary.isc[f"{init_state}>{final_state}"] = _parse_isc_output(filename)
+
+        # Collect results for each TROOTSSL value
+        for trootssl in trootssl_values:
+            ms_suffix = _format_ms_suffix(trootssl)
+            filename = esd_dir / f"{init_state}_{final_state}_ISC_{ms_suffix}.out"
+            ms_str = f"{trootssl:+d}" if trootssl != 0 else "0"
+            key = f"{init_state}>{final_state}(Ms={ms_str})"
+            summary.isc[key] = _parse_isc_output(filename)
 
     for ic in ics:
         ic_key = ic.strip().upper()

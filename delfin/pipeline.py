@@ -744,7 +744,7 @@ def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
     esd_enabled, esd_states, esd_iscs, esd_ics = parse_esd_config(ctx.config)
     if esd_enabled:
         esd_dir = working_dir / "ESD"
-        esd_summary = collect_esd_results(esd_dir, esd_states, esd_iscs, esd_ics)
+        esd_summary = collect_esd_results(esd_dir, esd_states, esd_iscs, esd_ics, config=ctx.config)
 
         # Calculate E_00 energies from ESD state results
         # E_00 = [E(excited) - E(S0)] + [ZPE(excited) - ZPE(S0)]

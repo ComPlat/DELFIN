@@ -383,12 +383,6 @@ class GlobalJobManager:
             signal.signal(signal.SIGINT, self._handle_sigint)
             self._signal_handler_installed = True
             logger.info("Registered GlobalJobManager SIGINT handler (previous=%s)", self._previous_sigint_handler)
-            # Emit console marker so users can verify handler install in tmux/screen
-            import sys
-            sys.stdout.write(f"⇢ SIGINT handler installed (previous={self._previous_sigint_handler})\n")
-            sys.stdout.flush()
-            sys.stderr.write(f"⇢ SIGINT handler installed (previous={self._previous_sigint_handler})\n")
-            sys.stderr.flush()
         except Exception as exc:  # noqa: BLE001
             logger.debug("Failed to install SIGINT handler: %s", exc)
 

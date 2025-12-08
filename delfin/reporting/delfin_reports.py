@@ -1,6 +1,7 @@
 # delfin_reports.py
 # Main DELFIN report generation functions
 
+from collections import defaultdict
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional
 from pathlib import Path
@@ -12,7 +13,7 @@ from ..utils import (
     select_rel_and_aux,
 )
 from ..parser import extract_last_uhf_deviation, extract_last_J3
-from ..esd_results import ESDSummary
+from ..esd_results import ESDSummary, ISCResult
 
 
 def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, E_ox_3,
@@ -247,7 +248,14 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
             if esd_lines:  # Add empty line before ISC section if there's already content
                 esd_lines.append("")
             esd_lines.append("ISC rate constants (s^-1):")
-            for transition, record in sorted(esd_summary.isc.items()):
+            isc_grouped: dict[str, list[tuple[str, ISCResult]]] = defaultdict(list)
+
+            # Group transitions by base (without Ms suffix) to allow summed output
+            for transition, record in esd_summary.isc.items():
+                base_transition = transition.split("(Ms=", 1)[0] if "(Ms=" in transition else transition
+                isc_grouped[base_transition].append((transition, record))
+
+            def _format_isc_line(label: str, record) -> str:
                 extras: list[str] = []
                 if record.temperature is not None:
                     extras.append(f"T={record.temperature:.2f} K")
@@ -265,7 +273,20 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                 if record.ht_percent is not None:
                     extras.append(f"HT={record.ht_percent:.2f}%")
                 detail = f" ({', '.join(extras)})" if extras else ""
-                esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}")
+                return f"  {label} = {fmt_rate(record.rate)}{detail}"
+
+            for base_transition in sorted(isc_grouped):
+                records = sorted(isc_grouped[base_transition])
+                for transition, record in records:
+                    esd_lines.append(_format_isc_line(transition, record))
+
+                # If multiple Ms components exist, append summed rate
+                if len(records) > 1:
+                    rates = [rec.rate for _, rec in records if rec.rate is not None]
+                    total_rate = sum(rates) if rates else None
+                    esd_lines.append(
+                        f"  {base_transition} (total) = {fmt_rate(total_rate)}"
+                    )
         if esd_summary.ic:
             if esd_lines:  # Add empty line before IC section if there's already content
                 esd_lines.append("")

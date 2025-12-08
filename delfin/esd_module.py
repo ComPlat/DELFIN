@@ -16,6 +16,7 @@ from delfin.esd_input_generator import (
     create_ic_input,
     create_isc_input,
     create_state_input,
+    _format_ms_suffix,
 )
 from delfin.orca import run_orca_with_intelligent_recovery
 from delfin.parallel_classic_manually import (
@@ -365,6 +366,23 @@ def _populate_isc_jobs(
         metal_basisset: Metal basis set
         config: Configuration dictionary
     """
+    # Parse TROOTSSL values from config
+    trootssl_raw = config.get('TROOTSSL', '0')
+
+    # Handle list/tuple directly
+    if isinstance(trootssl_raw, (list, tuple)):
+        trootssl_values = [int(x) for x in trootssl_raw]
+    else:
+        # Handle string format
+        trootssl_str = str(trootssl_raw).strip()
+        # Remove brackets if present (e.g., "['-1', '0', '1']" or "[-1, 0, 1]")
+        trootssl_str = trootssl_str.strip('[]')
+        if ',' in trootssl_str:
+            # Split and clean each value (remove quotes)
+            trootssl_values = [int(x.strip().strip("'\"")) for x in trootssl_str.split(',')]
+        else:
+            trootssl_values = [int(trootssl_str.strip("'\""))]
+
     for isc in iscs:
         initial_state, final_state = isc.split(">")
         initial_state = initial_state.strip().upper()
@@ -373,68 +391,75 @@ def _populate_isc_jobs(
         # ISC depends on both initial and final states
         deps = {f"esd_{initial_state}", f"esd_{final_state}"}
 
-        job_id = f"esd_isc_{initial_state}_{final_state}"
+        # Create a separate job for each TROOTSSL value
+        for trootssl in trootssl_values:
+            ms_suffix = _format_ms_suffix(trootssl)
+            job_id = f"esd_isc_{initial_state}_{final_state}_{ms_suffix}"
 
-        def make_isc_work(isc_pair: str) -> Callable[[int], None]:
-            """Create work function for ISC calculation."""
-            def work(cores: int) -> None:
-                # Generate input file
-                input_file = create_isc_input(
-                    isc_pair,
-                    esd_dir,
-                    charge,
-                    solvent,
-                    metals,
-                    main_basisset,
-                    metal_basisset,
-                    config,
-                )
-
-                # Convert to absolute path before any chdir operations
-                abs_input = Path(input_file).resolve()
-
-                # Update PAL in input file (use absolute path)
-                _update_pal_block(str(abs_input), cores)
-
-                # Determine output file name
-                init_st, fin_st = isc_pair.split(">")
-                init_st = init_st.strip().upper()
-                fin_st = fin_st.strip().upper()
-                output_file = esd_dir / f"{init_st}_{fin_st}_ISC.out"
-
-                logger.info(f"Running ORCA for ISC {isc_pair} in {esd_dir}")
-
-                # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
-                scratch_token = Path("scratch") / f"ISC_{init_st}_{fin_st}"
-                if not _run_orca_esd(
-                    abs_input,
-                    output_file.resolve(),
-                    scratch_subdir=scratch_token,
-                    working_dir=esd_dir,
-                    config=config,
-                ):
-                    raise RuntimeError(
-                        f"ORCA terminated abnormally for ISC {isc_pair}"
+            def make_isc_work(isc_pair: str, trootssl_val: int) -> Callable[[int], None]:
+                """Create work function for ISC calculation."""
+                def work(cores: int) -> None:
+                    # Generate input file
+                    input_file = create_isc_input(
+                        isc_pair,
+                        esd_dir,
+                        charge,
+                        solvent,
+                        metals,
+                        main_basisset,
+                        metal_basisset,
+                        config,
+                        trootssl=trootssl_val,
                     )
 
-                logger.info(f"ISC {isc_pair} calculation completed")
+                    # Convert to absolute path before any chdir operations
+                    abs_input = Path(input_file).resolve()
 
-            return work
+                    # Update PAL in input file (use absolute path)
+                    _update_pal_block(str(abs_input), cores)
 
-        # Allow ISC jobs to run in parallel with other jobs
-        half_cores = max(6, manager.total_cores // 2)
+                    # Determine output file name (with TROOTSSL suffix)
+                    init_st, fin_st = isc_pair.split(">")
+                    init_st = init_st.strip().upper()
+                    fin_st = fin_st.strip().upper()
+                    ms_sfx = _format_ms_suffix(trootssl_val)
+                    output_file = esd_dir / f"{init_st}_{fin_st}_ISC_{ms_sfx}.out"
 
-        manager.add_job(
-            WorkflowJob(
-                job_id=job_id,
-                work=make_isc_work(isc),
-                description=f"ISC {initial_state}→{final_state}",
-                dependencies=deps,
-                cores_min=6,
-                cores_optimal=half_cores,
-                cores_max=manager.total_cores,
+                    logger.info(f"Running ORCA for ISC {isc_pair} (Ms={trootssl_val}) in {esd_dir}")
+
+                    # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
+                    scratch_token = Path("scratch") / f"ISC_{init_st}_{fin_st}_{ms_sfx}"
+                    if not _run_orca_esd(
+                        abs_input,
+                        output_file.resolve(),
+                        scratch_subdir=scratch_token,
+                        working_dir=esd_dir,
+                        config=config,
+                    ):
+                        raise RuntimeError(
+                            f"ORCA terminated abnormally for ISC {isc_pair} (Ms={trootssl_val})"
+                        )
+
+                    logger.info(f"ISC {isc_pair} (Ms={trootssl_val}) calculation completed")
+
+                return work
+
+            # Allow ISC jobs to run in parallel with other jobs
+            half_cores = max(6, manager.total_cores // 2)
+
+            # Format description with sign
+            ms_str = f"{trootssl:+d}" if trootssl != 0 else "0"
+            manager.add_job(
+                WorkflowJob(
+                    job_id=job_id,
+                    work=make_isc_work(isc, trootssl),
+                    description=f"ISC {initial_state}→{final_state} (Ms={ms_str})",
+                    dependencies=deps,
+                    cores_min=6,
+                    cores_optimal=half_cores,
+                    cores_max=manager.total_cores,
+                )
             )
-        )
 
 
 def _populate_ic_jobs(
@@ -461,10 +486,21 @@ def _populate_ic_jobs(
         metal_basisset: Metal basis set
         config: Configuration dictionary
     """
+    unsupported_ics: list[str] = []
+
     for ic in ics:
         initial_state, final_state = ic.split(">")
         initial_state = initial_state.strip().upper()
         final_state = final_state.strip().upper()
+
+        # ORCA supports IC reliably only for Sn→S0; skip others with warning
+        if not initial_state.startswith("S") or final_state != "S0":
+            unsupported_ics.append(ic)
+            logger.warning(
+                "Skipping IC %s: ORCA IC support is limited to Sn→S0; calculation not scheduled.",
+                ic,
+            )
+            continue
 
         # IC depends on both initial and final states
         deps = {f"esd_{initial_state}", f"esd_{final_state}"}
@@ -530,6 +566,12 @@ def _populate_ic_jobs(
                 cores_optimal=half_cores,
                 cores_max=manager.total_cores,
             )
+        )
+
+    if unsupported_ics:
+        logger.info(
+            "Unsupported IC transitions skipped: %s",
+            ", ".join(unsupported_ics),
         )
 
 

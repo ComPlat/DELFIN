@@ -44,6 +44,7 @@ ESD_frequency=yes
 states=S1,T1,S2,T2
 ISCs=S1>T1,T1>S1
 ICs=S1>S0
+TROOTSSL=-1,0,1
 --------------------
 deltaSCF Settings:
 deltaSCF_DOMOM=true

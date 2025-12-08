@@ -20,6 +20,16 @@ logger = get_logger(__name__)
 HARTREE_TO_CM1 = 219474.63
 
 
+def _format_ms_suffix(trootssl: int) -> str:
+    """Format TROOTSSL value as ms suffix (e.g., -1 -> 'msm1', 0 -> 'ms0', 1 -> 'msp1')."""
+    if trootssl < 0:
+        return f"msm{abs(trootssl)}"
+    elif trootssl > 0:
+        return f"msp{trootssl}"
+    else:
+        return "ms0"
+
+
 def _resolve_tddft_maxiter(config: Dict[str, Any]) -> Optional[int]:
     """Prefer an ESD-specific TDDFT maxiter override, then fall back to global."""
     esd_override = resolve_maxiter(config, key="ESD_TDDFT_maxiter")
@@ -593,6 +603,7 @@ def create_isc_input(
     main_basisset: str,
     metal_basisset: str,
     config: Dict[str, Any],
+    trootssl: Optional[int] = None,
 ) -> str:
     """Generate ORCA input file for intersystem crossing (ISC) calculation.
 
@@ -605,6 +616,7 @@ def create_isc_input(
         main_basisset: Main basis set
         metal_basisset: Metal basis set
         config: Configuration dictionary
+        trootssl: Triplet sublevel (-1, 0, or 1). If None, uses config['TROOTSSL']
 
     Returns:
         Path to generated input file
@@ -613,11 +625,20 @@ def create_isc_input(
     initial_state = initial_state.strip().upper()
     final_state = final_state.strip().upper()
 
-    job_name = f"{initial_state}_{final_state}_ISC"
+    # Determine TROOTSSL value for this calculation
+    if trootssl is None:
+        trootssl_str = str(config.get('TROOTSSL', '0')).strip()
+    else:
+        trootssl_str = str(trootssl)
+
+    # Generate job name with TROOTSSL suffix
+    trootssl_int = int(trootssl_str)
+    ms_suffix = _format_ms_suffix(trootssl_int)
+    job_name = f"{initial_state}_{final_state}_ISC_{ms_suffix}"
     input_file = esd_dir / f"{job_name}.inp"
 
-    # Determine source geometry (use optimized geometry of initial state)
-    xyz_file = f"{initial_state}.xyz"
+    # Determine source geometry (use optimized geometry of FINAL state, per ORCA manual)
+    xyz_file = f"{final_state}.xyz"
 
     # Calculate adiabatic energy difference (DELE) for ISC
     # DELE = E(initial) - E(final) in cm^-1
@@ -654,14 +675,13 @@ def create_isc_input(
 
     # TDDFT block (aligned with reference layout)
     nroots = config.get('ESD_ISC_NROOTS', config.get('NROOTS', 10))  # Increased default to 10
-    trootssl = str(config.get('TROOTSSL', '0')).strip()
     dosoc_flag = "TRUE"
     tddft_maxiter = _resolve_tddft_maxiter(config)
     tddft_block = [
         f"%TDDFT  NROOTS  {int(nroots):>2}",
         "        SROOT   1",
         "        TROOT   1",
-        f"        TROOTSSL {trootssl}",
+        f"        TROOTSSL {trootssl_str}",
         f"        DOSOC   {dosoc_flag}",
     ]
     if tddft_maxiter is not None:
@@ -750,8 +770,10 @@ def create_ic_input(
     job_name = f"{initial_state}_{final_state}_IC"
     input_file = esd_dir / f"{job_name}.inp"
 
-    # Determine source geometry (use optimized geometry of initial state)
-    xyz_file = f"{initial_state}.xyz"
+    # Determine source geometry (use GROUND STATE geometry for IC, per ORCA manual)
+    # For S1>S0: use S0.xyz
+    # Note: This differs from ISC which uses final state!
+    xyz_file = f"{final_state}.xyz"
 
     # Build input (same as ISC but labeled as IC)
     functional = config.get('functional', 'PBE0')
@@ -800,11 +822,13 @@ def create_ic_input(
     blocks.append("\n".join(tddft_block))
 
     # ESD block
+    # For IC: GSHESSIAN = ground state (final), ESHESSIAN = excited state (initial)
+    # Example: S1>S0 IC → GSHESSIAN=S0.hess, ESHESSIAN=S1.hess
     temperature = config.get('temperature', 298.15)
     esd_block = [
         "%ESD",
-        f'  GSHESSIAN       "{initial_state}.hess"',
-        f'  ESHESSIAN       "{final_state}.hess"',
+        f'  GSHESSIAN       "{final_state}.hess"',
+        f'  ESHESSIAN       "{initial_state}.hess"',
         "  USEJ            TRUE",
         f"  TEMP            {temperature}",
     ]
