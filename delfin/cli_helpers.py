@@ -164,4 +164,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="Optional custom path for DELFIN_Data.json (default: <workspace>/DELFIN_Data.json)."
     )
+    p.add_argument(
+        "--afp",
+        action="store_true",
+        help="Generate combined Absorption-Fluorescence-Phosphorescence spectrum plot (AFP_spectrum.png)."
+    )
+    p.add_argument(
+        "--afp-fwhm",
+        type=float,
+        default=30.0,
+        metavar="NM",
+        help="FWHM for Gaussian broadening in AFP plot (default: 30.0 nm)."
+    )
     return p

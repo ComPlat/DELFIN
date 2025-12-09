@@ -879,13 +879,28 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # JSON-only mode: build DELFIN_Data.json and exit
-    if args.json and not any([args.report, args.imag, args.recalc, args.define, args.purge, args.cleanup]):
+    if args.json and not any([args.report, args.imag, args.recalc, args.define, args.purge, args.cleanup, args.afp]):
         try:
             output = save_esd_data_json(workspace_root, json_output_path)
             print(f"DELFIN data JSON written to: {output}")
             return 0
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to generate DELFIN_Data.json: %s", exc, exc_info=True)
+            return 1
+
+    # AFP-only mode: generate AFP plot and exit
+    if args.afp and not any([args.report, args.imag, args.recalc, args.define, args.purge, args.cleanup]):
+        from .afp_plot import generate_afp_report
+        try:
+            output_png = generate_afp_report(workspace_root, fwhm=args.afp_fwhm)
+            if output_png:
+                print(f"AFP spectrum plot saved to: {output_png}")
+                return 0
+            else:
+                logger.error("Failed to generate AFP plot - check if S0.out, S1.out, or T1.out exist")
+                return 1
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to generate AFP plot: %s", exc, exc_info=True)
             return 1
 
     if occupier_overrides and (getattr(args, "report", False) or getattr(args, "imag", False)):
