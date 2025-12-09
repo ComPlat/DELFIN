@@ -35,18 +35,20 @@ logger = get_logger(__name__)
 def create_spectrum_plot(
     transitions: List[Transition],
     output_png: Path,
-    wavelength_range: tuple[float, float] = (200, 800),
+    wavelength_range: tuple[float, float] | None = None,
     fwhm: float = 20.0,
-    dpi: int = 300
+    dpi: int = 300,
+    title: str = 'UV-Vis Absorption Spectrum'
 ) -> None:
     """Create UV-Vis spectrum plot with stick spectrum and broadened curve.
 
     Args:
         transitions: List of transitions
         output_png: Path to save PNG image
-        wavelength_range: Wavelength range (min, max) in nm
+        wavelength_range: Wavelength range (min, max) in nm (auto if None)
         fwhm: Full width at half maximum for Gaussian broadening (nm)
         dpi: Resolution of output image
+        title: Plot title
     """
     if not MATPLOTLIB_AVAILABLE:
         logger.warning("matplotlib not available, skipping spectrum plot")
@@ -61,6 +63,15 @@ def create_spectrum_plot(
         logger.warning("No significant transitions found for plotting")
         plt.close(fig)
         return
+
+    # Auto-determine wavelength range if not provided
+    if wavelength_range is None:
+        wavelengths_list = [t.wavelength_nm for t in significant]
+        min_wl = min(wavelengths_list)
+        max_wl = max(wavelengths_list)
+        # Add 10% padding on each side
+        padding = (max_wl - min_wl) * 0.1
+        wavelength_range = (max(0, min_wl - padding), max_wl + padding)
 
     # Create stick spectrum
     for trans in significant:
@@ -80,7 +91,7 @@ def create_spectrum_plot(
     # Formatting
     ax.set_xlabel('Wavelength (nm)', fontsize=12)
     ax.set_ylabel('Oscillator strength / Intensity (arb. units)', fontsize=12)
-    ax.set_title('UV-Vis Absorption Spectrum', fontsize=14, fontweight='bold')
+    ax.set_title(title, fontsize=14, fontweight='bold')
     ax.set_xlim(wavelength_range)
     ax.set_ylim(bottom=0)
     ax.grid(True, alpha=0.3)
@@ -94,7 +105,7 @@ def create_spectrum_plot(
 
 def generate_uv_vis_word_report(
     esd_output_file: Path,
-    output_docx: Path,
+    output_docx: Optional[Path] = None,
     min_fosc: float = 0.001,
     fwhm: float = 20.0
 ) -> None:
@@ -102,7 +113,7 @@ def generate_uv_vis_word_report(
 
     Args:
         esd_output_file: Path to S0_TDDFT.out or S0.out file
-        output_docx: Path to output Word document
+        output_docx: Path to output Word document (auto-generated if None)
         min_fosc: Minimum oscillator strength to include in table
         fwhm: Full width at half maximum for Gaussian broadening (nm)
     """
@@ -116,17 +127,35 @@ def generate_uv_vis_word_report(
         logger.warning(f"No transitions found in {esd_output_file}")
         return
 
+    # Extract state name from filename (e.g., S0.out -> S0, S0_TDDFT.out -> S0)
+    state_name = esd_output_file.stem.replace('_TDDFT', '')
+
+    # Determine spectrum type based on state
+    if state_name == 'S0':
+        spectrum_type = 'UV-Vis Absorption Spectrum'
+    elif state_name.startswith('S'):
+        spectrum_type = 'Fluorescence Spectrum'
+    elif state_name.startswith('T'):
+        spectrum_type = 'Phosphorescence Spectrum'
+    else:
+        spectrum_type = 'UV-Vis Spectrum'
+
+    # Auto-generate output filename if not provided
+    if output_docx is None:
+        output_docx = esd_output_file.parent / f"{spectrum_type.replace(' ', '_')}_{state_name}.docx"
+
     # Filter significant transitions for table
     significant = filter_significant_transitions(transitions, min_fosc=min_fosc)
 
     # Create Word document
     doc = Document()
 
-    # Title
-    title = doc.add_heading('UV-Vis Absorption Spectrum', level=1)
+    # Title with spectrum type and state name
+    title = doc.add_heading(f'{spectrum_type} ({state_name})', level=1)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     # Source file info
+    doc.add_paragraph(f"State: {state_name}")
     doc.add_paragraph(f"Source: {esd_output_file.name}")
     doc.add_paragraph(f"Total transitions: {len(transitions)}")
     doc.add_paragraph(f"Significant transitions (fosc ≥ {min_fosc}): {len(significant)}")
@@ -136,11 +165,11 @@ def generate_uv_vis_word_report(
     doc.add_heading('Transition Data', level=2)
 
     # Create table
-    table = doc.add_table(rows=1, cols=6)
+    table = doc.add_table(rows=1, cols=5)
     table.style = 'Light Grid Accent 1'
 
     # Header row
-    headers = ['Transition', 'Energy (eV)', 'Wavelength (nm)', 'fosc', 'Type', 'Intensity']
+    headers = ['Transition', 'Energy (eV)', 'Wavelength (nm)', 'fosc', 'Intensity']
     header_cells = table.rows[0].cells
     for i, header_text in enumerate(headers):
         header_cells[i].text = header_text
@@ -157,17 +186,6 @@ def generate_uv_vis_word_report(
         row_cells[2].text = f"{trans.wavelength_nm:.1f}"
         row_cells[3].text = f"{trans.fosc:.6f}"
 
-        # Determine transition type
-        if 'T' in trans.to_state and 'S' in trans.from_state:
-            trans_type = "Forbidden (S→T)"
-        elif 'S' in trans.to_state and 'S' in trans.from_state:
-            trans_type = "Allowed (S→S)"
-        elif 'T' in trans.to_state and 'T' in trans.from_state:
-            trans_type = "Allowed (T→T)"
-        else:
-            trans_type = "Unknown"
-        row_cells[4].text = trans_type
-
         # Qualitative intensity
         if trans.fosc < 0.01:
             intensity = "Very weak"
@@ -177,7 +195,7 @@ def generate_uv_vis_word_report(
             intensity = "Medium"
         else:
             intensity = "Strong"
-        row_cells[5].text = intensity
+        row_cells[4].text = intensity
 
     doc.add_paragraph()
 
@@ -186,14 +204,15 @@ def generate_uv_vis_word_report(
     doc.add_paragraph(f"Gaussian broadening with FWHM = {fwhm} nm")
     doc.add_paragraph()
 
-    # Generate plot
-    temp_png = output_docx.parent / f"{output_docx.stem}_spectrum.png"
+    # Generate plot with spectrum type and state name in filename
+    temp_png = output_docx.parent / f"{spectrum_type.replace(' ', '_')}_{state_name}.png"
     create_spectrum_plot(
         transitions,
         temp_png,
-        wavelength_range=(200, 800),
+        wavelength_range=None,  # Auto-determine from data
         fwhm=fwhm,
-        dpi=300
+        dpi=300,
+        title=spectrum_type  # Pass spectrum type as title
     )
 
     # Insert plot into document
@@ -247,11 +266,10 @@ def generate_all_esd_uv_vis_reports(esd_dir: Path, output_dir: Optional[Path] = 
         logger.warning(f"No S0 output file found in {esd_dir}")
         return
 
-    # Generate report
-    output_docx = output_dir / "UV_Vis_Spectrum.docx"
+    # Generate report (output filename auto-generated with state name)
     generate_uv_vis_word_report(
         s0_output,
-        output_docx,
+        output_docx=None,  # Auto-generate with state name
         min_fosc=0.001,
         fwhm=20.0
     )

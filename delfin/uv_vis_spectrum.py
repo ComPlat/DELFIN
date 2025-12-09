@@ -79,15 +79,18 @@ def parse_absorption_spectrum(output_file: Path) -> List[Transition]:
         logger.warning(f"Output file not found: {output_file}")
         return transitions
 
-    # Find the absorption spectrum section
+    # Find ALL absorption spectrum sections and take the LAST one (after final geometry)
     pattern = r'ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS.*?\n-+\n.*?\n-+\n(.*?)(?:\n\n|\Z)'
-    match = re.search(pattern, content, re.DOTALL)
+    matches = re.findall(pattern, content, re.DOTALL)
 
-    if not match:
+    if not matches:
         logger.info(f"No absorption spectrum found in {output_file}")
         return transitions
 
-    spectrum_text = match.group(1)
+    # Use the LAST spectrum (after geometry optimization converged)
+    spectrum_text = matches[-1]
+    if len(matches) > 1:
+        logger.info(f"Found {len(matches)} absorption spectra in {output_file}, using the last one")
 
     # Parse each transition line
     # Format: 0-1A  ->  1-3A    2.600831   20977.1   476.7   0.000000000   0.00000   0.00000   0.00000   0.00000

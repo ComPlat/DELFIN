@@ -581,7 +581,7 @@ def _create_state_input_tddft(
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
             _write_tddft_block(f, iroot=1, irootmult="triplet")
-            f.write(f"\n* xyz {charge} 1\n")
+            f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
             for line in coord_lines:
                 f.write(line)
             f.write("*\n")
@@ -593,7 +593,7 @@ def _create_state_input_tddft(
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
             _write_tddft_block(f, iroot=2, irootmult="triplet")
-            f.write(f"\n* xyz {charge} 1\n")
+            f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
             for line in coord_lines:
                 f.write(line)
             f.write("*\n")
@@ -617,7 +617,7 @@ def _create_state_input_tddft(
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
             _write_tddft_block(f, iroot=3, irootmult="triplet")
-            f.write(f"\n* xyz {charge} 1\n")
+            f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
             for line in coord_lines:
                 f.write(line)
             f.write("*\n")
@@ -677,7 +677,7 @@ def _create_state_input_tddft(
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
             _write_tddft_block(f, iroot=4, irootmult="triplet")
-            f.write(f"\n* xyz {charge} 1\n")
+            f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
             for line in coord_lines:
                 f.write(line)
             f.write("*\n")
@@ -689,7 +689,7 @@ def _create_state_input_tddft(
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
             _write_tddft_block(f, iroot=5, irootmult="triplet")
-            f.write(f"\n* xyz {charge} 1\n")
+            f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
             for line in coord_lines:
                 f.write(line)
             f.write("*\n")
@@ -701,7 +701,7 @@ def _create_state_input_tddft(
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
             _write_tddft_block(f, iroot=6, irootmult="triplet")
-            f.write(f"\n* xyz {charge} 1\n")
+            f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
             for line in coord_lines:
                 f.write(line)
             f.write("*\n")

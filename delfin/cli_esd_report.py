@@ -6,7 +6,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from delfin.common.logging import get_logger, setup_logging
+import logging
+
+from delfin.common.logging import get_logger
 from delfin.reporting.uv_vis_report import generate_uv_vis_word_report
 
 logger = get_logger(__name__)
@@ -66,7 +68,10 @@ Examples:
     args = parser.parse_args()
 
     # Setup logging
-    setup_logging(verbose=args.verbose)
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
+    else:
+        logging.basicConfig(level=logging.INFO, format='%(message)s')
 
     # Validate input file
     input_file = Path(args.output_file)
@@ -77,15 +82,13 @@ Examples:
     if not input_file.suffix == '.out':
         logger.warning(f"Input file does not have .out extension: {input_file}")
 
-    # Determine output path
-    if args.output:
-        output_docx = Path(args.output)
-    else:
-        output_docx = input_file.parent / "UV_Vis_Spectrum.docx"
+    # Determine output path (None = auto-generate with state name)
+    output_docx = Path(args.output) if args.output else None
 
     # Generate report
     logger.info(f"Generating UV-Vis spectrum report from {input_file}")
-    logger.info(f"Output will be saved to {output_docx}")
+    if output_docx:
+        logger.info(f"Output will be saved to {output_docx}")
 
     try:
         generate_uv_vis_word_report(
@@ -94,6 +97,21 @@ Examples:
             min_fosc=args.min_fosc,
             fwhm=args.fwhm
         )
+
+        # Determine actual output filename if it was auto-generated
+        if output_docx is None:
+            state_name = input_file.stem.replace('_TDDFT', '')
+            # Determine spectrum type
+            if state_name == 'S0':
+                spectrum_type = 'UV-Vis_Absorption_Spectrum'
+            elif state_name.startswith('S'):
+                spectrum_type = 'Fluorescence_Spectrum'
+            elif state_name.startswith('T'):
+                spectrum_type = 'Phosphorescence_Spectrum'
+            else:
+                spectrum_type = 'UV-Vis_Spectrum'
+            output_docx = input_file.parent / f"{spectrum_type}_{state_name}.docx"
+
         logger.info("Report generation complete!")
         print(f"\n✓ Report saved to: {output_docx}")
 
