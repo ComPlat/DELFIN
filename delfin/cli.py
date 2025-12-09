@@ -20,6 +20,7 @@ from .reporting import (
     generate_summary_report_DELFIN as generate_summary_report,
     generate_esd_report,
 )
+from .reporting.delfin_collector import save_esd_data_json
 from .cli_helpers import _avg_or_none, _build_parser
 from .cli_recalc import setup_recalc_mode, patch_modules_for_recalc
 from .cli_banner import print_delfin_banner, validate_required_files, get_file_paths
@@ -817,6 +818,7 @@ def main(argv: list[str] | None = None) -> int:
     RECALC_MODE = bool(getattr(args, "recalc", False))
     control_file_path = resolve_path(args.control)
     workspace_root = control_file_path.parent
+    json_output_path = Path(args.json_output).resolve() if getattr(args, "json_output", None) else None
     force_rerun_outputs: set[Path] = {
         _override_output_path(name, workspace_root) for name in occupier_overrides
     } if RECALC_MODE else set()
@@ -875,6 +877,16 @@ def main(argv: list[str] | None = None) -> int:
         cleanup_all(str(get_runtime_dir()))
         print("Cleanup done.")
         return 0
+
+    # JSON-only mode: build DELFIN_Data.json and exit
+    if args.json and not any([args.report, args.imag, args.recalc, args.define, args.purge, args.cleanup]):
+        try:
+            output = save_esd_data_json(workspace_root, json_output_path)
+            print(f"DELFIN data JSON written to: {output}")
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to generate DELFIN_Data.json: %s", exc, exc_info=True)
+            return 1
 
     if occupier_overrides and (getattr(args, "report", False) or getattr(args, "imag", False)):
         logger.error("--occupier-override is only supported for normal --recalc runs (not with --report/--imag).")
@@ -1300,7 +1312,14 @@ def main(argv: list[str] | None = None) -> int:
                 logger.info("ESD report written to %s", esd_report_path)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to generate ESD.txt: %s", exc, exc_info=True)
-    
+
+        # Always write consolidated DELFIN JSON at the end of a run
+        try:
+            output_json = save_esd_data_json(workspace_root, json_output_path)
+            logger.info("DELFIN data JSON written to %s", output_json)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to generate DELFIN_Data.json: %s", exc, exc_info=True)
+
         return _finalize(0)
     except KeyboardInterrupt:
         logger.warning("Execution interrupted by user; shutting down...")

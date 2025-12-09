@@ -154,4 +154,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only run IMAG elimination on existing .out/.hess files, then generate report."
     )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Generate DELFIN_Data.json for the project (if used alone, only JSON is built and then exit)."
+    )
+    p.add_argument(
+        "--json-output",
+        metavar="FILE",
+        help="Optional custom path for DELFIN_Data.json (default: <workspace>/DELFIN_Data.json)."
+    )
     return p
