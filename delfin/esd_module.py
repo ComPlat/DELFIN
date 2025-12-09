@@ -189,13 +189,22 @@ def _populate_state_jobs(
         esd_modus = esd_modus.split("|")[0].strip()
 
     # Define dependencies between states
+    # In TDDFT mode: all excited states depend only on S0 (ground state wavefunction)
+    # In deltaSCF mode: sequential dependencies for orbital optimization
     state_deps: Dict[str, Set[str]] = {
         "S0": set(),
         "S1": {"esd_S0"},
-        "S2": {"esd_S1"},
+        "S2": {"esd_S0"} if esd_modus == "tddft" else {"esd_S1"},
+        "S3": {"esd_S0"} if esd_modus == "tddft" else {"esd_S2"},
+        "S4": {"esd_S0"} if esd_modus == "tddft" else {"esd_S3"},
+        "S5": {"esd_S0"} if esd_modus == "tddft" else {"esd_S4"},
+        "S6": {"esd_S0"} if esd_modus == "tddft" else {"esd_S5"},
         "T1": {"esd_S0"},
-        "T2": {"esd_T1"},
-        "T3": {"esd_T2"},
+        "T2": {"esd_S0"} if esd_modus == "tddft" else {"esd_T1"},
+        "T3": {"esd_S0"} if esd_modus == "tddft" else {"esd_T2"},
+        "T4": {"esd_S0"} if esd_modus == "tddft" else {"esd_T3"},
+        "T5": {"esd_S0"} if esd_modus == "tddft" else {"esd_T4"},
+        "T6": {"esd_S0"} if esd_modus == "tddft" else {"esd_T5"},
     }
 
     for state in states:
@@ -743,9 +752,16 @@ def add_esd_jobs_to_scheduler(
         "S0": set(),
         "S1": {"esd_S0"},
         "S2": {"esd_S1"},
+        "S3": {"esd_S2"},
+        "S4": {"esd_S3"},
+        "S5": {"esd_S4"},
+        "S6": {"esd_S5"},
         "T1": {"esd_S0"},
         "T2": {"esd_T1"},
         "T3": {"esd_T2"},
+        "T4": {"esd_T3"},
+        "T5": {"esd_T4"},
+        "T6": {"esd_T5"},
     }
 
     # Populate jobs (they will be added to the shared scheduler manager)

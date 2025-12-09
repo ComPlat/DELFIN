@@ -453,17 +453,38 @@ def _create_state_input_tddft(
     elif state_upper == "S1":
         xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
+    elif state_upper == "S2":
+        xyz_path = esd_dir / "S1.xyz"
+        skip_lines = 2
+    elif state_upper == "S3":
+        xyz_path = esd_dir / "S2.xyz"
+        skip_lines = 2
+    elif state_upper == "S4":
+        xyz_path = esd_dir / "S3.xyz"
+        skip_lines = 2
+    elif state_upper == "S5":
+        xyz_path = esd_dir / "S4.xyz"
+        skip_lines = 2
+    elif state_upper == "S6":
+        xyz_path = esd_dir / "S5.xyz"
+        skip_lines = 2
     elif state_upper == "T1":
         xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "T2":
         xyz_path = esd_dir / "T1.xyz"
         skip_lines = 2
-    elif state_upper == "S2":
-        xyz_path = esd_dir / "S1.xyz"
-        skip_lines = 2
     elif state_upper == "T3":
         xyz_path = esd_dir / "T2.xyz"
+        skip_lines = 2
+    elif state_upper == "T4":
+        xyz_path = esd_dir / "T3.xyz"
+        skip_lines = 2
+    elif state_upper == "T5":
+        xyz_path = esd_dir / "T4.xyz"
+        skip_lines = 2
+    elif state_upper == "T6":
+        xyz_path = esd_dir / "T5.xyz"
         skip_lines = 2
     else:
         xyz_path = esd_dir / "S0.xyz"
@@ -567,7 +588,7 @@ def _create_state_input_tddft(
         elif state_upper == "T2":
             f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "T2"\n')
-            f.write('%moinp "T1.gbw"\n')
+            f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
@@ -579,7 +600,7 @@ def _create_state_input_tddft(
         elif state_upper == "S2":
             f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "S2"\n')
-            f.write('%moinp "S1.gbw"\n')
+            f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
@@ -596,6 +617,90 @@ def _create_state_input_tddft(
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
             _write_tddft_block(f, iroot=3, irootmult="triplet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n")
+        elif state_upper == "S3":
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write('%base "S3"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
+            _write_tddft_block(f, iroot=3, irootmult="singlet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n")
+        elif state_upper == "S4":
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write('%base "S4"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
+            _write_tddft_block(f, iroot=4, irootmult="singlet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n")
+        elif state_upper == "S5":
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write('%base "S5"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
+            _write_tddft_block(f, iroot=5, irootmult="singlet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n")
+        elif state_upper == "S6":
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write('%base "S6"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
+            _write_tddft_block(f, iroot=6, irootmult="singlet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n")
+        elif state_upper == "T4":
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write('%base "T4"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
+            _write_tddft_block(f, iroot=4, irootmult="triplet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n")
+        elif state_upper == "T5":
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write('%base "T5"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
+            _write_tddft_block(f, iroot=5, irootmult="triplet")
+            f.write(f"\n* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line)
+            f.write("*\n")
+        elif state_upper == "T6":
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write('%base "T6"\n')
+            f.write('%moinp "S0.gbw"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+            _write_output_blocks(f)
+            _write_tddft_block(f, iroot=6, irootmult="triplet")
             f.write(f"\n* xyz {charge} 1\n")
             for line in coord_lines:
                 f.write(line)
