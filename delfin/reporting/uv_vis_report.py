@@ -38,7 +38,7 @@ def create_spectrum_plot(
     wavelength_range: tuple[float, float] | None = None,
     fwhm: float = 20.0,
     dpi: int = 300,
-    title: str = 'UV-Vis Absorption Spectrum'
+    title: str = 'Absorption Spectrum'
 ) -> None:
     """Create UV-Vis spectrum plot with stick spectrum and broadened curve.
 
@@ -132,13 +132,13 @@ def generate_uv_vis_word_report(
 
     # Determine spectrum type based on state
     if state_name == 'S0':
-        spectrum_type = 'UV-Vis Absorption Spectrum'
+        spectrum_type = 'Absorption Spectrum'
     elif state_name.startswith('S'):
         spectrum_type = 'Fluorescence Spectrum'
     elif state_name.startswith('T'):
         spectrum_type = 'Phosphorescence Spectrum'
     else:
-        spectrum_type = 'UV-Vis Spectrum'
+        spectrum_type = 'Absorption Spectrum'
 
     # Auto-generate output filename if not provided
     if output_docx is None:

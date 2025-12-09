@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 def main():
     """Main entry point for delfin_ESD command."""
     parser = argparse.ArgumentParser(
-        description="Generate UV-Vis spectrum Word report from ORCA ESD output file",
+        description="Generate electronic spectrum Word report from ORCA ESD output file",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -42,7 +42,7 @@ Examples:
         '-o', '--output',
         type=str,
         default=None,
-        help='Output Word document path (default: UV_Vis_Spectrum.docx in same directory)'
+        help='Output Word document path (default: Absorption_Spectrum_S0.docx in same directory)'
     )
 
     parser.add_argument(
@@ -86,7 +86,7 @@ Examples:
     output_docx = Path(args.output) if args.output else None
 
     # Generate report
-    logger.info(f"Generating UV-Vis spectrum report from {input_file}")
+    logger.info(f"Generating electronic spectrum report from {input_file}")
     if output_docx:
         logger.info(f"Output will be saved to {output_docx}")
 
@@ -103,13 +103,13 @@ Examples:
             state_name = input_file.stem.replace('_TDDFT', '')
             # Determine spectrum type
             if state_name == 'S0':
-                spectrum_type = 'UV-Vis_Absorption_Spectrum'
+                spectrum_type = 'Absorption_Spectrum'
             elif state_name.startswith('S'):
                 spectrum_type = 'Fluorescence_Spectrum'
             elif state_name.startswith('T'):
                 spectrum_type = 'Phosphorescence_Spectrum'
             else:
-                spectrum_type = 'UV-Vis_Spectrum'
+                spectrum_type = 'Absorption_Spectrum'
             output_docx = input_file.parent / f"{spectrum_type}_{state_name}.docx"
 
         logger.info("Report generation complete!")
