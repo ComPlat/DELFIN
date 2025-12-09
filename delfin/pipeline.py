@@ -630,6 +630,16 @@ def run_esd_phase(ctx: PipelineContext) -> bool:
 
     ctx.extra['esd_result'] = result
 
+    # Generate UV-Vis spectrum report if ESD calculations were successful
+    try:
+        from delfin.reporting.uv_vis_report import generate_all_esd_uv_vis_reports
+        esd_dir = Path("ESD").resolve()
+        if esd_dir.exists():
+            logger.info("Generating UV-Vis spectrum report from ESD results")
+            generate_all_esd_uv_vis_reports(esd_dir)
+    except Exception as e:
+        logger.warning(f"Failed to generate UV-Vis spectrum report: {e}")
+
     if not result.success:
         failed_desc = ", ".join(
             f"{job_id} ({reason})" for job_id, reason in result.failed.items()
