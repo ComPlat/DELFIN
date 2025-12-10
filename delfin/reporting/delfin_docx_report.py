@@ -44,6 +44,7 @@ class ReportAssets:
     """Container for optional plot assets referenced in the final report."""
 
     afp_png: Optional[Path] = None
+    smiles_png: Optional[Path] = None
     uv_vis_pngs: Dict[str, Path] | None = None  # keyed by state name, e.g., "S0", "S1", "T1"
     ir_png: Optional[Path] = None
     energy_level_png: Optional[Path] = None
@@ -69,6 +70,119 @@ def _add_plot_if_exists(doc: Document, title: str, image_path: Optional[Path]) -
     doc.add_heading(title, level=2)
     doc.add_picture(str(image_path), width=Inches(6.5))
     doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+
+def _xyz_body_to_mol(xyz_lines: list[str]):
+    """Convert XYZ body (no header lines) to RDKit Mol via bond perception."""
+    try:
+        from rdkit import Chem, RDLogger
+        from rdkit.Chem import rdDetermineBonds
+        from rdkit.Geometry import Point3D
+
+        RDLogger.DisableLog("rdApp.*")
+    except Exception:
+        return None
+
+    atoms = []
+    coords = []
+    for line in xyz_lines:
+        if not line.strip():
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            return None
+        symbol = parts[0]
+        try:
+            x, y, z = map(float, parts[1:4])
+        except Exception:
+            return None
+        atoms.append(symbol)
+        coords.append(Point3D(x, y, z))
+
+    if not atoms:
+        return None
+
+    try:
+        mol = Chem.RWMol()
+        for sym in atoms:
+            mol.AddAtom(Chem.Atom(sym))
+        conf = Chem.Conformer(len(atoms))
+        for idx, pt in enumerate(coords):
+            conf.SetAtomPosition(idx, pt)
+        mol.AddConformer(conf)
+        rdDetermineBonds.DetermineBonds(mol)
+        Chem.SanitizeMol(mol)
+        return mol
+    except Exception:
+        return None
+
+
+def _mol_to_smiles(mol):
+    try:
+        from rdkit import Chem
+        smi = Chem.MolToSmiles(mol)
+        return smi
+    except Exception:
+        return None
+
+
+def _generate_smiles_image(project_dir: Path) -> Optional[Path]:
+    """Render SMILES from input.txt (SMILES or XYZ body) to a PNG using RDKit."""
+    smiles_file = project_dir / "input.txt"
+    if not smiles_file.exists():
+        logger.warning("SMILES source 'input.txt' not found for RDKit rendering")
+        return None
+
+    try:
+        lines = [line.strip() for line in smiles_file.read_text(encoding="utf-8", errors="ignore").splitlines()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to read input.txt: %s", exc)
+        return None
+
+    smiles = ""
+    mol_from_xyz = None
+
+    # Detect if content looks like XYZ body (no header lines)
+    xyz_candidate = [ln for ln in lines if ln and not ln.startswith("#")]
+    if xyz_candidate and all(len(ln.split()) >= 4 and ln.split()[0][0].isalpha() for ln in xyz_candidate):
+        # Try XYZ -> Mol
+        mol_from_xyz = _xyz_body_to_mol(xyz_candidate)
+
+    if mol_from_xyz:
+        smiles = _mol_to_smiles(mol_from_xyz) or ""
+    else:
+        # Fallback: treat first non-empty line as SMILES
+        smiles = next((ln for ln in lines if ln), "")
+
+    if not smiles:
+        logger.warning("No SMILES or usable XYZ detected in input.txt")
+        return None
+
+    try:
+        from rdkit import Chem, RDLogger
+        from rdkit.Chem import AllChem, Draw
+
+        RDLogger.DisableLog("rdApp.*")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RDKit not available for SMILES rendering: %s", exc)
+        return None
+
+    mol = Chem.MolFromSmiles(smiles) if not mol_from_xyz else mol_from_xyz
+    if mol is None:
+        logger.warning("Invalid SMILES in input.txt: %s", smiles)
+        return None
+
+    try:
+        # Hide hydrogens in the depiction for a cleaner schematic
+        mol_no_h = Chem.RemoveHs(mol, updateExplicitCount=True)
+        AllChem.Compute2DCoords(mol_no_h)
+        img = Draw.MolToImage(mol_no_h, size=(500, 400))
+        out_path = project_dir / "SMILES.png"
+        img.save(out_path)
+        return out_path
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to render SMILES to image: %s", exc)
+        return None
 
 
 def _format_energy_block(optimization: Dict[str, Any]) -> str:
@@ -271,7 +385,7 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> Optional[str
     else:
         parts.append(f"In total, {excited_count} excited states were calculated{settings_str}.")
     if est is not None:
-        parts.append(f"The singlet–triplet energy gap (ΔEₛₜ) is {fmt(est, ' eV')}.")
+        parts.append(f"The singlet–triplet energy gap ΔEₛₜ(S₁–T₁) is {fmt(est, ' eV')} (absolute difference).")
 
     # Absorption peaks
     if abs_peaks:
@@ -549,20 +663,66 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any]) -> None:
     if not entries:
         return
     doc.add_heading(title, level=2)
-    table = doc.add_table(rows=1, cols=4)
+    table = doc.add_table(rows=1, cols=7)
     table.style = "Light Grid Accent 1"
-    headers = ["Transition", "Rate (s^-1)", "Temperature (K)", "Δ0-0 (cm^-1)"]
+    headers = ["Transition", "Rate (s⁻¹)", "Temperature (K)", "Δ0-0 (cm⁻¹)", "SOC (cm⁻¹)", "FC (%)", "HT (%)"]
     for idx, text in enumerate(headers):
         cell = table.rows[0].cells[idx]
         cell.text = text
     _style_header_row(table.rows[0])
 
-    for name, record in sorted(entries.items()):
+    def _fmt_sci(val) -> str:
+        try:
+            return f"{float(val):.3e}"
+        except Exception:
+            return str(val) if val is not None else ""
+
+    def _format_soc(rec: Dict[str, Any]) -> str:
+        re_part = rec.get("soc_re_cm1")
+        im_part = rec.get("soc_im_cm1")
+        if re_part is None and im_part is None:
+            return ""
+        if re_part is not None and im_part is not None:
+            return f"{_fmt_sci(re_part)}+i{_fmt_sci(im_part)}"
+        if re_part is not None:
+            return _fmt_sci(re_part)
+        return f"i{_fmt_sci(im_part)}"
+
+    def _add_row(label: str, rec: Dict[str, Any]) -> None:
         row = table.add_row().cells
-        row[0].text = name
-        row[1].text = str(record.get("rate_s1") or record.get("total_rate_s1") or record.get("rate"))
-        row[2].text = str(record.get("temperature_K", ""))
-        row[3].text = str(record.get("delta_E_cm1", ""))
+        row[0].text = label
+        rate_val = rec.get("rate_s1") or rec.get("total_rate_s1") or rec.get("rate")
+        row[1].text = _fmt_sci(rate_val) if rate_val is not None else ""
+        row[2].text = str(rec.get("temperature_K", ""))
+        row[3].text = str(rec.get("delta_E_cm1", ""))
+        row[4].text = _format_soc(rec)
+        row[5].text = str(rec.get("fc_percent", ""))
+        row[6].text = str(rec.get("ht_percent", ""))
+
+    for name, record in sorted(entries.items()):
+        ms_comps = record.get("ms_components", {})
+        if ms_comps:
+            ms_rec_list = []
+            for ms_key, ms_rec in sorted(ms_comps.items()):
+                pretty = {
+                    "ms_0": "Ms=0",
+                    "ms_p1": "Ms=+1",
+                    "ms_m1": "Ms=-1",
+                }.get(ms_key, ms_key.replace("_", "="))
+                _add_row(f"{name} ({pretty})", ms_rec)
+                ms_rec_list.append(ms_rec)
+            # Add total if available
+            total_rate = record.get("total_rate_s1") or record.get("rate_s1")
+            if total_rate is not None:
+                total_rec = {"total_rate_s1": total_rate}
+                if ms_rec_list:
+                    sample = ms_rec_list[0]
+                    for key in ["temperature_K", "delta_E_cm1"]:
+                        if sample.get(key) is not None:
+                            total_rec[key] = sample.get(key)
+                _add_row(f"{name} (total)", total_rec)
+        else:
+            _add_row(name, record)
 
 
 def _extract_frontier_orbitals(orbital_data: Optional[Dict[str, Any]]) -> list[tuple[str, str, str]]:
@@ -769,6 +929,9 @@ def generate_combined_docx_report(
     if assets is None:
         assets = ReportAssets()
 
+    if assets.smiles_png is None:
+        assets.smiles_png = _generate_smiles_image(project_dir)
+
     if not json_path.exists():
         logger.error("JSON data file not found: %s", json_path)
         return None
@@ -791,6 +954,12 @@ def generate_combined_docx_report(
     if summary_text:
         summary_para = doc.add_paragraph(summary_text)
         summary_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+    # SMILES picture (if available) near the top
+    if assets.smiles_png and assets.smiles_png.exists():
+        doc.add_heading("Structure from SMILES (input.txt)", level=2)
+        doc.add_picture(str(assets.smiles_png), width=Inches(2.8))
+        doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     meta_rows = [
         ("Functional", meta.get("functional", "")),
