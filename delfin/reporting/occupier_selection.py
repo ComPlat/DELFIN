@@ -73,15 +73,15 @@ class OccupierSelector:
         self.DEV_MATCH_WINDOW = 0.30
 
         # Window parameters
-        self.EPS_AF = float(self.config.get('bs_override_window_h', 0.004))
-        self.E_BIAS_H = float(self.config.get('energy_bias_window_h', 0.002))
+        self.EPS_AF = float(self.config.get('bs_override_window_h', 0.001))
+        self.E_BIAS_H = float(self.config.get('energy_bias_window_h', 0.001))
         self.MIS_BIAS = float(self.config.get('mismatch_bias_window', 0.05))
 
         # Clean preference parameters
-        self.CLEAN_OVERRIDE_H = float(self.config.get('clean_override_window_h', 0.004))
+        self.CLEAN_OVERRIDE_H = float(self.config.get('clean_override_window_h', 0.001))
         self.CLEAN_Q_IMPROVE = float(self.config.get('clean_quality_improvement', 0.05))
         self.CLEAN_Q_GOOD = float(self.config.get('clean_quality_good', 0.05))
-        self.CLEAN_BIAS_H = float(self.config.get('clean_bias_window_h', 0.004))
+        self.CLEAN_BIAS_H = float(self.config.get('clean_bias_window_h', 0.001))
         self.QUAL_BIAS_WIN = float(self.config.get('quality_bias_window', 0.05))
 
     def effective_dev(self, idx: int) -> float:
