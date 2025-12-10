@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 
 try:
     from docx import Document
-    from docx.shared import Inches
+    from docx.shared import Inches, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     DOCX_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional dependency
@@ -37,6 +37,48 @@ def _translate_state(orca_state: str) -> str:
     if multiplicity == "3":
         return f"T{root_number}"
     return str(orca_state)
+
+
+def _wavelength_to_rgb(wavelength: float) -> tuple[int, int, int]:
+    """Map wavelength (nm) to approximate RGB (copied from AFP plotting logic)."""
+    if wavelength < 380:
+        r, g, b = 0.5, 0.0, 0.5
+    elif wavelength < 440:
+        r = -(wavelength - 440) / (440 - 380)
+        g = 0.0
+        b = 1.0
+    elif wavelength < 490:
+        r = 0.0
+        g = (wavelength - 440) / (490 - 440)
+        b = 1.0
+    elif wavelength < 510:
+        r = 0.0
+        g = 1.0
+        b = -(wavelength - 510) / (510 - 490)
+    elif wavelength < 580:
+        r = (wavelength - 510) / (580 - 510)
+        g = 1.0
+        b = 0.0
+    elif wavelength < 645:
+        r = 1.0
+        g = -(wavelength - 645) / (645 - 580)
+        b = 0.0
+    elif wavelength < 781:
+        r, g, b = 1.0, 0.0, 0.0
+    else:
+        r, g, b = 0.5, 0.0, 0.0
+
+    if wavelength < 420:
+        factor = 0.3 + 0.7 * (wavelength - 380) / (420 - 380)
+    elif wavelength > 700:
+        factor = 0.3 + 0.7 * (780 - wavelength) / (780 - 700)
+    else:
+        factor = 1.0
+
+    r = int(max(0, min(1, r * factor)) * 255)
+    g = int(max(0, min(1, g * factor)) * 255)
+    b = int(max(0, min(1, b * factor)) * 255)
+    return r, g, b
 
 
 @dataclass
@@ -185,6 +227,33 @@ def _generate_smiles_image(project_dir: Path) -> Optional[Path]:
         return None
 
 
+def _render_color_chip(rgb: tuple[int, int, int], project_dir: Path, label: str) -> Optional[Path]:
+    """Create a small PNG color chip for Word compatibility."""
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+
+    try:
+        chip = Image.new("RGB", (60, 40), rgb)
+        safe_label = (
+            label.replace("→", "-")
+            .replace("₀", "0")
+            .replace("₁", "1")
+            .replace("₂", "2")
+            .replace("₃", "3")
+            .replace("₄", "4")
+            .replace("₅", "5")
+            .replace("₆", "6")
+        )
+        out_path = project_dir / f"color_chip_{safe_label}.png"
+        chip.save(out_path)
+        return out_path
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to create color chip: %s", exc)
+        return None
+
+
 def _format_energy_block(optimization: Dict[str, Any]) -> str:
     def _fmt(value, fmt: str) -> Optional[str]:
         try:
@@ -221,7 +290,7 @@ def _energy_ev(optimization: Dict[str, Any]) -> Optional[float]:
     return None
 
 
-def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> Optional[str]:
+def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Optional[str], list[tuple[str, float, tuple[int, int, int]]]]:
     meta = data.get("metadata", {}) or {}
     name = meta.get("NAME") or meta.get("name") or project_dir.name
     functional = meta.get("functional") or "unknown functional"
@@ -394,6 +463,7 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> Optional[str
             parts.append(f"The most intense absorption peaks (S₀→Sₙ) are at {peak_str}.")
 
     # AFP spectrum wavelengths (absorption/fluorescence/phosphorescence)
+    color_boxes: list[tuple[str, float, tuple[int, int, int]]] = []
     if any(v is not None for v in (s0_to_s1_nm, s1_to_s0_nm, t1_to_s0_nm)):
         def fmt_nm(val):
             try:
@@ -407,6 +477,15 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> Optional[str
             f"T₁→S₀ (phosphorescence): {fmt_nm(t1_to_s0_nm)}",
         ]
         parts.append(f"Transitions: {', '.join(afp_parts)}.")
+
+        # Collect color chips for these wavelengths
+        for label, wl in [
+            ("S₀→S₁", s0_to_s1_nm),
+            ("S₁→S₀", s1_to_s0_nm),
+            ("T₁→S₀", t1_to_s0_nm),
+        ]:
+            if wl:
+                color_boxes.append((label, wl, _wavelength_to_rgb(float(wl))))
 
     # Redox potentials
     if oxidized_states or reduced_states:
@@ -507,7 +586,7 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> Optional[str
         if redox_strs:
             parts.append(f"Redox potentials (vs. Fc⁺/Fc): {', '.join(redox_strs)}.")
 
-    return " ".join(parts)
+    return " ".join(parts), color_boxes
 
 
 def _style_header_row(row) -> None:
@@ -950,10 +1029,25 @@ def generate_combined_docx_report(
     heading = doc.add_heading(f"DELFIN Report – {molecule_name}", level=1)
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    summary_text = _build_summary_text(data, project_dir)
+    summary_text, color_boxes = _build_summary_text(data, project_dir)
     if summary_text:
         summary_para = doc.add_paragraph(summary_text)
         summary_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+    # Color chips for key transitions (render before structure)
+    if color_boxes:
+        chip_para = doc.add_paragraph()
+        chip_para.add_run("Transition colors: ")
+        for label, wl, rgb in color_boxes:
+            chip_path = _render_color_chip(rgb, project_dir, label)
+            if chip_path and chip_path.exists():
+                run = chip_para.add_run()
+                run.add_picture(str(chip_path), width=Inches(0.25))
+            else:
+                run_box = chip_para.add_run("[]")
+                run_box.font.color.rgb = RGBColor(*rgb)
+                run_box.font.bold = True
+            chip_para.add_run(f" {label} ({wl:.0f} nm)  ")
 
     # SMILES picture (if available) near the top
     if assets.smiles_png and assets.smiles_png.exists():
