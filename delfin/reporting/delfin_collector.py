@@ -30,6 +30,59 @@ HARTREE_TO_EV = 27.211386245988
 HARTREE_TO_KJ_MOL = 2625.499639
 
 
+def parse_delfin_txt(project_dir: Path) -> Dict[str, Any]:
+    """Parse DELFIN.txt summary file for redox potentials and other info."""
+    delfin_txt = project_dir / "DELFIN.txt"
+    if not delfin_txt.exists():
+        return {}
+
+    data = {
+        "redox_potentials_vs_fc": {},
+        "total_run_time": None,
+    }
+
+    try:
+        with open(delfin_txt, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+
+        # Parse redox potentials (V vs. Fc+/Fc)
+        redox_patterns = [
+            (r'E_red\s*=\s*([-\d.]+)', 'E_red'),
+            (r'E_red_2\s*=\s*([-\d.]+)', 'E_red_2'),
+            (r'E_red_3\s*=\s*([-\d.]+)', 'E_red_3'),
+            (r'E_ox\s*=\s*([-\d.]+)', 'E_ox'),
+            (r'E_ox_2\s*=\s*([-\d.]+)', 'E_ox_2'),
+            (r'E_ox_3\s*=\s*([-\d.]+)', 'E_ox_3'),
+            (r'E_ref\s*=\s*([-\d.]+)', 'E_ref'),
+        ]
+
+        for pattern, key in redox_patterns:
+            match = re.search(pattern, content)
+            if match:
+                try:
+                    data["redox_potentials_vs_fc"][key] = float(match.group(1))
+                except ValueError:
+                    pass
+
+        # Parse total run time
+        time_match = re.search(r'TOTAL RUN TIME:\s*(\d+)\s*hours?\s*(\d+)\s*minutes?\s*([\d.]+)\s*seconds?', content, re.IGNORECASE)
+        if time_match:
+            hours = int(time_match.group(1))
+            minutes = int(time_match.group(2))
+            seconds = float(time_match.group(3))
+            data["total_run_time"] = {
+                "hours": hours,
+                "minutes": minutes,
+                "seconds": seconds,
+                "total_seconds": hours * 3600 + minutes * 60 + seconds
+            }
+
+    except Exception as e:
+        logger.error(f"Error parsing DELFIN.txt: {e}")
+
+    return data
+
+
 def parse_initial_inp(project_dir: Path) -> Dict[str, Any]:
     """Parse initial.inp (or fallback S0.inp) file for metadata."""
     initial_inp = project_dir / "initial.inp"
@@ -96,6 +149,39 @@ def parse_initial_inp(project_dir: Path) -> Dict[str, Any]:
         logger.error(f"Error parsing initial.inp: {e}")
 
     return metadata
+
+
+def parse_tddft_settings(inp_file: Path) -> Dict[str, Any]:
+    """Extract key TDDFT keywords (e.g., NROOTS, MAXDIM, FOLLOWIROOT) from an ORCA input."""
+    settings: Dict[str, Any] = {}
+    if not inp_file.exists():
+        return settings
+
+    try:
+        content = inp_file.read_text(encoding="utf-8", errors="ignore")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to read %s for TDDFT settings: %s", inp_file, exc)
+        return settings
+
+    # Only scan the TDDFT block to avoid false positives elsewhere
+    tddft_blocks = re.findall(r"%\s*TDDFT(.*?)(?:\n\s*end|\Z)", content, flags=re.IGNORECASE | re.DOTALL)
+    block_text = "\n".join(tddft_blocks) if tddft_blocks else content
+
+    def _extract_int(keyword: str) -> Optional[int]:
+        match = re.search(rf"{keyword}\s*=?\s*([-\d]+)", block_text, flags=re.IGNORECASE)
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                return match.group(1)
+        return None
+
+    for key in ["NROOTS", "MAXDIM", "FOLLOWIROOT"]:
+        val = _extract_int(key)
+        if val is not None:
+            settings[key.lower()] = val
+
+    return settings
 
 
 def parse_charge_multiplicity(inp_file: Path) -> Optional[Dict[str, int]]:
@@ -635,6 +721,9 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     occupier_dir = project_dir / "OCCUPIER"
     summary_data = parse_esd_summary(project_dir)
 
+    # Parse DELFIN.txt for redox potentials and summary info
+    delfin_summary = parse_delfin_txt(project_dir)
+
     data = {
         "metadata": parse_initial_inp(project_dir),
         "ground_state_S0": {},
@@ -648,7 +737,8 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         "intersystem_crossing": {},
         "internal_conversion": {},
         "occupier": {},
-        "photophysical_rates": {}
+        "photophysical_rates": {},
+        "delfin_summary": delfin_summary
     }
 
     # Parse S0
@@ -749,6 +839,12 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
             "dipole_moment": parse_dipole_moment(state_out),
             "orbitals": parse_orbitals(state_out)
         }
+
+        # Parse TDDFT keywords from the corresponding input, if available
+        state_inp = esd_dir / f"{state}.inp"
+        tddft_settings = parse_tddft_settings(state_inp)
+        if tddft_settings:
+            state_data["tddft_settings"] = tddft_settings
 
         scf_data = parse_scf_energy(state_out)
         if scf_data:

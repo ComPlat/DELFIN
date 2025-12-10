@@ -112,12 +112,17 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> Optional[str
     name = meta.get("NAME") or meta.get("name") or project_dir.name
     functional = meta.get("functional") or "unknown functional"
     basis = meta.get("basis_set") or "unknown basis"
+    aux_basis = meta.get("auxiliary_basis")
+    ri_method = meta.get("ri_method")
+    solvent_model = meta.get("implicit_solvation")
+    solvent = meta.get("solvent")
+    dispersion = meta.get("dispersion_correction")
 
     gs = data.get("ground_state_S0", {}) or {}
     gs_opt = gs.get("optimization", {}) or {}
     gs_orb = gs.get("orbitals", {}) or {}
     gs_dip = gs.get("dipole_moment", {}) or {}
-    scf_energy_ev = _energy_ev(gs_opt)
+    s0_e = _energy_ev(gs_opt)
 
     homo = gs_orb.get("homo_eV")
     lumo = gs_orb.get("lumo_eV")
@@ -150,7 +155,7 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> Optional[str
     excited_count = len(excited)
     s1_e = _energy_ev((excited.get("S1") or {}).get("optimization", {}) or {})
     t1_e = _energy_ev((excited.get("T1") or {}).get("optimization", {}) or {})
-    s0_e = scf_energy_ev
+
     def rel_energy(ref, val):
         if ref is None or val is None:
             return None
@@ -174,6 +179,42 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> Optional[str
     else:
         abs_peaks = []
 
+    def _pick_transition_nm(transitions: list[Dict[str, Any]], state_a: str, state_b: str) -> Optional[float]:
+        """Pick strongest transition between two states (order-agnostic)."""
+        best: tuple[float, float] | None = None
+        target_set = {state_a, state_b}
+        for t in transitions or []:
+            from_state = _translate_state(t.get("from_state", ""))
+            to_state = _translate_state(t.get("to_state", ""))
+            if {from_state, to_state} != target_set:
+                continue
+            try:
+                fosc = float(t.get("oscillator_strength", 0.0) or 0.0)
+            except Exception:
+                fosc = 0.0
+            wl = t.get("wavelength_nm")
+            if wl is None:
+                continue
+            if best is None or fosc > best[0]:
+                best = (fosc, wl)
+        return best[1] if best else None
+
+    # Key transitions for AFP plot: S0↔S1, S1↔S0, T1↔S0 (order-agnostic)
+    s0_to_s1_nm = _pick_transition_nm(s0_abs, "S0", "S1")
+
+    s1_transitions = (excited.get("S1", {}) or {}).get("tddft_from_geometry", {}).get("transitions", [])
+    s1_to_s0_nm = _pick_transition_nm(s1_transitions, "S0", "S1")
+
+    t1_transitions = (excited.get("T1", {}) or {}).get("tddft_from_geometry", {}).get("transitions", [])
+    t1_to_s0_nm = _pick_transition_nm(t1_transitions, "S0", "T1")
+
+    # Redox potentials from DELFIN.txt and OCCUPIER data
+    delfin_summary = data.get("delfin_summary", {}) or {}
+    redox_potentials_fc = delfin_summary.get("redox_potentials_vs_fc", {})
+    oxidized_states = data.get("oxidized_states", {}) or {}
+    reduced_states = data.get("reduced_states", {}) or {}
+    occupier_data = data.get("occupier", {}) or {}
+
     def fmt(val, suffix=""):
         if val is None:
             return "n/a"
@@ -182,29 +223,175 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> Optional[str
         except Exception:
             return str(val) + suffix
 
+    # Build summary
     parts = [
-        f"The calculation of optimized structure, vibrational frequencies and excited states for the system '{name}' is presented, with automated analysis and image generation provided by the DELFIN software package.",
-        f"The calculations were performed at the {functional}/{basis} level of theory.",
-        f"The total self-consistent field (SCF) energy of the ground state is {fmt(scf_energy_ev, ' eV')}.",
-        f"HOMO/LUMO energies are {fmt(homo, ' eV')} and {fmt(lumo, ' eV')}, yielding a gap of {fmt(gap, ' eV')}.",
-        f"The permanent dipole moment is {fmt(gs_dip.get('magnitude_debye'), ' D')}."
+        "The SMILES of the target system were converted into 3D coordinates using RDKit. "
+        "A global geometry optimization with the GOAT algorithm and GFN-xTB in ORCA provided the starting structure for the high-level DFT calculations automated by DELFIN.",
+        f"The calculation of optimized structure, vibrational frequencies and excited states for the system '{name}' is presented, with automated analysis provided by the DELFIN software package."
     ]
+
+    # Theory level with all details
+    theory_parts = [f"{functional}/{basis}"]
+    if ri_method:
+        theory_parts.append(ri_method)
+    if aux_basis:
+        theory_parts.append(aux_basis)
+    if dispersion:
+        theory_parts.append(dispersion)
+    if solvent_model and solvent:
+        theory_parts.append(f"{solvent_model}({solvent})")
+    elif solvent_model:
+        theory_parts.append(solvent_model)
+
+    parts.append(f"The calculations were performed at the {' '.join(theory_parts)} level of theory.")
+
+    # Ground state properties (NO SCF energy)
+    parts.append(f"HOMO/LUMO energies are {fmt(homo, ' eV')} and {fmt(lumo, ' eV')}, yielding a gap of {fmt(gap, ' eV')}.")
+    parts.append(f"The permanent dipole moment is {fmt(gs_dip.get('magnitude_debye'), ' D')}.")
 
     if vib_frequencies:
         vib_list = ", ".join(f"{freq:.0f}" for freq in vib_frequencies)
-        parts.append(f"The most intense vibrational frequencies are approximately {vib_list} cm-1.")
+        parts.append(f"The most intense vibrational frequencies are approximately {vib_list} cm⁻¹.")
     if ir_file:
         parts.append(f"Negative frequencies detected: {negative_freqs}.")
 
-    parts.append(f"In total, {excited_count} excited states were parsed.")
-    if s1_gap is not None and t1_gap is not None:
-        parts.append(
-            f"The lowest optimized singlet and triplet states (S1 and T1) lie at {fmt(s1_gap, ' eV')} and {fmt(t1_gap, ' eV')} above S0, giving ΔEST = {fmt(est, ' eV')}."
-        )
+    # Excited states + TDDFT settings from S1
+    tddft_settings = (excited.get("S1", {}) or {}).get("tddft_settings", {})
+    if tddft_settings:
+        tokens = []
+        for key in ["nroots", "maxdim", "followiroot"]:
+            if key in tddft_settings:
+                tokens.append(f"{key.capitalize()}={tddft_settings[key]}")
+        settings_str = f" using TDDFT ({', '.join(tokens)})" if tokens else " using TDDFT"
+    else:
+        settings_str = ""
+    if excited:
+        state_list = ", ".join(sorted(excited.keys()))
+        parts.append(f"In total, {excited_count} excited states were calculated{settings_str}: {state_list}.")
+    else:
+        parts.append(f"In total, {excited_count} excited states were calculated{settings_str}.")
+    if est is not None:
+        parts.append(f"The singlet–triplet energy gap (ΔEₛₜ) is {fmt(est, ' eV')}.")
+
+    # Absorption peaks
     if abs_peaks:
         peak_str = " and ".join(f"{w:.0f} nm" for w in abs_peaks if isinstance(w, (int, float)))
         if peak_str:
-            parts.append(f"The most intense absorption peaks are at {peak_str}.")
+            parts.append(f"The most intense absorption peaks (S₀→Sₙ) are at {peak_str}.")
+
+    # AFP spectrum wavelengths (absorption/fluorescence/phosphorescence)
+    if any(v is not None for v in (s0_to_s1_nm, s1_to_s0_nm, t1_to_s0_nm)):
+        def fmt_nm(val):
+            try:
+                return f"{float(val):.0f} nm"
+            except Exception:
+                return "n/a"
+
+        afp_parts = [
+            f"S₀→S₁ (absorption): {fmt_nm(s0_to_s1_nm)}",
+            f"S₁→S₀ (fluorescence): {fmt_nm(s1_to_s0_nm)}",
+            f"T₁→S₀ (phosphorescence): {fmt_nm(t1_to_s0_nm)}",
+        ]
+        parts.append(f"Transitions: {', '.join(afp_parts)}.")
+
+    # Redox potentials
+    if oxidized_states or reduced_states:
+        redox_parts = []
+        def _step_label(name: str) -> str:
+            match = re.search(r"_step_(\d+)", name)
+            return f" step {match.group(1)}" if match else ""
+
+        for state_name, state_data in oxidized_states.items():
+            opt = state_data.get("optimization", {}) or {}
+            charge = opt.get("charge")
+            mult = opt.get("multiplicity")
+            energy = opt.get("hartree")
+            if charge is not None and energy is not None:
+                step_info = _step_label(state_name)
+                # Try to get OCCUPIER info for this state
+                occ_key = state_name.replace("_step_", "")
+                occ_info = occupier_data.get(occ_key, {})
+                preferred_idx = occ_info.get("preferred_index")
+                if preferred_idx is not None and occ_info.get("entries"):
+                    preferred_entry = next((e for e in occ_info["entries"] if e.get("index") == preferred_idx), None)
+                    if preferred_entry:
+                        mult = preferred_entry.get("multiplicity", mult)
+                        unpaired_alpha = preferred_entry.get("unpaired_alpha")
+                        unpaired_beta = preferred_entry.get("unpaired_beta")
+                        spin_cont = preferred_entry.get("spin_contamination")
+                        info = f"oxidation{step_info} (charge {charge:+d}, multiplicity {mult}"
+                        if unpaired_alpha is not None and unpaired_beta is not None:
+                            info += f", α/β electrons: {unpaired_alpha}/{unpaired_beta}"
+                        if spin_cont is not None:
+                            info += f", spin contamination: {spin_cont:.3f}"
+                        info += ")"
+                        redox_parts.append(info)
+                    else:
+                        redox_parts.append(f"oxidation{step_info} (charge {charge:+d}, multiplicity {mult})")
+                else:
+                    redox_parts.append(f"oxidation{step_info} (charge {charge:+d}, multiplicity {mult})")
+
+        for state_name, state_data in reduced_states.items():
+            opt = state_data.get("optimization", {}) or {}
+            charge = opt.get("charge")
+            mult = opt.get("multiplicity")
+            energy = opt.get("hartree")
+            if charge is not None and energy is not None:
+                step_info = _step_label(state_name)
+                occ_key = state_name.replace("_step_", "")
+                occ_info = occupier_data.get(occ_key, {})
+                preferred_idx = occ_info.get("preferred_index")
+                if preferred_idx is not None and occ_info.get("entries"):
+                    preferred_entry = next((e for e in occ_info["entries"] if e.get("index") == preferred_idx), None)
+                    if preferred_entry:
+                        mult = preferred_entry.get("multiplicity", mult)
+                        unpaired_alpha = preferred_entry.get("unpaired_alpha")
+                        unpaired_beta = preferred_entry.get("unpaired_beta")
+                        spin_cont = preferred_entry.get("spin_contamination")
+                        info = f"reduction{step_info} (charge {charge:+d}, multiplicity {mult}"
+                        if unpaired_alpha is not None and unpaired_beta is not None:
+                            info += f", α/β electrons: {unpaired_alpha}/{unpaired_beta}"
+                        if spin_cont is not None:
+                            info += f", spin contamination: {spin_cont:.3f}"
+                        info += ")"
+                        redox_parts.append(info)
+                    else:
+                        redox_parts.append(f"reduction{step_info} (charge {charge:+d}, multiplicity {mult})")
+                else:
+                    redox_parts.append(f"reduction{step_info} (charge {charge:+d}, multiplicity {mult})")
+
+        if redox_parts:
+            parts.append(f"Redox calculations were performed for {', '.join(redox_parts)}.")
+
+    # Add redox potentials vs Fc+/Fc from DELFIN.txt
+    if redox_potentials_fc:
+        redox_strs = []
+        label_map = {
+            "E_red": "E_red1",
+            "E_red_2": "E_red2",
+            "E_red_3": "E_red3",
+            "E_ox": "E_ox1",
+            "E_ox_2": "E_ox2",
+            "E_ox_3": "E_ox3",
+        }
+        # Reductions
+        for key in ['E_red', 'E_red_2', 'E_red_3']:
+            if key in redox_potentials_fc:
+                val = redox_potentials_fc[key]
+                label = label_map.get(key, key)
+                redox_strs.append(f"{label}: {val:.3f} V")
+        # Oxidations
+        for key in ['E_ox', 'E_ox_2', 'E_ox_3']:
+            if key in redox_potentials_fc:
+                val = redox_potentials_fc[key]
+                label = label_map.get(key, key)
+                redox_strs.append(f"{label}: {val:.3f} V")
+        # Reference
+        if 'E_ref' in redox_potentials_fc:
+            redox_strs.append(f"E_ref: {redox_potentials_fc['E_ref']:.3f} V")
+
+        if redox_strs:
+            parts.append(f"Redox potentials (vs. Fc⁺/Fc): {', '.join(redox_strs)}.")
 
     return " ".join(parts)
 

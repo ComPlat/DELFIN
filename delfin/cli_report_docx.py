@@ -69,15 +69,24 @@ def _generate_ir_outputs(workspace: Path) -> Optional[Path]:
     from delfin.ir_spectrum import parse_ir_spectrum
     from delfin.reporting.ir_report import create_ir_spectrum_plot, generate_ir_report
 
-    output_file = _find_output_file(workspace, ["S0.out", "initial.out"])
-    if not output_file:
-        logger.warning("No IR-capable output (S0.out or initial.out) found for IR report")
-        return None
+    # Try S0.out first; if it exists but has no IR section, fall back to initial.out
+    candidates = ["S0.out", "initial.out"]
+    output_file: Optional[Path] = None
+    modes = None
 
-    logger.info("Parsing IR spectrum from %s", output_file)
-    modes = parse_ir_spectrum(output_file)
-    if not modes:
-        logger.warning("No IR modes found in %s", output_file)
+    for name in candidates:
+        candidate = _find_output_file(workspace, [name])
+        if not candidate:
+            continue
+        logger.info("Parsing IR spectrum from %s", candidate)
+        modes = parse_ir_spectrum(candidate)
+        if modes:
+            output_file = candidate
+            break
+        logger.warning("No IR modes found in %s", candidate)
+
+    if output_file is None or not modes:
+        logger.warning("No IR-capable output (S0.out or initial.out) yielded IR modes")
         return None
 
     output_docx = output_file.parent / f"IR_{output_file.stem}.docx"
@@ -151,4 +160,3 @@ def run_docx_report_mode(
     logger.info("DELFIN.docx generated at %s", result)
     print(f"DELFIN.docx written to: {result}")
     return 0
-
