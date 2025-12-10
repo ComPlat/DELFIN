@@ -16,8 +16,12 @@ from ..utils import (
 from ..parser import extract_last_uhf_deviation, extract_last_J3
 from ..occupier_auto import infer_parity_from_m, record_auto_preference
 from ..occupier_sequences import infer_species_delta
+from ..config_manager import DelfinConfig
 
 logger = get_logger(__name__)
+
+# Create default config instance for accessing default parameter values
+_DEFAULT_CONFIG = DelfinConfig()
 
 # This file will contain the OCCUPIER report generation functions
 # Functions will be moved here from report.py
@@ -231,34 +235,34 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
 
     # ----------------------- Schwellen/Parameter -------------------------------
     DEV_TINY       = 1e-3
-    DEV_SIMILARITY = float(config.get('dev_similarity', 0.15))
+    DEV_SIMILARITY = float(config.get('dev_similarity', _DEFAULT_CONFIG.dev_similarity))
     DEV_GOOD_MARGIN= 0.30
     DEV_HIGH       = 0.50
     DEV_MATCH_WINDOW = 0.30
 
     # AF override (energy window to pull BS candidates back in when contamination is high)
-    EPS_AF = float(config.get('bs_override_window_h', 0.001))
+    EPS_AF = float(config.get('bs_override_window_h', _DEFAULT_CONFIG.bs_override_window_h))
 
     # Energy-bias (wie bisher)
-    E_BIAS_H = float(config.get('energy_bias_window_h', 0.001))
-    MIS_BIAS = float(config.get('mismatch_bias_window', 0.05))
+    E_BIAS_H = float(config.get('energy_bias_window_h', _DEFAULT_CONFIG.energy_bias_window_h))
+    MIS_BIAS = float(config.get('mismatch_bias_window', _DEFAULT_CONFIG.mismatch_bias_window))
 
     # Clean-preference knobs
-    CLEAN_OVERRIDE_H = float(config.get('clean_override_window_h', 0.001))
-    CLEAN_Q_IMPROVE  = float(config.get('clean_quality_improvement', 0.05))
-    CLEAN_Q_GOOD     = float(config.get('clean_quality_good', 0.05))
-    CLEAN_BIAS_H     = float(config.get('clean_bias_window_h', 0.001))
-    QUAL_BIAS_WIN    = float(config.get('quality_bias_window', 0.05))
+    CLEAN_OVERRIDE_H = float(config.get('clean_override_window_h', _DEFAULT_CONFIG.clean_override_window_h))
+    CLEAN_Q_IMPROVE  = float(config.get('clean_quality_improvement', _DEFAULT_CONFIG.clean_quality_improvement))
+    CLEAN_Q_GOOD     = float(config.get('clean_quality_good', _DEFAULT_CONFIG.clean_quality_good))
+    CLEAN_BIAS_H     = float(config.get('clean_bias_window_h', _DEFAULT_CONFIG.clean_bias_window_h))
+    QUAL_BIAS_WIN    = float(config.get('quality_bias_window', _DEFAULT_CONFIG.quality_bias_window))
 
     # Additional raw spin-contamination override (prefers smaller ⟨S²⟩ when energies match)
-    SPIN_BIAS_WINDOW = float(config.get('spin_bias_energy_window_h', 0.0))
-    SPIN_BIAS_GAIN   = float(config.get('spin_bias_min_gain', 0.003))
-    SPIN_BIAS_TRIGGER= float(config.get('spin_bias_trigger_dev', 0.05))
+    SPIN_BIAS_WINDOW = float(config.get('spin_bias_energy_window_h', _DEFAULT_CONFIG.spin_bias_energy_window_h))
+    SPIN_BIAS_GAIN   = float(config.get('spin_bias_min_gain', _DEFAULT_CONFIG.spin_bias_min_gain))
+    SPIN_BIAS_TRIGGER= float(config.get('spin_bias_trigger_dev', _DEFAULT_CONFIG.spin_bias_trigger_dev))
 
     # BrokenSym pair bias (prefer BS(M,1) / BS(M,2) when contamination is ~1 or ~2 and energies match)
-    SPIN_PAIR_WINDOW = float(config.get('spin_pair_bias_window_h', 0.0))
-    SPIN_PAIR_DEV    = float(config.get('spin_pair_bias_dev_window', 0.20))
-    SPIN_PAIR_GAIN   = float(config.get('spin_pair_bias_min_gain', 0.10))
+    SPIN_PAIR_WINDOW = float(config.get('spin_pair_bias_window_h', _DEFAULT_CONFIG.spin_pair_bias_window_h))
+    SPIN_PAIR_DEV    = float(config.get('spin_pair_bias_dev_window', _DEFAULT_CONFIG.spin_pair_bias_dev_window))
+    SPIN_PAIR_GAIN   = float(config.get('spin_pair_bias_min_gain', _DEFAULT_CONFIG.spin_pair_bias_min_gain))
 
     # ----------------------- caches & parsers ----------------------------------
     dev_cache: dict[int, Optional[float]] = {}
