@@ -397,6 +397,7 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
     oxidized_states = data.get("oxidized_states", {}) or {}
     reduced_states = data.get("reduced_states", {}) or {}
     occupier_data = data.get("occupier", {}) or {}
+    control_flags = data.get("control_flags", {}) or {}
 
     def fmt(val, suffix=""):
         if val is None:
@@ -487,7 +488,7 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
             if wl:
                 color_boxes.append((label, wl, _wavelength_to_rgb(float(wl))))
 
-    # Redox potentials
+    # Redox potentials / oxidation-reduction context
     if oxidized_states or reduced_states:
         redox_parts = []
         def _step_label(name: str) -> str:
@@ -556,8 +557,17 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         if redox_parts:
             parts.append(f"Redox calculations were performed for {', '.join(redox_parts)}.")
 
+    if not redox_potentials_fc or (len(redox_potentials_fc) == 1 and 'E_ref' in redox_potentials_fc):
+        parts.append("Redox potentials were not calculated.")
+
+    if not occupier_data:
+        parts.append("No spin state analysis were done using OCCUPIER.")
+
+    if control_flags.get("imag"):
+        parts.append("IMAG was used to eliminate imaginary frequencies.")
+
     # Add redox potentials vs Fc+/Fc from DELFIN.txt
-    if redox_potentials_fc:
+    if redox_potentials_fc and len(redox_potentials_fc) > 1:
         redox_strs = []
         label_map = {
             "E_red": "E_red1",

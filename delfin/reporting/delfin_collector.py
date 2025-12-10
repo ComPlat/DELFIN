@@ -83,6 +83,24 @@ def parse_delfin_txt(project_dir: Path) -> Dict[str, Any]:
     return data
 
 
+def parse_control_flags(project_dir: Path) -> Dict[str, Any]:
+    """Parse CONTROL.txt for simple flags (e.g., IMAG=yes)."""
+    control = project_dir / "CONTROL.txt"
+    flags: Dict[str, Any] = {}
+    if not control.exists():
+        return flags
+
+    try:
+        content = control.read_text(encoding="utf-8", errors="ignore")
+        imag_match = re.search(r'^\s*IMAG\s*=\s*(\w+)', content, flags=re.IGNORECASE | re.MULTILINE)
+        if imag_match:
+            flags["imag"] = imag_match.group(1).strip().lower() == "yes"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to parse CONTROL.txt for flags: %s", exc)
+
+    return flags
+
+
 def parse_initial_inp(project_dir: Path) -> Dict[str, Any]:
     """Parse initial.inp (or fallback S0.inp) file for metadata."""
     initial_inp = project_dir / "initial.inp"
@@ -720,6 +738,7 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     esd_dir = project_dir / "ESD"
     occupier_dir = project_dir / "OCCUPIER"
     summary_data = parse_esd_summary(project_dir)
+    control_flags = parse_control_flags(project_dir)
 
     # Parse DELFIN.txt for redox potentials and summary info
     delfin_summary = parse_delfin_txt(project_dir)
@@ -738,7 +757,8 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         "internal_conversion": {},
         "occupier": {},
         "photophysical_rates": {},
-        "delfin_summary": delfin_summary
+        "delfin_summary": delfin_summary,
+        "control_flags": control_flags,
     }
 
     # Parse S0
