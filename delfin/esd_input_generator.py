@@ -173,20 +173,20 @@ def _create_state_input_delta_scf(
         moinp_gbw = "S0.gbw"
         use_deltascf = True
     elif state_upper == "S2":
-        xyz_file = "S1.xyz"
-        moinp_gbw = "S1.gbw"
+        xyz_file = "S0.xyz"
+        moinp_gbw = "S0.gbw"
         use_deltascf = True
     elif state_upper == "T1":
         xyz_file = "S0.xyz"
         moinp_gbw = "S0.gbw"
         use_deltascf = False
     elif state_upper == "T2":
-        xyz_file = "T1.xyz"
-        moinp_gbw = "T1.gbw"
+        xyz_file = "S0.xyz"
+        moinp_gbw = "S0.gbw"
         use_deltascf = True
     elif state_upper == "T3":
         xyz_file = "S0.xyz"
-        moinp_gbw = "T2.gbw"
+        moinp_gbw = "S0.gbw"
         use_deltascf = True
     else:
         raise ValueError(f"Unknown state: {state}")
@@ -454,37 +454,37 @@ def _create_state_input_tddft(
         xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "S2":
-        xyz_path = esd_dir / "S1.xyz"
+        xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "S3":
-        xyz_path = esd_dir / "S2.xyz"
+        xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "S4":
-        xyz_path = esd_dir / "S3.xyz"
+        xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "S5":
-        xyz_path = esd_dir / "S4.xyz"
+        xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "S6":
-        xyz_path = esd_dir / "S5.xyz"
+        xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "T1":
         xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "T2":
-        xyz_path = esd_dir / "T1.xyz"
+        xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "T3":
-        xyz_path = esd_dir / "T2.xyz"
+        xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "T4":
-        xyz_path = esd_dir / "T3.xyz"
+        xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "T5":
-        xyz_path = esd_dir / "T4.xyz"
+        xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     elif state_upper == "T6":
-        xyz_path = esd_dir / "T5.xyz"
+        xyz_path = esd_dir / "S0.xyz"
         skip_lines = 2
     else:
         xyz_path = esd_dir / "S0.xyz"

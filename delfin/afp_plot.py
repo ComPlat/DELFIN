@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional, List
+import re
 import numpy as np
 
 try:
@@ -22,6 +23,20 @@ from delfin.common.logging import get_logger
 from delfin.uv_vis_spectrum import parse_absorption_spectrum, Transition
 
 logger = get_logger(__name__)
+
+
+def _translate_state(orca_state: str) -> str:
+    """Translate ORCA notation (0-1A/1-3A) to S0/S1/T1 for matching/labels."""
+    match = re.match(r'(\d+)-([13])A', str(orca_state))
+    if not match:
+        return str(orca_state)
+    root_number = int(match.group(1))
+    multiplicity = match.group(2)
+    if multiplicity == "1":
+        return f"S{root_number}"
+    if multiplicity == "3":
+        return f"T{root_number}"
+    return str(orca_state)
 
 
 def find_first_allowed_singlet(transitions: List[Transition], min_fosc: float = 0.001) -> Optional[Transition]:
@@ -113,6 +128,14 @@ def wavelength_to_rgb(wavelength: float) -> tuple:
     return (r * factor, g * factor, b * factor)
 
 
+def _pick_by_states(transitions: List[Transition], from_state: str, to_state: str) -> Optional[Transition]:
+    """Pick the first transition matching translated from/to states (keeps file order)."""
+    for trans in transitions:
+        if _translate_state(trans.from_state) == from_state and _translate_state(trans.to_state) == to_state:
+            return trans
+    return None
+
+
 def gaussian(x: np.ndarray, center: float, amplitude: float, fwhm: float = 20.0) -> np.ndarray:
     """
     Generate Gaussian curve.
@@ -182,57 +205,52 @@ def create_afp_plot(
         logger.info(f"Parsing S0 absorption from {s0_file.name}")
         s0_transitions = parse_absorption_spectrum(s0_file)
         if s0_transitions:
-            # Find first allowed singlet transition (S0 → S1)
-            s0_singlet = find_first_allowed_singlet(s0_transitions)
+            # Pick the S0 → S1 transition (use file order)
+            s0_singlet = _pick_by_states(s0_transitions, "S0", "S1")
             if s0_singlet:
                 transitions_data.append({
                     'transition': s0_singlet,
-                    'label': 'S0 Absorption',
+                    'label': f"S0 → S1 (Absorption)",
                     'color': 'blue',
                     'state': 'S0'
                 })
-                logger.info(f"  S0 → S1: {s0_singlet.wavelength_nm:.1f} nm (fosc = {s0_singlet.fosc:.4f})")
+                logger.info(f"  S0 → S1 (absorption): {s0_singlet.wavelength_nm:.1f} nm (fosc = {s0_singlet.fosc:.4f})")
             else:
-                logger.warning("No allowed singlet transition found in S0.out")
+                logger.warning("No S0 → S1 transition found in S0.out")
 
     if s1_file:
         logger.info(f"Parsing S1 fluorescence from {s1_file.name}")
         s1_transitions = parse_absorption_spectrum(s1_file)
         if s1_transitions:
-            # Find first allowed singlet transition (S1 → S0 fluorescence)
-            s1_singlet = find_first_allowed_singlet(s1_transitions)
+            # Pick the S0 → S1 transition at S1 geometry (mirror image approximation for emission)
+            s1_singlet = _pick_by_states(s1_transitions, "S0", "S1")
             if s1_singlet:
                 transitions_data.append({
                     'transition': s1_singlet,
-                    'label': 'S1 Fluorescence',
+                    'label': f"S1 → S0 (Fluorescence)",
                     'color': 'green',
                     'state': 'S1'
                 })
-                logger.info(f"  S1 → S0: {s1_singlet.wavelength_nm:.1f} nm (fosc = {s1_singlet.fosc:.4f})")
+                logger.info(f"  S1 → S0 (emission): {s1_singlet.wavelength_nm:.1f} nm (fosc = {s1_singlet.fosc:.4f})")
             else:
-                logger.warning("No allowed singlet transition found in S1.out")
+                logger.warning("No S0 → S1 transition found in S1.out")
 
     if t1_file:
         logger.info(f"Parsing T1 phosphorescence from {t1_file.name}")
         t1_transitions = parse_absorption_spectrum(t1_file)
         if t1_transitions:
-            # Find first transition to singlet state (T1 → S0 phosphorescence)
-            t1_to_singlet = None
-            for trans in t1_transitions:
-                if trans.to_state.endswith('-1A'):  # Transition to singlet
-                    t1_to_singlet = trans
-                    break
-
+            # Pick the S0 → T1 transition at T1 geometry (mirror image approximation for emission)
+            t1_to_singlet = _pick_by_states(t1_transitions, "S0", "T1")
             if t1_to_singlet:
                 transitions_data.append({
                     'transition': t1_to_singlet,
-                    'label': 'T1 Phosphorescence',
+                    'label': f"T1 → S0 (Phosphorescence)",
                     'color': 'red',
                     'state': 'T1'
                 })
-                logger.info(f"  T1 → S0: {t1_to_singlet.wavelength_nm:.1f} nm (fosc = {t1_to_singlet.fosc:.6f})")
+                logger.info(f"  T1 → S0 (emission): {t1_to_singlet.wavelength_nm:.1f} nm (fosc = {t1_to_singlet.fosc:.6f})")
             else:
-                logger.warning("No transition to singlet state found in T1.out")
+                logger.warning("No S0 → T1 transition found in T1.out")
 
     if not transitions_data:
         logger.error("No transitions found in S0.out, S1.out, or T1.out")
@@ -311,7 +329,7 @@ def create_afp_plot(
     ax.set_title('Absorption, Fluorescence, and Phosphorescence Spectrum',
                  fontsize=16, fontweight='bold', pad=20)
     ax.set_xlim(wl_range)
-    ax.set_ylim(0, 1.4)
+    ax.set_ylim(0, 1.6)
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.legend(loc='upper right', fontsize=12, framealpha=0.9)
 

@@ -146,8 +146,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--report",
-        action="store_true",
-        help="Recompute redox potentials from existing output files without running calculations."
+        nargs="?",
+        const="text",
+        choices=["text", "docx"],
+        help="Recompute redox potentials from existing output files (text) or build DELFIN.docx (docx)."
     )
     p.add_argument(
         "--imag",

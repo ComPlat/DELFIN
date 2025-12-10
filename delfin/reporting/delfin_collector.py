@@ -31,11 +31,17 @@ HARTREE_TO_KJ_MOL = 2625.499639
 
 
 def parse_initial_inp(project_dir: Path) -> Dict[str, Any]:
-    """Parse initial.inp file for metadata."""
+    """Parse initial.inp (or fallback S0.inp) file for metadata."""
     initial_inp = project_dir / "initial.inp"
+    # Fallback: use S0.inp inside ESD if initial.inp is missing
     if not initial_inp.exists():
-        logger.warning(f"initial.inp not found in {project_dir}")
-        return {}
+        s0_inp = project_dir / "ESD" / "S0.inp"
+        if s0_inp.exists():
+            initial_inp = s0_inp
+            logger.info(f"initial.inp not found, using fallback {s0_inp}")
+        else:
+            logger.warning(f"initial.inp not found in {project_dir} and no fallback S0.inp")
+            return {}
 
     metadata = {
         "functional": None,
@@ -119,7 +125,11 @@ def parse_orbitals_from_occuper(out_file: Path) -> Optional[Dict[str, Any]]:
 
 
 def parse_scf_energy(output_file: Path) -> Optional[Dict[str, Any]]:
-    """Parse SCF energy from ORCA output file."""
+    """Parse SCF energy from ORCA output file.
+
+    Uses the last FINAL SINGLE POINT ENERGY before 'OPTIMIZATION RUN DONE'.
+    This excludes subsequent single-point calculations (e.g., TDDFT at optimized geometry).
+    """
     if not output_file.exists():
         return None
 
@@ -127,10 +137,21 @@ def parse_scf_energy(output_file: Path) -> Optional[Dict[str, Any]]:
         with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
 
-        # Find FINAL SINGLE POINT ENERGY
-        energy_match = re.search(r'FINAL SINGLE POINT ENERGY\s+([-\d.]+)', content)
-        if energy_match:
-            energy_hartree = float(energy_match.group(1))
+        # Find position of optimization completion marker
+        opt_done_match = re.search(r'\*\*\* OPTIMIZATION RUN DONE \*\*\*', content)
+        if opt_done_match:
+            # Only consider energies before optimization completion
+            search_content = content[:opt_done_match.start()]
+        else:
+            # No optimization marker - use entire file
+            search_content = content
+
+        # Find all FINAL SINGLE POINT ENERGY entries in search region
+        energy_matches = re.findall(r'FINAL SINGLE POINT ENERGY\s+([-\d.]+)', search_content)
+
+        if energy_matches:
+            # Use last FSPE before OPTIMIZATION RUN DONE
+            energy_hartree = float(energy_matches[-1])
             return {
                 "hartree": energy_hartree,
                 "eV": energy_hartree * HARTREE_TO_EV,
@@ -652,10 +673,15 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         data["ground_state_S0"]["dipole_moment"] = parse_dipole_moment(s0_out)
 
         # Parse absorption spectrum from S0
+        # Try S0_TDDFT.out first, fall back to S0.out if it doesn't exist
         s0_tddft = esd_dir / "S0_TDDFT.out"
-        if s0_tddft.exists():
+        if not s0_tddft.exists():
+            s0_tddft = s0_out if s0_out.exists() else None
+
+        if s0_tddft and s0_tddft.exists():
             transitions = parse_absorption_spectrum(s0_tddft)
             data["ground_state_S0"]["tddft_absorption"] = {
+                "comment": f"Parsed from {s0_tddft.name}",
                 "transitions": [
                     {
                         "from_state": t.from_state,

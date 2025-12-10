@@ -816,6 +816,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     RECALC_MODE = bool(getattr(args, "recalc", False))
+    report_mode = getattr(args, "report", None)
+    REPORT_TEXT = report_mode == "text"
+    REPORT_DOCX = report_mode == "docx"
     control_file_path = resolve_path(args.control)
     workspace_root = control_file_path.parent
     json_output_path = Path(args.json_output).resolve() if getattr(args, "json_output", None) else None
@@ -879,7 +882,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # JSON-only mode: build DELFIN_Data.json and exit
-    if args.json and not any([args.report, args.imag, args.recalc, args.define, args.purge, args.cleanup, args.afp]):
+    if args.json and not any([report_mode, args.imag, args.recalc, args.define, args.purge, args.cleanup, args.afp]):
         try:
             output = save_esd_data_json(workspace_root, json_output_path)
             print(f"DELFIN data JSON written to: {output}")
@@ -889,7 +892,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     # AFP-only mode: generate AFP plot and exit
-    if args.afp and not any([args.report, args.imag, args.recalc, args.define, args.purge, args.cleanup]):
+    if args.afp and not any([report_mode, args.imag, args.recalc, args.define, args.purge, args.cleanup]):
         from .afp_plot import generate_afp_report
         try:
             output_png = generate_afp_report(workspace_root, fwhm=args.afp_fwhm)
@@ -903,12 +906,12 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("Failed to generate AFP plot: %s", exc, exc_info=True)
             return 1
 
-    if occupier_overrides and (getattr(args, "report", False) or getattr(args, "imag", False)):
+    if occupier_overrides and (report_mode or getattr(args, "imag", False)):
         logger.error("--occupier-override is only supported for normal --recalc runs (not with --report/--imag).")
         return 2
 
     # Handle --report mode: recompute potentials from existing outputs
-    if getattr(args, "report", False):
+    if REPORT_TEXT:
         from .cli_report import run_report_mode
 
         # Read CONTROL.txt
@@ -919,6 +922,21 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         return run_report_mode(config)
+    if REPORT_DOCX:
+        from .cli_report_docx import run_docx_report_mode
+
+        try:
+            config = read_control_file(str(control_file_path))
+        except ValueError as exc:
+            logger.error("Invalid CONTROL configuration: %s", exc)
+            return 2
+
+        return run_docx_report_mode(
+            workspace_root,
+            config=config,
+            afp_fwhm=args.afp_fwhm,
+            json_output_path=json_output_path,
+        )
 
     # Handle --imag mode: run IMAG elimination then report
     if getattr(args, "imag", False):
