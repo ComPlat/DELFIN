@@ -891,7 +891,7 @@ def _add_frontier_orbital_table(doc: Document, orbital_data: Optional[Dict[str, 
 
 
 def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Optional[Path]:
-    """Create energy level diagram for S and T states.
+    """Create energy level diagram for S, T, oxidized and reduced states.
 
     Args:
         data: DELFIN data dictionary
@@ -941,39 +941,107 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
     s_states.sort(key=lambda x: x[1])
     t_states.sort(key=lambda x: x[1])
 
-    # Create plot
-    fig, ax = plt.subplots(figsize=(8, 6))
+    # Create plot with variable width based on number of lanes
+    num_lanes = sum([1 if s_states else 0, 1 if t_states else 0])
+    fig_width = 4 + num_lanes * 2
+    fig, ax = plt.subplots(figsize=(fig_width, 6))
 
-    # Define x positions for the two lanes
-    s_x = 1.0
-    t_x = 2.0
+    # Define x positions for the lanes
+    lane_spacing = 1.2
+    current_x = 1.0
+    lane_positions = {}
+    lane_labels = {}
+
+    if s_states:
+        lane_positions['S'] = current_x
+        lane_labels['S'] = "Singlet States"
+        current_x += lane_spacing
+    if t_states:
+        lane_positions['T'] = current_x
+        lane_labels['T'] = "Triplet States"
+
     line_width = 0.3
 
+    def _avoid_label_overlap(states_list, x_pos):
+        """Adjust label positions to avoid overlap by placing them side-by-side."""
+        # Group states that are very close in energy (within 0.005 Eh ~0.14 eV)
+        overlap_threshold = 0.005
+        label_offsets = []
+        overlap_groups = []
+        current_group = []
+
+        # Group overlapping states
+        for i, (name, energy) in enumerate(states_list):
+            if not current_group:
+                current_group = [i]
+            else:
+                # Check if this state overlaps with the last one in current group
+                prev_idx = current_group[-1]
+                prev_energy = states_list[prev_idx][1]
+                if abs(energy - prev_energy) < overlap_threshold:
+                    current_group.append(i)
+                else:
+                    # Start a new group
+                    overlap_groups.append(current_group)
+                    current_group = [i]
+
+        if current_group:
+            overlap_groups.append(current_group)
+
+        # Assign offsets: for groups with multiple states, spread them horizontally
+        for group in overlap_groups:
+            if len(group) == 1:
+                label_offsets.append(0)
+            else:
+                # Spread labels horizontally for overlapping states
+                for j, idx in enumerate(group):
+                    offset = j * 0.15  # Horizontal spacing between labels
+                    label_offsets.append(offset)
+
+        return label_offsets
+
     # Plot S states
-    for state_name, energy in s_states:
-        ax.plot([s_x - line_width, s_x + line_width], [energy, energy], 'b-', linewidth=2)
-        # Format label with subscript
-        label = state_name.replace("S", "$S_").replace("0", "{0}") \
-                          .replace("1", "{1}").replace("2", "{2}") \
-                          .replace("3", "{3}").replace("4", "{4}") \
-                          .replace("5", "{5}").replace("6", "{6}") + "$"
-        ax.text(s_x + line_width + 0.05, energy, label, va='center', fontsize=10)
+    if s_states:
+        s_x = lane_positions['S']
+        label_offsets = _avoid_label_overlap(s_states, s_x)
+        for idx, (state_name, energy) in enumerate(s_states):
+            ax.plot([s_x - line_width, s_x + line_width], [energy, energy], 'b-', linewidth=2)
+            # Format label with subscript
+            label = state_name.replace("S", "$S_").replace("0", "{0}") \
+                              .replace("1", "{1}").replace("2", "{2}") \
+                              .replace("3", "{3}").replace("4", "{4}") \
+                              .replace("5", "{5}").replace("6", "{6}") + "$"
+            # Apply offset to avoid overlap
+            x_offset = s_x + line_width + 0.05 + label_offsets[idx]
+            ax.text(x_offset, energy, label, va='center', fontsize=10, ha='left')
 
     # Plot T states
-    for state_name, energy in t_states:
-        ax.plot([t_x - line_width, t_x + line_width], [energy, energy], 'r-', linewidth=2)
-        # Format label with subscript
-        label = state_name.replace("T", "$T_").replace("1", "{1}") \
-                          .replace("2", "{2}").replace("3", "{3}") \
-                          .replace("4", "{4}").replace("5", "{5}") \
-                          .replace("6", "{6}") + "$"
-        ax.text(t_x + line_width + 0.05, energy, label, va='center', fontsize=10)
+    if t_states:
+        t_x = lane_positions['T']
+        label_offsets = _avoid_label_overlap(t_states, t_x)
+        for idx, (state_name, energy) in enumerate(t_states):
+            ax.plot([t_x - line_width, t_x + line_width], [energy, energy], 'r-', linewidth=2)
+            # Format label with subscript
+            label = state_name.replace("T", "$T_").replace("1", "{1}") \
+                              .replace("2", "{2}").replace("3", "{3}") \
+                              .replace("4", "{4}").replace("5", "{5}") \
+                              .replace("6", "{6}") + "$"
+            # Apply offset to avoid overlap
+            x_offset = t_x + line_width + 0.05 + label_offsets[idx]
+            ax.text(x_offset, energy, label, va='center', fontsize=10, ha='left')
 
     # Styling
-    ax.set_xlim(0.3, 3.2)
+    ax.set_xlim(0.3, current_x + 0.8)
     ax.set_ylabel("Energy (Eh)", fontsize=12)
-    ax.set_xticks([s_x, t_x])
-    ax.set_xticklabels(["Singlet States", "Triplet States"], fontsize=11)
+
+    # Set x-ticks for all lanes
+    xtick_positions = [lane_positions[k] for k in sorted(lane_positions.keys(),
+                                                          key=lambda x: lane_positions[x])]
+    xtick_labels = [lane_labels[k] for k in sorted(lane_positions.keys(),
+                                                     key=lambda x: lane_positions[x])]
+    ax.set_xticks(xtick_positions)
+    ax.set_xticklabels(xtick_labels, fontsize=11)
+
     ax.grid(axis='y', alpha=0.3, linestyle='--')
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
