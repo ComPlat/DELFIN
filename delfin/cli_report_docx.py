@@ -162,6 +162,17 @@ def run_docx_report_mode(
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to generate vertical excitation diagram: %s", exc, exc_info=True)
 
+    # Correlation diagram
+    try:
+        import json
+        from delfin.reporting.delfin_docx_report import _create_correlation_plot
+
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        correlation_plot_path = workspace_root / "Correlation_Diagram.png"
+        assets.correlation_png = _create_correlation_plot(data, correlation_plot_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to generate correlation diagram: %s", exc, exc_info=True)
+
     # Assemble DELFIN.docx
     output_docx = workspace_root / "DELFIN.docx"
     result = generate_combined_docx_report(workspace_root, json_path, output_docx, assets=assets)

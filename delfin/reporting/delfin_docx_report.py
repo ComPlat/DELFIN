@@ -91,6 +91,7 @@ class ReportAssets:
     ir_png: Optional[Path] = None
     energy_level_png: Optional[Path] = None
     vertical_excitation_png: Optional[Path] = None
+    correlation_png: Optional[Path] = None
 
 
 def _add_key_value_table(doc: Document, title: str, rows: Iterable[tuple[str, str]]) -> None:
@@ -1269,6 +1270,161 @@ def _create_vertical_excitation_plot(data: Dict[str, Any], output_path: Path) ->
         return None
 
 
+def _format_state_label(state_name: str) -> str:
+    """Format state name with subscript notation for matplotlib.
+
+    Examples: S0 -> $S_0$, S1 -> $S_1$, T1 -> $T_1$
+    """
+    import re
+    match = re.match(r'([ST])(\d+)', state_name)
+    if match:
+        letter = match.group(1)
+        number = match.group(2)
+        return f"${letter}_{{{number}}}$"
+    return state_name
+
+
+def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optional[Path]:
+    """Create correlation diagram between S0 vertical excitations and optimized state energies.
+
+    Left axis: S0 TDDFT vertical excitations (eV)
+    Right axis: Final single point energies of optimized states, normalized to S0=0 eV
+    Dashed lines connect corresponding states.
+
+    Args:
+        data: DELFIN data dictionary
+        output_path: Path to save the PNG plot
+
+    Returns:
+        Path to saved plot or None if creation failed
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib
+        matplotlib.use('Agg')  # Non-interactive backend
+    except ImportError:
+        logger.warning("matplotlib not available; skipping correlation plot")
+        return None
+
+    # Get S0 energy for normalization
+    gs = data.get("ground_state_S0", {}) or {}
+    gs_opt = gs.get("optimization", {}) or {}
+    s0_hartree = gs_opt.get("hartree")
+    if s0_hartree is None:
+        logger.warning("S0 energy not found for correlation plot")
+        return None
+    s0_energy_ev = float(s0_hartree) * HARTREE_TO_EV
+
+    # Collect optimized state energies (right side), normalized to S0=0
+    excited = data.get("excited_states", {}) or {}
+    right_states_dict = {"S0": 0.0}  # S0 at 0 eV reference
+    for state_name in sorted(excited.keys()):
+        state_data = excited[state_name] or {}
+        opt = state_data.get("optimization", {}) or {}
+        hartree = opt.get("hartree")
+        if hartree is not None:
+            # Convert to eV and normalize to S0=0
+            energy_ev = float(hartree) * HARTREE_TO_EV - s0_energy_ev
+            right_states_dict[state_name] = energy_ev
+
+    # Collect S0 vertical excitations (left side) - only for states that have FSPE
+    s0_abs = (gs.get("tddft_absorption") or {}).get("transitions", []) or []
+    left_states_dict = {"S0": 0.0}  # S0 ground state at 0 eV
+    for t in s0_abs:
+        from_state = _translate_state(t.get("from_state", ""))
+        to_state = _translate_state(t.get("to_state", ""))
+        energy_ev = t.get("energy_eV")
+        # Only include if there is a corresponding optimized state
+        if energy_ev is not None and to_state in right_states_dict:
+            left_states_dict[to_state] = float(energy_ev)
+
+    # Find common states
+    common_states = set(left_states_dict.keys()) & set(right_states_dict.keys())
+    if len(common_states) <= 1:
+        logger.warning("Insufficient common states for correlation plot")
+        return None
+
+    # Convert to lists for plotting
+    left_states = [(state, left_states_dict[state]) for state in sorted(common_states, key=lambda x: left_states_dict[x])]
+    right_states = [(state, right_states_dict[state]) for state in sorted(common_states, key=lambda x: right_states_dict[x])]
+
+    # Create plot with layout matching Energy Level Diagram
+    num_lanes = 2  # left and right sides
+    fig_width = 4 + num_lanes * 2
+    fig, ax = plt.subplots(figsize=(fig_width, 6))
+
+    # Define x positions (matching Energy Level Diagram style)
+    lane_spacing = 1.2
+    left_x = 1.0
+    right_x = left_x + lane_spacing
+    line_width = 0.3
+
+    # Helper function to avoid label overlap
+    def _get_label_offsets(states_list):
+        """Calculate vertical offsets for labels to avoid overlap."""
+        overlap_threshold = 0.15  # eV
+        offsets = []
+        for i, (_, energy) in enumerate(states_list):
+            offset = 0
+            for j in range(i):
+                _, prev_energy = states_list[j]
+                if abs(energy - prev_energy) < overlap_threshold:
+                    offset += 0.08
+            offsets.append(offset)
+        return offsets
+
+    # Plot left side (vertical excitations)
+    left_offsets = _get_label_offsets(left_states)
+    for idx, (state_name, energy) in enumerate(left_states):
+        color = "blue" if state_name.startswith("S") else "red" if state_name.startswith("T") else "gray"
+        ax.plot([left_x - line_width, left_x + line_width], [energy, energy],
+                color=color, linewidth=2, solid_capstyle='butt')
+        label = _format_state_label(state_name)
+        ax.text(left_x + line_width + 0.05, energy + left_offsets[idx], label,
+                ha='left', va='center', fontsize=10)
+
+    # Plot right side (optimized states)
+    right_offsets = _get_label_offsets(right_states)
+    for idx, (state_name, energy) in enumerate(right_states):
+        color = "blue" if state_name.startswith("S") else "red" if state_name.startswith("T") else "gray"
+        ax.plot([right_x - line_width, right_x + line_width], [energy, energy],
+                color=color, linewidth=2, solid_capstyle='butt')
+        label = _format_state_label(state_name)
+        ax.text(right_x + line_width + 0.05, energy + right_offsets[idx], label,
+                ha='left', va='center', fontsize=10)
+
+    # Connect corresponding states with dashed lines
+    # All states in left_states and right_states are already matched
+    for (state_name, left_energy), (_, right_energy) in zip(left_states, right_states):
+        color = "blue" if state_name.startswith("S") else "red" if state_name.startswith("T") else "gray"
+        ax.plot([left_x + line_width, right_x - line_width], [left_energy, right_energy],
+                color=color, linestyle='--', linewidth=1, alpha=0.6)
+
+    # Styling (matching Energy Level Diagram)
+    ax.set_xlim(0.3, right_x + 0.8)
+    ax.set_ylabel("Energy (eV)", fontsize=12)
+    ax.set_xticks([left_x, right_x])
+    ax.set_xticklabels(["S0 Vertical Excitations\n(TDDFT)", "Optimized States\n(FSPE, S0=0 eV)"], fontsize=11)
+    ax.tick_params(axis='both', labelsize=11)
+    ax.grid(axis='y', alpha=0.3, linestyle='--')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    plt.title("Correlation: Vertical Excitations vs. Optimized State Energies", fontsize=14, fontweight='bold')
+    plt.tight_layout()
+
+    # Save plot
+    try:
+        plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        logger.info(f"Correlation plot saved to {output_path}")
+        return output_path
+    except Exception as exc:
+        logger.error(f"Failed to save correlation plot: {exc}")
+        plt.close(fig)
+        return None
+
+
 def generate_combined_docx_report(
     project_dir: Path,
     json_path: Path,
@@ -1397,6 +1553,9 @@ def generate_combined_docx_report(
 
     # Add energy level diagram
     _add_plot_if_exists(doc, "Energy Level Diagram (Optimized State Energies)", assets.energy_level_png)
+
+    # Add correlation diagram
+    _add_plot_if_exists(doc, "Correlation: Vertical Excitations vs. Optimized State Energies", assets.correlation_png)
 
     # Rates
     _add_rate_table(doc, "Intersystem crossing", data.get("intersystem_crossing", {}) or {})
