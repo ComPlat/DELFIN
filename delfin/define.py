@@ -59,6 +59,7 @@ ESD_nroots=15
 ESD_maxdim=30
 ESD_TDA=FALSE
 ESD_followiroot=true
+ESD_SOC=false
 ------------------------------------
 MANUALLY:
 multiplicity_0=

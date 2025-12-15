@@ -377,6 +377,9 @@ def _create_state_input_delta_scf(
             # Use ESD_maxdim if set, otherwise default to nroots/2 (min 5)
             esd_maxdim = config.get('ESD_maxdim', None)
             maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
+            # Read ESD_SOC setting
+            dosoc_flag = str(config.get('ESD_SOC', 'false')).strip().lower()
+            dosoc_value = "true" if dosoc_flag in ('yes', 'true', '1', 'on') else "false"
             f.write("\n%tddft\n")
             f.write(f"  nroots {nroots}\n")
             f.write(f"  maxdim {maxdim}\n")
@@ -384,6 +387,7 @@ def _create_state_input_delta_scf(
             if tddft_maxiter is not None:
                 f.write(f"  maxiter {tddft_maxiter}\n")
             f.write("  triplets true\n")
+            f.write(f"  dosoc {dosoc_value}\n")
             f.write("end\n")
 
             # Geometry reference
@@ -512,6 +516,10 @@ def _create_state_input_tddft(
         *,
         triplets: bool = False,
     ) -> None:
+        # Read ESD_SOC setting
+        dosoc_flag = str(config.get('ESD_SOC', 'false')).strip().lower()
+        dosoc_value = "true" if dosoc_flag in ('yes', 'true', '1', 'on') else "false"
+
         fh.write("%tddft\n")
         fh.write(f"  nroots {nroots}\n")
         fh.write(f"  maxdim {maxdim}\n")
@@ -527,6 +535,7 @@ def _create_state_input_tddft(
             fh.write(f"  irootmult {irootmult}\n")
         if iroot is not None and followiroot:
             fh.write("  followiroot true\n")
+        fh.write(f"  dosoc {dosoc_value}\n")
         fh.write("end\n")
 
     def _write_output_blocks(fh) -> None:
