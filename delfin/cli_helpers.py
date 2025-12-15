@@ -18,7 +18,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "DELFIN – DFT-based automated prediction of preferred spin states and associated redox potentials pipeline\n\n"
         "Subcommands: `cleanup` (use `delfin cleanup --help` for options like --orca).\n\n"
         "Prerequisites:\n"
-        "  • ORCA 6.1.0 installed and available in PATH (academic license required)\n"
+        "  • ORCA 6.1.1 installed and available in PATH (academic license required)\n"
         "  • Recommended for some workflows: XTB and CREST available in PATH\n"
         "  • Create and edit CONTROL.txt (or run `delfin --define`) before running calculations\n"
         "  • Input geometry should be in XYZ format (atom count + comment line + coordinates)\n"

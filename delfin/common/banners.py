@@ -44,7 +44,7 @@ class BannerGenerator:
     def create_info_banner(author: str = "ComPlat",
                           author_name: str = "M. Hartmann",
                           institution: str = "Karlsruhe Institute of Technology (KIT)",
-                          description: str = "Automates ORCA 6.1.0 calculations",
+                          description: str = "Automates ORCA 6.1.1 calculations",
                           version: Optional[str] = None) -> str:
         """Create a standard info banner with author and institution info.
 
@@ -76,7 +76,7 @@ class BannerGenerator:
     def create_compact_banner(author: str = "ComPlat",
                             author_name: str = "M. Hartmann",
                             institution: str = "Karlsruhe Institute of Technology (KIT)",
-                            description: str = "Automates ORCA 6.1.0 calculations",
+                            description: str = "Automates ORCA 6.1.1 calculations",
                             version: Optional[str] = None,
                             width: int = 49) -> str:
         """Create a compact banner for smaller spaces.
@@ -143,7 +143,7 @@ def build_banner(title: str,
 
 
 def build_standard_banner(*,
-                          description: str = "Automates ORCA 6.1.0, xTB 6.7.1 and CREST 3.0.2 runs",
+                          description: str = "Automates ORCA 6.1.1, xTB 6.7.1 and CREST 3.0.2 runs",
                           header_indent: int = 0,
                           info_indent: int = 0) -> str:
     """Convenience wrapper for the default DELFIN banner."""
@@ -158,7 +158,7 @@ def build_standard_banner(*,
 
 
 def build_occupier_banner(*,
-                          description: str = "Automates ORCA 6.1.0 calculations",
+                          description: str = "Automates ORCA 6.1.1 calculations",
                           header_indent: int = 0,
                           info_indent: int = 0) -> str:
     """Convenience wrapper for OCCUPIER banner output."""

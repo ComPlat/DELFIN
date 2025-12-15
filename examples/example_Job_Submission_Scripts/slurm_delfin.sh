@@ -26,7 +26,7 @@
 
 # Load required modules (adjust for your cluster)
 module purge
-module load orca/6.1.0
+module load orca/6.1.1
 module load python/3.11
 # module load conda  # if using conda environment
 
