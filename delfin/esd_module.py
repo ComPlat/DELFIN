@@ -236,19 +236,26 @@ def _populate_state_jobs(
             def work(cores: int) -> None:
                 st_upper = st.upper()
 
-                # For S0: copy optimized initial.xyz to S0.xyz AFTER classic_initial completes
+                # For S0: copy optimized initial.xyz to S0.xyz OR convert start.txt
                 if st_upper == "S0":
                     initial_xyz = Path("initial.xyz")
+                    start_txt = Path("start.txt")
                     s0_xyz = esd_dir / "S0.xyz"
-                    if initial_xyz.exists() and not s0_xyz.exists():
-                        import shutil
-                        shutil.copy2(initial_xyz, s0_xyz)
-                        logger.info(f"Copied optimized {initial_xyz} → {s0_xyz}")
-                    elif not initial_xyz.exists():
-                        raise RuntimeError(
-                            f"Cannot create S0.xyz: {initial_xyz} does not exist. "
-                            "Ensure esd_S0 depends on classic_initial."
-                        )
+
+                    if not s0_xyz.exists():
+                        if initial_xyz.exists():
+                            # Prefer optimized initial.xyz if available
+                            import shutil
+                            shutil.copy2(initial_xyz, s0_xyz)
+                            logger.info(f"Copied optimized {initial_xyz} → {s0_xyz}")
+                        elif start_txt.exists():
+                            # Fallback: convert start.txt to S0.xyz
+                            _convert_start_to_xyz(start_txt, s0_xyz)
+                            logger.info(f"Converted {start_txt} → {s0_xyz} (no initial.xyz found)")
+                        else:
+                            raise RuntimeError(
+                                f"Cannot create S0.xyz: neither {initial_xyz} nor {start_txt} exist."
+                            )
 
                     # deltaSCF optimization: reuse initial.* files if inputs are identical
                     if esd_modus == "deltascf":
@@ -783,10 +790,20 @@ def add_esd_jobs_to_scheduler(
             config,
         )
 
-        # Now modify esd_S0 to depend on classic_initial
+        # Add dependency on classic_initial only if it will actually run
+        # (i.e., calc_initial=yes or initial.xyz already exists)
         if "esd_S0" in manager._jobs:
-            manager._jobs["esd_S0"].dependencies.add(dependency_job_id)
-            logger.debug("Added dependency: esd_S0 depends on %s", dependency_job_id)
+            calc_initial = str(config.get('calc_initial', 'no')).strip().lower() == 'yes'
+            initial_xyz_exists = Path("initial.xyz").exists()
+
+            if calc_initial or initial_xyz_exists:
+                # classic_initial will run or has run -> add dependency
+                manager._jobs["esd_S0"].dependencies.add(dependency_job_id)
+                logger.debug("Added dependency: esd_S0 depends on %s", dependency_job_id)
+            else:
+                # No classic_initial -> esd_S0 will use start.txt directly
+                logger.info("Skipping dependency on %s (calc_initial=no and no initial.xyz found)", dependency_job_id)
+                logger.info("esd_S0 will convert start.txt to S0.xyz directly")
 
     # Check if frequency calculations are enabled (required for ISC/IC)
     esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')

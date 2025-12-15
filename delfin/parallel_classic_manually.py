@@ -1480,9 +1480,18 @@ def execute_classic_workflows(
 
     try:
         _populate_classic_jobs(manager, config, kwargs)
+
+        # If using a shared scheduler, check if scheduler has any jobs
+        # (e.g., ESD jobs may have been added before execute_classic_workflows was called)
         if not manager.has_jobs():
-            logger.info("[classic] No oxidation/reduction jobs queued for execution")
-            return WorkflowRunResult()
+            if scheduler is not None and scheduler.manager.has_jobs():
+                # No classic jobs, but scheduler has other jobs (e.g., ESD) - run them
+                logger.info("[classic] No oxidation/reduction jobs queued for execution")
+                return scheduler.run()
+            else:
+                # No jobs at all
+                logger.info("[classic] No oxidation/reduction jobs queued for execution")
+                return WorkflowRunResult()
 
         jobs_snapshot = list(manager._jobs.values())
 
