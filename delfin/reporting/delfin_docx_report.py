@@ -486,7 +486,20 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         dipole_parts.append(f"T₁: {fmt(t1_dipole, ' D')}")
 
     if dipole_parts:
-        parts.append(f"The permanent dipole moments are {', '.join(dipole_parts)}.")
+        parts.append(f"The permanent dipole moments μ are {', '.join(dipole_parts)}.")
+
+    # Hyperpolarizability (if available)
+    hyperpol = gs.get("hyperpolarizability", {}) or {}
+    if hyperpol:
+        beta_tot_esu = hyperpol.get("beta_tot_esu")
+        beta_mu_esu = hyperpol.get("beta_mu_esu")
+        if beta_tot_esu is not None:
+            # Format in scientific notation with proper subscript notation
+            beta_tot_str = f"{beta_tot_esu:.2e}"
+            parts.append(f"The static hyperpolarizability β\u209C\u2092\u209C is {beta_tot_str} esu.")
+        if beta_mu_esu is not None:
+            beta_mu_str = f"{beta_mu_esu:.2e}"
+            parts.append(f"The dipole-projected hyperpolarizability β\u03BC is {beta_mu_str} esu.")
 
     if vib_frequencies:
         vib_list = ", ".join(f"{freq:.0f}" for freq in vib_frequencies)

@@ -328,8 +328,14 @@ def parse_dipole_moment(output_file: Path) -> Optional[Dict[str, Any]]:
             content = f.read()
 
         # Find the LAST dipole moment (after optimization)
+        # Pattern matches:
+        # Total Dipole Moment    :     -0.286613982       1.115620361       0.186158294
+        #                         -----------------------------------------
+        # Magnitude (a.u.)       :      1.166795301
+        # Magnitude (Debye)      :      2.965757963
         dipole_matches = re.findall(
             r'Total Dipole Moment\s+:\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+).*?'
+            r'Magnitude \(a\.u\.\)\s+:\s+([-\d.]+).*?'
             r'Magnitude \(Debye\)\s+:\s+([-\d.]+)',
             content,
             re.DOTALL
@@ -337,10 +343,14 @@ def parse_dipole_moment(output_file: Path) -> Optional[Dict[str, Any]]:
 
         if dipole_matches:
             # Take the last match
-            x, y, z, magnitude = dipole_matches[-1]
+            x_au, y_au, z_au, mag_au, mag_debye = dipole_matches[-1]
             return {
-                "magnitude_debye": float(magnitude),
-                "vector_debye": [float(x), float(y), float(z)]
+                "x_au": float(x_au),
+                "y_au": float(y_au),
+                "z_au": float(z_au),
+                "magnitude_au": float(mag_au),
+                "magnitude_debye": float(mag_debye),
+                "vector_debye": [float(x_au), float(y_au), float(z_au)]  # Actually in a.u. but kept for compatibility
             }
     except Exception as e:
         logger.error(f"Error parsing dipole moment from {output_file}: {e}")
@@ -781,6 +791,20 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         data["ground_state_S0"]["thermochemistry"] = parse_thermochemistry(s0_out)
         data["ground_state_S0"]["orbitals"] = parse_orbitals(s0_out)
         data["ground_state_S0"]["dipole_moment"] = parse_dipole_moment(s0_out)
+
+        # Parse hyperpolarizability if available
+        from delfin.parser import parse_hyperpolarizability, calculate_beta_properties
+        beta_tensor = parse_hyperpolarizability(s0_out)
+        if beta_tensor:
+            dipole = data["ground_state_S0"]["dipole_moment"] or {}
+            dipole_x = dipole.get("x_au", 0.0)
+            dipole_y = dipole.get("y_au", 0.0)
+            dipole_z = dipole.get("z_au", 0.0)
+            beta_props = calculate_beta_properties(beta_tensor, dipole_x, dipole_y, dipole_z)
+            data["ground_state_S0"]["hyperpolarizability"] = {
+                "tensor_au": beta_tensor,
+                **beta_props
+            }
 
         # Parse absorption spectrum from S0
         # Try S0_TDDFT.out first, fall back to S0.out if it doesn't exist
