@@ -330,6 +330,13 @@ def _create_state_input_delta_scf(
         f.write(simple_line + "\n")
         for block in blocks:
             f.write(block + "\n")
+
+        # Add custom additions for S0 state if specified in CONTROL
+        if state_upper == "S0":
+            addition_s0 = config.get('addition_S0', '').strip()
+            if addition_s0:
+                f.write(f"{addition_s0}\n")
+
         f.write("\n")
         f.write(f"* xyz {charge} {multiplicity}\n")
         for line in coord_lines:
@@ -546,6 +553,12 @@ def _create_state_input_tddft(
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
+
+            # Add custom additions for S0 state if specified in CONTROL
+            addition_s0 = config.get('addition_S0', '').strip()
+            if addition_s0:
+                f.write(f"{addition_s0}\n")
+
             f.write(f"\n* xyz {charge} 1\n")
             for line in coord_lines:
                 f.write(line)

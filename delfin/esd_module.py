@@ -211,14 +211,19 @@ def _populate_state_jobs(
         state_upper = state.upper()
 
         # Check if this state should be calculated
-        # S0 is special: only skip if both .out and .hess already exist
-        if state_upper == "S0":
-            s0_out = esd_dir / "S0.out"
-            s0_hess = esd_dir / "S0.hess"
-            if s0_out.exists() and s0_hess.exists():
-                logger.info(f"S0 calculation skipped (S0.out/.hess exist in {esd_dir})")
+        # In normal mode: skip if both .out and .hess exist
+        # In recalc mode: let the recalc wrapper decide (it checks TERMINATED NORMALLY)
+        import os
+        recalc_mode = os.environ.get("DELFIN_RECALC", "0") == "1"
+
+        if not recalc_mode:
+            state_out = esd_dir / f"{state_upper}.out"
+            state_hess = esd_dir / f"{state_upper}.hess"
+
+            if state_out.exists() and state_hess.exists():
+                logger.info(f"{state_upper} calculation skipped ({state_upper}.out/.hess exist in {esd_dir})")
                 # Mark as completed so dependencies can proceed
-                manager._completed.add("esd_S0")
+                manager._completed.add(f"esd_{state_upper}")
                 continue
 
         deps = set(state_deps.get(state_upper, set()))
