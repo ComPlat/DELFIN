@@ -1389,10 +1389,11 @@ def generate_combined_docx_report(
         row["_type"] = "Reduced"
         state_rows[name] = row
 
-    _add_state_table(doc, "Energetics overview", state_rows)
-
     # Add vertical excitation diagram
     _add_plot_if_exists(doc, "Vertical Excitation Energies", assets.vertical_excitation_png)
+
+    # Add energetics overview table
+    _add_state_table(doc, "Energetics overview", state_rows)
 
     # Add energy level diagram
     _add_plot_if_exists(doc, "Energy Level Diagram (Optimized State Energies)", assets.energy_level_png)
