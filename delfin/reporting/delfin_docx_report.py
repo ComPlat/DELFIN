@@ -360,6 +360,10 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
     s1_e = _energy_ev((excited.get("S1") or {}).get("optimization", {}) or {})
     t1_e = _energy_ev((excited.get("T1") or {}).get("optimization", {}) or {})
 
+    # Extract dipole moments from excited states
+    s1_dip = ((excited.get("S1") or {}).get("dipole_moment", {}) or {})
+    t1_dip = ((excited.get("T1") or {}).get("dipole_moment", {}) or {})
+
     def rel_energy(ref, val):
         if ref is None or val is None:
             return None
@@ -467,7 +471,22 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
 
     # Ground state properties (NO SCF energy)
     parts.append(f"HOMO/LUMO energies are {fmt(homo, ' eV')} and {fmt(lumo, ' eV')}, yielding a gap of {fmt(gap, ' eV')}.")
-    parts.append(f"The permanent dipole moment is {fmt(gs_dip.get('magnitude_debye'), ' D')}.")
+
+    # Dipole moments for S0, S1, T1
+    dipole_parts = []
+    s0_dipole = gs_dip.get('magnitude_debye')
+    s1_dipole = s1_dip.get('magnitude_debye')
+    t1_dipole = t1_dip.get('magnitude_debye')
+
+    if s0_dipole is not None:
+        dipole_parts.append(f"S₀: {fmt(s0_dipole, ' D')}")
+    if s1_dipole is not None:
+        dipole_parts.append(f"S₁: {fmt(s1_dipole, ' D')}")
+    if t1_dipole is not None:
+        dipole_parts.append(f"T₁: {fmt(t1_dipole, ' D')}")
+
+    if dipole_parts:
+        parts.append(f"The permanent dipole moments are {', '.join(dipole_parts)}.")
 
     if vib_frequencies:
         vib_list = ", ".join(f"{freq:.0f}" for freq in vib_frequencies)
