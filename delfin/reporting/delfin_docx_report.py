@@ -290,6 +290,27 @@ def _energy_ev(optimization: Dict[str, Any]) -> Optional[float]:
     return None
 
 
+def _parse_goat_conformer_count(project_dir: Path) -> Optional[int]:
+    """Parse 'Conformers below 3 kcal/mol: X' from XTB_GOAT output."""
+    goat_candidates = [
+        project_dir / "XTB_GOAT" / "output_XTB_GOAT.out",
+        project_dir / "XTB2_GOAT" / "output_XTB_GOAT.out",
+        project_dir / "output_XTB_GOAT.out",
+    ]
+
+    for goat_file in goat_candidates:
+        if not goat_file.exists():
+            continue
+        try:
+            content = goat_file.read_text(encoding="utf-8", errors="ignore")
+            match = re.search(r'Conformers below 3 kcal/mol:\s*(\d+)', content)
+            if match:
+                return int(match.group(1))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to parse GOAT conformer count from %s: %s", goat_file, exc)
+    return None
+
+
 def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Optional[str], list[tuple[str, float, tuple[int, int, int]]]]:
     meta = data.get("metadata", {}) or {}
     name = meta.get("NAME") or meta.get("name") or project_dir.name
@@ -407,12 +428,27 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         except Exception:
             return str(val) + suffix
 
+    # Parse GOAT conformer count if available
+    goat_conformer_count = _parse_goat_conformer_count(project_dir)
+
     # Build summary
-    parts = [
-        "The SMILES of the target system were converted into 3D coordinates using RDKit. "
-        "A global geometry optimization with the GOAT algorithm and GFN-xTB in ORCA provided the starting structure for the high-level DFT calculations automated by DELFIN.",
-        f"The calculation of optimized structure, vibrational frequencies and excited states for the system '{name}' is presented, with automated analysis provided by the DELFIN software package."
-    ]
+    parts = []
+
+    # Opening statement about workflow
+    opening = "The SMILES of the target system were converted into 3D coordinates using RDKit. "
+    if goat_conformer_count is not None:
+        opening += (
+            f"A global geometry optimization with the GOAT algorithm and GFN-xTB in ORCA "
+            f"identified {goat_conformer_count} conformer{'s' if goat_conformer_count != 1 else ''} "
+            f"below 3 kcal/mol. The energetically lowest conformer provided the starting structure for subsequent high-level DFT calculations using ORCA. "
+        )
+    else:
+        opening += (
+            "A global geometry optimization with the GOAT algorithm and GFN-xTB in ORCA "
+            "provided the starting structure for subsequent high-level DFT calculations using ORCA. "
+        )
+    opening += "The entire workflow, from initial structure generation to high-level DFT calculations, was automated by DELFIN."
+    parts.append(opening)
 
     # Theory level with all details
     theory_parts = [f"{functional}/{basis}"]
