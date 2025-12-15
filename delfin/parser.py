@@ -309,3 +309,58 @@ def calculate_beta_properties(
         'beta_tot_esu': beta_tot * AU_TO_ESU,
         'beta_mu_esu': beta_mu * AU_TO_ESU,
     }
+
+
+def parse_polarizability(
+    file: Union[str, Path, TextIO],
+    *,
+    encoding: str = "utf-8",
+) -> Optional[Dict[str, float]]:
+    """
+    Parse the static polarizability from ORCA output.
+
+    Searches for 'STATIC POLARIZABILITY TENSOR' and extracts the
+    isotropic polarizability value.
+
+    Parameters
+    ----------
+    file : str | Path | TextIO
+        Path to the ORCA output file or an open file handle.
+    encoding : str
+        File encoding when opening by path.
+
+    Returns
+    -------
+    dict | None
+        Dictionary with 'isotropic_au' and 'isotropic_angstrom3' keys,
+        or None if not found.
+    """
+    should_close = False
+    if hasattr(file, "read"):
+        fh = file
+    else:
+        fh = open(file, "r", encoding=encoding, errors="replace")
+        should_close = True
+
+    isotropic = None
+
+    try:
+        for line in fh:
+            # Look for "Isotropic polarizability :  12.86035"
+            if "Isotropic polarizability" in line:
+                match = re.search(r'Isotropic polarizability\s*:\s*([+-]?\d+\.\d+)', line)
+                if match:
+                    isotropic = float(match.group(1))
+                    break
+
+        if isotropic is not None:
+            # Conversion: 1 a.u. = 0.1482 Å³
+            AU_TO_ANGSTROM3 = 0.1482
+            return {
+                'isotropic_au': isotropic,
+                'isotropic_angstrom3': isotropic * AU_TO_ANGSTROM3,
+            }
+        return None
+    finally:
+        if should_close:
+            fh.close()

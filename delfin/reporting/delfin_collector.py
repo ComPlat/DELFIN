@@ -792,6 +792,12 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         data["ground_state_S0"]["orbitals"] = parse_orbitals(s0_out)
         data["ground_state_S0"]["dipole_moment"] = parse_dipole_moment(s0_out)
 
+        # Parse polarizability if available
+        from delfin.parser import parse_polarizability
+        polarizability = parse_polarizability(s0_out)
+        if polarizability:
+            data["ground_state_S0"]["polarizability"] = polarizability
+
         # Parse hyperpolarizability if available
         from delfin.parser import parse_hyperpolarizability, calculate_beta_properties
         beta_tensor = parse_hyperpolarizability(s0_out)

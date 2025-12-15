@@ -488,6 +488,14 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
     if dipole_parts:
         parts.append(f"The permanent dipole moments μ are {', '.join(dipole_parts)}.")
 
+    # Polarizability (if available)
+    polarizability = gs.get("polarizability", {}) or {}
+    if polarizability:
+        alpha_iso_au = polarizability.get("isotropic_au")
+        alpha_iso_a3 = polarizability.get("isotropic_angstrom3")
+        if alpha_iso_au is not None and alpha_iso_a3 is not None:
+            parts.append(f"The isotropic polarizability α is {alpha_iso_au:.2f} a.u. ({alpha_iso_a3:.2f} Å³).")
+
     # Hyperpolarizability (if available)
     hyperpol = gs.get("hyperpolarizability", {}) or {}
     if hyperpol:
