@@ -90,6 +90,7 @@ class ReportAssets:
     uv_vis_pngs: Dict[str, Path] | None = None  # keyed by state name, e.g., "S0", "S1", "T1"
     ir_png: Optional[Path] = None
     energy_level_png: Optional[Path] = None
+    vertical_excitation_png: Optional[Path] = None
 
 
 def _add_key_value_table(doc: Document, title: str, rows: Iterable[tuple[str, str]]) -> None:
@@ -1117,12 +1118,13 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
                                                      key=lambda x: lane_positions[x])]
     ax.set_xticks(xtick_positions)
     ax.set_xticklabels(xtick_labels, fontsize=11)
+    ax.tick_params(axis='both', labelsize=11)
 
     ax.grid(axis='y', alpha=0.3, linestyle='--')
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
 
-    plt.title("Energy Level Diagram", fontsize=14, fontweight='bold')
+    plt.title("Energy Level Diagram (Optimized State Energies)", fontsize=14, fontweight='bold')
     plt.tight_layout()
 
     # Save plot
@@ -1133,6 +1135,136 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         return output_path
     except Exception as exc:
         logger.error(f"Failed to save energy level plot: {exc}")
+        plt.close(fig)
+        return None
+
+
+def _create_vertical_excitation_plot(data: Dict[str, Any], output_path: Path) -> Optional[Path]:
+    """Create vertical excitation energy diagram with separate lanes for S0, S1, T1.
+
+    This shows all vertical excitation energies (from TDDFT) for each state on its own axis.
+
+    Args:
+        data: DELFIN data dictionary
+        output_path: Path to save the PNG plot
+
+    Returns:
+        Path to saved plot or None if creation failed
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib
+        matplotlib.use('Agg')  # Non-interactive backend
+    except ImportError:
+        logger.warning("matplotlib not available; skipping vertical excitation plot")
+        return None
+
+    # Collect transitions for S0, S1, T1
+    # Structure: state_name -> list of (from_state, to_state, energy_eV)
+    transitions_data = {}
+
+    # S0 absorption transitions
+    gs = data.get("ground_state_S0", {}) or {}
+    s0_abs = (gs.get("tddft_absorption") or {}).get("transitions", []) or []
+    s0_transitions = []
+    for t in s0_abs:
+        from_state = _translate_state(t.get("from_state", ""))
+        to_state = _translate_state(t.get("to_state", ""))
+        energy_ev = t.get("energy_eV")
+        if energy_ev is not None:
+            s0_transitions.append((from_state, to_state, float(energy_ev)))
+    if s0_transitions:
+        transitions_data["S0"] = s0_transitions
+
+    # S1 and T1 transitions
+    excited = data.get("excited_states", {}) or {}
+    for state_name in ["S1", "T1"]:
+        state_data = excited.get(state_name, {}) or {}
+        transitions = (state_data.get("tddft_from_geometry") or {}).get("transitions", []) or []
+        state_transitions = []
+        for t in transitions:
+            from_state = _translate_state(t.get("from_state", ""))
+            to_state = _translate_state(t.get("to_state", ""))
+            energy_ev = t.get("energy_eV")
+            if energy_ev is not None:
+                state_transitions.append((from_state, to_state, float(energy_ev)))
+        if state_transitions:
+            transitions_data[state_name] = state_transitions
+
+    if not transitions_data:
+        logger.warning("No vertical excitation data found for S0, S1, or T1")
+        return None
+
+    # Create plot with lanes for each state
+    num_lanes = len(transitions_data)
+    fig_width = 4 + num_lanes * 2.5
+    fig, ax = plt.subplots(figsize=(fig_width, 6))
+
+    # Define x positions for lanes
+    lane_spacing = 1.5
+    current_x = 1.0
+    lane_positions = {}
+    lane_labels = {}
+    lane_colors = {
+        "S0": "blue",
+        "S1": "green",
+        "T1": "red"
+    }
+
+    for state in ["S0", "S1", "T1"]:
+        if state in transitions_data:
+            lane_positions[state] = current_x
+            lane_labels[state] = f"{state} Geometry"
+            current_x += lane_spacing
+
+    line_width = 0.3
+
+    # Plot transitions for each state
+    for state, x_pos in lane_positions.items():
+        transitions = transitions_data[state]
+        # Sort by energy
+        transitions.sort(key=lambda x: x[2])
+        color = lane_colors.get(state, "gray")
+
+        for idx, (from_state, to_state, energy) in enumerate(transitions):
+            # Plot horizontal line for this transition
+            ax.plot([x_pos - line_width, x_pos + line_width], [energy, energy],
+                    color=color, linewidth=2, solid_capstyle='butt')
+            # Add label only for first 3 transitions
+            if idx < 3:
+                label = f"{from_state}→{to_state}"
+                ax.text(x_pos + line_width + 0.05, energy,
+                       f"{label} ({energy:.2f} eV)",
+                       va='center', fontsize=8, ha='left')
+
+    # Styling
+    ax.set_xlim(0.3, current_x + 0.8)
+    ax.set_ylabel("Vertical Excitation Energy (eV)", fontsize=12)
+
+    # Set x-ticks for all lanes
+    xtick_positions = [lane_positions[k] for k in sorted(lane_positions.keys(),
+                                                          key=lambda x: ["S0", "S1", "T1"].index(x))]
+    xtick_labels = [lane_labels[k] for k in sorted(lane_positions.keys(),
+                                                     key=lambda x: ["S0", "S1", "T1"].index(x))]
+    ax.set_xticks(xtick_positions)
+    ax.set_xticklabels(xtick_labels, fontsize=11)
+    ax.tick_params(axis='both', labelsize=11)
+
+    ax.grid(axis='y', alpha=0.3, linestyle='--')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    plt.title("Vertical Excitation Energies (TDDFT)", fontsize=14, fontweight='bold')
+    plt.tight_layout()
+
+    # Save plot
+    try:
+        plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        logger.info(f"Vertical excitation plot saved to {output_path}")
+        return output_path
+    except Exception as exc:
+        logger.error(f"Failed to save vertical excitation plot: {exc}")
         plt.close(fig)
         return None
 
@@ -1259,8 +1391,11 @@ def generate_combined_docx_report(
 
     _add_state_table(doc, "Energetics overview", state_rows)
 
+    # Add vertical excitation diagram
+    _add_plot_if_exists(doc, "Vertical Excitation Energies", assets.vertical_excitation_png)
+
     # Add energy level diagram
-    _add_plot_if_exists(doc, "Energy Level Diagram", assets.energy_level_png)
+    _add_plot_if_exists(doc, "Energy Level Diagram (Optimized State Energies)", assets.energy_level_png)
 
     # Rates
     _add_rate_table(doc, "Intersystem crossing", data.get("intersystem_crossing", {}) or {})

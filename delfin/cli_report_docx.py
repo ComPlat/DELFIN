@@ -151,6 +151,17 @@ def run_docx_report_mode(
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to generate energy level diagram: %s", exc, exc_info=True)
 
+    # Vertical excitation diagram
+    try:
+        import json
+        from delfin.reporting.delfin_docx_report import _create_vertical_excitation_plot
+
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        vertical_plot_path = workspace_root / "Vertical_Excitation_Energies.png"
+        assets.vertical_excitation_png = _create_vertical_excitation_plot(data, vertical_plot_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to generate vertical excitation diagram: %s", exc, exc_info=True)
+
     # Assemble DELFIN.docx
     output_docx = workspace_root / "DELFIN.docx"
     result = generate_combined_docx_report(workspace_root, json_path, output_docx, assets=assets)
