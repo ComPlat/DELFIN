@@ -1524,9 +1524,8 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
         # Draw dipole moment vector as CGO (Compiled Graphics Object)
         from pymol.cgo import CYLINDER, CONE, COLOR
 
-        # Scale dipole vector for visualization
-        scale_factor = 4.0
-        dipole_vec_scaled = dipole_vec * scale_factor
+        # Use dipole vector directly for visualization (no artificial scaling)
+        dipole_vec_scaled = dipole_vec
         arrow_start = center
         arrow_end = center + dipole_vec_scaled
 
