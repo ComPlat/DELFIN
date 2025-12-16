@@ -2018,7 +2018,8 @@ def generate_combined_docx_report(
         gs_entry = dict(gs)
         gs_entry["_type"] = "Ground"
         state_rows["S0"] = gs_entry
-        # Absorption transitions from S0_TDDFT
+        # Absorption transitions from S0_TDDFT - start on new page
+        doc.add_page_break()
         s0_abs = (gs.get("tddft_absorption") or {}).get("transitions", [])
         _add_transition_table(doc, "Absorption transitions (S0)", s0_abs)
 
