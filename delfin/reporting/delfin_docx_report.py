@@ -92,6 +92,7 @@ class ReportAssets:
     energy_level_png: Optional[Path] = None
     vertical_excitation_png: Optional[Path] = None
     correlation_png: Optional[Path] = None
+    dipole_moment_png: Optional[Path] = None
 
 
 def _add_key_value_table(doc: Document, title: str, rows: Iterable[tuple[str, str]]) -> None:
@@ -1333,6 +1334,195 @@ def _format_state_label(state_name: str) -> str:
     return state_name
 
 
+def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_path: Path) -> Optional[Path]:
+    """Create 3D visualization of S0 geometry with dipole moment vector using PyMOL.
+
+    Args:
+        project_dir: Project directory containing S0.xyz
+        data: DELFIN data dictionary
+        output_path: Path to save the PNG plot
+
+    Returns:
+        Path to saved plot or None if creation failed
+    """
+    try:
+        import pymol
+        from pymol import cmd
+        import numpy as np
+        from ase.io import read, write
+    except ImportError as e:
+        logger.warning(f"PyMOL or required dependencies not available; skipping dipole moment plot: {e}")
+        return None
+
+    # Get dipole moment from data
+    gs = data.get("ground_state_S0", {}) or {}
+    dipole = gs.get("dipole_moment", {}) or {}
+    dipole_x = dipole.get("x_au")
+    dipole_y = dipole.get("y_au")
+    dipole_z = dipole.get("z_au")
+    dipole_mag = dipole.get("magnitude_debye")
+
+    if dipole_x is None or dipole_y is None or dipole_z is None:
+        logger.warning("Dipole moment components not found in data")
+        return None
+
+    # Read S0.xyz file
+    xyz_file = project_dir / "ESD" / "S0.xyz"
+    if not xyz_file.exists():
+        logger.warning(f"S0.xyz not found at {xyz_file}")
+        return None
+
+    try:
+        # Read structure using ASE
+        atoms = read(str(xyz_file))
+
+        # Dipole moment vector (in a.u.)
+        dipole_vec = np.array([dipole_x, dipole_y, dipole_z])
+
+        # Calculate rotation matrix to align dipole moment with X-axis
+        dipole_norm = dipole_vec / np.linalg.norm(dipole_vec)
+        x_axis = np.array([1.0, 0.0, 0.0])
+
+        # Rotation axis (cross product)
+        rotation_axis = np.cross(dipole_norm, x_axis)
+        rotation_axis_norm = np.linalg.norm(rotation_axis)
+
+        # Rotation angle
+        cos_angle = np.dot(dipole_norm, x_axis)
+        angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+
+        # Apply rotation to atoms if dipole is not already aligned with X
+        if rotation_axis_norm > 1e-6:  # Not already aligned
+            rotation_axis = rotation_axis / rotation_axis_norm
+
+            # Rodrigues' rotation formula
+            K = np.array([
+                [0, -rotation_axis[2], rotation_axis[1]],
+                [rotation_axis[2], 0, -rotation_axis[0]],
+                [-rotation_axis[1], rotation_axis[0], 0]
+            ])
+            R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+
+            # Rotate all atoms
+            positions = atoms.get_positions()
+            center = atoms.get_center_of_mass()
+            positions_centered = positions - center
+            positions_rotated = (R @ positions_centered.T).T + center
+            atoms.set_positions(positions_rotated)
+
+            # Rotate dipole vector
+            dipole_vec = R @ dipole_vec
+
+        # Save rotated structure to temporary file
+        temp_xyz = project_dir / "temp_rotated_dipole.xyz"
+        write(str(temp_xyz), atoms)
+
+        # Get center of mass for dipole arrow placement
+        center = atoms.get_center_of_mass()
+
+        # Initialize PyMOL in quiet mode (no GUI)
+        pymol.finish_launching(['pymol', '-c'])
+        cmd.reinitialize()
+
+        # Load the rotated structure
+        cmd.load(str(temp_xyz), 'molecule')
+
+        # Set up visualization style
+        cmd.hide('everything', 'molecule')
+        cmd.show('sticks', 'molecule')
+        cmd.show('spheres', 'molecule')
+        cmd.set('sphere_scale', 0.25)
+        cmd.set('stick_radius', 0.15)
+        cmd.set('stick_quality', 15)
+        cmd.set('sphere_quality', 3)
+
+        # Use ball-and-stick representation
+        cmd.set('valence', 1)
+
+        # Set background to white
+        cmd.bg_color('white')
+
+        # Enable ray tracing settings for high quality
+        cmd.set('ray_trace_mode', 1)
+        cmd.set('ray_shadows', 1)
+        cmd.set('ray_opaque_background', 1)
+        cmd.set('antialias', 2)
+        cmd.set('ambient', 0.4)
+        cmd.set('direct', 0.6)
+        cmd.set('specular', 0.5)
+        cmd.set('shininess', 10)
+        cmd.set('depth_cue', 0)
+
+        # Draw dipole moment vector as CGO (Compiled Graphics Object)
+        from pymol.cgo import CYLINDER, CONE, COLOR
+
+        # Scale dipole vector for visualization
+        scale_factor = 4.0
+        dipole_vec_scaled = dipole_vec * scale_factor
+        arrow_start = center
+        arrow_end = center + dipole_vec_scaled
+
+        # Arrow shaft radius and cone dimensions
+        shaft_radius = 0.15
+        cone_radius = 0.3
+        cone_length = 0.8
+
+        # Calculate cone base position
+        arrow_direction = dipole_vec_scaled / np.linalg.norm(dipole_vec_scaled)
+        cone_base = arrow_end - arrow_direction * cone_length
+
+        # Create CGO arrow (red color: RGB = 1.0, 0.0, 0.0)
+        arrow_obj = [
+            COLOR, 1.0, 0.0, 0.0,  # Red color
+            CYLINDER, float(arrow_start[0]), float(arrow_start[1]), float(arrow_start[2]),
+                     float(cone_base[0]), float(cone_base[1]), float(cone_base[2]),
+                     shaft_radius,
+                     1.0, 0.0, 0.0,  # Start color (red)
+                     1.0, 0.0, 0.0,  # End color (red)
+            CONE, float(cone_base[0]), float(cone_base[1]), float(cone_base[2]),
+                 float(arrow_end[0]), float(arrow_end[1]), float(arrow_end[2]),
+                 cone_radius, 0.0,
+                 1.0, 0.0, 0.0,  # Base color (red)
+                 1.0, 0.0, 0.0,  # Tip color (red)
+                 1.0, 1.0,  # Caps
+        ]
+        cmd.load_cgo(arrow_obj, 'dipole_arrow')
+
+        # Add label for dipole magnitude
+        label_pos = arrow_end + arrow_direction * 0.5
+        cmd.pseudoatom('dipole_label', pos=list(label_pos))
+        cmd.label('dipole_label', f'"μ = {dipole_mag:.2f} D"')
+        cmd.set('label_size', 20)
+        cmd.set('label_color', 'red')
+        cmd.set('label_font_id', 7)  # Bold font
+        cmd.hide('everything', 'dipole_label')
+
+        # Set camera view to emphasize X-axis alignment
+        cmd.orient('molecule')
+        cmd.turn('y', -60)
+        cmd.turn('x', 15)
+        cmd.zoom('all', buffer=2)
+
+        # Render with ray tracing at high resolution
+        cmd.ray(2400, 2000)  # High resolution for quality
+        cmd.png(str(output_path), dpi=300)
+
+        # Clean up
+        cmd.delete('all')
+        cmd.reinitialize()
+        if temp_xyz.exists():
+            temp_xyz.unlink()
+
+        logger.info(f"Dipole moment plot saved to {output_path}")
+        return output_path
+
+    except Exception as exc:
+        logger.error(f"Failed to create dipole moment plot: {exc}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
+
 def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optional[Path]:
     """Create correlation diagram between S0 vertical excitations and optimized state energies.
 
@@ -1632,6 +1822,12 @@ def generate_combined_docx_report(
     if assets.ir_png:
         _add_heading_with_subscript(doc, "IR spectrum (S0)", level=2)
         doc.add_picture(str(assets.ir_png), width=Inches(6.5))
+        doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # Dipole moment visualization
+    if assets.dipole_moment_png:
+        _add_heading_with_subscript(doc, "Dipole Moment Visualization (S0)", level=2)
+        doc.add_picture(str(assets.dipole_moment_png), width=Inches(6.5))
         doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     output_docx.parent.mkdir(parents=True, exist_ok=True)

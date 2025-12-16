@@ -173,6 +173,17 @@ def run_docx_report_mode(
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to generate correlation diagram: %s", exc, exc_info=True)
 
+    # Dipole moment visualization
+    try:
+        import json
+        from delfin.reporting.delfin_docx_report import _create_dipole_moment_plot
+
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        dipole_plot_path = workspace_root / "Dipole_Moment_Visualization.png"
+        assets.dipole_moment_png = _create_dipole_moment_plot(workspace_root, data, dipole_plot_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to generate dipole moment visualization: %s", exc, exc_info=True)
+
     # Assemble DELFIN.docx
     output_docx = workspace_root / "DELFIN.docx"
     result = generate_combined_docx_report(workspace_root, json_path, output_docx, assets=assets)
