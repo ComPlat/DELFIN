@@ -1344,9 +1344,13 @@ def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optiona
         logger.warning("Insufficient common states for correlation plot")
         return None
 
-    # Convert to lists for plotting
+    # Convert to lists for plotting - keep state ordering separate for left and right
+    # Sort by energy for visual clarity on each side
     left_states = [(state, left_states_dict[state]) for state in sorted(common_states, key=lambda x: left_states_dict[x])]
     right_states = [(state, right_states_dict[state]) for state in sorted(common_states, key=lambda x: right_states_dict[x])]
+
+    # Create mapping for connecting corresponding states (not by sorted order)
+    state_connections = {state: (left_states_dict[state], right_states_dict[state]) for state in common_states}
 
     # Create plot with layout matching Energy Level Diagram
     num_lanes = 2  # left and right sides
@@ -1394,8 +1398,8 @@ def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optiona
                 ha='left', va='center', fontsize=10)
 
     # Connect corresponding states with dashed lines
-    # All states in left_states and right_states are already matched
-    for (state_name, left_energy), (_, right_energy) in zip(left_states, right_states):
+    # Use state_connections to match T1↔T1, S1↔S1, etc., not by sorted order
+    for state_name, (left_energy, right_energy) in state_connections.items():
         color = "blue" if state_name.startswith("S") else "red" if state_name.startswith("T") else "gray"
         ax.plot([left_x + line_width, right_x - line_width], [left_energy, right_energy],
                 color=color, linestyle='--', linewidth=1, alpha=0.6)
