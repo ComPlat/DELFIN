@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 
 try:
     from docx import Document
-    from docx.shared import Inches, RGBColor
+    from docx.shared import Inches, RGBColor, Pt
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     DOCX_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional dependency
@@ -93,6 +93,7 @@ class ReportAssets:
     vertical_excitation_png: Optional[Path] = None
     correlation_png: Optional[Path] = None
     dipole_moment_png: Optional[Path] = None
+    mo_pngs: Dict[str, Path] | None = None  # keyed by orbital name, e.g., "HOMO", "LUMO+1"
 
 
 def _add_key_value_table(doc: Document, title: str, rows: Iterable[tuple[str, str]]) -> None:
@@ -993,8 +994,8 @@ def _extract_frontier_orbitals(orbital_data: Optional[Dict[str, Any]]) -> list[t
     return rows
 
 
-def _add_frontier_orbital_table(doc: Document, orbital_data: Optional[Dict[str, Any]]) -> None:
-    """Add table showing frontier orbital energies (LUMO+3 to HOMO-3)."""
+def _add_frontier_orbital_table(doc: Document, orbital_data: Optional[Dict[str, Any]], mo_pngs: Dict[str, Path] | None = None) -> None:
+    """Add table showing frontier orbital energies (LUMO+3 to HOMO-3) with MO visualizations."""
     rows = _extract_frontier_orbitals(orbital_data)
     if not rows:
         return
@@ -1015,7 +1016,18 @@ def _add_frontier_orbital_table(doc: Document, orbital_data: Optional[Dict[str, 
         row_cells = table.add_row().cells
         row_cells[0].text = label
         row_cells[1].text = energy
-        row_cells[2].text = orbital
+
+        # Add MO image if available
+        if mo_pngs and label in mo_pngs:
+            mo_png = mo_pngs[label]
+            if mo_png.exists():
+                paragraph = row_cells[2].paragraphs[0]
+                run = paragraph.add_run()
+                run.add_picture(str(mo_png), width=Inches(1.5))
+            else:
+                row_cells[2].text = orbital
+        else:
+            row_cells[2].text = orbital
 
 
 def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Optional[Path]:
@@ -1439,6 +1451,13 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
         # Use ball-and-stick representation
         cmd.set('valence', 1)
 
+        # Set element colors - carbon should be gray, not green
+        cmd.color('gray50', 'elem C')
+        cmd.color('white', 'elem H')
+        cmd.color('slate', 'elem N')
+        cmd.color('red', 'elem O')
+        cmd.color('yellow', 'elem S')
+
         # Set background to white
         cmd.bg_color('white')
 
@@ -1488,15 +1507,6 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
         ]
         cmd.load_cgo(arrow_obj, 'dipole_arrow')
 
-        # Add label for dipole magnitude
-        label_pos = arrow_end + arrow_direction * 0.5
-        cmd.pseudoatom('dipole_label', pos=list(label_pos))
-        cmd.label('dipole_label', f'"μ = {dipole_mag:.2f} D"')
-        cmd.set('label_size', 20)
-        cmd.set('label_color', 'red')
-        cmd.set('label_font_id', 7)  # Bold font
-        cmd.hide('everything', 'dipole_label')
-
         # Set camera view to emphasize X-axis alignment
         cmd.orient('molecule')
         cmd.turn('y', -60)
@@ -1521,6 +1531,181 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
         import traceback
         logger.error(traceback.format_exc())
         return None
+
+
+def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> Dict[str, Path]:
+    """Generate molecular orbital visualizations using ORCA and PyMOL.
+
+    Args:
+        project_dir: Project directory containing ESD/S0.gbw
+        orbital_indices: List of orbital indices relative to HOMO (e.g., [-3, -2, -1, 0, 1, 2, 3, 4] for HOMO-3 to LUMO+3)
+
+    Returns:
+        Dictionary mapping orbital names (e.g., 'HOMO', 'LUMO+1') to PNG paths
+    """
+    import subprocess
+    import shutil
+
+    try:
+        import pymol
+        from pymol import cmd
+    except ImportError:
+        logger.warning("PyMOL not available; skipping MO visualizations")
+        return {}
+
+    gbw_file = project_dir / "ESD" / "S0.gbw"
+    if not gbw_file.exists():
+        logger.warning(f"S0.gbw not found at {gbw_file}")
+        return {}
+
+    # Find HOMO orbital number from S0.out
+    s0_out = project_dir / "ESD" / "S0.out"
+    if not s0_out.exists():
+        logger.warning(f"S0.out not found at {s0_out}")
+        return {}
+
+    homo_number = None
+    try:
+        with open(s0_out, 'r') as f:
+            lines = f.readlines()
+            for i, line in enumerate(lines):
+                if "ORBITAL ENERGIES" in line:
+                    # Find the last occupied orbital
+                    for j in range(i, min(i + 300, len(lines))):
+                        if "NO   OCC" in lines[j]:
+                            # Parse orbital lines
+                            for k in range(j + 1, min(j + 250, len(lines))):
+                                parts = lines[k].split()
+                                if len(parts) >= 2:
+                                    try:
+                                        orb_num = int(parts[0])
+                                        occ = float(parts[1])
+                                        # HOMO is the last orbital with occupation 2.0
+                                        if occ > 1.9:
+                                            homo_number = orb_num
+                                        elif occ < 0.1 and homo_number is not None:
+                                            # Found LUMO, stop searching
+                                            break
+                                    except (ValueError, IndexError):
+                                        continue
+                            break
+                    if homo_number is not None:
+                        break
+    except Exception as exc:
+        logger.error(f"Failed to find HOMO orbital number: {exc}")
+        return {}
+
+    if homo_number is None:
+        logger.warning("Could not determine HOMO orbital number")
+        return {}
+
+    logger.info(f"HOMO orbital number: {homo_number}")
+
+    mo_images = {}
+
+    # Work directly in ESD directory where .gbw file is located
+    esd_dir = gbw_file.parent
+
+    for rel_idx in orbital_indices:
+        # Calculate absolute MO number
+        abs_mo_number = homo_number + rel_idx
+
+        # Determine orbital name
+        if rel_idx == 0:
+            mo_name = "HOMO"
+        elif rel_idx < 0:
+            mo_name = f"HOMO{rel_idx}"  # e.g., HOMO-1
+        elif rel_idx == 1:
+            mo_name = "LUMO"
+        else:
+            mo_name = f"LUMO+{rel_idx-1}"  # e.g., LUMO+1 for index 2
+
+        logger.info(f"Generating MO visualization for {mo_name} (orbital {abs_mo_number})")
+
+        try:
+            # Prepare orca_plot input for interactive mode
+            # Menu sequence:
+            # 1 - Enter type of plot -> 1 (MO-PLOT)
+            # 2 - Enter no of orbital -> abs_mo_number
+            # 4 - Enter number of grid intervals -> 80
+            # 11 - Generate the plot
+            # 12 - exit
+            orca_input = f"1\n1\n2\n{abs_mo_number}\n4\n80\n11\n12\n"
+
+            # Run orca_plot in interactive mode from ESD directory
+            result = subprocess.run(
+                ["/opt/orca/orca_plot", "S0.gbw", "-i"],
+                input=orca_input.encode(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=esd_dir,
+                timeout=120
+            )
+
+            if result.returncode != 0:
+                logger.warning(f"orca_plot failed for {mo_name}: {result.stderr.decode()}")
+                continue
+
+            # Find generated cube file (ORCA creates S0.mo<X>a.cube or similar)
+            cube_files = sorted(esd_dir.glob("*.cube"), key=lambda p: p.stat().st_mtime)
+            if not cube_files:
+                logger.warning(f"No cube file generated for {mo_name}")
+                continue
+
+            cube_file = cube_files[-1]  # Use the most recently created
+
+            # Visualize with PyMOL
+            pymol.finish_launching(['pymol', '-c'])
+            cmd.reinitialize()
+
+            # Load cube file
+            cmd.load(str(cube_file), 'orbital')
+
+            # Create isosurface
+            cmd.isosurface('positive', 'orbital', 0.03)
+            cmd.isosurface('negative', 'orbital', -0.03)
+
+            # Color isosurfaces (blue for positive, red for negative)
+            cmd.color('blue', 'positive')
+            cmd.color('red', 'negative')
+
+            # Set transparency
+            cmd.set('transparency', 0.2)
+
+            # Set background to white
+            cmd.bg_color('white')
+
+            # Enable ray tracing
+            cmd.set('ray_trace_mode', 1)
+            cmd.set('ray_shadows', 0)
+            cmd.set('ray_opaque_background', 1)
+            cmd.set('antialias', 2)
+
+            # Orient and zoom
+            cmd.orient()
+            cmd.zoom('all', buffer=2)
+
+            # Render
+            output_png = project_dir / f"MO_{mo_name}.png"
+            cmd.ray(800, 800)
+            cmd.png(str(output_png), dpi=150)
+
+            # Clean up cube file
+            if cube_file.exists():
+                cube_file.unlink()
+
+            # Clean up PyMOL
+            cmd.delete('all')
+            cmd.reinitialize()
+
+            mo_images[mo_name] = output_png
+            logger.info(f"MO visualization saved: {output_png}")
+
+        except Exception as exc:
+            logger.error(f"Failed to create MO visualization for {mo_name}: {exc}")
+            continue
+
+    return mo_images
 
 
 def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optional[Path]:
@@ -1756,7 +1941,7 @@ def generate_combined_docx_report(
     # Add frontier orbital energies table for S0
     gs = data.get("ground_state_S0", {}) or {}
     gs_orbitals = gs.get("orbitals") if gs else None
-    _add_frontier_orbital_table(doc, gs_orbitals)
+    _add_frontier_orbital_table(doc, gs_orbitals, mo_pngs=assets.mo_pngs)
 
     # Collect state summaries for one consolidated table
     state_rows: Dict[str, Dict[str, Any]] = {}
@@ -1829,6 +2014,17 @@ def generate_combined_docx_report(
         _add_heading_with_subscript(doc, "Dipole Moment Visualization (S0)", level=2)
         doc.add_picture(str(assets.dipole_moment_png), width=Inches(6.5))
         doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Add caption with dipole magnitude
+        gs = data.get("ground_state_S0", {}) or {}
+        dipole = gs.get("dipole_moment", {}) or {}
+        dipole_mag = dipole.get("magnitude_debye")
+        if dipole_mag is not None:
+            caption = doc.add_paragraph(f"μ = {dipole_mag:.2f} D")
+            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            caption_run = caption.runs[0]
+            caption_run.font.size = Pt(11)
+            caption_run.font.italic = True
 
     output_docx.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_docx))
