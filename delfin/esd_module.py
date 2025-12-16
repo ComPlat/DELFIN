@@ -218,10 +218,19 @@ def _populate_state_jobs(
 
         if not recalc_mode:
             state_out = esd_dir / f"{state_upper}.out"
-            state_hess = esd_dir / f"{state_upper}.hess"
 
-            if state_out.exists() and state_hess.exists():
-                logger.info(f"{state_upper} calculation skipped ({state_upper}.out/.hess exist in {esd_dir})")
+            # Check if output is complete (TERMINATED NORMALLY)
+            is_complete = False
+            if state_out.exists():
+                try:
+                    with state_out.open("r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                        is_complete = "ORCA TERMINATED NORMALLY" in content
+                except Exception:
+                    pass
+
+            if is_complete:
+                logger.info(f"{state_upper} calculation skipped (ORCA TERMINATED NORMALLY in {state_out.name})")
                 # Mark as completed so dependencies can proceed
                 manager._completed.add(f"esd_{state_upper}")
                 continue
@@ -323,13 +332,6 @@ def _populate_state_jobs(
 
                 # Run ORCA with absolute paths (no chdir needed)
                 abs_output = output_file.resolve()
-
-                # If Hessian missing but old output exists (e.g., recalc mode), force rerun
-                if not hess_file.exists() and abs_output.exists():
-                    try:
-                        abs_output.unlink()
-                    except Exception:  # noqa: BLE001
-                        logger.debug("[esd] Could not remove stale output %s", abs_output, exc_info=True)
 
                 # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
                 if not _run_orca_esd(

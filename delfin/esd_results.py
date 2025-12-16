@@ -214,8 +214,12 @@ def collect_esd_results(
             # Handle string format
             trootssl_str = str(trootssl_raw).strip()
             # Remove brackets if present (e.g., "['-1', '0', '1']" or "[-1, 0, 1]")
-            trootssl_str = trootssl_str.strip('[]')
-            if ',' in trootssl_str:
+            trootssl_str = trootssl_str.strip('[]').strip()
+
+            # If empty string after stripping, keep default [0]
+            if not trootssl_str:
+                pass  # Keep default trootssl_values = [0]
+            elif ',' in trootssl_str:
                 # Split and clean each value (remove quotes)
                 trootssl_values = [int(x.strip().strip("'\"")) for x in trootssl_str.split(',')]
             else:
