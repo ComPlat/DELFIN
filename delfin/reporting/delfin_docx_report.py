@@ -219,8 +219,57 @@ def _generate_smiles_image(project_dir: Path) -> Optional[Path]:
     try:
         # Hide hydrogens in the depiction for a cleaner schematic
         mol_no_h = Chem.RemoveHs(mol, updateExplicitCount=True)
-        AllChem.Compute2DCoords(mol_no_h)
-        img = Draw.MolToImage(mol_no_h, size=(500, 400))
+
+        # Normalize the molecule (standardize functional groups)
+        try:
+            from rdkit.Chem.MolStandardize import rdMolStandardize
+            normalizer = rdMolStandardize.Normalizer()
+            mol_no_h = normalizer.normalize(mol_no_h)
+        except Exception:
+            pass
+
+        # Try to use CoordGen for better 2D coordinates (if available)
+        # CoordGen produces publication-quality layouts
+        coordgen_success = False
+        try:
+            from rdkit.Chem import rdCoordGen
+            params = rdCoordGen.CoordGenParams()
+            params.SetCoordgenScaling(1.5)  # Slightly larger structure
+            params.SetMinimizerPrecision(1e-4)  # Higher precision
+            coordgen_success = rdCoordGen.AddCoords(mol_no_h, params)
+        except Exception:
+            pass
+
+        # If CoordGen failed or not available, use optimized Compute2DCoords
+        if not coordgen_success:
+            # Use AllChem with optimized parameters and ring templates
+            AllChem.Compute2DCoords(mol_no_h,
+                                   canonOrient=True,
+                                   clearConfs=True,
+                                   coordMap={},
+                                   nFlipsPerSample=3,
+                                   nSample=100,
+                                   sampleSeed=42,
+                                   permuteDeg4Nodes=True,
+                                   bondLength=1.5)
+
+            # Try to straighten the depiction for cleaner appearance
+            try:
+                from rdkit.Chem import rdDepictor
+                rdDepictor.StraightenDepiction(mol_no_h)
+            except Exception:
+                pass
+
+        # Use high-resolution rendering with better options
+        drawer_options = Draw.MolDrawOptions()
+        drawer_options.clearBackground = True
+        drawer_options.bondLineWidth = 3
+        drawer_options.multipleBondOffset = 0.15
+        drawer_options.addStereoAnnotation = True
+        drawer_options.addAtomIndices = False
+
+        # Use larger canvas with more detail
+        img = Draw.MolToImage(mol_no_h, size=(500, 400), options=drawer_options, kekulize=True)
         out_path = project_dir / "SMILES.png"
         img.save(out_path)
         return out_path
@@ -1498,7 +1547,7 @@ def generate_combined_docx_report(
     # SMILES picture (if available) near the top
     if assets.smiles_png and assets.smiles_png.exists():
         doc.add_heading("Structure from SMILES (input.txt)", level=2)
-        doc.add_picture(str(assets.smiles_png), width=Inches(2.8))
+        doc.add_picture(str(assets.smiles_png), width=Inches(2.25))
         doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     meta_rows = [
