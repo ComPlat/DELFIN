@@ -103,7 +103,7 @@ def _prevent_row_splits(table) -> None:
         from docx.oxml.ns import qn
 
         # Set cantSplit property on each row to prevent splitting
-        for row in table.rows:
+        for i, row in enumerate(table.rows):
             tr = row._element
             tr_pr = tr.xpath('./w:trPr')
             if tr_pr:
@@ -115,13 +115,27 @@ def _prevent_row_splits(table) -> None:
             # Set cantSplit to prevent this row from splitting across pages
             cant_split = OxmlElement('w:cantSplit')
             tr_pr.append(cant_split)
+
+            # Keep first 5 rows together with heading using keepNext
+            if i < 5:
+                keep_next = OxmlElement('w:keepNext')
+                tr_pr.append(keep_next)
     except Exception as exc:
         logger.warning(f"Failed to set table row properties: {exc}")
 
 
+def _keep_heading_with_table(heading_paragraph) -> None:
+    """Keep heading with the following table."""
+    try:
+        heading_paragraph.paragraph_format.keep_with_next = True
+    except Exception as exc:
+        logger.warning(f"Failed to set heading keep_with_next: {exc}")
+
+
 def _add_key_value_table(doc: Document, title: str, rows: Iterable[tuple[str, str]]) -> None:
     """Render a simple two-column table."""
-    doc.add_heading(title, level=2)
+    heading = doc.add_heading(title, level=2)
+    _keep_heading_with_table(heading)
     table = doc.add_table(rows=0, cols=2)
     table.style = "Light Grid Accent 1"
     for key, value in rows:
@@ -818,7 +832,8 @@ def _format_significant_figures(value, sig_figs: int = 3) -> str:
 def _add_state_table(doc: Document, title: str, states: Dict[str, Any]) -> None:
     if not states:
         return
-    doc.add_heading(title, level=2)
+    heading = doc.add_heading(title, level=2)
+    _keep_heading_with_table(heading)
     table = doc.add_table(rows=1, cols=6)
     table.style = "Light Grid Accent 1"
     headers = ["State", "Type", "Charge", "Multiplicity", "Energy (Eh)", "ZPE (Eh)"]
@@ -908,7 +923,8 @@ def _add_transition_table(
 def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any]) -> None:
     if not entries:
         return
-    doc.add_heading(title, level=2)
+    heading = doc.add_heading(title, level=2)
+    _keep_heading_with_table(heading)
     table = doc.add_table(rows=1, cols=7)
     table.style = "Light Grid Accent 1"
     headers = ["Transition", "Rate (s⁻¹)", "Temperature (K)", "Δ0-0 (cm⁻¹)", "SOC (cm⁻¹)", "FC (%)", "HT (%)"]
@@ -1030,7 +1046,8 @@ def _add_frontier_orbital_table(doc: Document, orbital_data: Optional[Dict[str, 
     if not rows:
         return
 
-    doc.add_heading("Frontier Orbital Energies", level=2)
+    heading = doc.add_heading("Frontier Orbital Energies", level=2)
+    _keep_heading_with_table(heading)
     table = doc.add_table(rows=1, cols=3)
     table.style = "Light Grid Accent 1"
 
