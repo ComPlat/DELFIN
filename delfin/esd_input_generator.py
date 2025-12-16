@@ -105,7 +105,7 @@ def create_state_input(
     if "|" in mode:
         mode = mode.split("|")[0].strip()
     if mode == "tddft":
-        return _create_state_input_tddft(
+        input_file = _create_state_input_tddft(
             state=state,
             esd_dir=esd_dir,
             charge=charge,
@@ -115,16 +115,44 @@ def create_state_input(
             metal_basisset=metal_basisset,
             config=config,
         )
-    return _create_state_input_delta_scf(
-        state=state,
-        esd_dir=esd_dir,
-        charge=charge,
-        solvent=solvent,
-        metals=metals,
-        main_basisset=main_basisset,
-        metal_basisset=metal_basisset,
-        config=config,
-    )
+    else:
+        input_file = _create_state_input_delta_scf(
+            state=state,
+            esd_dir=esd_dir,
+            charge=charge,
+            solvent=solvent,
+            metals=metals,
+            main_basisset=main_basisset,
+            metal_basisset=metal_basisset,
+            config=config,
+        )
+
+    # Add properties_of_interest jobs (IP, EA) only for S0 when method=classic
+    if state.strip().upper() == "S0":
+        method = str(config.get('method', '')).strip().lower()
+        properties = config.get('properties_of_interest', '')
+        if properties and method == 'classic':
+            # Get multiplicity for S0
+            multiplicity = config.get('multiplicity_0') or config.get('multiplicity')
+            if multiplicity is None:
+                # Calculate from charge and total electrons (simplified)
+                multiplicity = 1  # Default singlet for S0
+
+            xyz_file = str(esd_dir / "S0.xyz")
+            append_properties_of_interest_jobs(
+                inp_file=input_file,
+                xyz_file=xyz_file,
+                base_charge=charge,
+                base_multiplicity=multiplicity,
+                properties=properties,
+                config=config,
+                solvent=solvent,
+                metals=metals,
+                main_basisset=main_basisset,
+                metal_basisset=metal_basisset,
+            )
+
+    return input_file
 
 
 def _create_state_input_delta_scf(
@@ -1028,3 +1056,130 @@ def create_ic_input(
 
     logger.info(f"Created IC input: {input_file}")
     return str(input_file)
+
+
+def append_properties_of_interest_jobs(
+    inp_file: str,
+    xyz_file: str,
+    base_charge: int,
+    base_multiplicity: int,
+    properties: str,
+    config: Dict[str, Any],
+    solvent: str,
+    metals: List[str],
+    main_basisset: str,
+    metal_basisset: str,
+) -> None:
+    """Append $new_job blocks for IP and EA calculations to an existing input file.
+
+    Args:
+        inp_file: Path to the input file to modify
+        xyz_file: Path to the xyz geometry file (e.g., 'S0.xyz')
+        base_charge: Base charge of the system
+        base_multiplicity: Base multiplicity of the system
+        properties: Comma-separated list of properties (e.g., 'IP,EA')
+        config: Configuration dictionary
+        solvent: Solvent name
+        metals: List of metal atoms
+        main_basisset: Main basis set
+        metal_basisset: Metal basis set
+    """
+    if not properties:
+        return
+
+    # Parse properties list - handle both string and list input
+    if isinstance(properties, (list, tuple)):
+        prop_list = [p.strip().upper() for p in properties]
+    else:
+        # Handle string that might look like "['IP', 'EA']" or "IP,EA"
+        prop_str = str(properties).strip()
+        # Remove list brackets and quotes if present
+        prop_str = prop_str.strip('[]').replace("'", "").replace('"', '')
+        prop_list = [p.strip().upper() for p in prop_str.split(',')]
+
+    if not any(p in ['IP', 'EA'] for p in prop_list):
+        return
+
+    logger.info(f"Adding properties_of_interest jobs to {inp_file}: {prop_list}")
+
+    # Get settings from config
+    functional = config.get('functional', 'PBE0')
+    disp_corr = config.get('disp_corr', 'D4')
+    ri_jkx = config.get('ri_jkx', 'RIJCOSX')
+    relativity = str(config.get('relativity', 'none')).strip().lower()
+    implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
+    pal = config.get('PAL', 6)
+    maxcore = config.get('maxcore', 6000)
+    maxiter = config.get('maxiter', 125)
+
+    # Determine basis sets and aux basis based on relativity
+    if relativity in ['zora', 'dkh', 'dkh2']:
+        # Use relativistic basis sets
+        if relativity == 'zora':
+            actual_main_basis = config.get('main_basisset_rel', f'ZORA-{main_basisset}')
+            aux_jk = config.get('aux_jk_rel', 'SARC/J')
+        else:  # DKH
+            actual_main_basis = config.get('main_basisset_rel', f'DKH-{main_basisset}')
+            aux_jk = config.get('aux_jk', 'def2/J')
+        relativity_keyword = relativity.upper()
+    else:
+        actual_main_basis = main_basisset
+        aux_jk = config.get('aux_jk', 'def2/J')
+        relativity_keyword = None
+
+    # Calculate total electrons for multiplicity determination
+    # For now, we use simple rules: odd electrons -> mult=2, even -> mult=1
+    # This is a simplification and may need refinement
+
+    jobs_to_add = []
+
+    if 'IP' in prop_list:
+        # Ionization Potential: remove one electron (charge +1)
+        ip_charge = base_charge + 1
+        # Always use doublet (mult=2) for IP/EA
+        ip_mult = 2
+        jobs_to_add.append(('IP', ip_charge, ip_mult))
+
+    if 'EA' in prop_list:
+        # Electron Affinity: add one electron (charge -1)
+        ea_charge = base_charge - 1
+        # Always use doublet (mult=2) for IP/EA
+        ea_mult = 2
+        jobs_to_add.append(('EA', ea_charge, ea_mult))
+
+    # Build output blocks (same as main job)
+    output_blocks = collect_output_blocks(config)
+
+    # Append to input file
+    with open(inp_file, 'a') as f:
+        for prop_name, charge, mult in jobs_to_add:
+            f.write("\n")
+            f.write(f"$new_job\n")
+
+            # Build keyword line (without OPT/FREQ)
+            keywords = [functional, actual_main_basis, disp_corr, ri_jkx, aux_jk]
+            if relativity_keyword:
+                keywords.append(relativity_keyword)
+            keywords.append(f"{implicit_solvation}({solvent})")
+
+            f.write("! " + " ".join(keywords) + "\n")
+
+            # Base name for output files
+            base_name = Path(inp_file).stem  # e.g., 'S0'
+            f.write(f'%base "{base_name}_{prop_name}"\n')
+
+            # PAL and maxcore
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+
+            # SCF settings
+            f.write(f"%scf maxiter {maxiter} end\n")
+
+            # Output blocks
+            for block in output_blocks:
+                f.write(block + "\n")
+
+            # Geometry reference using xyzfile
+            f.write(f"* xyzfile {charge} {mult} {Path(xyz_file).name}\n")
+
+    logger.info(f"Added {len(jobs_to_add)} properties_of_interest job(s) to {inp_file}")

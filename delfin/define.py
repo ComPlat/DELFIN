@@ -30,6 +30,8 @@ allow_imaginary_freq=0
 IMAG_sp_energy_window=1e-3
 IMAG_optimize_candidates=no
 ------------------------------------
+properties_of_interest=IP,EA
+------------------------------------
 Redox steps:
 calc_initial=yes
 oxidation_steps=1,2,3

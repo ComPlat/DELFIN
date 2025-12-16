@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, Set, 
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import PoolJob, JobPriority
+from delfin.esd_input_generator import append_properties_of_interest_jobs
 from delfin.global_manager import get_global_manager
 from delfin.orca import run_orca
 from delfin.imag import run_IMAG
@@ -1752,6 +1753,26 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     additions,
                 )
                 _update_pal_block(ox_inputs[idx], cores)
+
+                # Add IP/EA jobs for ox_step_1 if properties_of_interest is set and method != classic
+                if idx == 1:
+                    method = str(config.get('method', '')).strip().lower()
+                    properties = config.get('properties_of_interest', '')
+                    if properties and method != 'classic':
+                        xyz_file = ox_sources[idx]  # Use the same xyz file as the main job
+                        append_properties_of_interest_jobs(
+                            inp_file=ox_inputs[idx],
+                            xyz_file=xyz_file,
+                            base_charge=charge,
+                            base_multiplicity=multiplicity,
+                            properties=properties,
+                            config=config,
+                            solvent=solvents,
+                            metals=metals,
+                            main_basisset=main_basis,
+                            metal_basisset=metal_basis,
+                        )
+
                 if not run_orca(ox_inputs[idx], ox_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
                 run_IMAG(
@@ -1811,6 +1832,26 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     additions,
                 )
                 _update_pal_block(red_inputs[idx], cores)
+
+                # Add IP/EA jobs for red_step_1 if properties_of_interest is set and method != classic
+                if idx == 1:
+                    method = str(config.get('method', '')).strip().lower()
+                    properties = config.get('properties_of_interest', '')
+                    if properties and method != 'classic':
+                        xyz_file = red_sources[idx]  # Use the same xyz file as the main job
+                        append_properties_of_interest_jobs(
+                            inp_file=red_inputs[idx],
+                            xyz_file=xyz_file,
+                            base_charge=charge,
+                            base_multiplicity=multiplicity,
+                            properties=properties,
+                            config=config,
+                            solvent=solvents,
+                            metals=metals,
+                            main_basisset=main_basis,
+                            metal_basisset=metal_basis,
+                        )
+
                 if not run_orca(red_inputs[idx], red_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
                 run_IMAG(
@@ -1952,6 +1993,26 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                     additions,
                 )
                 _update_pal_block(ox_inputs[idx], cores)
+
+                # Add IP/EA jobs for ox_step_1 if properties_of_interest is set and method != classic
+                if idx == 1:
+                    method = str(config.get('method', '')).strip().lower()
+                    properties = config.get('properties_of_interest', '')
+                    if properties and method != 'classic':
+                        xyz_file = ox_sources[idx]  # Use the same xyz file as the main job
+                        append_properties_of_interest_jobs(
+                            inp_file=ox_inputs[idx],
+                            xyz_file=xyz_file,
+                            base_charge=charge,
+                            base_multiplicity=multiplicity,
+                            properties=properties,
+                            config=config,
+                            solvent=solvents,
+                            metals=metals,
+                            main_basisset=main_basis,
+                            metal_basisset=metal_basis,
+                        )
+
                 if not run_orca(ox_inputs[idx], ox_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
                 run_IMAG(
@@ -2014,6 +2075,26 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                     additions,
                 )
                 _update_pal_block(red_inputs[idx], cores)
+
+                # Add IP/EA jobs for red_step_1 if properties_of_interest is set and method != classic
+                if idx == 1:
+                    method = str(config.get('method', '')).strip().lower()
+                    properties = config.get('properties_of_interest', '')
+                    if properties and method != 'classic':
+                        xyz_file = red_sources[idx]  # Use the same xyz file as the main job
+                        append_properties_of_interest_jobs(
+                            inp_file=red_inputs[idx],
+                            xyz_file=xyz_file,
+                            base_charge=charge,
+                            base_multiplicity=multiplicity,
+                            properties=properties,
+                            config=config,
+                            solvent=solvents,
+                            metals=metals,
+                            main_basisset=main_basis,
+                            metal_basisset=metal_basis,
+                        )
+
                 if not run_orca(red_inputs[idx], red_outputs[idx]):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
                 run_IMAG(
