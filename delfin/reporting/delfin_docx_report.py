@@ -478,8 +478,8 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
     else:
         abs_peaks = []
 
-    def _pick_transition_nm(transitions: list[Dict[str, Any]], state_a: str, state_b: str) -> Optional[float]:
-        """Pick strongest transition between two states (order-agnostic)."""
+    def _pick_transition(transitions: list[Dict[str, Any]], state_a: str, state_b: str) -> Optional[tuple[float, float]]:
+        """Pick strongest transition between two states (order-agnostic). Returns (fosc, wavelength_nm)."""
         best: tuple[float, float] | None = None
         target_set = {state_a, state_b}
         for t in transitions or []:
@@ -496,16 +496,20 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
                 continue
             if best is None or fosc > best[0]:
                 best = (fosc, wl)
-        return best[1] if best else None
+        return best
 
     # Key transitions for AFP plot: S0↔S1, S1↔S0, T1↔S0 (order-agnostic)
-    s0_to_s1_nm = _pick_transition_nm(s0_abs, "S0", "S1")
+    s0_to_s1 = _pick_transition(s0_abs, "S0", "S1")
 
     s1_transitions = (excited.get("S1", {}) or {}).get("tddft_from_geometry", {}).get("transitions", [])
-    s1_to_s0_nm = _pick_transition_nm(s1_transitions, "S0", "S1")
+    s1_to_s0 = _pick_transition(s1_transitions, "S0", "S1")
 
     t1_transitions = (excited.get("T1", {}) or {}).get("tddft_from_geometry", {}).get("transitions", [])
-    t1_to_s0_nm = _pick_transition_nm(t1_transitions, "S0", "T1")
+    t1_to_s0 = _pick_transition(t1_transitions, "S0", "T1")
+
+    s0_to_s1_nm = s0_to_s1[1] if s0_to_s1 else None
+    s1_to_s0_nm = s1_to_s0[1] if s1_to_s0 else None
+    t1_to_s0_nm = t1_to_s0[1] if t1_to_s0 else None
 
     # Redox potentials from DELFIN.txt and OCCUPIER data
     delfin_summary = data.get("delfin_summary", {}) or {}
@@ -639,12 +643,22 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
             except Exception:
                 return "n/a"
 
+        def fmt_fosc(val):
+            try:
+                return f"{float(val):.4f}"
+            except Exception:
+                return "n/a"
+
+        s0_to_s1_fosc = s0_to_s1[0] if s0_to_s1 else None
+        s1_to_s0_fosc = s1_to_s0[0] if s1_to_s0 else None
+        t1_to_s0_fosc = t1_to_s0[0] if t1_to_s0 else None
+
         afp_parts = [
-            f"S₀→S₁ (absorption): {fmt_nm(s0_to_s1_nm)}",
-            f"S₁→S₀ (fluorescence): {fmt_nm(s1_to_s0_nm)}",
-            f"T₁→S₀ (phosphorescence): {fmt_nm(t1_to_s0_nm)}",
+            f"S₀→S₁ (absorption): {fmt_nm(s0_to_s1_nm)} (fosc = {fmt_fosc(s0_to_s1_fosc)})",
+            f"S₁→S₀ (fluorescence): {fmt_nm(s1_to_s0_nm)} (fosc = {fmt_fosc(s1_to_s0_fosc)})",
+            f"T₁→S₀ (phosphorescence): {fmt_nm(t1_to_s0_nm)} (fosc = {fmt_fosc(t1_to_s0_fosc)})",
         ]
-        parts.append(f"Transitions: {', '.join(afp_parts)}.")
+        parts.append(f"Transitions (fosc = oscillator strength, transition intensity, dimensionless): {', '.join(afp_parts)}.")
 
         # Collect color chips for these wavelengths
         for label, wl in [
