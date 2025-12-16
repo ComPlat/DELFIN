@@ -1023,7 +1023,7 @@ def _add_frontier_orbital_table(doc: Document, orbital_data: Optional[Dict[str, 
             if mo_png.exists():
                 paragraph = row_cells[2].paragraphs[0]
                 run = paragraph.add_run()
-                run.add_picture(str(mo_png), width=Inches(1.5))
+                run.add_picture(str(mo_png), width=Inches(2.0))
             else:
                 row_cells[2].text = orbital
         else:
@@ -1627,10 +1627,10 @@ def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> 
             # Menu sequence:
             # 1 - Enter type of plot -> 1 (MO-PLOT)
             # 2 - Enter no of orbital -> abs_mo_number
-            # 4 - Enter number of grid intervals -> 80
+            # 4 - Enter number of grid intervals -> 100
             # 11 - Generate the plot
             # 12 - exit
-            orca_input = f"1\n1\n2\n{abs_mo_number}\n4\n80\n11\n12\n"
+            orca_input = f"1\n1\n2\n{abs_mo_number}\n4\n100\n11\n12\n"
 
             # Run orca_plot in interactive mode from ESD directory
             result = subprocess.run(
@@ -1658,7 +1658,25 @@ def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> 
             pymol.finish_launching(['pymol', '-c'])
             cmd.reinitialize()
 
-            # Load cube file
+            # Load molecular structure from S0.xyz
+            xyz_file = project_dir / "ESD" / "S0.xyz"
+            if xyz_file.exists():
+                cmd.load(str(xyz_file), 'molecule')
+
+                # Display molecule as sticks
+                cmd.hide('everything', 'molecule')
+                cmd.show('sticks', 'molecule')
+                cmd.set('stick_radius', 0.15)
+                cmd.set('stick_quality', 15)
+
+                # Set element colors
+                cmd.color('gray50', 'elem C')
+                cmd.color('white', 'elem H')
+                cmd.color('slate', 'elem N')
+                cmd.color('red', 'elem O')
+                cmd.color('yellow', 'elem S')
+
+            # Load cube file for MO isosurface
             cmd.load(str(cube_file), 'orbital')
 
             # Create isosurface
@@ -1669,8 +1687,9 @@ def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> 
             cmd.color('blue', 'positive')
             cmd.color('red', 'negative')
 
-            # Set transparency
-            cmd.set('transparency', 0.2)
+            # Set transparency for isosurfaces
+            cmd.set('transparency', 0.3, 'positive')
+            cmd.set('transparency', 0.3, 'negative')
 
             # Set background to white
             cmd.bg_color('white')
@@ -1683,11 +1702,11 @@ def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> 
 
             # Orient and zoom
             cmd.orient()
-            cmd.zoom('all', buffer=2)
+            cmd.zoom('all', buffer=2.5)
 
             # Render
             output_png = project_dir / f"MO_{mo_name}.png"
-            cmd.ray(800, 800)
+            cmd.ray(1200, 1200)
             cmd.png(str(output_png), dpi=150)
 
             # Clean up cube file
