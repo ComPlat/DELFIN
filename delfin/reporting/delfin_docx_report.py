@@ -96,6 +96,29 @@ class ReportAssets:
     mo_pngs: Dict[str, Path] | None = None  # keyed by orbital name, e.g., "HOMO", "LUMO+1"
 
 
+def _prevent_row_splits(table) -> None:
+    """Prevent individual table rows from splitting across pages."""
+    try:
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        # Set cantSplit property on each row to prevent splitting
+        for row in table.rows:
+            tr = row._element
+            tr_pr = tr.xpath('./w:trPr')
+            if tr_pr:
+                tr_pr = tr_pr[0]
+            else:
+                tr_pr = OxmlElement('w:trPr')
+                tr.insert(0, tr_pr)
+
+            # Set cantSplit to prevent this row from splitting across pages
+            cant_split = OxmlElement('w:cantSplit')
+            tr_pr.append(cant_split)
+    except Exception as exc:
+        logger.warning(f"Failed to set table row properties: {exc}")
+
+
 def _add_key_value_table(doc: Document, title: str, rows: Iterable[tuple[str, str]]) -> None:
     """Render a simple two-column table."""
     doc.add_heading(title, level=2)
@@ -105,6 +128,7 @@ def _add_key_value_table(doc: Document, title: str, rows: Iterable[tuple[str, st
         row_cells = table.add_row().cells
         row_cells[0].text = str(key)
         row_cells[1].text = str(value)
+    _prevent_row_splits(table)
 
 
 def _add_plot_if_exists(doc: Document, title: str, image_path: Optional[Path]) -> None:
@@ -826,6 +850,8 @@ def _add_state_table(doc: Document, title: str, states: Dict[str, Any]) -> None:
             else ""
         )
 
+    _prevent_row_splits(table)
+
 
 def _add_transition_table(
     doc: Document,
@@ -875,6 +901,8 @@ def _add_transition_table(
 
         fosc = trans.get('oscillator_strength', '')
         row[4].text = _format_significant_figures(fosc) if fosc != '' else ''
+
+    _prevent_row_splits(table)
 
 
 def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any]) -> None:
@@ -941,6 +969,8 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any]) -> None:
                 _add_row(f"{name} (total)", total_rec)
         else:
             _add_row(name, record)
+
+    _prevent_row_splits(table)
 
 
 def _extract_frontier_orbitals(orbital_data: Optional[Dict[str, Any]]) -> list[tuple[str, str, str]]:
@@ -1028,6 +1058,8 @@ def _add_frontier_orbital_table(doc: Document, orbital_data: Optional[Dict[str, 
                 row_cells[2].text = orbital
         else:
             row_cells[2].text = orbital
+
+    _prevent_row_splits(table)
 
 
 def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Optional[Path]:
