@@ -11,8 +11,32 @@ from delfin.config import get_E_ref
 from delfin.cli_calculations import calculate_redox_potentials, select_final_potentials
 from delfin.reporting.delfin_reports import generate_summary_report_DELFIN
 from delfin.copy_helpers import extract_preferred_spin
+from delfin.utils import _TM_LIST
 
 logger = get_logger(__name__)
+
+
+def _extract_energy_for_state(
+    state_label: str,
+    out_filename: str,
+    energies: Dict[str, Optional[float]]
+) -> None:
+    """Extract Gibbs energy for a specific state and update energies dict.
+
+    Args:
+        state_label: Label for the state (e.g., '0', '+1', '-1')
+        out_filename: Output file to extract energy from
+        energies: Dictionary to update with extracted energy
+    """
+    if os.path.exists(out_filename):
+        g = find_gibbs_energy(out_filename)
+        if g is not None:
+            energies[state_label] = g
+            logger.info(f"Extracted G({state_label}) = {g:.6f} Eh from {out_filename}")
+        else:
+            logger.warning(f"Could not extract Gibbs energy from {out_filename}")
+    else:
+        logger.warning(f"File {out_filename} not found")
 
 
 def extract_energies_from_outputs(config: Dict[str, Any]) -> Dict[str, Optional[float]]:
@@ -37,42 +61,15 @@ def extract_energies_from_outputs(config: Dict[str, Any]) -> Dict[str, Optional[
 
     # Initial state
     if calc_initial:
-        initial_out = 'initial.out'
-        if os.path.exists(initial_out):
-            g = find_gibbs_energy(initial_out)
-            if g is not None:
-                energies['0'] = g
-                logger.info(f"Extracted G(initial) = {g:.6f} Eh from {initial_out}")
-            else:
-                logger.warning(f"Could not extract Gibbs energy from {initial_out}")
-        else:
-            logger.warning(f"File {initial_out} not found")
+        _extract_energy_for_state('0', 'initial.out', energies)
 
     # Oxidation steps
     for step in ox_steps:
-        ox_out = f'ox_step_{step}.out'
-        if os.path.exists(ox_out):
-            g = find_gibbs_energy(ox_out)
-            if g is not None:
-                energies[f'+{step}'] = g
-                logger.info(f"Extracted G(+{step}) = {g:.6f} Eh from {ox_out}")
-            else:
-                logger.warning(f"Could not extract Gibbs energy from {ox_out}")
-        else:
-            logger.warning(f"File {ox_out} not found")
+        _extract_energy_for_state(f'+{step}', f'ox_step_{step}.out', energies)
 
     # Reduction steps
     for step in red_steps:
-        red_out = f'red_step_{step}.out'
-        if os.path.exists(red_out):
-            g = find_gibbs_energy(red_out)
-            if g is not None:
-                energies[f'-{step}'] = g
-                logger.info(f"Extracted G(-{step}) = {g:.6f} Eh from {red_out}")
-            else:
-                logger.warning(f"Could not extract Gibbs energy from {red_out}")
-        else:
-            logger.warning(f"File {red_out} not found")
+        _extract_energy_for_state(f'-{step}', f'red_step_{step}.out', energies)
 
     return energies
 
@@ -148,8 +145,7 @@ def run_report_mode(config: Dict[str, Any]) -> int:
             with open('initial.out', 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read(5000)
                 # Simple heuristic: look for metal atoms in coordinates
-                metal_symbols = ['Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Mn', 'Cr', 'V', 'Ti', 'Ru', 'Rh', 'Pd', 'Ag', 'Os', 'Ir', 'Pt', 'Au']
-                for metal in metal_symbols:
+                for metal in _TM_LIST:
                     if f' {metal} ' in content or f' {metal}\t' in content:
                         if metal not in metals:
                             metals.append(metal)

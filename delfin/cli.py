@@ -498,7 +498,6 @@ def _run_co2_subcommand(argv: list[str]) -> int:
     # Normal run mode - execute CO2 coordinator workflow
     try:
         # Set recalc mode environment variable if needed
-        import os
         if args.recalc:
             os.environ["DELFIN_CO2_RECALC"] = "1"
         co2_main()

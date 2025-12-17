@@ -29,17 +29,7 @@ _thread_local = threading.local()
 # Global print lock to keep OCCUPIER logs tidy
 _PRINT_LOCK = threading.Lock()
 
-_XYZ_COORD_LINE_RE = re.compile(
-    r"^\s*[A-Za-z]{1,2}[A-Za-z0-9()]*\s+"      # Atom label, optional index
-    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?\s+"  # X coordinate
-    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?\s+"  # Y coordinate
-    r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?"      # Z coordinate
-)
-
-
-def _count_xyz_coord_lines(lines) -> int:
-    """Return number of lines that look like XYZ coordinates."""
-    return sum(1 for line in lines if _XYZ_COORD_LINE_RE.match(line))
+from delfin.common.xyz_patterns import XYZ_COORD_LINE_RE as _XYZ_COORD_LINE_RE, count_xyz_coord_lines as _count_xyz_coord_lines
 
 
 def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,

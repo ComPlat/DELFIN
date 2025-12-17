@@ -140,7 +140,8 @@ def _parse_dependency_indices(raw_from):
 def _parse_geometry_wait(value: Any, default: Optional[float] = None) -> Optional[float]:
     """Convert CONTROL option to seconds; <=0 or 'inf' disables timeout."""
     try:
-        text = str(value).strip().lower()
+        from delfin.utils import normalize_str
+        text = normalize_str(value)
     except Exception:
         text = ""
 

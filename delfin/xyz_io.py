@@ -160,52 +160,6 @@ def write_to_file(lines: List[str], output_file_path: str) -> None:
             file.write(line + '\n')
     logging.info(f"Lines written to '{output_file_path}'")
 
-def modify_file(file_path: str) -> None:
-    with open(file_path, 'r') as file:
-        lines = file.readlines()
-    modified_lines = lines[2:-3]
-    with open(file_path, 'w') as file:
-        for line in modified_lines:
-            file.write(line)
-    logging.info(f"File '{file_path}' modified")
-
-def extract_orbital_energies(file_path: str) -> List[str]:
-    with open(file_path, 'r') as file:
-        lines = file.readlines()
-    start_marker = "ORBITAL ENERGIES"
-    end_marker = "MULLIKEN POPULATION ANALYSIS"
-    extracting = False
-    extracted_lines = []
-    for line in lines:
-        if start_marker in line:
-            extracting = True
-            continue
-        if extracting and end_marker in line:
-            extracting = False
-            break
-        if extracting:
-            extracted_lines.append(line.strip())
-    logging.info(f"Extracted orbital energies from '{file_path}'")
-    return extracted_lines
-
-def find_homo_index_and_extract_lines(file_path):
-    with open(file_path, 'r') as file:
-        lines = file.readlines()
-    last_occurrence_index = -1
-    for i, line in enumerate(lines):
-        if "2.0000" in line:
-            last_occurrence_index = i
-    if last_occurrence_index == -1:
-        logging.warning("No occurrence of '2.0000' found in the file.")
-        return -1, []
-    else:
-        homo_index = last_occurrence_index - 1
-        logging.info(f"HOMO index found at {homo_index}")
-        start_index = max(homo_index - 10, 0)
-        end_index = min(homo_index + 11, len(lines))
-        mos_for_print = [line.strip() for line in lines[start_index:end_index]]
-        return homo_index, mos_for_print
-
 def modify_file2(target_file, header, footer):
     with open(target_file, "r") as f:
         content = f.read()
@@ -718,81 +672,6 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
     builder.add_blocks(output_blocks)
 
     lines = builder.lines
-
-    lines.extend(build_qmmm_block(qmmm_range))
-    lines.append(f"* xyz {charge} {multiplicity}\n")
-    geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
-    lines.extend(geom)
-    lines.append("*\n")
-
-    with open(output_file_path, 'w') as file:
-        file.writelines(lines)
-    logging.info(f"XYZ file '{xyz_file_path}' processed and saved as '{output_file_path}'")
-
-def read_xyz_and_create_input4(xyz_file_path: str, output_file_path: str, charge: int, multiplicity: int,
-                               solvent: str, found_metals: List[str], metal_basisset: Optional[str], main_basisset: str, config: Dict[str, Any], additions: str) -> None:
-    """
-    E00 / selected-root TDDFT builder (with %TDDFT IROOT/FOLLOWIROOT).
-    Uses new CONTROL keys and per-atom basis tagging.
-    """
-    xyz_path = Path(xyz_file_path)
-    try:
-        with xyz_path.open('r') as file:
-            xyz_lines = file.readlines()[2:]
-    except FileNotFoundError:
-        logging.error(f"File not found: {xyz_file_path}")
-        return
-
-    geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(xyz_lines, xyz_path)
-    _ensure_qmmm_implicit_model(config, qmmm_range, qmmm_explicit)
-    qmmm_token = str(config.get('qmmm_option', 'QM/XTB')).strip() if qmmm_range else None
-
-    enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
-    sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
-
-    load_radii = enable_first and not sphere_scale_raw
-    radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if load_radii else None
-
-    # TDDFT block (root following)
-    tddft_block = [
-        "%TDDFT\n",
-        f" NROOTS {config['NROOTS']}\n",
-        f" IROOT {config['IROOT']}\n",
-        f" FOLLOWIROOT   {config['FOLLOWIROOT']}\n",
-        "end\n"
-    ]
-
-    # bases
-    auto_main, auto_metal = set_main_basisset(found_metals, config)
-    main  = main_basisset  or auto_main
-    metal = metal_basisset or auto_metal
-
-    # relativity + aux-JK
-    rel_token, aux_jk, _ = select_rel_and_aux(found_metals, config)
-    implicit = _implicit_token(config, solvent)
-
-    # method line (with FREQ to mirror previous behavior)
-    bang = _build_bang_line(
-        config,
-        rel_token,
-        main,
-        aux_jk,
-        implicit,
-        include_freq=True,
-        geom_key="geom_opt",
-        qmmm_method=qmmm_token,
-    )
-
-    lines: List[str] = []
-    lines.append(bang + "\n")
-    lines.extend(tddft_block)
-    # special mcore for E00 flows (kept from your original)
-    lines.append(f"%maxcore {config['mcore_E00']}\n%pal nprocs {config['PAL']} end\n")
-    maxiter_val = resolve_maxiter(config)
-    if maxiter_val is not None:
-        lines.append(f"%scf maxiter {maxiter_val} end\n")
-    if additions and additions.strip():
-        lines.append(f"{additions.strip()}\n")
 
     lines.extend(build_qmmm_block(qmmm_range))
     lines.append(f"* xyz {charge} {multiplicity}\n")

@@ -124,130 +124,64 @@ def find_electronic_energy(filename: str) -> Optional[float]:
     return _search_last_float(filename, patterns)
 
 
-def find_state1_ohne_SOC(filename3: str) -> Optional[float]:
-    """Extract S1 excited state energy without spin-orbit coupling.
+def _extract_excited_state_energy(filename: str, state_number: int = 1, use_soc: bool = False) -> Optional[float]:
+    """Extract excited state energy from ORCA TD-DFT output.
 
-    Parses TD-DFT results from 'CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS' section.
+    Consolidated function to extract S1 or S3 energies with or without SOC corrections.
 
     Args:
-        filename3: Path to ORCA output file with TD-DFT results
+        filename: Path to ORCA output file with TD-DFT results
+        state_number: State to extract (1 for S1, 3 for S3)
+        use_soc: Whether to use SOC-corrected results
 
     Returns:
-        S1 state energy in eV, or None if not found
+        Excited state energy in eV, or None if not found
     """
-    search_text = "CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
-    last_value = None
+    if use_soc:
+        search_text = "SOC CORRECTED CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
+    else:
+        search_text = "CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
+
+    # S1 is at offset +5, S3 is at offset +7
+    offset = 5 if state_number == 1 else 7
+
     try:
-        with open(filename3, 'r') as file:
+        with open(filename, 'r') as file:
             lines = file.readlines()
             for i, line in enumerate(lines):
                 if search_text in line:
-                    target_line_index = i + 5  # Fifth line after the header
+                    target_line_index = i + offset
                     if target_line_index < len(lines):
                         target_line = lines[target_line_index]
                         parts = target_line[20:].split()
                         try:
-                            last_value = float(parts[0])  # First numeric element
+                            return float(parts[0])
                         except ValueError:
                             logger.error(f"Could not convert '{parts[0]}' to a float.")
-                            continue
+                            return None
     except FileNotFoundError:
-        logger.info(f"File {filename3} not found; skipping excited-state extraction.")
-        return None
-    return last_value
+        logger.info(f"File {filename} not found; skipping excited-state extraction.")
+    return None
+
+
+def find_state1_ohne_SOC(filename3: str) -> Optional[float]:
+    """Extract S1 excited state energy without spin-orbit coupling."""
+    return _extract_excited_state_energy(filename3, state_number=1, use_soc=False)
+
 
 def find_state3_ohne_SOC(filename3: str) -> Optional[float]:
-    """Extract S3 excited state energy without spin-orbit coupling.
-
-    Parses TD-DFT results from 'CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS' section.
-
-    Args:
-        filename3: Path to ORCA output file with TD-DFT results
-
-    Returns:
-        S3 state energy in eV, or None if not found
-    """
-    search_text = "CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
-    last_value = None
-    try:
-        with open(filename3, 'r') as file:
-            lines = file.readlines()
-            for i, line in enumerate(lines):
-                if search_text in line:
-                    target_line_index = i + 7  # Seventh line after the header
-                    if target_line_index < len(lines):
-                        target_line = lines[target_line_index]
-                        parts = target_line[20:].split()
-                        try:
-                            last_value = float(parts[0])  # First numeric element
-                        except ValueError:
-                            logger.error(f"Could not convert '{parts[0]}' to a float.")
-                            continue
-    except FileNotFoundError:
-        logger.info(f"File {filename3} not found; skipping excited-state extraction.")
-        return None
-    return last_value
+    """Extract S3 excited state energy without spin-orbit coupling."""
+    return _extract_excited_state_energy(filename3, state_number=3, use_soc=False)
 
 
 def find_state1_mit_SOC(filename3: str) -> Optional[float]:
-    """Extract S1 excited state energy with spin-orbit coupling corrections.
+    """Extract S1 excited state energy with spin-orbit coupling corrections."""
+    return _extract_excited_state_energy(filename3, state_number=1, use_soc=True)
 
-    Parses SOC-corrected TD-DFT results from ORCA output.
-
-    Args:
-        filename3: Path to ORCA output file with SOC-TD-DFT results
-
-    Returns:
-        SOC-corrected S1 state energy in eV, or None if not found
-    """
-    search_text = "SOC CORRECTED CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
-    try:
-        with open(filename3, 'r') as file:
-            lines = file.readlines()
-            for i, line in enumerate(lines):
-                if search_text in line:
-                    target_line_index = i + 5  # Fifth line after the header
-                    if target_line_index < len(lines):
-                        target_line = lines[target_line_index]
-                        parts = target_line[20:].split()
-                        try:
-                            return float(parts[0])  # First numeric value
-                        except ValueError:
-                            logger.error(f"Could not convert '{parts[0]}' to a float.")
-                            return None
-    except FileNotFoundError:
-        logger.info(f"File {filename3} not found; skipping excited-state extraction.")
-    return None
 
 def find_state3_mit_SOC(filename3: str) -> Optional[float]:
-    """Extract S3 excited state energy with spin-orbit coupling corrections.
-
-    Parses SOC-corrected TD-DFT results from ORCA output.
-
-    Args:
-        filename3: Path to ORCA output file with SOC-TD-DFT results
-
-    Returns:
-        SOC-corrected S3 state energy in eV, or None if not found
-    """
-    search_text = "SOC CORRECTED CD SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
-    try:
-        with open(filename3, 'r') as file:
-            lines = file.readlines()
-            for i, line in enumerate(lines):
-                if search_text in line:
-                    target_line_index = i + 7  # Seventh line after the header
-                    if target_line_index < len(lines):
-                        target_line = lines[target_line_index]
-                        parts = target_line[20:].split()
-                        try:
-                            return float(parts[0])  # First numeric value
-                        except ValueError:
-                            logger.error(f"Could not convert '{parts[0]}' to a float.")
-                            return None
-    except FileNotFoundError:
-        logger.info(f"File {filename3} not found; skipping excited-state extraction.")
-    return None
+    """Extract S3 excited state energy with spin-orbit coupling corrections."""
+    return _extract_excited_state_energy(filename3, state_number=3, use_soc=True)
 
 def check_and_execute_SOC(filename3: str, config: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
     """Extract excited state energies with or without SOC based on configuration.

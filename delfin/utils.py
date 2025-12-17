@@ -27,6 +27,22 @@ logger = get_logger(__name__)
 
 
 # ------------------------------------------------------------------------------------
+# String utilities
+# ------------------------------------------------------------------------------------
+
+def normalize_str(value: Any) -> str:
+    """Normalize a value to lowercase trimmed string.
+
+    Args:
+        value: Any value to normalize
+
+    Returns:
+        Lowercase trimmed string representation
+    """
+    return str(value).strip().lower()
+
+
+# ------------------------------------------------------------------------------------
 # Metal detection
 # ------------------------------------------------------------------------------------
 def search_transition_metals(inputfile: str) -> List[str]:
