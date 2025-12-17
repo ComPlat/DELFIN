@@ -9,7 +9,7 @@ This module generates ORCA input files for:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.common.orca_blocks import resolve_maxiter, collect_output_blocks
@@ -89,6 +89,25 @@ def calculate_dele_cm1(state1_file: str, state2_file: str) -> Optional[float]:
     return dele_cm1
 
 
+def _parse_step_set(raw: Any) -> Set[int]:
+    """Parse oxidation/reduction step spec into a set of ints."""
+    if raw is None:
+        return set()
+    if isinstance(raw, (int, float)):
+        return {int(raw)}
+    tokens = str(raw).replace(';', ',').replace('[', '').replace(']', '').split(',')
+    steps: Set[int] = set()
+    for tok in tokens:
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            steps.add(int(tok))
+        except Exception:  # noqa: BLE001
+            continue
+    return steps
+
+
 def create_state_input(
     state: str,
     esd_dir: Path,
@@ -132,25 +151,39 @@ def create_state_input(
         method = str(config.get('method', '')).strip().lower()
         properties = config.get('properties_of_interest', '')
         if properties and method == 'classic':
-            # Get multiplicity for S0
-            multiplicity = config.get('multiplicity_0') or config.get('multiplicity')
-            if multiplicity is None:
-                # Calculate from charge and total electrons (simplified)
-                multiplicity = 1  # Default singlet for S0
+            # Determine which properties to keep based on requested red/ox steps
+            ox_steps = _parse_step_set(config.get('oxidation_steps'))
+            red_steps = _parse_step_set(config.get('reduction_steps'))
+            prop_tokens = str(properties).strip()
+            prop_tokens = prop_tokens.strip('[]').replace("'", "").replace('"', '')
+            prop_set = {p.strip().upper() for p in prop_tokens.split(',') if p.strip()}
 
-            xyz_file = str(esd_dir / "S0.xyz")
-            append_properties_of_interest_jobs(
-                inp_file=input_file,
-                xyz_file=xyz_file,
-                base_charge=charge,
-                base_multiplicity=multiplicity,
-                properties=properties,
-                config=config,
-                solvent=solvent,
-                metals=metals,
-                main_basisset=main_basisset,
-                metal_basisset=metal_basisset,
-            )
+            filtered_props = []
+            if 'IP' in prop_set and (not ox_steps or 1 in ox_steps):
+                filtered_props.append('IP')
+            if 'EA' in prop_set and (not red_steps or 1 in red_steps):
+                filtered_props.append('EA')
+
+            if filtered_props:
+                # Get multiplicity for S0
+                multiplicity = config.get('multiplicity_0') or config.get('multiplicity')
+                if multiplicity is None:
+                    # Calculate from charge and total electrons (simplified)
+                    multiplicity = 1  # Default singlet for S0
+
+                xyz_file = str(esd_dir / "S0.xyz")
+                append_properties_of_interest_jobs(
+                    inp_file=input_file,
+                    xyz_file=xyz_file,
+                    base_charge=charge,
+                    base_multiplicity=multiplicity,
+                    properties=",".join(filtered_props),
+                    config=config,
+                    solvent=solvent,
+                    metals=metals,
+                    main_basisset=main_basisset,
+                    metal_basisset=metal_basisset,
+                )
 
     return input_file
 
