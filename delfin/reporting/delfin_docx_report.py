@@ -94,6 +94,7 @@ class ReportAssets:
     correlation_png: Optional[Path] = None
     dipole_moment_png: Optional[Path] = None
     mo_pngs: Dict[str, Path] | None = None  # keyed by orbital name, e.g., "HOMO", "LUMO+1"
+    esp_png: Optional[Path] = None
 
 
 def _prevent_row_splits(table) -> None:
@@ -1420,6 +1421,59 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
     Returns:
         Path to saved plot or None if creation failed
     """
+    def _autocrop_white(im, threshold: int = 10, pad: int = 8):
+        try:
+            from PIL import Image, ImageChops
+        except Exception:
+            return im
+
+        bg = Image.new("RGB", im.size, "white")
+        diff = ImageChops.difference(im.convert("RGB"), bg).convert("L")
+        diff = diff.point(lambda p: 255 if p > threshold else 0)
+        bbox = diff.getbbox()
+        if not bbox:
+            return im
+        left, upper, right, lower = bbox
+        left = max(0, left - pad)
+        upper = max(0, upper - pad)
+        right = min(im.width, right + pad)
+        lower = min(im.height, lower + pad)
+        return im.crop((left, upper, right, lower))
+
+    def _montage(png_paths: list[Path], out_png: Path, cols: int = 3, pad_px: int = 10) -> Optional[Path]:
+        try:
+            from PIL import Image
+        except Exception:
+            return None
+
+        imgs = []
+        for p in png_paths:
+            if not p.exists():
+                continue
+            im = Image.open(p).convert("RGB")
+            im = _autocrop_white(im, threshold=10, pad=8)
+            imgs.append(im)
+        if not imgs:
+            return None
+
+        cols = max(1, int(cols))
+        rows = (len(imgs) + cols - 1) // cols
+        pad_px = max(0, int(pad_px))
+
+        tile_w = min(im.width for im in imgs)
+        tile_h = min(im.height for im in imgs)
+        imgs = [im.resize((tile_w, tile_h), Image.Resampling.LANCZOS) for im in imgs]
+
+        out = Image.new("RGB", (cols * tile_w + (cols - 1) * pad_px, rows * tile_h + (rows - 1) * pad_px), "white")
+        for idx, im in enumerate(imgs):
+            r = idx // cols
+            c = idx % cols
+            out.paste(im, (c * (tile_w + pad_px), r * (tile_h + pad_px)))
+
+        out_png.parent.mkdir(parents=True, exist_ok=True)
+        out.save(out_png)
+        return out_png if out_png.exists() else None
+
     try:
         import pymol
         from pymol import cmd
@@ -1571,13 +1625,46 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
 
         # Set camera view to emphasize X-axis alignment
         cmd.orient('molecule')
-        cmd.turn('y', -60)
-        cmd.turn('x', 15)
         cmd.zoom('all', buffer=2)
 
-        # Render with ray tracing at high resolution
-        cmd.ray(2400, 2000)  # High resolution for quality
-        cmd.png(str(output_path), dpi=300)
+        # Render 6 views (3x2 montage) for a more informative figure
+        view_files = [
+            output_path.with_name(output_path.stem + "_v1.png"),
+            output_path.with_name(output_path.stem + "_v2.png"),
+            output_path.with_name(output_path.stem + "_v3.png"),
+            output_path.with_name(output_path.stem + "_v4.png"),
+            output_path.with_name(output_path.stem + "_v5.png"),
+            output_path.with_name(output_path.stem + "_v6.png"),
+        ]
+        # Azimuth (y) x Elevation (x)
+        y_angles = [-60, 0, 60]
+        x_angles = [15, -30]
+        k = 0
+        for xa in x_angles:
+            for ya in y_angles:
+                cmd.orient('molecule')
+                cmd.turn('y', ya)
+                cmd.turn('x', xa)
+                cmd.zoom('all', buffer=2)
+                cmd.ray(1200, 1000)
+                cmd.png(str(view_files[k]), dpi=300)
+                k += 1
+
+        montage_path = _montage(view_files, output_path, cols=3, pad_px=10)
+        for vf in view_files:
+            try:
+                if vf.exists():
+                    vf.unlink()
+            except Exception:
+                pass
+        if montage_path is None:
+            # Fallback: single view (legacy)
+            cmd.orient('molecule')
+            cmd.turn('y', -60)
+            cmd.turn('x', 15)
+            cmd.zoom('all', buffer=2)
+            cmd.ray(2400, 2000)
+            cmd.png(str(output_path), dpi=300)
 
         # Clean up
         cmd.delete('all')
@@ -2107,6 +2194,14 @@ def generate_combined_docx_report(
             caption_run = caption.runs[0]
             caption_run.font.size = Pt(11)
             caption_run.font.italic = True
+
+    # Electrostatic potential (ESP) visualization (add at the very end)
+    if assets.esp_png and assets.esp_png.exists():
+        _add_heading_with_subscript(doc, "Electrostatic Potential Plot (S0)", level=2)
+        doc.add_picture(str(assets.esp_png), width=Inches(6.5))
+        doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    elif assets.esp_png:
+        logger.warning("Plot 'Electrostatic Potential Plot (S0)' not found at %s", assets.esp_png)
 
     output_docx.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_docx))
