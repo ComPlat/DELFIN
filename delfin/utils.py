@@ -275,10 +275,28 @@ def calculate_total_electrons_txt(control_file_path: str) -> Optional[Tuple[int,
 
     try:
         with input_file_path.open('r', encoding='utf-8', errors="ignore") as input_file:
-            lines = input_file.readlines()
+            file_content = input_file.read()
+            lines = file_content.splitlines(keepends=True)
     except Exception as e:
         logger.error(f"Error reading the file '{input_file_path}': {e}")
         return None
+
+    # Check if input is SMILES (simple heuristic: single line = SMILES)
+    non_empty_lines = [l for l in lines if l.strip()]
+    if len(non_empty_lines) == 1:
+        try:
+            from delfin.smiles_converter import smiles_to_xyz
+            logger.info(f"Single line detected in {input_file_path.name}, treating as SMILES")
+            xyz_content, error = smiles_to_xyz(file_content.strip())
+            if error:
+                logger.warning(f"SMILES conversion failed: {error}")
+            elif xyz_content:
+                lines = xyz_content.splitlines(keepends=True)
+                logger.debug("Successfully converted SMILES to XYZ for electron counting")
+        except ImportError:
+            logger.warning("SMILES converter not available, cannot convert single-line input")
+        except Exception as e:
+            logger.warning(f"SMILES conversion failed: {e}")
 
     # If XYZ: skip first two lines (natoms + comment)
     coord_lines = lines[2:] if _looks_like_xyz(lines) else lines[:]
