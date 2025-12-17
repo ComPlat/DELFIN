@@ -274,13 +274,19 @@ def create_afp_plot(
     # Different vertical offsets for labels to avoid overlap
     label_offsets = [15, 45, 75]  # Different heights for S0, S1, T1
 
+    # Find maximum fosc for normalization
+    max_fosc = max(data['transition'].fosc for data in transitions_data)
+    if max_fosc <= 0:
+        logger.warning("All fosc values are zero or negative, using uniform intensity")
+        max_fosc = 1.0
+
     for idx, data in enumerate(transitions_data):
         trans = data['transition']
         color = data['color']
         label = data['label']
 
-        # Normalize all intensities to 1.0
-        intensity = 1.0
+        # Normalize intensity based on fosc (highest fosc = 1.0)
+        intensity = trans.fosc / max_fosc if max_fosc > 0 else 1.0
 
         # Generate Gaussian curve
         y = gaussian(x, trans.wavelength_nm, intensity, fwhm)
@@ -300,13 +306,13 @@ def create_afp_plot(
         # Get the actual color of this wavelength
         wl_color = wavelength_to_rgb(trans.wavelength_nm)
 
-        # Add wavelength label with white background
-        ax.annotate(f'{trans.wavelength_nm:.1f} nm',
+        # Add wavelength label with white background, including fosc
+        ax.annotate(f'{trans.wavelength_nm:.1f} nm\n(f={trans.fosc:.4f})',
                     xy=(trans.wavelength_nm, peak_y),
                     xytext=(-15, y_offset),
                     textcoords='offset points',
                     ha='center',
-                    fontsize=10,
+                    fontsize=9,
                     fontweight='bold',
                     color=color,
                     bbox=dict(boxstyle='round,pad=0.4', facecolor='white',
