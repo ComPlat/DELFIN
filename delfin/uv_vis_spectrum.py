@@ -156,10 +156,7 @@ def gaussian_broadening(
             gaussian = trans.fosc * np.exp(-0.5 * ((wavelengths - trans.wavelength_nm) / sigma) ** 2)
             intensities += gaussian
 
-    # Normalize to max intensity = 1
-    if intensities.max() > 0:
-        intensities /= intensities.max()
-
+    # No normalization - keep actual fosc values for scientific accuracy
     return wavelengths, intensities
 
 

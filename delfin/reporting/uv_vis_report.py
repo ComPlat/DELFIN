@@ -90,7 +90,7 @@ def create_spectrum_plot(
 
     # Formatting
     ax.set_xlabel('Wavelength (nm)', fontsize=12)
-    ax.set_ylabel('Oscillator strength / Intensity (arb. units)', fontsize=12)
+    ax.set_ylabel('Oscillator strength (f)', fontsize=12)
     ax.set_title(title, fontsize=14, fontweight='bold')
     ax.set_xlim(wavelength_range)
     ax.set_ylim(bottom=0)
