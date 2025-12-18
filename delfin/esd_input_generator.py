@@ -129,22 +129,38 @@ def _parse_step_set(raw: Any) -> Set[int]:
 def _parse_iroot_spec(raw: Any, *, default: List[int]) -> List[int]:
     """Parse an IROOT specification from CONTROL.
 
-    Accepts either:
-    - explicit list: "1,2,3" / [1,2,3]
-    - count/range: "3" meaning [1,2,3]
+    Semantics:
+    - A single value (e.g. "3" or 3) means *exactly* IROOT=3
+    - A comma/whitespace separated list (e.g. "1,2,3") means those IROOTs
+    - A simple range "1-3" expands to 1,2,3
     """
     if raw is None:
         return list(default)
     if isinstance(raw, (int, float)):
-        n = int(raw)
-        return list(range(1, n + 1)) if n > 0 else list(default)
+        val = int(raw)
+        return [val] if val > 0 else list(default)
     text = str(raw).strip()
     if not text:
         return list(default)
-    # If it's a single integer token, interpret as count
+
+    # Range "a-b"
+    import re
+
+    m = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", text)
+    if m:
+        start = int(m.group(1))
+        end = int(m.group(2))
+        if start <= 0 or end <= 0:
+            return list(default)
+        if start <= end:
+            return list(range(start, end + 1))
+        return list(range(start, end - 1, -1))
+
+    # Single integer token -> single IROOT
     if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
-        n = int(text)
-        return list(range(1, n + 1)) if n > 0 else list(default)
+        val = int(text)
+        return [val] if val > 0 else list(default)
+
     tokens = text.replace(";", ",").replace(" ", ",").split(",")
     values: List[int] = []
     for tok in tokens:
