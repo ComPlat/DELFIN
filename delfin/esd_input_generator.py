@@ -176,6 +176,19 @@ def _parse_iroot_spec(raw: Any, *, default: List[int]) -> List[int]:
     return values or list(default)
 
 
+def _resolve_temperature_K(config: Dict[str, Any], default: float = 298.15) -> float:
+    """Resolve temperature in K from CONTROL config."""
+    for key in ("temperature", "temperature_K", "TEMP"):
+        val = config.get(key)
+        if val is None:
+            continue
+        try:
+            return float(val)
+        except Exception:  # noqa: BLE001
+            continue
+    return float(default)
+
+
 def create_state_input(
     state: str,
     esd_dir: Path,
@@ -1277,7 +1290,7 @@ def create_fluor_input(
     lines = str(config.get("ESD_LINES", "VOIGT")).strip().upper() or "VOIGT"
     linew = str(config.get("ESD_LINEW", 75)).strip()
     inlinew = str(config.get("ESD_INLINEW", 200)).strip()
-    temperature = config.get("temperature", 298.15)
+    temperature = _resolve_temperature_K(config, default=298.15)
     esd_block = [
         "%ESD",
         f'  GSHESSIAN  "{final_state}.hess"',
@@ -1384,7 +1397,7 @@ def create_phosp_input(
 
     # Shared settings
     doht_flag = str(config.get("DOHT", "TRUE")).upper()
-    temperature = config.get("temperature", 298.15)
+    temperature = _resolve_temperature_K(config, default=298.15)
     tda_flag = str(config.get("ESD_TDA", config.get("TDA", "FALSE"))).upper()
     # Use the general ESD_nroots by default (CONTROL), allow PHOSP override if desired.
     nroots = int(config.get("ESD_PHOSP_NROOTS", config.get("ESD_nroots", 15)))
