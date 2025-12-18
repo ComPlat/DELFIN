@@ -16,6 +16,7 @@ from delfin.esd_input_generator import (
     create_fluor_input,
     create_ic_input,
     create_isc_input,
+    create_phosp_input,
     create_state_input,
     _format_ms_suffix,
 )
@@ -676,6 +677,68 @@ def _populate_fluor_jobs(
     )
 
 
+def _populate_phosp_jobs(
+    manager: _WorkflowManager,
+    esd_dir: Path,
+    charge: int,
+    solvent: str,
+    metals: List[str],
+    main_basisset: str,
+    metal_basisset: str,
+    config: Dict[str, Any],
+) -> None:
+    """Add phosphorescence (T1→S0) ESD(PHOSP) job when requested via emission_rates=p.
+
+    ORCA phosphorescence requires SOC and typically three IROOT jobs (1..3) after SOC splitting.
+    """
+    deps = {"esd_S0", "esd_T1"}
+    job_id = "esd_phosp_T1_S0"
+
+    def work(cores: int) -> None:
+        input_file = create_phosp_input(
+            esd_dir=esd_dir,
+            charge=charge,
+            solvent=solvent,
+            metals=metals,
+            main_basisset=main_basisset,
+            metal_basisset=metal_basisset,
+            config=config,
+            initial_state="T1",
+            final_state="S0",
+        )
+
+        abs_input = Path(input_file).resolve()
+        _update_pal_block(str(abs_input), cores)
+
+        output_file = esd_dir / "T1_S0_PHOSP.out"
+        logger.info("Running ORCA for phosphorescence (T1→S0) in %s", esd_dir)
+
+        scratch_token = Path("scratch") / "PHOSP_T1_S0"
+        if not _run_orca_esd(
+            abs_input,
+            output_file.resolve(),
+            scratch_subdir=scratch_token,
+            working_dir=esd_dir,
+            config=config,
+        ):
+            raise RuntimeError("ORCA terminated abnormally for phosphorescence (T1→S0)")
+
+        logger.info("Phosphorescence (T1→S0) calculation completed")
+
+    half_cores = max(6, manager.total_cores // 2)
+    manager.add_job(
+        WorkflowJob(
+            job_id=job_id,
+            work=work,
+            description="Phosphorescence T1→S0",
+            dependencies=deps,
+            cores_min=6,
+            cores_optimal=half_cores,
+            cores_max=manager.total_cores,
+        )
+    )
+
+
 def _create_s0_tddft_check_input(
     output_path: Path,
     esd_dir: Path,
@@ -843,6 +906,12 @@ def add_esd_jobs_to_scheduler(
             if required not in state_set:
                 states_effective.append(required)
                 state_set.add(required)
+    if "p" in emission_rates:
+        state_set = {s.upper() for s in states_effective}
+        for required in ("S0", "T1"):
+            if required not in state_set:
+                states_effective.append(required)
+                state_set.add(required)
 
     # Setup ESD directory (use absolute path to avoid chdir issues in parallel jobs)
     esd_dir = Path("ESD").resolve()
@@ -945,6 +1014,20 @@ def add_esd_jobs_to_scheduler(
     elif "f" in emission_rates and not esd_frequency_enabled:
         logger.info("Fluorescence calculations skipped (ESD_frequency=no - Hessians not available)")
 
+    if "p" in emission_rates and esd_frequency_enabled:
+        _populate_phosp_jobs(
+            manager,
+            esd_dir,
+            charge,
+            solvent,
+            metals,
+            main_basisset,
+            metal_basisset,
+            config,
+        )
+    elif "p" in emission_rates and not esd_frequency_enabled:
+        logger.info("Phosphorescence calculations skipped (ESD_frequency=no - Hessians not available)")
+
     logger.info("Added %d ESD jobs to scheduler", len([j for j in manager._jobs if j.startswith("esd_")]))
 
     return esd_enabled, states, iscs, ics
@@ -999,6 +1082,12 @@ def run_esd_phase(
     if "f" in emission_rates:
         state_set = {s.upper() for s in states_effective}
         for required in ("S0", "S1"):
+            if required not in state_set:
+                states_effective.append(required)
+                state_set.add(required)
+    if "p" in emission_rates:
+        state_set = {s.upper() for s in states_effective}
+        for required in ("S0", "T1"):
             if required not in state_set:
                 states_effective.append(required)
                 state_set.add(required)
@@ -1068,6 +1157,20 @@ def run_esd_phase(
             )
         elif "f" in emission_rates and not esd_frequency_enabled:
             logger.info("Fluorescence calculations skipped (ESD_frequency=no - Hessians not available)")
+
+        if "p" in emission_rates and esd_frequency_enabled:
+            _populate_phosp_jobs(
+                manager,
+                esd_dir,
+                charge,
+                solvent,
+                metals,
+                main_basisset,
+                metal_basisset,
+                config,
+            )
+        elif "p" in emission_rates and not esd_frequency_enabled:
+            logger.info("Phosphorescence calculations skipped (ESD_frequency=no - Hessians not available)")
 
         if not manager.has_jobs():
             logger.info("No ESD jobs to execute")

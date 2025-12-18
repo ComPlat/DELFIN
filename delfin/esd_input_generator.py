@@ -1261,6 +1261,131 @@ def create_fluor_input(
     return str(input_file)
 
 
+def create_phosp_input(
+    esd_dir: Path,
+    charge: int,
+    solvent: str,
+    metals: List[str],
+    main_basisset: str,
+    metal_basisset: str,
+    config: Dict[str, Any],
+    *,
+    initial_state: str = "T1",
+    final_state: str = "S0",
+) -> str:
+    """Generate ORCA input file for phosphorescence rate/spectrum calculation (ESD(PHOSP)).
+
+    Notes (ORCA manual):
+    - Requires SOC and the ESD(PHOSP) module.
+    - Needs GSHESSIAN (ground singlet) and TSHESSIAN (triplet Hessian).
+    - DELE should be the adiabatic energy difference between S0 and T1 at their respective geometries
+      (electronic energies, no ZPE correction), given in cm^-1.
+    - For triplet sub-levels after SOC splitting, compute IROOT=1,2,3 (often via $new_job).
+    """
+    initial_state = initial_state.strip().upper()
+    final_state = final_state.strip().upper()
+    init_type, init_root = _parse_state_root(initial_state)
+    final_type, _ = _parse_state_root(final_state)
+
+    if init_type != "T" or initial_state != "T1" or final_state != "S0" or final_type != "S":
+        raise ValueError(f"Phosphorescence only supported for T1→S0 (got {initial_state}→{final_state})")
+
+    job_name = f"{initial_state}_{final_state}_PHOSP"
+    input_file = esd_dir / f"{job_name}.inp"
+
+    functional = config.get("functional", "PBE0")
+    disp_corr = config.get("disp_corr", "D4")
+    ri_jkx = config.get("ri_jkx", "RIJCOSX")
+    aux_jk = config.get("aux_jk", "def2/J")
+    implicit_solvation = config.get("implicit_solvation_model", "")
+
+    # SOC operator keyword (recommended by ORCA manual examples)
+    somf_kw = str(config.get("ESD_PHOSP_SOMF", "RI-SOMF(1X)")).strip()
+
+    keywords = [
+        functional,
+        main_basisset,
+        disp_corr,
+        ri_jkx,
+        aux_jk,
+        "TIGHTSCF",
+        "ESD(PHOSP)",
+        somf_kw,
+    ]
+    keywords = [k for k in keywords if str(k).strip()]
+
+    solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
+    if solvation_kw:
+        keywords.insert(-1 if somf_kw else len(keywords), solvation_kw)
+
+    simple_line = "! " + " ".join(keywords)
+
+    # Compute DELE (cm^-1) from electronic energies at optimized geometries (no ZPE)
+    # Use T1.out and S0.out produced by state jobs.
+    t1_out = esd_dir / "T1.out"
+    s0_out = esd_dir / "S0.out"
+    dele_cm1 = calculate_dele_cm1(str(t1_out), str(s0_out))
+    dele_int = int(round(dele_cm1)) if dele_cm1 is not None else None
+
+    # Shared settings
+    doht_flag = str(config.get("DOHT", "TRUE")).upper()
+    temperature = config.get("temperature", 298.15)
+    tda_flag = str(config.get("ESD_TDA", config.get("TDA", "FALSE"))).upper()
+    nroots = int(config.get("ESD_PHOSP_NROOTS", config.get("ESD_nroots", 20)))
+    tddft_maxiter = _resolve_tddft_maxiter(config)
+
+    # ORCA recommends DOSOC TRUE for phosphorescence
+    dosoc_flag = str(config.get("ESD_PHOSP_DOSOC", "TRUE")).upper()
+
+    def _job_block(iroot: int) -> str:
+        blocks: list[str] = []
+        blocks.append(simple_line)
+        blocks.append(f'%base "{job_name}_iroot{iroot}"')
+        tddft = [
+            "%TDDFT",
+            f"  NROOTS  {nroots}",
+            f"  DOSOC   {dosoc_flag}",
+            f"  TDA     {tda_flag}",
+            f"  IROOT   {iroot}",
+        ]
+        if tddft_maxiter is not None:
+            tddft.append(f"  maxiter {tddft_maxiter}")
+        tddft.append("END")
+        blocks.append("\n".join(tddft))
+
+        esd = [
+            "%ESD",
+            f'  GSHESSIAN       "{final_state}.hess"',
+            f'  TSHESSIAN       "{initial_state}.hess"',
+            f"  DOHT            {doht_flag}",
+            f"  TEMP            {temperature}",
+        ]
+        if dele_int is not None:
+            esd.append(f"  DELE            {dele_int}")
+        esd.append("END")
+        blocks.append("\n".join(esd))
+
+        # Use the ground-state geometry (S0.xyz), multiplicity 1
+        blocks.append(f"* xyzfile {charge} 1 {final_state}.xyz")
+        return "\n".join(blocks)
+
+    pal = config.get("PAL", 12)
+    maxcore = config.get("maxcore", 6000)
+
+    with open(input_file, "w", encoding="utf-8") as f:
+        f.write(_job_block(1) + "\n")
+        f.write(f"%pal nprocs {pal} end\n")
+        f.write(f"%maxcore {maxcore}\n")
+        for iroot in (2, 3):
+            f.write("\n$new_job\n\n")
+            f.write(_job_block(iroot) + "\n")
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+
+    logger.info(f"Created PHOSP input: {input_file}")
+    return str(input_file)
+
+
 def append_properties_of_interest_jobs(
     inp_file: str,
     xyz_file: str,
