@@ -48,6 +48,7 @@ ISCs=S1>T1,T1>S1
 ICs=S2>S1
 emission_rates=f,p
 phosp_IROOT=1,2,3
+phosp_keywords=
 TROOTSSL=-1,0,1
 addition_S0=
 --------------------

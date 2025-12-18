@@ -1349,24 +1349,29 @@ def create_phosp_input(
     aux_jk = config.get("aux_jk", "def2/J")
     implicit_solvation = config.get("implicit_solvation_model", "")
 
-    # SOC operator keyword (recommended by ORCA manual examples)
-    somf_kw = str(config.get("ESD_PHOSP_SOMF", "RI-SOMF(1X)")).strip()
-
     keywords = [
         functional,
         main_basisset,
         disp_corr,
         ri_jkx,
         aux_jk,
-        "TIGHTSCF",
         "ESD(PHOSP)",
-        somf_kw,
     ]
+    # Optional extra keywords for the main keyword line (e.g. "RI-SOMF(1X)")
+    phosp_keywords = str(config.get("phosp_keywords", "")).strip()
+    if phosp_keywords:
+        keywords.append(phosp_keywords)
+
     keywords = [k for k in keywords if str(k).strip()]
 
     solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
     if solvation_kw:
-        keywords.insert(-1 if somf_kw else len(keywords), solvation_kw)
+        # Keep solvation close to the method tokens (before ESD(PHOSP))
+        try:
+            esd_idx = keywords.index("ESD(PHOSP)")
+        except ValueError:
+            esd_idx = len(keywords)
+        keywords.insert(esd_idx, solvation_kw)
 
     simple_line = "! " + " ".join(keywords)
 
@@ -1381,7 +1386,8 @@ def create_phosp_input(
     doht_flag = str(config.get("DOHT", "TRUE")).upper()
     temperature = config.get("temperature", 298.15)
     tda_flag = str(config.get("ESD_TDA", config.get("TDA", "FALSE"))).upper()
-    nroots = int(config.get("ESD_PHOSP_NROOTS", config.get("ESD_nroots", 20)))
+    # Use the general ESD_nroots by default (CONTROL), allow PHOSP override if desired.
+    nroots = int(config.get("ESD_PHOSP_NROOTS", config.get("ESD_nroots", 15)))
     tddft_maxiter = _resolve_tddft_maxiter(config)
 
     # ORCA recommends DOSOC TRUE for phosphorescence
