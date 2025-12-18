@@ -126,6 +126,40 @@ def _parse_step_set(raw: Any) -> Set[int]:
     return steps
 
 
+def _parse_iroot_spec(raw: Any, *, default: List[int]) -> List[int]:
+    """Parse an IROOT specification from CONTROL.
+
+    Accepts either:
+    - explicit list: "1,2,3" / [1,2,3]
+    - count/range: "3" meaning [1,2,3]
+    """
+    if raw is None:
+        return list(default)
+    if isinstance(raw, (int, float)):
+        n = int(raw)
+        return list(range(1, n + 1)) if n > 0 else list(default)
+    text = str(raw).strip()
+    if not text:
+        return list(default)
+    # If it's a single integer token, interpret as count
+    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+        n = int(text)
+        return list(range(1, n + 1)) if n > 0 else list(default)
+    tokens = text.replace(";", ",").replace(" ", ",").split(",")
+    values: List[int] = []
+    for tok in tokens:
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            val = int(tok)
+        except Exception:  # noqa: BLE001
+            continue
+        if val > 0 and val not in values:
+            values.append(val)
+    return values or list(default)
+
+
 def create_state_input(
     state: str,
     esd_dir: Path,
@@ -1337,6 +1371,10 @@ def create_phosp_input(
     # ORCA recommends DOSOC TRUE for phosphorescence
     dosoc_flag = str(config.get("ESD_PHOSP_DOSOC", "TRUE")).upper()
 
+    # Which IROOT subjobs to run (triplet SOC-split components).
+    # Default is 1,2,3, but allow overriding via CONTROL.
+    iroots = _parse_iroot_spec(config.get("phosp_IROOT", None), default=[1, 2, 3])
+
     def _job_block(iroot: int) -> str:
         blocks: list[str] = []
         blocks.append(simple_line)
@@ -1373,11 +1411,11 @@ def create_phosp_input(
     maxcore = config.get("maxcore", 6000)
 
     with open(input_file, "w", encoding="utf-8") as f:
-        f.write(_job_block(1) + "\n")
-        f.write(f"%pal nprocs {pal} end\n")
-        f.write(f"%maxcore {maxcore}\n")
-        for iroot in (2, 3):
-            f.write("\n$new_job\n\n")
+        first = True
+        for iroot in iroots:
+            if not first:
+                f.write("\n$new_job\n\n")
+            first = False
             f.write(_job_block(iroot) + "\n")
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")

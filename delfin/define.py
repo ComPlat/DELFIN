@@ -47,6 +47,7 @@ states=S1,T1,S2,T2
 ISCs=S1>T1,T1>S1
 ICs=S2>S1
 emission_rates=f,p
+phosp_IROOT=1,2,3
 TROOTSSL=-1,0,1
 addition_S0=
 --------------------
