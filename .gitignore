@@ -5,3 +5,8 @@ docs/*
 dist/
 *.egg-info/
 own_auto_tree.json
+
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*$py.class

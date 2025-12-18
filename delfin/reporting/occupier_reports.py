@@ -5,13 +5,12 @@ from decimal import Decimal, ROUND_DOWN
 import math
 from pathlib import Path
 from typing import Optional
-import os, re
+import re
 
 from ..common.banners import build_occupier_banner
 from ..common.logging import get_logger
 from ..utils import (
     search_transition_metals,
-    select_rel_and_aux,
 )
 from ..parser import extract_last_uhf_deviation, extract_last_J3
 from ..occupier_auto import infer_parity_from_m, record_auto_preference
@@ -63,9 +62,6 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
       approximate_spin_projection_APMethod
     """
     # ----------------------- imports & tiny helpers ----------------------------
-    import os, re
-    from typing import Optional
-    from decimal import Decimal, ROUND_DOWN
 
     def truncate(x: float, d: int) -> float:
         q = Decimal(10) ** -d
@@ -751,9 +747,6 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
         Keys: energy_bias_window_h (default 0.002), mismatch_bias_window (default 0.05).
     """
     # ----------------------- imports & tiny helpers ----------------------------
-    import os, re
-    from typing import Optional
-    from decimal import Decimal, ROUND_DOWN
 
     def truncate(x: float, d: int) -> float:
         q = Decimal(10) ** -d

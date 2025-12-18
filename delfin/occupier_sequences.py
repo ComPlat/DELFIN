@@ -14,7 +14,6 @@ from delfin.common.control_validator import _as_occupier_tree
 from .occupier_auto import (
     resolve_auto_sequence_bundle,
     _parity_token,
-    _resolve_root,
 )
 
 _DELTA_MARKER = ".delfin_occ_delta"

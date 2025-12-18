@@ -1,7 +1,10 @@
 # OCCUPIER.py
 
-import os, shutil, re, time, ast, math, threading
-from decimal import Decimal, ROUND_DOWN
+import math
+import os
+import re
+import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 

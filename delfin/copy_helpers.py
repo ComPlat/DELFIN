@@ -22,7 +22,7 @@ _SPIN_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
-from delfin.common.xyz_patterns import XYZ_COORD_LINE_RE as _XYZ_COORD_LINE_RE, count_xyz_coord_lines as _count_xyz_coord_lines
+from delfin.common.xyz_patterns import count_xyz_coord_lines as _count_xyz_coord_lines
 
 # -------------------------------------------------------------------------------------------------------
 def read_occupier_file(

@@ -29,7 +29,7 @@ _thread_local = threading.local()
 # Global print lock to keep OCCUPIER logs tidy
 _PRINT_LOCK = threading.Lock()
 
-from delfin.common.xyz_patterns import XYZ_COORD_LINE_RE as _XYZ_COORD_LINE_RE, count_xyz_coord_lines as _count_xyz_coord_lines
+from delfin.common.xyz_patterns import count_xyz_coord_lines as _count_xyz_coord_lines
 
 
 def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,

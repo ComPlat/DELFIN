@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import re
 import time
 import statistics
@@ -12,7 +11,7 @@ import threading
 from pathlib import Path
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, Set, List
+from typing import Any, Callable, Dict, Iterable, Optional, Set, List
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import PoolJob, JobPriority
@@ -23,10 +22,6 @@ from delfin.imag import run_IMAG
 from delfin.xyz_io import read_and_modify_file_1, read_xyz_and_create_input3
 
 logger = get_logger(__name__)
-
-if TYPE_CHECKING:
-    from .global_scheduler import GlobalOrcaScheduler
-
 
 JOB_DURATION_HISTORY: Dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=8))
 

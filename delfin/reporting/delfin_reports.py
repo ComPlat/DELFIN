@@ -2,17 +2,14 @@
 # Main DELFIN report generation functions
 
 from collections import defaultdict
-from decimal import Decimal, ROUND_DOWN
 from typing import Optional
 from pathlib import Path
-import os, re
 
 from ..common.banners import build_standard_banner
 from ..utils import (
     search_transition_metals,
     select_rel_and_aux,
 )
-from ..parser import extract_last_uhf_deviation, extract_last_J3
 from ..esd_results import ESDSummary, ISCResult
 
 

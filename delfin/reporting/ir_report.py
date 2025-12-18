@@ -8,7 +8,7 @@ import numpy as np
 
 try:
     from docx import Document
-    from docx.shared import Inches, Pt, RGBColor
+    from docx.shared import Inches, Pt
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
@@ -25,7 +25,7 @@ except ImportError:
     MATPLOTLIB_AVAILABLE = False
 
 from delfin.common.logging import get_logger
-from delfin.ir_spectrum import IRMode, parse_ir_spectrum, calculate_spectrum_range
+from delfin.ir_spectrum import IRMode, calculate_spectrum_range
 
 logger = get_logger(__name__)
 

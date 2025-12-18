@@ -8,6 +8,26 @@
 
 This repository contains DELFIN, a comprehensive workflow tool for automated quantum chemistry calculations using ORCA, xTB, and CREST. DELFIN automates the identification of preferred electron configurations, tracks orbital occupation changes during redox processes, and calculates redox potentials.
 
+## What DELFIN can do (current state)
+
+Core workflows:
+- End-to-end ORCA pipeline for ground-state optimisation plus sequential oxidation/reduction steps (up to 3 each, depending on your CONTROL settings).
+- OCCUPIER workflow to screen spin states / broken-symmetry variants and propagate the preferred geometry/settings into follow-up jobs.
+- Automatic redox potential evaluation (vs Fc+/Fc) and summary reporting (`DELFIN.txt`, `OCCUPIER.txt`).
+
+Optional modules (activate via CLI flags and/or CONTROL switches):
+- **Recalc/resume mode** (`--recalc`): re-parse existing results and only rerun missing/incomplete ORCA/xTB/CREST jobs.
+- **IMAG mode** (`--imag`): eliminate imaginary frequencies from existing ORCA results and regenerate the report.
+- **ESD module** (`ESD_modul=yes` in CONTROL): excited-state dynamics workflow in `ESD/` (S0/S1/T1/… optimisation, ISC/IC evaluation; under active development).
+- **JSON export** (`--json`): collect project results into `DELFIN_Data.json` for downstream analysis.
+- **DOCX report** (`--report docx`): generate a Word report if `python-docx` is available.
+- **AFP plot** (`--afp`): build an absorption/fluorescence/phosphorescence spectrum plot from existing outputs.
+- **CO2 Coordinator** (`delfin co2 ...`): helper workflow for CO2 placement and scan generation/runs.
+
+Execution model:
+- Built-in global scheduler can share PAL dynamically across jobs and run multiple steps in parallel (or sequentially if configured).
+- Designed for workstation and HPC usage; logs go to `delfin_run.log` (global) and `occupier.log` (per OCCUPIER subprocess).
+
 ## 🚀 Quick Install
 
 ```bash
@@ -60,7 +80,7 @@ Create a working directory with at least these two files:
 
 Then run:
 
-from the directory that contains CONTROL.txt and input.txt
+from the directory that contains `CONTROL.txt` and `input.txt`
 ```bash
 delfin
 ```
@@ -69,10 +89,17 @@ alternatively
 python -m delfin
 ```
 
+You can also point DELFIN at a different workspace directory:
+```bash
+delfin /path/to/project
+```
+
 **CLI shortcuts**
 
 - `delfin --define[=input.xyz] [--overwrite]`
   creates/updates `CONTROL.txt` and optionally converts an XYZ into `input.txt`.
+- `delfin /path/to/project --define[=input.xyz] [--overwrite]`
+  same as above, but writing into a different workspace directory.
 - `delfin --control /path/to/CONTROL.txt`
   runs the workflow from another directory while normalising all paths.
 - `delfin --no-cleanup`
@@ -83,16 +110,22 @@ python -m delfin
   offers finer control over workspace/scratch cleanup; combine with `--dry-run` to preview deletions.
 - `delfin cleanup --orca`
   stops running ORCA jobs in the current workspace, purges OCCUPIER scratch folders, and cleans leftover temporary files.
+- `delfin stop --workspace PATH`
+  sends a graceful stop signal to running DELFIN processes associated with a workspace.
 - `delfin --purge`
   removes DELFIN-generated artifacts (OCCUPIER folders, ORCA inputs/outputs, logs) after confirmation while keeping CONTROL.txt, the configured input file, and any unrelated files.
 - `delfin --recalc`
   re-parses existing results and only restarts missing or incomplete jobs.
-- `delfin --recalc WORKSPACE --occupier-override STAGE=INDEX`
+- `delfin WORKSPACE --recalc --occupier-override STAGE=INDEX`
   forces a specific OCCUPIER index for a stage during recalc (e.g., `--occupier-override red_step_2=1` uses index 1 for red_step_2_OCCUPIER instead of the automatically selected preferred index). Can be passed multiple times for different stages.
 - `delfin --report`
   re-calculates redox potentials from existing output files without launching new calculations.
 - `delfin --imag`
   eliminates imaginary modes from existing ORCA results (`*.out`/`*.hess`) and regenerates the summary report.
+- `delfin --json`
+  collects key results into `DELFIN_Data.json` (useful for scripts/notebooks).
+- `delfin --afp`
+  generates an AFP spectrum plot (`AFP_spectrum.png`) from existing ESD/S0/S1/T1 results if present.
 - `delfin --version`
   prints the installed DELFIN version (`-V` shortcut).
 - `delfin --help`
@@ -101,6 +134,19 @@ python -m delfin
 Results and reports are written to the current working directory,
 e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 ---
+
+## Development
+
+Install dev tools:
+```bash
+pip install -e '.[dev]'
+```
+
+Format + lint:
+```bash
+black .
+ruff check .
+```
 
 ## Excited-State Dynamics (ESD) Module
 

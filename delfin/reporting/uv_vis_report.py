@@ -7,7 +7,7 @@ from typing import List, Optional
 
 try:
     from docx import Document
-    from docx.shared import Inches, Pt, RGBColor
+    from docx.shared import Inches
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     DOCX_AVAILABLE = True
 except ImportError:

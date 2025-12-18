@@ -101,7 +101,6 @@ def _prevent_row_splits(table) -> None:
     """Prevent individual table rows from splitting across pages."""
     try:
         from docx.oxml import OxmlElement
-        from docx.oxml.ns import qn
 
         # Set cantSplit property on each row to prevent splitting
         for i, row in enumerate(table.rows):
@@ -1693,7 +1692,6 @@ def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> 
         Dictionary mapping orbital names (e.g., 'HOMO', 'LUMO+1') to PNG paths
     """
     import subprocess
-    import shutil
 
     try:
         import pymol

@@ -1,29 +1,34 @@
 from __future__ import annotations
-import os, time, sys, argparse, shutil, fnmatch, re, signal
+import argparse
+import fnmatch
+import os
+import re
+import shutil
+import signal
+import sys
+import time
 from pathlib import Path
 
 from dataclasses import asdict
 from typing import Optional
 from delfin.common.logging import configure_logging, get_logger, add_file_handler
 from delfin.common.paths import get_runtime_dir, resolve_path
-from delfin.cluster_utils import auto_configure_resources, detect_cluster_environment
+from delfin.cluster_utils import auto_configure_resources
 from delfin.global_manager import get_global_manager
 from .define import create_control_file
 from .cleanup import cleanup_all, cleanup_orca
 from .config import read_control_file, get_E_ref
 from .utils import search_transition_metals, set_main_basisset, calculate_total_electrons_txt
 from .orca import run_orca, cleanup_orca_scratch_dir
-from .imag import run_IMAG
 from .xtb_crest import XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
-from .energies import find_gibbs_energy, find_ZPE, find_electronic_energy
 from .reporting import (
     generate_summary_report_DELFIN as generate_summary_report,
     generate_esd_report,
 )
 from .reporting.delfin_collector import save_esd_data_json
-from .cli_helpers import _avg_or_none, _build_parser
+from .cli_helpers import _build_parser
 from .cli_recalc import setup_recalc_mode, patch_modules_for_recalc
-from .cli_banner import print_delfin_banner, validate_required_files, get_file_paths
+from .cli_banner import print_delfin_banner, validate_required_files
 from .pipeline import (
     FileBundle,
     PipelineContext,
@@ -806,7 +811,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_co2_subcommand(arg_list[1:])
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
-    args, _ = parser.parse_known_args(arg_list)
+    args, unknown = parser.parse_known_args(arg_list)
+    if unknown:
+        logger.error("Unknown argument(s): %s", " ".join(unknown))
+        return 2
 
     try:
         occupier_overrides = _parse_occupier_overrides(getattr(args, "occupier_override", []) or [])
@@ -818,9 +826,18 @@ def main(argv: list[str] | None = None) -> int:
     report_mode = getattr(args, "report", None)
     REPORT_TEXT = report_mode == "text"
     REPORT_DOCX = report_mode == "docx"
-    control_file_path = resolve_path(args.control)
+    workspace_arg = getattr(args, "workspace", ".") or "."
+    workspace_hint = resolve_path(workspace_arg)
+    if getattr(args, "control", "CONTROL.txt") == "CONTROL.txt":
+        control_file_path = resolve_path(workspace_hint / "CONTROL.txt")
+    else:
+        control_file_path = resolve_path(args.control)
     workspace_root = control_file_path.parent
-    json_output_path = Path(args.json_output).resolve() if getattr(args, "json_output", None) else None
+    if getattr(args, "json_output", None):
+        candidate = Path(args.json_output)
+        json_output_path = (workspace_root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+    else:
+        json_output_path = None
     force_rerun_outputs: set[Path] = {
         _override_output_path(name, workspace_root) for name in occupier_overrides
     } if RECALC_MODE else set()
@@ -916,6 +933,10 @@ def main(argv: list[str] | None = None) -> int:
         # Read CONTROL.txt
         try:
             config = read_control_file(str(control_file_path))
+        except FileNotFoundError:
+            logger.error("CONTROL file not found: %s", control_file_path)
+            logger.error("Hint: run `delfin %s --define` or pass `--control /path/to/CONTROL.txt`.", workspace_arg)
+            return 2
         except ValueError as exc:
             logger.error("Invalid CONTROL configuration: %s", exc)
             return 2
@@ -926,6 +947,10 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             config = read_control_file(str(control_file_path))
+        except FileNotFoundError:
+            logger.error("CONTROL file not found: %s", control_file_path)
+            logger.error("Hint: run `delfin %s --define` or pass `--control /path/to/CONTROL.txt`.", workspace_arg)
+            return 2
         except ValueError as exc:
             logger.error("Invalid CONTROL configuration: %s", exc)
             return 2
@@ -944,6 +969,10 @@ def main(argv: list[str] | None = None) -> int:
         # Read CONTROL.txt
         try:
             config = read_control_file(str(control_file_path))
+        except FileNotFoundError:
+            logger.error("CONTROL file not found: %s", control_file_path)
+            logger.error("Hint: run `delfin %s --define` or pass `--control /path/to/CONTROL.txt`.", workspace_arg)
+            return 2
         except ValueError as exc:
             logger.error("Invalid CONTROL configuration: %s", exc)
             return 2
@@ -964,6 +993,10 @@ def main(argv: list[str] | None = None) -> int:
     # Read CONTROL.txt once and derive all settings from it
     try:
         config = read_control_file(str(control_file_path))
+    except FileNotFoundError:
+        logger.error("CONTROL file not found: %s", control_file_path)
+        logger.error("Hint: run `delfin %s --define` or pass `--control /path/to/CONTROL.txt`.", workspace_arg)
+        return 2
     except ValueError as exc:
         logger.error("Invalid CONTROL configuration: %s", exc)
         return 2

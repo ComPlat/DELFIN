@@ -2,16 +2,14 @@
 
 import os
 import re
-import time
 import shutil
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set
 
 from delfin.common.logging import get_logger
-from delfin.global_manager import get_global_manager
 from delfin.copy_helpers import read_occupier_file, copy_preferred_files_with_names
 from delfin.occupier_sequences import resolve_sequences_for_delta
 from delfin.imag import run_IMAG
@@ -24,14 +22,10 @@ from .parallel_classic_manually import (
     _parse_int,
     _update_pal_block,
     _add_moinp_block,
-    _verify_orca_output,
     estimate_parallel_width,
     determine_effective_slots,
     normalize_parallel_token,
 )
-
-if TYPE_CHECKING:
-    from .global_scheduler import GlobalOrcaScheduler
 
 logger = get_logger(__name__)
 
