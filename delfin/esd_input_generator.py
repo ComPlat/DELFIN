@@ -189,6 +189,47 @@ def _resolve_temperature_K(config: Dict[str, Any], default: float = 298.15) -> f
     return float(default)
 
 
+def _apply_esd_newgto(
+    coord_lines: List[str],
+    *,
+    found_metals: List[str],
+    metal_basisset: Optional[str],
+    config: Dict[str, Any],
+) -> List[str]:
+    """Apply per-atom NewGTO tagging to an XYZ coordinate block for ESD inputs.
+
+    Mirrors the behavior used for classic initial inputs:
+    - Always tags detected metals with NewGTO "metal_basisset" end
+    - Optionally tags the first coordination sphere when enabled in CONTROL
+    """
+    if not metal_basisset:
+        return coord_lines
+
+    enable_first = str(config.get("first_coordination_sphere_metal_basisset", "no")).lower() in (
+        "yes",
+        "true",
+        "1",
+        "on",
+    )
+    sphere_scale_raw = str(config.get("first_coordination_sphere_scale", "")).strip()
+    load_radii = enable_first and not sphere_scale_raw
+
+    radii_all = None
+    if load_radii:
+        try:
+            from delfin.xyz_io import _load_covalent_radii
+            radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009"))
+        except Exception:
+            radii_all = None
+
+    try:
+        from delfin.xyz_io import _apply_per_atom_newgto
+        return _apply_per_atom_newgto(coord_lines, found_metals, metal_basisset, config, radii_all)
+    except Exception:
+        # Fail safe: never break input generation because of NewGTO tagging.
+        return coord_lines
+
+
 def create_state_input(
     state: str,
     esd_dir: Path,
@@ -470,6 +511,12 @@ def _create_state_input_delta_scf(
     except FileNotFoundError:
         logger.error(f"Coordinate file not found: {xyz_path}")
         raise
+    coord_lines = _apply_esd_newgto(
+        coord_lines,
+        found_metals=metals,
+        metal_basisset=metal_basisset,
+        config=config,
+    )
 
     # Write input file
     with open(input_file, 'w', encoding='utf-8') as f:
@@ -540,7 +587,10 @@ def _create_state_input_delta_scf(
 
             # Geometry reference
             f.write("\n")
-            f.write(f"* xyzfile {charge} 1 S0.xyz\n")
+            f.write(f"* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line if line.endswith("\n") else line + "\n")
+            f.write("*\n")
 
             logger.info(f"Added TDDFT check job to S0 input for state identification")
 
@@ -661,6 +711,13 @@ def _create_state_input_tddft(
         logger.error(f"Coordinate file not found: {xyz_path}")
         raise
 
+    coord_lines = _apply_esd_newgto(
+        coord_lines,
+        found_metals=metals,
+        metal_basisset=metal_basisset,
+        config=config,
+    )
+
     def _write_tddft_block(
         fh,
         iroot: Optional[int] = None,
@@ -745,7 +802,10 @@ def _create_state_input_tddft(
             _write_output_blocks(f)
             _write_tddft_block(f, triplets=True)
             f.write("\n")
-            f.write(f"* xyzfile {charge} 1 S0.xyz\n")
+            f.write(f"* xyz {charge} 1\n")
+            for line in coord_lines:
+                f.write(line if line.endswith("\n") else line + "\n")
+            f.write("*\n")
         elif state_upper == "S1":
             f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "S1"\n')
@@ -1011,7 +1071,7 @@ def create_isc_input(
     blocks.append("\n".join(tddft_block))
 
     # ESD block
-    temperature = config.get('temperature', 298.15)
+    temperature = _resolve_temperature_K(config, default=298.15)
     doht_flag = str(config.get('DOHT', 'TRUE')).upper()
     esd_block = [
         "%ESD",
@@ -1041,6 +1101,12 @@ def create_isc_input(
     except FileNotFoundError:
         logger.error(f"Coordinate file not found: {xyz_path}")
         raise
+    coord_lines = _apply_esd_newgto(
+        coord_lines,
+        found_metals=metals,
+        metal_basisset=metal_basisset,
+        config=config,
+    )
 
     # Write input file
     with open(input_file, 'w', encoding='utf-8') as f:
@@ -1162,7 +1228,7 @@ def create_ic_input(
     # ESD block
     # For IC: GSHESSIAN = ground state (final), ESHESSIAN = excited state (initial)
     # Example: S1>S0 IC → GSHESSIAN=S0.hess, ESHESSIAN=S1.hess
-    temperature = config.get('temperature', 298.15)
+    temperature = _resolve_temperature_K(config, default=298.15)
     esd_block = [
         "%ESD",
         f'  GSHESSIAN       "{final_state}.hess"',
@@ -1188,6 +1254,12 @@ def create_ic_input(
     except FileNotFoundError:
         logger.error(f"Coordinate file not found: {xyz_path}")
         raise
+    coord_lines = _apply_esd_newgto(
+        coord_lines,
+        found_metals=metals,
+        metal_basisset=metal_basisset,
+        config=config,
+    )
 
     # Write input file
     with open(input_file, 'w', encoding='utf-8') as f:
@@ -1313,15 +1385,28 @@ def create_fluor_input(
     blocks.append(f"%pal nprocs {pal} end")
     blocks.append(f"%maxcore {maxcore}")
 
-    # Geometry uses the optimized ground-state geometry from the ESD directory
-    xyzfile_line = f"* xyzfile {charge} 1 {final_state}.xyz"
+    # Geometry uses the optimized ground-state geometry from the ESD directory.
+    # Use inline coordinates so we can attach per-atom NewGTO for metals (like classic inputs).
+    xyz_path = esd_dir / f"{final_state}.xyz"
+    with open(xyz_path, "r", encoding="utf-8") as f:
+        all_lines = f.readlines()
+    coord_lines = all_lines[2:]  # skip XYZ header
+    coord_lines = _apply_esd_newgto(
+        coord_lines,
+        found_metals=metals,
+        metal_basisset=metal_basisset,
+        config=config,
+    )
 
     with open(input_file, "w", encoding="utf-8") as f:
         f.write(simple_line + "\n")
         for block in blocks:
             f.write(block + "\n")
         f.write("\n")
-        f.write(xyzfile_line + "\n")
+        f.write(f"* xyz {charge} 1\n")
+        for line in coord_lines:
+            f.write(line if line.endswith("\n") else line + "\n")
+        f.write("*\n")
 
     logger.info(f"Created FLUOR input: {input_file}")
     return str(input_file)
@@ -1416,6 +1501,19 @@ def create_phosp_input(
     # Default is 1,2,3, but allow overriding via CONTROL.
     iroots = _parse_iroot_spec(config.get("phosp_IROOT", None), default=[1, 2, 3])
 
+    # Geometry uses the ground-state geometry (S0.xyz), multiplicity 1.
+    # Use inline coordinates so we can attach per-atom NewGTO for metals (like classic inputs).
+    xyz_path = esd_dir / f"{final_state}.xyz"
+    with open(xyz_path, "r", encoding="utf-8") as f:
+        all_lines = f.readlines()
+    geom_coord_lines = all_lines[2:]  # skip XYZ header
+    geom_coord_lines = _apply_esd_newgto(
+        geom_coord_lines,
+        found_metals=metals,
+        metal_basisset=metal_basisset,
+        config=config,
+    )
+
     def _job_block(iroot: int) -> str:
         blocks: list[str] = []
         blocks.append(simple_line)
@@ -1447,8 +1545,9 @@ def create_phosp_input(
         esd.append("END")
         blocks.append("\n".join(esd))
 
-        # Use the ground-state geometry (S0.xyz), multiplicity 1
-        blocks.append(f"* xyzfile {charge} 1 {final_state}.xyz")
+        blocks.append(f"* xyz {charge} 1")
+        blocks.extend([ln.rstrip("\n") for ln in geom_coord_lines])
+        blocks.append("*")
         return "\n".join(blocks)
 
     pal = config.get("PAL", 12)
@@ -1594,7 +1693,23 @@ def append_properties_of_interest_jobs(
             for block in output_blocks:
                 f.write(block + "\n")
 
-            # Geometry reference using xyzfile
-            f.write(f"* xyzfile {charge} {mult} {Path(xyz_file).name}\n")
+            # Geometry (inline, to support per-atom NewGTO like classic inputs)
+            xyz_path = Path(xyz_file)
+            try:
+                raw_lines = xyz_path.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                raw_lines = []
+            skip = 2 if raw_lines and raw_lines[0].strip().isdigit() else 0
+            coord_lines = [(ln + "\n") for ln in raw_lines[skip:] if ln.strip() and ln.strip() != "*"]
+            coord_lines = _apply_esd_newgto(
+                coord_lines,
+                found_metals=metals,
+                metal_basisset=metal_basisset,
+                config=config,
+            )
+            f.write(f"* xyz {charge} {mult}\n")
+            for line in coord_lines:
+                f.write(line if line.endswith("\n") else line + "\n")
+            f.write("*\n")
 
     logger.info(f"Added {len(jobs_to_add)} properties_of_interest job(s) to {inp_file}")
