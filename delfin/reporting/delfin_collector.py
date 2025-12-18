@@ -711,6 +711,16 @@ def parse_phosp_data(esd_dir: Path, state1: str = "T1", state2: str = "S0") -> O
         with phosp_file.open("r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
 
+        # Determine expected IROOTs from the corresponding input (if present)
+        expected_iroots: list[str] = []
+        inp_file = esd_dir / f"{state1}_{state2}_PHOSP.inp"
+        if inp_file.exists():
+            try:
+                inp_text = inp_file.read_text(encoding="utf-8", errors="ignore")
+                expected_iroots = re.findall(r"^\s*IROOT\s+(\d+)\s*$", inp_text, flags=re.IGNORECASE | re.MULTILINE)
+            except Exception:
+                expected_iroots = []
+
         # Collect all occurrences (often one per subjob / IROOT)
         matches = re.findall(
             r'(?:k[_\s-]*p|k[_\s-]*phosp|phosphorescence\s+rate\s+constant\s+(?:is)?|calculated\s+phosphorescence\s+rate\s+constant\s+is)\s*=?\s*([\d.eE+-]+)\s*s-?1',
@@ -722,8 +732,16 @@ def parse_phosp_data(esd_dir: Path, state1: str = "T1", state2: str = "S0") -> O
         temp_match = re.search(r'Temperature used:\s*([-\d.]+)\s*K', content)
         delta_e_match = re.search(r'0-0 energy difference:\s*([-\d.]+)\s*cm-1', content)
 
-        # Map in order of appearance: IROOT 1..N
-        iroot_rates = {str(i + 1): rates[i] for i in range(len(rates))}
+        # Map in order of appearance onto expected IROOTs if we know them,
+        # otherwise default to 1..N.
+        if expected_iroots:
+            iroot_rates = {iroot: None for iroot in expected_iroots}
+            for idx, rate in enumerate(rates):
+                if idx >= len(expected_iroots):
+                    break
+                iroot_rates[expected_iroots[idx]] = rate
+        else:
+            iroot_rates = {str(i + 1): rates[i] for i in range(len(rates))}
         mean_rate = sum(rates) / len(rates) if rates else None
 
         return {
