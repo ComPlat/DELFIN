@@ -266,9 +266,11 @@ def calculate_beta_properties(
         - 'beta_x_au', 'beta_y_au', 'beta_z_au': Contracted vector components (a.u.)
         - 'beta_tot_au': Total hyperpolarizability magnitude (a.u.)
         - 'beta_mu_au': Projection onto dipole vector (a.u.)
+        - 'beta_zzz_au': β_zzz tensor component (a.u.)
         - 'beta_x_esu', 'beta_y_esu', 'beta_z_esu': Converted to esu
         - 'beta_tot_esu': Total in esu
         - 'beta_mu_esu': Projection in esu
+        - 'beta_zzz_esu': β_zzz tensor component in esu
     """
     # Conversion factor: 1 a.u. = 8.6393 × 10⁻³³ esu
     AU_TO_ESU = 8.6393e-33
@@ -297,17 +299,22 @@ def calculate_beta_properties(
     else:
         beta_mu = 0.0
 
+    # Extract β_zzz tensor component
+    beta_zzz = beta_tensor.get('zzz', 0.0)
+
     return {
         'beta_x_au': beta_x,
         'beta_y_au': beta_y,
         'beta_z_au': beta_z,
         'beta_tot_au': beta_tot,
         'beta_mu_au': beta_mu,
+        'beta_zzz_au': beta_zzz,
         'beta_x_esu': beta_x * AU_TO_ESU,
         'beta_y_esu': beta_y * AU_TO_ESU,
         'beta_z_esu': beta_z * AU_TO_ESU,
         'beta_tot_esu': beta_tot * AU_TO_ESU,
         'beta_mu_esu': beta_mu * AU_TO_ESU,
+        'beta_zzz_esu': beta_zzz * AU_TO_ESU,
     }
 
 
