@@ -1235,11 +1235,18 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         for idx, (state_name, fspe, zpe_corrected) in enumerate(s_states):
             # Plot FSPE (darker line)
             ax.plot([s_x - line_width, s_x + line_width], [fspe, fspe], 'b-', linewidth=2, label='FSPE' if idx == 0 else "")
-            # Plot ΔE(0,0) (lighter line) if available
+            # Plot ΔE(0,0) (lighter line) if available with label
             if zpe_corrected is not None:
                 ax.plot([s_x - line_width, s_x + line_width], [zpe_corrected, zpe_corrected],
                        'b-', linewidth=2, alpha=0.35, label='E$_{0,0}$' if idx == 0 else "")
-            # Format label with subscript
+                # Add E00 label on the left side
+                e00_label = "E$_{0,0}$(" + state_name.replace("S", "$S_").replace("0", "{0}") \
+                                  .replace("1", "{1}").replace("2", "{2}") \
+                                  .replace("3", "{3}").replace("4", "{4}") \
+                                  .replace("5", "{5}").replace("6", "{6}") + "$)"
+                ax.text(s_x - line_width - 0.05, zpe_corrected, e00_label,
+                       va='center', fontsize=8, ha='right', alpha=0.7)
+            # Format FSPE label with subscript
             label = state_name.replace("S", "$S_").replace("0", "{0}") \
                               .replace("1", "{1}").replace("2", "{2}") \
                               .replace("3", "{3}").replace("4", "{4}") \
@@ -1255,11 +1262,18 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         for idx, (state_name, fspe, zpe_corrected) in enumerate(t_states):
             # Plot FSPE (darker line)
             ax.plot([t_x - line_width, t_x + line_width], [fspe, fspe], 'r-', linewidth=2)
-            # Plot ΔE(0,0) (lighter line) if available
+            # Plot ΔE(0,0) (lighter line) if available with label
             if zpe_corrected is not None:
                 ax.plot([t_x - line_width, t_x + line_width], [zpe_corrected, zpe_corrected],
                        'r-', linewidth=2, alpha=0.35)
-            # Format label with subscript
+                # Add E00 label on the left side
+                e00_label = "E$_{0,0}$(" + state_name.replace("T", "$T_").replace("1", "{1}") \
+                                  .replace("2", "{2}").replace("3", "{3}") \
+                                  .replace("4", "{4}").replace("5", "{5}") \
+                                  .replace("6", "{6}") + "$)"
+                ax.text(t_x - line_width - 0.05, zpe_corrected, e00_label,
+                       va='center', fontsize=8, ha='right', alpha=0.7)
+            # Format FSPE label with subscript
             label = state_name.replace("T", "$T_").replace("1", "{1}") \
                               .replace("2", "{2}").replace("3", "{3}") \
                               .replace("4", "{4}").replace("5", "{5}") \
@@ -1273,41 +1287,71 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
     ic_data = data.get("internal_conversion", {}) or {}
 
     def _parse_transition(key: str):
-        """Parse transition key like 'S1>T1' or 'S1>T1(Ms=0)'."""
+        """Parse transition key like 'S1_T1', 'S1>T1', or 'S1>T1(Ms=0)'."""
         # Remove Ms specification if present
         base_key = key.split('(')[0] if '(' in key else key
-        if '>' not in base_key:
+        # Try both '_' and '>' as separators
+        if '_' in base_key:
+            parts = base_key.split('_')
+        elif '>' in base_key:
+            parts = base_key.split('>')
+        else:
             return None, None
-        parts = base_key.split('>')
+        if len(parts) != 2:
+            return None, None
         return parts[0].strip(), parts[1].strip()
 
+    # Different colors for each transition
+    transition_colors = ['green', 'purple', 'orange', 'brown', 'olive', 'cyan', 'magenta', 'pink']
+
+    # Detect bidirectional transitions to offset them
+    bidirectional = set()
+    for trans_key in isc_data.keys():
+        init_s, final_s = _parse_transition(trans_key)
+        if init_s and final_s:
+            reverse_key = f"{final_s}_{init_s}"
+            if reverse_key in isc_data:
+                # Store as sorted tuple to avoid duplicates
+                pair = tuple(sorted([trans_key, reverse_key]))
+                bidirectional.add(pair)
+
     drawn_arrows = set()  # Avoid duplicate arrows
+    color_idx = 0
+    rate_labels = []  # Collect rate labels for top-right display
+
     for trans_key, trans_data in isc_data.items():
         init_state, final_state = _parse_transition(trans_key)
         if not init_state or not final_state:
             continue
 
-        # Get energies (use ZPE-corrected if available, else FSPE)
+        # IMPORTANT: Only draw arrows between states that actually exist in the diagram
         init_info = state_energy_map.get(init_state)
         final_info = state_energy_map.get(final_state)
         if not init_info or not final_info:
+            logger.warning(f"Skipping {trans_key}: state not in diagram (init={init_state} exists={init_info is not None}, final={final_state} exists={final_info is not None})")
             continue
 
-        init_energy = init_info[1] if init_info[1] is not None else init_info[0]
-        final_energy = final_info[1] if final_info[1] is not None else final_info[0]
+        init_energy = init_info[0]  # Always use FSPE
+        final_energy = final_info[0]  # Always use FSPE
 
         # Determine if ISC (S>T) or rISC (T>S)
         is_risc = init_state.startswith('T') and final_state.startswith('S')
+        trans_type = 'rISC' if is_risc else 'ISC'
 
-        # Get lane positions
+        # Get lane positions - always connect singlet (right) to triplet (left)
         init_lane = 'S' if init_state.startswith('S') else 'T'
         final_lane = 'S' if final_state.startswith('S') else 'T'
 
         if init_lane not in lane_positions or final_lane not in lane_positions:
             continue
 
-        x1 = lane_positions[init_lane] + line_width
-        x2 = lane_positions[final_lane] - line_width
+        # Always draw from singlet (right side) to triplet (left side)
+        if 'S' in lane_positions and 'T' in lane_positions:
+            x1 = lane_positions['S'] + line_width  # Right side of singlet
+            x2 = lane_positions['T'] - line_width  # Left side of triplet
+        else:
+            x1 = lane_positions[init_lane] + line_width
+            x2 = lane_positions[final_lane] - line_width
 
         # Avoid duplicate arrows
         arrow_key = f"{init_state}_{final_state}"
@@ -1315,20 +1359,53 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
             continue
         drawn_arrows.add(arrow_key)
 
-        # Draw arrow
-        color = 'purple' if is_risc else 'green'
-        arrow_style = '->' if not is_risc else '<-'
-        ax.annotate('', xy=(x2, final_energy), xytext=(x1, init_energy),
-                   arrowprops=dict(arrowstyle=arrow_style, color=color, lw=1.5, alpha=0.6))
+        # Assign unique color to each transition
+        color = transition_colors[color_idx % len(transition_colors)]
+        color_idx += 1
 
-        # Add rate label if available
-        rate = trans_data.get('rate')
+        # Check if this is part of a bidirectional pair and apply offset
+        reverse_key = f"{final_state}_{init_state}"
+        is_bidirectional = any(trans_key in pair and reverse_key in pair for pair in bidirectional)
+
+        # Apply vertical offset for bidirectional arrows
+        y_offset = 0.0
+        if is_bidirectional:
+            # Offset one direction up, the other down
+            if trans_key < reverse_key:  # Consistent ordering
+                y_offset = 0.005  # Offset up
+            else:
+                y_offset = -0.005  # Offset down
+
+        # Draw arrow with correct energy positions
+        if is_risc:
+            # rISC: T->S, arrow from triplet state to singlet state
+            # x2 = triplet side, x1 = singlet side
+            # Start at init_state (T) energy on triplet side, end at final_state (S) energy on singlet side
+            ax.annotate('', xy=(x1, final_energy + y_offset), xytext=(x2, init_energy + y_offset),
+                       arrowprops=dict(arrowstyle='->', color=color, lw=1.5, alpha=0.6))
+        else:
+            # ISC: S->T, arrow from singlet state to triplet state
+            # x1 = singlet side, x2 = triplet side
+            # Start at init_state (S) energy on singlet side, end at final_state (T) energy on triplet side
+            ax.annotate('', xy=(x2, final_energy + y_offset), xytext=(x1, init_energy + y_offset),
+                       arrowprops=dict(arrowstyle='->', color=color, lw=1.5, alpha=0.6))
+
+        # Collect rate label for top-right display
+        rate = trans_data.get('total_rate_s1')
         if rate is not None:
-            mid_x = (x1 + x2) / 2
-            mid_y = (init_energy + final_energy) / 2
-            rate_str = f"{rate:.1e} s$^{{-1}}$"
-            ax.text(mid_x, mid_y, rate_str, fontsize=7, ha='center',
-                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7, edgecolor=color))
+            # Format: k(ISC, S1→T1) = 5.2e+06 s⁻¹
+            label_text = f"$k$({trans_type}, ${init_state}$→${final_state}$) = {rate:.1e} s$^{{-1}}$"
+            rate_labels.append((label_text, color))
+
+    # Display rate constants in top-right corner (in axes coordinates to avoid overlap)
+    if rate_labels:
+        y_start = 0.95  # Start at 95% from bottom (near top)
+
+        for i, (label_text, color) in enumerate(rate_labels):
+            y_pos = y_start - i * 0.08  # Stack vertically
+            ax.text(1.15, y_pos, label_text, transform=ax.transAxes,
+                   fontsize=7, ha='right', va='top',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.85, edgecolor=color))
 
     # Styling
     ax.set_xlim(0.3, current_x + 0.8)
@@ -1347,16 +1424,7 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
 
-    # Add legend for ISC/rISC if present
-    legend_elements = []
-    if isc_data:
-        from matplotlib.lines import Line2D
-        legend_elements.extend([
-            Line2D([0], [0], color='green', lw=1.5, alpha=0.6, label='ISC'),
-            Line2D([0], [0], color='purple', lw=1.5, alpha=0.6, label='rISC'),
-        ])
-    if legend_elements:
-        ax.legend(handles=legend_elements, loc='upper right', fontsize=9, framealpha=0.9)
+    # Legend removed - each ISC/rISC transition has its own color and label
 
     plt.title("Energy Level Diagram (FSPE and E$_{0,0}$ with ISC/rISC rates)", fontsize=14, fontweight='bold')
     plt.tight_layout()
