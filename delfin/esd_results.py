@@ -220,10 +220,22 @@ def collect_esd_results(
             if not trootssl_str:
                 pass  # Keep default trootssl_values = [0]
             elif ',' in trootssl_str:
-                # Split and clean each value (remove quotes)
-                trootssl_values = [int(x.strip().strip("'\"")) for x in trootssl_str.split(',')]
+                # Split and clean each value (remove quotes), filter out empty strings
+                trootssl_values = [
+                    int(x.strip().strip("'\""))
+                    for x in trootssl_str.split(',')
+                    if x.strip().strip("'\"")  # Skip empty strings
+                ]
+                # If all values were empty, keep default [0]
+                if not trootssl_values:
+                    trootssl_values = [0]
             else:
-                trootssl_values = [int(trootssl_str.strip("'\""))]
+                # Single value - only convert if not empty
+                cleaned = trootssl_str.strip("'\"")
+                if cleaned:
+                    trootssl_values = [int(cleaned)]
+                else:
+                    trootssl_values = [0]
 
     for isc in iscs:
         isc_key = isc.strip().upper()

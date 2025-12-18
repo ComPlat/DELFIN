@@ -843,6 +843,16 @@ def _format_significant_figures(value, sig_figs: int = 3) -> str:
         return str(value)
 
 
+def _format_fixed_decimals(value: Any, decimals: int) -> str:
+    """Format a numeric value with a fixed number of decimal places."""
+    if value is None:
+        return ""
+    try:
+        return f"{float(value):.{decimals}f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _add_state_table(doc: Document, title: str, states: Dict[str, Any]) -> None:
     if not states:
         return
@@ -869,12 +879,12 @@ def _add_state_table(doc: Document, title: str, states: Dict[str, Any]) -> None:
         row[2].text = str(opt.get("charge", ""))
         row[3].text = str(opt.get("multiplicity", ""))
 
-        # Only show Hartree energy with 3 significant figures
+        # Energetics overview: show energies with fixed decimals for comparability
         hartree = opt.get("hartree")
-        row[4].text = _format_significant_figures(hartree, sig_figs=3) if hartree is not None else ""
+        row[4].text = _format_fixed_decimals(hartree, decimals=5) if hartree is not None else ""
 
         row[5].text = (
-            _format_significant_figures(thermo.get('zero_point_energy_hartree'), sig_figs=3)
+            _format_fixed_decimals(thermo.get('zero_point_energy_hartree'), decimals=5)
             if "zero_point_energy_hartree" in thermo
             else ""
         )

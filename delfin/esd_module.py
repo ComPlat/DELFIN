@@ -620,7 +620,7 @@ def _create_s0_tddft_check_input(
     functional = config.get('functional', 'PBE0')
     disp_corr = config.get('disp_corr', 'D4')
     ri_jkx = config.get('ri_jkx', 'RIJCOSX')
-    implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
+    implicit_solvation = config.get('implicit_solvation_model', '')
     pal = config.get("PAL", 12)
     maxcore = config.get("maxcore", 6000)
     nroots = config.get('ESD_nroots', 15)
@@ -630,6 +630,10 @@ def _create_s0_tddft_check_input(
 
     _, aux_jk, _ = select_rel_and_aux(metals, config)
 
+    # Build solvation keyword
+    from delfin.esd_input_generator import _build_solvation_keyword
+    solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
+
     # TDDFT keyword line (RKS for vertical excitations from S0)
     tddft_keywords = [
         functional,
@@ -638,8 +642,9 @@ def _create_s0_tddft_check_input(
         disp_corr,
         ri_jkx,
         aux_jk,
-        f"{implicit_solvation}({solvent})",
     ]
+    if solvation_kw:
+        tddft_keywords.append(solvation_kw)
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write("! " + " ".join(tddft_keywords) + "\n")

@@ -20,6 +20,24 @@ logger = get_logger(__name__)
 HARTREE_TO_CM1 = 219474.63
 
 
+def _build_solvation_keyword(implicit_solvation_model: str, solvent: str) -> str:
+    """Build solvation keyword string, returning empty string if model is not set.
+
+    Args:
+        implicit_solvation_model: Solvation model (e.g., 'CPCM', 'SMD')
+        solvent: Solvent name (e.g., 'water', 'DMF')
+
+    Returns:
+        Formatted solvation keyword (e.g., 'CPCM(water)') or empty string
+    """
+    model = str(implicit_solvation_model).strip()
+    if not model:
+        return ""
+    if solvent and str(solvent).strip():
+        return f"{model}({solvent})"
+    return model
+
+
 def _format_ms_suffix(trootssl: int) -> str:
     """Format TROOTSSL value as ms suffix (e.g., -1 -> 'msm1', 0 -> 'ms0', 1 -> 'msp1')."""
     if trootssl < 0:
@@ -259,7 +277,7 @@ def _create_state_input_delta_scf(
     aux_jk = config.get('aux_jk', 'def2/J')
 
     # Solvation
-    implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
+    implicit_solvation = config.get('implicit_solvation_model', '')
 
     # Geometry optimization token from CONTROL (fall back to OPT)
     geom_token_raw = config.get('geom_opt', 'OPT')
@@ -287,8 +305,12 @@ def _create_state_input_delta_scf(
         disp_corr,
         ri_jkx,
         aux_jk,
-        f"{implicit_solvation}({solvent})",
     ]
+
+    # Add solvation keyword only if model is set
+    solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
+    if solvation_kw:
+        keywords.append(solvation_kw)
 
     if geom_token:
         keywords.append(geom_token)
@@ -421,8 +443,10 @@ def _create_state_input_delta_scf(
                 disp_corr,
                 ri_jkx,
                 aux_jk,
-                f"{implicit_solvation}({solvent})",
             ]
+            # Add solvation keyword only if model is set
+            if solvation_kw:
+                tddft_keywords.append(solvation_kw)
             f.write("! " + " ".join(tddft_keywords) + "\n")
 
             # Base block for TDDFT check
@@ -479,7 +503,7 @@ def _create_state_input_tddft(
     disp_corr = config.get("disp_corr", "D4")
     ri_jkx = config.get("ri_jkx", "RIJCOSX")
     aux_jk = config.get("aux_jk", "def2/J")
-    implicit_solvation = config.get("implicit_solvation_model", "CPCM")
+    implicit_solvation = config.get("implicit_solvation_model", "")
     geom_token_raw = config.get("geom_opt", "OPT")
     geom_token = str(geom_token_raw).strip() or "OPT"
     pal = config.get("PAL", 12)
@@ -494,6 +518,9 @@ def _create_state_input_tddft(
     esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
     output_blocks = collect_output_blocks(config, allow=True)
 
+    # Build solvation keyword once
+    solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
+
     def _join_keywords(parts: List[str]) -> str:
         """Join keyword fragments while skipping empty entries."""
         return " ".join(str(p) for p in parts if str(p).strip())
@@ -507,9 +534,10 @@ def _create_state_input_tddft(
             disp_corr,
             ri_jkx,
             aux_jk,
-            f"{implicit_solvation}({solvent})",
-            geom_token,
         ]
+        if solvation_kw:
+            kw.append(solvation_kw)
+        kw.append(geom_token)
         if with_freq and esd_frequency_enabled:
             kw.append("numFREQ")
         return kw
@@ -612,8 +640,9 @@ def _create_state_input_tddft(
                 disp_corr,
                 ri_jkx,
                 aux_jk,
-                f"{implicit_solvation}({solvent})",
             ]
+            if solvation_kw:
+                keywords.append(solvation_kw)
             if geom_token:
                 keywords.append(geom_token)
             if esd_frequency_enabled:
@@ -635,7 +664,18 @@ def _create_state_input_tddft(
             f.write("*\n\n")
 
             f.write("$new_job\n")
-            f.write("! " + " ".join(keywords[:-2]) + "\n")
+            # Build TDDFT keywords without OPT and numFREQ
+            tddft_keywords = [
+                functional,
+                "RKS",
+                main_basisset,
+                disp_corr,
+                ri_jkx,
+                aux_jk,
+            ]
+            if solvation_kw:
+                tddft_keywords.append(solvation_kw)
+            f.write("! " + " ".join(tddft_keywords) + "\n")
             f.write('%base "S0_TDDFT"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
@@ -857,7 +897,7 @@ def create_isc_input(
     disp_corr = config.get('disp_corr', 'D4')
     ri_jkx = config.get('ri_jkx', 'RIJCOSX')
     aux_jk = config.get('aux_jk', 'def2/J')
-    implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
+    implicit_solvation = config.get('implicit_solvation_model', '')
 
     # Simple keyword line (restricted reference)
     keywords = [
@@ -867,9 +907,14 @@ def create_isc_input(
         disp_corr,
         ri_jkx,
         aux_jk,
-        f"{implicit_solvation}({solvent})",
-        "ESD(ISC)",
     ]
+
+    # Add solvation keyword only if model is set
+    solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
+    if solvation_kw:
+        keywords.append(solvation_kw)
+
+    keywords.append("ESD(ISC)")
 
     simple_line = "! " + " ".join(keywords)
 
@@ -995,7 +1040,7 @@ def create_ic_input(
     disp_corr = config.get('disp_corr', 'D4')
     ri_jkx = config.get('ri_jkx', 'RIJCOSX')
     aux_jk = config.get('aux_jk', 'def2/J')
-    implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
+    implicit_solvation = config.get('implicit_solvation_model', '')
 
     # Simple keyword line (no RKS/UKS flag - let ORCA decide based on multiplicity)
     keywords = [
@@ -1004,9 +1049,14 @@ def create_ic_input(
         disp_corr,
         ri_jkx,
         aux_jk,
-        f"{implicit_solvation}({solvent})",
-        "ESD(IC)",
     ]
+
+    # Add solvation keyword only if model is set
+    solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
+    if solvation_kw:
+        keywords.append(solvation_kw)
+
+    keywords.append("ESD(IC)")
 
     simple_line = "! " + " ".join(keywords)
 
@@ -1140,10 +1190,13 @@ def append_properties_of_interest_jobs(
     disp_corr = config.get('disp_corr', 'D4')
     ri_jkx = config.get('ri_jkx', 'RIJCOSX')
     relativity = str(config.get('relativity', 'none')).strip().lower()
-    implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
+    implicit_solvation = config.get('implicit_solvation_model', '')
     pal = config.get('PAL', 6)
     maxcore = config.get('maxcore', 6000)
     maxiter = config.get('maxiter', 125)
+
+    # Build solvation keyword
+    solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
 
     # Determine basis sets and aux basis based on relativity
     if relativity in ['zora', 'dkh', 'dkh2']:
@@ -1193,7 +1246,9 @@ def append_properties_of_interest_jobs(
             keywords = [functional, actual_main_basis, disp_corr, ri_jkx, aux_jk]
             if relativity_keyword:
                 keywords.append(relativity_keyword)
-            keywords.append(f"{implicit_solvation}({solvent})")
+            # Add solvation keyword only if model is set
+            if solvation_kw:
+                keywords.append(solvation_kw)
 
             f.write("! " + " ".join(keywords) + "\n")
 
