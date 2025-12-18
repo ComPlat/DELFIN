@@ -2490,6 +2490,31 @@ def generate_combined_docx_report(
     # Rates
     _add_rate_table(doc, "Intersystem crossing", data.get("intersystem_crossing", {}) or {})
     _add_rate_table(doc, "Internal conversion", data.get("internal_conversion", {}) or {})
+    _add_rate_table(doc, "Fluorescence (radiative)", data.get("fluorescence_rates", {}) or {})
+
+    # Phosphorescence: expand sublevel rates and append arithmetic mean
+    phosp_rates = data.get("phosphorescence_rates", {}) or {}
+    if phosp_rates:
+        expanded: Dict[str, Any] = {}
+        for name, rec in phosp_rates.items():
+            if not isinstance(rec, dict):
+                continue
+            iroots = rec.get("iroot_rates_s1") or {}
+            if isinstance(iroots, dict):
+                for iroot, rate in sorted(iroots.items(), key=lambda kv: int(str(kv[0])) if str(kv[0]).isdigit() else 999):
+                    expanded[f"{name} (IROOT {iroot})"] = {
+                        "rate_s1": rate,
+                        "temperature_K": rec.get("temperature_K"),
+                        "delta_E_cm1": rec.get("delta_E_cm1"),
+                    }
+            mean_rate = rec.get("rate_mean_s1")
+            if mean_rate is not None:
+                expanded[f"{name} (mean)"] = {
+                    "rate_s1": mean_rate,
+                    "temperature_K": rec.get("temperature_K"),
+                    "delta_E_cm1": rec.get("delta_E_cm1"),
+                }
+        _add_rate_table(doc, "Phosphorescence (radiative)", expanded)
 
     # Plots
     _add_plot_if_exists(doc, "AFP spectrum", assets.afp_png)

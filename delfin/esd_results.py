@@ -49,6 +49,15 @@ _FC_HT_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+_FLUOR_RATE_RE = re.compile(
+    r"(?:calculated\s+fluorescence\s+rate\s+constant\s+is|fluorescence\s+rate\s+constant\s+is|k[_\s-]*f)\s*=?\s*([0-9.+-Ee]+)\s*s(?:-1|\^-1)",
+    flags=re.IGNORECASE,
+)
+_PHOSP_RATE_RE = re.compile(
+    r"(?:calculated\s+phosphorescence\s+rate\s+constant\s+is|phosphorescence\s+rate\s+constant\s+is|k[_\s-]*p)\s*=?\s*([0-9.+-Ee]+)\s*s(?:-1|\^-1)",
+    flags=re.IGNORECASE,
+)
+
 
 def _safe_float(value: Optional[str]) -> Optional[float]:
     if value is None:
@@ -94,12 +103,34 @@ class ICResult:
 
 
 @dataclass
+class FluorResult:
+    """Parsed information for a fluorescence transition."""
+
+    rate: Optional[float]
+    temperature: Optional[float]
+    delta_cm1: Optional[float]
+    source: Path
+
+
+@dataclass
+class PhospResult:
+    """Parsed information for a phosphorescence transition (multiple sublevels + mean)."""
+
+    sublevel_rates: Tuple[Optional[float], ...]
+    rate_mean: Optional[float]
+    temperature: Optional[float]
+    delta_cm1: Optional[float]
+    source: Path
+
+@dataclass
 class ESDSummary:
     """Structured results parsed from ESD output files."""
 
     states: Dict[str, StateResult] = field(default_factory=dict)
     isc: Dict[str, ISCResult] = field(default_factory=dict)
     ic: Dict[str, ICResult] = field(default_factory=dict)
+    fluor: Dict[str, FluorResult] = field(default_factory=dict)
+    phosp: Dict[str, PhospResult] = field(default_factory=dict)
 
     @property
     def states_fspe(self) -> Dict[str, Optional[float]]:
@@ -120,6 +151,8 @@ class ESDSummary:
                 any(result.fspe is not None for result in self.states.values()),
                 any(result.rate is not None for result in self.isc.values()),
                 any(result.rate is not None for result in self.ic.values()),
+                any(result.rate is not None for result in self.fluor.values()),
+                any(result.rate_mean is not None for result in self.phosp.values()),
             )
         )
 
@@ -161,6 +194,32 @@ def _parse_ic_output(path: Path) -> ICResult:
     temp = _safe_float(_TEMP_RE.search(text).group(1)) if text and _TEMP_RE.search(text) else None
     delta = _safe_float(_DELE_RE.search(text).group(1)) if text and _DELE_RE.search(text) else None
     return ICResult(rate, temp, delta, path)
+
+
+def _parse_fluor_output(path: Path) -> FluorResult:
+    text = _read_text(path)
+    rate = _safe_float(_FLUOR_RATE_RE.search(text).group(1)) if text and _FLUOR_RATE_RE.search(text) else None
+    temp = _safe_float(_TEMP_RE.search(text).group(1)) if text and _TEMP_RE.search(text) else None
+    delta = _safe_float(_DELE_RE.search(text).group(1)) if text and _DELE_RE.search(text) else None
+    return FluorResult(rate, temp, delta, path)
+
+
+def _parse_phosp_output(path: Path) -> PhospResult:
+    text = _read_text(path)
+    rates: Tuple[Optional[float], ...]
+    if text:
+        matches = _PHOSP_RATE_RE.findall(text)
+        rates = tuple(_safe_float(m) for m in matches)
+        vals = [r for r in rates if r is not None]
+        rate_mean = sum(vals) / len(vals) if vals else None
+        temp = _safe_float(_TEMP_RE.search(text).group(1)) if _TEMP_RE.search(text) else None
+        delta = _safe_float(_DELE_RE.search(text).group(1)) if _DELE_RE.search(text) else None
+    else:
+        rates = tuple()
+        rate_mean = None
+        temp = None
+        delta = None
+    return PhospResult(rates, rate_mean, temp, delta, path)
 
 
 def collect_esd_results(
@@ -258,5 +317,19 @@ def collect_esd_results(
         init_state, final_state = (part.strip() for part in ic_key.split(">", 1))
         filename = esd_dir / f"{init_state}_{final_state}_IC.out"
         summary.ic[f"{init_state}>{final_state}"] = _parse_ic_output(filename)
+
+    # Fluorescence / phosphorescence rates (controlled by emission_rates)
+    emission_rates = set()
+    if config is not None:
+        raw = config.get("emission_rates", "")
+        emission_rates = {t.strip().lower() for t in str(raw).replace(";", ",").replace(" ", ",").split(",") if t.strip()}
+
+    if "f" in emission_rates:
+        fluor_out = esd_dir / "S1_S0_FLUOR.out"
+        summary.fluor["S1>S0"] = _parse_fluor_output(fluor_out)
+
+    if "p" in emission_rates:
+        phosp_out = esd_dir / "T1_S0_PHOSP.out"
+        summary.phosp["T1>S0"] = _parse_phosp_output(phosp_out)
 
     return summary

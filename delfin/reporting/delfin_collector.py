@@ -670,6 +670,74 @@ def parse_ic_data(esd_dir: Path, state1: str, state2: str) -> Optional[Dict[str,
     return None
 
 
+def parse_fluor_data(esd_dir: Path, state1: str = "S1", state2: str = "S0") -> Optional[Dict[str, Any]]:
+    """Parse fluorescence rate data from ESD(FLUOR) output."""
+    fluor_file = esd_dir / f"{state1}_{state2}_FLUOR.out"
+    if not fluor_file.exists():
+        return None
+    try:
+        with fluor_file.open("r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+
+        rate_match = re.search(
+            r'(?:k[_\s-]*f|k[_\s-]*fluor|fluorescence\s+rate\s+constant\s+(?:is)?|calculated\s+fluorescence\s+rate\s+constant\s+is)\s*=?\s*([\d.eE+-]+)\s*s-?1',
+            content,
+            flags=re.IGNORECASE,
+        )
+        temp_match = re.search(r'Temperature used:\s*([-\d.]+)\s*K', content)
+        delta_e_match = re.search(r'0-0 energy difference:\s*([-\d.]+)\s*cm-1', content)
+
+        return {
+            "rate_s1": float(rate_match.group(1)) if rate_match else None,
+            "temperature_K": float(temp_match.group(1)) if temp_match else None,
+            "delta_E_cm1": float(delta_e_match.group(1)) if delta_e_match else None,
+            "source_file": fluor_file.name,
+        }
+    except Exception as e:
+        logger.error(f"Error parsing FLUOR file {fluor_file}: {e}")
+        return None
+
+
+def parse_phosp_data(esd_dir: Path, state1: str = "T1", state2: str = "S0") -> Optional[Dict[str, Any]]:
+    """Parse phosphorescence rates from ESD(PHOSP) output.
+
+    The PHOSP workflow may run multiple IROOT subjobs in a single output via $new_job.
+    We parse all phosphorescence rate constants and return k1/k2/k3 plus arithmetic mean.
+    """
+    phosp_file = esd_dir / f"{state1}_{state2}_PHOSP.out"
+    if not phosp_file.exists():
+        return None
+    try:
+        with phosp_file.open("r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+
+        # Collect all occurrences (often one per subjob / IROOT)
+        matches = re.findall(
+            r'(?:k[_\s-]*p|k[_\s-]*phosp|phosphorescence\s+rate\s+constant\s+(?:is)?|calculated\s+phosphorescence\s+rate\s+constant\s+is)\s*=?\s*([\d.eE+-]+)\s*s-?1',
+            content,
+            flags=re.IGNORECASE,
+        )
+        rates = [float(x) for x in matches] if matches else []
+
+        temp_match = re.search(r'Temperature used:\s*([-\d.]+)\s*K', content)
+        delta_e_match = re.search(r'0-0 energy difference:\s*([-\d.]+)\s*cm-1', content)
+
+        # Map in order of appearance: IROOT 1..N
+        iroot_rates = {str(i + 1): rates[i] for i in range(len(rates))}
+        mean_rate = sum(rates) / len(rates) if rates else None
+
+        return {
+            "iroot_rates_s1": iroot_rates,
+            "rate_mean_s1": mean_rate,
+            "temperature_K": float(temp_match.group(1)) if temp_match else None,
+            "delta_E_cm1": float(delta_e_match.group(1)) if delta_e_match else None,
+            "source_file": phosp_file.name,
+        }
+    except Exception as e:
+        logger.error(f"Error parsing PHOSP file {phosp_file}: {e}")
+        return None
+
+
 def parse_esd_summary(project_dir: Path) -> Dict[str, Any]:
     """Parse summary data from ESD.txt if present (rates, SOC, FC/HT)."""
     esd_txt = project_dir / "ESD.txt"
@@ -772,6 +840,8 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         "emission": {},
         "intersystem_crossing": {},
         "internal_conversion": {},
+        "fluorescence_rates": {},
+        "phosphorescence_rates": {},
         "occupier": {},
         "photophysical_rates": {},
         "delfin_summary": delfin_summary,
@@ -981,6 +1051,15 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     for key, entry in summary_data.get("ic", {}).items():
         if key not in data["internal_conversion"]:
             data["internal_conversion"][key] = entry
+
+    # Parse fluorescence/phosphorescence rates if present
+    fluor = parse_fluor_data(esd_dir, "S1", "S0")
+    if fluor:
+        data["fluorescence_rates"]["S1_S0"] = fluor
+
+    phosp = parse_phosp_data(esd_dir, "T1", "S0")
+    if phosp:
+        data["phosphorescence_rates"]["T1_S0"] = phosp
 
     logger.info("ESD data collection complete")
     return data

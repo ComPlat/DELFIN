@@ -296,6 +296,38 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                     extras.append(f"Δ0-0={record.delta_cm1:.2f} cm^-1")
                 detail = f" ({', '.join(extras)})" if extras else ""
                 esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}")
+        if getattr(esd_summary, "fluor", None):
+            fluor_items = [(k, v) for k, v in sorted(esd_summary.fluor.items()) if v and v.rate is not None]
+            if fluor_items:
+                if esd_lines:
+                    esd_lines.append("")
+                esd_lines.append("Fluorescence rate constants (s^-1):")
+                for transition, record in fluor_items:
+                    extras: list[str] = []
+                    if record.temperature is not None:
+                        extras.append(f"T={record.temperature:.2f} K")
+                    if record.delta_cm1 is not None:
+                        extras.append(f"Δ0-0={record.delta_cm1:.2f} cm^-1")
+                    detail = f" ({', '.join(extras)})" if extras else ""
+                    esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}")
+        if getattr(esd_summary, "phosp", None):
+            phosp_items = [(k, v) for k, v in sorted(esd_summary.phosp.items()) if v and v.rate_mean is not None]
+            if phosp_items:
+                if esd_lines:
+                    esd_lines.append("")
+                esd_lines.append("Phosphorescence rate constants (s^-1):")
+                for transition, record in phosp_items:
+                    extras: list[str] = []
+                    if record.temperature is not None:
+                        extras.append(f"T={record.temperature:.2f} K")
+                    if record.delta_cm1 is not None:
+                        extras.append(f"Δ0-0={record.delta_cm1:.2f} cm^-1")
+                    detail = f" ({', '.join(extras)})" if extras else ""
+                    # Print k1/k2/k3 lines if present, then arithmetic mean
+                    sub = [r for r in record.sublevel_rates if r is not None]
+                    for i, r in enumerate(sub, start=1):
+                        esd_lines.append(f"  {transition} (k{i}) = {fmt_rate(r)}{detail}")
+                    esd_lines.append(f"  {transition} (mean) = {fmt_rate(record.rate_mean)}{detail}")
         if esd_lines:
             sections.append("ESD:\n" + "\n".join(esd_lines))
     middle = "\n\n".join(sections)
