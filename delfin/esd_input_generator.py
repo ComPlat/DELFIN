@@ -1257,8 +1257,11 @@ def create_fluor_input(
         disp_corr,
         ri_jkx,
         aux_jk,
-        "TIGHTSCF",
     ]
+    fluor_keywords = str(config.get("fluor_keywords", "")).strip()
+    if fluor_keywords:
+        keywords.append(fluor_keywords)
+
     keywords = [k for k in keywords if str(k).strip()]
 
     solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
@@ -1405,6 +1408,9 @@ def create_phosp_input(
 
     # ORCA recommends DOSOC TRUE for phosphorescence
     dosoc_flag = str(config.get("ESD_PHOSP_DOSOC", "TRUE")).upper()
+    lines = str(config.get("ESD_LINES", "VOIGT")).strip().upper() or "VOIGT"
+    linew = str(config.get("ESD_LINEW", 75)).strip()
+    inlinew = str(config.get("ESD_INLINEW", 200)).strip()
 
     # Which IROOT subjobs to run (triplet SOC-split components).
     # Default is 1,2,3, but allow overriding via CONTROL.
@@ -1431,6 +1437,9 @@ def create_phosp_input(
             f'  GSHESSIAN       "{final_state}.hess"',
             f'  TSHESSIAN       "{initial_state}.hess"',
             f"  DOHT            {doht_flag}",
+            f"  LINES           {lines}",
+            f"  LINEW           {linew}",
+            f"  INLINEW         {inlinew}",
             f"  TEMP            {temperature}",
         ]
         if dele_int is not None:

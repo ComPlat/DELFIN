@@ -49,6 +49,7 @@ ICs=S2>S1
 emission_rates=f,p
 phosp_IROOT=1,2,3
 phosp_keywords=
+fluor_keywords=
 TROOTSSL=-1,0,1
 addition_S0=
 --------------------
@@ -65,6 +66,10 @@ ESD_maxdim=30
 ESD_TDA=FALSE
 ESD_followiroot=true
 ESD_SOC=false
+DOHT=TRUE
+ESD_LINES=VOIGT
+ESD_LINEW=75
+ESD_INLINEW=200
 ------------------------------------
 MANUALLY:
 multiplicity_0=
