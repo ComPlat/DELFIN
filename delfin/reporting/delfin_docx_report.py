@@ -1121,10 +1121,12 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         logger.warning("matplotlib not available; skipping energy level plot")
         return None
 
-    # Extract S and T states with their energies (FSPE and ZPE-corrected)
-    s_states = []  # (name, fspe, zpe_corrected or None)
+    # Extract S and T states with their energies (FSPE) and optionally E0 and U.
+    # Transitions (ISC/rISC/IC) are drawn using FSPE to keep a consistent reference.
+    # E0 = E_el + ZPE (0 K internal energy); U = ORCA "Total thermal energy" (includes ZPE + thermal corrections).
+    s_states = []  # (name, fspe, e0_or_none, u_or_none)
     t_states = []
-    state_energy_map = {}  # For ISC arrow drawing: {state_name: (fspe, zpe_corrected)}
+    state_energy_map = {}  # For transition drawing: {state_name: fspe}
 
     # Ground state S0
     gs = data.get("ground_state_S0", {}) or {}
@@ -1133,11 +1135,13 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         thermo = gs.get("thermochemistry", {}) or {}
         hartree = opt.get("hartree")
         zpe = thermo.get("zero_point_energy_hartree")
+        total_u = thermo.get("total_thermal_energy_hartree")
         if hartree is not None:
             fspe = float(hartree)
-            zpe_corrected = fspe + zpe if zpe is not None else None
-            s_states.append(("S0", fspe, zpe_corrected))
-            state_energy_map["S0"] = (fspe, zpe_corrected)
+            e0 = fspe + zpe if zpe is not None else None
+            u_val = float(total_u) if total_u is not None else None
+            s_states.append(("S0", fspe, e0, u_val))
+            state_energy_map["S0"] = fspe
 
     # Excited states
     excited = data.get("excited_states", {}) or {}
@@ -1148,14 +1152,16 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         thermo = entry.get("thermochemistry", {}) or {}
         hartree = opt.get("hartree")
         zpe = thermo.get("zero_point_energy_hartree")
+        total_u = thermo.get("total_thermal_energy_hartree")
         if hartree is not None:
             fspe = float(hartree)
-            zpe_corrected = fspe + zpe if zpe is not None else None
+            e0 = fspe + zpe if zpe is not None else None
+            u_val = float(total_u) if total_u is not None else None
             if state_name.startswith("S"):
-                s_states.append((state_name, fspe, zpe_corrected))
+                s_states.append((state_name, fspe, e0, u_val))
             elif state_name.startswith("T"):
-                t_states.append((state_name, fspe, zpe_corrected))
-            state_energy_map[state_name] = (fspe, zpe_corrected)
+                t_states.append((state_name, fspe, e0, u_val))
+            state_energy_map[state_name] = fspe
 
     if not s_states and not t_states:
         logger.warning("No S or T states found for energy level plot")
@@ -1186,10 +1192,21 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
 
     line_width = 0.3
 
+    def _format_state_math(state_name: str) -> str:
+        """Format 'S0'/'T1' into LaTeX math like 'S_{0}'/'T_{1}'."""
+        state = str(state_name).strip().upper()
+        if not state:
+            return state
+        head = state[0]
+        tail = state[1:]
+        if head in ("S", "T") and tail.isdigit():
+            return f"{head}_{{{tail}}}"
+        return state
+
     def _avoid_label_overlap(states_list, x_pos):
         """Adjust label positions to avoid overlap by placing them side-by-side.
 
-        states_list now contains tuples of (name, fspe, zpe_corrected).
+        states_list now contains tuples of (name, fspe, e0_or_none, u_or_none).
         """
         # Group states that are very close in energy (within 0.005 Eh ~0.14 eV)
         overlap_threshold = 0.005
@@ -1232,53 +1249,111 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
     if s_states:
         s_x = lane_positions['S']
         label_offsets = _avoid_label_overlap(s_states, s_x)
-        for idx, (state_name, fspe, zpe_corrected) in enumerate(s_states):
-            # Plot FSPE (darker line)
-            ax.plot([s_x - line_width, s_x + line_width], [fspe, fspe], 'b-', linewidth=2, label='FSPE' if idx == 0 else "")
-            # Plot ΔE(0,0) (lighter line) if available with label
-            if zpe_corrected is not None:
-                ax.plot([s_x - line_width, s_x + line_width], [zpe_corrected, zpe_corrected],
-                       'b-', linewidth=2, alpha=0.35, label='E$_{0,0}$' if idx == 0 else "")
-                # Add E00 label on the left side
-                e00_label = "E$_{0,0}$(" + state_name.replace("S", "$S_").replace("0", "{0}") \
-                                  .replace("1", "{1}").replace("2", "{2}") \
-                                  .replace("3", "{3}").replace("4", "{4}") \
-                                  .replace("5", "{5}").replace("6", "{6}") + "$)"
-                ax.text(s_x - line_width - 0.05, zpe_corrected, e00_label,
-                       va='center', fontsize=8, ha='right', alpha=0.7)
+        for idx, (state_name, fspe, e0, u_val) in enumerate(s_states):
+            # Plot FSPE (dark)
+            ax.plot(
+                [s_x - line_width, s_x + line_width],
+                [fspe, fspe],
+                'b-',
+                linewidth=2,
+                label='FSPE' if idx == 0 else "",
+            )
+            # Plot E0 (FSPE+ZPE) as a light line (labeled)
+            if e0 is not None:
+                ax.plot(
+                    [s_x - line_width, s_x + line_width],
+                    [e0, e0],
+                    'b-',
+                    linewidth=2,
+                    alpha=0.35,
+                )
+                ax.text(
+                    s_x - line_width - 0.05,
+                    e0,
+                    f"$E_0({_format_state_math(state_name)})$",
+                    va='center',
+                    fontsize=7,
+                    ha='right',
+                    alpha=0.65,
+                )
+            # Plot U (ORCA total thermal energy at 298 K) as a very light dotted line
+            if u_val is not None:
+                ax.plot(
+                    [s_x - line_width, s_x + line_width],
+                    [u_val, u_val],
+                    color='b',
+                    linewidth=1.6,
+                    alpha=0.25,
+                    linestyle=':',
+                )
+                ax.text(
+                    s_x - line_width - 0.05,
+                    u_val,
+                    f"$U({_format_state_math(state_name)})$",
+                    va='center',
+                    fontsize=7,
+                    ha='right',
+                    alpha=0.55,
+                )
             # Format FSPE label with subscript
             label = state_name.replace("S", "$S_").replace("0", "{0}") \
                               .replace("1", "{1}").replace("2", "{2}") \
                               .replace("3", "{3}").replace("4", "{4}") \
                               .replace("5", "{5}").replace("6", "{6}") + "$"
-            # Apply offset to avoid overlap
-            x_offset = s_x + line_width + 0.05 + label_offsets[idx]
-            ax.text(x_offset, fspe, label, va='center', fontsize=10, ha='left')
+            # Place FSPE state labels close to the line (left side), similar distance as E0/U labels
+            x_offset = s_x - line_width - 0.05 - label_offsets[idx]
+            ax.text(x_offset, fspe, label, va='center', fontsize=10, ha='right')
 
     # Plot T states
     if t_states:
         t_x = lane_positions['T']
         label_offsets = _avoid_label_overlap(t_states, t_x)
-        for idx, (state_name, fspe, zpe_corrected) in enumerate(t_states):
-            # Plot FSPE (darker line)
+        for idx, (state_name, fspe, e0, u_val) in enumerate(t_states):
+            # Plot FSPE (dark)
             ax.plot([t_x - line_width, t_x + line_width], [fspe, fspe], 'r-', linewidth=2)
-            # Plot ΔE(0,0) (lighter line) if available with label
-            if zpe_corrected is not None:
-                ax.plot([t_x - line_width, t_x + line_width], [zpe_corrected, zpe_corrected],
-                       'r-', linewidth=2, alpha=0.35)
-                # Add E00 label on the left side
-                e00_label = "E$_{0,0}$(" + state_name.replace("T", "$T_").replace("1", "{1}") \
-                                  .replace("2", "{2}").replace("3", "{3}") \
-                                  .replace("4", "{4}").replace("5", "{5}") \
-                                  .replace("6", "{6}") + "$)"
-                ax.text(t_x - line_width - 0.05, zpe_corrected, e00_label,
-                       va='center', fontsize=8, ha='right', alpha=0.7)
+            # Plot E0 (FSPE+ZPE) as a light line (labeled)
+            if e0 is not None:
+                ax.plot(
+                    [t_x - line_width, t_x + line_width],
+                    [e0, e0],
+                    'r-',
+                    linewidth=2,
+                    alpha=0.35,
+                )
+                ax.text(
+                    t_x - line_width - 0.05,
+                    e0,
+                    f"$E_0({_format_state_math(state_name)})$",
+                    va='center',
+                    fontsize=7,
+                    ha='right',
+                    alpha=0.65,
+                )
+            # Plot U (ORCA total thermal energy at 298 K) as a very light dotted line
+            if u_val is not None:
+                ax.plot(
+                    [t_x - line_width, t_x + line_width],
+                    [u_val, u_val],
+                    color='r',
+                    linewidth=1.6,
+                    alpha=0.25,
+                    linestyle=':',
+                )
+                ax.text(
+                    t_x - line_width - 0.05,
+                    u_val,
+                    f"$U({_format_state_math(state_name)})$",
+                    va='center',
+                    fontsize=7,
+                    ha='right',
+                    alpha=0.55,
+                )
             # Format FSPE label with subscript
             label = state_name.replace("T", "$T_").replace("1", "{1}") \
                               .replace("2", "{2}").replace("3", "{3}") \
                               .replace("4", "{4}").replace("5", "{5}") \
                               .replace("6", "{6}") + "$"
-            # Apply offset to avoid overlap
+            # Place FSPE state labels close to the line (right side)
             x_offset = t_x + line_width + 0.05 + label_offsets[idx]
             ax.text(x_offset, fspe, label, va='center', fontsize=10, ha='left')
 
@@ -1300,6 +1375,17 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         if len(parts) != 2:
             return None, None
         return parts[0].strip(), parts[1].strip()
+
+    def _get_rate_value(rec: Dict[str, Any]) -> Optional[float]:
+        """Best-effort extraction of a transition rate for labeling."""
+        for k in ("total_rate_s1", "rate_s1", "rate"):
+            val = rec.get(k)
+            if val is not None:
+                try:
+                    return float(val)
+                except Exception:
+                    return None
+        return None
 
     # Different colors for each transition
     transition_colors = ['green', 'purple', 'orange', 'brown', 'olive', 'cyan', 'magenta', 'pink']
@@ -1325,14 +1411,18 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
             continue
 
         # IMPORTANT: Only draw arrows between states that actually exist in the diagram
-        init_info = state_energy_map.get(init_state)
-        final_info = state_energy_map.get(final_state)
-        if not init_info or not final_info:
-            logger.warning(f"Skipping {trans_key}: state not in diagram (init={init_state} exists={init_info is not None}, final={final_state} exists={final_info is not None})")
+        init_energy = state_energy_map.get(init_state)
+        final_energy = state_energy_map.get(final_state)
+        if init_energy is None or final_energy is None:
+            logger.warning(
+                "Skipping %s: state not in diagram (init=%s exists=%s, final=%s exists=%s)",
+                trans_key,
+                init_state,
+                init_energy is not None,
+                final_state,
+                final_energy is not None,
+            )
             continue
-
-        init_energy = init_info[0]  # Always use FSPE
-        final_energy = final_info[0]  # Always use FSPE
 
         # Determine if ISC (S>T) or rISC (T>S)
         is_risc = init_state.startswith('T') and final_state.startswith('S')
@@ -1372,9 +1462,9 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         if is_bidirectional:
             # Offset one direction up, the other down
             if trans_key < reverse_key:  # Consistent ordering
-                y_offset = 0.005  # Offset up
+                y_offset = 0.003  # Offset up
             else:
-                y_offset = -0.005  # Offset down
+                y_offset = -0.003  # Offset down
 
         # Draw arrow with correct energy positions
         if is_risc:
@@ -1391,10 +1481,79 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
                        arrowprops=dict(arrowstyle='->', color=color, lw=1.5, alpha=0.6))
 
         # Collect rate label for top-right display
-        rate = trans_data.get('total_rate_s1')
+        rate = _get_rate_value(trans_data)
         if rate is not None:
             # Format: k(ISC, S1→T1) = 5.2e+06 s⁻¹
             label_text = f"$k$({trans_type}, ${init_state}$→${final_state}$) = {rate:.1e} s$^{{-1}}$"
+            rate_labels.append((label_text, color))
+
+    # Plot IC (internal conversion) connectors within the same multiplicity lane (S->S, T->T)
+    ic_bidirectional = set()
+    for trans_key in ic_data.keys():
+        init_s, final_s = _parse_transition(trans_key)
+        if init_s and final_s:
+            reverse_key = f"{final_s}_{init_s}"
+            if reverse_key in ic_data:
+                pair = tuple(sorted([trans_key, reverse_key]))
+                ic_bidirectional.add(pair)
+
+    for trans_key, trans_data in ic_data.items():
+        init_state, final_state = _parse_transition(trans_key)
+        if not init_state or not final_state:
+            continue
+
+        # Only draw arrows between states that exist in the diagram
+        init_energy = state_energy_map.get(init_state)
+        final_energy = state_energy_map.get(final_state)
+        if init_energy is None or final_energy is None:
+            logger.warning(
+                "Skipping IC %s: state not in diagram (init=%s exists=%s, final=%s exists=%s)",
+                trans_key,
+                init_state,
+                init_energy is not None,
+                final_state,
+                final_energy is not None,
+            )
+            continue
+
+        # IC should stay within the same lane; skip cross-lane pairs just in case
+        init_lane = 'S' if init_state.startswith('S') else 'T' if init_state.startswith('T') else None
+        final_lane = 'S' if final_state.startswith('S') else 'T' if final_state.startswith('T') else None
+        if init_lane is None or final_lane is None or init_lane != final_lane:
+            continue
+        if init_lane not in lane_positions:
+            continue
+
+        # Avoid duplicate arrows
+        arrow_key = f"IC_{init_state}_{final_state}"
+        if arrow_key in drawn_arrows:
+            continue
+        drawn_arrows.add(arrow_key)
+
+        # Assign unique color to each IC transition
+        color = transition_colors[color_idx % len(transition_colors)]
+        color_idx += 1
+
+        # If bidirectional, offset slightly in x so both are visible, but keep them centered on the lane
+        reverse_key = f"{final_state}_{init_state}"
+        is_bidirectional = any(trans_key in pair and reverse_key in pair for pair in ic_bidirectional)
+        x_offset = 0.0
+        if is_bidirectional:
+            x_offset = 0.04 if trans_key < reverse_key else -0.04
+
+        # Connect the two level bars in the middle of the lane
+        x_mid = lane_positions[init_lane] + x_offset
+        ax.annotate(
+            '',
+            xy=(x_mid, final_energy),
+            xytext=(x_mid, init_energy),
+            arrowprops=dict(arrowstyle='->', color=color, lw=1.5, alpha=0.6, linestyle='--'),
+        )
+
+        # Collect rate label for top-right display (append under ISC/rISC)
+        rate = _get_rate_value(trans_data)
+        if rate is not None:
+            label_text = f"$k$(IC, ${init_state}$→${final_state}$) = {rate:.1e} s$^{{-1}}$"
             rate_labels.append((label_text, color))
 
     # Display rate constants in top-right corner (in axes coordinates to avoid overlap)
@@ -1426,7 +1585,7 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
 
     # Legend removed - each ISC/rISC transition has its own color and label
 
-    plt.title("Energy Level Diagram (FSPE and E$_{0,0}$ with ISC/rISC rates)", fontsize=14, fontweight='bold')
+    plt.title("Energy Level Diagram (Optimized State Energies with ISC/rISC/IC rates)", fontsize=14, fontweight='bold')
     plt.tight_layout()
 
     # Save plot

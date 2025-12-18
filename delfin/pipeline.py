@@ -446,14 +446,15 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
     logger.info("[classic] Dispatching workflows to scheduler (%s mode)", mode_label)
 
     # Check if ESD is enabled - we need to know this before creating the scheduler
-    from delfin.esd_module import parse_esd_config
+    from delfin.esd_module import parse_emission_rates, parse_esd_config
     esd_enabled, states, iscs, ics = parse_esd_config(config)
+    emission_rates = parse_emission_rates(config)
 
     scheduler = GlobalOrcaScheduler(config, label="classic")
     try:
         # Add ESD jobs to scheduler FIRST (before execute_classic_workflows which calls run())
         # This allows ESD to run in parallel with ox/red steps after initial completes
-        if esd_enabled and (states or iscs or ics):
+        if esd_enabled and (states or iscs or ics or emission_rates):
             from delfin.esd_module import add_esd_jobs_to_scheduler
             add_esd_jobs_to_scheduler(
                 scheduler,
@@ -471,6 +472,7 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
             ctx.extra['esd_states'] = states
             ctx.extra['esd_iscs'] = iscs
             ctx.extra['esd_ics'] = ics
+            ctx.extra['esd_emission_rates'] = sorted(emission_rates)
         else:
             esd_enabled = False
 

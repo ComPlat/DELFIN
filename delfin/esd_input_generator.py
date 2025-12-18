@@ -1141,6 +1141,126 @@ def create_ic_input(
     return str(input_file)
 
 
+def create_fluor_input(
+    esd_dir: Path,
+    charge: int,
+    solvent: str,
+    metals: List[str],
+    main_basisset: str,
+    metal_basisset: str,
+    config: Dict[str, Any],
+    *,
+    initial_state: str = "S1",
+    final_state: str = "S0",
+) -> str:
+    """Generate ORCA input file for fluorescence rate calculation (ESD(FLUOR)).
+
+    This is primarily used when CONTROL sets emission_rates=f.
+
+    Args:
+        esd_dir: ESD working directory
+        charge: Molecular charge
+        solvent: Solvent name
+        metals: List of metal atoms (kept for signature consistency)
+        main_basisset: Main basis set
+        metal_basisset: Metal basis set (kept for signature consistency)
+        config: Configuration dictionary
+        initial_state: Excited singlet state (default: S1)
+        final_state: Ground singlet state (default: S0)
+
+    Returns:
+        Path to generated input file
+    """
+    initial_state = initial_state.strip().upper()
+    final_state = final_state.strip().upper()
+    init_type, init_root = _parse_state_root(initial_state)
+    final_type, _ = _parse_state_root(final_state)
+
+    if init_type != "S" or final_state != "S0" or final_type != "S":
+        raise ValueError(f"Fluorescence only supported for Sn→S0 (got {initial_state}→{final_state})")
+
+    job_name = f"{initial_state}_{final_state}_FLUOR"
+    input_file = esd_dir / f"{job_name}.inp"
+
+    functional = config.get("functional", "PBE0")
+    disp_corr = config.get("disp_corr", "D4")
+    ri_jkx = config.get("ri_jkx", "RIJCOSX")
+    aux_jk = config.get("aux_jk", "def2/J")
+    implicit_solvation = config.get("implicit_solvation_model", "")
+
+    keywords = [
+        functional,
+        main_basisset,
+        disp_corr,
+        ri_jkx,
+        aux_jk,
+        "TIGHTSCF",
+    ]
+    keywords = [k for k in keywords if str(k).strip()]
+
+    solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
+    if solvation_kw:
+        keywords.append(solvation_kw)
+
+    keywords.append("ESD(FLUOR)")
+    simple_line = "! " + " ".join(keywords)
+
+    blocks: list[str] = []
+    blocks.append(f'%base "{job_name}"')
+
+    # TDDFT block (minimal, with configurable nroots)
+    nroots = int(config.get("ESD_FLUOR_NROOTS", 5))
+    iroot = int(config.get("ESD_FLUOR_IROOT", init_root))
+    tddft_block = [
+        "%TDDFT",
+        f"  NROOTS     {nroots}",
+        f"  IROOT      {iroot}",
+        "END",
+    ]
+    tddft_maxiter = _resolve_tddft_maxiter(config)
+    if tddft_maxiter is not None:
+        tddft_block.insert(-1, f"  maxiter    {tddft_maxiter}")
+    blocks.append("\n".join(tddft_block))
+
+    # ESD block
+    doht_flag = str(config.get("DOHT", "TRUE")).upper()
+    lines = str(config.get("ESD_LINES", "VOIGT")).strip().upper() or "VOIGT"
+    linew = str(config.get("ESD_LINEW", 75)).strip()
+    inlinew = str(config.get("ESD_INLINEW", 200)).strip()
+    temperature = config.get("temperature", 298.15)
+    esd_block = [
+        "%ESD",
+        f'  GSHESSIAN  "{final_state}.hess"',
+        f'  ESHESSIAN  "{initial_state}.hess"',
+        f"  DOHT       {doht_flag}",
+        f"  LINES      {lines}",
+        f"  LINEW      {linew}",
+        f"  INLINEW    {inlinew}",
+        f"  TEMP       {temperature}",
+        "END",
+    ]
+    blocks.append("\n".join(esd_block))
+
+    # PAL and maxcore
+    pal = config.get("PAL", 12)
+    maxcore = config.get("maxcore", 6000)
+    blocks.append(f"%pal nprocs {pal} end")
+    blocks.append(f"%maxcore {maxcore}")
+
+    # Geometry uses the optimized ground-state geometry from the ESD directory
+    xyzfile_line = f"* xyzfile {charge} 1 {final_state}.xyz"
+
+    with open(input_file, "w", encoding="utf-8") as f:
+        f.write(simple_line + "\n")
+        for block in blocks:
+            f.write(block + "\n")
+        f.write("\n")
+        f.write(xyzfile_line + "\n")
+
+    logger.info(f"Created FLUOR input: {input_file}")
+    return str(input_file)
+
+
 def append_properties_of_interest_jobs(
     inp_file: str,
     xyz_file: str,

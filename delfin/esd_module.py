@@ -13,6 +13,7 @@ import threading
 
 from delfin.common.logging import get_logger
 from delfin.esd_input_generator import (
+    create_fluor_input,
     create_ic_input,
     create_isc_input,
     create_state_input,
@@ -142,6 +143,22 @@ def parse_esd_config(config: Dict[str, Any]) -> tuple[bool, List[str], List[str]
     # logger.info(f"ESD config: enabled={esd_enabled}, states={states}, ISCs={iscs}, ICs={ics}")
 
     return esd_enabled, states, iscs, ics
+
+
+def parse_emission_rates(config: Dict[str, Any]) -> Set[str]:
+    """Parse CONTROL emission_rates into a set like {'f','p'}.
+
+    Accepted separators: comma, semicolon, whitespace. Case-insensitive.
+    """
+    raw = config.get("emission_rates", "")
+    if raw is None:
+        return set()
+    if isinstance(raw, list):
+        tokens = [str(x) for x in raw]
+    else:
+        tokens = str(raw).replace(";", ",").replace(" ", ",").split(",")
+    rates = {t.strip().lower() for t in tokens if str(t).strip()}
+    return {r for r in rates if r in {"f", "p"}}
 
 
 def setup_esd_directory(esd_dir: Path, states: List[str]) -> None:
@@ -600,6 +617,65 @@ def _populate_ic_jobs(
         )
 
 
+def _populate_fluor_jobs(
+    manager: _WorkflowManager,
+    esd_dir: Path,
+    charge: int,
+    solvent: str,
+    metals: List[str],
+    main_basisset: str,
+    metal_basisset: str,
+    config: Dict[str, Any],
+) -> None:
+    """Add fluorescence (S1→S0) ESD(FLUOR) job when requested via emission_rates=f."""
+    deps = {"esd_S0", "esd_S1"}
+    job_id = "esd_fluor_S1_S0"
+
+    def work(cores: int) -> None:
+        input_file = create_fluor_input(
+            esd_dir=esd_dir,
+            charge=charge,
+            solvent=solvent,
+            metals=metals,
+            main_basisset=main_basisset,
+            metal_basisset=metal_basisset,
+            config=config,
+            initial_state="S1",
+            final_state="S0",
+        )
+
+        abs_input = Path(input_file).resolve()
+        _update_pal_block(str(abs_input), cores)
+
+        output_file = esd_dir / "S1_S0_FLUOR.out"
+        logger.info("Running ORCA for fluorescence (S1→S0) in %s", esd_dir)
+
+        scratch_token = Path("scratch") / "FLUOR_S1_S0"
+        if not _run_orca_esd(
+            abs_input,
+            output_file.resolve(),
+            scratch_subdir=scratch_token,
+            working_dir=esd_dir,
+            config=config,
+        ):
+            raise RuntimeError("ORCA terminated abnormally for fluorescence (S1→S0)")
+
+        logger.info("Fluorescence (S1→S0) calculation completed")
+
+    half_cores = max(6, manager.total_cores // 2)
+    manager.add_job(
+        WorkflowJob(
+            job_id=job_id,
+            work=work,
+            description="Fluorescence S1→S0",
+            dependencies=deps,
+            cores_min=6,
+            cores_optimal=half_cores,
+            cores_max=manager.total_cores,
+        )
+    )
+
+
 def _create_s0_tddft_check_input(
     output_path: Path,
     esd_dir: Path,
@@ -747,20 +823,30 @@ def add_esd_jobs_to_scheduler(
         Tuple of (esd_enabled, states, iscs, ics) for tracking what was added
     """
     esd_enabled, states, iscs, ics = parse_esd_config(config)
+    emission_rates = parse_emission_rates(config)
 
     if not esd_enabled:
         logger.debug("ESD module disabled (ESD_modul=no)")
         return esd_enabled, states, iscs, ics
 
-    if not states and not iscs and not ics:
+    if not states and not iscs and not ics and not emission_rates:
         logger.debug("ESD module enabled but no states/ISCs/ICs configured")
         return esd_enabled, states, iscs, ics
 
     logger.info("Adding ESD jobs to scheduler (will run after %s)", dependency_job_id)
 
+    # Ensure required states exist when emission rates are requested
+    states_effective = list(states)
+    if "f" in emission_rates:
+        state_set = {s.upper() for s in states_effective}
+        for required in ("S0", "S1"):
+            if required not in state_set:
+                states_effective.append(required)
+                state_set.add(required)
+
     # Setup ESD directory (use absolute path to avoid chdir issues in parallel jobs)
     esd_dir = Path("ESD").resolve()
-    setup_esd_directory(esd_dir, states)
+    setup_esd_directory(esd_dir, states_effective)
 
     # Get the scheduler's internal manager
     manager = scheduler.manager
@@ -784,10 +870,10 @@ def add_esd_jobs_to_scheduler(
     }
 
     # Populate jobs (they will be added to the shared scheduler manager)
-    if states:
+    if states_effective:
         _populate_state_jobs(
             manager,
-            states,
+            states_effective,
             esd_dir,
             charge,
             solvent,
@@ -845,6 +931,20 @@ def add_esd_jobs_to_scheduler(
     elif ics and not esd_frequency_enabled:
         logger.info("IC calculations skipped (ESD_frequency=no - ZPE not available)")
 
+    if "f" in emission_rates and esd_frequency_enabled:
+        _populate_fluor_jobs(
+            manager,
+            esd_dir,
+            charge,
+            solvent,
+            metals,
+            main_basisset,
+            metal_basisset,
+            config,
+        )
+    elif "f" in emission_rates and not esd_frequency_enabled:
+        logger.info("Fluorescence calculations skipped (ESD_frequency=no - Hessians not available)")
+
     logger.info("Added %d ESD jobs to scheduler", len([j for j in manager._jobs if j.startswith("esd_")]))
 
     return esd_enabled, states, iscs, ics
@@ -878,12 +978,13 @@ def run_esd_phase(
         WorkflowRunResult with completed/failed/skipped jobs
     """
     esd_enabled, states, iscs, ics = parse_esd_config(config)
+    emission_rates = parse_emission_rates(config)
 
     if not esd_enabled:
         logger.info("ESD module disabled (ESD_modul=no)")
         return WorkflowRunResult()
 
-    if not states and not iscs and not ics:
+    if not states and not iscs and not ics and not emission_rates:
         logger.info("ESD module enabled but no states/ISCs/ICs configured")
         return WorkflowRunResult()
 
@@ -894,7 +995,14 @@ def run_esd_phase(
 
     # Setup ESD directory (use absolute path to avoid chdir issues in parallel jobs)
     esd_dir = Path("ESD").resolve()
-    setup_esd_directory(esd_dir, states)
+    states_effective = list(states)
+    if "f" in emission_rates:
+        state_set = {s.upper() for s in states_effective}
+        for required in ("S0", "S1"):
+            if required not in state_set:
+                states_effective.append(required)
+                state_set.add(required)
+    setup_esd_directory(esd_dir, states_effective)
 
     # Create workflow manager
     manager = _WorkflowManager(config, label="esd")
@@ -904,10 +1012,10 @@ def run_esd_phase(
 
     try:
         # Populate jobs
-        if states:
+        if states_effective:
             _populate_state_jobs(
                 manager,
-                states,
+                states_effective,
                 esd_dir,
                 charge,
                 solvent,
@@ -946,6 +1054,20 @@ def run_esd_phase(
             )
         elif ics and not esd_frequency_enabled:
             logger.info("IC calculations skipped (ESD_frequency=no - ZPE not available)")
+
+        if "f" in emission_rates and esd_frequency_enabled:
+            _populate_fluor_jobs(
+                manager,
+                esd_dir,
+                charge,
+                solvent,
+                metals,
+                main_basisset,
+                metal_basisset,
+                config,
+            )
+        elif "f" in emission_rates and not esd_frequency_enabled:
+            logger.info("Fluorescence calculations skipped (ESD_frequency=no - Hessians not available)")
 
         if not manager.has_jobs():
             logger.info("No ESD jobs to execute")

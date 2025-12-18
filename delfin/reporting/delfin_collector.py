@@ -294,10 +294,18 @@ def parse_thermochemistry(output_file: Path) -> Optional[Dict[str, Any]]:
             thermo['zero_point_energy_eV'] = zpe_hartree * HARTREE_TO_EV
             thermo['zero_point_energy_kJ_mol'] = zpe_hartree * HARTREE_TO_KJ_MOL
 
-        # Thermal corrections
+        # Thermal corrections / thermodynamic totals
         thermal_energy_match = re.search(r'Total thermal energy\s+([-\d.]+)\s+Eh', content)
         thermal_enthalpy_match = re.search(r'Total enthalpy\s+([-\d.]+)\s+Eh', content)
         thermal_gibbs_match = re.search(r'Final Gibbs free energy\s+\.\.\.\s+([-\d.]+)\s+Eh', content)
+
+        if thermal_energy_match:
+            thermo["total_thermal_energy_hartree"] = float(thermal_energy_match.group(1))
+            thermo["total_thermal_energy_eV"] = thermo["total_thermal_energy_hartree"] * HARTREE_TO_EV
+
+        if thermal_enthalpy_match:
+            thermo["total_enthalpy_hartree"] = float(thermal_enthalpy_match.group(1))
+            thermo["total_enthalpy_eV"] = thermo["total_enthalpy_hartree"] * HARTREE_TO_EV
 
         if thermal_gibbs_match:
             gibbs_hartree = float(thermal_gibbs_match.group(1))

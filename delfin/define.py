@@ -45,7 +45,8 @@ ESD_modus=TDDFT|deltaSCF
 ESD_frequency=yes
 states=S1,T1,S2,T2
 ISCs=S1>T1,T1>S1
-ICs=S1>S0
+ICs=S2>S1
+emission_rates=f,p
 TROOTSSL=-1,0,1
 addition_S0=
 --------------------
