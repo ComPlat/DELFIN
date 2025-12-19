@@ -536,13 +536,21 @@ def _populate_ic_jobs(
         initial_state = initial_state.strip().upper()
         final_state = final_state.strip().upper()
 
-        # ORCA IC support: Sn→S0 and Tn→T1 (T1 as SCF ground in triplet multiplicity)
-        allowed_sn = initial_state.startswith("S") and final_state == "S0"
-        allowed_tn = initial_state.startswith("T") and initial_state != "T1" and final_state == "T1"
-        if not (allowed_sn or allowed_tn):
+        # ORCA IC support: Transitions to S1, T1, or S0 (fluorescence only)
+        # Examples: S2→S1, S3→S1, S1→S0 (fluorescence), T2→T1, T3→T1
+        # NOT allowed: S2→S0, S3→S0 (only S1→S0 for fluorescence)
+
+        # Allow Sn→S1 (IC to S1) or S1→S0 (fluorescence)
+        allowed_sn_to_s1 = initial_state.startswith("S") and final_state == "S1"
+        allowed_fluorescence = initial_state == "S1" and final_state == "S0"
+
+        # Allow Tn→T1 (IC to T1, excluding T1→T1)
+        allowed_tn_to_t1 = initial_state.startswith("T") and initial_state != "T1" and final_state == "T1"
+
+        if not (allowed_sn_to_s1 or allowed_fluorescence or allowed_tn_to_t1):
             unsupported_ics.append(ic)
             logger.warning(
-                "Skipping IC %s: ORCA IC support is limited to Sn→S0 or Tn→T1; calculation not scheduled.",
+                "Skipping IC %s: ORCA IC support is limited to Sn→S1, S1→S0 (fluorescence), or Tn→T1; calculation not scheduled.",
                 ic,
             )
             continue
