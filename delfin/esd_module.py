@@ -369,8 +369,9 @@ def _populate_state_jobs(
             return work
 
         # Allow ESD jobs to run in parallel with oxidation/reduction
-        # Use half of available cores as optimal, allowing 2 jobs to run simultaneously
-        half_cores = max(6, manager.total_cores // 2)
+        # cores_min based on total_cores / max_jobs (e.g., 72/6=12, 12/4=3)
+        min_cores = max(2, manager.total_cores // manager.max_jobs)
+        half_cores = max(min_cores, manager.total_cores // 2)
 
         manager.add_job(
             WorkflowJob(
@@ -378,7 +379,7 @@ def _populate_state_jobs(
                 work=make_state_work(state_upper),
                 description=f"ESD {state_upper} optimization",
                 dependencies=deps,
-                cores_min=6,
+                cores_min=min_cores,
                 cores_optimal=half_cores,
                 cores_max=manager.total_cores,
             )
@@ -488,7 +489,9 @@ def _populate_isc_jobs(
                 return work
 
             # Allow ISC jobs to run in parallel with other jobs
-            half_cores = max(6, manager.total_cores // 2)
+            # cores_min based on total_cores / max_jobs (e.g., 72/6=12, 12/4=3)
+            min_cores = max(2, manager.total_cores // manager.max_jobs)
+            half_cores = max(min_cores, manager.total_cores // 2)
 
             # Format description with sign
             ms_str = f"{trootssl:+d}" if trootssl != 0 else "0"
@@ -498,7 +501,7 @@ def _populate_isc_jobs(
                     work=make_isc_work(isc, trootssl),
                     description=f"ISC {initial_state}→{final_state} (Ms={ms_str})",
                     dependencies=deps,
-                    cores_min=6,
+                    cores_min=min_cores,
                     cores_optimal=half_cores,
                     cores_max=manager.total_cores,
                 )
@@ -607,7 +610,9 @@ def _populate_ic_jobs(
             return work
 
         # Allow IC jobs to run in parallel with other jobs
-        half_cores = max(6, manager.total_cores // 2)
+        # cores_min based on total_cores / max_jobs (e.g., 72/6=12, 12/4=3)
+        min_cores = max(2, manager.total_cores // manager.max_jobs)
+        half_cores = max(min_cores, manager.total_cores // 2)
 
         manager.add_job(
             WorkflowJob(
@@ -615,7 +620,7 @@ def _populate_ic_jobs(
                 work=make_ic_work(ic),
                 description=f"IC {initial_state}→{final_state}",
                 dependencies=deps,
-                cores_min=6,
+                cores_min=min_cores,
                 cores_optimal=half_cores,
                 cores_max=manager.total_cores,
             )
@@ -673,14 +678,16 @@ def _populate_fluor_jobs(
 
         logger.info("Fluorescence (S1→S0) calculation completed")
 
-    half_cores = max(6, manager.total_cores // 2)
+    # cores_min based on total_cores / max_jobs (e.g., 72/6=12, 12/4=3)
+    min_cores = max(2, manager.total_cores // manager.max_jobs)
+    half_cores = max(min_cores, manager.total_cores // 2)
     manager.add_job(
         WorkflowJob(
             job_id=job_id,
             work=work,
             description="Fluorescence S1→S0",
             dependencies=deps,
-            cores_min=6,
+            cores_min=min_cores,
             cores_optimal=half_cores,
             cores_max=manager.total_cores,
         )
@@ -735,14 +742,16 @@ def _populate_phosp_jobs(
 
         logger.info("Phosphorescence (T1→S0) calculation completed")
 
-    half_cores = max(6, manager.total_cores // 2)
+    # cores_min based on total_cores / max_jobs (e.g., 72/6=12, 12/4=3)
+    min_cores = max(2, manager.total_cores // manager.max_jobs)
+    half_cores = max(min_cores, manager.total_cores // 2)
     manager.add_job(
         WorkflowJob(
             job_id=job_id,
             work=work,
             description="Phosphorescence T1→S0",
             dependencies=deps,
-            cores_min=6,
+            cores_min=min_cores,
             cores_optimal=half_cores,
             cores_max=manager.total_cores,
         )

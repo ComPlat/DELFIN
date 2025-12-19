@@ -571,6 +571,54 @@ def parse_occupier_folder(folder: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _calculate_total_isc_rate(ms_components: Dict[str, Dict[str, Any]]) -> float:
+    """Calculate total ISC rate from Ms components with symmetry approximation.
+
+    - 3 components (Ms=-1,0,+1): sum all three
+    - 2 components (Ms=0,±1): rate(Ms=0) + 2×rate(Ms=±1)
+    - 1 component (Ms=0 only): 3×rate(Ms=0)
+
+    Args:
+        ms_components: Dictionary of Ms component data (ms_0, ms_p1, ms_m1)
+
+    Returns:
+        Total ISC rate (s^-1)
+    """
+    # Get rates for each Ms component
+    rate_ms0 = ms_components.get("ms_0", {}).get("rate_s1") or 0
+    rate_msp1 = ms_components.get("ms_p1", {}).get("rate_s1") or 0
+    rate_msm1 = ms_components.get("ms_m1", {}).get("rate_s1") or 0
+
+    # Check which components are present
+    has_ms0 = "ms_0" in ms_components
+    has_msp1 = "ms_p1" in ms_components
+    has_msm1 = "ms_m1" in ms_components
+    num_components = sum([has_ms0, has_msp1, has_msm1])
+
+    if num_components == 1:
+        # Only 1 component: use 3× that value (approximates all 3 Ms components)
+        if has_ms0:
+            return 3 * rate_ms0
+        elif has_msp1:
+            return 3 * rate_msp1
+        else:  # has_msm1
+            return 3 * rate_msm1
+    elif num_components == 2:
+        # 2 components: use symmetry approximation
+        if has_msp1 and not has_msm1:
+            # Missing Ms=-1, use 2× Ms=+1
+            return rate_ms0 + 2 * rate_msp1
+        elif has_msm1 and not has_msp1:
+            # Missing Ms=+1, use 2× Ms=-1
+            return rate_ms0 + 2 * rate_msm1
+        else:
+            # Has both Ms=±1 but no Ms=0 (unusual), just sum
+            return rate_ms0 + rate_msp1 + rate_msm1
+    else:
+        # All 3 present: simple sum
+        return rate_ms0 + rate_msp1 + rate_msm1
+
+
 def parse_isc_data(esd_dir: Path, state1: str, state2: str) -> Optional[Dict[str, Any]]:
     """Parse ISC data from ISC output files."""
     isc_data = {"ms_components": {}}
@@ -628,11 +676,7 @@ def parse_isc_data(esd_dir: Path, state1: str, state2: str) -> Optional[Dict[str
 
     # Calculate total rate
     if isc_data["ms_components"]:
-        total_rate = sum(
-            comp.get("rate_s1", 0) or 0
-            for comp in isc_data["ms_components"].values()
-        )
-        isc_data["total_rate_s1"] = total_rate
+        isc_data["total_rate_s1"] = _calculate_total_isc_rate(isc_data["ms_components"])
         return isc_data
 
     return None
@@ -1036,10 +1080,7 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         if summary_isc:
             # Ensure total rate present
             if "total_rate_s1" not in summary_isc and summary_isc.get("ms_components"):
-                summary_isc["total_rate_s1"] = sum(
-                    comp.get("rate_s1", 0) or 0
-                    for comp in summary_isc["ms_components"].values()
-                )
+                summary_isc["total_rate_s1"] = _calculate_total_isc_rate(summary_isc["ms_components"])
             data["intersystem_crossing"][key] = summary_isc
         elif isc_data:
             data["intersystem_crossing"][key] = isc_data
@@ -1048,10 +1089,7 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     for key, entry in summary_data.get("isc", {}).items():
         if key not in data["intersystem_crossing"]:
             if "total_rate_s1" not in entry and entry.get("ms_components"):
-                entry["total_rate_s1"] = sum(
-                    comp.get("rate_s1", 0) or 0
-                    for comp in entry["ms_components"].values()
-                )
+                entry["total_rate_s1"] = _calculate_total_isc_rate(entry["ms_components"])
             data["intersystem_crossing"][key] = entry
 
     # Parse IC data
