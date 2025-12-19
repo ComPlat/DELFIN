@@ -430,19 +430,21 @@ class DynamicCorePool:
         Allocate cores intelligently based on available resources and pending jobs.
 
         If no other jobs are waiting, give more than cores_optimal (up to cores_max).
+        If jobs are waiting BUT can't start (max_concurrent_jobs reached), use more cores.
         Otherwise, stick to cores_optimal to leave room for other jobs.
         """
-        # Check if other jobs are waiting
+        # Check if other jobs are waiting AND can actually start
         has_pending = not self._job_queue.empty()
+        can_start_more = len(self._running_jobs) < self.max_concurrent_jobs
 
-        if has_pending:
-            # Other jobs waiting - use cores_optimal to leave resources
+        if has_pending and can_start_more:
+            # Jobs waiting AND can start - use cores_optimal to leave resources
             return max(
                 new_job.cores_min,
                 min(new_job.cores_optimal, new_job.cores_max, available_cores)
             )
         else:
-            # No other jobs waiting - use all available cores up to cores_max
+            # No jobs waiting OR max_concurrent_jobs reached - use all available cores
             return max(
                 new_job.cores_min,
                 min(new_job.cores_max, available_cores)
