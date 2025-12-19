@@ -136,10 +136,12 @@ def parse_esd_config(config: Dict[str, Any]) -> tuple[bool, List[str], List[str]
     else:
         ics = [ic.strip() for ic in str(ics_raw).split(',') if ic.strip()]
 
-    # Ensure ground-state S0 is present when any excited states are requested so
-    # downstream jobs that depend on esd_S0 are scheduled instead of skipped.
-    if esd_enabled and states and "S0" not in states:
-        states = ["S0"] + states
+    # Ensure ground-state S0 is present when ESD module is enabled
+    # S0 is always calculated as minimum when ESD_modul=yes
+    if esd_enabled:
+        states_set = {s.upper() for s in states}
+        if "S0" not in states_set:
+            states = ["S0"] + states
 
     # logger.info(f"ESD config: enabled={esd_enabled}, states={states}, ISCs={iscs}, ICs={ics}")
 
