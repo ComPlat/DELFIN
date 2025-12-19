@@ -497,8 +497,12 @@ def _create_state_input_delta_scf(
         keywords.append(geom_token)
 
     # Only add FREQ/numFREQ if frequency calculations are enabled
+    # S0 always uses FREQ, all other states use freq_type (typically numFREQ)
     if esd_frequency_enabled:
-        keywords.append(freq_type)
+        if state_upper == "S0":
+            keywords.append("FREQ")
+        else:
+            keywords.append(freq_type)
 
     if use_deltascf:
         keywords.append("deltaSCF")
@@ -849,7 +853,7 @@ def _create_state_input_tddft(
             if geom_token:
                 keywords.append(geom_token)
             if esd_frequency_enabled:
-                keywords.append("numFREQ")
+                keywords.append("FREQ")
             f.write("! " + " ".join(keywords) + "\n")
             f.write('%base "S0"\n')
             f.write(f"%pal nprocs {pal} end\n")

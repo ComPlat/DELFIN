@@ -366,6 +366,16 @@ def _populate_state_jobs(
 
                 logger.info(f"State {st_upper} calculation completed")
 
+                # If S0 completed and initial.xyz doesn't exist, copy S0.xyz to initial.xyz
+                # This allows ox/red jobs to use the ESD S0 geometry
+                if st_upper == "S0":
+                    initial_xyz = Path("initial.xyz")
+                    s0_xyz = esd_dir / "S0.xyz"
+                    if not initial_xyz.exists() and s0_xyz.exists():
+                        import shutil
+                        shutil.copy2(s0_xyz, initial_xyz)
+                        logger.info(f"Copied {s0_xyz} → {initial_xyz} for ox/red jobs")
+
             return work
 
         # Allow ESD jobs to run in parallel with oxidation/reduction
@@ -972,19 +982,19 @@ def add_esd_jobs_to_scheduler(
         )
 
         # Add dependency on classic_initial only if it will actually run
-        # (i.e., calc_initial=yes or initial.xyz already exists)
+        # When ESD module is enabled, calc_initial is automatically set to 'no' to avoid redundancy
+        # In that case, S0 should start directly from start.txt without depending on classic_initial
         if "esd_S0" in manager._jobs:
             calc_initial = str(config.get('calc_initial', 'no')).strip().lower() == 'yes'
-            initial_xyz_exists = Path("initial.xyz").exists()
 
-            if calc_initial or initial_xyz_exists:
-                # classic_initial will run or has run -> add dependency
+            if calc_initial:
+                # classic_initial will run -> add dependency
                 manager._jobs["esd_S0"].dependencies.add(dependency_job_id)
                 logger.debug("Added dependency: esd_S0 depends on %s", dependency_job_id)
             else:
                 # No classic_initial -> esd_S0 will use start.txt directly
-                logger.info("Skipping dependency on %s (calc_initial=no and no initial.xyz found)", dependency_job_id)
-                logger.info("esd_S0 will convert start.txt to S0.xyz directly")
+                logger.info("Skipping dependency on %s (calc_initial=no)", dependency_job_id)
+                logger.info("esd_S0 will use start.txt or existing initial.xyz directly")
 
     # Check if frequency calculations are enabled (required for ISC/IC)
     esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')

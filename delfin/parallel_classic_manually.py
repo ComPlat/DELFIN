@@ -1484,7 +1484,12 @@ def execute_classic_workflows(
 ) -> WorkflowRunResult:
     """Run classic oxidation/reduction steps via the shared workflow scheduler."""
 
-    manager = _WorkflowManager(config, label="classic")
+    # If a scheduler is provided, use its manager (which may already have ESD jobs)
+    # Otherwise create a new manager
+    if scheduler is not None:
+        manager = scheduler.manager
+    else:
+        manager = _WorkflowManager(config, label="classic")
 
     try:
         _populate_classic_jobs(manager, config, kwargs)
@@ -1525,8 +1530,8 @@ def execute_classic_workflows(
                     scheduler.manager.pool.max_concurrent_jobs = 1
                     scheduler.manager.max_jobs = 1
                     scheduler.manager._sync_parallel_flag()
-            for job in jobs_snapshot:
-                scheduler.add_job(job)
+            # Jobs were already added to scheduler.manager (since manager = scheduler.manager)
+            # No need to add them again
             return scheduler.run()
 
         if effective <= 0:
@@ -1577,7 +1582,12 @@ def execute_manually_workflows(
 ) -> WorkflowRunResult:
     """Run manual oxidation/reduction steps via the shared workflow scheduler."""
 
-    manager = _WorkflowManager(config, label="manually")
+    # If a scheduler is provided, use its manager (which may already have ESD jobs)
+    # Otherwise create a new manager
+    if scheduler is not None:
+        manager = scheduler.manager
+    else:
+        manager = _WorkflowManager(config, label="manually")
 
     try:
         _populate_manual_jobs(manager, config, kwargs)
@@ -1609,8 +1619,8 @@ def execute_manually_workflows(
                     scheduler.manager.pool.max_concurrent_jobs = 1
                     scheduler.manager.max_jobs = 1
                     scheduler.manager._sync_parallel_flag()
-            for job in jobs_snapshot:
-                scheduler.add_job(job)
+            # Jobs were already added to scheduler.manager (since manager = scheduler.manager)
+            # No need to add them again
             return scheduler.run()
 
         if effective <= 0:
@@ -1739,6 +1749,9 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
         dependencies = {f"classic_ox{step - 1}"} if step > 1 else set()
         if initial_job_id:
             dependencies.add(initial_job_id)
+        elif "esd_S0" in manager._jobs:
+            # If initial is skipped but ESD is enabled, wait for S0 to provide initial.xyz
+            dependencies.add("esd_S0")
         cores_min, cores_opt, cores_max = manager.derive_core_bounds()
 
         def make_work(idx: int) -> Callable[[int], None]:
@@ -1818,6 +1831,9 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
         dependencies = {f"classic_red{step - 1}"} if step > 1 else set()
         if initial_job_id:
             dependencies.add(initial_job_id)
+        elif "esd_S0" in manager._jobs:
+            # If initial is skipped but ESD is enabled, wait for S0 to provide initial.xyz
+            dependencies.add("esd_S0")
         cores_min, cores_opt, cores_max = manager.derive_core_bounds()
 
         def make_work(idx: int) -> Callable[[int], None]:

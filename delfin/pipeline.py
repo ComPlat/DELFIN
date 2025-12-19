@@ -450,6 +450,13 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
     esd_enabled, states, iscs, ics = parse_esd_config(config)
     emission_rates = parse_emission_rates(config)
 
+    # If ESD is enabled, skip initial job (S0 from ESD replaces it)
+    if esd_enabled and (states or iscs or ics or emission_rates):
+        original_calc_initial = config.get('calc_initial', 'yes')
+        if str(original_calc_initial).strip().lower() == 'yes':
+            logger.info("ESD module enabled: skipping initial job (using S0 from ESD instead)")
+            config['calc_initial'] = 'no'
+
     scheduler = GlobalOrcaScheduler(config, label="classic")
     try:
         # Add ESD jobs to scheduler FIRST (before execute_classic_workflows which calls run())
@@ -684,6 +691,16 @@ def collect_gibbs_energies(ctx: PipelineContext) -> Dict[str, Optional[float]]:
 
     for key, filename in file_map.items():
         path = working_dir / filename
+
+        # Special handling for initial.out: use ESD/S0.out if initial.out doesn't exist and ESD is enabled
+        if key == '0' and not path.exists():
+            esd_enabled, _, _, _ = parse_esd_config(ctx.config)
+            if esd_enabled:
+                esd_s0_path = working_dir / "ESD" / "S0.out"
+                if esd_s0_path.exists():
+                    path = esd_s0_path
+                    logger.info("Using ESD/S0.out for ground state Gibbs energy (initial.out not found)")
+
         if not path.exists():
             energies[key] = None
             continue
@@ -696,7 +713,7 @@ def collect_gibbs_energies(ctx: PipelineContext) -> Dict[str, Optional[float]]:
             logger.info(
                 "Skipping Gibbs energy for state %s (data unavailable in %s)",
                 key,
-                filename,
+                path.name,
             )
     return energies
 
