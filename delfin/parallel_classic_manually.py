@@ -1213,6 +1213,19 @@ class _WorkflowManager:
             share = max(job.cores_min, min(share, job.cores_max, self.total_cores))
             allocations[job.job_id] = share
 
+        # After initial distribution, redistribute any unused cores to jobs that can use more
+        total_allocated = sum(allocations.values())
+        remaining_cores = available - total_allocated
+        if remaining_cores > 0:
+            for job in selected:
+                if remaining_cores <= 0:
+                    break
+                current = allocations[job.job_id]
+                can_add = min(remaining_cores, job.cores_max - current)
+                if can_add > 0:
+                    allocations[job.job_id] = current + can_add
+                    remaining_cores -= can_add
+
         # Cap when we had to pack tightly (either we deferred jobs or could not reach targets)
         could_not_reach_targets = any(
             allocations[job.job_id] < targets[job.job_id] for job in selected
@@ -1220,7 +1233,6 @@ class _WorkflowManager:
         cap_needed = (
             could_not_reach_targets
             or len(selected) < len(ready_jobs)
-            or remaining == 0
         )
         caps = {job.job_id: cap_needed for job in selected}
 
