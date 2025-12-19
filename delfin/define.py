@@ -53,6 +53,15 @@ fluor_keywords=
 TROOTSSL=-1,0,1
 addition_S0=
 --------------------
+Electrical Properties:
+elprop_Dipole=
+elprop_Quadrupole=
+elprop_Hyperpol=
+elprop_Polar=
+elprop_PolarVelocity=
+elprop_PolarDipQuad=
+elprop_PolarQuadQuad=
+--------------------
 deltaSCF Settings:
 deltaSCF_DOMOM=true
 deltaSCF_PMOM=true

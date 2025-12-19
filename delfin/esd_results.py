@@ -318,18 +318,20 @@ def collect_esd_results(
         filename = esd_dir / f"{init_state}_{final_state}_IC.out"
         summary.ic[f"{init_state}>{final_state}"] = _parse_ic_output(filename)
 
-    # Fluorescence / phosphorescence rates (controlled by emission_rates)
+    # Fluorescence / phosphorescence rates (controlled by emission_rates or auto-detected)
     emission_rates = set()
     if config is not None:
         raw = config.get("emission_rates", "")
         emission_rates = {t.strip().lower() for t in str(raw).replace(";", ",").replace(" ", ",").split(",") if t.strip()}
 
-    if "f" in emission_rates:
-        fluor_out = esd_dir / "S1_S0_FLUOR.out"
+    # Auto-detect fluorescence if FLUOR output exists
+    fluor_out = esd_dir / "S1_S0_FLUOR.out"
+    if "f" in emission_rates or fluor_out.exists():
         summary.fluor["S1>S0"] = _parse_fluor_output(fluor_out)
 
-    if "p" in emission_rates:
-        phosp_out = esd_dir / "T1_S0_PHOSP.out"
+    # Auto-detect phosphorescence if PHOSP output exists
+    phosp_out = esd_dir / "T1_S0_PHOSP.out"
+    if "p" in emission_rates or phosp_out.exists():
         summary.phosp["T1>S0"] = _parse_phosp_output(phosp_out)
 
     return summary

@@ -48,6 +48,83 @@ def _format_ms_suffix(trootssl: int) -> str:
         return "ms0"
 
 
+def generate_elprop_block(config: Dict[str, Any]) -> str:
+    """Generate %elprop block based on individual property settings.
+
+    Args:
+        config: Configuration dictionary containing elprop_* parameters
+
+    Returns:
+        Formatted %elprop block string, or empty string if no properties are specified
+
+    Example config values:
+        elprop_Dipole = true
+        elprop_Polar = true
+        elprop_PolarVelocity = true
+        elprop_PolarDipQuad = true
+        elprop_Hyperpol = true
+    """
+    def _parse_bool(value: Any, default: bool = False) -> bool:
+        """Parse boolean value from config."""
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        s = str(value).strip().lower()
+        if s in ('true', 'yes', '1', 'on'):
+            return True
+        if s in ('false', 'no', '0', 'off'):
+            return False
+        return default
+
+    # Main properties in order
+    main_properties = [
+        ('Dipole', 'elprop_Dipole'),
+        ('Quadrupole', 'elprop_Quadrupole'),
+        ('Polar', 'elprop_Polar'),
+        ('Hyperpol', 'elprop_Hyperpol'),
+    ]
+
+    # Sub-properties for Polar
+    polar_sub_properties = [
+        ('PolarVelocity', 'elprop_PolarVelocity'),
+        ('PolarDipQuad', 'elprop_PolarDipQuad'),
+        ('PolarQuadQuad', 'elprop_PolarQuadQuad'),
+    ]
+
+    # Collect enabled properties
+    enabled_properties = []
+    polar_enabled = False
+
+    for prop_name, config_key in main_properties:
+        value = config.get(config_key)
+        if _parse_bool(value, default=False):
+            enabled_properties.append(prop_name)
+            if prop_name == 'Polar':
+                polar_enabled = True
+
+    # If no properties enabled, return empty string
+    if not enabled_properties:
+        return ""
+
+    # Build the %elprop block
+    lines = ["%elprop"]
+
+    for prop_name in enabled_properties:
+        lines.append(f"  {prop_name} true")
+
+        # Add Polar sub-properties if Polar is enabled
+        if prop_name == 'Polar' and polar_enabled:
+            for sub_name, sub_key in polar_sub_properties:
+                sub_value = config.get(sub_key)
+                if _parse_bool(sub_value, default=False):
+                    lines.append(f"  {sub_name} true")
+
+    lines.append("end")
+
+    return "\n".join(lines)
+
+
 def _parse_state_root(label: str) -> tuple[str, int]:
     """Return (state_type, root_index) from labels like 'S1', 'T2'. Defaults to 1 on parse errors."""
     if not label:
@@ -526,6 +603,12 @@ def _create_state_input_delta_scf(
 
         # Add custom additions for S0 state if specified in CONTROL
         if state_upper == "S0":
+            # Generate %elprop block from elprop_properties config
+            elprop_block = generate_elprop_block(config)
+            if elprop_block:
+                f.write(f"{elprop_block}\n")
+
+            # Legacy addition_S0 support (can be used together with elprop_properties)
             addition_s0 = config.get('addition_S0', '').strip()
             if addition_s0:
                 f.write(f"{addition_s0}\n")
@@ -774,6 +857,12 @@ def _create_state_input_tddft(
             _write_output_blocks(f)
 
             # Add custom additions for S0 state if specified in CONTROL
+            # Generate %elprop block from elprop_properties config
+            elprop_block = generate_elprop_block(config)
+            if elprop_block:
+                f.write(f"{elprop_block}\n")
+
+            # Legacy addition_S0 support (can be used together with elprop_properties)
             addition_s0 = config.get('addition_S0', '').strip()
             if addition_s0:
                 f.write(f"{addition_s0}\n")
