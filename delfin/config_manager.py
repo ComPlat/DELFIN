@@ -49,14 +49,22 @@ class DelfinConfig:
     clean_override_window_h: float = 0.001
     clean_quality_improvement: float = 0.05
     clean_quality_good: float = 0.05
-    clean_bias_window_h: float = 0.004
+    clean_bias_window_h: float = 0.001
     quality_bias_window: float = 0.05
 
     # Energy bias parameters
-    energy_bias_window_h: float = 0.002
+    energy_bias_window_h: float = 0.001
     mismatch_bias_window: float = 0.05
     dev_similarity: float = 0.15
-    bs_override_window_h: float = 0.004
+    bs_override_window_h: float = 0.001
+
+    # Spin contamination bias parameters
+    spin_bias_energy_window_h: float = 0.0
+    spin_bias_min_gain: float = 0.003
+    spin_bias_trigger_dev: float = 0.05
+    spin_pair_bias_window_h: float = 0.0
+    spin_pair_bias_dev_window: float = 0.20
+    spin_pair_bias_min_gain: float = 0.10
 
     # Advanced settings
     dev_max: Optional[float] = None

@@ -14,7 +14,6 @@ from delfin.common.logging import get_logger
 from delfin.config import OCCUPIER_parser
 from delfin.copy_helpers import read_occupier_file
 from delfin.orca import run_orca_with_intelligent_recovery
-from delfin.orca_recovery import prepare_input_for_continuation
 from delfin.parallel_classic_manually import WorkflowJob, _update_pal_block, normalize_parallel_token
 from delfin.process_checker import check_and_warn_competing_processes
 from delfin.reporting import generate_summary_report_OCCUPIER
@@ -29,7 +28,6 @@ from delfin.occupier import (
 from delfin.utils import (
     calculate_total_electrons_txt,
     resolve_path,
-    search_transition_metals,
     set_main_basisset,
 )
 

@@ -39,7 +39,9 @@ class GlobalOrcaScheduler:
         self.add_jobs([job])
 
     def run(self) -> WorkflowRunResult:
-        if not self._jobs_added:
+        # Check both _jobs_added flag AND if manager actually has jobs
+        # (jobs may have been added directly to manager bypassing add_job/add_jobs)
+        if not self._jobs_added and not self._manager.has_jobs():
             logger.info("[%s] no ORCA jobs queued – skipping run", self._manager.label)
             return WorkflowRunResult()
 

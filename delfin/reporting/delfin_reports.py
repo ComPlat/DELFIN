@@ -1,18 +1,16 @@
 # delfin_reports.py
 # Main DELFIN report generation functions
 
-from decimal import Decimal, ROUND_DOWN
+from collections import defaultdict
 from typing import Optional
 from pathlib import Path
-import os, re
 
 from ..common.banners import build_standard_banner
 from ..utils import (
     search_transition_metals,
     select_rel_and_aux,
 )
-from ..parser import extract_last_uhf_deviation, extract_last_J3
-from ..esd_results import ESDSummary
+from ..esd_results import ESDSummary, ISCResult
 
 
 def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, E_ox_3,
@@ -247,7 +245,14 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
             if esd_lines:  # Add empty line before ISC section if there's already content
                 esd_lines.append("")
             esd_lines.append("ISC rate constants (s^-1):")
-            for transition, record in sorted(esd_summary.isc.items()):
+            isc_grouped: dict[str, list[tuple[str, ISCResult]]] = defaultdict(list)
+
+            # Group transitions by base (without Ms suffix) to allow summed output
+            for transition, record in esd_summary.isc.items():
+                base_transition = transition.split("(Ms=", 1)[0] if "(Ms=" in transition else transition
+                isc_grouped[base_transition].append((transition, record))
+
+            def _format_isc_line(label: str, record) -> str:
                 extras: list[str] = []
                 if record.temperature is not None:
                     extras.append(f"T={record.temperature:.2f} K")
@@ -265,7 +270,20 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                 if record.ht_percent is not None:
                     extras.append(f"HT={record.ht_percent:.2f}%")
                 detail = f" ({', '.join(extras)})" if extras else ""
-                esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}")
+                return f"  {label} = {fmt_rate(record.rate)}{detail}"
+
+            for base_transition in sorted(isc_grouped):
+                records = sorted(isc_grouped[base_transition])
+                for transition, record in records:
+                    esd_lines.append(_format_isc_line(transition, record))
+
+                # If multiple Ms components exist, append summed rate
+                if len(records) > 1:
+                    rates = [rec.rate for _, rec in records if rec.rate is not None]
+                    total_rate = sum(rates) if rates else None
+                    esd_lines.append(
+                        f"  {base_transition} (total) = {fmt_rate(total_rate)}"
+                    )
         if esd_summary.ic:
             if esd_lines:  # Add empty line before IC section if there's already content
                 esd_lines.append("")
@@ -278,6 +296,38 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                     extras.append(f"Δ0-0={record.delta_cm1:.2f} cm^-1")
                 detail = f" ({', '.join(extras)})" if extras else ""
                 esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}")
+        if getattr(esd_summary, "fluor", None):
+            fluor_items = [(k, v) for k, v in sorted(esd_summary.fluor.items()) if v and v.rate is not None]
+            if fluor_items:
+                if esd_lines:
+                    esd_lines.append("")
+                esd_lines.append("Fluorescence rate constants (s^-1):")
+                for transition, record in fluor_items:
+                    extras: list[str] = []
+                    if record.temperature is not None:
+                        extras.append(f"T={record.temperature:.2f} K")
+                    if record.delta_cm1 is not None:
+                        extras.append(f"Δ0-0={record.delta_cm1:.2f} cm^-1")
+                    detail = f" ({', '.join(extras)})" if extras else ""
+                    esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}")
+        if getattr(esd_summary, "phosp", None):
+            phosp_items = [(k, v) for k, v in sorted(esd_summary.phosp.items()) if v and v.rate_mean is not None]
+            if phosp_items:
+                if esd_lines:
+                    esd_lines.append("")
+                esd_lines.append("Phosphorescence rate constants (s^-1):")
+                for transition, record in phosp_items:
+                    extras: list[str] = []
+                    if record.temperature is not None:
+                        extras.append(f"T={record.temperature:.2f} K")
+                    if record.delta_cm1 is not None:
+                        extras.append(f"Δ0-0={record.delta_cm1:.2f} cm^-1")
+                    detail = f" ({', '.join(extras)})" if extras else ""
+                    # Print k1/k2/k3 lines if present, then arithmetic mean
+                    sub = [r for r in record.sublevel_rates if r is not None]
+                    for i, r in enumerate(sub, start=1):
+                        esd_lines.append(f"  {transition} (k{i}) = {fmt_rate(r)}{detail}")
+                    esd_lines.append(f"  {transition} (mean) = {fmt_rate(record.rate_mean)}{detail}")
         if esd_lines:
             sections.append("ESD:\n" + "\n".join(esd_lines))
     middle = "\n\n".join(sections)

@@ -182,3 +182,192 @@ def extract_last_J3(
     if j3 is None and raise_on_missing:
         raise ValueError("J(3) not found in the last Spin-Hamiltonian block.")
     return j3
+
+
+def parse_hyperpolarizability(
+    file: Union[str, Path, TextIO],
+    *,
+    encoding: str = "utf-8",
+) -> Optional[Dict[str, float]]:
+    """
+    Parse the static hyperpolarizability tensor from ORCA output.
+
+    Searches for 'STATIC HYPERPOLARIZABILITY TENSOR' and extracts all 27
+    Cartesian components β_ijk (i,j,k ∈ {x,y,z}).
+
+    Parameters
+    ----------
+    file : str | Path | TextIO
+        Path to the ORCA output file or an open file handle.
+    encoding : str
+        File encoding when opening by path.
+
+    Returns
+    -------
+    dict | None
+        Dictionary with keys like 'xxx', 'xxy', 'xyz', etc. containing
+        the β_ijk values in atomic units, or None if not found.
+    """
+    should_close = False
+    if hasattr(file, "read"):
+        fh = file
+    else:
+        fh = open(file, "r", encoding=encoding, errors="replace")
+        should_close = True
+
+    tensor = {}
+    in_tensor = False
+
+    try:
+        for line in fh:
+            # Look for the tensor header
+            if "STATIC HYPERPOLARIZABILITY TENSOR" in line:
+                in_tensor = True
+                continue
+
+            if in_tensor:
+                # Look for lines like "     ( x x x ):         -931.858682"
+                match = re.match(r'\s*\(\s*([xyz])\s+([xyz])\s+([xyz])\s*\)\s*:\s*([+-]?\d+\.\d+)', line)
+                if match:
+                    i, j, k, value = match.groups()
+                    key = f"{i}{j}{k}"
+                    tensor[key] = float(value)
+
+                # End of tensor section (empty line or next section)
+                if line.strip() == "" and tensor:
+                    break
+
+        return tensor if tensor else None
+    finally:
+        if should_close:
+            fh.close()
+
+
+def calculate_beta_properties(
+    beta_tensor: Dict[str, float],
+    dipole_x: float,
+    dipole_y: float,
+    dipole_z: float,
+) -> Dict[str, float]:
+    """
+    Calculate derived hyperpolarizability properties from the tensor.
+
+    Parameters
+    ----------
+    beta_tensor : dict
+        Dictionary with β_ijk components (e.g., {'xxx': -931.86, 'xxy': -210.84, ...})
+    dipole_x, dipole_y, dipole_z : float
+        Dipole moment components in atomic units
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - 'beta_x_au', 'beta_y_au', 'beta_z_au': Contracted vector components (a.u.)
+        - 'beta_tot_au': Total hyperpolarizability magnitude (a.u.)
+        - 'beta_mu_au': Projection onto dipole vector (a.u.)
+        - 'beta_zzz_au': β_zzz tensor component (a.u.)
+        - 'beta_x_esu', 'beta_y_esu', 'beta_z_esu': Converted to esu
+        - 'beta_tot_esu': Total in esu
+        - 'beta_mu_esu': Projection in esu
+        - 'beta_zzz_esu': β_zzz tensor component in esu
+    """
+    # Conversion factor: 1 a.u. = 8.6393 × 10⁻³³ esu
+    AU_TO_ESU = 8.6393e-33
+
+    # Calculate contracted vector components
+    beta_x = (beta_tensor.get('xxx', 0) +
+              beta_tensor.get('xyy', 0) +
+              beta_tensor.get('xzz', 0))
+
+    beta_y = (beta_tensor.get('yxx', 0) +
+              beta_tensor.get('yyy', 0) +
+              beta_tensor.get('yzz', 0))
+
+    beta_z = (beta_tensor.get('zxx', 0) +
+              beta_tensor.get('zyy', 0) +
+              beta_tensor.get('zzz', 0))
+
+    # Total hyperpolarizability
+    import math
+    beta_tot = math.sqrt(beta_x**2 + beta_y**2 + beta_z**2)
+
+    # Projection onto dipole vector
+    dipole_mag = math.sqrt(dipole_x**2 + dipole_y**2 + dipole_z**2)
+    if dipole_mag > 0:
+        beta_mu = (beta_x * dipole_x + beta_y * dipole_y + beta_z * dipole_z) / dipole_mag
+    else:
+        beta_mu = 0.0
+
+    # Extract β_zzz tensor component
+    beta_zzz = beta_tensor.get('zzz', 0.0)
+
+    return {
+        'beta_x_au': beta_x,
+        'beta_y_au': beta_y,
+        'beta_z_au': beta_z,
+        'beta_tot_au': beta_tot,
+        'beta_mu_au': beta_mu,
+        'beta_zzz_au': beta_zzz,
+        'beta_x_esu': beta_x * AU_TO_ESU,
+        'beta_y_esu': beta_y * AU_TO_ESU,
+        'beta_z_esu': beta_z * AU_TO_ESU,
+        'beta_tot_esu': beta_tot * AU_TO_ESU,
+        'beta_mu_esu': beta_mu * AU_TO_ESU,
+        'beta_zzz_esu': beta_zzz * AU_TO_ESU,
+    }
+
+
+def parse_polarizability(
+    file: Union[str, Path, TextIO],
+    *,
+    encoding: str = "utf-8",
+) -> Optional[Dict[str, float]]:
+    """
+    Parse the static polarizability from ORCA output.
+
+    Searches for 'STATIC POLARIZABILITY TENSOR' and extracts the
+    isotropic polarizability value.
+
+    Parameters
+    ----------
+    file : str | Path | TextIO
+        Path to the ORCA output file or an open file handle.
+    encoding : str
+        File encoding when opening by path.
+
+    Returns
+    -------
+    dict | None
+        Dictionary with 'isotropic_au' and 'isotropic_angstrom3' keys,
+        or None if not found.
+    """
+    should_close = False
+    if hasattr(file, "read"):
+        fh = file
+    else:
+        fh = open(file, "r", encoding=encoding, errors="replace")
+        should_close = True
+
+    isotropic = None
+
+    try:
+        for line in fh:
+            # Look for "Isotropic polarizability :  12.86035"
+            if "Isotropic polarizability" in line:
+                match = re.search(r'Isotropic polarizability\s*:\s*([+-]?\d+\.\d+)', line)
+                if match:
+                    isotropic = float(match.group(1))
+                    break
+
+        if isotropic is not None:
+            # Conversion: 1 a.u. = 0.1482 Å³
+            AU_TO_ANGSTROM3 = 0.1482
+            return {
+                'isotropic_au': isotropic,
+                'isotropic_angstrom3': isotropic * AU_TO_ANGSTROM3,
+            }
+        return None
+    finally:
+        if should_close:
+            fh.close()

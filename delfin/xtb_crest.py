@@ -1,4 +1,8 @@
-import os, re, shutil, subprocess, logging
+import logging
+import os
+import re
+import shutil
+import subprocess
 from pathlib import Path
 from .orca import run_orca
 from .xyz_io import modify_file2

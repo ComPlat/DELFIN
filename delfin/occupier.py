@@ -1,7 +1,10 @@
 # OCCUPIER.py
 
-import os, shutil, re, time, ast, math, threading
-from decimal import Decimal, ROUND_DOWN
+import math
+import os
+import re
+import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -140,7 +143,8 @@ def _parse_dependency_indices(raw_from):
 def _parse_geometry_wait(value: Any, default: Optional[float] = None) -> Optional[float]:
     """Convert CONTROL option to seconds; <=0 or 'inf' disables timeout."""
     try:
-        text = str(value).strip().lower()
+        from delfin.utils import normalize_str
+        text = normalize_str(value)
     except Exception:
         text = ""
 

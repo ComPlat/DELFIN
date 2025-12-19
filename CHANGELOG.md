@@ -87,7 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release
 - OCCUPIER, classic, and manually calculation modes
 - Automated spin-state prediction and redox potential calculations
-- Integration with ORCA 6.1.0, xTB, and CREST
+- Integration with ORCA 6.1.1, xTB, and CREST
 - Support for up to 3 sequential oxidation/reduction steps
 - Parallel workflow execution for oxidation/reduction steps
 - Cluster environment detection (SLURM/PBS/LSF)

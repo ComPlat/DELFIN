@@ -18,7 +18,7 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
     from decimal import Decimal, ROUND_DOWN
     from pathlib import Path
     from typing import Optional
-    import os, re
+    import re
 
     def truncate(x: float, d: int) -> float:
         q = Decimal(10) ** -d
@@ -435,7 +435,7 @@ def generate_summary_report_OCCUPIER_safe3(duration, fspe_values, is_even, charg
     # ----------------------- numeric formatting helpers ------------------------
     from decimal import Decimal, ROUND_DOWN
     from typing import Optional
-    import os, re
+    import re
 
     def truncate(x: float, d: int) -> float:
         q = Decimal(10) ** -d
@@ -911,7 +911,7 @@ def generate_summary_report_OCCUPIER_safe2(duration, fspe_values, is_even, charg
     # ----------------------- numeric formatting helpers ------------------------
     from decimal import Decimal, ROUND_DOWN
     from typing import Optional
-    import os, re
+    import re
 
     def truncate(x: float, d: int) -> float:
         q = Decimal(10) ** -d
@@ -1397,7 +1397,7 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
     # ----------------------- numeric formatting helpers ------------------------
     from decimal import Decimal, ROUND_DOWN
     from typing import Optional
-    import os, re
+    import re
 
     def truncate(x: float, d: int) -> float:
         q = Decimal(10) ** -d

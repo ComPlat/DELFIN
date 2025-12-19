@@ -30,6 +30,8 @@ allow_imaginary_freq=0
 IMAG_sp_energy_window=1e-3
 IMAG_optimize_candidates=no
 ------------------------------------
+properties_of_interest=IP,EA
+------------------------------------
 Redox steps:
 calc_initial=yes
 oxidation_steps=1,2,3
@@ -43,7 +45,22 @@ ESD_modus=TDDFT|deltaSCF
 ESD_frequency=yes
 states=S1,T1,S2,T2
 ISCs=S1>T1,T1>S1
-ICs=S1>S0
+ICs=S2>S1
+emission_rates=f,p
+phosp_IROOT=1,2,3
+phosp_keywords=
+fluor_keywords=
+TROOTSSL=-1,0,1
+addition_S0=
+--------------------
+Electrical Properties:
+elprop_Dipole=
+elprop_Quadrupole=
+elprop_Hyperpol=
+elprop_Polar=
+elprop_PolarVelocity=
+elprop_PolarDipQuad=
+elprop_PolarQuadQuad=
 --------------------
 deltaSCF Settings:
 deltaSCF_DOMOM=true
@@ -57,6 +74,11 @@ ESD_nroots=15
 ESD_maxdim=30
 ESD_TDA=FALSE
 ESD_followiroot=true
+ESD_SOC=false
+DOHT=TRUE
+ESD_LINES=VOIGT
+ESD_LINEW=75
+ESD_INLINEW=200
 ------------------------------------
 MANUALLY:
 multiplicity_0=

@@ -14,3 +14,8 @@ own_auto_tree.json
 secrets/
 .anthropic_api_key
 .openai_api_key
+
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*$py.class

@@ -8,18 +8,17 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from delfin.common.logging import get_logger
 from delfin.common.paths import resolve_path
-from delfin.copy_helpers import copy_if_exists, prepare_occ_folder, read_occupier_file
+from delfin.copy_helpers import copy_if_exists, read_occupier_file
 from delfin.global_scheduler import GlobalOrcaScheduler
 from delfin.parallel_occupier import OccupierExecutionContext, run_occupier_orca_jobs
 from delfin.parallel_classic_manually import execute_classic_workflows, execute_manually_workflows, normalize_parallel_token, WorkflowRunResult
 from delfin.xtb_crest import XTB, XTB_GOAT, XTB_SOLVATOR, run_crest_workflow
 from delfin.cli_calculations import calculate_redox_potentials, select_final_potentials
-import delfin.thread_safe_helpers as thread_safe_helpers
-from delfin.energies import find_gibbs_energy, find_ZPE, find_electronic_energy
+from delfin.energies import find_gibbs_energy
 from delfin.esd_module import run_esd_phase as execute_esd_module, parse_esd_config
 from delfin.esd_results import collect_esd_results, ESDSummary
 
@@ -447,14 +446,15 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
     logger.info("[classic] Dispatching workflows to scheduler (%s mode)", mode_label)
 
     # Check if ESD is enabled - we need to know this before creating the scheduler
-    from delfin.esd_module import parse_esd_config
+    from delfin.esd_module import parse_emission_rates, parse_esd_config
     esd_enabled, states, iscs, ics = parse_esd_config(config)
+    emission_rates = parse_emission_rates(config)
 
     scheduler = GlobalOrcaScheduler(config, label="classic")
     try:
         # Add ESD jobs to scheduler FIRST (before execute_classic_workflows which calls run())
         # This allows ESD to run in parallel with ox/red steps after initial completes
-        if esd_enabled and (states or iscs or ics):
+        if esd_enabled and (states or iscs or ics or emission_rates):
             from delfin.esd_module import add_esd_jobs_to_scheduler
             add_esd_jobs_to_scheduler(
                 scheduler,
@@ -472,6 +472,7 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
             ctx.extra['esd_states'] = states
             ctx.extra['esd_iscs'] = iscs
             ctx.extra['esd_ics'] = ics
+            ctx.extra['esd_emission_rates'] = sorted(emission_rates)
         else:
             esd_enabled = False
 
@@ -630,6 +631,16 @@ def run_esd_phase(ctx: PipelineContext) -> bool:
 
     ctx.extra['esd_result'] = result
 
+    # Generate UV-Vis spectrum report if ESD calculations were successful
+    try:
+        from delfin.reporting.uv_vis_report import generate_all_esd_uv_vis_reports
+        esd_dir = Path("ESD").resolve()
+        if esd_dir.exists():
+            logger.info("Generating UV-Vis spectrum report from ESD results")
+            generate_all_esd_uv_vis_reports(esd_dir)
+    except Exception as e:
+        logger.warning(f"Failed to generate UV-Vis spectrum report: {e}")
+
     if not result.success:
         failed_desc = ", ".join(
             f"{job_id} ({reason})" for job_id, reason in result.failed.items()
@@ -744,7 +755,7 @@ def compute_summary(ctx: PipelineContext, E_ref: float) -> SummaryResults:
     esd_enabled, esd_states, esd_iscs, esd_ics = parse_esd_config(ctx.config)
     if esd_enabled:
         esd_dir = working_dir / "ESD"
-        esd_summary = collect_esd_results(esd_dir, esd_states, esd_iscs, esd_ics)
+        esd_summary = collect_esd_results(esd_dir, esd_states, esd_iscs, esd_ics, config=ctx.config)
 
         # Calculate E_00 energies from ESD state results
         # E_00 = [E(excited) - E(S0)] + [ZPE(excited) - ZPE(S0)]

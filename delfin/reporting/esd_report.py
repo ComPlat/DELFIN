@@ -52,31 +52,84 @@ def generate_esd_report(summary: ESDSummary, output_path: Path) -> None:
 
     if summary.isc:
         isc_lines = []
-        for trans, record in sorted(summary.isc.items()):
-            details = []
-            if record.temperature is not None:
-                details.append(f"T={_fmt_float(record.temperature, '{:.2f}')} K")
-            if record.delta_cm1 is not None:
-                details.append(f"Δ0-0={_fmt_float(record.delta_cm1, '{:.2f}')} cm^-1")
-            if record.soc is not None:
-                re_part, im_part = record.soc
-                soc_str = f"SOC={_fmt_float(re_part, '{:.6e}')}"
-                if im_part is not None:
-                    soc_str += f"+i{_fmt_float(im_part, '{:.6e}')}"
-                details.append(soc_str)
-            if record.fc_percent is not None and record.ht_percent is not None:
-                details.append(
-                    f"FC={_fmt_percent(record.fc_percent)}%, HT={_fmt_percent(record.ht_percent)}%"
+
+        # Group ISC results by base transition (e.g., "S1>T1")
+        from collections import defaultdict
+        isc_grouped = defaultdict(list)
+        for trans, record in summary.isc.items():
+            # Extract base transition (remove Ms suffix if present)
+            if "(Ms=" in trans:
+                base_trans = trans.split("(Ms=")[0]
+                isc_grouped[base_trans].append((trans, record))
+            else:
+                isc_grouped[trans].append((trans, record))
+
+        # Sort and format ISC rates
+        for base_trans in sorted(isc_grouped.keys()):
+            records = isc_grouped[base_trans]
+
+            # If multiple TROOTSSL values, show individual rates and sum
+            if len(records) > 1:
+                total_rate = sum(rec.rate for _, rec in records if rec.rate is not None)
+
+                # Show individual sublevel rates
+                for trans, record in sorted(records):
+                    details = []
+                    if record.temperature is not None:
+                        details.append(f"T={_fmt_float(record.temperature, '{:.2f}')} K")
+                    if record.delta_cm1 is not None:
+                        details.append(f"Δ0-0={_fmt_float(record.delta_cm1, '{:.2f}')} cm^-1")
+                    if record.soc is not None:
+                        re_part, im_part = record.soc
+                        soc_str = f"SOC={_fmt_float(re_part, '{:.6e}')}"
+                        if im_part is not None:
+                            soc_str += f"+i{_fmt_float(im_part, '{:.6e}')}"
+                        details.append(soc_str)
+                    if record.fc_percent is not None and record.ht_percent is not None:
+                        details.append(
+                            f"FC={_fmt_percent(record.fc_percent)}%, HT={_fmt_percent(record.ht_percent)}%"
+                        )
+                    elif record.fc_percent is not None:
+                        details.append(f"FC={_fmt_percent(record.fc_percent)}%")
+                    elif record.ht_percent is not None:
+                        details.append(f"HT={_fmt_percent(record.ht_percent)}%")
+                    detail_str = f" ({', '.join(details)})" if details else ""
+                    isc_lines.append(
+                        f"  {trans}: {_fmt_rate(record.rate)} s^-1{detail_str}"
+                    )
+
+                # Show total rate
+                isc_lines.append(
+                    f"  {base_trans} (total): {_fmt_rate(total_rate)} s^-1"
                 )
-            elif record.fc_percent is not None:
-                details.append(f"FC={_fmt_percent(record.fc_percent)}%")
-            elif record.ht_percent is not None:
-                details.append(f"HT={_fmt_percent(record.ht_percent)}%")
-            detail_str = f" ({', '.join(details)})" if details else ""
-            isc_lines.append(
-                f"  {trans}: {_fmt_rate(record.rate)} s^-1{detail_str}"
-            )
-        _emit_section(lines, "ISC rate constants:", isc_lines)
+            else:
+                # Single TROOTSSL value, show as before
+                trans, record = records[0]
+                details = []
+                if record.temperature is not None:
+                    details.append(f"T={_fmt_float(record.temperature, '{:.2f}')} K")
+                if record.delta_cm1 is not None:
+                    details.append(f"Δ0-0={_fmt_float(record.delta_cm1, '{:.2f}')} cm^-1")
+                if record.soc is not None:
+                    re_part, im_part = record.soc
+                    soc_str = f"SOC={_fmt_float(re_part, '{:.6e}')}"
+                    if im_part is not None:
+                        soc_str += f"+i{_fmt_float(im_part, '{:.6e}')}"
+                    details.append(soc_str)
+                if record.fc_percent is not None and record.ht_percent is not None:
+                    details.append(
+                        f"FC={_fmt_percent(record.fc_percent)}%, HT={_fmt_percent(record.ht_percent)}%"
+                    )
+                elif record.fc_percent is not None:
+                    details.append(f"FC={_fmt_percent(record.fc_percent)}%")
+                elif record.ht_percent is not None:
+                    details.append(f"HT={_fmt_percent(record.ht_percent)}%")
+                detail_str = f" ({', '.join(details)})" if details else ""
+                isc_lines.append(
+                    f"  {trans}: {_fmt_rate(record.rate)} s^-1{detail_str}"
+                )
+
+        _emit_section(lines, "ISC rate constants (s^-1):", isc_lines)
 
     if summary.ic:
         ic_lines = []

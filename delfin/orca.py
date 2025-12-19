@@ -17,7 +17,6 @@ except ImportError:
     psutil = None  # type: ignore
 
 from delfin.common.logging import get_logger
-from delfin.common.paths import get_runtime_dir
 from delfin.global_manager import get_global_manager
 from delfin.orca_recovery import (
     OrcaErrorDetector,
@@ -25,7 +24,6 @@ from delfin.orca_recovery import (
     OrcaInputModifier,
     RecoveryStrategy,
     RetryStateTracker,
-    prepare_input_for_continuation,
 )
 
 logger = get_logger(__name__)

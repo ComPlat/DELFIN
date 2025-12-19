@@ -19,7 +19,9 @@ dependencies = [
     "scipy>=1.6.0",
     "matplotlib>=3.3.4",
     "rdkit>=2023.3.1",
-    "openbabel-wheel>=3.1.0"
+    "openbabel-wheel>=3.1.0",
+    "python-docx>=0.8.11",
+    "pymol-open-source>=3.0.0"
 ]
 
 [project.optional-dependencies]
@@ -28,6 +30,7 @@ dev = [
     "pytest-cov",
     "black",
     "flake8",
+    "ruff",
 ]
 ai = [
     "anthropic>=0.18.0",
@@ -38,7 +41,32 @@ ai = [
 
 [project.scripts]
 delfin = "delfin.main:main"
+delfin_ESD = "delfin.cli_esd_report:main"
+delfin_IR = "delfin.cli_ir_report:main"
+delfin-json = "delfin.cli_delfin_collect:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["delfin*"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501", # handled by black (line length)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["delfin"]

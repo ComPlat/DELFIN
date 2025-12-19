@@ -448,17 +448,6 @@ class DynamicCorePool:
                 min(new_job.cores_max, available_cores)
             )
 
-    def _min_waiting_cores_locked(self, default: int = 0) -> int:
-        """Return minimum cores_min among queued jobs (expects caller holds lock)."""
-        if self._job_queue.empty():
-            return 0
-        try:
-            pending = [item[3] for item in list(self._job_queue.queue)]
-        except Exception:
-            return default
-        mins = [job.cores_min for job in pending if hasattr(job, 'cores_min')]
-        return min(mins) if mins else default
-
     def _try_start_next_job(self) -> bool:
         """Try to start the next job from the queue."""
         try:
@@ -707,54 +696,6 @@ class DynamicCorePool:
         if self._shutdown:
             return
         self._schedule_pending_jobs()
-        # NOTE: Core reallocation is disabled for ORCA jobs because ORCA cannot
-        # change core count during execution (it's fixed in the .inp file at start).
-        # Reallocating cores to running jobs would waste resources instead of
-        # allowing new jobs to start.
-        # self._consider_reallocation()
-
-    def _consider_reallocation(self):
-        """Consider reallocating cores to running jobs for better utilization."""
-        with self._lock:
-            if not self._running_jobs:
-                return
-
-            # Do not reallocate while there are queued jobs waiting for resources.
-            if not self._job_queue.empty():
-                return
-
-            spare_cores = self.total_cores - self._allocated_cores
-            if spare_cores <= 0:
-                return
-
-            # Find jobs that could benefit from more cores
-            candidates = []
-            for job in self._running_jobs.values():
-                if job.allocated_cores < job.cores_max:
-                    potential_gain = min(job.cores_max - job.allocated_cores, spare_cores)
-                    if potential_gain > 0:
-                        # Estimate benefit (simple heuristic)
-                        benefit_score = potential_gain / (job.allocated_cores + 1)
-                        candidates.append((job, potential_gain, benefit_score))
-
-            if not candidates:
-                return
-
-            # Sort by benefit score (highest first)
-            candidates.sort(key=lambda x: x[2], reverse=True)
-
-            # Allocate spare cores to most beneficial jobs
-            for job, potential_gain, _ in candidates:
-                if spare_cores <= 0:
-                    break
-
-                additional_cores = min(potential_gain, spare_cores)
-                job.allocated_cores += additional_cores
-                self._allocated_cores += additional_cores
-                spare_cores -= additional_cores
-
-                logger.info(f"Reallocated +{additional_cores} cores to job {job.job_id} "
-                           f"(now {job.allocated_cores} cores)")
 
     def _resource_monitor(self):
         """Background thread to monitor and optimize resource usage.

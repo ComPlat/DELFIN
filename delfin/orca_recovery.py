@@ -18,7 +18,7 @@ import re
 import shutil
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from delfin.common.logging import get_logger
 

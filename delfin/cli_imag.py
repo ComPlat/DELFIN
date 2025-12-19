@@ -6,7 +6,6 @@ Handles `delfin --imag` mode:
 - Automatically generates report with updated potentials
 """
 
-import logging
 from pathlib import Path
 from typing import Dict, Any
 

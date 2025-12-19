@@ -156,6 +156,14 @@ def _load_template_defaults() -> Dict[str, Any]:
         defaults = validate_control_config(validation_seed)
         if "_occupier_sequence_blocks" in parsed:
             defaults["_occupier_sequence_blocks"] = parsed["_occupier_sequence_blocks"]
+
+        # Override ESD-specific defaults to empty (opt-in only)
+        # Users must explicitly set these in CONTROL.txt to enable ESD calculations
+        esd_opt_in_keys = ['states', 'ISCs', 'ICs', 'emission_rates']
+        for key in esd_opt_in_keys:
+            if key in defaults:
+                defaults[key] = ''
+
         _TEMPLATE_DEFAULTS_CACHE = defaults
 
     return deepcopy(_TEMPLATE_DEFAULTS_CACHE)

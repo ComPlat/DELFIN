@@ -13,9 +13,12 @@ import threading
 
 from delfin.common.logging import get_logger
 from delfin.esd_input_generator import (
+    create_fluor_input,
     create_ic_input,
     create_isc_input,
+    create_phosp_input,
     create_state_input,
+    _format_ms_suffix,
 )
 from delfin.orca import run_orca_with_intelligent_recovery
 from delfin.parallel_classic_manually import (
@@ -133,14 +136,32 @@ def parse_esd_config(config: Dict[str, Any]) -> tuple[bool, List[str], List[str]
     else:
         ics = [ic.strip() for ic in str(ics_raw).split(',') if ic.strip()]
 
-    # Ensure ground-state S0 is present when any excited states are requested so
-    # downstream jobs that depend on esd_S0 are scheduled instead of skipped.
-    if esd_enabled and states and "S0" not in states:
-        states = ["S0"] + states
+    # Ensure ground-state S0 is present when ESD module is enabled
+    # S0 is always calculated as minimum when ESD_modul=yes
+    if esd_enabled:
+        states_set = {s.upper() for s in states}
+        if "S0" not in states_set:
+            states = ["S0"] + states
 
     # logger.info(f"ESD config: enabled={esd_enabled}, states={states}, ISCs={iscs}, ICs={ics}")
 
     return esd_enabled, states, iscs, ics
+
+
+def parse_emission_rates(config: Dict[str, Any]) -> Set[str]:
+    """Parse CONTROL emission_rates into a set like {'f','p'}.
+
+    Accepted separators: comma, semicolon, whitespace. Case-insensitive.
+    """
+    raw = config.get("emission_rates", "")
+    if raw is None:
+        return set()
+    if isinstance(raw, list):
+        tokens = [str(x) for x in raw]
+    else:
+        tokens = str(raw).replace(";", ",").replace(" ", ",").split(",")
+    rates = {t.strip().lower() for t in tokens if str(t).strip()}
+    return {r for r in rates if r in {"f", "p"}}
 
 
 def setup_esd_directory(esd_dir: Path, states: List[str]) -> None:
@@ -188,27 +209,50 @@ def _populate_state_jobs(
         esd_modus = esd_modus.split("|")[0].strip()
 
     # Define dependencies between states
+    # In TDDFT mode: all excited states depend only on S0 (ground state wavefunction)
+    # In deltaSCF mode: sequential dependencies for orbital optimization
     state_deps: Dict[str, Set[str]] = {
         "S0": set(),
         "S1": {"esd_S0"},
-        "S2": {"esd_S1"},
+        "S2": {"esd_S0"} if esd_modus == "tddft" else {"esd_S1"},
+        "S3": {"esd_S0"} if esd_modus == "tddft" else {"esd_S2"},
+        "S4": {"esd_S0"} if esd_modus == "tddft" else {"esd_S3"},
+        "S5": {"esd_S0"} if esd_modus == "tddft" else {"esd_S4"},
+        "S6": {"esd_S0"} if esd_modus == "tddft" else {"esd_S5"},
         "T1": {"esd_S0"},
-        "T2": {"esd_T1"},
-        "T3": {"esd_T2"},
+        "T2": {"esd_S0"} if esd_modus == "tddft" else {"esd_T1"},
+        "T3": {"esd_S0"} if esd_modus == "tddft" else {"esd_T2"},
+        "T4": {"esd_S0"} if esd_modus == "tddft" else {"esd_T3"},
+        "T5": {"esd_S0"} if esd_modus == "tddft" else {"esd_T4"},
+        "T6": {"esd_S0"} if esd_modus == "tddft" else {"esd_T5"},
     }
 
     for state in states:
         state_upper = state.upper()
 
         # Check if this state should be calculated
-        # S0 is special: only skip if both .out and .hess already exist
-        if state_upper == "S0":
-            s0_out = esd_dir / "S0.out"
-            s0_hess = esd_dir / "S0.hess"
-            if s0_out.exists() and s0_hess.exists():
-                logger.info(f"S0 calculation skipped (S0.out/.hess exist in {esd_dir})")
+        # In normal mode: skip if both .out and .hess exist
+        # In recalc mode: let the recalc wrapper decide (it checks TERMINATED NORMALLY)
+        import os
+        recalc_mode = os.environ.get("DELFIN_RECALC", "0") == "1"
+
+        if not recalc_mode:
+            state_out = esd_dir / f"{state_upper}.out"
+
+            # Check if output is complete (TERMINATED NORMALLY)
+            is_complete = False
+            if state_out.exists():
+                try:
+                    with state_out.open("r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                        is_complete = "ORCA TERMINATED NORMALLY" in content
+                except Exception:
+                    pass
+
+            if is_complete:
+                logger.info(f"{state_upper} calculation skipped (ORCA TERMINATED NORMALLY in {state_out.name})")
                 # Mark as completed so dependencies can proceed
-                manager._completed.add("esd_S0")
+                manager._completed.add(f"esd_{state_upper}")
                 continue
 
         deps = set(state_deps.get(state_upper, set()))
@@ -221,19 +265,26 @@ def _populate_state_jobs(
             def work(cores: int) -> None:
                 st_upper = st.upper()
 
-                # For S0: copy optimized initial.xyz to S0.xyz AFTER classic_initial completes
+                # For S0: copy optimized initial.xyz to S0.xyz OR convert start.txt
                 if st_upper == "S0":
                     initial_xyz = Path("initial.xyz")
+                    start_txt = Path("start.txt")
                     s0_xyz = esd_dir / "S0.xyz"
-                    if initial_xyz.exists() and not s0_xyz.exists():
-                        import shutil
-                        shutil.copy2(initial_xyz, s0_xyz)
-                        logger.info(f"Copied optimized {initial_xyz} → {s0_xyz}")
-                    elif not initial_xyz.exists():
-                        raise RuntimeError(
-                            f"Cannot create S0.xyz: {initial_xyz} does not exist. "
-                            "Ensure esd_S0 depends on classic_initial."
-                        )
+
+                    if not s0_xyz.exists():
+                        if initial_xyz.exists():
+                            # Prefer optimized initial.xyz if available
+                            import shutil
+                            shutil.copy2(initial_xyz, s0_xyz)
+                            logger.info(f"Copied optimized {initial_xyz} → {s0_xyz}")
+                        elif start_txt.exists():
+                            # Fallback: convert start.txt to S0.xyz
+                            _convert_start_to_xyz(start_txt, s0_xyz)
+                            logger.info(f"Converted {start_txt} → {s0_xyz} (no initial.xyz found)")
+                        else:
+                            raise RuntimeError(
+                                f"Cannot create S0.xyz: neither {initial_xyz} nor {start_txt} exist."
+                            )
 
                     # deltaSCF optimization: reuse initial.* files if inputs are identical
                     if esd_modus == "deltascf":
@@ -302,13 +353,6 @@ def _populate_state_jobs(
                 # Run ORCA with absolute paths (no chdir needed)
                 abs_output = output_file.resolve()
 
-                # If Hessian missing but old output exists (e.g., recalc mode), force rerun
-                if not hess_file.exists() and abs_output.exists():
-                    try:
-                        abs_output.unlink()
-                    except Exception:  # noqa: BLE001
-                        logger.debug("[esd] Could not remove stale output %s", abs_output, exc_info=True)
-
                 # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
                 if not _run_orca_esd(
                     abs_input,
@@ -365,6 +409,23 @@ def _populate_isc_jobs(
         metal_basisset: Metal basis set
         config: Configuration dictionary
     """
+    # Parse TROOTSSL values from config
+    trootssl_raw = config.get('TROOTSSL', '0')
+
+    # Handle list/tuple directly
+    if isinstance(trootssl_raw, (list, tuple)):
+        trootssl_values = [int(x) for x in trootssl_raw]
+    else:
+        # Handle string format
+        trootssl_str = str(trootssl_raw).strip()
+        # Remove brackets if present (e.g., "['-1', '0', '1']" or "[-1, 0, 1]")
+        trootssl_str = trootssl_str.strip('[]')
+        if ',' in trootssl_str:
+            # Split and clean each value (remove quotes)
+            trootssl_values = [int(x.strip().strip("'\"")) for x in trootssl_str.split(',')]
+        else:
+            trootssl_values = [int(trootssl_str.strip("'\""))]
+
     for isc in iscs:
         initial_state, final_state = isc.split(">")
         initial_state = initial_state.strip().upper()
@@ -373,68 +434,75 @@ def _populate_isc_jobs(
         # ISC depends on both initial and final states
         deps = {f"esd_{initial_state}", f"esd_{final_state}"}
 
-        job_id = f"esd_isc_{initial_state}_{final_state}"
+        # Create a separate job for each TROOTSSL value
+        for trootssl in trootssl_values:
+            ms_suffix = _format_ms_suffix(trootssl)
+            job_id = f"esd_isc_{initial_state}_{final_state}_{ms_suffix}"
 
-        def make_isc_work(isc_pair: str) -> Callable[[int], None]:
-            """Create work function for ISC calculation."""
-            def work(cores: int) -> None:
-                # Generate input file
-                input_file = create_isc_input(
-                    isc_pair,
-                    esd_dir,
-                    charge,
-                    solvent,
-                    metals,
-                    main_basisset,
-                    metal_basisset,
-                    config,
-                )
-
-                # Convert to absolute path before any chdir operations
-                abs_input = Path(input_file).resolve()
-
-                # Update PAL in input file (use absolute path)
-                _update_pal_block(str(abs_input), cores)
-
-                # Determine output file name
-                init_st, fin_st = isc_pair.split(">")
-                init_st = init_st.strip().upper()
-                fin_st = fin_st.strip().upper()
-                output_file = esd_dir / f"{init_st}_{fin_st}_ISC.out"
-
-                logger.info(f"Running ORCA for ISC {isc_pair} in {esd_dir}")
-
-                # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
-                scratch_token = Path("scratch") / f"ISC_{init_st}_{fin_st}"
-                if not _run_orca_esd(
-                    abs_input,
-                    output_file.resolve(),
-                    scratch_subdir=scratch_token,
-                    working_dir=esd_dir,
-                    config=config,
-                ):
-                    raise RuntimeError(
-                        f"ORCA terminated abnormally for ISC {isc_pair}"
+            def make_isc_work(isc_pair: str, trootssl_val: int) -> Callable[[int], None]:
+                """Create work function for ISC calculation."""
+                def work(cores: int) -> None:
+                    # Generate input file
+                    input_file = create_isc_input(
+                        isc_pair,
+                        esd_dir,
+                        charge,
+                        solvent,
+                        metals,
+                        main_basisset,
+                        metal_basisset,
+                        config,
+                        trootssl=trootssl_val,
                     )
 
-                logger.info(f"ISC {isc_pair} calculation completed")
+                    # Convert to absolute path before any chdir operations
+                    abs_input = Path(input_file).resolve()
 
-            return work
+                    # Update PAL in input file (use absolute path)
+                    _update_pal_block(str(abs_input), cores)
 
-        # Allow ISC jobs to run in parallel with other jobs
-        half_cores = max(6, manager.total_cores // 2)
+                    # Determine output file name (with TROOTSSL suffix)
+                    init_st, fin_st = isc_pair.split(">")
+                    init_st = init_st.strip().upper()
+                    fin_st = fin_st.strip().upper()
+                    ms_sfx = _format_ms_suffix(trootssl_val)
+                    output_file = esd_dir / f"{init_st}_{fin_st}_ISC_{ms_sfx}.out"
 
-        manager.add_job(
-            WorkflowJob(
-                job_id=job_id,
-                work=make_isc_work(isc),
-                description=f"ISC {initial_state}→{final_state}",
-                dependencies=deps,
-                cores_min=6,
-                cores_optimal=half_cores,
-                cores_max=manager.total_cores,
+                    logger.info(f"Running ORCA for ISC {isc_pair} (Ms={trootssl_val}) in {esd_dir}")
+
+                    # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
+                    scratch_token = Path("scratch") / f"ISC_{init_st}_{fin_st}_{ms_sfx}"
+                    if not _run_orca_esd(
+                        abs_input,
+                        output_file.resolve(),
+                        scratch_subdir=scratch_token,
+                        working_dir=esd_dir,
+                        config=config,
+                    ):
+                        raise RuntimeError(
+                            f"ORCA terminated abnormally for ISC {isc_pair} (Ms={trootssl_val})"
+                        )
+
+                    logger.info(f"ISC {isc_pair} (Ms={trootssl_val}) calculation completed")
+
+                return work
+
+            # Allow ISC jobs to run in parallel with other jobs
+            half_cores = max(6, manager.total_cores // 2)
+
+            # Format description with sign
+            ms_str = f"{trootssl:+d}" if trootssl != 0 else "0"
+            manager.add_job(
+                WorkflowJob(
+                    job_id=job_id,
+                    work=make_isc_work(isc, trootssl),
+                    description=f"ISC {initial_state}→{final_state} (Ms={ms_str})",
+                    dependencies=deps,
+                    cores_min=6,
+                    cores_optimal=half_cores,
+                    cores_max=manager.total_cores,
+                )
             )
-        )
 
 
 def _populate_ic_jobs(
@@ -461,10 +529,23 @@ def _populate_ic_jobs(
         metal_basisset: Metal basis set
         config: Configuration dictionary
     """
+    unsupported_ics: list[str] = []
+
     for ic in ics:
         initial_state, final_state = ic.split(">")
         initial_state = initial_state.strip().upper()
         final_state = final_state.strip().upper()
+
+        # ORCA IC support: Sn→S0 and Tn→T1 (T1 as SCF ground in triplet multiplicity)
+        allowed_sn = initial_state.startswith("S") and final_state == "S0"
+        allowed_tn = initial_state.startswith("T") and initial_state != "T1" and final_state == "T1"
+        if not (allowed_sn or allowed_tn):
+            unsupported_ics.append(ic)
+            logger.warning(
+                "Skipping IC %s: ORCA IC support is limited to Sn→S0 or Tn→T1; calculation not scheduled.",
+                ic,
+            )
+            continue
 
         # IC depends on both initial and final states
         deps = {f"esd_{initial_state}", f"esd_{final_state}"}
@@ -532,6 +613,133 @@ def _populate_ic_jobs(
             )
         )
 
+    if unsupported_ics:
+        logger.info(
+            "Unsupported IC transitions skipped: %s",
+            ", ".join(unsupported_ics),
+        )
+
+
+def _populate_fluor_jobs(
+    manager: _WorkflowManager,
+    esd_dir: Path,
+    charge: int,
+    solvent: str,
+    metals: List[str],
+    main_basisset: str,
+    metal_basisset: str,
+    config: Dict[str, Any],
+) -> None:
+    """Add fluorescence (S1→S0) ESD(FLUOR) job when requested via emission_rates=f."""
+    deps = {"esd_S0", "esd_S1"}
+    job_id = "esd_fluor_S1_S0"
+
+    def work(cores: int) -> None:
+        input_file = create_fluor_input(
+            esd_dir=esd_dir,
+            charge=charge,
+            solvent=solvent,
+            metals=metals,
+            main_basisset=main_basisset,
+            metal_basisset=metal_basisset,
+            config=config,
+            initial_state="S1",
+            final_state="S0",
+        )
+
+        abs_input = Path(input_file).resolve()
+        _update_pal_block(str(abs_input), cores)
+
+        output_file = esd_dir / "S1_S0_FLUOR.out"
+        logger.info("Running ORCA for fluorescence (S1→S0) in %s", esd_dir)
+
+        scratch_token = Path("scratch") / "FLUOR_S1_S0"
+        if not _run_orca_esd(
+            abs_input,
+            output_file.resolve(),
+            scratch_subdir=scratch_token,
+            working_dir=esd_dir,
+            config=config,
+        ):
+            raise RuntimeError("ORCA terminated abnormally for fluorescence (S1→S0)")
+
+        logger.info("Fluorescence (S1→S0) calculation completed")
+
+    half_cores = max(6, manager.total_cores // 2)
+    manager.add_job(
+        WorkflowJob(
+            job_id=job_id,
+            work=work,
+            description="Fluorescence S1→S0",
+            dependencies=deps,
+            cores_min=6,
+            cores_optimal=half_cores,
+            cores_max=manager.total_cores,
+        )
+    )
+
+
+def _populate_phosp_jobs(
+    manager: _WorkflowManager,
+    esd_dir: Path,
+    charge: int,
+    solvent: str,
+    metals: List[str],
+    main_basisset: str,
+    metal_basisset: str,
+    config: Dict[str, Any],
+) -> None:
+    """Add phosphorescence (T1→S0) ESD(PHOSP) job when requested via emission_rates=p.
+
+    ORCA phosphorescence requires SOC and typically three IROOT jobs (1..3) after SOC splitting.
+    """
+    deps = {"esd_S0", "esd_T1"}
+    job_id = "esd_phosp_T1_S0"
+
+    def work(cores: int) -> None:
+        input_file = create_phosp_input(
+            esd_dir=esd_dir,
+            charge=charge,
+            solvent=solvent,
+            metals=metals,
+            main_basisset=main_basisset,
+            metal_basisset=metal_basisset,
+            config=config,
+            initial_state="T1",
+            final_state="S0",
+        )
+
+        abs_input = Path(input_file).resolve()
+        _update_pal_block(str(abs_input), cores)
+
+        output_file = esd_dir / "T1_S0_PHOSP.out"
+        logger.info("Running ORCA for phosphorescence (T1→S0) in %s", esd_dir)
+
+        scratch_token = Path("scratch") / "PHOSP_T1_S0"
+        if not _run_orca_esd(
+            abs_input,
+            output_file.resolve(),
+            scratch_subdir=scratch_token,
+            working_dir=esd_dir,
+            config=config,
+        ):
+            raise RuntimeError("ORCA terminated abnormally for phosphorescence (T1→S0)")
+
+        logger.info("Phosphorescence (T1→S0) calculation completed")
+
+    half_cores = max(6, manager.total_cores // 2)
+    manager.add_job(
+        WorkflowJob(
+            job_id=job_id,
+            work=work,
+            description="Phosphorescence T1→S0",
+            dependencies=deps,
+            cores_min=6,
+            cores_optimal=half_cores,
+            cores_max=manager.total_cores,
+        )
+    )
+
 
 def _create_s0_tddft_check_input(
     output_path: Path,
@@ -553,7 +761,7 @@ def _create_s0_tddft_check_input(
     functional = config.get('functional', 'PBE0')
     disp_corr = config.get('disp_corr', 'D4')
     ri_jkx = config.get('ri_jkx', 'RIJCOSX')
-    implicit_solvation = config.get('implicit_solvation_model', 'CPCM')
+    implicit_solvation = config.get('implicit_solvation_model', '')
     pal = config.get("PAL", 12)
     maxcore = config.get("maxcore", 6000)
     nroots = config.get('ESD_nroots', 15)
@@ -563,6 +771,10 @@ def _create_s0_tddft_check_input(
 
     _, aux_jk, _ = select_rel_and_aux(metals, config)
 
+    # Build solvation keyword
+    from delfin.esd_input_generator import _build_solvation_keyword
+    solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
+
     # TDDFT keyword line (RKS for vertical excitations from S0)
     tddft_keywords = [
         functional,
@@ -571,8 +783,9 @@ def _create_s0_tddft_check_input(
         disp_corr,
         ri_jkx,
         aux_jk,
-        f"{implicit_solvation}({solvent})",
     ]
+    if solvation_kw:
+        tddft_keywords.append(solvation_kw)
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write("! " + " ".join(tddft_keywords) + "\n")
@@ -675,20 +888,36 @@ def add_esd_jobs_to_scheduler(
         Tuple of (esd_enabled, states, iscs, ics) for tracking what was added
     """
     esd_enabled, states, iscs, ics = parse_esd_config(config)
+    emission_rates = parse_emission_rates(config)
 
     if not esd_enabled:
         logger.debug("ESD module disabled (ESD_modul=no)")
         return esd_enabled, states, iscs, ics
 
-    if not states and not iscs and not ics:
+    if not states and not iscs and not ics and not emission_rates:
         logger.debug("ESD module enabled but no states/ISCs/ICs configured")
         return esd_enabled, states, iscs, ics
 
     logger.info("Adding ESD jobs to scheduler (will run after %s)", dependency_job_id)
 
+    # Ensure required states exist when emission rates are requested
+    states_effective = list(states)
+    if "f" in emission_rates:
+        state_set = {s.upper() for s in states_effective}
+        for required in ("S0", "S1"):
+            if required not in state_set:
+                states_effective.append(required)
+                state_set.add(required)
+    if "p" in emission_rates:
+        state_set = {s.upper() for s in states_effective}
+        for required in ("S0", "T1"):
+            if required not in state_set:
+                states_effective.append(required)
+                state_set.add(required)
+
     # Setup ESD directory (use absolute path to avoid chdir issues in parallel jobs)
     esd_dir = Path("ESD").resolve()
-    setup_esd_directory(esd_dir, states)
+    setup_esd_directory(esd_dir, states_effective)
 
     # Get the scheduler's internal manager
     manager = scheduler.manager
@@ -699,16 +928,23 @@ def add_esd_jobs_to_scheduler(
         "S0": set(),
         "S1": {"esd_S0"},
         "S2": {"esd_S1"},
+        "S3": {"esd_S2"},
+        "S4": {"esd_S3"},
+        "S5": {"esd_S4"},
+        "S6": {"esd_S5"},
         "T1": {"esd_S0"},
         "T2": {"esd_T1"},
         "T3": {"esd_T2"},
+        "T4": {"esd_T3"},
+        "T5": {"esd_T4"},
+        "T6": {"esd_T5"},
     }
 
     # Populate jobs (they will be added to the shared scheduler manager)
-    if states:
+    if states_effective:
         _populate_state_jobs(
             manager,
-            states,
+            states_effective,
             esd_dir,
             charge,
             solvent,
@@ -718,10 +954,20 @@ def add_esd_jobs_to_scheduler(
             config,
         )
 
-        # Now modify esd_S0 to depend on classic_initial
+        # Add dependency on classic_initial only if it will actually run
+        # (i.e., calc_initial=yes or initial.xyz already exists)
         if "esd_S0" in manager._jobs:
-            manager._jobs["esd_S0"].dependencies.add(dependency_job_id)
-            logger.debug("Added dependency: esd_S0 depends on %s", dependency_job_id)
+            calc_initial = str(config.get('calc_initial', 'no')).strip().lower() == 'yes'
+            initial_xyz_exists = Path("initial.xyz").exists()
+
+            if calc_initial or initial_xyz_exists:
+                # classic_initial will run or has run -> add dependency
+                manager._jobs["esd_S0"].dependencies.add(dependency_job_id)
+                logger.debug("Added dependency: esd_S0 depends on %s", dependency_job_id)
+            else:
+                # No classic_initial -> esd_S0 will use start.txt directly
+                logger.info("Skipping dependency on %s (calc_initial=no and no initial.xyz found)", dependency_job_id)
+                logger.info("esd_S0 will convert start.txt to S0.xyz directly")
 
     # Check if frequency calculations are enabled (required for ISC/IC)
     esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
@@ -756,6 +1002,34 @@ def add_esd_jobs_to_scheduler(
     elif ics and not esd_frequency_enabled:
         logger.info("IC calculations skipped (ESD_frequency=no - ZPE not available)")
 
+    if "f" in emission_rates and esd_frequency_enabled:
+        _populate_fluor_jobs(
+            manager,
+            esd_dir,
+            charge,
+            solvent,
+            metals,
+            main_basisset,
+            metal_basisset,
+            config,
+        )
+    elif "f" in emission_rates and not esd_frequency_enabled:
+        logger.info("Fluorescence calculations skipped (ESD_frequency=no - Hessians not available)")
+
+    if "p" in emission_rates and esd_frequency_enabled:
+        _populate_phosp_jobs(
+            manager,
+            esd_dir,
+            charge,
+            solvent,
+            metals,
+            main_basisset,
+            metal_basisset,
+            config,
+        )
+    elif "p" in emission_rates and not esd_frequency_enabled:
+        logger.info("Phosphorescence calculations skipped (ESD_frequency=no - Hessians not available)")
+
     logger.info("Added %d ESD jobs to scheduler", len([j for j in manager._jobs if j.startswith("esd_")]))
 
     return esd_enabled, states, iscs, ics
@@ -789,12 +1063,13 @@ def run_esd_phase(
         WorkflowRunResult with completed/failed/skipped jobs
     """
     esd_enabled, states, iscs, ics = parse_esd_config(config)
+    emission_rates = parse_emission_rates(config)
 
     if not esd_enabled:
         logger.info("ESD module disabled (ESD_modul=no)")
         return WorkflowRunResult()
 
-    if not states and not iscs and not ics:
+    if not states and not iscs and not ics and not emission_rates:
         logger.info("ESD module enabled but no states/ISCs/ICs configured")
         return WorkflowRunResult()
 
@@ -805,17 +1080,33 @@ def run_esd_phase(
 
     # Setup ESD directory (use absolute path to avoid chdir issues in parallel jobs)
     esd_dir = Path("ESD").resolve()
-    setup_esd_directory(esd_dir, states)
+    states_effective = list(states)
+    if "f" in emission_rates:
+        state_set = {s.upper() for s in states_effective}
+        for required in ("S0", "S1"):
+            if required not in state_set:
+                states_effective.append(required)
+                state_set.add(required)
+    if "p" in emission_rates:
+        state_set = {s.upper() for s in states_effective}
+        for required in ("S0", "T1"):
+            if required not in state_set:
+                states_effective.append(required)
+                state_set.add(required)
+    setup_esd_directory(esd_dir, states_effective)
 
     # Create workflow manager
     manager = _WorkflowManager(config, label="esd")
 
+    # Check if frequency calculations are enabled (required for ISC/IC)
+    esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
+
     try:
         # Populate jobs
-        if states:
+        if states_effective:
             _populate_state_jobs(
                 manager,
-                states,
+                states_effective,
                 esd_dir,
                 charge,
                 solvent,
@@ -854,6 +1145,34 @@ def run_esd_phase(
             )
         elif ics and not esd_frequency_enabled:
             logger.info("IC calculations skipped (ESD_frequency=no - ZPE not available)")
+
+        if "f" in emission_rates and esd_frequency_enabled:
+            _populate_fluor_jobs(
+                manager,
+                esd_dir,
+                charge,
+                solvent,
+                metals,
+                main_basisset,
+                metal_basisset,
+                config,
+            )
+        elif "f" in emission_rates and not esd_frequency_enabled:
+            logger.info("Fluorescence calculations skipped (ESD_frequency=no - Hessians not available)")
+
+        if "p" in emission_rates and esd_frequency_enabled:
+            _populate_phosp_jobs(
+                manager,
+                esd_dir,
+                charge,
+                solvent,
+                metals,
+                main_basisset,
+                metal_basisset,
+                config,
+            )
+        elif "p" in emission_rates and not esd_frequency_enabled:
+            logger.info("Phosphorescence calculations skipped (ESD_frequency=no - Hessians not available)")
 
         if not manager.has_jobs():
             logger.info("No ESD jobs to execute")

@@ -1,28 +1,34 @@
 from __future__ import annotations
-import os, time, sys, argparse, shutil, fnmatch, re, signal
+import argparse
+import fnmatch
+import os
+import re
+import shutil
+import signal
+import sys
+import time
 from pathlib import Path
 
 from dataclasses import asdict
 from typing import Optional
 from delfin.common.logging import configure_logging, get_logger, add_file_handler
 from delfin.common.paths import get_runtime_dir, resolve_path
-from delfin.cluster_utils import auto_configure_resources, detect_cluster_environment
+from delfin.cluster_utils import auto_configure_resources
 from delfin.global_manager import get_global_manager
 from .define import create_control_file
 from .cleanup import cleanup_all, cleanup_orca
 from .config import read_control_file, get_E_ref
 from .utils import search_transition_metals, set_main_basisset, calculate_total_electrons_txt
 from .orca import run_orca, cleanup_orca_scratch_dir
-from .imag import run_IMAG
 from .xtb_crest import XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
-from .energies import find_gibbs_energy, find_ZPE, find_electronic_energy
 from .reporting import (
     generate_summary_report_DELFIN as generate_summary_report,
     generate_esd_report,
 )
-from .cli_helpers import _avg_or_none, _build_parser
+from .reporting.delfin_collector import save_esd_data_json
+from .cli_helpers import _build_parser
 from .cli_recalc import setup_recalc_mode, patch_modules_for_recalc
-from .cli_banner import print_delfin_banner, validate_required_files, get_file_paths
+from .cli_banner import print_delfin_banner, validate_required_files
 from .pipeline import (
     FileBundle,
     PipelineContext,
@@ -497,7 +503,6 @@ def _run_co2_subcommand(argv: list[str]) -> int:
     # Normal run mode - execute CO2 coordinator workflow
     try:
         # Set recalc mode environment variable if needed
-        import os
         if args.recalc:
             os.environ["DELFIN_CO2_RECALC"] = "1"
         co2_main()
@@ -812,7 +817,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_report_ai_command(arg_list[1:])
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
-    args, _ = parser.parse_known_args(arg_list)
+    args, unknown = parser.parse_known_args(arg_list)
+    if unknown:
+        logger.error("Unknown argument(s): %s", " ".join(unknown))
+        return 2
 
     try:
         occupier_overrides = _parse_occupier_overrides(getattr(args, "occupier_override", []) or [])
@@ -821,8 +829,21 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     RECALC_MODE = bool(getattr(args, "recalc", False))
-    control_file_path = resolve_path(args.control)
+    report_mode = getattr(args, "report", None)
+    REPORT_TEXT = report_mode == "text"
+    REPORT_DOCX = report_mode == "docx"
+    workspace_arg = getattr(args, "workspace", ".") or "."
+    workspace_hint = resolve_path(workspace_arg)
+    if getattr(args, "control", "CONTROL.txt") == "CONTROL.txt":
+        control_file_path = resolve_path(workspace_hint / "CONTROL.txt")
+    else:
+        control_file_path = resolve_path(args.control)
     workspace_root = control_file_path.parent
+    if getattr(args, "json_output", None):
+        candidate = Path(args.json_output)
+        json_output_path = (workspace_root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+    else:
+        json_output_path = None
     force_rerun_outputs: set[Path] = {
         _override_output_path(name, workspace_root) for name in occupier_overrides
     } if RECALC_MODE else set()
@@ -882,22 +903,70 @@ def main(argv: list[str] | None = None) -> int:
         print("Cleanup done.")
         return 0
 
-    if occupier_overrides and (getattr(args, "report", False) or getattr(args, "imag", False)):
+    # JSON-only mode: build DELFIN_Data.json and exit
+    if args.json and not any([report_mode, args.imag, args.recalc, args.define, args.purge, args.cleanup, args.afp]):
+        try:
+            output = save_esd_data_json(workspace_root, json_output_path)
+            print(f"DELFIN data JSON written to: {output}")
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to generate DELFIN_Data.json: %s", exc, exc_info=True)
+            return 1
+
+    # AFP-only mode: generate AFP plot and exit
+    if args.afp and not any([report_mode, args.imag, args.recalc, args.define, args.purge, args.cleanup]):
+        from .afp_plot import generate_afp_report
+        try:
+            output_png = generate_afp_report(workspace_root, fwhm=args.afp_fwhm)
+            if output_png:
+                print(f"AFP spectrum plot saved to: {output_png}")
+                return 0
+            else:
+                logger.error("Failed to generate AFP plot - check if S0.out, S1.out, or T1.out exist")
+                return 1
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to generate AFP plot: %s", exc, exc_info=True)
+            return 1
+
+    if occupier_overrides and (report_mode or getattr(args, "imag", False)):
         logger.error("--occupier-override is only supported for normal --recalc runs (not with --report/--imag).")
         return 2
 
     # Handle --report mode: recompute potentials from existing outputs
-    if getattr(args, "report", False):
+    if REPORT_TEXT:
         from .cli_report import run_report_mode
 
         # Read CONTROL.txt
         try:
             config = read_control_file(str(control_file_path))
+        except FileNotFoundError:
+            logger.error("CONTROL file not found: %s", control_file_path)
+            logger.error("Hint: run `delfin %s --define` or pass `--control /path/to/CONTROL.txt`.", workspace_arg)
+            return 2
         except ValueError as exc:
             logger.error("Invalid CONTROL configuration: %s", exc)
             return 2
 
         return run_report_mode(config)
+    if REPORT_DOCX:
+        from .cli_report_docx import run_docx_report_mode
+
+        try:
+            config = read_control_file(str(control_file_path))
+        except FileNotFoundError:
+            logger.error("CONTROL file not found: %s", control_file_path)
+            logger.error("Hint: run `delfin %s --define` or pass `--control /path/to/CONTROL.txt`.", workspace_arg)
+            return 2
+        except ValueError as exc:
+            logger.error("Invalid CONTROL configuration: %s", exc)
+            return 2
+
+        return run_docx_report_mode(
+            workspace_root,
+            config=config,
+            afp_fwhm=args.afp_fwhm,
+            json_output_path=json_output_path,
+        )
 
     # Handle --imag mode: run IMAG elimination then report
     if getattr(args, "imag", False):
@@ -906,6 +975,10 @@ def main(argv: list[str] | None = None) -> int:
         # Read CONTROL.txt
         try:
             config = read_control_file(str(control_file_path))
+        except FileNotFoundError:
+            logger.error("CONTROL file not found: %s", control_file_path)
+            logger.error("Hint: run `delfin %s --define` or pass `--control /path/to/CONTROL.txt`.", workspace_arg)
+            return 2
         except ValueError as exc:
             logger.error("Invalid CONTROL configuration: %s", exc)
             return 2
@@ -926,6 +999,10 @@ def main(argv: list[str] | None = None) -> int:
     # Read CONTROL.txt once and derive all settings from it
     try:
         config = read_control_file(str(control_file_path))
+    except FileNotFoundError:
+        logger.error("CONTROL file not found: %s", control_file_path)
+        logger.error("Hint: run `delfin %s --define` or pass `--control /path/to/CONTROL.txt`.", workspace_arg)
+        return 2
     except ValueError as exc:
         logger.error("Invalid CONTROL configuration: %s", exc)
         return 2
@@ -1306,7 +1383,14 @@ def main(argv: list[str] | None = None) -> int:
                 logger.info("ESD report written to %s", esd_report_path)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to generate ESD.txt: %s", exc, exc_info=True)
-    
+
+        # Always write consolidated DELFIN JSON at the end of a run
+        try:
+            output_json = save_esd_data_json(workspace_root, json_output_path)
+            logger.info("DELFIN data JSON written to %s", output_json)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to generate DELFIN_Data.json: %s", exc, exc_info=True)
+
         return _finalize(0)
     except KeyboardInterrupt:
         logger.warning("Execution interrupted by user; shutting down...")

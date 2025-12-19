@@ -17,9 +17,9 @@ intersystem crossings (ISC) and internal conversions (IC), alongside E_00 energi
 DELFIN does not address the fundamental question of whether a hypothetical system is chemically viable or
 synthetically accessible.
 
-To use DELFIN, install ORCA 6.1.0 and add it to your PATH. CREST 3.0.2 is optional.
+To use DELFIN, install ORCA 6.1.1 and add it to your PATH. CREST 3.0.2 is optional.
 
-ORCA 6.1.0 is available free of charge for academic use under the ORCA License Agreement.
+ORCA 6.1.1 is available free of charge for academic use under the ORCA License Agreement.
 It is developed and copyrighted by the Max Planck Society; all non-academic use
 requires a separate commercial license from the ORCA team. The full licensing terms
 and registration steps are provided via the official ORCA portal:
