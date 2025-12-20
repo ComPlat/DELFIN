@@ -632,10 +632,37 @@ class _WorkflowManager:
             failed_ids = set(self._failed)
             skipped_ids = set(self._skipped)
 
+            # CRITICAL FIX: Get fresh pool status to ensure allocated_cores is up-to-date
+            # This prevents using stale snapshots after job completions
             try:
                 status = self.pool.get_status()
             except Exception:
                 status = None
+
+            # ROBUST FIX: If pool snapshot shows more cores allocated than we have inflight jobs,
+            # it's stale. Use a conservative estimate based on our tracking.
+            if status and self._inflight:
+                snapshot_allocated = status.get('allocated_cores', 0)
+                # Assume inflight jobs use at least cores_min each as lower bound
+                with self._lock:
+                    inflight_count = len(self._inflight)
+                # If snapshot shows unreasonably high allocation, cap it
+                # This handles race conditions where pool hasn't updated after completions
+                if snapshot_allocated > self.total_cores or (
+                    inflight_count == 0 and snapshot_allocated > 0
+                ):
+                    logger.debug(
+                        "[%s] Pool snapshot stale (allocated=%d, inflight=%d), refreshing",
+                        self.label,
+                        snapshot_allocated,
+                        inflight_count,
+                    )
+                    # Force a small delay to let pool update, then re-fetch
+                    time.sleep(0.05)
+                    try:
+                        status = self.pool.get_status()
+                    except Exception:
+                        pass
 
             logger.debug(
                 "[%s] Ready jobs=%s | completed=%s",
@@ -977,13 +1004,45 @@ class _WorkflowManager:
 
         ready_count = len(ready_jobs)
 
+        # ROBUST FIX: Better available cores calculation with stale snapshot detection
+        with self._lock:
+            actual_inflight = len(self._inflight)
+
         # If nothing else is running, the ready jobs may use the full PAL.
-        if running_jobs == 0:
+        if running_jobs == 0 and queued_jobs == 0:
+            available = total
+        elif actual_inflight == 0 and allocated_cores > 0:
+            # CRITICAL FIX: Snapshot is stale - we have no inflight jobs but snapshot shows allocation
+            # This happens when jobs just completed. Use full pool.
+            logger.debug(
+                "[%s] Stale snapshot detected (allocated=%d but inflight=0), using full pool",
+                self.label,
+                allocated_cores,
+            )
             available = total
         else:
+            # Use snapshot's allocated_cores, but sanity-check it
+            # allocated_cores should never exceed total, and should be reasonable given inflight count
             available = max(1, total - allocated_cores)
-            # Guard against pathological snapshots where allocated exceeds total.
+            # Guard against pathological snapshots where allocated exceeds total
             available = min(total, available)
+
+            # Additional sanity check: if available is suspiciously low and we have few inflight jobs,
+            # the snapshot is likely stale. Be more optimistic about available cores.
+            if actual_inflight > 0 and available < total * 0.2:
+                # Estimate a more realistic available based on typical job sizes
+                # Assume each inflight job uses ~optimal cores on average
+                estimated_used = min(total, actual_inflight * 12)  # 12 cores typical for ESD jobs
+                estimated_available = max(1, total - estimated_used)
+                if estimated_available > available:
+                    logger.debug(
+                        "[%s] Snapshot shows low availability (%d cores), but inflight=%d suggests more (%d cores). Using optimistic estimate.",
+                        self.label,
+                        available,
+                        actual_inflight,
+                        estimated_available,
+                    )
+                    available = estimated_available
 
         if not self._parallel_enabled:
             return {job.job_id: total for job in ready_jobs}, {
@@ -1164,6 +1223,33 @@ class _WorkflowManager:
             # This preserves the asymmetric FoB weight-based allocation
             allocations = {job.job_id: targets[job.job_id] for job in jobs_sorted}
 
+            # CRITICAL FIX: Redistribute unused cores to maximize utilization
+            # Even when all targets fit, we should use ALL available cores
+            total_allocated = sum(allocations.values())
+            remaining_cores = available - total_allocated
+            if remaining_cores > 0:
+                logger.debug(
+                    "[%s] Redistributing %d unused cores to jobs that can use more",
+                    self.label,
+                    remaining_cores,
+                )
+                for job in jobs_sorted:
+                    if remaining_cores <= 0:
+                        break
+                    current = allocations[job.job_id]
+                    can_add = min(remaining_cores, job.cores_max - current)
+                    if can_add > 0:
+                        allocations[job.job_id] = current + can_add
+                        remaining_cores -= can_add
+                        logger.debug(
+                            "[%s] Allocated +%d cores to %s (now %d/%d cores)",
+                            self.label,
+                            can_add,
+                            job.job_id,
+                            allocations[job.job_id],
+                            job.cores_max,
+                        )
+
             # Cap jobs with preserve_cores_optimal to enforce asymmetric allocation
             # Otherwise dynamic pool might expand them
             caps = {
@@ -1175,7 +1261,7 @@ class _WorkflowManager:
                 "[%s] ✓ Using asymmetric allocations: %s (total: %d/%d cores)",
                 self.label,
                 allocations,
-                total_target_cores,
+                sum(allocations.values()),
                 available,
             )
 
