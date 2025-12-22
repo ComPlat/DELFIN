@@ -1,4 +1,5 @@
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -17,6 +18,7 @@ except ImportError:
     psutil = None  # type: ignore
 
 from delfin.common.logging import get_logger
+from delfin.common.progress_display import ProgressDisplay
 from delfin.global_manager import get_global_manager
 from delfin.orca_recovery import (
     OrcaErrorDetector,
@@ -27,6 +29,10 @@ from delfin.orca_recovery import (
 )
 
 logger = get_logger(__name__)
+
+# Compile regex patterns at module level for performance
+_CPHF_PATTERN = re.compile(r'ITERATION\s+(\d+):.*?\(\s*[\d.]+\s+sec\s+(\d+)/(\d+)\s+done\)')
+_FREQ_PATTERN = re.compile(r'(\d+)\s+\(of\s+(\d+)\)')
 
 ORCA_PLOT_INPUT_TEMPLATE = (
     "1\n"
@@ -368,27 +374,34 @@ def _check_orca_success(output_file: str) -> bool:
 
 
 def _monitor_orca_progress(output_file: str, stop_event: threading.Event, input_name: str):
-    """Monitor ORCA output file and log progress updates.
+    """Monitor ORCA output file and display progress updates.
 
-    Runs in a background thread and logs interesting progress markers:
-    - SCF iterations
-    - Geometry optimization steps
+    Runs in a background thread and displays/logs interesting progress markers:
+    - CPHF/POPLE solver iterations (numerical frequencies)
     - Numerical frequency displacements
-    """
-    last_size = 0
-    last_log_time = time.time()
-    log_interval = 60  # Log every 60 seconds
+    - Convergence markers
 
-    # Patterns to detect in output
-    patterns = {
-        'scf': r'ITER\s+Energy\s+Delta-E',
-        'opt': r'OPTIMIZATION\s+RUN',
-        'freq_disp': r'Calculating gradient on displaced geometry\s+(\d+)\s+\(of\s+(\d+)\)',
-        'terminating': r'ORCA TERMINATED',
-    }
+    Automatically detects TTY and uses live updates when available,
+    falls back to logging in batch environments (SLURM, PBS, etc.).
+
+    Args:
+        output_file: Path to ORCA output file to monitor
+        stop_event: Threading event to signal monitoring should stop
+        input_name: Name of input file (for display purposes)
+    """
+    # Initialize progress display (auto-detects TTY)
+    progress = ProgressDisplay()
+
+    last_size = 0
+    last_update_time = time.time()
+    update_interval = 5  # Update every 5 seconds (reduced from 60s)
+
+    # Track last displayed progress to avoid redundant updates
+    last_progress_state = None
 
     while not stop_event.is_set():
         try:
+            # Wait for output file to exist
             if not os.path.exists(output_file):
                 time.sleep(2)
                 continue
@@ -396,61 +409,92 @@ def _monitor_orca_progress(output_file: str, stop_event: threading.Event, input_
             current_size = os.path.getsize(output_file)
             current_time = time.time()
 
-            # Check if file is growing and enough time has passed
-            if current_size > last_size and (current_time - last_log_time) >= log_interval:
-                with open(output_file, 'r') as f:
-                    # Read last 50 lines for recent activity
-                    f.seek(max(0, current_size - 5000))
-                    recent_lines = f.read().split('\n')[-50:]
+            # Check if file is growing
+            if current_size > last_size:
+                # Only check for updates if enough time has passed
+                if (current_time - last_update_time) >= update_interval:
+                    try:
+                        with open(output_file, 'r', errors='replace') as f:
+                            # Read last 5000 bytes for recent activity
+                            f.seek(max(0, current_size - 5000))
+                            recent_content = f.read()
+                            recent_lines = recent_content.split('\n')[-50:]
 
-                    for line in recent_lines:
-                        # Check for frequency displacement progress
-                        if 'displaced geometry' in line:
-                            import re
-                            match = re.search(r'(\d+)\s+\(of\s+(\d+)\)', line)
-                            if match:
-                                current, total = match.groups()
-                                percent = (int(current) / int(total)) * 100
-                                logger.info(f"[{input_name}] Frequency calculation: {current}/{total} ({percent:.1f}%)")
-                                last_log_time = current_time
-                                break
+                            progress_message = None
+                            progress_key = None  # To detect duplicates
+                            is_persistent = False
 
-                        # Check for CPHF/POPLE solver progress (numerical frequencies)
-                        elif 'ITERATION' in line and 'done)' in line:
-                            import re
-                            match = re.search(r'ITERATION\s+(\d+):.*?\(\s*[\d.]+\s+sec\s+(\d+)/(\d+)\s+done\)', line)
-                            if match:
-                                iteration, current, total = match.groups()
-                                percent = (int(current) / int(total)) * 100
-                                logger.info(f"[{input_name}] CPHF/POPLE iteration {iteration}: {current}/{total} ({percent:.1f}%)")
-                                last_log_time = current_time
-                                break
+                            # Check patterns in priority order (most specific first)
+                            # Process lines in reverse to get most recent match
+                            for line in reversed(recent_lines):
 
-                        # Check for optimization convergence
-                        elif 'THE OPTIMIZATION HAS CONVERGED' in line:
-                            logger.info(f"[{input_name}] Geometry optimization converged")
-                            last_log_time = current_time
-                            break
+                                # Priority 1: CPHF/POPLE solver progress (numerical frequencies)
+                                # Example: "ITERATION   5:  (  3.47 sec  162/162 done)"
+                                if 'ITERATION' in line and 'done)' in line:
+                                    match = _CPHF_PATTERN.search(line)
+                                    if match:
+                                        iteration, current, total = match.groups()
+                                        percent = (int(current) / int(total)) * 100
+                                        progress_message = (
+                                            f"[{input_name}] CPHF/POPLE iteration {iteration}: "
+                                            f"{current}/{total} ({percent:.1f}%)"
+                                        )
+                                        progress_key = f"cphf_{iteration}_{current}"
+                                        break
 
-                        # Check for geometry optimization
-                        elif 'GEOMETRY OPTIMIZATION CYCLE' in line:
-                            logger.info(f"[{input_name}] Geometry optimization running...")
-                            last_log_time = current_time
-                            break
+                                # Priority 2: Frequency displacement progress
+                                # Example: "Calculating gradient on displaced geometry 24 (of 162)"
+                                elif 'displaced geometry' in line:
+                                    match = _FREQ_PATTERN.search(line)
+                                    if match:
+                                        current, total = match.groups()
+                                        percent = (int(current) / int(total)) * 100
+                                        progress_message = (
+                                            f"[{input_name}] Frequency calculation: "
+                                            f"displaced geometry {current}/{total} ({percent:.1f}%)"
+                                        )
+                                        progress_key = f"freq_{current}"
+                                        break
 
-                        # Check for SCF convergence
-                        elif 'SCF CONVERGED' in line:
-                            logger.info(f"[{input_name}] SCF converged")
-                            last_log_time = current_time
-                            break
+                                # Priority 3: Optimization convergence (persistent message)
+                                elif 'THE OPTIMIZATION HAS CONVERGED' in line:
+                                    progress_message = f"[{input_name}] Geometry optimization converged"
+                                    progress_key = "opt_converged"
+                                    is_persistent = True
+                                    break
 
+                                # Priority 4: SCF convergence (persistent message)
+                                elif 'SCF CONVERGED' in line:
+                                    progress_message = f"[{input_name}] SCF converged"
+                                    progress_key = "scf_converged"
+                                    is_persistent = True
+                                    break
+
+                            # Only update display if we found NEW progress (different from last state)
+                            # This ensures no output when nothing has changed
+                            if progress_message and progress_key and progress_key != last_progress_state:
+                                progress.update(progress_message, persistent=is_persistent)
+                                last_update_time = current_time
+                                last_progress_state = progress_key
+
+                    except OSError as e:
+                        logger.debug(f"Could not read ORCA output file {output_file}: {e}")
+                    except Exception as e:
+                        logger.debug(f"Error processing ORCA output: {e}")
+
+                # Always update last_size when file grows
                 last_size = current_size
 
-            time.sleep(5)  # Check every 5 seconds
+            # Sleep between checks
+            time.sleep(5)
 
         except Exception as e:
             logger.debug(f"Progress monitor error: {e}")
             time.sleep(5)
+
+    # Finalize progress display when stopping
+    # This ensures clean output (newline in TTY mode)
+    progress.finalize()
 
 
 def _ensure_process_group_terminated(process: subprocess.Popen, grace_timeout: float = 2.0) -> None:
