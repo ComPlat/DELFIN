@@ -854,13 +854,9 @@ def _inject_moinp_block(input_path: Path, gbw_path: Path) -> None:
 
     for idx, line in enumerate(lines):
         if line.strip().startswith("!"):
-            if "MOREAD" in line:
-                break
-            if "PModel" in line:
-                line = line.replace("PModel", "MOREAD")
-            else:
-                line = line.rstrip() + " MOREAD"
-            lines[idx] = line
+            # Only add MOREAD if neither MOREAD nor PModel is present
+            if "MOREAD" not in line and "PModel" not in line:
+                lines[idx] = line.rstrip() + " MOREAD\n"
             break
 
     input_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

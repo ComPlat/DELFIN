@@ -665,7 +665,6 @@ def _create_state_input_delta_scf(
         keywords.append("deltaSCF")
 
     if moinp_gbw:
-        keywords.append("NODIIS")
         keywords.append("MOREAD")
 
     if initial_guess:

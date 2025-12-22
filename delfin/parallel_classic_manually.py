@@ -2324,14 +2324,11 @@ def _add_moinp_block(input_path: str, gbw_path: str) -> None:
 
         lines.insert(insert_idx, moinp_line)
 
-    # Replace PModel with MOREAD in the ! line
+    # Add MOREAD keyword if not already present (unless PModel is used)
     for idx, line in enumerate(lines):
         if line.strip().startswith('!'):
-            # Replace PModel with MOREAD
-            if 'PModel' in line:
-                lines[idx] = line.replace('PModel', 'MOREAD')
-            elif 'MOREAD' not in line:
-                # Add MOREAD if neither PModel nor MOREAD exists
+            # Only add MOREAD if neither MOREAD nor PModel is present
+            if 'MOREAD' not in line and 'PModel' not in line:
                 lines[idx] = line.rstrip() + ' MOREAD\n'
             break
 
