@@ -158,11 +158,10 @@ def _parse_tddft_and_derive_deltascf(s0_out_path: Path, state: str) -> Optional[
         logger.info(f"{state}: Triplet spin-flip config - ALPHACONF {alphaconf}, BETACONF {betaconf}")
     elif from_spin == 'a':
         # Alpha excitation (standard for Singlets)
-        # Don't use BETACONF for singlets to avoid RKS reference conflicts with ORCA 6.1.1
         alphaconf_list = [0] * (m + 1) + [1] * (n + 1)
         alphaconf = ','.join(map(str, alphaconf_list))
-        betaconf = None  # Omit BETACONF for singlets
-        logger.info(f"{state}: Singlet config - ALPHACONF {alphaconf} (BETACONF omitted)")
+        betaconf = "0"
+        logger.info(f"{state}: Singlet config - ALPHACONF {alphaconf}, BETACONF {betaconf}")
     else:
         # Beta excitation (fallback for other cases)
         alphaconf = "0,1"  # Still promote alpha
@@ -576,6 +575,10 @@ def _create_state_input_delta_scf(
     else:
         multiplicity = 1  # Singlet states
 
+    # Check if we're using deltaSCF mode
+    esd_modus = str(config.get('ESD_modus', 'TDDFT')).strip().lower()
+    use_moinp_for_deltascf = (esd_modus != 'deltascf')  # TDDFT uses MOINP, deltaSCF doesn't
+
     # Determine source geometry
     if state_upper == "S0":
         xyz_file = "initial.xyz"
@@ -583,23 +586,23 @@ def _create_state_input_delta_scf(
         use_deltascf = False
     elif state_upper == "S1":
         xyz_file = "S0.xyz"
-        moinp_gbw = "S0.gbw"
+        moinp_gbw = "S0.gbw" if use_moinp_for_deltascf else None
         use_deltascf = True
     elif state_upper == "S2":
         xyz_file = "S0.xyz"
-        moinp_gbw = "S0.gbw"
+        moinp_gbw = "S0.gbw" if use_moinp_for_deltascf else None
         use_deltascf = True
     elif state_upper == "T1":
         xyz_file = "S0.xyz"
-        moinp_gbw = "S0.gbw"
+        moinp_gbw = "S0.gbw" if use_moinp_for_deltascf else None
         use_deltascf = False
     elif state_upper == "T2":
         xyz_file = "S0.xyz"
-        moinp_gbw = "S0.gbw"
+        moinp_gbw = "S0.gbw" if use_moinp_for_deltascf else None
         use_deltascf = True
     elif state_upper == "T3":
         xyz_file = "S0.xyz"
-        moinp_gbw = "S0.gbw"
+        moinp_gbw = "S0.gbw" if use_moinp_for_deltascf else None
         use_deltascf = True
     else:
         raise ValueError(f"Unknown state: {state}")
@@ -722,18 +725,19 @@ def _create_state_input_delta_scf(
         if alphaconf is None:
             if state_upper == "S1":
                 alphaconf = "0,1"
-                betaconf = None  # Omit BETACONF for singlets
+                betaconf = "0"
             elif state_upper == "T2":
                 alphaconf = "0,1"
                 betaconf = "0,1"  # Triplet spin-flip
             else:
                 # Default for other states
                 alphaconf = "0,1"
-                betaconf = None if state_upper.startswith('S') else "0"
+                betaconf = "0"
 
-        scf_block.append(f"  alphaconf {alphaconf}")
-        if betaconf is not None:
-            scf_block.append(f"  betaconf {betaconf}")
+        scf_block.extend([
+            f"  alphaconf {alphaconf}",
+            f"  betaconf {betaconf}",
+        ])
 
         scf_block.append(f"  SOSCFHESSUP {soscfhessup}")
         scf_block.append("end")
