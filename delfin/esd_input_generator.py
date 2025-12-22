@@ -841,12 +841,9 @@ def _create_state_input_delta_scf(
             f.write(f"  dosoc {dosoc_value}\n")
             f.write("end\n")
 
-            # Geometry reference
+            # Geometry reference - use optimized S0.xyz
             f.write("\n")
-            f.write(f"* xyz {charge} 1\n")
-            for line in coord_lines:
-                f.write(line if line.endswith("\n") else line + "\n")
-            f.write("*\n")
+            f.write(f"* xyzfile {charge} 1 S0.xyz\n")
 
             logger.info(f"Added TDDFT check job to S0 input for state identification")
 
@@ -1120,10 +1117,7 @@ def _create_state_input_tddft(
             _write_output_blocks(f)
             _write_tddft_block(f, triplets=True)
             f.write("\n")
-            f.write(f"* xyz {charge} 1\n")
-            for line in coord_lines:
-                f.write(line if line.endswith("\n") else line + "\n")
-            f.write("*\n")
+            f.write(f"* xyzfile {charge} 1 S0.xyz\n")
         elif state_upper == "S1":
             f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "S1"\n')
@@ -2011,23 +2005,15 @@ def append_properties_of_interest_jobs(
             for block in output_blocks:
                 f.write(block + "\n")
 
-            # Geometry (inline, to support per-atom NewGTO like classic inputs)
-            xyz_path = Path(xyz_file)
-            try:
-                raw_lines = xyz_path.read_text(encoding="utf-8").splitlines()
-            except Exception:
-                raw_lines = []
-            skip = 2 if raw_lines and raw_lines[0].strip().isdigit() else 0
-            coord_lines = [(ln + "\n") for ln in raw_lines[skip:] if ln.strip() and ln.strip() != "*"]
-            coord_lines = _apply_esd_newgto(
-                coord_lines,
-                found_metals=metals,
-                metal_basisset=metal_basisset,
-                config=config,
-            )
-            f.write(f"* xyz {charge} {mult}\n")
-            for line in coord_lines:
-                f.write(line if line.endswith("\n") else line + "\n")
-            f.write("*\n")
+            # Add %basis block with NewGTO for metals if present
+            if metals and metal_basisset:
+                f.write("\n%basis\n")
+                for metal in metals:
+                    f.write(f'  NewGTO {metal} "{metal_basisset}" end\n')
+                f.write("end\n")
+
+            # Geometry - use xyzfile to reference optimized geometry (filename only, no path)
+            xyz_filename = Path(xyz_file).name
+            f.write(f"\n* xyzfile {charge} {mult} {xyz_filename}\n")
 
     logger.info(f"Added {len(jobs_to_add)} properties_of_interest job(s) to {inp_file}")
