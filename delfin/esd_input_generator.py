@@ -575,10 +575,6 @@ def _create_state_input_delta_scf(
     else:
         multiplicity = 1  # Singlet states
 
-    # Check if we're using deltaSCF mode
-    esd_modus = str(config.get('ESD_modus', 'TDDFT')).strip().lower()
-    use_moinp_for_deltascf = (esd_modus != 'deltascf')  # TDDFT uses MOINP, deltaSCF doesn't
-
     # Determine source geometry
     if state_upper == "S0":
         xyz_file = "initial.xyz"
@@ -586,23 +582,23 @@ def _create_state_input_delta_scf(
         use_deltascf = False
     elif state_upper == "S1":
         xyz_file = "S0.xyz"
-        moinp_gbw = "S0.gbw" if use_moinp_for_deltascf else None
+        moinp_gbw = "S0.gbw"
         use_deltascf = True
     elif state_upper == "S2":
         xyz_file = "S0.xyz"
-        moinp_gbw = "S0.gbw" if use_moinp_for_deltascf else None
+        moinp_gbw = "S0.gbw"
         use_deltascf = True
     elif state_upper == "T1":
         xyz_file = "S0.xyz"
-        moinp_gbw = "S0.gbw" if use_moinp_for_deltascf else None
+        moinp_gbw = "S0.gbw"
         use_deltascf = False
     elif state_upper == "T2":
         xyz_file = "S0.xyz"
-        moinp_gbw = "S0.gbw" if use_moinp_for_deltascf else None
+        moinp_gbw = "S0.gbw"
         use_deltascf = True
     elif state_upper == "T3":
         xyz_file = "S0.xyz"
-        moinp_gbw = "S0.gbw" if use_moinp_for_deltascf else None
+        moinp_gbw = "S0.gbw"
         use_deltascf = True
     else:
         raise ValueError(f"Unknown state: {state}")
