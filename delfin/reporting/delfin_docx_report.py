@@ -658,12 +658,12 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
     t1_zpe_eh = t1_thermo.get("zero_point_energy_hartree")
     t1_e0_eh = (t1_energy_eh + t1_zpe_eh) if (t1_energy_eh is not None and t1_zpe_eh is not None) else None
 
-    # Calculate Δ0-0 transitions in nm
+    # Calculate Δ0-0 transitions in nm (emission: S₁→S₀ fluorescence, T₁→S₀ phosphorescence)
     if s0_e0_eh is not None and s1_e0_eh is not None:
         delta_e_ev = (s1_e0_eh - s0_e0_eh) * HARTREE_TO_EV
         if delta_e_ev > 0:
             wavelength_nm = 1239.84 / delta_e_ev  # eV to nm conversion
-            delta00_color_boxes.append(("S₀→S₁", wavelength_nm, _wavelength_to_rgb(wavelength_nm)))
+            delta00_color_boxes.append(("S₁→S₀", wavelength_nm, _wavelength_to_rgb(wavelength_nm)))
 
     if s0_e0_eh is not None and t1_e0_eh is not None:
         delta_e_ev = (t1_e0_eh - s0_e0_eh) * HARTREE_TO_EV
@@ -814,7 +814,29 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         if redox_strs:
             parts.append(f"Redox potentials (vs. Fc⁺/Fc): {', '.join(redox_strs)}.")
 
-    return " ".join(parts), color_boxes, delta00_color_boxes
+    # Calculate ΔFSPE transitions WITHOUT ZPE (electronic energies only)
+    delta_fspe_eh = None
+    delta_fspe_ev = None
+    delta_fspe_color_boxes: list[tuple[str, float, tuple[int, int, int]]] = []
+
+    if s1_e0_eh is not None and t1_e0_eh is not None:
+        delta_fspe_eh = s1_e0_eh - t1_e0_eh
+        delta_fspe_ev = delta_fspe_eh * HARTREE_TO_EV
+
+    # Calculate ΔFSPE transitions WITHOUT ZPE for visualization
+    if s0_energy_eh is not None and s1_energy_eh is not None:
+        delta_e_ev = (s1_energy_eh - s0_energy_eh) * HARTREE_TO_EV
+        if delta_e_ev > 0:
+            wavelength_nm = 1239.84 / delta_e_ev
+            delta_fspe_color_boxes.append(("S₁→S₀", wavelength_nm, _wavelength_to_rgb(wavelength_nm)))
+
+    if s0_energy_eh is not None and t1_energy_eh is not None:
+        delta_e_ev = (t1_energy_eh - s0_energy_eh) * HARTREE_TO_EV
+        if delta_e_ev > 0:
+            wavelength_nm = 1239.84 / delta_e_ev
+            delta_fspe_color_boxes.append(("T₁→S₀", wavelength_nm, _wavelength_to_rgb(wavelength_nm)))
+
+    return " ".join(parts), color_boxes, delta00_color_boxes, (delta_fspe_eh, delta_fspe_ev, delta_fspe_color_boxes)
 
 
 def _style_header_row(row) -> None:
@@ -919,9 +941,9 @@ def _add_state_table(doc: Document, title: str, states: Dict[str, Any]) -> None:
         return
     heading = doc.add_heading(title, level=2)
     _keep_heading_with_table(heading)
-    table = doc.add_table(rows=1, cols=6)
+    table = doc.add_table(rows=1, cols=7)
     table.style = "Light Grid Accent 1"
-    headers = ["State", "Type", "Charge", "Multiplicity", "Energy (Eh)", "ZPE (Eh)"]
+    headers = ["State", "Type", "Charge", "Multiplicity", "Energy (Eh)", "ZPE (Eh)", "E₀ (Eh)"]
     for idx, text in enumerate(headers):
         cell = table.rows[0].cells[idx]
         cell.text = text
@@ -944,11 +966,19 @@ def _add_state_table(doc: Document, title: str, states: Dict[str, Any]) -> None:
         hartree = opt.get("hartree")
         row[4].text = _format_fixed_decimals(hartree, decimals=5) if hartree is not None else ""
 
+        zpe = thermo.get('zero_point_energy_hartree')
         row[5].text = (
-            _format_fixed_decimals(thermo.get('zero_point_energy_hartree'), decimals=5)
+            _format_fixed_decimals(zpe, decimals=5)
             if "zero_point_energy_hartree" in thermo
             else ""
         )
+
+        # E₀ = Energy + ZPE (for FSPE calculation)
+        if hartree is not None and zpe is not None:
+            e0 = hartree + zpe
+            row[6].text = _format_fixed_decimals(e0, decimals=5)
+        else:
+            row[6].text = ""
 
     _prevent_row_splits(table)
 
@@ -2522,7 +2552,7 @@ def generate_combined_docx_report(
     heading = doc.add_heading(f"DELFIN Report – {molecule_name}", level=1)
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    summary_text, color_boxes, delta00_color_boxes = _build_summary_text(data, project_dir)
+    summary_text, color_boxes, delta00_color_boxes, delta_fspe = _build_summary_text(data, project_dir)
     if summary_text:
         summary_para = _add_paragraph_with_subscript(doc, summary_text)
         summary_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
@@ -2541,6 +2571,24 @@ def generate_combined_docx_report(
                 run_box.font.color.rgb = RGBColor(*rgb)
                 run_box.font.bold = True
             chip_para.add_run(f" {label} ({wl:.0f} nm)  ")
+
+    # Display ΔFSPE between TDDFT and Δ0-0 transition colors showing S₁→S₀ and T₁→S₀ WITHOUT ZPE
+    delta_fspe_eh, delta_fspe_ev, delta_fspe_color_boxes = delta_fspe
+    if delta_fspe_color_boxes:
+        fspe_para = doc.add_paragraph()
+        fspe_para.add_run("ΔFSPE: ")
+
+        # Show the two transitions that define FSPE: S₁→S₀ and T₁→S₀ (electronic energies, no ZPE)
+        for label, wl, rgb in delta_fspe_color_boxes:
+            chip_path = _render_color_chip(rgb, project_dir, f"FSPE_{label}")
+            if chip_path and chip_path.exists():
+                run = fspe_para.add_run()
+                run.add_picture(str(chip_path), width=Inches(0.25))
+            else:
+                run_box = fspe_para.add_run("[]")
+                run_box.font.color.rgb = RGBColor(*rgb)
+                run_box.font.bold = True
+            fspe_para.add_run(f" {label} ({wl:.0f} nm)  ")
 
     # Color chips for Δ0-0 transitions (from optimized state energies)
     if delta00_color_boxes:

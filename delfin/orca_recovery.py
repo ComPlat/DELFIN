@@ -372,24 +372,45 @@ class RecoveryStrategy:
         ORCA Manual recommendations:
         - KDIIS is more robust than standard DIIS
         - SOSCF when DIIS gets stuck at ~0.001
+        - MaxDIIS to limit DIIS space size
+        - TolE relaxation for difficult cases
         """
         if self.attempt == 1:
-            # Try KDIIS first
+            # Try KDIIS with smaller DIIS space
             return {
                 "use_moread": True,
                 "keywords_add": ["KDIIS", "SlowConv"],  # Simple input keywords
                 "scf_block": {
-                    "MaxIter": 300,
+                    "MaxIter": 500,
+                    "MaxDIIS": 10,  # Limit DIIS space to avoid linear dependencies
+                    "TolE": 5e-6,  # Slightly relaxed from default 1e-6
                 },
             }
-        else:
-            # Use SOSCF (second-order SCF) instead of disabling DIIS
+        elif self.attempt == 2:
+            # Use SOSCF with early start
             return {
                 "use_moread": True,
                 "scf_block": {
                     "SOSCF": True,  # %scf block parameter
+                    "SOSCFStart": 0.00033,  # Start SOSCF earlier
                     "MaxIter": 500,
+                    "MaxDIIS": 8,
                     "DampFac": 0.9,
+                    "TolE": 1e-5,  # More relaxed
+                },
+            }
+        else:
+            # Last resort: Very aggressive damping and relaxed convergence
+            return {
+                "use_moread": True,
+                "scf_block": {
+                    "SOSCF": True,
+                    "SOSCFStart": 0.001,
+                    "MaxIter": 600,
+                    "MaxDIIS": 5,  # Very small DIIS space
+                    "DampFac": 0.95,  # Strong damping
+                    "DampErr": 0.1,  # Damp until error < 0.1
+                    "TolE": 5e-5,  # Very relaxed
                 },
             }
 
