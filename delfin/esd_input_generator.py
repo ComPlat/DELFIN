@@ -667,7 +667,8 @@ def _create_state_input_delta_scf(
     if moinp_gbw:
         keywords.append("MOREAD")
 
-    if initial_guess:
+    # Only add initial_guess if not PModel (MOREAD replaces PModel when reading orbitals)
+    if initial_guess and not (moinp_gbw and initial_guess == "PModel"):
         keywords.append(initial_guess)
 
     simple_line = "! " + " ".join(keywords)
