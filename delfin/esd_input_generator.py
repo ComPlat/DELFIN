@@ -862,11 +862,10 @@ def _create_state_input_delta_scf(
             f.write("\n")
             f.write("$new_job\n")
 
-            # TDDFT keyword line (RKS for singlets, UKS for triplets)
-            scf_type_tddft = "RKS" if state_upper.startswith('S') else "UKS"
+            # TDDFT keyword line - always RKS (closed shell) for TDDFT check jobs
             tddft_keywords = [
                 functional,
-                scf_type_tddft,
+                "RKS",
                 main_basisset,
                 disp_corr,
                 ri_jkx,
@@ -901,9 +900,9 @@ def _create_state_input_delta_scf(
             f.write(f"  dosoc {dosoc_value}\n")
             f.write("end\n")
 
-            # Geometry reference - use optimized geometry from this state
+            # Geometry reference - always multiplicity 1 (closed shell) for TDDFT
             f.write("\n")
-            f.write(f"* xyzfile {charge} {multiplicity} {state_xyz_file}\n")
+            f.write(f"* xyzfile {charge} 1 {state_xyz_file}\n")
 
             logger.info(f"Added TDDFT check job to {state_upper} input for transition analysis")
 
