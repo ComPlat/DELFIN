@@ -850,6 +850,63 @@ def _create_state_input_delta_scf(
 
             logger.info(f"Added TDDFT check job to S0 input for state identification")
 
+        # Add TDDFT check job for S1 and T1 only
+        elif state_upper in ("S1", "T1"):
+            # Determine XYZ file for this state (S1.xyz, T1.xyz, etc.)
+            state_xyz_file = f"{state_upper}.xyz"
+
+            f.write("\n")
+            f.write("#==========================================\n")
+            f.write(f"# TDDFT Check: Transitions from {state_upper}\n")
+            f.write("#==========================================\n")
+            f.write("\n")
+            f.write("$new_job\n")
+
+            # TDDFT keyword line (RKS for singlets, UKS for triplets)
+            scf_type_tddft = "RKS" if state_upper.startswith('S') else "UKS"
+            tddft_keywords = [
+                functional,
+                scf_type_tddft,
+                main_basisset,
+                disp_corr,
+                ri_jkx,
+                aux_jk,
+            ]
+            # Add solvation keyword only if model is set
+            if solvation_kw:
+                tddft_keywords.append(solvation_kw)
+            f.write("! " + " ".join(tddft_keywords) + "\n")
+
+            # Base block for TDDFT check
+            f.write(f'%base "{state_upper}_TDDFT"\n')
+
+            # PAL and maxcore
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+
+            # TDDFT block - NO followiroot for excited state checks
+            nroots = config.get('ESD_nroots', 15)
+            tda_flag = str(config.get('TDA', 'FALSE')).upper()
+            esd_maxdim = config.get('ESD_maxdim', None)
+            maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
+            dosoc_flag = str(config.get('ESD_SOC', 'false')).strip().lower()
+            dosoc_value = "true" if dosoc_flag in ('yes', 'true', '1', 'on') else "false"
+            f.write("\n%tddft\n")
+            f.write(f"  nroots {nroots}\n")
+            f.write(f"  maxdim {maxdim}\n")
+            f.write(f"  tda {tda_flag}\n")
+            if tddft_maxiter is not None:
+                f.write(f"  maxiter {tddft_maxiter}\n")
+            f.write("  triplets true\n")
+            f.write(f"  dosoc {dosoc_value}\n")
+            f.write("end\n")
+
+            # Geometry reference - use optimized geometry from this state
+            f.write("\n")
+            f.write(f"* xyzfile {charge} {multiplicity} {state_xyz_file}\n")
+
+            logger.info(f"Added TDDFT check job to {state_upper} input for transition analysis")
+
     logger.info(f"Created ESD state input: {input_file}")
     return str(input_file)
 
