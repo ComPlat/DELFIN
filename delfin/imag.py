@@ -854,8 +854,8 @@ def _inject_moinp_block(input_path: Path, gbw_path: Path) -> None:
 
     for idx, line in enumerate(lines):
         if line.strip().startswith("!"):
-            # Only add MOREAD if neither MOREAD nor PModel is present
-            if "MOREAD" not in line and "PModel" not in line:
+            # Add MOREAD if not present (required when using MOINP with .gbw)
+            if "MOREAD" not in line:
                 lines[idx] = line.rstrip() + " MOREAD\n"
             break
 
