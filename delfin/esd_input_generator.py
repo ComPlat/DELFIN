@@ -158,10 +158,11 @@ def _parse_tddft_and_derive_deltascf(s0_out_path: Path, state: str) -> Optional[
         logger.info(f"{state}: Triplet spin-flip config - ALPHACONF {alphaconf}, BETACONF {betaconf}")
     elif from_spin == 'a':
         # Alpha excitation (standard for Singlets)
+        # Don't use BETACONF for singlets to avoid RKS reference conflicts with ORCA 6.1.1
         alphaconf_list = [0] * (m + 1) + [1] * (n + 1)
         alphaconf = ','.join(map(str, alphaconf_list))
-        betaconf = "0"
-        logger.info(f"{state}: Singlet config - ALPHACONF {alphaconf}, BETACONF {betaconf}")
+        betaconf = None  # Omit BETACONF for singlets
+        logger.info(f"{state}: Singlet config - ALPHACONF {alphaconf} (BETACONF omitted)")
     else:
         # Beta excitation (fallback for other cases)
         alphaconf = "0,1"  # Still promote alpha
@@ -721,19 +722,18 @@ def _create_state_input_delta_scf(
         if alphaconf is None:
             if state_upper == "S1":
                 alphaconf = "0,1"
-                betaconf = "0"
+                betaconf = None  # Omit BETACONF for singlets
             elif state_upper == "T2":
                 alphaconf = "0,1"
-                betaconf = "0"
+                betaconf = "0,1"  # Triplet spin-flip
             else:
                 # Default for other states
                 alphaconf = "0,1"
-                betaconf = "0"
+                betaconf = None if state_upper.startswith('S') else "0"
 
-        scf_block.extend([
-            f"  alphaconf {alphaconf}",
-            f"  betaconf {betaconf}",
-        ])
+        scf_block.append(f"  alphaconf {alphaconf}")
+        if betaconf is not None:
+            scf_block.append(f"  betaconf {betaconf}")
 
         scf_block.append(f"  SOSCFHESSUP {soscfhessup}")
         scf_block.append("end")
