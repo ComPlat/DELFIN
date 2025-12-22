@@ -20,6 +20,144 @@ logger = get_logger(__name__)
 HARTREE_TO_CM1 = 219474.63
 
 
+def _parse_tddft_and_derive_deltascf(s0_out_path: Path, state: str) -> Optional[tuple[str, str]]:
+    """Parse TD-DFT results from S0.out and derive ALPHACONF/BETACONF for deltaSCF.
+
+    Args:
+        s0_out_path: Path to S0.out file containing TD-DFT results
+        state: Target state (e.g., 'S1', 'S2', 'T1', 'T2')
+
+    Returns:
+        Tuple of (alphaconf_string, betaconf_string) or None if parsing fails
+
+    Example:
+        For S2 with dominant excitation 117a -> 119a (HOMO-1 -> LUMO):
+        Returns ("0,1,1", "0")
+    """
+    if not s0_out_path.exists():
+        logger.warning(f"S0.out not found at {s0_out_path}, cannot derive deltaSCF config")
+        return None
+
+    import re
+
+    # Parse state type and number (e.g., 'S2' -> 'S', 2)
+    match = re.match(r'([ST])(\d+)', state.upper())
+    if not match:
+        return None
+    state_type, state_num = match.group(1), int(match.group(2))
+
+    # Read S0.out and find HOMO orbital number
+    try:
+        content = s0_out_path.read_text(encoding='utf-8', errors='ignore')
+    except Exception as exc:
+        logger.warning(f"Failed to read {s0_out_path}: {exc}")
+        return None
+
+    # Find HOMO orbital number (last occupied orbital before JOB 2)
+    # Look for orbital energies before "JOB NUMBER  2"
+    job2_match = re.search(r'\$+\s*JOB NUMBER\s+2\s+\$+', content)
+    if job2_match:
+        content_before_job2 = content[:job2_match.start()]
+    else:
+        content_before_job2 = content
+
+    # Find last ORBITAL ENERGIES section before JOB 2
+    # Support both RHF/RKS (no spin labels) and UHF/UKS (SPIN UP/DOWN labels)
+    orbital_sections = list(re.finditer(r'ORBITAL ENERGIES\s*\n-+', content_before_job2))
+    if not orbital_sections:
+        logger.warning("Could not find ORBITAL ENERGIES section in S0.out")
+        return None
+
+    last_orbital_section = orbital_sections[-1]
+    orbital_text = content_before_job2[last_orbital_section.end():][:8000]  # Take next 8000 chars
+
+    # Find HOMO (last orbital with OCC = 2.0000 or 1.0000)
+    homo_num = None
+    for line in orbital_text.split('\n'):
+        orbital_match = re.match(r'\s*(\d+)\s+(2\.0000|1\.0000)\s+', line)
+        if orbital_match:
+            homo_num = int(orbital_match.group(1))
+
+    if homo_num is None:
+        logger.warning("Could not determine HOMO orbital number from S0.out")
+        return None
+
+    lumo_num = homo_num + 1
+    logger.info(f"Detected HOMO = orbital {homo_num}, LUMO = orbital {lumo_num}")
+
+    # Find TD-DFT excitations for the requested state
+    # Note: TD-DFT results may be in a different JOB than ORBITAL ENERGIES
+    if state_type == 'S':
+        section_header = r'TD-DFT EXCITED STATES \(SINGLETS\)'
+    else:  # T
+        section_header = r'TD-DFT EXCITED STATES \(TRIPLETS\)'
+
+    # Search in full content (not just before JOB 2)
+    tddft_match = re.search(section_header, content)
+    if not tddft_match:
+        logger.warning(f"Could not find {section_header} section in S0.out")
+        return None
+
+    tddft_text = content[tddft_match.end():][:50000]  # Take next 50000 chars for TD-DFT data
+
+    # Find STATE N where N = state_num
+    # Match STATE line, then capture all excitations until next STATE or empty line
+    state_pattern = rf'STATE\s+{state_num}:.*?\n(.*?)(?:\n\s*\n|STATE|$)'
+    state_match = re.search(state_pattern, tddft_text, re.DOTALL)
+
+    if not state_match:
+        logger.warning(f"Could not find STATE {state_num} in TD-DFT results")
+        return None
+
+    excitations_text = state_match.group(1)
+
+    # Parse excitations and find dominant one (highest weight)
+    excitations = []
+    for line in excitations_text.strip().split('\n'):
+        exc_match = re.match(r'\s*(\d+)([ab])\s+->\s+(\d+)([ab])\s+:\s+([\d.]+)', line.strip())
+        if exc_match:
+            from_orb = int(exc_match.group(1))
+            from_spin = exc_match.group(2)
+            to_orb = int(exc_match.group(3))
+            to_spin = exc_match.group(4)
+            weight = float(exc_match.group(5))
+            excitations.append((from_orb, from_spin, to_orb, to_spin, weight))
+
+    if not excitations:
+        logger.warning(f"No excitations found for STATE {state_num}")
+        return None
+
+    # Get dominant excitation (highest weight)
+    dominant = max(excitations, key=lambda x: x[4])
+    from_orb, from_spin, to_orb, to_spin, weight = dominant
+
+    logger.info(f"{state}: Dominant excitation {from_orb}{from_spin} -> {to_orb}{to_spin} (weight={weight:.4f})")
+
+    # Calculate ALPHACONF/BETACONF based on excitation
+    # For (HOMO-n) -> (LUMO+m): ALPHACONF [0]*(m+1), [1]*(n+1)
+    # Examples:
+    #   HOMO→LUMO (n=0, m=0): [0] + [1] = 0,1
+    #   HOMO-1→LUMO (n=1, m=0): [0] + [1,1] = 0,1,1
+    #   HOMO→LUMO+1 (n=0, m=1): [0,0] + [1] = 0,0,1
+
+    n = homo_num - from_orb  # How many orbitals below HOMO
+    m = to_orb - lumo_num    # How many orbitals above LUMO
+
+    if from_spin == 'a':
+        # Alpha excitation
+        alphaconf_list = [0] * (m + 1) + [1] * (n + 1)
+        alphaconf = ','.join(map(str, alphaconf_list))
+        betaconf = "0"
+    else:
+        # Beta excitation (for triplets)
+        alphaconf = "0,1"  # Still promote alpha for triplet
+        betaconf_list = [0] * (m + 1) + [1] * (n + 1)
+        betaconf = ','.join(map(str, betaconf_list))
+
+    logger.info(f"{state}: Derived ALPHACONF {alphaconf}, BETACONF {betaconf}")
+    return (alphaconf, betaconf)
+
+
 def _build_solvation_keyword(implicit_solvation_model: str, solvent: str) -> str:
     """Build solvation keyword string, returning empty string if model is not set.
 
@@ -554,17 +692,34 @@ def _create_state_input_delta_scf(
             f"  keepinitialref {keepinitialref}",
         ]
 
-        # State-specific orbital configurations
-        if state_upper == "S1":
-            scf_block.extend([
-                "  alphaconf 0,1",
-                "  betaconf 0",
-            ])
-        elif state_upper == "T2":
-            scf_block.extend([
-                "  alphaconf 0,1",
-                "  betaconf 0",
-            ])
+        # State-specific orbital configurations - derived from TD-DFT if available
+        alphaconf = None
+        betaconf = None
+
+        # Try to derive ALPHACONF/BETACONF from S0.out TD-DFT results
+        s0_out_path = esd_dir / "S0.out"
+        if s0_out_path.exists():
+            result = _parse_tddft_and_derive_deltascf(s0_out_path, state_upper)
+            if result:
+                alphaconf, betaconf = result
+
+        # Fallback to hardcoded values if parsing failed
+        if alphaconf is None:
+            if state_upper == "S1":
+                alphaconf = "0,1"
+                betaconf = "0"
+            elif state_upper == "T2":
+                alphaconf = "0,1"
+                betaconf = "0"
+            else:
+                # Default for other states
+                alphaconf = "0,1"
+                betaconf = "0"
+
+        scf_block.extend([
+            f"  alphaconf {alphaconf}",
+            f"  betaconf {betaconf}",
+        ])
 
         scf_block.append(f"  SOSCFHESSUP {soscfhessup}")
         scf_block.append("end")
