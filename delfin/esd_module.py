@@ -378,6 +378,42 @@ def _populate_state_jobs(
 
             return work
 
+        def make_tddft_check_work(st: str) -> Callable[[int], None]:
+            """Create work function for TDDFT check on optimized singlet states."""
+            def work(cores: int) -> None:
+                st_upper = st.upper()
+                tddft_input = esd_dir / f"{st_upper}_TDDFT.inp"
+                tddft_output = esd_dir / f"{st_upper}_TDDFT.out"
+
+                if tddft_output.exists():
+                    try:
+                        with tddft_output.open("r", encoding="utf-8", errors="replace") as f:
+                            content = f.read()
+                        if "ORCA TERMINATED NORMALLY" in content:
+                            logger.info(f"{st_upper} TDDFT check skipped (ORCA TERMINATED NORMALLY in {tddft_output.name})")
+                            return
+                    except Exception:
+                        pass
+
+                if not tddft_input.exists():
+                    raise RuntimeError(f"Missing TDDFT check input: {tddft_input}")
+
+                _update_pal_block(str(tddft_input.resolve()), cores)
+
+                if not _run_orca_esd(
+                    tddft_input.resolve(),
+                    tddft_output.resolve(),
+                    working_dir=esd_dir,
+                    config=config,
+                ):
+                    raise RuntimeError(
+                        f"ORCA terminated abnormally for {st_upper} TDDFT check"
+                    )
+
+                logger.info(f"TDDFT check for {st_upper} completed")
+
+            return work
+
         # Allow ESD jobs to run in parallel with oxidation/reduction
         # cores_min based on total_cores / max_jobs (e.g., 72/6=12, 12/4=3)
         min_cores = max(2, manager.total_cores // manager.max_jobs)
@@ -394,6 +430,19 @@ def _populate_state_jobs(
                 cores_max=manager.total_cores,
             )
         )
+
+        if esd_modus == "deltascf" and state_upper.startswith("S") and state_upper != "S0":
+            manager.add_job(
+                WorkflowJob(
+                    job_id=f"esd_{state_upper}_tddft",
+                    work=make_tddft_check_work(state_upper),
+                    description=f"TDDFT check {state_upper}",
+                    dependencies={f"esd_{state_upper}"},
+                    cores_min=min_cores,
+                    cores_optimal=half_cores,
+                    cores_max=manager.total_cores,
+                )
+            )
 
 
 def _populate_isc_jobs(

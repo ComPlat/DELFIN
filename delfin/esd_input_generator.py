@@ -628,11 +628,11 @@ def _create_state_input_delta_scf(
     initial_guess = (str(config.get("initial_guess", "")).split() or [""])[0]
 
     # Build simple keyword line
-    # For deltaSCF: all states use UKS to ensure compatible UKS reference orbitals
+    # For deltaSCF: use RKS for S0 (closed-shell), UKS for excited states
     # For TDDFT: S0 uses RKS (closed-shell), excited states use UKS
     esd_modus = str(config.get('ESD_modus', 'TDDFT')).strip().lower()
     if esd_modus == 'deltascf':
-        scf_type = "UKS"  # All states including S0 use UKS for deltaSCF
+        scf_type = "RKS" if state_upper == "S0" else "UKS"
     else:
         scf_type = "RKS" if state_upper == "S0" else "UKS"
 
@@ -852,8 +852,8 @@ def _create_state_input_delta_scf(
 
             logger.info(f"Added TDDFT check job to S0 input for state identification")
 
-        # Add TDDFT check job for S1 and T1 only
-        elif state_upper in ("S1", "T1"):
+        # Add TDDFT check job for T1 only
+        elif state_upper == "T1":
             # Determine XYZ file for this state (S1.xyz, T1.xyz, etc.)
             state_xyz_file = f"{state_upper}.xyz"
 
@@ -907,6 +907,64 @@ def _create_state_input_delta_scf(
             f.write(f"* xyzfile {charge} 1 {state_xyz_file}\n")
 
             logger.info(f"Added TDDFT check job to {state_upper} input for transition analysis")
+
+    def _write_tddft_check_input(state_label: str) -> None:
+        if not (state_label.startswith("S") and state_label != "S0"):
+            return
+
+        tddft_input = esd_dir / f"{state_label}_TDDFT.inp"
+        state_xyz_file = f"{state_label}.xyz"
+
+        with open(tddft_input, "w", encoding="utf-8") as f:
+            f.write("#==========================================\n")
+            f.write(f"# TDDFT Check: Transitions from {state_label}\n")
+            f.write("#==========================================\n")
+            f.write("\n")
+
+            # TDDFT keyword line - always RKS (closed shell) for TDDFT check jobs
+            tddft_keywords = [
+                functional,
+                "RKS",
+                main_basisset,
+                disp_corr,
+                ri_jkx,
+                aux_jk,
+            ]
+            if solvation_kw:
+                tddft_keywords.append(solvation_kw)
+            f.write("! " + " ".join(tddft_keywords) + "\n")
+
+            # Base block for TDDFT check
+            f.write(f'%base "{state_label}_TDDFT"\n')
+
+            # PAL and maxcore
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+
+            # TDDFT block - NO followiroot for excited state checks
+            nroots = config.get('ESD_nroots', 15)
+            tda_flag = str(config.get('TDA', 'FALSE')).upper()
+            esd_maxdim = config.get('ESD_maxdim', None)
+            maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
+            dosoc_flag = str(config.get('ESD_SOC', 'false')).strip().lower()
+            dosoc_value = "true" if dosoc_flag in ('yes', 'true', '1', 'on') else "false"
+            f.write("\n%tddft\n")
+            f.write(f"  nroots {nroots}\n")
+            f.write(f"  maxdim {maxdim}\n")
+            f.write(f"  tda {tda_flag}\n")
+            if tddft_maxiter is not None:
+                f.write(f"  maxiter {tddft_maxiter}\n")
+            f.write("  triplets true\n")
+            f.write(f"  dosoc {dosoc_value}\n")
+            f.write("end\n")
+
+            # Geometry reference - always multiplicity 1 (closed shell) for TDDFT
+            f.write("\n")
+            f.write(f"* xyzfile {charge} 1 {state_xyz_file}\n")
+
+        logger.info(f"Created TDDFT check input: {tddft_input}")
+
+    _write_tddft_check_input(state_upper)
 
     logger.info(f"Created ESD state input: {input_file}")
     return str(input_file)
