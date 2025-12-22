@@ -402,7 +402,7 @@ def _parse_goat_conformer_count(project_dir: Path) -> Optional[int]:
     return None
 
 
-def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Optional[str], list[tuple[str, float, tuple[int, int, int]]]]:
+def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Optional[str], list[tuple[str, float, tuple[int, int, int]]], list[tuple[str, float, tuple[int, int, int]]]]:
     meta = data.get("metadata", {}) or {}
     name = meta.get("NAME") or meta.get("name") or project_dir.name
     functional = meta.get("functional") or "unknown functional"
@@ -638,7 +638,40 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         if peak_str:
             parts.append(f"The most intense absorption peaks (S₀→Sₙ) are at {peak_str}.")
 
-    # AFP spectrum wavelengths (absorption/fluorescence/phosphorescence)
+    # Calculate Δ0-0 transitions from optimized state energies (E0 = Energy + ZPE)
+    delta00_color_boxes: list[tuple[str, float, tuple[int, int, int]]] = []
+
+    # Extract E0 values (Energy + ZPE) for S0, S1, T1
+    s0_energy_eh = gs_opt.get("hartree")
+    s0_zpe_eh = (gs.get("thermochemistry", {}) or {}).get("zero_point_energy_hartree")
+    s0_e0_eh = (s0_energy_eh + s0_zpe_eh) if (s0_energy_eh is not None and s0_zpe_eh is not None) else None
+
+    s1_opt = (excited.get("S1", {}) or {}).get("optimization", {}) or {}
+    s1_thermo = (excited.get("S1", {}) or {}).get("thermochemistry", {}) or {}
+    s1_energy_eh = s1_opt.get("hartree")
+    s1_zpe_eh = s1_thermo.get("zero_point_energy_hartree")
+    s1_e0_eh = (s1_energy_eh + s1_zpe_eh) if (s1_energy_eh is not None and s1_zpe_eh is not None) else None
+
+    t1_opt = (excited.get("T1", {}) or {}).get("optimization", {}) or {}
+    t1_thermo = (excited.get("T1", {}) or {}).get("thermochemistry", {}) or {}
+    t1_energy_eh = t1_opt.get("hartree")
+    t1_zpe_eh = t1_thermo.get("zero_point_energy_hartree")
+    t1_e0_eh = (t1_energy_eh + t1_zpe_eh) if (t1_energy_eh is not None and t1_zpe_eh is not None) else None
+
+    # Calculate Δ0-0 transitions in nm
+    if s0_e0_eh is not None and s1_e0_eh is not None:
+        delta_e_ev = (s1_e0_eh - s0_e0_eh) * HARTREE_TO_EV
+        if delta_e_ev > 0:
+            wavelength_nm = 1239.84 / delta_e_ev  # eV to nm conversion
+            delta00_color_boxes.append(("S₀→S₁", wavelength_nm, _wavelength_to_rgb(wavelength_nm)))
+
+    if s0_e0_eh is not None and t1_e0_eh is not None:
+        delta_e_ev = (t1_e0_eh - s0_e0_eh) * HARTREE_TO_EV
+        if delta_e_ev > 0:
+            wavelength_nm = 1239.84 / delta_e_ev
+            delta00_color_boxes.append(("T₁→S₀", wavelength_nm, _wavelength_to_rgb(wavelength_nm)))
+
+    # AFP spectrum wavelengths (absorption/fluorescence/phosphorescence) - TDDFT vertical transitions
     color_boxes: list[tuple[str, float, tuple[int, int, int]]] = []
     if any(v is not None for v in (s0_to_s1_nm, s1_to_s0_nm, t1_to_s0_nm)):
         def fmt_nm(val):
@@ -781,7 +814,7 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         if redox_strs:
             parts.append(f"Redox potentials (vs. Fc⁺/Fc): {', '.join(redox_strs)}.")
 
-    return " ".join(parts), color_boxes
+    return " ".join(parts), color_boxes, delta00_color_boxes
 
 
 def _style_header_row(row) -> None:
@@ -972,14 +1005,22 @@ def _add_transition_table(
     _prevent_row_splits(table)
 
 
-def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any]) -> None:
+def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_dir: Optional[Path] = None, show_color_chips: bool = False) -> None:
     if not entries:
         return
     heading = doc.add_heading(title, level=2)
     _keep_heading_with_table(heading)
-    table = doc.add_table(rows=1, cols=7)
+
+    # Add extra column for wavelength visualization if show_color_chips is True
+    num_cols = 8 if show_color_chips else 7
+    table = doc.add_table(rows=1, cols=num_cols)
     table.style = "Light Grid Accent 1"
-    headers = ["Transition", "Rate (s⁻¹)", "Temperature (K)", "Δ0-0 (cm⁻¹)", "SOC (cm⁻¹)", "FC (%)", "HT (%)"]
+
+    if show_color_chips:
+        headers = ["Transition", "Rate (s⁻¹)", "Temperature (K)", "Δ0-0 (cm⁻¹)", "Δ0-0 (nm)", "SOC (cm⁻¹)", "FC (%)", "HT (%)"]
+    else:
+        headers = ["Transition", "Rate (s⁻¹)", "Temperature (K)", "Δ0-0 (cm⁻¹)", "SOC (cm⁻¹)", "FC (%)", "HT (%)"]
+
     for idx, text in enumerate(headers):
         cell = table.rows[0].cells[idx]
         cell.text = text
@@ -1008,10 +1049,51 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any]) -> None:
         rate_val = rec.get("rate_s1") or rec.get("total_rate_s1") or rec.get("rate")
         row[1].text = _fmt_sci(rate_val) if rate_val is not None else ""
         row[2].text = str(rec.get("temperature_K", ""))
-        row[3].text = str(rec.get("delta_E_cm1", ""))
-        row[4].text = _format_soc(rec)
-        row[5].text = str(rec.get("fc_percent", ""))
-        row[6].text = str(rec.get("ht_percent", ""))
+
+        # Δ0-0 column
+        delta_E_cm1 = rec.get("delta_E_cm1")
+        row[3].text = str(delta_E_cm1) if delta_E_cm1 is not None else ""
+
+        # Wavelength column with color visualization (only if show_color_chips is True)
+        if show_color_chips and delta_E_cm1 is not None:
+            try:
+                wavelength_nm = 1e7 / float(delta_E_cm1)  # Convert cm⁻¹ to nm
+                r, g, b = _wavelength_to_rgb(wavelength_nm)
+
+                paragraph = row[4].paragraphs[0]
+
+                # Try to render color chip image (like transition colors)
+                if project_dir:
+                    chip_path = _render_color_chip((r, g, b), project_dir, f"{label}_{wavelength_nm:.0f}nm")
+                    if chip_path and chip_path.exists():
+                        run_img = paragraph.add_run()
+                        run_img.add_picture(str(chip_path), width=Inches(0.25))
+                    else:
+                        # Fallback: colored box symbol
+                        run_box = paragraph.add_run("■")
+                        run_box.font.color.rgb = RGBColor(r, g, b)
+                        run_box.font.bold = True
+                else:
+                    # No project_dir: use colored symbol
+                    run_box = paragraph.add_run("■")
+                    run_box.font.color.rgb = RGBColor(r, g, b)
+                    run_box.font.bold = True
+
+                # Add wavelength text after the image/symbol
+                run_nm = paragraph.add_run(f" {wavelength_nm:.1f} nm")
+            except (ValueError, ZeroDivisionError, TypeError):
+                row[4].text = ""
+
+            # Adjust column indices for remaining columns
+            row[5].text = _format_soc(rec)
+            row[6].text = str(rec.get("fc_percent", ""))
+            row[7].text = str(rec.get("ht_percent", ""))
+        else:
+            # No color chips: original column layout
+            col_offset = 0 if not show_color_chips else 1
+            row[4 - col_offset].text = _format_soc(rec)
+            row[5 - col_offset].text = str(rec.get("fc_percent", ""))
+            row[6 - col_offset].text = str(rec.get("ht_percent", ""))
 
     for name, record in sorted(entries.items()):
         ms_comps = record.get("ms_components", {})
@@ -1141,6 +1223,18 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
     Returns:
         Path to saved plot or None if creation failed
     """
+    # ========== SWITCH FOR E0 AND U DISPLAY ==========
+    # True: Shows E0 (FSPE+ZPE) and U (Total thermal energy) in addition to S/T
+    # False: Shows only S and T with ISC/rISC/IC rates
+    SHOW_E0_AND_U = False
+    # =================================================
+
+    # ========== SWITCH FOR BIDIRECTIONAL ARROW OFFSET ==========
+    # Vertical offset between forward and reverse arrows for bidirectional transitions
+    # (e.g., S1→T1 and T1→S1). Default was 0.003. Smaller values bring arrows closer.
+    BIDIRECTIONAL_ARROW_OFFSET = 0.0015
+    # ===========================================================
+
     try:
         import matplotlib.pyplot as plt
         import matplotlib
@@ -1286,8 +1380,8 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
                 linewidth=2,
                 label='FSPE' if idx == 0 else "",
             )
-            # Plot E0 (FSPE+ZPE) as a light line (labeled)
-            if e0 is not None:
+            # Plot E0 (FSPE+ZPE) as a light line (labeled) - only if SHOW_E0_AND_U is enabled
+            if SHOW_E0_AND_U and e0 is not None:
                 ax.plot(
                     [s_x - line_width, s_x + line_width],
                     [e0, e0],
@@ -1304,8 +1398,8 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
                     ha='right',
                     alpha=0.65,
                 )
-            # Plot U (ORCA total thermal energy at 298 K) as a very light dotted line
-            if u_val is not None:
+            # Plot U (ORCA total thermal energy at 298 K) as a very light dotted line - only if SHOW_E0_AND_U is enabled
+            if SHOW_E0_AND_U and u_val is not None:
                 ax.plot(
                     [s_x - line_width, s_x + line_width],
                     [u_val, u_val],
@@ -1339,8 +1433,8 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         for idx, (state_name, fspe, e0, u_val) in enumerate(t_states):
             # Plot FSPE (dark)
             ax.plot([t_x - line_width, t_x + line_width], [fspe, fspe], 'r-', linewidth=2)
-            # Plot E0 (FSPE+ZPE) as a light line (labeled)
-            if e0 is not None:
+            # Plot E0 (FSPE+ZPE) as a light line (labeled) - only if SHOW_E0_AND_U is enabled
+            if SHOW_E0_AND_U and e0 is not None:
                 ax.plot(
                     [t_x - line_width, t_x + line_width],
                     [e0, e0],
@@ -1357,8 +1451,8 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
                     ha='right',
                     alpha=0.65,
                 )
-            # Plot U (ORCA total thermal energy at 298 K) as a very light dotted line
-            if u_val is not None:
+            # Plot U (ORCA total thermal energy at 298 K) as a very light dotted line - only if SHOW_E0_AND_U is enabled
+            if SHOW_E0_AND_U and u_val is not None:
                 ax.plot(
                     [t_x - line_width, t_x + line_width],
                     [u_val, u_val],
@@ -1490,9 +1584,9 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         if is_bidirectional:
             # Offset one direction up, the other down
             if trans_key < reverse_key:  # Consistent ordering
-                y_offset = 0.003  # Offset up
+                y_offset = BIDIRECTIONAL_ARROW_OFFSET  # Offset up
             else:
-                y_offset = -0.003  # Offset down
+                y_offset = -BIDIRECTIONAL_ARROW_OFFSET  # Offset down
 
         # Draw arrow with correct energy positions
         if is_risc:
@@ -2428,15 +2522,15 @@ def generate_combined_docx_report(
     heading = doc.add_heading(f"DELFIN Report – {molecule_name}", level=1)
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    summary_text, color_boxes = _build_summary_text(data, project_dir)
+    summary_text, color_boxes, delta00_color_boxes = _build_summary_text(data, project_dir)
     if summary_text:
         summary_para = _add_paragraph_with_subscript(doc, summary_text)
         summary_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
-    # Color chips for key transitions (render before structure)
+    # Color chips for key transitions - TDDFT vertical transitions
     if color_boxes:
         chip_para = doc.add_paragraph()
-        chip_para.add_run("Transition colors: ")
+        chip_para.add_run("Transition colors TDDFT: ")
         for label, wl, rgb in color_boxes:
             chip_path = _render_color_chip(rgb, project_dir, label)
             if chip_path and chip_path.exists():
@@ -2447,6 +2541,21 @@ def generate_combined_docx_report(
                 run_box.font.color.rgb = RGBColor(*rgb)
                 run_box.font.bold = True
             chip_para.add_run(f" {label} ({wl:.0f} nm)  ")
+
+    # Color chips for Δ0-0 transitions (from optimized state energies)
+    if delta00_color_boxes:
+        delta00_para = doc.add_paragraph()
+        delta00_para.add_run("Δ0-0 Transition colors: ")
+        for label, wl, rgb in delta00_color_boxes:
+            chip_path = _render_color_chip(rgb, project_dir, f"delta00_{label}")
+            if chip_path and chip_path.exists():
+                run = delta00_para.add_run()
+                run.add_picture(str(chip_path), width=Inches(0.25))
+            else:
+                run_box = delta00_para.add_run("[]")
+                run_box.font.color.rgb = RGBColor(*rgb)
+                run_box.font.bold = True
+            delta00_para.add_run(f" {label} ({wl:.0f} nm)  ")
 
     # SMILES picture (if available) near the top
     if assets.smiles_png and assets.smiles_png.exists():
@@ -2518,7 +2627,7 @@ def generate_combined_docx_report(
     # Rates
     _add_rate_table(doc, "Intersystem crossing", data.get("intersystem_crossing", {}) or {})
     _add_rate_table(doc, "Internal conversion", data.get("internal_conversion", {}) or {})
-    _add_rate_table(doc, "Fluorescence (radiative)", data.get("fluorescence_rates", {}) or {})
+    _add_rate_table(doc, "Fluorescence (radiative)", data.get("fluorescence_rates", {}) or {}, project_dir=project_dir, show_color_chips=True)
 
     # Phosphorescence: expand sublevel rates and append arithmetic mean
     phosp_rates = data.get("phosphorescence_rates", {}) or {}
@@ -2542,7 +2651,7 @@ def generate_combined_docx_report(
                     "temperature_K": rec.get("temperature_K"),
                     "delta_E_cm1": rec.get("delta_E_cm1"),
                 }
-        _add_rate_table(doc, "Phosphorescence (radiative)", expanded)
+        _add_rate_table(doc, "Phosphorescence (radiative)", expanded, project_dir=project_dir, show_color_chips=True)
 
     # Plots
     _add_plot_if_exists(doc, "AFP spectrum", assets.afp_png)

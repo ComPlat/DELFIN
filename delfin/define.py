@@ -54,13 +54,13 @@ TROOTSSL=-1,0,1
 addition_S0=
 --------------------
 Electrical Properties:
-elprop_Dipole=
-elprop_Quadrupole=
-elprop_Hyperpol=
-elprop_Polar=
-elprop_PolarVelocity=
-elprop_PolarDipQuad=
-elprop_PolarQuadQuad=
+elprop_Dipole=no
+elprop_Quadrupole=no
+elprop_Hyperpol=no
+elprop_Polar=no
+elprop_PolarVelocity=no
+elprop_PolarDipQuad=no
+elprop_PolarQuadQuad=no
 --------------------
 deltaSCF Settings:
 deltaSCF_DOMOM=true
