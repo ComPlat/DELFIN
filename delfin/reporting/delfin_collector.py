@@ -1031,7 +1031,8 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
 
         # Parse TDDFT keywords from the corresponding input, if available
         state_inp = esd_dir / f"{state}.inp"
-        tddft_settings = parse_tddft_settings(state_inp)
+        tddft_inp = esd_dir / f"{state}_TDDFT.inp"
+        tddft_settings = parse_tddft_settings(tddft_inp if tddft_inp.exists() else state_inp)
         if tddft_settings:
             state_data["tddft_settings"] = tddft_settings
 
@@ -1040,10 +1041,12 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
             state_data["optimization"].update(scf_data)
 
         # Parse emission spectrum (transitions FROM this state)
-        transitions = parse_absorption_spectrum(state_out)
+        tddft_out = esd_dir / f"{state}_TDDFT.out"
+        tddft_source = tddft_out if tddft_out.exists() else state_out
+        transitions = parse_absorption_spectrum(tddft_source)
         if transitions:
             state_data["tddft_from_geometry"] = {
-                "comment": f"Vertical transitions FROM {state} geometry",
+                "comment": f"Vertical transitions FROM {state} geometry (parsed from {tddft_source.name})",
                 "transitions": [
                     {
                         "from_state": t.from_state,

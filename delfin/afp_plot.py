@@ -192,8 +192,12 @@ def create_afp_plot(
                     s0_file = candidate
                     break
 
-        if s1_file is None and (search_dir / "S1.out").exists():
-            s1_file = search_dir / "S1.out"
+        if s1_file is None:
+            s1_candidates = [search_dir / "S1_TDDFT.out", search_dir / "S1.out"]
+            for candidate in s1_candidates:
+                if candidate.exists():
+                    s1_file = candidate
+                    break
 
         if t1_file is None and (search_dir / "T1.out").exists():
             t1_file = search_dir / "T1.out"

@@ -28,7 +28,7 @@ def _generate_uvvis_outputs(workspace: Path, fwhm: float) -> Dict[str, Path]:
 
     state_to_file = {
         "S0": ["S0_TDDFT.out", "S0.out"],
-        "S1": ["S1.out"],
+        "S1": ["S1_TDDFT.out", "S1.out"],
         "T1": ["T1.out"],
     }
     pngs: Dict[str, Path] = {}
