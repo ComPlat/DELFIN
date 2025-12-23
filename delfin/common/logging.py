@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Optional, Dict
 
+from delfin.common.progress_display import ProgressAwareStreamHandler
+
 DEFAULT_LOG_LEVEL = logging.INFO
 DEFAULT_LOG_FORMAT = "%(levelname)s: %(message)s"
 FILE_LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
@@ -32,12 +34,20 @@ def configure_logging(
     if root_logger.handlers and not force:
         return
 
-    logging.basicConfig(
-        level=level or DEFAULT_LOG_LEVEL,
-        format=fmt or DEFAULT_LOG_FORMAT,
-        stream=stream or sys.stderr,
-        force=force,
-    )
+    # Remove existing handlers if forcing reconfiguration
+    if force:
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+            handler.close()
+
+    # Create a progress-aware stream handler instead of using basicConfig
+    handler = ProgressAwareStreamHandler(stream or sys.stderr)
+    handler.setLevel(level or DEFAULT_LOG_LEVEL)
+    formatter = logging.Formatter(fmt or DEFAULT_LOG_FORMAT)
+    handler.setFormatter(formatter)
+
+    root_logger.addHandler(handler)
+    root_logger.setLevel(level or DEFAULT_LOG_LEVEL)
 
 
 def get_logger(name: Optional[str] = None) -> logging.Logger:

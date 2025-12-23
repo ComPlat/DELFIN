@@ -9,7 +9,12 @@ This module provides a simple, zero-dependency progress display that:
 
 import sys
 import threading
+import logging
 from typing import Optional
+
+# Global registry to track active progress displays
+_active_progress_displays = []
+_registry_lock = threading.Lock()
 
 
 class ProgressDisplay:
@@ -35,6 +40,10 @@ class ProgressDisplay:
         self._lock = threading.Lock()
         self._last_line_length = 0
         self._active = True
+
+        # Register this display in the global registry
+        with _registry_lock:
+            _active_progress_displays.append(self)
 
     def update(self, message: str, persistent: bool = False):
         """Update progress display.
@@ -79,11 +88,12 @@ class ProgressDisplay:
                 self.stream.flush()
                 self._last_line_length = 0
 
-    def finalize(self, final_message: Optional[str] = None):
+    def finalize(self, final_message: Optional[str] = None, remove_from_registry: bool = True):
         """Finalize progress display (move to new line in TTY mode).
 
         Args:
             final_message: Optional final message to display
+            remove_from_registry: If True, remove this display from the global registry
         """
         if not self._active:
             return
@@ -103,3 +113,41 @@ class ProgressDisplay:
                 # Batch mode: write final message
                 self.stream.write(f'{final_message}\n')
                 self.stream.flush()
+
+        # Remove from registry when fully finalized
+        if remove_from_registry:
+            with _registry_lock:
+                try:
+                    _active_progress_displays.remove(self)
+                except ValueError:
+                    pass  # Already removed
+
+
+def clear_active_progress_lines():
+    """Clear all active progress lines before logging output.
+
+    This ensures that logger messages don't appear on the same line
+    as progress displays in TTY mode.
+    """
+    with _registry_lock:
+        for display in _active_progress_displays[:]:  # Copy list to avoid modification during iteration
+            if display.is_tty and display._last_line_length > 0:
+                # Finalize without removing from registry (so it can be resumed)
+                display.finalize(remove_from_registry=False)
+
+
+class ProgressAwareStreamHandler(logging.StreamHandler):
+    """StreamHandler that clears progress displays before emitting log records.
+
+    This prevents log messages from appearing on the same line as progress displays.
+    """
+
+    def emit(self, record):
+        """Emit a log record, clearing active progress displays first."""
+        try:
+            # Clear any active progress lines before logging
+            clear_active_progress_lines()
+            # Emit the log record normally
+            super().emit(record)
+        except Exception:
+            self.handleError(record)
