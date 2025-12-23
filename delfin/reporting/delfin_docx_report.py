@@ -2576,7 +2576,7 @@ def generate_combined_docx_report(
     delta_fspe_eh, delta_fspe_ev, delta_fspe_color_boxes = delta_fspe
     if delta_fspe_color_boxes:
         fspe_para = doc.add_paragraph()
-        fspe_para.add_run("ΔFSPE: ")
+        fspe_para.add_run("ΔFSPE color (adiabatic excitation, geometry optimized): ")
 
         # Show the two transitions that define FSPE: S₁→S₀ and T₁→S₀ (electronic energies, no ZPE)
         for label, wl, rgb in delta_fspe_color_boxes:

@@ -1424,7 +1424,7 @@ def create_isc_input(
     blocks.append(f'%base "{job_name}"')
 
     # TDDFT block (aligned with reference layout)
-    nroots = config.get('ESD_ISC_NROOTS', config.get('NROOTS', 10))  # Increased default to 10
+    nroots = config.get('ESD_ISC_NROOTS', config.get('ESD_nroots', 10))  # Use ESD_nroots as fallback
 
     # Map roots to correct spin manifolds based on states, per ORCA ESD docs
     s_root = init_root if init_type == "S" else (final_root if final_type == "S" else 1)
@@ -1583,7 +1583,7 @@ def create_ic_input(
     blocks.append(f'%base "{job_name}"')
 
     # TDDFT block tailored for IC calculations
-    nroots = config.get('ESD_IC_NROOTS', config.get('NROOTS', 10))  # Increased default to 10
+    nroots = config.get('ESD_IC_NROOTS', config.get('ESD_nroots', 10))  # Use ESD_nroots as fallback
 
     # Calculate IROOT: For Tn->T1 IC, T1 is the SCF ground state (multiplicity 3)
     # and Tn is the (n-1)-th excited state above T1
@@ -1745,7 +1745,7 @@ def create_fluor_input(
     blocks.append(f'%base "{job_name}"')
 
     # TDDFT block (minimal, with configurable nroots)
-    nroots = int(config.get("ESD_FLUOR_NROOTS", 5))
+    nroots = int(config.get("ESD_FLUOR_NROOTS", config.get("ESD_nroots", 15)))
     iroot = int(config.get("ESD_FLUOR_IROOT", init_root))
     tddft_block = [
         "%TDDFT",
