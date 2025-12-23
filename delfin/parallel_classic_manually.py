@@ -1860,11 +1860,12 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 )
                 _update_pal_block(ox_inputs[idx], cores)
 
-                # Add IP/EA jobs for ox_step_1 if properties_of_interest is set and method != classic
+                # Add IP/EA jobs for ox_step_1 if properties_of_interest is set, calc_prop_of_interest=yes, and method != classic
                 if idx == 1:
                     method = str(config.get('method', '')).strip().lower()
+                    calc_prop = str(config.get('calc_prop_of_interest', 'no')).strip().lower()
                     properties = config.get('properties_of_interest', '')
-                    if properties and method != 'classic':
+                    if calc_prop in ('yes', 'true', '1', 'on') and properties and method != 'classic':
                         xyz_file = ox_sources[idx]  # Use the same xyz file as the main job
                         append_properties_of_interest_jobs(
                             inp_file=ox_inputs[idx],
@@ -1942,11 +1943,12 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 )
                 _update_pal_block(red_inputs[idx], cores)
 
-                # Add IP/EA jobs for red_step_1 if properties_of_interest is set and method != classic
+                # Add IP/EA jobs for red_step_1 if properties_of_interest is set, calc_prop_of_interest=yes, and method != classic
                 if idx == 1:
                     method = str(config.get('method', '')).strip().lower()
+                    calc_prop = str(config.get('calc_prop_of_interest', 'no')).strip().lower()
                     properties = config.get('properties_of_interest', '')
-                    if properties and method != 'classic':
+                    if calc_prop in ('yes', 'true', '1', 'on') and properties and method != 'classic':
                         xyz_file = red_sources[idx]  # Use the same xyz file as the main job
                         append_properties_of_interest_jobs(
                             inp_file=red_inputs[idx],
@@ -2103,11 +2105,12 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 )
                 _update_pal_block(ox_inputs[idx], cores)
 
-                # Add IP/EA jobs for ox_step_1 if properties_of_interest is set and method != classic
+                # Add IP/EA jobs for ox_step_1 if properties_of_interest is set, calc_prop_of_interest=yes, and method != classic
                 if idx == 1:
                     method = str(config.get('method', '')).strip().lower()
+                    calc_prop = str(config.get('calc_prop_of_interest', 'no')).strip().lower()
                     properties = config.get('properties_of_interest', '')
-                    if properties and method != 'classic':
+                    if calc_prop in ('yes', 'true', '1', 'on') and properties and method != 'classic':
                         xyz_file = ox_sources[idx]  # Use the same xyz file as the main job
                         append_properties_of_interest_jobs(
                             inp_file=ox_inputs[idx],
@@ -2185,11 +2188,12 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 )
                 _update_pal_block(red_inputs[idx], cores)
 
-                # Add IP/EA jobs for red_step_1 if properties_of_interest is set and method != classic
+                # Add IP/EA jobs for red_step_1 if properties_of_interest is set, calc_prop_of_interest=yes, and method != classic
                 if idx == 1:
                     method = str(config.get('method', '')).strip().lower()
+                    calc_prop = str(config.get('calc_prop_of_interest', 'no')).strip().lower()
                     properties = config.get('properties_of_interest', '')
-                    if properties and method != 'classic':
+                    if calc_prop in ('yes', 'true', '1', 'on') and properties and method != 'classic':
                         xyz_file = red_sources[idx]  # Use the same xyz file as the main job
                         append_properties_of_interest_jobs(
                             inp_file=red_inputs[idx],

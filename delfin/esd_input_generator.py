@@ -497,11 +497,12 @@ def create_state_input(
             config=config,
         )
 
-    # Add properties_of_interest jobs (IP, EA) only for S0 when method=classic
+    # Add properties_of_interest jobs (IP, EA) only for S0 when method=classic and calc_prop_of_interest=yes
     if state.strip().upper() == "S0":
         method = str(config.get('method', '')).strip().lower()
+        calc_prop = str(config.get('calc_prop_of_interest', 'no')).strip().lower()
         properties = config.get('properties_of_interest', '')
-        if properties and method == 'classic':
+        if calc_prop in ('yes', 'true', '1', 'on') and properties and method == 'classic':
             # Determine which properties to keep based on requested red/ox steps
             ox_steps = _parse_step_set(config.get('oxidation_steps'))
             red_steps = _parse_step_set(config.get('reduction_steps'))
