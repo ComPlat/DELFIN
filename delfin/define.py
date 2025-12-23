@@ -52,6 +52,12 @@ phosp_keywords=
 fluor_keywords=
 TROOTSSL=-1,0,1
 addition_S0=
+DOHT=TRUE
+ESD_LINES=LORENTZ
+ESD_LINEW=50
+ESD_INLINEW=250
+ESD_NPOINTS=131072
+ESD_MAXTIME=12000
 --------------------
 Electrical Properties:
 elprop_Dipole=no
@@ -66,7 +72,7 @@ deltaSCF Settings:
 deltaSCF_DOMOM=true
 deltaSCF_PMOM=true
 deltaSCF_keepinitialref=true
-deltaSCF_SOSCFHESSUP=LBFGS
+deltaSCF_SOSCFHESSUP=LSR1
 --------------------
 TDDFT Settings:
 ESD_TDDFT_maxiter=500
@@ -75,10 +81,6 @@ ESD_maxdim=30
 ESD_TDA=FALSE
 ESD_followiroot=true
 ESD_SOC=false
-DOHT=TRUE
-ESD_LINES=VOIGT
-ESD_LINEW=75
-ESD_INLINEW=200
 ------------------------------------
 MANUALLY:
 multiplicity_0=

@@ -1448,12 +1448,23 @@ def create_isc_input(
     # ESD block
     temperature = _resolve_temperature_K(config, default=298.15)
     doht_flag = str(config.get('DOHT', 'TRUE')).upper()
+    lines = str(config.get("ESD_LINES", "LORENTZ")).strip().upper() or "LORENTZ"
+    linew = str(config.get("ESD_LINEW", 50)).strip()
+    inlinew = str(config.get("ESD_INLINEW", 250)).strip()
+    npoints = str(config.get("ESD_NPOINTS", 131072)).strip()
+    maxtime = str(config.get("ESD_MAXTIME", 12000)).strip()
+
     esd_block = [
         "%ESD",
         f'  ISCISHESS       "{initial_state}.hess"',
         f'  ISCFSHESS       "{final_state}.hess"',
         "  USEJ            TRUE",
         f"  DOHT            {doht_flag}",
+        f"  LINES           {lines}",
+        f"  LINEW           {linew}",
+        f"  INLINEW         {inlinew}",
+        f"  NPOINTS         {npoints}",
+        f"  MAXTIME         {maxtime}",
         f"  TEMP            {temperature}",
     ]
     if dele is not None:
@@ -1604,11 +1615,22 @@ def create_ic_input(
     # For IC: GSHESSIAN = ground state (final), ESHESSIAN = excited state (initial)
     # Example: S1>S0 IC → GSHESSIAN=S0.hess, ESHESSIAN=S1.hess
     temperature = _resolve_temperature_K(config, default=298.15)
+    lines = str(config.get("ESD_LINES", "LORENTZ")).strip().upper() or "LORENTZ"
+    linew = str(config.get("ESD_LINEW", 50)).strip()
+    inlinew = str(config.get("ESD_INLINEW", 250)).strip()
+    npoints = str(config.get("ESD_NPOINTS", 131072)).strip()
+    maxtime = str(config.get("ESD_MAXTIME", 12000)).strip()
+
     esd_block = [
         "%ESD",
         f'  GSHESSIAN       "{final_state}.hess"',
         f'  ESHESSIAN       "{initial_state}.hess"',
         "  USEJ            TRUE",
+        f"  LINES           {lines}",
+        f"  LINEW           {linew}",
+        f"  INLINEW         {inlinew}",
+        f"  NPOINTS         {npoints}",
+        f"  MAXTIME         {maxtime}",
         f"  TEMP            {temperature}",
     ]
     esd_block.append("END")
@@ -1737,9 +1759,9 @@ def create_fluor_input(
 
     # ESD block
     doht_flag = str(config.get("DOHT", "TRUE")).upper()
-    lines = str(config.get("ESD_LINES", "VOIGT")).strip().upper() or "VOIGT"
-    linew = str(config.get("ESD_LINEW", 75)).strip()
-    inlinew = str(config.get("ESD_INLINEW", 200)).strip()
+    lines = str(config.get("ESD_LINES", "LORENTZ")).strip().upper() or "LORENTZ"
+    linew = str(config.get("ESD_LINEW", 50)).strip()
+    inlinew = str(config.get("ESD_INLINEW", 250)).strip()
     temperature = _resolve_temperature_K(config, default=298.15)
     esd_block = [
         "%ESD",
@@ -1868,9 +1890,9 @@ def create_phosp_input(
 
     # ORCA recommends DOSOC TRUE for phosphorescence
     dosoc_flag = str(config.get("ESD_PHOSP_DOSOC", "TRUE")).upper()
-    lines = str(config.get("ESD_LINES", "VOIGT")).strip().upper() or "VOIGT"
-    linew = str(config.get("ESD_LINEW", 75)).strip()
-    inlinew = str(config.get("ESD_INLINEW", 200)).strip()
+    lines = str(config.get("ESD_LINES", "LORENTZ")).strip().upper() or "LORENTZ"
+    linew = str(config.get("ESD_LINEW", 50)).strip()
+    inlinew = str(config.get("ESD_INLINEW", 250)).strip()
 
     # Which IROOT subjobs to run (triplet SOC-split components).
     # Default is 1,2,3, but allow overriding via CONTROL.
