@@ -1,4 +1,5 @@
 import re
+import subprocess
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 
@@ -40,6 +41,50 @@ def normalize_str(value: Any) -> str:
         Lowercase trimmed string representation
     """
     return str(value).strip().lower()
+
+
+# ------------------------------------------------------------------------------------
+# Git version tracking
+# ------------------------------------------------------------------------------------
+def get_git_commit_info() -> Optional[str]:
+    """Get current git commit hash and status for reproducibility tracking.
+
+    Returns:
+        String like "0558f4b" or "0558f4b-dirty" if uncommitted changes,
+        or None if not in a git repository.
+    """
+    try:
+        # Get the directory where DELFIN is installed
+        delfin_dir = Path(__file__).parent.parent
+
+        # Get commit hash (short)
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=delfin_dir,
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+
+        if result.returncode != 0:
+            return None
+
+        commit_hash = result.stdout.strip()
+
+        # Check if there are uncommitted changes
+        result = subprocess.run(
+            ["git", "diff-index", "--quiet", "HEAD", "--"],
+            cwd=delfin_dir,
+            timeout=2
+        )
+
+        if result.returncode != 0:
+            commit_hash += "-dirty"
+
+        return commit_hash
+
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        return None
 
 
 # ------------------------------------------------------------------------------------

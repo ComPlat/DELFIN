@@ -9,6 +9,7 @@ from ..common.banners import build_standard_banner
 from ..utils import (
     search_transition_metals,
     select_rel_and_aux,
+    get_git_commit_info,
 )
 from ..esd_results import ESDSummary, ISCResult
 
@@ -335,6 +336,15 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
     # ---- write file ----------------------------------------------------------
     banner = build_standard_banner(header_indent=4, info_indent=4)
 
+    # Get git commit info for reproducibility tracking
+    git_commit = get_git_commit_info()
+    if git_commit:
+        # Remove -dirty suffix for GitHub link
+        clean_commit = git_commit.replace("-dirty", "")
+        git_info_line = f"Git commit: {git_commit} (https://github.com/ComPlat/DELFIN/commit/{clean_commit})"
+    else:
+        git_info_line = "Git commit: unknown (not in git repository)"
+
     delfin_output_path = output_dir / 'DELFIN.txt'
     with open(delfin_output_path, 'w', encoding='utf-8') as file:
         multiplicity_display = config.get('_multiplicity_display')
@@ -346,6 +356,8 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
         # Build output with proper formatting
         output_parts = [
             banner,
+            "",
+            git_info_line,
             "",
             f"Compound name (NAME): {name_str}",
             "",

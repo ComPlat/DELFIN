@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 
 from delfin.common.logging import get_logger
 from delfin.uv_vis_spectrum import parse_absorption_spectrum
+from delfin.utils import get_git_commit_info
 
 logger = get_logger(__name__)
 
@@ -890,7 +891,11 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     # Parse DELFIN.txt for redox potentials and summary info
     delfin_summary = parse_delfin_txt(project_dir)
 
+    # Get git commit info for reproducibility tracking
+    git_commit = get_git_commit_info()
+
     data = {
+        "git_commit": git_commit,
         "metadata": parse_initial_inp(project_dir),
         "ground_state_S0": {},
         "excited_states": {},
