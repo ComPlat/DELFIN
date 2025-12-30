@@ -344,10 +344,11 @@ def _populate_state_jobs(
                     mode = mode.split("|")[0].strip()
 
                 is_hybrid1 = mode == "hybrid1"
-                is_excited_state = st_upper not in ("S0",)
+                # S0 and T1 are lowest states in their spin manifolds - stable without two-step
+                needs_two_step = st_upper not in ("S0", "T1")
 
-                if is_hybrid1 and is_excited_state:
-                    # Hybrid1 mode for excited states: run two sequential ORCA calculations
+                if is_hybrid1 and needs_two_step:
+                    # Hybrid1 mode for higher excited states (S1+, T2+): run two sequential ORCA calculations
                     # Step 1: TDDFT optimization (first_TDDFT)
                     first_input = esd_dir / f"{st_upper}_first_TDDFT.inp"
                     first_output = esd_dir / f"{st_upper}_first_TDDFT.out"

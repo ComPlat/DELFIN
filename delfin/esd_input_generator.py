@@ -1007,11 +1007,12 @@ def _create_state_input_hybrid1(
     """Generate hybrid TDDFT→deltaSCF input files for excited states.
 
     For S0: Creates standard TDDFT input
-    For excited states (S1, S2, T1, T2, etc.):
+    For T1: Creates simple UKS mult=3 optimization (lowest triplet, stable without deltaSCF)
+    For excited states (S1, S2, T2, T3, etc.):
         1. {state}_first_TDDFT.inp: TDDFT OPT without FREQ
         2. {state}_second.inp: deltaSCF OPT with FREQ, reads from first step
 
-    This two-step approach prevents deltaSCF collapse to S0 by using TDDFT pre-optimization.
+    This two-step approach prevents deltaSCF collapse for higher excited states.
     """
     state_upper = state.upper()
 
@@ -1028,7 +1029,20 @@ def _create_state_input_hybrid1(
             config=config,
         )
 
-    # For excited states: create two-step inputs
+    # For T1 (lowest triplet), use simple UKS mult=3 like S0 (no two-step needed)
+    if state_upper == "T1":
+        return _create_state_input_delta_scf(
+            state=state,
+            esd_dir=esd_dir,
+            charge=charge,
+            solvent=solvent,
+            metals=metals,
+            main_basisset=main_basisset,
+            metal_basisset=metal_basisset,
+            config=config,
+        )
+
+    # For excited states (S1+, T2+): create two-step inputs
     # Step 1: TDDFT OPT (no FREQ)
     config_step1 = config.copy()
     config_step1['ESD_frequency'] = 'no'  # Disable FREQ for first step
