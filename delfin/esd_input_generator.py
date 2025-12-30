@@ -1088,6 +1088,7 @@ def _create_state_input_hybrid1(
     if solvation_kw:
         keywords_first.append(solvation_kw)
     keywords_first.append(geom_token)
+    keywords_first.append("MOREAD")  # Read orbitals from S0.gbw for better initial guess
     # NO FREQ/numFREQ for first step
 
     # Read coordinates from S0.xyz
@@ -1108,6 +1109,7 @@ def _create_state_input_hybrid1(
     with open(input_file_first, 'w', encoding='utf-8') as f:
         f.write("! " + " ".join(keywords_first) + "\n")
         f.write(f'%base "{first_input_base}"\n')
+        f.write('%moinp "S0.gbw"\n')
         f.write(f"%pal nprocs {pal} end\n")
         f.write(f"%maxcore {maxcore}\n")
 
@@ -1199,7 +1201,7 @@ def _create_state_input_hybrid1(
     # Write second deltaSCF input
     with open(input_file_second, 'w', encoding='utf-8') as f:
         f.write("! " + " ".join(keywords_second) + "\n")
-        f.write(f'%base "{state_upper}_second"\n')
+        f.write(f'%base "{state_upper}_second_deltaSCF"\n')
         f.write(f'%moinp "{first_input_base}.gbw"\n')
         f.write(f"%pal nprocs {pal} end\n")
         f.write(f"%maxcore {maxcore}\n")
