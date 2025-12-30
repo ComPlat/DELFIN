@@ -672,6 +672,12 @@ def _create_state_input_delta_scf(
     if initial_guess and not (moinp_gbw and initial_guess == "PModel"):
         keywords.append(initial_guess)
 
+    # Add deltaSCF-specific keywords
+    if use_deltascf:
+        deltascf_keywords = config.get('deltaSCF_keywords', '')
+        if deltascf_keywords:
+            keywords.extend(deltascf_keywords.split())
+
     simple_line = "! " + " ".join(keywords)
 
     # Blocks
@@ -704,6 +710,9 @@ def _create_state_input_delta_scf(
         pmom = str(config.get('deltaSCF_PMOM', 'true')).lower()
         keepinitialref = str(config.get('deltaSCF_keepinitialref', 'true')).lower()
         soscfhessup = config.get('deltaSCF_SOSCFHESSUP', 'LSR1')  # Changed to LSR1 (better for excited states)
+        maxiter = config.get('deltaSCF_maxiter', 1000)
+        soscf_convfactor = config.get('deltaSCF_SOSCFConvFactor', 500)
+        soscf_maxstep = config.get('deltaSCF_SOSCFMaxStep', 0.1)
 
         scf_block = [
             "%scf",
@@ -742,6 +751,9 @@ def _create_state_input_delta_scf(
         ])
 
         scf_block.append(f"  SOSCFHESSUP {soscfhessup}")
+        scf_block.append(f"  maxiter {maxiter}")
+        scf_block.append(f"  SOSCFConvFactor {soscf_convfactor}")
+        scf_block.append(f"  SOSCFMaxStep {soscf_maxstep}")
         scf_block.append("end")
         blocks.append("\n".join(scf_block))
 
