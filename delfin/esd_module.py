@@ -338,31 +338,91 @@ def _populate_state_jobs(
                         config,
                     )
 
-                # Convert to absolute path before any chdir operations
-                abs_input = Path(input_file).resolve()
+                # Check if hybrid1 mode and if we need to run two-step calculation
+                mode = str(config.get("ESD_modus", "TDDFT")).strip().lower()
+                if "|" in mode:
+                    mode = mode.split("|")[0].strip()
 
-                # Update PAL in input file (use absolute path)
-                _update_pal_block(str(abs_input), cores)
+                is_hybrid1 = mode == "hybrid1"
+                is_excited_state = st_upper not in ("S0",)
 
-                # Run ORCA in ESD directory
-                output_file = esd_dir / f"{st_upper}.out"
-                hess_file = esd_dir / f"{st_upper}.hess"
+                if is_hybrid1 and is_excited_state:
+                    # Hybrid1 mode for excited states: run two sequential ORCA calculations
+                    # Step 1: TDDFT optimization (first_TDDFT)
+                    first_input = esd_dir / f"{st_upper}_first_TDDFT.inp"
+                    first_output = esd_dir / f"{st_upper}_first_TDDFT.out"
 
-                logger.info(f"Running ORCA for state {st_upper} in {esd_dir}")
+                    if not first_input.exists():
+                        raise RuntimeError(f"Missing hybrid1 first step input: {first_input}")
 
-                # Run ORCA with absolute paths (no chdir needed)
-                abs_output = output_file.resolve()
+                    abs_first_input = first_input.resolve()
+                    abs_first_output = first_output.resolve()
 
-                # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
-                if not _run_orca_esd(
-                    abs_input,
-                    abs_output,
-                    working_dir=esd_dir,
-                    config=config,
-                ):
-                    raise RuntimeError(
-                        f"ORCA terminated abnormally for {st_upper} state"
-                    )
+                    # Update PAL for first step
+                    _update_pal_block(str(abs_first_input), cores)
+
+                    logger.info(f"Running ORCA hybrid1 step 1 (TDDFT) for {st_upper} in {esd_dir}")
+
+                    if not _run_orca_esd(
+                        abs_first_input,
+                        abs_first_output,
+                        working_dir=esd_dir,
+                        config=config,
+                    ):
+                        raise RuntimeError(
+                            f"ORCA terminated abnormally for {st_upper} hybrid1 step 1 (TDDFT)"
+                        )
+
+                    logger.info(f"Hybrid1 step 1 (TDDFT) completed for {st_upper}")
+
+                    # Step 2: deltaSCF optimization (second)
+                    # input_file already points to S1_second.inp from create_state_input
+                    abs_input = Path(input_file).resolve()
+                    _update_pal_block(str(abs_input), cores)
+
+                    output_file = esd_dir / f"{st_upper}.out"
+                    abs_output = output_file.resolve()
+
+                    logger.info(f"Running ORCA hybrid1 step 2 (deltaSCF) for {st_upper} in {esd_dir}")
+
+                    if not _run_orca_esd(
+                        abs_input,
+                        abs_output,
+                        working_dir=esd_dir,
+                        config=config,
+                    ):
+                        raise RuntimeError(
+                            f"ORCA terminated abnormally for {st_upper} hybrid1 step 2 (deltaSCF)"
+                        )
+
+                    logger.info(f"Hybrid1 step 2 (deltaSCF) completed for {st_upper}")
+                else:
+                    # Standard single-step calculation (TDDFT or deltaSCF)
+                    # Convert to absolute path before any chdir operations
+                    abs_input = Path(input_file).resolve()
+
+                    # Update PAL in input file (use absolute path)
+                    _update_pal_block(str(abs_input), cores)
+
+                    # Run ORCA in ESD directory
+                    output_file = esd_dir / f"{st_upper}.out"
+                    hess_file = esd_dir / f"{st_upper}.hess"
+
+                    logger.info(f"Running ORCA for state {st_upper} in {esd_dir}")
+
+                    # Run ORCA with absolute paths (no chdir needed)
+                    abs_output = output_file.resolve()
+
+                    # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
+                    if not _run_orca_esd(
+                        abs_input,
+                        abs_output,
+                        working_dir=esd_dir,
+                        config=config,
+                    ):
+                        raise RuntimeError(
+                            f"ORCA terminated abnormally for {st_upper} state"
+                        )
 
                 logger.info(f"State {st_upper} calculation completed")
 

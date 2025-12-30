@@ -156,7 +156,7 @@ def gaussian(x: np.ndarray, center: float, amplitude: float, fwhm: float = 20.0)
 def create_afp_plot(
     workspace_dir: Path,
     output_png: Optional[Path] = None,
-    fwhm: float = 30.0,
+    fwhm: float = 50.0,
     dpi: int = 300
 ) -> Optional[Path]:
     """
@@ -365,7 +365,7 @@ def create_afp_plot(
 def generate_afp_report(
     workspace_dir: Path,
     output_png: Optional[Path] = None,
-    fwhm: float = 30.0
+    fwhm: float = 50.0
 ) -> Optional[Path]:
     """
     Generate AFP (Absorption-Fluorescence-Phosphorescence) spectrum plot.

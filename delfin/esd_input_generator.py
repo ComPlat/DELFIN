@@ -469,13 +469,24 @@ def create_state_input(
     metal_basisset: str,
     config: Dict[str, Any],
 ) -> str:
-    """Generate ORCA input for a state, respecting ESD_modus (deltaSCF|TDDFT)."""
+    """Generate ORCA input for a state, respecting ESD_modus (deltaSCF|TDDFT|hybrid1)."""
     mode = str(config.get("ESD_modus", "TDDFT")).strip().lower()
-    # If pipe-separated options (e.g., "TDDFT|deltaSCF"), take first as default
+    # If pipe-separated options (e.g., "TDDFT|deltaSCF|hybrid1"), take first as default
     if "|" in mode:
         mode = mode.split("|")[0].strip()
     if mode == "tddft":
         input_file = _create_state_input_tddft(
+            state=state,
+            esd_dir=esd_dir,
+            charge=charge,
+            solvent=solvent,
+            metals=metals,
+            main_basisset=main_basisset,
+            metal_basisset=metal_basisset,
+            config=config,
+        )
+    elif mode == "hybrid1":
+        input_file = _create_state_input_hybrid1(
             state=state,
             esd_dir=esd_dir,
             charge=charge,
@@ -981,6 +992,229 @@ def _create_state_input_delta_scf(
 
     logger.info(f"Created ESD state input: {input_file}")
     return str(input_file)
+
+
+def _create_state_input_hybrid1(
+    state: str,
+    esd_dir: Path,
+    charge: int,
+    solvent: str,
+    metals: List[str],
+    main_basisset: str,
+    metal_basisset: str,
+    config: Dict[str, Any],
+) -> str:
+    """Generate hybrid TDDFT→deltaSCF input files for excited states.
+
+    For S0: Creates standard TDDFT input
+    For excited states (S1, S2, T1, T2, etc.):
+        1. {state}_first_TDDFT.inp: TDDFT OPT without FREQ
+        2. {state}_second.inp: deltaSCF OPT with FREQ, reads from first step
+
+    This two-step approach prevents deltaSCF collapse to S0 by using TDDFT pre-optimization.
+    """
+    state_upper = state.upper()
+
+    # For S0, just create a standard TDDFT input
+    if state_upper == "S0":
+        return _create_state_input_tddft(
+            state=state,
+            esd_dir=esd_dir,
+            charge=charge,
+            solvent=solvent,
+            metals=metals,
+            main_basisset=main_basisset,
+            metal_basisset=metal_basisset,
+            config=config,
+        )
+
+    # For excited states: create two-step inputs
+    # Step 1: TDDFT OPT (no FREQ)
+    config_step1 = config.copy()
+    config_step1['ESD_frequency'] = 'no'  # Disable FREQ for first step
+
+    # Temporarily modify state to create first input
+    first_input_base = f"{state_upper}_first_TDDFT"
+
+    # Create TDDFT input for first optimization
+    # We need to manually build this since we need custom filename
+    from pathlib import Path
+    input_file_first = esd_dir / f"{first_input_base}.inp"
+
+    # Build first input using TDDFT logic (simplified)
+    functional = config.get('functional', 'PBE0')
+    disp_corr = config.get('disp_corr', 'D4')
+    ri_jkx = config.get('ri_jkx', 'RIJCOSX')
+    aux_jk = config.get('aux_jk', 'def2/J')
+    implicit_solvation = config.get('implicit_solvation_model', '')
+    geom_token = str(config.get('geom_opt', 'OPT')).strip() or "OPT"
+    pal = config.get('PAL', 12)
+    maxcore = config.get('maxcore', 6000)
+    nroots = config.get('ESD_nroots', 15)
+    tda_flag = str(config.get('ESD_TDA', 'FALSE')).upper()
+    esd_maxdim = config.get('ESD_maxdim', None)
+    maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
+    tddft_maxiter = _resolve_tddft_maxiter(config)
+    followiroot = str(config.get('ESD_followiroot', 'true')).lower() in ('true', 'yes', '1', 'on')
+
+    # Determine multiplicity and iroot
+    if state_upper.startswith('T'):
+        multiplicity = 3
+        # Extract root number: T1→1, T2→2, etc.
+        root_num = int(state_upper[1:]) if len(state_upper) > 1 else 1
+    else:
+        multiplicity = 1
+        root_num = int(state_upper[1:]) if len(state_upper) > 1 else 1
+
+    # Build solvation keyword
+    solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
+
+    # Build keyword line for first step (TDDFT OPT, no FREQ)
+    keywords_first = [functional, "UKS", main_basisset, disp_corr, ri_jkx, aux_jk]
+    if solvation_kw:
+        keywords_first.append(solvation_kw)
+    keywords_first.append(geom_token)
+    # NO FREQ/numFREQ for first step
+
+    # Read coordinates from S0.xyz
+    xyz_path = esd_dir / "S0.xyz"
+    try:
+        with open(xyz_path, 'r', encoding='utf-8') as f:
+            all_lines = f.readlines()
+            coord_lines = all_lines[2:]  # Skip atom count and comment
+    except FileNotFoundError:
+        logger.error(f"Coordinate file not found: {xyz_path}")
+        raise
+
+    coord_lines = _apply_esd_newgto(
+        coord_lines, found_metals=metals, metal_basisset=metal_basisset, config=config
+    )
+
+    # Write first TDDFT input
+    with open(input_file_first, 'w', encoding='utf-8') as f:
+        f.write("! " + " ".join(keywords_first) + "\n")
+        f.write(f'%base "{first_input_base}"\n')
+        f.write(f"%pal nprocs {pal} end\n")
+        f.write(f"%maxcore {maxcore}\n")
+
+        # Output blocks
+        for block in collect_output_blocks(config, allow=True):
+            f.write(block + "\n")
+
+        # TDDFT block
+        f.write("\n%TDDFT\n")
+        f.write(f"  NROOTS  {nroots}\n")
+        f.write(f"  MAXDIM  {maxdim}\n")
+        f.write(f"  TDA     {tda_flag}\n")
+        if tddft_maxiter is not None:
+            f.write(f"  maxiter {tddft_maxiter}\n")
+        f.write(f"  IROOT   {root_num}\n")
+        if followiroot:
+            f.write("  DOSOC   FALSE\n")
+        f.write("END\n")
+
+        # Coordinates
+        f.write(f"\n* xyz {charge} {multiplicity}\n")
+        for line in coord_lines:
+            f.write(line)
+        f.write("*\n")
+
+    logger.info(f"Created hybrid step 1 (TDDFT): {input_file_first}")
+
+    # Step 2: deltaSCF OPT with FREQ
+    input_file_second = esd_dir / f"{state_upper}_second.inp"
+
+    # Now create deltaSCF input that reads from first step
+    # Determine if this state uses deltaSCF
+    use_deltascf = True  # All excited states in hybrid mode use deltaSCF for second step
+
+    # Get frequency settings
+    esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
+    freq_type = str(config.get('freq_type', 'FREQ')).strip().upper()
+    if freq_type not in ('FREQ', 'NUMFREQ'):
+        freq_type = 'FREQ'
+
+    # Build keywords for second step (deltaSCF)
+    keywords_second = [functional, "UKS", main_basisset, disp_corr, ri_jkx, aux_jk]
+    if solvation_kw:
+        keywords_second.append(solvation_kw)
+    keywords_second.append(geom_token)
+
+    # Add FREQ for second step
+    if esd_frequency_enabled:
+        keywords_second.append(freq_type)
+
+    keywords_second.append("deltaSCF")
+    keywords_second.append("MOREAD")
+
+    # Add deltaSCF-specific keywords
+    deltascf_keywords = config.get('deltaSCF_keywords', '')
+    if deltascf_keywords:
+        keywords_second.extend(deltascf_keywords.split())
+
+    # Get deltaSCF SCF parameters
+    domom = str(config.get('deltaSCF_DOMOM', 'true')).lower()
+    pmom = str(config.get('deltaSCF_PMOM', 'true')).lower()
+    keepinitialref = str(config.get('deltaSCF_keepinitialref', 'true')).lower()
+    soscfhessup = config.get('deltaSCF_SOSCFHESSUP', 'LSR1')
+    maxiter_scf = config.get('deltaSCF_maxiter', 1000)
+    soscf_convfactor = config.get('deltaSCF_SOSCFConvFactor', 500)
+    soscf_maxstep = config.get('deltaSCF_SOSCFMaxStep', 0.1)
+
+    # Try to derive alphaconf/betaconf from S0.out
+    alphaconf = None
+    betaconf = None
+    s0_out_path = esd_dir / "S0.out"
+    if s0_out_path.exists():
+        result = _parse_tddft_and_derive_deltascf(s0_out_path, state_upper)
+        if result:
+            alphaconf, betaconf = result
+
+    # Fallback configs
+    if alphaconf is None:
+        if state_upper.startswith('S'):
+            alphaconf = "0,1"
+            betaconf = "0"
+        elif state_upper.startswith('T'):
+            alphaconf = "0,1"
+            betaconf = "0,1"
+        else:
+            alphaconf = "0,1"
+            betaconf = "0"
+
+    # Write second deltaSCF input
+    with open(input_file_second, 'w', encoding='utf-8') as f:
+        f.write("! " + " ".join(keywords_second) + "\n")
+        f.write(f'%base "{state_upper}_second"\n')
+        f.write(f'%moinp "{first_input_base}.gbw"\n')
+        f.write(f"%pal nprocs {pal} end\n")
+        f.write(f"%maxcore {maxcore}\n")
+
+        # Output blocks
+        for block in collect_output_blocks(config, allow=True):
+            f.write(block + "\n")
+
+        # SCF block for deltaSCF
+        f.write("\n%scf\n")
+        f.write(f"  DOMOM {domom}\n")
+        f.write(f"  pmom {pmom}\n")
+        f.write(f"  keepinitialref {keepinitialref}\n")
+        f.write(f"  alphaconf {alphaconf}\n")
+        f.write(f"  betaconf {betaconf}\n")
+        f.write(f"  SOSCFHESSUP {soscfhessup}\n")
+        f.write(f"  maxiter {maxiter_scf}\n")
+        f.write(f"  SOSCFConvFactor {soscf_convfactor}\n")
+        f.write(f"  SOSCFMaxStep {soscf_maxstep}\n")
+        f.write("end\n")
+
+        # Coordinates - read from first step output
+        # For now, we'll use the same coords as first step; ORCA will update from .gbw
+        f.write(f"\n* xyzfile {charge} {multiplicity} {first_input_base}.xyz\n")
+
+    logger.info(f"Created hybrid step 2 (deltaSCF): {input_file_second}")
+
+    # Return the second input file as the "main" one
+    return str(input_file_second)
 
 
 def _create_state_input_tddft(

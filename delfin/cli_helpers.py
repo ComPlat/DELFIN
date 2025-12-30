@@ -205,8 +205,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--afp-fwhm",
         type=float,
-        default=30.0,
+        default=50.0,
         metavar="NM",
-        help="FWHM for Gaussian broadening in AFP plot (default: 30.0 nm)."
+        help="FWHM for Gaussian broadening in AFP plot (default: 50.0 nm)."
     )
     return p

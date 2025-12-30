@@ -72,7 +72,7 @@ class OrcaErrorDetector:
             "all_required": True,
             "priority": 1,
         },
-        # MPI crashes
+        # MPI crashes - general process crashes
         {
             "type": OrcaErrorType.MPI_CRASH,
             "patterns": [
@@ -80,6 +80,25 @@ class OrcaErrorDetector:
                 "exited on signal",
             ],
             "all_required": True,
+            "priority": 2,
+        },
+        # MPI crashes - ORCA parallelization bugs (TGeneralVectorSet, etc.)
+        {
+            "type": OrcaErrorType.MPI_CRASH,
+            "patterns": [
+                "TGeneralVectorSet",
+                "Constructor called with NVecs<=0",
+            ],
+            "all_required": True,
+            "priority": 2,
+        },
+        # MPI crashes - LEANSCF failures (often parallelization-related)
+        {
+            "type": OrcaErrorType.MPI_CRASH,
+            "patterns": [
+                "error termination in LEANSCF",
+            ],
+            "all_required": False,
             "priority": 2,
         },
         # SCF convergence failures

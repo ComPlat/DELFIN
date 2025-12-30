@@ -1041,8 +1041,17 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
             state_data["optimization"].update(scf_data)
 
         # Parse emission spectrum (transitions FROM this state)
+        # For hybrid1 mode: TDDFT excitations come from first_TDDFT (step 1)
+        # For deltaSCF mode: TDDFT excitations come from separate _TDDFT job
+        # Priority: first_TDDFT.out > _TDDFT.out > state.out
+        tddft_first_out = esd_dir / f"{state}_first_TDDFT.out"
         tddft_out = esd_dir / f"{state}_TDDFT.out"
-        tddft_source = tddft_out if tddft_out.exists() else state_out
+        if tddft_first_out.exists():
+            tddft_source = tddft_first_out
+        elif tddft_out.exists():
+            tddft_source = tddft_out
+        else:
+            tddft_source = state_out
         transitions = parse_absorption_spectrum(tddft_source)
         if transitions:
             state_data["tddft_from_geometry"] = {
