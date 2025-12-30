@@ -1124,7 +1124,7 @@ def _create_state_input_hybrid1(
             f.write(f"  maxiter {tddft_maxiter}\n")
         f.write(f"  IROOT   {root_num}\n")
         if followiroot:
-            f.write("  DOSOC   FALSE\n")
+            f.write("  FOLLOWIROOT TRUE\n")
         f.write("END\n")
 
         # Coordinates
