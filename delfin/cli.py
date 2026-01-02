@@ -1385,6 +1385,19 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to generate DELFIN_Data.json: %s", exc, exc_info=True)
 
+        # Generate DOCX report at the end of the run
+        try:
+            from delfin.cli_report_docx import run_docx_report_mode
+            afp_fwhm = float(config.get('afp_fwhm', 100.0))
+            logger.info("Generating DELFIN.docx report...")
+            report_status = run_docx_report_mode(workspace_root, config, afp_fwhm, json_output_path)
+            if report_status == 0:
+                logger.info("DELFIN.docx report generated successfully")
+            else:
+                logger.warning("DELFIN.docx report generation returned status %d", report_status)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to generate DELFIN.docx: %s", exc, exc_info=True)
+
         return _finalize(0)
     except KeyboardInterrupt:
         logger.warning("Execution interrupted by user; shutting down...")
