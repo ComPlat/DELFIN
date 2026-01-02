@@ -148,6 +148,10 @@ class OrcaErrorDetector:
                 "insufficient memory",
                 "cannot allocate memory",
                 "memory allocation failed",
+                "out-of-memory",
+                "out of memory",
+                "not a single batch is possible with the present MaxCore",
+                "BatchOrganizer",
             ],
             "all_required": False,
             "priority": 7,
@@ -391,17 +395,15 @@ class RecoveryStrategy:
         ORCA Manual recommendations:
         - KDIIS is more robust than standard DIIS
         - SOSCF when DIIS gets stuck at ~0.001
-        - MaxDIIS to limit DIIS space size
         - TolE relaxation for difficult cases
         """
         if self.attempt == 1:
-            # Try KDIIS with smaller DIIS space
+            # Try KDIIS
             return {
                 "use_moread": True,
                 "keywords_add": ["KDIIS", "SlowConv"],  # Simple input keywords
                 "scf_block": {
                     "MaxIter": 500,
-                    "MaxDIIS": 10,  # Limit DIIS space to avoid linear dependencies
                     "TolE": 5e-6,  # Slightly relaxed from default 1e-6
                 },
             }
@@ -413,7 +415,6 @@ class RecoveryStrategy:
                     "SOSCF": True,  # %scf block parameter
                     "SOSCFStart": 0.00033,  # Start SOSCF earlier
                     "MaxIter": 500,
-                    "MaxDIIS": 8,
                     "DampFac": 0.9,
                     "TolE": 1e-5,  # More relaxed
                 },
@@ -426,7 +427,6 @@ class RecoveryStrategy:
                     "SOSCF": True,
                     "SOSCFStart": 0.001,
                     "MaxIter": 600,
-                    "MaxDIIS": 5,  # Very small DIIS space
                     "DampFac": 0.95,  # Strong damping
                     "DampErr": 0.1,  # Damp until error < 0.1
                     "TolE": 5e-5,  # Very relaxed
@@ -474,9 +474,13 @@ class RecoveryStrategy:
             }
 
     def _mpi_crash_fixes(self) -> Dict:
-        """Fixes for MPI crashes."""
+        """Fixes for MPI crashes.
+
+        MPI crashes often happen early before orbitals are written.
+        DO NOT use MOREAD - it will fail with "No orbitals found".
+        Just reduce cores and retry from scratch.
+        """
         return {
-            "use_moread": True,
             "reduce_pal": 0.5,  # Reduce cores by half
             "env_vars": {
                 "OMPI_MCA_btl": "^vader",  # Disable vader transport
@@ -501,12 +505,27 @@ class RecoveryStrategy:
             }
 
     def _memory_error_fixes(self) -> Dict:
-        """Fixes for memory errors."""
-        return {
-            "use_moread": True,
-            "reduce_maxcore": 0.7,  # Reduce memory by 30%
-            "reduce_pal": 0.75 if self.attempt > 1 else 1.0,
-        }
+        """Fixes for memory errors.
+
+        Memory errors often occur with SOSCF (needs Hessian) or high parallelization.
+        Strategy:
+        1. Disable SOSCF (most memory-intensive)
+        2. Reduce cores significantly (more memory per core)
+        3. Optionally increase MaxCore
+        """
+        if self.attempt == 1:
+            return {
+                "keywords_remove": ["SOSCF"],  # Disable SOSCF keyword if present
+                "scf_block_remove": ["SOSCF", "SOSCFStart", "SOSCFConvFactor", "SOSCFMaxStep", "SOSCFHESSUP"],
+                "reduce_pal": 0.5,  # Half the cores = double memory per core
+            }
+        else:
+            # Attempt 2: Even fewer cores
+            return {
+                "keywords_remove": ["SOSCF"],
+                "scf_block_remove": ["SOSCF", "SOSCFStart", "SOSCFConvFactor", "SOSCFMaxStep", "SOSCFHESSUP"],
+                "reduce_pal": 0.25,  # Quarter cores = 4x memory per core
+            }
 
 
 
@@ -567,6 +586,12 @@ class OrcaInputModifier:
 
             if "keywords_add" in mods:
                 parsed = self._add_keywords(parsed, mods["keywords_add"])
+
+            if "keywords_remove" in mods:
+                parsed = self._remove_keywords(parsed, mods["keywords_remove"])
+
+            if "scf_block_remove" in mods:
+                parsed = self._remove_scf_params(parsed, mods["scf_block_remove"])
 
             # Create modified input file
             new_inp = self.inp_file.with_suffix(f'.retry{strategy.attempt}.inp')
@@ -784,6 +809,16 @@ class OrcaInputModifier:
 
         # Update parsed geometry
         parsed["geometry"] = new_geometry
+
+        # CRITICAL: Change "* xyzfile ..." to "* xyz ..." since we're using inline coords
+        if parsed["charge_mult"] and "xyzfile" in parsed["charge_mult"]:
+            # Extract charge and multiplicity, replace xyzfile with xyz
+            parts = parsed["charge_mult"].split()
+            if len(parts) >= 4 and parts[0] == "*" and parts[1] == "xyzfile":
+                charge = parts[2]
+                mult = parts[3]
+                parsed["charge_mult"] = f"* xyz {charge} {mult}"
+                logger.info(f"Changed geometry format from xyzfile to inline xyz")
 
         logger.info(f"Updated {len(xyz_coords)} atom coordinates from .xyz, preserved inline basis sets")
 
@@ -1075,6 +1110,72 @@ class OrcaInputModifier:
 
         return parsed
 
+    def _remove_keywords(self, parsed: Dict, keywords_to_remove: List[str]) -> Dict:
+        """Remove keywords from the input file.
+
+        Args:
+            parsed: Parsed input dict
+            keywords_to_remove: List of keywords to remove (e.g., ["SOSCF", "AutoAux"])
+
+        Returns:
+            Modified parsed dict
+        """
+        original_count = len(parsed["keywords"])
+        keywords_upper = [kw.upper() for kw in keywords_to_remove]
+        parsed["keywords"] = [
+            kw for kw in parsed["keywords"]
+            if kw.upper() not in keywords_upper
+        ]
+        removed_count = original_count - len(parsed["keywords"])
+        if removed_count > 0:
+            logger.info(f"Removed {removed_count} keyword(s): {keywords_to_remove}")
+
+        return parsed
+
+    def _remove_scf_params(self, parsed: Dict, params_to_remove: List[str]) -> Dict:
+        """Remove parameters from %scf block.
+
+        Args:
+            parsed: Parsed input dict
+            params_to_remove: List of parameter names to remove (e.g., ["SOSCF", "MaxDIIS"])
+
+        Returns:
+            Modified parsed dict
+        """
+        if "scf" not in parsed["blocks"]:
+            return parsed
+
+        scf_lines = parsed["blocks"]["scf"].split("\n")
+        # Filter out block delimiters and empty lines
+        scf_lines = [l for l in scf_lines if l.strip() and l.strip().lower() not in ["%scf", "end"]]
+
+        params_upper = [p.upper() for p in params_to_remove]
+        new_scf = ["%scf"]
+        removed_params = []
+
+        for line in scf_lines:
+            keep_line = True
+            line_stripped = line.strip()
+            # Check if this line contains any of the parameters to remove
+            for param in params_upper:
+                # Check if parameter name appears at start of line (before space or =)
+                if line_stripped.upper().startswith(param) or \
+                   line_stripped.upper().startswith(param + " ") or \
+                   line_stripped.upper().startswith(param + "="):
+                    keep_line = False
+                    removed_params.append(param)
+                    break
+            if keep_line:
+                new_scf.append("  " + line_stripped)
+
+        new_scf.append("end")
+        parsed["blocks"]["scf"] = "\n".join(new_scf)
+
+        if removed_params:
+            logger.info(f"Removed {len(removed_params)} SCF parameter(s): {list(set(removed_params))}")
+
+        return parsed
+
     def _write_input(self, path: Path, parsed: Dict):
         """Write modified input file preserving original format.
 
@@ -1316,6 +1417,17 @@ def prepare_input_for_continuation(
                             # Replace geometry block
                             lines[geom_start + 1:geom_end] = new_geom_lines
                             modified = True
+
+                            # CRITICAL: Change "* xyzfile ..." to "* xyz ..." since we're using inline coords
+                            geom_header = lines[geom_start].strip()
+                            if "xyzfile" in geom_header:
+                                parts = geom_header.split()
+                                if len(parts) >= 4 and parts[0] == "*" and parts[1] == "xyzfile":
+                                    charge = parts[2]
+                                    mult = parts[3]
+                                    lines[geom_start] = f"* xyz {charge} {mult}\n"
+                                    logger.info(f"Changed geometry format from xyzfile to inline xyz")
+
                             logger.info(f"Updated {len(xyz_coords)} coordinates from {xyz_file.name}, preserved inline basis sets")
 
                     except Exception as e:

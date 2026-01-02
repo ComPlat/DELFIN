@@ -381,7 +381,8 @@ def _populate_state_jobs(
                     abs_input = Path(input_file).resolve()
                     _update_pal_block(str(abs_input), cores)
 
-                    output_file = esd_dir / f"{st_upper}.out"
+                    # Use consistent output naming: S1_second.inp -> S1_second.out
+                    output_file = abs_input.with_suffix('.out')
                     abs_output = output_file.resolve()
 
                     logger.info(f"Running ORCA hybrid1 step 2 (deltaSCF) for {st_upper} in {esd_dir}")

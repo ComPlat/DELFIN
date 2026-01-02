@@ -59,6 +59,7 @@ ESD_LINEW=50
 ESD_INLINEW=250
 ESD_NPOINTS=131072
 ESD_MAXTIME=12000
+hybrid1_geom_MaxIter=2
 --------------------
 Electrical Properties:
 elprop_Dipole=no
@@ -80,12 +81,12 @@ deltaSCF_SOSCFConvFactor=500
 deltaSCF_SOSCFMaxStep=0.1
 --------------------
 TDDFT Settings:
-ESD_TDDFT_maxiter=500
-ESD_nroots=15
-ESD_maxdim=30
-ESD_TDA=FALSE
-ESD_followiroot=true
-ESD_SOC=false
+TDDFT_TDDFT_maxiter=500
+TDDFT_nroots=15
+TDDFT_maxdim=30
+TDDFT_TDA=FALSE
+TDDFT_followiroot=true
+TDDFT_SOC=false
 ------------------------------------
 MANUALLY:
 multiplicity_0=

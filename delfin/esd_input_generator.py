@@ -20,6 +20,46 @@ logger = get_logger(__name__)
 HARTREE_TO_CM1 = 219474.63
 
 
+def _resolve_state_filename(state: str, extension: str, esd_mode: str) -> str:
+    """Resolve the correct filename for a state based on ESD mode.
+
+    In hybrid1 mode:
+    - S0: S0.{extension}
+    - T1: T1.{extension} (special case - single step)
+    - S1, S2, T2, etc:
+      - .out files: {state}_second.out
+      - .xyz, .hess, .gbw files: {state}_second_deltaSCF.{extension}
+
+    In tddft mode:
+    - All states: {state}.{extension}
+
+    Args:
+        state: State label (e.g., 'S1', 'T2')
+        extension: File extension without dot (e.g., 'out', 'xyz', 'gbw', 'hess')
+        esd_mode: ESD mode ('hybrid1' or 'tddft')
+
+    Returns:
+        Filename like 'S1_second.out' or 'S1_second_deltaSCF.xyz'
+    """
+    state_upper = state.upper()
+
+    # In tddft mode, always use simple naming
+    if esd_mode != 'hybrid1':
+        return f"{state_upper}.{extension}"
+
+    # In hybrid1 mode, S0 and T1 use simple naming
+    if state_upper in ('S0', 'T1'):
+        return f"{state_upper}.{extension}"
+
+    # All other states in hybrid1 use _second suffix
+    # .out files: S1_second.out
+    # .xyz, .hess, .gbw: S1_second_deltaSCF.xyz
+    if extension == 'out':
+        return f"{state_upper}_second.{extension}"
+    else:
+        return f"{state_upper}_second_deltaSCF.{extension}"
+
+
 def _parse_tddft_and_derive_deltascf(s0_out_path: Path, state: str) -> Optional[tuple[str, str]]:
     """Parse TD-DFT results from S0.out and derive ALPHACONF/BETACONF for deltaSCF.
 
@@ -291,11 +331,37 @@ def _parse_state_root(label: str) -> tuple[str, int]:
 
 
 def _resolve_tddft_maxiter(config: Dict[str, Any]) -> Optional[int]:
-    """Prefer an ESD-specific TDDFT maxiter override, then fall back to global."""
+    """Prefer TDDFT_maxiter, fall back to ESD_TDDFT_maxiter (legacy), then global TDDFT_maxiter."""
+    # Try new naming first
+    tddft_maxiter = resolve_maxiter(config, key="TDDFT_maxiter")
+    if tddft_maxiter is not None:
+        return tddft_maxiter
+    # Fall back to legacy ESD_TDDFT_maxiter for backwards compatibility
     esd_override = resolve_maxiter(config, key="ESD_TDDFT_maxiter")
     if esd_override is not None:
         return esd_override
-    return resolve_maxiter(config, key="TDDFT_maxiter")
+    return None
+
+
+def _get_tddft_param(config: Dict[str, Any], param_name: str, default: Any) -> Any:
+    """Get TDDFT parameter with fallback to legacy ESD_ naming.
+
+    Args:
+        config: Configuration dictionary
+        param_name: Parameter name without prefix (e.g., 'nroots', 'maxdim', 'TDA')
+        default: Default value if not found
+
+    Returns:
+        Parameter value from TDDFT_{param_name} or ESD_{param_name} (legacy)
+    """
+    # Try new TDDFT_ prefix first
+    new_key = f"TDDFT_{param_name}"
+    if new_key in config:
+        return config[new_key]
+
+    # Fall back to legacy ESD_ prefix for backwards compatibility
+    legacy_key = f"ESD_{param_name}"
+    return config.get(legacy_key, default)
 
 
 def calculate_dele_cm1(state1_file: str, state2_file: str) -> Optional[float]:
@@ -1064,12 +1130,12 @@ def _create_state_input_hybrid1(
     geom_token = str(config.get('geom_opt', 'OPT')).strip() or "OPT"
     pal = config.get('PAL', 12)
     maxcore = config.get('maxcore', 6000)
-    nroots = config.get('ESD_nroots', 15)
-    tda_flag = str(config.get('ESD_TDA', 'FALSE')).upper()
-    esd_maxdim = config.get('ESD_maxdim', None)
+    nroots = _get_tddft_param(config, 'nroots', 15)
+    tda_flag = str(_get_tddft_param(config, 'TDA', 'FALSE')).upper()
+    esd_maxdim = _get_tddft_param(config, 'maxdim', None)
     maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
     tddft_maxiter = _resolve_tddft_maxiter(config)
-    followiroot = str(config.get('ESD_followiroot', 'true')).lower() in ('true', 'yes', '1', 'on')
+    followiroot = str(_get_tddft_param(config, 'followiroot', 'true')).lower() in ('true', 'yes', '1', 'on')
 
     # Determine multiplicity and iroot
     if state_upper.startswith('T'):
@@ -1112,6 +1178,12 @@ def _create_state_input_hybrid1(
         f.write('%moinp "S0.gbw"\n')
         f.write(f"%pal nprocs {pal} end\n")
         f.write(f"%maxcore {maxcore}\n")
+
+        # Add %geom block for first TDDFT step (configurable via hybrid1_geom_MaxIter)
+        geom_maxiter = config.get('hybrid1_geom_MaxIter', 2)
+        f.write("%geom\n")
+        f.write(f"  MaxIter {geom_maxiter}\n")
+        f.write("end\n")
 
         # Output blocks
         for block in collect_output_blocks(config, allow=True):
@@ -1256,13 +1328,13 @@ def _create_state_input_tddft(
     geom_token = str(geom_token_raw).strip() or "OPT"
     pal = config.get("PAL", 12)
     maxcore = config.get("maxcore", 6000)
-    nroots = config.get("ESD_nroots", 15)
-    tda_flag = str(config.get("ESD_TDA", config.get("TDA", "FALSE"))).upper()
-    # Use ESD_maxdim if set, otherwise default to nroots/2 (min 5)
-    esd_maxdim = config.get("ESD_maxdim", None)
+    nroots = _get_tddft_param(config, "nroots", 15)
+    tda_flag = str(_get_tddft_param(config, "TDA", config.get("TDA", "FALSE"))).upper()
+    # Use TDDFT_maxdim if set, otherwise default to nroots/2 (min 5)
+    esd_maxdim = _get_tddft_param(config, "maxdim", None)
     maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
     tddft_maxiter = _resolve_tddft_maxiter(config)
-    followiroot = str(config.get("ESD_followiroot", "true")).lower() in ("true", "yes", "1", "on")
+    followiroot = str(_get_tddft_param(config, "followiroot", "true")).lower() in ("true", "yes", "1", "on")
     esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
     output_blocks = collect_output_blocks(config, allow=True)
 
@@ -1360,8 +1432,8 @@ def _create_state_input_tddft(
         *,
         triplets: bool = False,
     ) -> None:
-        # Read ESD_SOC setting
-        dosoc_flag = str(config.get('ESD_SOC', 'false')).strip().lower()
+        # Read TDDFT_SOC setting (legacy: ESD_SOC)
+        dosoc_flag = str(_get_tddft_param(config, 'SOC', 'false')).strip().lower()
         dosoc_value = "true" if dosoc_flag in ('yes', 'true', '1', 'on') else "false"
 
         fh.write("%tddft\n")
@@ -1641,16 +1713,26 @@ def create_isc_input(
     job_name = f"{initial_state}_{final_state}_ISC_{ms_suffix}"
     input_file = esd_dir / f"{job_name}.inp"
 
+    # Get ESD mode to resolve correct file names
+    esd_mode = str(config.get('ESD_modus', 'tddft')).strip().lower()
+    if "|" in esd_mode:
+        esd_mode = esd_mode.split("|")[0].strip()
+
     # Determine source geometry (use optimized geometry of FINAL state, per ORCA manual)
-    xyz_file = f"{final_state}.xyz"
+    # In hybrid1 mode: S1_second.xyz, T2_second.xyz, etc.
+    xyz_file = _resolve_state_filename(final_state, 'xyz', esd_mode)
+
     # Use restricted (closed-shell) reference for SOC; keep multiplicity 1 to avoid UKS
     final_multiplicity = 1
 
     # Calculate adiabatic energy difference (DELE) for ISC
     # DELE = E(initial) - E(final) in cm^-1
+    # In hybrid1 mode: use S1_second.out, T2_second.out, etc.
+    initial_out = _resolve_state_filename(initial_state, 'out', esd_mode)
+    final_out = _resolve_state_filename(final_state, 'out', esd_mode)
     dele = calculate_dele_cm1(
-        str(esd_dir / f"{initial_state}.out"),
-        str(esd_dir / f"{final_state}.out"),
+        str(esd_dir / initial_out),
+        str(esd_dir / final_out),
     )
 
     # Build input
@@ -1717,10 +1799,14 @@ def create_isc_input(
     npoints = str(config.get("ESD_NPOINTS", 131072)).strip()
     maxtime = str(config.get("ESD_MAXTIME", 12000)).strip()
 
+    # Resolve Hessian file names for hybrid1 mode
+    initial_hess = _resolve_state_filename(initial_state, 'hess', esd_mode)
+    final_hess = _resolve_state_filename(final_state, 'hess', esd_mode)
+
     esd_block = [
         "%ESD",
-        f'  ISCISHESS       "{initial_state}.hess"',
-        f'  ISCFSHESS       "{final_state}.hess"',
+        f'  ISCISHESS       "{initial_hess}"',
+        f'  ISCFSHESS       "{final_hess}"',
         "  USEJ            TRUE",
         f"  DOHT            {doht_flag}",
         f"  LINES           {lines}",
@@ -1806,9 +1892,16 @@ def create_ic_input(
     job_name = f"{initial_state}_{final_state}_IC"
     input_file = esd_dir / f"{job_name}.inp"
 
+    # Get ESD mode to resolve correct file names
+    esd_mode = str(config.get('ESD_modus', 'tddft')).strip().lower()
+    if "|" in esd_mode:
+        esd_mode = esd_mode.split("|")[0].strip()
+
     # Determine source geometry (use lower-state geometry for IC, per ORCA manual)
     # For S1>S0: use S0.xyz; for Tn>T1: use T1.xyz
-    xyz_file = f"{final_state}.xyz"
+    # In hybrid1 mode: S1_second.xyz, T2_second.xyz, etc.
+    xyz_file = _resolve_state_filename(final_state, 'xyz', esd_mode)
+
     # Multiplicity follows final state (triplet -> 3, singlet -> 1)
     final_type, _ = _parse_state_root(final_state)
     final_multiplicity = 3 if final_type == "T" else 1
@@ -1884,10 +1977,14 @@ def create_ic_input(
     npoints = str(config.get("ESD_NPOINTS", 131072)).strip()
     maxtime = str(config.get("ESD_MAXTIME", 12000)).strip()
 
+    # Resolve Hessian file names for hybrid1 mode
+    final_hess = _resolve_state_filename(final_state, 'hess', esd_mode)
+    initial_hess = _resolve_state_filename(initial_state, 'hess', esd_mode)
+
     esd_block = [
         "%ESD",
-        f'  GSHESSIAN       "{final_state}.hess"',
-        f'  ESHESSIAN       "{initial_state}.hess"',
+        f'  GSHESSIAN       "{final_hess}"',
+        f'  ESHESSIAN       "{initial_hess}"',
         "  USEJ            TRUE",
         f"  LINES           {lines}",
         f"  LINEW           {linew}",

@@ -823,6 +823,16 @@ def run_orca_with_intelligent_recovery(
         tracker.increment_attempt(job_name, error_type)
         attempted_errors.add(error_key)
 
+        # Backup the failed output file before retry (for debugging)
+        if out_path.exists():
+            backup_num = attempt
+            backup_path = out_path.with_suffix(f'.old{backup_num}.out')
+            try:
+                shutil.copy2(out_path, backup_path)
+                logger.info(f"Backed up failed output: {backup_path.name}")
+            except Exception as e:
+                logger.warning(f"Failed to backup output file: {e}")
+
         # Use modified input for next attempt
         current_inp = new_inp
 
