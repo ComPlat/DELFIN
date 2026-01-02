@@ -2117,6 +2117,15 @@ def create_fluor_input(
         tddft_block.insert(-1, f"  maxiter    {tddft_maxiter}")
     blocks.append("\n".join(tddft_block))
 
+    # Get ESD mode to resolve correct file names for hybrid1
+    esd_mode = str(config.get('ESD_modus', 'tddft')).strip().lower()
+    if "|" in esd_mode:
+        esd_mode = esd_mode.split("|")[0].strip()
+
+    # Resolve Hessian file names for hybrid1 mode
+    final_hess = _resolve_state_filename(final_state, 'hess', esd_mode)
+    initial_hess = _resolve_state_filename(initial_state, 'hess', esd_mode)
+
     # ESD block
     doht_flag = str(config.get("DOHT", "TRUE")).upper()
     lines = str(config.get("ESD_LINES", "LORENTZ")).strip().upper() or "LORENTZ"
@@ -2125,8 +2134,8 @@ def create_fluor_input(
     temperature = _resolve_temperature_K(config, default=298.15)
     esd_block = [
         "%ESD",
-        f'  GSHESSIAN  "{final_state}.hess"',
-        f'  ESHESSIAN  "{initial_state}.hess"',
+        f'  GSHESSIAN  "{final_hess}"',
+        f'  ESHESSIAN  "{initial_hess}"',
         f"  DOHT       {doht_flag}",
         f"  LINES      {lines}",
         f"  LINEW      {linew}",
@@ -2144,7 +2153,9 @@ def create_fluor_input(
 
     # Geometry uses the optimized ground-state geometry from the ESD directory.
     # Use inline coordinates so we can attach per-atom NewGTO for metals (like classic inputs).
-    xyz_path = esd_dir / f"{final_state}.xyz"
+    # In hybrid1 mode: use S0.xyz (S0 is always simple naming)
+    final_xyz = _resolve_state_filename(final_state, 'xyz', esd_mode)
+    xyz_path = esd_dir / final_xyz
     with open(xyz_path, "r", encoding="utf-8") as f:
         all_lines = f.readlines()
     coord_lines = all_lines[2:]  # skip XYZ header
@@ -2258,9 +2269,16 @@ def create_phosp_input(
     # Default is 1,2,3, but allow overriding via CONTROL.
     iroots = _parse_iroot_spec(config.get("phosp_IROOT", None), default=[1, 2, 3])
 
+    # Get ESD mode to resolve correct file names for hybrid1
+    esd_mode = str(config.get('ESD_modus', 'tddft')).strip().lower()
+    if "|" in esd_mode:
+        esd_mode = esd_mode.split("|")[0].strip()
+
     # Geometry uses the ground-state geometry (S0.xyz), multiplicity 1.
     # Use inline coordinates so we can attach per-atom NewGTO for metals (like classic inputs).
-    xyz_path = esd_dir / f"{final_state}.xyz"
+    # Note: For PHOSP (T1→S0), both states use simple naming even in hybrid1
+    final_xyz = _resolve_state_filename(final_state, 'xyz', esd_mode)
+    xyz_path = esd_dir / final_xyz
     with open(xyz_path, "r", encoding="utf-8") as f:
         all_lines = f.readlines()
     geom_coord_lines = all_lines[2:]  # skip XYZ header
@@ -2270,6 +2288,11 @@ def create_phosp_input(
         metal_basisset=metal_basisset,
         config=config,
     )
+
+    # Resolve Hessian file names for hybrid1 mode
+    # Note: For PHOSP (T1→S0), both states use simple naming even in hybrid1
+    final_hess = _resolve_state_filename(final_state, 'hess', esd_mode)
+    initial_hess = _resolve_state_filename(initial_state, 'hess', esd_mode)
 
     def _job_block(iroot: int) -> str:
         blocks: list[str] = []
@@ -2289,8 +2312,8 @@ def create_phosp_input(
 
         esd = [
             "%ESD",
-            f'  GSHESSIAN       "{final_state}.hess"',
-            f'  TSHESSIAN       "{initial_state}.hess"',
+            f'  GSHESSIAN       "{final_hess}"',
+            f'  TSHESSIAN       "{initial_hess}"',
             f"  DOHT            {doht_flag}",
             f"  LINES           {lines}",
             f"  LINEW           {linew}",
