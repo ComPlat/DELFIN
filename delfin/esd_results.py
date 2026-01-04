@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from delfin.common.logging import get_logger
 from delfin.energies import find_electronic_energy, find_ZPE, find_gibbs_energy
@@ -236,8 +236,9 @@ def collect_esd_results(
         states: List of electronic states
         iscs: List of ISC transitions
         ics: List of IC transitions
-        config: Configuration dictionary (for TROOTSSL parsing)
+        config: Configuration dictionary (for TROOTSSL and ESD_modus parsing)
     """
+    from delfin.esd_input_generator import _resolve_state_filename
 
     summary = ESDSummary()
 
@@ -245,11 +246,22 @@ def collect_esd_results(
         logger.info("ESD directory %s missing; skipping ESD result aggregation.", esd_dir)
         return summary
 
+    # Get ESD mode to resolve correct file names for hybrid1
+    esd_mode = 'tddft'  # default
+    if config is not None:
+        esd_mode = str(config.get('ESD_modus', 'tddft')).strip().lower()
+        if "|" in esd_mode:
+            esd_mode = esd_mode.split("|")[0].strip()
+
     for state in states:
         state_key = state.strip().upper()
         if not state_key:
             continue
-        output_path = esd_dir / f"{state_key}.out"
+
+        # Resolve output filename for hybrid1 mode
+        output_filename = _resolve_state_filename(state_key, 'out', esd_mode)
+        output_path = esd_dir / output_filename
+
         if output_path.exists():
             fspe = find_electronic_energy(str(output_path))
             zpe = find_ZPE(str(output_path))
