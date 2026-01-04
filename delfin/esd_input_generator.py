@@ -109,7 +109,7 @@ def _parse_tddft_and_derive_deltascf(s0_out_path: Path, state: str) -> Optional[
         return None
 
     last_orbital_section = orbital_sections[-1]
-    orbital_text = content_before_job2[last_orbital_section.end():][:8000]  # Take next 8000 chars
+    orbital_text = content_before_job2[last_orbital_section.end():][:500000]  # Take next 500000 chars (supports systems with 1000+ orbitals)
 
     # Find HOMO (last orbital with OCC = 2.0000 or 1.0000)
     homo_num = None
