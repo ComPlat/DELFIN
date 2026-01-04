@@ -123,6 +123,36 @@ def parse_absorption_spectrum(output_file: Path) -> List[Transition]:
                 dz=dz
             ))
 
+    # Convert ORCA notation to S/T notation
+    # ORCA numbers states by energy (all symmetries together), but we need to count separately:
+    # - First X-1A (singlet, X>0) = S1, second = S2, etc.
+    # - First X-3A (triplet) = T1, second = T2, etc.
+    singlet_counter = 0
+    triplet_counter = 0
+    state_mapping = {"0-1A": "S0"}  # Ground state
+
+    for trans in transitions:
+        # Map to_state if not already mapped
+        if trans.to_state not in state_mapping:
+            if "-1A" in trans.to_state and trans.to_state != "0-1A":
+                singlet_counter += 1
+                state_mapping[trans.to_state] = f"S{singlet_counter}"
+            elif "-3A" in trans.to_state:
+                triplet_counter += 1
+                state_mapping[trans.to_state] = f"T{triplet_counter}"
+            else:
+                # Other symmetries (keep ORCA notation)
+                state_mapping[trans.to_state] = trans.to_state
+
+        # Map from_state if not already mapped
+        if trans.from_state not in state_mapping:
+            state_mapping[trans.from_state] = trans.from_state
+
+    # Apply mapping to all transitions
+    for trans in transitions:
+        trans.from_state = state_mapping.get(trans.from_state, trans.from_state)
+        trans.to_state = state_mapping.get(trans.to_state, trans.to_state)
+
     logger.info(f"Parsed {len(transitions)} transitions from {output_file.name}")
     return transitions
 
