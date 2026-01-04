@@ -193,7 +193,11 @@ def create_afp_plot(
                     break
 
         if s1_file is None:
-            s1_candidates = [search_dir / "S1_TDDFT.out", search_dir / "S1.out"]
+            s1_candidates = [
+                search_dir / "S1_first_TDDFT.out",  # hybrid1 mode
+                search_dir / "S1_TDDFT.out",        # deltaSCF mode
+                search_dir / "S1.out"               # TDDFT mode
+            ]
             for candidate in s1_candidates:
                 if candidate.exists():
                     s1_file = candidate
