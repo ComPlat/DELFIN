@@ -76,7 +76,7 @@ deltaSCF_PMOM=true
 deltaSCF_keepinitialref=true
 deltaSCF_SOSCFHESSUP=LSR1
 deltaSCF_keywords=FreezeAndRelease GMF NODIIS SCFCheckGrad
-deltaSCF_maxiter=1000
+deltaSCF_maxiter=300
 deltaSCF_SOSCFConvFactor=500
 deltaSCF_SOSCFMaxStep=0.1
 --------------------
