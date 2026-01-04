@@ -881,12 +881,28 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     Returns:
         Complete data structure as dictionary (ready for JSON)
     """
+    from delfin.esd_input_generator import _resolve_state_filename
+
     logger.info(f"Collecting ESD data from {project_dir}")
 
     esd_dir = project_dir / "ESD"
     occupier_dir = project_dir / "OCCUPIER"
     summary_data = parse_esd_summary(project_dir)
     control_flags = parse_control_flags(project_dir)
+
+    # Read ESD_modus from CONTROL.txt to determine correct filenames for hybrid1 mode
+    esd_mode = 'tddft'  # default
+    control_path = project_dir / "CONTROL.txt"
+    if control_path.exists():
+        try:
+            content = control_path.read_text(encoding="utf-8", errors="ignore")
+            mode_match = re.search(r'^\s*ESD_modus\s*=\s*(.+)', content, flags=re.IGNORECASE | re.MULTILINE)
+            if mode_match:
+                esd_mode = mode_match.group(1).strip().lower()
+                if "|" in esd_mode:
+                    esd_mode = esd_mode.split("|")[0].strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to parse ESD_modus from CONTROL.txt: %s", exc)
 
     # Parse DELFIN.txt for redox potentials and summary info
     delfin_summary = parse_delfin_txt(project_dir)
@@ -1018,16 +1034,21 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
 
     # Parse excited states (S1-S6, T1-T6)
     for state in ["S1", "S2", "S3", "S4", "S5", "S6", "T1", "T2", "T3", "T4", "T5", "T6"]:
-        state_out = esd_dir / f"{state}.out"
+        # Resolve filename for hybrid1 mode: S1_second.out, T2_second.out, etc.
+        state_out_filename = _resolve_state_filename(state, 'out', esd_mode)
+        state_out = esd_dir / state_out_filename
         if not state_out.exists():
             continue
 
-        logger.info(f"Parsing excited state {state}")
+        logger.info(f"Parsing excited state {state} (from {state_out_filename})")
+
+        # Geometry file also uses _second_deltaSCF suffix in hybrid1
+        state_xyz_filename = _resolve_state_filename(state, 'xyz', esd_mode)
 
         state_data = {
             "optimization": {
                 "converged": True,
-                "geometry_file": f"{state}.xyz"
+                "geometry_file": state_xyz_filename
             },
             "thermochemistry": parse_thermochemistry(state_out),
             "dipole_moment": parse_dipole_moment(state_out),
