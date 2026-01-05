@@ -106,7 +106,7 @@ e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 ### Export & Reporting
 
 - `delfin --json` — Collect key results into `DELFIN_Data.json` (useful for scripts/notebooks)
-- `delfin --report docx` — Generate a Word report if `python-docx` is available
+- `delfin --report docx` — Generate a Word report in DOCX format
 - `delfin --afp` — Generate an AFP spectrum plot (`AFP_spectrum.png`) from existing ESD/S0/S1/T1 results if present
 
 ### Information
