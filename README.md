@@ -8,43 +8,37 @@
 
 This repository contains DELFIN, a comprehensive workflow tool for automated quantum chemistry calculations using ORCA, xTB, and CREST. DELFIN automates the identification of preferred electron configurations, tracks orbital occupation changes during redox processes, and calculates redox potentials.
 
-## 🚀 Quick Install
-
-```bash
-pip install delfin-complat
-```
-
-**Requirements:**
-- **Python 3.10+**
-- **ORCA 6.1.1** in your `PATH` ([free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal))
-- **Optional:** CREST, xTB (for extended workflows)
-
-> **Prereqs**
->
-> * ORCA **6.1.1** in your `PATH` (`orca` and `orca_pltvib`)
-> * Optional: `crest` (for CREST workflow), **xTB** if used (`xtb` and `crest` in `PATH`)
-> * Python **3.10+** required
-
----
-
-## Install
+## 🚀 Installation
 
 **PyPI Package**: https://pypi.org/project/delfin-complat/
 
-From the `delfin` folder (the one containing `pyproject.toml`):
+### Requirements
+- **Python 3.10+**
+- **ORCA 6.1.1** in your `PATH` (`orca` and `orca_pltvib`) — [free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal)
+- **Optional:** `crest` and `xtb` (for CREST/xTB workflows)
 
-recommended (isolated) install
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-regular install
+### Install Methods
+
+**Standard install (recommended for most users):**
 ```bash
 pip install delfin-complat
 ```
 
-All Python dependencies (for example `mendeleev` for covalent radii) are installed automatically. Using a virtual environment or tools such as `pipx` keeps the scientific software stack reproducible and avoids system-wide modifications.
+**Development install (from source):**
+```bash
+# Clone the repository
+git clone https://github.com/ComPlat/DELFIN.git
+cd DELFIN
+
+# Create virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install in editable mode
+pip install -e .
+```
+
+All Python dependencies (e.g., `mendeleev` for covalent radii) are installed automatically. Using a virtual environment keeps the scientific software stack reproducible and avoids system-wide modifications.
 
 This exposes the console command **`delfin`** and enables `python -m delfin`.
 
@@ -79,16 +73,99 @@ e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 
 ---
 
-## Excited-State Dynamics (ESD) Module
+## 📋 CLI Reference
 
-> **Status:** The ESD module is under construction and not yet production-ready.
+### Basic Commands
 
-The optional ESD pipeline optimises S0/S1/T1/T2 states and launches intersystem
-crossing (ISC) / internal conversion (IC) calculations inside a dedicated `ESD/`
-folder. Enable it via `ESD_modul=yes` in `CONTROL.txt`. It runs after the normal
-redox workflows when `method` is set, or on its own when `method` is left empty.
+- `delfin` — Run DELFIN workflow in current directory (requires `CONTROL.txt` and `input.txt`)
+- `delfin /path/to/project` — Run DELFIN workflow in specified directory
+- `python -m delfin` — Alternative way to run DELFIN
 
-Minimal CONTROL settings:
+### Setup & Configuration
+
+- `delfin --define[=input.xyz] [--overwrite]` — Create/update `CONTROL.txt` and optionally convert XYZ to `input.txt`
+- `delfin /path/to/project --define[=input.xyz] [--overwrite]` — Same as above, but in a different workspace directory
+- `delfin --control /path/to/CONTROL.txt` — Run workflow from another directory while normalising all paths
+
+### Execution Control
+
+- `delfin --recalc` — Re-parse existing results and only restart missing or incomplete jobs
+- `delfin WORKSPACE --recalc --occupier-override STAGE=INDEX` — Force a specific OCCUPIER index for a stage during recalc (e.g., `--occupier-override red_step_2=1` uses index 1 for red_step_2_OCCUPIER instead of the automatically selected preferred index). Can be passed multiple times for different stages
+- `delfin --report` — Re-calculate redox potentials from existing output files without launching new calculations
+- `delfin --imag` — Eliminate imaginary modes from existing ORCA results (`*.out`/`*.hess`) and regenerate the summary report
+- `delfin stop --workspace PATH` — Send a graceful stop signal to running DELFIN processes associated with a workspace
+
+### Cleanup & Maintenance
+
+- `delfin --no-cleanup` — Keep temporary files and scratch folders after the pipeline finishes
+- `delfin --cleanup` — Remove previously generated intermediates and exit immediately
+- `delfin cleanup [--dry-run] [--workspace PATH] [--scratch PATH]` — Fine control over workspace/scratch cleanup; combine with `--dry-run` to preview deletions
+- `delfin cleanup --orca` — Stop running ORCA jobs in the current workspace, purge OCCUPIER scratch folders, and clean leftover temporary files
+- `delfin --purge` — Remove DELFIN-generated artifacts (OCCUPIER folders, ORCA inputs/outputs, logs) after confirmation while keeping CONTROL.txt, the configured input file, and any unrelated files
+
+### Export & Reporting
+
+- `delfin --json` — Collect key results into `DELFIN_Data.json` (useful for scripts/notebooks)
+- `delfin --report docx` — Generate a Word report if `python-docx` is available
+- `delfin --afp` — Generate an AFP spectrum plot (`AFP_spectrum.png`) from existing ESD/S0/S1/T1 results if present
+
+### Information
+
+- `delfin --version` (or `-V`) — Print the installed DELFIN version
+- `delfin --help` — Print the full list of CLI flags, including the new pipeline/resource switches
+
+### Specialized Workflows
+
+- `delfin co2 ...` — CO2 Coordinator helper workflow for CO2 placement and scan generation/runs
+- `delfin ESD` — Run excited-state dynamics workflow (requires `ESD_modul=yes` in CONTROL)
+
+---
+
+## ⚙️ Configuration (CONTROL.txt)
+
+DELFIN is configured via `CONTROL.txt` in your working directory. Key settings include:
+
+### Workflow Control
+* `method = OCCUPIER | classic | manually` (leave empty for ESD-only runs)
+* `OCCUPIER_method = auto | manually` (auto uses adaptive tree-based sequences)
+* `OCCUPIER_tree = flat | deep2 | deep3 | deep | own` (auto tree mode)
+* `calc_initial = yes | no`
+* `oxidation_steps = 1,2,3` / `reduction_steps = 1,2,3`
+* `parallel_workflows = yes | no | auto`
+
+### Resource Management
+* `pal_jobs = N` (number of parallel PAL processes; auto-detected from cluster if not set)
+* `orca_parallel_strategy = auto | threads | serial`
+
+### Optional Modules
+* `XTB_OPT = yes | no` / `XTB_GOAT = yes | no` / `CREST = yes | no`
+* `XTB_SOLVATOR = yes | no`
+* `ESD_modul = yes | no` (excited-state dynamics)
+  * `states = S0,S1,T1,T2`
+  * `ISCs = S1>T1,...` / `ICs = S1>S0,...`
+* `IMAG = yes | no` (imaginary frequency elimination)
+  * `IMAG_scope = initial | all`
+  * `allow_imaginary_freq = N`
+
+### Error Recovery
+* `enable_auto_recovery = yes | no` (intelligent ORCA error recovery with MOREAD)
+* `max_recovery_attempts = N` (default: 1)
+* `enable_job_timeouts = yes | no` (set to 'no' for unlimited runtime)
+
+For the complete list of settings, see the "Typical workflow switches" section below.
+
+---
+
+## ✨ Features
+
+### Excited-State Dynamics (ESD) Module
+
+> **Status:** Under active development
+
+The optional ESD pipeline optimizes S0/S1/T1/T2 states and calculates intersystem
+crossing (ISC) / internal conversion (IC) inside a dedicated `ESD/` folder.
+
+Enable via `ESD_modul=yes` in `CONTROL.txt`. Minimal settings:
 
 ```ini
 ESD_modul=yes
@@ -117,61 +194,6 @@ ESD/
 
 ---
 
-## Project layout
-
-```
-delfin/
-  __init__.py
-  __main__.py       # enables `python -m delfin`
-  cli.py            # main CLI entry point orchestrating the full workflow
-  cli_helpers.py    # CLI argument parsing and helper functions
-  cli_recalc.py     # recalc mode wrapper functions for computational tools
-  cli_banner.py     # banner display and file validation utilities
-  cli_calculations.py # redox potential calculation methods (M1, M2, M3)
-  main.py           # optional small loader (may delegate to cli.main)
-  pipeline.py       # high-level orchestration across workflow phases (classic/manually/OCCUPIER)
-  esd_module.py     # optional excited-state dynamics workflow (states, ISC/IC scheduling)
-  esd_input_generator.py # ORCA input builders for ESD states/ISC/IC jobs
-  config_manager.py # shared configuration utilities used by new pipeline helpers
-  safe.py           # lightweight sandbox helpers for robust filesystem ops
-  define.py         # CONTROL template generator (+ .xyz → input.txt conversion, path normalisation + logging hooks)
-  cleanup.py        # delete temporary files
-  config.py         # CONTROL.txt parsing & helpers
-  utils.py          # common helpers (transition metal scan, basis-set selection, electron counts)
-  orca.py           # ORCA executable discovery & runs
-  imag.py           # IMAG workflow (plotvib helpers, imaginary-mode loop, freq-first order for optional output blocks)
-  xyz_io.py         # XYZ/ORCA-input read/write helpers (freq block comes before any optional %output sections)
-  xtb_crest.py      # xTB / GOAT / CREST / ALPB solvation workflows
-  energies.py       # extractors for energies (FSPE, Gibbs, ZPE, electronic energies)
-  parser.py         # parser utilities for ORCA output files
-  occupier.py       # OCCUPIER workflow (sequence execution + summary)
-  occupier_auto.py  # Auto OCCUPIER sequence management and tree navigation
-  deep_auto_tree.py # Deep tree: adaptive BS evolution (reduction: BS(m-1,1) or BS(M±1,N); oxidation: pure only)
-  deep2_auto_tree.py # Deep2 tree: only pure states (no BS), simple 3×3 branching
-  generate_deep2_tree.py # Generator for deep2 (pure states only)
-  generate_deep_tree.py # Generator for deep tree with adaptive BS evolution
-  copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
-  thread_safe_helpers.py  # thread-safe workflow execution with PAL management
-  global_manager.py       # singleton global job manager for resource coordination
-  dynamic_pool.py         # dynamic core pool for job scheduling
-  parallel_classic_manually.py     # parallel execution for classic/manually modes
-  parallel_occupier.py  # parallel OCCUPIER workflow integration
-  verify_global_manager.py  # smoke tests for the global resource orchestration
-  cluster_utils.py        # cluster resource detection (SLURM/PBS/LSF)
-  api.py            # programmatic API (e.g. `delfin.api.run(...)` for notebooks/workflows)
-  common/           # shared utilities
-    __init__.py     # exposes common helpers
-    banners.py      # CLI banner art + static strings
-    logging.py      # logging configuration/get_logger helpers (cluster-friendly)
-    orca_blocks.py  # reusable ORCA block assembly utilities
-    paths.py        # central path & scratch-directory helpers (`DELFIN_SCRATCH` aware)
-  reporting/        # modular report generation
-    __init__.py     # reporting submodule exports
-    occupier_reports.py  # OCCUPIER-specific report generation functions
-    delfin_reports.py    # DELFIN-specific report generation functions
-    occupier_selection.py # OCCUPIER selection helpers used by reports
-```
----
 ## Typical workflow switches (in CONTROL.txt)
 
 * `method = OCCUPIER | classic | manually` (leave empty for ESD-only runs)
@@ -374,14 +396,6 @@ See **[docs/RETRY_LOGIC.md](docs/RETRY_LOGIC.md)** for:
 
 ---
 
-## Dev notes
-
-* Update CLI entry point via `pyproject.toml`
-  `"[project.scripts] delfin = \"delfin.cli:main\""`
-* Build a wheel: `pip wheel .` (inside `delfin/`).
-* Run tests/workflow locally using a fresh virtual environment to catch missing deps.
-
----
 ## References
 
 The generic references for ORCA, xTB and CREST are:
@@ -469,51 +483,70 @@ If you use DELFIN in a scientific publication, please cite:
 
 ---
 
-## CLI Reference
+## 📚 Appendix (For Developers)
 
-### Basic Commands
+### Project Layout
 
-- `delfin` — Run DELFIN workflow in current directory (requires `CONTROL.txt` and `input.txt`)
-- `delfin /path/to/project` — Run DELFIN workflow in specified directory
-- `python -m delfin` — Alternative way to run DELFIN
+```
+delfin/
+  __init__.py
+  __main__.py       # enables `python -m delfin`
+  cli.py            # main CLI entry point orchestrating the full workflow
+  cli_helpers.py    # CLI argument parsing and helper functions
+  cli_recalc.py     # recalc mode wrapper functions for computational tools
+  cli_banner.py     # banner display and file validation utilities
+  cli_calculations.py # redox potential calculation methods (M1, M2, M3)
+  main.py           # optional small loader (may delegate to cli.main)
+  pipeline.py       # high-level orchestration across workflow phases (classic/manually/OCCUPIER)
+  esd_module.py     # optional excited-state dynamics workflow (states, ISC/IC scheduling)
+  esd_input_generator.py # ORCA input builders for ESD states/ISC/IC jobs
+  config_manager.py # shared configuration utilities used by new pipeline helpers
+  safe.py           # lightweight sandbox helpers for robust filesystem ops
+  define.py         # CONTROL template generator (+ .xyz → input.txt conversion, path normalisation + logging hooks)
+  cleanup.py        # delete temporary files
+  config.py         # CONTROL.txt parsing & helpers
+  utils.py          # common helpers (transition metal scan, basis-set selection, electron counts)
+  orca.py           # ORCA executable discovery & runs
+  imag.py           # IMAG workflow (plotvib helpers, imaginary-mode loop, freq-first order for optional output blocks)
+  xyz_io.py         # XYZ/ORCA-input read/write helpers (freq block comes before any optional %output sections)
+  xtb_crest.py      # xTB / GOAT / CREST / ALPB solvation workflows
+  energies.py       # extractors for energies (FSPE, Gibbs, ZPE, electronic energies)
+  parser.py         # parser utilities for ORCA output files
+  occupier.py       # OCCUPIER workflow (sequence execution + summary)
+  occupier_auto.py  # Auto OCCUPIER sequence management and tree navigation
+  deep_auto_tree.py # Deep tree: adaptive BS evolution (reduction: BS(m-1,1) or BS(M±1,N); oxidation: pure only)
+  deep2_auto_tree.py # Deep2 tree: only pure states (no BS), simple 3×3 branching
+  generate_deep2_tree.py # Generator for deep2 (pure states only)
+  generate_deep_tree.py # Generator for deep tree with adaptive BS evolution
+  copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
+  thread_safe_helpers.py  # thread-safe workflow execution with PAL management
+  global_manager.py       # singleton global job manager for resource coordination
+  dynamic_pool.py         # dynamic core pool for job scheduling
+  parallel_classic_manually.py     # parallel execution for classic/manually modes
+  parallel_occupier.py  # parallel OCCUPIER workflow integration
+  verify_global_manager.py  # smoke tests for the global resource orchestration
+  cluster_utils.py        # cluster resource detection (SLURM/PBS/LSF)
+  api.py            # programmatic API (e.g. `delfin.api.run(...)` for notebooks/workflows)
+  common/           # shared utilities
+    __init__.py     # exposes common helpers
+    banners.py      # CLI banner art + static strings
+    logging.py      # logging configuration/get_logger helpers (cluster-friendly)
+    orca_blocks.py  # reusable ORCA block assembly utilities
+    paths.py        # central path & scratch-directory helpers (`DELFIN_SCRATCH` aware)
+  reporting/        # modular report generation
+    __init__.py     # reporting submodule exports
+    occupier_reports.py  # OCCUPIER-specific report generation functions
+    delfin_reports.py    # DELFIN-specific report generation functions
+    occupier_selection.py # OCCUPIER selection helpers used by reports
+```
 
-### Setup & Configuration
+### Development Notes
 
-- `delfin --define[=input.xyz] [--overwrite]` — Create/update `CONTROL.txt` and optionally convert XYZ to `input.txt`
-- `delfin /path/to/project --define[=input.xyz] [--overwrite]` — Same as above, but in a different workspace directory
-- `delfin --control /path/to/CONTROL.txt` — Run workflow from another directory while normalising all paths
-
-### Execution Control
-
-- `delfin --recalc` — Re-parse existing results and only restart missing or incomplete jobs
-- `delfin WORKSPACE --recalc --occupier-override STAGE=INDEX` — Force a specific OCCUPIER index for a stage during recalc (e.g., `--occupier-override red_step_2=1` uses index 1 for red_step_2_OCCUPIER instead of the automatically selected preferred index). Can be passed multiple times for different stages
-- `delfin --report` — Re-calculate redox potentials from existing output files without launching new calculations
-- `delfin --imag` — Eliminate imaginary modes from existing ORCA results (`*.out`/`*.hess`) and regenerate the summary report
-- `delfin stop --workspace PATH` — Send a graceful stop signal to running DELFIN processes associated with a workspace
-
-### Cleanup & Maintenance
-
-- `delfin --no-cleanup` — Keep temporary files and scratch folders after the pipeline finishes
-- `delfin --cleanup` — Remove previously generated intermediates and exit immediately
-- `delfin cleanup [--dry-run] [--workspace PATH] [--scratch PATH]` — Fine control over workspace/scratch cleanup; combine with `--dry-run` to preview deletions
-- `delfin cleanup --orca` — Stop running ORCA jobs in the current workspace, purge OCCUPIER scratch folders, and clean leftover temporary files
-- `delfin --purge` — Remove DELFIN-generated artifacts (OCCUPIER folders, ORCA inputs/outputs, logs) after confirmation while keeping CONTROL.txt, the configured input file, and any unrelated files
-
-### Export & Reporting
-
-- `delfin --json` — Collect key results into `DELFIN_Data.json` (useful for scripts/notebooks)
-- `delfin --report docx` — Generate a Word report if `python-docx` is available
-- `delfin --afp` — Generate an AFP spectrum plot (`AFP_spectrum.png`) from existing ESD/S0/S1/T1 results if present
-
-### Information
-
-- `delfin --version` (or `-V`) — Print the installed DELFIN version
-- `delfin --help` — Print the full list of CLI flags, including the new pipeline/resource switches
-
-### Specialized Workflows
-
-- `delfin co2 ...` — CO2 Coordinator helper workflow for CO2 placement and scan generation/runs
-- `delfin ESD` — Run excited-state dynamics workflow (requires `ESD_modul=yes` in CONTROL)
+* Update CLI entry point via `pyproject.toml`: `"[project.scripts] delfin = \"delfin.cli:main\""`
+* Build a wheel: `pip wheel .` (inside `delfin/`)
+* Run tests/workflow locally using a fresh virtual environment to catch missing deps
+* Install development tools: `pip install -e '.[dev]'`
+* Format code: `black .` / Lint code: `ruff check .`
 
 ---
 
