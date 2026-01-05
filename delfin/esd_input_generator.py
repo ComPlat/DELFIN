@@ -182,8 +182,9 @@ def _parse_tddft_and_derive_deltascf(s0_out_path: Path, state: str) -> Optional[
     #   HOMO-1→LUMO (n=1, m=0): alphaconf [0] + [1,1] = 0,1,1
     #
     # Triplet spin-flip (T2+): Beta electron from HOMO-n → becomes Alpha in LUMO
-    #   T2 (HOMO-1→LUMO, n=1): alphaconf [1,1], betaconf 0,1
-    #   T3 (HOMO-2→LUMO, n=2): alphaconf [1,1,1], betaconf 0,1
+    #   T2 (n orbitals below HOMO): alphaconf [1]*2, betaconf [0] + [1]*n
+    #   T3 (n orbitals below HOMO): alphaconf [1]*3, betaconf [0] + [1]*n
+    #   Example: T2 with HOMO-3→LUMO (n=3): alphaconf 1,1, betaconf 0,1,1,1
 
     n = homo_num - from_orb  # How many orbitals below HOMO
     m = to_orb - lumo_num    # How many orbitals above LUMO
@@ -191,10 +192,11 @@ def _parse_tddft_and_derive_deltascf(s0_out_path: Path, state: str) -> Optional[
     # Special handling for higher Triplet states (T2, T3, T4, ...)
     if state_type == 'T' and state_num >= 2:
         # Spin-flip configuration: Beta electron from HOMO-n → Alpha in LUMO
-        # Beta loses electron from HOMO-n, Alpha gains electron in LUMO
-        alphaconf_list = [1] * (n + 1)  # Only 1s, no 0s (Alpha gains electron)
+        # ALPHACONF based on state number, BETACONF based on orbital distance
+        alphaconf_list = [1] * state_num  # state_num ones for Tn
         alphaconf = ','.join(map(str, alphaconf_list))
-        betaconf = "0,1"  # Beta: HOMO → LUMO (electron "moves" but becomes Alpha)
+        betaconf_list = [0] + [1] * n  # 0 followed by n ones
+        betaconf = ','.join(map(str, betaconf_list))
         logger.info(f"{state}: Triplet spin-flip config - ALPHACONF {alphaconf}, BETACONF {betaconf}")
     elif from_spin == 'a':
         # Alpha excitation (standard for Singlets)
