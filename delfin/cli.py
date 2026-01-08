@@ -18,7 +18,7 @@ from delfin.global_manager import get_global_manager
 from .define import create_control_file
 from .cleanup import cleanup_all, cleanup_orca
 from .config import read_control_file, get_E_ref
-from .utils import search_transition_metals, set_main_basisset, calculate_total_electrons_txt
+from .utils import search_transition_metals, set_main_basisset, calculate_total_electrons_txt, get_git_commit_info
 from .orca import run_orca, cleanup_orca_scratch_dir
 from .xtb_crest import XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
 from .reporting import (
@@ -983,6 +983,13 @@ def main(argv: list[str] | None = None) -> int:
     if "DELFIN_GLOBAL_LOG" not in os.environ:
         os.environ["DELFIN_GLOBAL_LOG"] = str(run_log_path)
     add_file_handler(os.environ["DELFIN_GLOBAL_LOG"])
+
+    # Log DELFIN version and git commit at the very start
+    from delfin import __version__
+    git_commit = get_git_commit_info() or "unknown"
+    logger.info("=" * 80)
+    logger.info("DELFIN v%s - Git commit: %s", __version__, git_commit)
+    logger.info("=" * 80)
     logger.info("Global run log attached at %s", os.environ["DELFIN_GLOBAL_LOG"])
 
 
