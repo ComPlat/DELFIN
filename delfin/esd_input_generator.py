@@ -1519,7 +1519,7 @@ def _create_state_input_tddft(
             f.write("\n")
             f.write(f"* xyzfile {charge} 1 S0.xyz\n")
         elif state_upper == "S1":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "S1"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1532,7 +1532,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n\n")
         elif state_upper == "T1":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "T1"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1544,7 +1544,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "T2":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "T2"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1556,7 +1556,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "S2":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "S2"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1568,7 +1568,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "T3":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "T3"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1580,7 +1580,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "S3":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "S3"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1592,7 +1592,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "S4":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "S4"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1604,7 +1604,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "S5":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "S5"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1616,7 +1616,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "S6":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "S6"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1628,7 +1628,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "T4":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "T4"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1640,7 +1640,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "T5":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "T5"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1652,7 +1652,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "T6":
-            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "T6"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
