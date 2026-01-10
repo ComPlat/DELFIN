@@ -78,7 +78,7 @@ class OccupierSelector:
         self.MIS_BIAS = float(self.config.get('mismatch_bias_window', 0.05))
 
         # Clean preference parameters
-        self.CLEAN_OVERRIDE_H = float(self.config.get('clean_override_window_h', 0.001))
+        self.CLEAN_OVERRIDE_H = float(self.config.get('clean_override_window_h', 0.002))
         self.CLEAN_Q_IMPROVE = float(self.config.get('clean_quality_improvement', 0.05))
         self.CLEAN_Q_GOOD = float(self.config.get('clean_quality_good', 0.05))
         self.CLEAN_BIAS_H = float(self.config.get('clean_bias_window_h', 0.001))

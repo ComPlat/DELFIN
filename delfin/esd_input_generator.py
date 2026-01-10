@@ -709,12 +709,12 @@ def _create_state_input_delta_scf(
 
     # Build simple keyword line
     # For deltaSCF: use RKS for S0 (closed-shell), UKS for excited states
-    # For TDDFT: S0 uses RKS (closed-shell), excited states use UKS
+    # For TDDFT: always use RKS (restricted) for all states
     esd_modus = str(config.get('ESD_modus', 'TDDFT')).strip().lower()
     if esd_modus == 'deltascf':
         scf_type = "RKS" if state_upper == "S0" else "UKS"
     else:
-        scf_type = "RKS" if state_upper == "S0" else "UKS"
+        scf_type = "RKS"
 
     keywords = [
         functional,

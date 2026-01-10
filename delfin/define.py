@@ -59,7 +59,7 @@ ESD_LINEW=50
 ESD_INLINEW=250
 ESD_NPOINTS=131072
 ESD_MAXTIME=12000
-hybrid1_geom_MaxIter=2
+hybrid1_geom_MaxIter=60
 --------------------
 Electrical Properties:
 elprop_Dipole=no
@@ -174,6 +174,9 @@ frequency_calculation_OCCUPIER=no
 occupier_selection=tolerance|truncation|rounding
 occupier_precision=3
 occupier_epsilon=5e-4
+clean_override_window_h=0.002
+clean_quality_improvement=0.05
+clean_quality_good=0.05
 maxiter_occupier=125
 geom_opt_OCCUPIER=OPT
 pass_wavefunction=no
@@ -230,6 +233,17 @@ OWN_TREE_PURE_WINDOW: Number of pure states to test around previous winner (defa
 OWN_progressive_from: Sequential pure states (yes) or all parallel (no, default)
   - no  -> All pure states start from "from": 0 (maximum parallelization)
   - yes -> Pure states build sequentially: m=1 -> m=3 -> m=5 (safer but slower)
+-------------------------------------------------
+OCCUPIER Selection Parameters (Fine-tuning):
+clean_override_window_h: Energy window (Hartree) for considering cleaner candidates (default: 0.002)
+  → If a candidate has much lower spin contamination and energy within this window, it may be preferred
+  → Reduce (e.g., 0.001) to strictly prefer lowest energy regardless of spin contamination
+  → Increase (e.g., 0.004) to allow cleaner solutions even with slightly higher energy
+clean_quality_improvement: Minimum quality improvement to trigger clean-override (default: 0.05)
+  → Quality = spin contamination deviation for non-BS, or BS pair mismatch for BS states
+  → Increase (e.g., 0.10) to require larger quality differences before preferring cleaner states
+clean_quality_good: Absolute quality threshold for clean-override (default: 0.05)
+  → If quality < this value, candidate is considered very clean and may be preferred
 -------------------------------------------------
 ESD (Excited State Dynamics):
 ESD_MODUL: yes/no - Enable ESD calculations in separate ESD/ directory
