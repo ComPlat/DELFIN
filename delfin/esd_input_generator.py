@@ -1191,17 +1191,31 @@ def _create_state_input_hybrid1(
         for block in collect_output_blocks(config, allow=True):
             f.write(block + "\n")
 
-        # TDDFT block
-        f.write("\n%TDDFT\n")
-        f.write(f"  NROOTS  {nroots}\n")
-        f.write(f"  MAXDIM  {maxdim}\n")
-        f.write(f"  TDA     {tda_flag}\n")
+        # TDDFT block (identical to TDDFT mode)
+        # Read TDDFT_SOC setting (same as in TDDFT mode)
+        dosoc_flag = str(_get_tddft_param(config, 'SOC', 'false')).strip().lower()
+        dosoc_value = "true" if dosoc_flag in ('yes', 'true', '1', 'on') else "false"
+
+        # Determine irootmult based on state type
+        if state_upper.startswith('T'):
+            irootmult = "triplet"
+        else:
+            irootmult = "singlet"
+
+        f.write("\n%tddft\n")
+        f.write(f"  nroots {nroots}\n")
+        f.write(f"  maxdim {maxdim}\n")
+        f.write(f"  tda {tda_flag}\n")
         if tddft_maxiter is not None:
             f.write(f"  maxiter {tddft_maxiter}\n")
-        f.write(f"  IROOT   {root_num}\n")
+        if state_upper.startswith('T'):
+            f.write("  triplets true\n")
+        f.write(f"  iroot {root_num}\n")
+        f.write(f"  irootmult {irootmult}\n")
         if followiroot:
-            f.write("  FOLLOWIROOT TRUE\n")
-        f.write("END\n")
+            f.write("  followiroot true\n")
+        f.write(f"  dosoc {dosoc_value}\n")
+        f.write("end\n")
 
         # Coordinates
         f.write(f"\n* xyz {charge} {multiplicity}\n")
