@@ -708,13 +708,9 @@ def _create_state_input_delta_scf(
     initial_guess = (str(config.get("initial_guess", "")).split() or [""])[0]
 
     # Build simple keyword line
-    # For deltaSCF: use RKS for S0 (closed-shell), UKS for excited states
-    # For TDDFT: always use RKS (restricted) for all states
-    esd_modus = str(config.get('ESD_modus', 'TDDFT')).strip().lower()
-    if esd_modus == 'deltascf':
-        scf_type = "RKS" if state_upper == "S0" else "UKS"
-    else:
-        scf_type = "RKS"
+    # For deltaSCF calculations: use RKS for S0 (closed-shell), UKS for excited states
+    # This applies to deltaSCF mode and hybrid1 mode (T1, second steps of S1/T2/etc.)
+    scf_type = "RKS" if state_upper == "S0" else "UKS"
 
     keywords = [
         functional,
@@ -1140,19 +1136,18 @@ def _create_state_input_hybrid1(
     followiroot = str(_get_tddft_param(config, 'followiroot', 'true')).lower() in ('true', 'yes', '1', 'on')
 
     # Determine multiplicity and iroot
-    if state_upper.startswith('T'):
-        multiplicity = 3
-        # Extract root number: T1→1, T2→2, etc.
-        root_num = int(state_upper[1:]) if len(state_upper) > 1 else 1
-    else:
-        multiplicity = 1
-        root_num = int(state_upper[1:]) if len(state_upper) > 1 else 1
+    # For TDDFT (first step): always use multiplicity 1 (like pure TDDFT mode)
+    # TDDFT computes triplet excitations via irootmult=triplet, not via multiplicity 3
+    multiplicity = 1
+    # Extract root number: T2→2, S1→1, etc.
+    root_num = int(state_upper[1:]) if len(state_upper) > 1 else 1
 
     # Build solvation keyword
     solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
 
     # Build keyword line for first step (TDDFT OPT, no FREQ)
-    keywords_first = [functional, "UKS", main_basisset, disp_corr, ri_jkx, aux_jk]
+    # Use RKS for TDDFT (required for dosoc, identical to pure TDDFT mode)
+    keywords_first = [functional, "RKS", main_basisset, disp_corr, ri_jkx, aux_jk]
     if solvation_kw:
         keywords_first.append(solvation_kw)
     keywords_first.append(geom_token)
@@ -1533,7 +1528,7 @@ def _create_state_input_tddft(
             f.write("\n")
             f.write(f"* xyzfile {charge} 1 S0.xyz\n")
         elif state_upper == "S1":
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "S1"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1546,31 +1541,70 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n\n")
         elif state_upper == "T1":
+            # T1 (lowest triplet) uses simple UKS + mult 3 optimization (like S0)
+            # NO deltaSCF - just a ground state triplet optimization
             f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
             f.write('%base "T1"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
-            _write_tddft_block(f, iroot=1, irootmult="triplet")
-            f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
+            f.write(f"\n* xyz {charge} 3\n")  # Multiplicity 3 for lowest triplet
             for line in coord_lines:
                 f.write(line)
             f.write("*\n")
+
+            # Add TDDFT check job for T1 (like in hybrid1/deltaSCF mode)
+            f.write("\n")
+            f.write("#==========================================\n")
+            f.write("# TDDFT Check: Transitions from T1\n")
+            f.write("#==========================================\n")
+            f.write("\n")
+            f.write("$new_job\n")
+
+            # TDDFT keyword line - RKS for TDDFT check
+            tddft_keywords_check = [
+                functional,
+                "RKS",
+                main_basisset,
+                disp_corr,
+                ri_jkx,
+                aux_jk,
+            ]
+            if solvation_kw:
+                tddft_keywords_check.append(solvation_kw)
+            f.write("! " + " ".join(tddft_keywords_check) + "\n")
+
+            f.write('%base "T1_TDDFT"\n')
+            f.write(f"%pal nprocs {pal} end\n")
+            f.write(f"%maxcore {maxcore}\n")
+
+            # TDDFT block for check job
+            f.write("\n%tddft\n")
+            f.write(f"  nroots {nroots}\n")
+            f.write(f"  maxdim {maxdim}\n")
+            f.write(f"  tda {tda_flag}\n")
+            if tddft_maxiter is not None:
+                f.write(f"  maxiter {tddft_maxiter}\n")
+            f.write("  triplets true\n")
+            f.write("  dosoc false\n")
+            f.write("end\n")
+
+            f.write(f"\n* xyzfile {charge} 1 T1.xyz\n")
         elif state_upper == "T2":
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "T2"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
-            _write_tddft_block(f, iroot=2, irootmult="triplet")
+            _write_tddft_block(f, iroot=2, irootmult="triplet", triplets=True)
             f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
             for line in coord_lines:
                 f.write(line)
             f.write("*\n")
         elif state_upper == "S2":
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "S2"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1582,19 +1616,19 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "T3":
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "T3"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
-            _write_tddft_block(f, iroot=3, irootmult="triplet")
+            _write_tddft_block(f, iroot=3, irootmult="triplet", triplets=True)
             f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
             for line in coord_lines:
                 f.write(line)
             f.write("*\n")
         elif state_upper == "S3":
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "S3"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1606,7 +1640,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "S4":
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "S4"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1618,7 +1652,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "S5":
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "S5"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1630,7 +1664,7 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "S6":
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "S6"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1642,37 +1676,37 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n")
         elif state_upper == "T4":
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "T4"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
-            _write_tddft_block(f, iroot=4, irootmult="triplet")
+            _write_tddft_block(f, iroot=4, irootmult="triplet", triplets=True)
             f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
             for line in coord_lines:
                 f.write(line)
             f.write("*\n")
         elif state_upper == "T5":
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "T5"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
-            _write_tddft_block(f, iroot=5, irootmult="triplet")
+            _write_tddft_block(f, iroot=5, irootmult="triplet", triplets=True)
             f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
             for line in coord_lines:
                 f.write(line)
             f.write("*\n")
         elif state_upper == "T6":
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+            f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "T6"\n')
             f.write('%moinp "S0.gbw"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
-            _write_tddft_block(f, iroot=6, irootmult="triplet")
+            _write_tddft_block(f, iroot=6, irootmult="triplet", triplets=True)
             f.write(f"\n* xyz {charge} 1\n")  # Multiplicity 1 with irootmult=triplet
             for line in coord_lines:
                 f.write(line)
