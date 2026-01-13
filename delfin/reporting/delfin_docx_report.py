@@ -987,6 +987,54 @@ def _add_state_table(doc: Document, title: str, states: Dict[str, Any]) -> None:
     _prevent_row_splits(table)
 
 
+def _format_dominant_orbital_transition(trans: Dict[str, Any]) -> str:
+    """Extract and format dominant orbital transition from TDDFT excitations.
+
+    Returns string like "HOMO → LUMO (85%)" or empty string if not available.
+    """
+    try:
+        excitations = trans.get("excitations", [])
+        if not excitations:
+            return ""
+
+        # Find dominant excitation (highest weight)
+        dominant = max(excitations, key=lambda x: x.get("weight", 0))
+        weight = dominant.get("weight", 0)
+        from_orb = dominant.get("from_orbital")
+        to_orb = dominant.get("to_orbital")
+        homo_number = trans.get("homo_number")
+
+        if from_orb is None or to_orb is None or homo_number is None:
+            return ""
+
+        # Calculate HOMO-n and LUMO+m notation
+        # HOMO has index homo_number, LUMO has index homo_number + 1
+        from_offset = homo_number - from_orb
+        to_offset = to_orb - (homo_number + 1)
+
+        # Format orbital names
+        if from_offset == 0:
+            from_label = "HOMO"
+        elif from_offset > 0:
+            from_label = f"HOMO-{from_offset}"
+        else:
+            from_label = f"LUMO+{-from_offset-1}"
+
+        if to_offset == 0:
+            to_label = "LUMO"
+        elif to_offset > 0:
+            to_label = f"LUMO+{to_offset}"
+        else:
+            to_label = f"HOMO{to_offset}"
+
+        # Format percentage
+        percentage = int(round(weight * 100))
+
+        return f"{from_label} → {to_label} ({percentage}%)"
+    except Exception:
+        return ""
+
+
 def _add_transition_table(
     doc: Document,
     title: str,
@@ -998,7 +1046,7 @@ def _add_transition_table(
     _add_heading_with_subscript(doc, title, level=3)
     table = doc.add_table(rows=1, cols=5)
     table.style = "Light Grid Accent 1"
-    headers = ["From", "To", "Energy (eV)", "Wavelength (nm)", "fosc"]
+    headers = ["Transition", "Energy (eV)", "Wavelength (nm)", "fosc", "Dominant Orbital"]
     for idx, text in enumerate(headers):
         cell = table.rows[0].cells[idx]
         cell.text = text
@@ -1010,31 +1058,34 @@ def _add_transition_table(
         except Exception:
             return float("inf")
 
-    # Sort by wavelength (nm) ascending
-    sorted_transitions = sorted(transitions, key=_wl_nm)
+    # Sort by wavelength (nm) descending - longest wavelength (lowest energy) first
+    sorted_transitions = sorted(transitions, key=_wl_nm, reverse=True)
     max_items = len(sorted_transitions) if limit is None else limit
     for trans in sorted_transitions[:max_items]:
         row = table.add_row().cells
 
-        # Format "From" state with subscript
+        # Format transition with arrow: "S₀ → T₁"
         from_state = _translate_state(trans.get("from_state", ""))
-        row[0].text = ""  # Clear default text
-        _format_state_with_subscript(row[0].paragraphs[0], from_state)
-
-        # Format "To" state with subscript
         to_state = _translate_state(trans.get("to_state", ""))
-        row[1].text = ""  # Clear default text
-        _format_state_with_subscript(row[1].paragraphs[0], to_state)
+        row[0].text = ""  # Clear default text
+        para = row[0].paragraphs[0]
+        _format_state_with_subscript(para, from_state)
+        para.add_run(" → ")
+        _format_state_with_subscript(para, to_state)
 
         # Format numeric values with 3 significant figures
         energy = trans.get('energy_eV', '')
-        row[2].text = _format_significant_figures(energy) if energy != '' else ''
+        row[1].text = _format_significant_figures(energy) if energy != '' else ''
 
         wavelength = trans.get('wavelength_nm', '')
-        row[3].text = _format_significant_figures(wavelength) if wavelength != '' else ''
+        row[2].text = _format_significant_figures(wavelength) if wavelength != '' else ''
 
         fosc = trans.get('oscillator_strength', '')
-        row[4].text = _format_significant_figures(fosc) if fosc != '' else ''
+        row[3].text = _format_significant_figures(fosc) if fosc != '' else ''
+
+        # Add dominant orbital transition
+        orbital_trans = _format_dominant_orbital_transition(trans)
+        row[4].text = orbital_trans
 
     _prevent_row_splits(table)
 
