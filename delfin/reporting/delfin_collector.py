@@ -1057,8 +1057,13 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
             "orbitals": parse_orbitals(state_out)
         }
 
-        # Parse TDDFT keywords from the corresponding input, if available
+        # Parse charge and multiplicity from input file
         state_inp = esd_dir / f"{state}.inp"
+        cm_data = parse_charge_multiplicity(state_inp)
+        if cm_data:
+            state_data["optimization"].update(cm_data)
+
+        # Parse TDDFT keywords from the corresponding input, if available
         tddft_inp = esd_dir / f"{state}_TDDFT.inp"
         tddft_settings = parse_tddft_settings(tddft_inp if tddft_inp.exists() else state_inp)
         if tddft_settings:
