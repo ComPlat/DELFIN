@@ -1046,7 +1046,7 @@ def _add_transition_table(
     _add_heading_with_subscript(doc, title, level=3)
     table = doc.add_table(rows=1, cols=5)
     table.style = "Light Grid Accent 1"
-    headers = ["Transition", "Energy (eV)", "Wavelength (nm)", "fosc", "Dominant Orbital"]
+    headers = ["Transition", "Energy (eV)", "Wavelength (nm)", "fosc", "Dominant Excitation"]
     for idx, text in enumerate(headers):
         cell = table.rows[0].cells[idx]
         cell.text = text
