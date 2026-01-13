@@ -2552,14 +2552,15 @@ def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optiona
     right_x = left_x + lane_spacing
     line_width = 0.3
 
-    # Helper function to avoid label overlap - returns horizontal offsets
+    # Helper function to avoid label overlap - returns horizontal and vertical offsets
     def _get_label_offsets(states_list):
-        """Calculate horizontal offsets for labels to avoid overlap.
+        """Calculate label offsets to avoid overlap.
 
-        Returns: list of x_offsets for each state
+        Returns: (x_offsets, y_offsets) lists for each state
         """
         overlap_threshold = 0.15  # eV
-        offsets = []
+        x_offsets = []
+        y_offsets = []
         overlap_groups = []
         current_group = []
 
@@ -2579,39 +2580,61 @@ def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optiona
         if current_group:
             overlap_groups.append(current_group)
 
-        # Assign horizontal offsets for overlapping groups
+        # Assign offsets for overlapping groups
+        y_spacing = 0.06  # eV vertical spacing for labels
+        default_y_offset = 0.02
         for group in overlap_groups:
             if len(group) == 1:
-                offsets.append(0)
+                x_offsets.append(0)
+                y_offsets.append(default_y_offset)
             else:
                 n = len(group)
                 for j, idx in enumerate(group):
-                    x_offset = (j - (n-1)/2) * 0.08  # Horizontal spacing
-                    offsets.append(x_offset)
+                    x_offset = (j - (n - 1) / 2) * 0.08  # Horizontal spacing
+                    y_offset = (j - (n - 1) / 2) * y_spacing
+                    x_offsets.append(x_offset)
+                    y_offsets.append(y_offset)
 
-        return offsets
+        return x_offsets, y_offsets
 
     # Plot left side (vertical excitations)
-    left_offsets = _get_label_offsets(left_states)
+    left_x_offsets, left_y_offsets = _get_label_offsets(left_states)
+    min_energy = None
+    max_energy = None
+    max_label_y = None
     for idx, (state_name, energy) in enumerate(left_states):
+        if min_energy is None or energy < min_energy:
+            min_energy = energy
+        if max_energy is None or energy > max_energy:
+            max_energy = energy
         color = "blue" if state_name.startswith("S") else "red" if state_name.startswith("T") else "gray"
         ax.plot([left_x - line_width, left_x + line_width], [energy, energy],
                 color=color, linewidth=2, solid_capstyle='butt')
         label = _format_state_label(state_name)
         # Apply horizontal offset if overlapping
-        x_label = left_x + line_width + 0.05 + left_offsets[idx]
-        ax.text(x_label, energy, label, ha='left', va='center', fontsize=10)
+        x_label = left_x + line_width + 0.05 + left_x_offsets[idx]
+        y_label = energy + left_y_offsets[idx]
+        if max_label_y is None or y_label > max_label_y:
+            max_label_y = y_label
+        ax.text(x_label, y_label, label, ha='left', va='center', fontsize=10)
 
     # Plot right side (optimized states)
-    right_offsets = _get_label_offsets(right_states)
+    right_x_offsets, right_y_offsets = _get_label_offsets(right_states)
     for idx, (state_name, energy) in enumerate(right_states):
+        if min_energy is None or energy < min_energy:
+            min_energy = energy
+        if max_energy is None or energy > max_energy:
+            max_energy = energy
         color = "blue" if state_name.startswith("S") else "red" if state_name.startswith("T") else "gray"
         ax.plot([right_x - line_width, right_x + line_width], [energy, energy],
                 color=color, linewidth=2, solid_capstyle='butt')
         label = _format_state_label(state_name)
         # Apply horizontal offset if overlapping
-        x_label = right_x + line_width + 0.05 + right_offsets[idx]
-        ax.text(x_label, energy, label, ha='left', va='center', fontsize=10)
+        x_label = right_x + line_width + 0.05 + right_x_offsets[idx]
+        y_label = energy + right_y_offsets[idx]
+        if max_label_y is None or y_label > max_label_y:
+            max_label_y = y_label
+        ax.text(x_label, y_label, label, ha='left', va='center', fontsize=10)
 
     # Connect corresponding states with dashed lines
     # Use state_connections to match T1↔T1, S1↔S1, etc., not by sorted order
@@ -2621,6 +2644,12 @@ def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optiona
                 color=color, linestyle='--', linewidth=1, alpha=0.6)
 
     # Styling (matching Energy Level Diagram)
+    if min_energy is not None and max_energy is not None:
+        top = max_energy
+        if max_label_y is not None and max_label_y > top:
+            top = max_label_y
+        ypad = 0.2
+        ax.set_ylim(min_energy - ypad, top + ypad)
     ax.set_xlim(0.3, right_x + 0.8)
     ax.set_ylabel("Energy (eV)", fontsize=12)
     ax.set_xticks([left_x, right_x])
