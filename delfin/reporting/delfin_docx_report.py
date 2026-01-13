@@ -95,6 +95,7 @@ class ReportAssets:
     dipole_moment_png: Optional[Path] = None
     mo_pngs: Dict[str, Path] | None = None  # keyed by orbital name, e.g., "HOMO", "LUMO+1"
     esp_png: Optional[Path] = None
+    esp_pngs: Dict[str, Path] | None = None  # keyed by state name, e.g., "S0", "S1", "T1"
 
 
 def _prevent_row_splits(table) -> None:
@@ -2907,7 +2908,15 @@ def generate_combined_docx_report(
             caption_run.font.italic = True
 
     # Electrostatic potential (ESP) visualization (add at the very end)
-    if assets.esp_png and assets.esp_png.exists():
+    if assets.esp_pngs:
+        for state, png_path in sorted(assets.esp_pngs.items()):
+            if png_path and png_path.exists():
+                _add_heading_with_subscript(doc, f"Electrostatic Potential Plot ({state})", level=2)
+                doc.add_picture(str(png_path), width=Inches(6.5))
+                doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            elif png_path:
+                logger.warning("Plot 'Electrostatic Potential Plot (%s)' not found at %s", state, png_path)
+    elif assets.esp_png and assets.esp_png.exists():
         _add_heading_with_subscript(doc, "Electrostatic Potential Plot (S0)", level=2)
         doc.add_picture(str(assets.esp_png), width=Inches(6.5))
         doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER

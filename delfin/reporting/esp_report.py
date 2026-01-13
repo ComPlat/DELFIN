@@ -297,10 +297,9 @@ def _create_colorbar_png(output_png: Path, vlim: float, label: str = "Electrosta
         pass
     for spine in cb.ax.spines.values():
         spine.set_visible(False)
-    # Keep label off by default (it tends to introduce extra whitespace in tight layouts).
-    # The numeric ticks are usually sufficient for the report.
-    if label and False:  # intentionally disabled
-        cb.set_label(label, fontsize=9)
+    if label:
+        # Keep label compact to avoid extra whitespace in tight layouts.
+        cb.ax.set_title(label, fontsize=8, pad=2)
 
     output_png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(str(output_png), dpi=300, bbox_inches="tight", pad_inches=0.0, facecolor="white")
@@ -822,6 +821,7 @@ def create_esp_slice_png(
         for spine in cbar.ax.spines.values():
             spine.set_visible(False)
         cbar.ax.tick_params(labelsize=8, length=0)
+        cbar.set_label("a.u.", fontsize=8, labelpad=2)
 
     output_png.parent.mkdir(parents=True, exist_ok=True)
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
@@ -833,9 +833,27 @@ def create_esp_slice_png(
 
 def generate_esp_png(workspace_root: Path) -> Optional[Path]:
     """Generate an ESP visualization PNG for S0 (3D isosurface if possible, else 2D slice)."""
-    gbw = _find_first_existing(workspace_root, ["S0.gbw", "initial.gbw"])
+    return generate_esp_png_for_state(workspace_root, "S0")
+
+
+def _state_file_candidates(state_name: str, ext: str) -> list[str]:
+    state = state_name.upper()
+    candidates = [
+        f"{state}.{ext}",
+        f"{state}_second_deltaSCF.{ext}",
+        f"{state}_TDDFT.{ext}",
+        f"{state}_opt.{ext}",
+    ]
+    if state == "S0":
+        candidates.append(f"initial.{ext}")
+    return candidates
+
+
+def generate_esp_png_for_state(workspace_root: Path, state_name: str) -> Optional[Path]:
+    """Generate an ESP visualization PNG for a specific state (3D isosurface if possible, else 2D slice)."""
+    gbw = _find_first_existing(workspace_root, _state_file_candidates(state_name, "gbw"))
     if not gbw:
-        logger.warning("No GBW file found (S0.gbw/initial.gbw); skipping ESP plot")
+        logger.warning("No GBW file found for %s; skipping ESP plot", state_name)
         return None
 
     # Locate / generate ESP cube (in GBW directory)
@@ -850,13 +868,13 @@ def generate_esp_png(workspace_root: Path) -> Optional[Path]:
         return None
 
     # Prefer 3D render if we have an XYZ; color the molecular surface by the ESP map.
-    xyz = _find_first_existing(workspace_root, ["S0.xyz", "initial.xyz"])
+    xyz = _find_first_existing(workspace_root, _state_file_candidates(state_name, "xyz"))
     if xyz:
-        out_3d = workspace_root / "Electrostatic_Potential_S0.png"
+        out_3d = workspace_root / f"Electrostatic_Potential_{state_name.upper()}.png"
         rendered = create_esp_molecular_surface_png(xyz, esp_cube, out_3d)
         if rendered:
             return rendered
 
     # Fallback: 2D slice with colorbar
-    output_png = workspace_root / "Electrostatic_Potential_S0.png"
+    output_png = workspace_root / f"Electrostatic_Potential_{state_name.upper()}.png"
     return create_esp_slice_png(esp_cube, output_png, slice_axis="z")

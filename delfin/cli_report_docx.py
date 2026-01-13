@@ -194,11 +194,18 @@ def run_docx_report_mode(
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to generate MO visualizations: %s", exc, exc_info=True)
 
-    # Electrostatic potential (ESP) plot
+    # Electrostatic potential (ESP) plots
     try:
-        from delfin.reporting.esp_report import generate_esp_png
+        from delfin.reporting.esp_report import generate_esp_png, generate_esp_png_for_state
 
-        assets.esp_png = generate_esp_png(workspace_root)
+        esp_pngs: Dict[str, Path] = {}
+        for state in ("S0", "S1", "T1"):
+            png = generate_esp_png_for_state(workspace_root, state)
+            if png:
+                esp_pngs[state] = png
+        assets.esp_pngs = esp_pngs or None
+        if not assets.esp_pngs:
+            assets.esp_png = generate_esp_png(workspace_root)
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to generate ESP plot: %s", exc, exc_info=True)
 
