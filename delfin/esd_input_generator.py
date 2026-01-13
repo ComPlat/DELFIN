@@ -668,6 +668,22 @@ def _create_state_input_delta_scf(
         xyz_file = "S0.xyz"
         moinp_gbw = "S0.gbw"
         use_deltascf = True
+    elif state_upper == "S3":
+        xyz_file = "S0.xyz"
+        moinp_gbw = "S0.gbw"
+        use_deltascf = True
+    elif state_upper == "S4":
+        xyz_file = "S0.xyz"
+        moinp_gbw = "S0.gbw"
+        use_deltascf = True
+    elif state_upper == "S5":
+        xyz_file = "S0.xyz"
+        moinp_gbw = "S0.gbw"
+        use_deltascf = True
+    elif state_upper == "S6":
+        xyz_file = "S0.xyz"
+        moinp_gbw = "S0.gbw"
+        use_deltascf = True
     elif state_upper == "T1":
         xyz_file = "S0.xyz"
         moinp_gbw = "S0.gbw"

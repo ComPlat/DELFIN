@@ -273,6 +273,7 @@ class RecoveryStrategy:
         self.error_type = error_type
         self.attempt = attempt
         self.config = config
+        self.parsed_input = None  # Will be set by apply_recovery before get_modifications
 
     def get_modifications(self) -> Dict:
         """Get input file modifications for this error/attempt combination.
@@ -327,34 +328,61 @@ class RecoveryStrategy:
         - KDIIS as robust DIIS alternative (! KDIIS or %scf KDIIS end)
         - SOSCF when DIIS stucks at ~0.001 (%scf SOSCF end)
         - High damping (0.9+) for pathological cases
+        - GMX for deltaSCF calculations (helps with excited state convergence)
         """
+        # Check if this is a deltaSCF calculation
+        is_deltascf = False
+        if self.parsed_input and "keywords" in self.parsed_input:
+            keywords_lower = [k.lower() for k in self.parsed_input["keywords"]]
+            is_deltascf = "deltascf" in keywords_lower
+
         if self.attempt == 1:
             # Attempt 1: SlowConv keyword + increased MaxIter
+            # For deltaSCF: Add GMX to help with excited state convergence
+            keywords_to_add = ["SlowConv"]
+            maxiter = 400 if is_deltascf else 300
+
+            if is_deltascf and "gmx" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
+                keywords_to_add.append("GMX")
+                logger.info("Adding GMX keyword for deltaSCF calculation")
+
             return {
                 "use_moread": True,
-                "keywords_add": ["SlowConv"],  # Simple input keyword
+                "keywords_add": keywords_to_add,
                 "scf_block": {
-                    "MaxIter": 300,
+                    "MaxIter": maxiter,
                 },
             }
         elif self.attempt == 2:
             # Attempt 2: VerySlowConv + KDIIS + high damping
+            keywords_to_add = ["VerySlowConv", "KDIIS"]
+            maxiter = 600 if is_deltascf else 500
+
+            if is_deltascf and "gmx" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
+                keywords_to_add.append("GMX")
+
             return {
                 "use_moread": True,
-                "keywords_add": ["VerySlowConv", "KDIIS"],  # Simple input keywords
+                "keywords_add": keywords_to_add,
                 "scf_block": {
-                    "MaxIter": 500,
+                    "MaxIter": maxiter,
                     "DampFac": 0.9,  # High damping factor (default: 0.7)
                     "DampErr": 0.02,  # Keep damping longer
                 },
             }
         else:
             # Attempt 3+: SOSCF (second-order) with very high damping
+            keywords_to_add = ["VerySlowConv"]
+            maxiter = 1000 if is_deltascf else 800
+
+            if is_deltascf and "gmx" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
+                keywords_to_add.append("GMX")
+
             return {
                 "use_moread": True,
-                "keywords_add": ["VerySlowConv"],
+                "keywords_add": keywords_to_add,
                 "scf_block": {
-                    "MaxIter": 800,
+                    "MaxIter": maxiter,
                     "SOSCF": True,  # %scf block parameter
                     "DampFac": 0.95,  # Very high damping for pathological cases
                     "DampErr": 0.001,  # Damp until very converged
@@ -553,15 +581,18 @@ class OrcaInputModifier:
         Returns:
             Path to modified input file
         """
-        mods = strategy.get_modifications()
-
-        if not mods:
-            logger.warning(f"No modifications defined for {strategy.error_type.value}")
-            return self.inp_file
-
         try:
-            # Parse original input
+            # Parse original input first so strategy can access it
             parsed = self._parse_input()
+
+            # Provide parsed input to strategy for context-aware modifications
+            strategy.parsed_input = parsed
+
+            mods = strategy.get_modifications()
+
+            if not mods:
+                logger.warning(f"No modifications defined for {strategy.error_type.value}")
+                return self.inp_file
 
             # Apply modifications
             if mods.get("use_moread"):
@@ -1219,7 +1250,9 @@ class OrcaInputModifier:
                 f.write(parsed["charge_mult"] + "\n")
                 for line in parsed["geometry"]:
                     f.write(line + "\n")
-                f.write("*\n")
+                # Only write closing * for inline coordinates, not for xyzfile
+                if "xyzfile" not in parsed["charge_mult"]:
+                    f.write("*\n")
 
             # Write blocks AFTER geometry (preserving original order)
             blocks_after = parsed.get("blocks_after_geom", [])
