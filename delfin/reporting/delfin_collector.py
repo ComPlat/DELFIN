@@ -988,7 +988,9 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
                         "to_state": t.to_state,
                         "energy_eV": t.energy_ev,
                         "wavelength_nm": t.wavelength_nm,
-                        "oscillator_strength": t.fosc
+                        "oscillator_strength": t.fosc,
+                        "excitations": t.excitations if t.excitations else [],
+                        "homo_number": t.homo_number
                     }
                     for t in transitions
                 ]
@@ -1088,7 +1090,9 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
                         "to_state": t.to_state,
                         "energy_eV": t.energy_ev,
                         "wavelength_nm": t.wavelength_nm,
-                        "oscillator_strength": t.fosc
+                        "oscillator_strength": t.fosc,
+                        "excitations": t.excitations if t.excitations else [],
+                        "homo_number": t.homo_number
                     }
                     for t in transitions
                 ]

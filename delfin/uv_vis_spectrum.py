@@ -28,6 +28,8 @@ class Transition:
     dx: float
     dy: float
     dz: float
+    excitations: List[dict] = None  # List of orbital excitations with weights
+    homo_number: int = None  # HOMO orbital number for this transition
 
     @property
     def readable_transition(self) -> str:
@@ -153,8 +155,99 @@ def parse_absorption_spectrum(output_file: Path) -> List[Transition]:
         trans.from_state = state_mapping.get(trans.from_state, trans.from_state)
         trans.to_state = state_mapping.get(trans.to_state, trans.to_state)
 
+    # Parse orbital excitations from STATE sections
+    _add_orbital_excitations(content, transitions)
+
     logger.info(f"Parsed {len(transitions)} transitions from {output_file.name}")
     return transitions
+
+
+def _add_orbital_excitations(content: str, transitions: List[Transition]) -> None:
+    """Parse STATE sections and add orbital excitation information to transitions.
+
+    Args:
+        content: Full ORCA output file content
+        transitions: List of Transition objects to augment with excitation data
+    """
+    # Find HOMO orbital number from the last ORBITAL ENERGIES section
+    homo_number = _find_homo_number(content)
+    if homo_number is None:
+        return  # Cannot parse excitations without HOMO number
+
+    # Parse all STATE sections
+    # Format: STATE  1:  E=   0.091053 au      2.478 eV    19983.7 cm**-1 <S**2> =   2.000000 Mult 3
+    #             39a ->  42a  :     0.849876
+    state_pattern = r'STATE\s+(\d+):\s+E=\s+[\d.]+\s+au\s+([\d.]+)\s+eV.*?\n((?:\s+\d+[ab]\s+->\s+\d+[ab]\s+:\s+[\d.]+\s*\n)+)'
+
+    state_matches = re.findall(state_pattern, content, re.MULTILINE)
+
+    # Build map from energy to excitations
+    energy_to_excitations = {}
+    for state_num, energy_ev_str, excitations_text in state_matches:
+        energy_ev = float(energy_ev_str)
+
+        # Parse individual excitations
+        excitations = []
+        exc_pattern = r'(\d+)([ab])\s+->\s+(\d+)([ab])\s+:\s+([\d.]+)'
+        for exc_match in re.finditer(exc_pattern, excitations_text):
+            from_orb = int(exc_match.group(1))
+            from_spin = exc_match.group(2)
+            to_orb = int(exc_match.group(3))
+            to_spin = exc_match.group(4)
+            weight = float(exc_match.group(5))
+
+            excitations.append({
+                "from_orbital": from_orb,
+                "from_spin": from_spin,
+                "to_orbital": to_orb,
+                "to_spin": to_spin,
+                "weight": weight
+            })
+
+        if excitations:
+            energy_to_excitations[energy_ev] = excitations
+
+    # Match transitions to STATE sections by energy (with tolerance)
+    for trans in transitions:
+        # Find closest matching energy in STATE sections
+        closest_energy = None
+        min_diff = float('inf')
+        for state_energy in energy_to_excitations.keys():
+            diff = abs(trans.energy_ev - state_energy)
+            if diff < min_diff and diff < 0.01:  # 0.01 eV tolerance
+                min_diff = diff
+                closest_energy = state_energy
+
+        if closest_energy is not None:
+            trans.excitations = energy_to_excitations[closest_energy]
+            trans.homo_number = homo_number
+
+
+def _find_homo_number(content: str) -> int:
+    """Find HOMO orbital number from ORBITAL ENERGIES section.
+
+    Args:
+        content: Full ORCA output file content
+
+    Returns:
+        HOMO orbital number or None if not found
+    """
+    # Find last ORBITAL ENERGIES section (after final optimization)
+    orbital_sections = list(re.finditer(r'ORBITAL ENERGIES\s*\n-+', content))
+    if not orbital_sections:
+        return None
+
+    last_section = orbital_sections[-1]
+    orbital_text = content[last_section.end():][:500000]  # Take next 500k chars
+
+    # Find HOMO (last orbital with OCC = 2.0000 or 1.0000)
+    homo_num = None
+    for line in orbital_text.split('\n'):
+        orbital_match = re.match(r'\s*(\d+)\s+(2\.0000|1\.0000)\s+', line)
+        if orbital_match:
+            homo_num = int(orbital_match.group(1))
+
+    return homo_num
 
 
 def gaussian_broadening(
