@@ -597,6 +597,7 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         beta_tot_esu = hyperpol.get("beta_tot_esu")
         beta_mu_esu = hyperpol.get("beta_mu_esu")
         beta_zzz_esu = hyperpol.get("beta_zzz_esu")
+        beta_zzz_aligned_esu = hyperpol.get("beta_zzz_aligned_esu")
         if beta_tot_esu is not None:
             # Format in scientific notation with proper subscript notation
             beta_tot_str = f"{beta_tot_esu:.2e}"
@@ -604,9 +605,12 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         if beta_mu_esu is not None:
             beta_mu_str = f"{beta_mu_esu:.2e}"
             parts.append(f"The dipole-projected hyperpolarizability β{{sub:μ}} is {beta_mu_str} esu.")
+        if beta_zzz_aligned_esu is not None:
+            beta_zzz_aligned_str = f"{beta_zzz_aligned_esu:.2e}"
+            parts.append(f"The dipole-aligned hyperpolarizability β'{{sub:zzz}} is {beta_zzz_aligned_str} esu.")
         if beta_zzz_esu is not None:
             beta_zzz_str = f"{beta_zzz_esu:.2e}"
-            parts.append(f"The tensor component β{{sub:zzz}} is {beta_zzz_str} esu.")
+            parts.append(f"The tensor component β{{sub:zzz}} (original frame) is {beta_zzz_str} esu.")
 
     if vib_frequencies:
         vib_list = ", ".join(f"{freq:.0f}" for freq in vib_frequencies)

@@ -243,6 +243,78 @@ def parse_hyperpolarizability(
             fh.close()
 
 
+def calculate_beta_zzz_aligned(
+    beta_tensor: Dict[str, float],
+    dipole_x: float,
+    dipole_y: float,
+    dipole_z: float,
+) -> float:
+    """
+    Calculate β'_zzz in the dipole-aligned coordinate system.
+
+    This rotates the hyperpolarizability tensor so that the dipole moment
+    points along the z-axis, then extracts the β'_zzz component.
+
+    Parameters
+    ----------
+    beta_tensor : dict
+        Dictionary with β_ijk components in atomic units
+    dipole_x, dipole_y, dipole_z : float
+        Dipole moment components in atomic units
+
+    Returns
+    -------
+    float
+        β'_zzz in the dipole-aligned coordinate system (a.u.)
+    """
+    import math
+
+    # Calculate dipole magnitude
+    dipole_mag = math.sqrt(dipole_x**2 + dipole_y**2 + dipole_z**2)
+
+    # Handle zero dipole case
+    if dipole_mag < 1e-10:
+        # No preferred direction - return original beta_zzz
+        return beta_tensor.get('zzz', 0.0)
+
+    # Normalized dipole vector components (third row of rotation matrix)
+    R_31 = dipole_x / dipole_mag
+    R_32 = dipole_y / dipole_mag
+    R_33 = dipole_z / dipole_mag
+
+    # Helper function to get tensor components with permutation symmetry
+    def get_beta(i: str, j: str, k: str) -> float:
+        """Get β_ijk, trying all permutations due to tensor symmetry."""
+        # Try direct lookup first
+        key = i + j + k
+        if key in beta_tensor:
+            return beta_tensor[key]
+        # Try all 6 permutations (tensor is symmetric under index exchange)
+        for perm in [f"{i}{k}{j}", f"{j}{i}{k}", f"{j}{k}{i}", f"{k}{i}{j}", f"{k}{j}{i}"]:
+            if perm in beta_tensor:
+                return beta_tensor[perm]
+        return 0.0
+
+    # Calculate β'_zzz using tensor transformation
+    # β'_zzz = Σ_ijk R_3i R_3j R_3k β_ijk
+    # With symmetry: use reduced form with appropriate multiplicities
+
+    beta_zzz_new = (
+        R_31**3 * get_beta('x', 'x', 'x') +
+        3 * R_31**2 * R_32 * get_beta('x', 'x', 'y') +
+        3 * R_31**2 * R_33 * get_beta('x', 'x', 'z') +
+        3 * R_31 * R_32**2 * get_beta('x', 'y', 'y') +
+        6 * R_31 * R_32 * R_33 * get_beta('x', 'y', 'z') +
+        3 * R_31 * R_33**2 * get_beta('x', 'z', 'z') +
+        R_32**3 * get_beta('y', 'y', 'y') +
+        3 * R_32**2 * R_33 * get_beta('y', 'y', 'z') +
+        3 * R_32 * R_33**2 * get_beta('y', 'z', 'z') +
+        R_33**3 * get_beta('z', 'z', 'z')
+    )
+
+    return beta_zzz_new
+
+
 def calculate_beta_properties(
     beta_tensor: Dict[str, float],
     dipole_x: float,
@@ -267,10 +339,12 @@ def calculate_beta_properties(
         - 'beta_tot_au': Total hyperpolarizability magnitude (a.u.)
         - 'beta_mu_au': Projection onto dipole vector (a.u.)
         - 'beta_zzz_au': β_zzz tensor component (a.u.)
+        - 'beta_zzz_aligned_au': β'_zzz rotated to dipole-aligned frame (a.u.)
         - 'beta_x_esu', 'beta_y_esu', 'beta_z_esu': Converted to esu
         - 'beta_tot_esu': Total in esu
         - 'beta_mu_esu': Projection in esu
         - 'beta_zzz_esu': β_zzz tensor component in esu
+        - 'beta_zzz_aligned_esu': β'_zzz in dipole-aligned frame (esu)
     """
     # Conversion factor: 1 a.u. = 8.6393 × 10⁻³³ esu
     AU_TO_ESU = 8.6393e-33
@@ -302,6 +376,9 @@ def calculate_beta_properties(
     # Extract β_zzz tensor component
     beta_zzz = beta_tensor.get('zzz', 0.0)
 
+    # Calculate β'_zzz in dipole-aligned coordinate system
+    beta_zzz_aligned = calculate_beta_zzz_aligned(beta_tensor, dipole_x, dipole_y, dipole_z)
+
     return {
         'beta_x_au': beta_x,
         'beta_y_au': beta_y,
@@ -309,12 +386,14 @@ def calculate_beta_properties(
         'beta_tot_au': beta_tot,
         'beta_mu_au': beta_mu,
         'beta_zzz_au': beta_zzz,
+        'beta_zzz_aligned_au': beta_zzz_aligned,
         'beta_x_esu': beta_x * AU_TO_ESU,
         'beta_y_esu': beta_y * AU_TO_ESU,
         'beta_z_esu': beta_z * AU_TO_ESU,
         'beta_tot_esu': beta_tot * AU_TO_ESU,
         'beta_mu_esu': beta_mu * AU_TO_ESU,
         'beta_zzz_esu': beta_zzz * AU_TO_ESU,
+        'beta_zzz_aligned_esu': beta_zzz_aligned * AU_TO_ESU,
     }
 
 
