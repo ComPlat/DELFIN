@@ -1419,10 +1419,12 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         """Adjust label positions to avoid overlap by placing them side-by-side.
 
         states_list now contains tuples of (name, fspe, e0_or_none, u_or_none).
+        Returns: (x_offsets, y_offsets) tuples for each state
         """
         # Group states that are very close in energy (within 0.005 Eh ~0.14 eV)
         overlap_threshold = 0.005
-        label_offsets = []
+        x_offsets = []
+        y_offsets = []
         overlap_groups = []
         current_group = []
 
@@ -1445,22 +1447,26 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         if current_group:
             overlap_groups.append(current_group)
 
-        # Assign offsets: for groups with multiple states, spread them horizontally
+        # Assign offsets: for groups with multiple states, stagger them horizontally
         for group in overlap_groups:
             if len(group) == 1:
-                label_offsets.append(0)
+                x_offsets.append(0)
+                y_offsets.append(0)
             else:
-                # Spread labels horizontally for overlapping states
+                # Stagger labels horizontally for overlapping states
+                # All offsets positive so labels move away from energy lines
                 for j, idx in enumerate(group):
-                    offset = j * 0.30  # Horizontal spacing between labels (increased for better readability)
-                    label_offsets.append(offset)
+                    # Horizontal offset: spread them progressively further away
+                    x_offset = j * 0.08  # All positive = move away from line
+                    x_offsets.append(x_offset)
+                    y_offsets.append(0)  # No vertical offset
 
-        return label_offsets
+        return x_offsets, y_offsets
 
     # Plot S states
     if s_states:
         s_x = lane_positions['S']
-        label_offsets = _avoid_label_overlap(s_states, s_x)
+        x_offsets, y_offsets = _avoid_label_overlap(s_states, s_x)
         for idx, (state_name, fspe, e0, u_val) in enumerate(s_states):
             # Plot FSPE (dark)
             ax.plot(
@@ -1512,14 +1518,15 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
                               .replace("1", "{1}").replace("2", "{2}") \
                               .replace("3", "{3}").replace("4", "{4}") \
                               .replace("5", "{5}").replace("6", "{6}") + "$"
-            # Place FSPE state labels close to the line (left side), similar distance as E0/U labels
-            x_offset = s_x - line_width - 0.05 - label_offsets[idx]
-            ax.text(x_offset, fspe, label, va='center', fontsize=10, ha='right')
+            # Place FSPE state labels close to the line (left side) with horizontal offset if overlapping
+            x_label = s_x - line_width - 0.05 - x_offsets[idx]
+            y_label = fspe
+            ax.text(x_label, y_label, label, va='center', fontsize=10, ha='right')
 
     # Plot T states
     if t_states:
         t_x = lane_positions['T']
-        label_offsets = _avoid_label_overlap(t_states, t_x)
+        x_offsets, y_offsets = _avoid_label_overlap(t_states, t_x)
         for idx, (state_name, fspe, e0, u_val) in enumerate(t_states):
             # Plot FSPE (dark)
             ax.plot([t_x - line_width, t_x + line_width], [fspe, fspe], 'r-', linewidth=2)
@@ -1565,9 +1572,10 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
                               .replace("2", "{2}").replace("3", "{3}") \
                               .replace("4", "{4}").replace("5", "{5}") \
                               .replace("6", "{6}") + "$"
-            # Place FSPE state labels close to the line (right side)
-            x_offset = t_x + line_width + 0.05 + label_offsets[idx]
-            ax.text(x_offset, fspe, label, va='center', fontsize=10, ha='left')
+            # Place FSPE state labels close to the line (right side) with horizontal offset if overlapping
+            x_label = t_x + line_width + 0.05 + x_offsets[idx]
+            y_label = fspe
+            ax.text(x_label, y_label, label, va='center', fontsize=10, ha='left')
 
     # Plot ISC and rISC arrows
     isc_data = data.get("intersystem_crossing", {}) or {}
@@ -1797,8 +1805,13 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
 
     # Legend removed - each ISC/rISC transition has its own color and label
 
-    plt.title("Energy Level Diagram (Optimized State Energies with ISC/rISC/IC rates)", fontsize=14, fontweight='bold')
-    plt.tight_layout(pad=2.0)  # Add padding to prevent title overlap with y-axis labels
+    ax.set_title(
+        "Energy Level Diagram (Optimized State Energies with ISC/rISC/IC rates)",
+        fontsize=14,
+        fontweight='bold',
+        pad=24,
+    )
+    plt.tight_layout(pad=2.5)  # Add padding to prevent title overlap with y-axis labels
 
     # Save plot
     try:
@@ -1893,24 +1906,63 @@ def _create_vertical_excitation_plot(data: Dict[str, Any], output_path: Path) ->
     line_width = 0.3
 
     # Plot transitions for each state
+    min_energy = None
+    max_energy = None
+    max_label_y = None
     for state, x_pos in lane_positions.items():
         transitions = transitions_data[state]
         # Sort by energy
         transitions.sort(key=lambda x: x[2])
         color = lane_colors.get(state, "gray")
 
+        label_gap = 0.15  # eV gap to avoid overlapping labels
+        label_items = []
+
         for idx, (from_state, to_state, energy) in enumerate(transitions):
+            if min_energy is None or energy < min_energy:
+                min_energy = energy
+            if max_energy is None or energy > max_energy:
+                max_energy = energy
             # Plot horizontal line for this transition
             ax.plot([x_pos - line_width, x_pos + line_width], [energy, energy],
                     color=color, linewidth=2, solid_capstyle='butt')
             # Add label only for first 3 transitions
             if idx < 3:
+                label_items.append((from_state, to_state, energy))
+
+        if label_items:
+            label_ys = []
+            for _, _, energy in label_items:
+                if not label_ys:
+                    label_ys.append(energy)
+                    continue
+                y_pos = energy
+                if y_pos - label_ys[-1] < label_gap:
+                    y_pos = label_ys[-1] + label_gap
+                label_ys.append(y_pos)
+
+            for (from_state, to_state, energy), y_pos in zip(label_items, label_ys):
+                if max_label_y is None or y_pos > max_label_y:
+                    max_label_y = y_pos
                 label = f"{from_state}→{to_state}"
-                ax.text(x_pos + line_width + 0.05, energy,
-                       f"{label} ({energy:.2f} eV)",
-                       va='center', fontsize=8, ha='left')
+                ax.annotate(
+                    f"{label} ({energy:.2f} eV)",
+                    xy=(x_pos + line_width, energy),
+                    xytext=(x_pos + line_width + 0.05, y_pos),
+                    textcoords="data",
+                    va='center',
+                    fontsize=8,
+                    ha='left',
+                    arrowprops=dict(arrowstyle='-', lw=0.5, color=color, alpha=0.6),
+                )
 
     # Styling
+    if min_energy is not None and max_energy is not None:
+        top = max_energy
+        if max_label_y is not None and max_label_y > top:
+            top = max_label_y
+        ypad = 0.2
+        ax.set_ylim(min_energy - ypad, top + ypad)
     ax.set_xlim(0.3, current_x + 0.8)
     ax.set_ylabel("Vertical Excitation Energy (eV)", fontsize=12)
 
@@ -2500,18 +2552,43 @@ def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optiona
     right_x = left_x + lane_spacing
     line_width = 0.3
 
-    # Helper function to avoid label overlap
+    # Helper function to avoid label overlap - returns horizontal offsets
     def _get_label_offsets(states_list):
-        """Calculate vertical offsets for labels to avoid overlap."""
+        """Calculate horizontal offsets for labels to avoid overlap.
+
+        Returns: list of x_offsets for each state
+        """
         overlap_threshold = 0.15  # eV
         offsets = []
-        for i, (_, energy) in enumerate(states_list):
-            offset = 0
-            for j in range(i):
-                _, prev_energy = states_list[j]
+        overlap_groups = []
+        current_group = []
+
+        # Group overlapping states
+        for i, (state_name, energy) in enumerate(states_list):
+            if not current_group:
+                current_group = [i]
+            else:
+                prev_idx = current_group[-1]
+                prev_energy = states_list[prev_idx][1]
                 if abs(energy - prev_energy) < overlap_threshold:
-                    offset += 0.08
-            offsets.append(offset)
+                    current_group.append(i)
+                else:
+                    overlap_groups.append(current_group)
+                    current_group = [i]
+
+        if current_group:
+            overlap_groups.append(current_group)
+
+        # Assign horizontal offsets for overlapping groups
+        for group in overlap_groups:
+            if len(group) == 1:
+                offsets.append(0)
+            else:
+                n = len(group)
+                for j, idx in enumerate(group):
+                    x_offset = (j - (n-1)/2) * 0.08  # Horizontal spacing
+                    offsets.append(x_offset)
+
         return offsets
 
     # Plot left side (vertical excitations)
@@ -2521,8 +2598,9 @@ def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optiona
         ax.plot([left_x - line_width, left_x + line_width], [energy, energy],
                 color=color, linewidth=2, solid_capstyle='butt')
         label = _format_state_label(state_name)
-        ax.text(left_x + line_width + 0.05, energy + left_offsets[idx], label,
-                ha='left', va='center', fontsize=10)
+        # Apply horizontal offset if overlapping
+        x_label = left_x + line_width + 0.05 + left_offsets[idx]
+        ax.text(x_label, energy, label, ha='left', va='center', fontsize=10)
 
     # Plot right side (optimized states)
     right_offsets = _get_label_offsets(right_states)
@@ -2531,8 +2609,9 @@ def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optiona
         ax.plot([right_x - line_width, right_x + line_width], [energy, energy],
                 color=color, linewidth=2, solid_capstyle='butt')
         label = _format_state_label(state_name)
-        ax.text(right_x + line_width + 0.05, energy + right_offsets[idx], label,
-                ha='left', va='center', fontsize=10)
+        # Apply horizontal offset if overlapping
+        x_label = right_x + line_width + 0.05 + right_offsets[idx]
+        ax.text(x_label, energy, label, ha='left', va='center', fontsize=10)
 
     # Connect corresponding states with dashed lines
     # Use state_connections to match T1↔T1, S1↔S1, etc., not by sorted order
@@ -2552,7 +2631,7 @@ def _create_correlation_plot(data: Dict[str, Any], output_path: Path) -> Optiona
     ax.spines['right'].set_visible(False)
 
     plt.title("Correlation: Vertical Excitations vs. Optimized State Energies", fontsize=14, fontweight='bold')
-    plt.tight_layout()
+    plt.tight_layout(pad=2.0)  # Add padding to prevent title overlap with y-axis labels
 
     # Save plot
     try:
