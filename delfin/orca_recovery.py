@@ -31,6 +31,9 @@ class OrcaErrorType(Enum):
     SCF_NO_CONVERGENCE = "scf_convergence"
     """SCF failed to converge within maxiter iterations."""
 
+    LEANSCF_NOT_CONVERGED = "leanscf_not_converged"
+    """LEANSCF (coupled-perturbed SCF for FREQ) failed to converge."""
+
     TRAH_SEGFAULT = "trah_crash"
     """Segmentation fault during TRAH-SCF procedure."""
 
@@ -72,6 +75,16 @@ class OrcaErrorDetector:
             "all_required": True,
             "priority": 1,
         },
+        # LEANSCF SCF convergence failures (higher priority than generic MPI crash)
+        {
+            "type": OrcaErrorType.LEANSCF_NOT_CONVERGED,
+            "patterns": [
+                "LEANSCF",
+                "SCF has not converged",
+            ],
+            "all_required": True,
+            "priority": 2,
+        },
         # MPI crashes - general process crashes
         {
             "type": OrcaErrorType.MPI_CRASH,
@@ -80,7 +93,7 @@ class OrcaErrorDetector:
                 "exited on signal",
             ],
             "all_required": True,
-            "priority": 2,
+            "priority": 3,
         },
         # MPI crashes - ORCA parallelization bugs (TGeneralVectorSet, etc.)
         {
@@ -90,16 +103,16 @@ class OrcaErrorDetector:
                 "Constructor called with NVecs<=0",
             ],
             "all_required": True,
-            "priority": 2,
+            "priority": 3,
         },
-        # MPI crashes - LEANSCF failures (often parallelization-related)
+        # MPI crashes - LEANSCF failures (generic - lower priority than specific LEANSCF SCF convergence)
         {
             "type": OrcaErrorType.MPI_CRASH,
             "patterns": [
                 "error termination in LEANSCF",
             ],
             "all_required": False,
-            "priority": 2,
+            "priority": 4,
         },
         # SCF convergence failures
         {
@@ -284,6 +297,9 @@ class RecoveryStrategy:
         if self.error_type == OrcaErrorType.SCF_NO_CONVERGENCE:
             return self._scf_convergence_fixes()
 
+        elif self.error_type == OrcaErrorType.LEANSCF_NOT_CONVERGED:
+            return self._leanscf_convergence_fixes()
+
         elif self.error_type == OrcaErrorType.TRAH_SEGFAULT:
             return self._trah_crash_fixes()
 
@@ -387,6 +403,69 @@ class RecoveryStrategy:
                     "DampFac": 0.95,  # Very high damping for pathological cases
                     "DampErr": 0.001,  # Damp until very converged
                 },
+            }
+
+    def _leanscf_convergence_fixes(self) -> Dict:
+        """Progressive fixes for LEANSCF (coupled-perturbed SCF) convergence failures.
+
+        LEANSCF is used for analytical frequencies and can fail to converge for:
+        - Highly excited deltaSCF states
+        - Difficult electronic structures
+        - Unstable wavefunctions
+
+        Strategy:
+        - Attempt 1: Increase main SCF convergence (tighter threshold helps LEANSCF)
+        - Attempt 2: Add GMX for deltaSCF + tighten SCF further
+        - Attempt 3: Skip FREQ (use MOREAD to keep geometry)
+        """
+        # Check if this is a deltaSCF calculation
+        is_deltascf = False
+        if self.parsed_input and "keywords" in self.parsed_input:
+            keywords_lower = [k.lower() for k in self.parsed_input["keywords"]]
+            is_deltascf = "deltascf" in keywords_lower
+
+        if self.attempt == 1:
+            # Attempt 1: Tighter SCF convergence + increased MaxIter
+            # This helps LEANSCF by providing a better starting wavefunction
+            keywords_to_add = ["TightSCF", "SlowConv"]
+            maxiter = 500 if is_deltascf else 400
+
+            if is_deltascf and "gmx" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
+                keywords_to_add.append("GMX")
+                logger.info("Adding GMX keyword for deltaSCF LEANSCF convergence")
+
+            return {
+                "use_moread": True,
+                "keywords_add": keywords_to_add,
+                "scf_block": {
+                    "MaxIter": maxiter,
+                    "ConvForced": "true",  # Force convergence for better LEANSCF starting point
+                },
+            }
+        elif self.attempt == 2:
+            # Attempt 2: VeryTightSCF + high damping + GMX for deltaSCF
+            keywords_to_add = ["VeryTightSCF", "VerySlowConv"]
+            maxiter = 700 if is_deltascf else 600
+
+            if is_deltascf and "gmx" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
+                keywords_to_add.append("GMX")
+
+            return {
+                "use_moread": True,
+                "keywords_add": keywords_to_add,
+                "scf_block": {
+                    "MaxIter": maxiter,
+                    "ConvForced": "true",
+                    "DampFac": 0.9,  # High damping
+                    "DampErr": 0.01,
+                },
+            }
+        else:
+            # Attempt 3: Skip FREQ entirely, just keep the optimized geometry
+            logger.info("LEANSCF failed repeatedly - skipping FREQ calculation")
+            return {
+                "use_moread": True,
+                "skip_freq": True,
             }
 
     def _trah_crash_fixes(self) -> Dict:
