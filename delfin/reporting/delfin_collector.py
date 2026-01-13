@@ -931,17 +931,28 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         "control_flags": control_flags,
     }
 
-    # Parse S0
-    s0_out = esd_dir / "S0.out"
-    if s0_out.exists():
-        logger.info("Parsing S0 ground state")
+    # Parse S0 (fallback to initial.out if S0.out is missing)
+    s0_candidates = [
+        esd_dir / "S0.out",
+        project_dir / "S0.out",
+        project_dir / "initial.out",
+        esd_dir / "initial.out",
+    ]
+    s0_out = next((path for path in s0_candidates if path.exists()), None)
+    if s0_out:
+        logger.info("Parsing S0 ground state from %s", s0_out.name)
+        if s0_out.name.startswith("initial"):
+            geometry_file = "initial.xyz"
+            s0_inp = project_dir / "initial.inp"
+        else:
+            geometry_file = "S0.xyz"
+            s0_inp = s0_out.parent / "S0.inp"
+
         data["ground_state_S0"]["optimization"] = {
             "converged": True,
-            "geometry_file": "S0.xyz"
+            "geometry_file": geometry_file,
         }
 
-        # Parse charge and multiplicity from S0 input file in ESD directory
-        s0_inp = esd_dir / "S0.inp"
         cm_data = parse_charge_multiplicity(s0_inp)
         if cm_data:
             data["ground_state_S0"]["optimization"].update(cm_data)

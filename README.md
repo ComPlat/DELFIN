@@ -465,7 +465,7 @@ If you use DELFIN in a scientific publication, please cite:
 @software{hartmann2025delfin,
   author  = {Hartmann, Maximilian},
   title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
-  version = {v1.0.4},
+  version = {v1.0.9},
   year    = {2025},
   publisher = {Zenodo},
   doi     = {10.5281/zenodo.17208145},
