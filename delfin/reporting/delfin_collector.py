@@ -940,7 +940,9 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
             "geometry_file": "S0.xyz"
         }
 
-        cm_data = parse_charge_multiplicity(project_dir / "initial.inp")
+        # Parse charge and multiplicity from S0 input file in ESD directory
+        s0_inp = esd_dir / "S0.inp"
+        cm_data = parse_charge_multiplicity(s0_inp)
         if cm_data:
             data["ground_state_S0"]["optimization"].update(cm_data)
 

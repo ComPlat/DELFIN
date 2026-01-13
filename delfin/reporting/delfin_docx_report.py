@@ -1090,21 +1090,28 @@ def _add_transition_table(
     _prevent_row_splits(table)
 
 
-def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_dir: Optional[Path] = None, show_color_chips: bool = False) -> None:
+def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_dir: Optional[Path] = None, show_color_chips: bool = False, show_isc_columns: bool = False) -> None:
     if not entries:
         return
     heading = doc.add_heading(title, level=2)
     _keep_heading_with_table(heading)
 
-    # Add extra column for wavelength visualization if show_color_chips is True
-    num_cols = 8 if show_color_chips else 7
+    # Determine columns: ISC needs SOC/FC/HT, radiative processes need color chips
+    if show_isc_columns:
+        # ISC table: include SOC, FC, HT
+        headers = ["Transition", "Rate (s⁻¹)", "Temperature (K)", "Δ0-0 (cm⁻¹)", "SOC (cm⁻¹)", "FC (%)", "HT (%)"]
+        num_cols = 7
+    elif show_color_chips:
+        # Fluorescence/Phosphorescence: include wavelength color, no SOC/FC/HT
+        headers = ["Transition", "Rate (s⁻¹)", "Temperature (K)", "Δ0-0 (cm⁻¹)", "Δ0-0 (nm)"]
+        num_cols = 5
+    else:
+        # Internal conversion: minimal columns
+        headers = ["Transition", "Rate (s⁻¹)", "Temperature (K)", "Δ0-0 (cm⁻¹)"]
+        num_cols = 4
+
     table = doc.add_table(rows=1, cols=num_cols)
     table.style = "Light Grid Accent 1"
-
-    if show_color_chips:
-        headers = ["Transition", "Rate (s⁻¹)", "Temperature (K)", "Δ0-0 (cm⁻¹)", "Δ0-0 (nm)", "SOC (cm⁻¹)", "FC (%)", "HT (%)"]
-    else:
-        headers = ["Transition", "Rate (s⁻¹)", "Temperature (K)", "Δ0-0 (cm⁻¹)", "SOC (cm⁻¹)", "FC (%)", "HT (%)"]
 
     for idx, text in enumerate(headers):
         cell = table.rows[0].cells[idx]
@@ -1139,46 +1146,44 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_
         delta_E_cm1 = rec.get("delta_E_cm1")
         row[3].text = str(delta_E_cm1) if delta_E_cm1 is not None else ""
 
-        # Wavelength column with color visualization (only if show_color_chips is True)
-        if show_color_chips and delta_E_cm1 is not None:
-            try:
-                wavelength_nm = 1e7 / float(delta_E_cm1)  # Convert cm⁻¹ to nm
-                r, g, b = _wavelength_to_rgb(wavelength_nm)
+        if show_isc_columns:
+            # ISC table: show SOC, FC, HT
+            row[4].text = _format_soc(rec)
+            row[5].text = str(rec.get("fc_percent", ""))
+            row[6].text = str(rec.get("ht_percent", ""))
+        elif show_color_chips:
+            # Fluorescence/Phosphorescence: show wavelength with color
+            if delta_E_cm1 is not None:
+                try:
+                    wavelength_nm = 1e7 / float(delta_E_cm1)  # Convert cm⁻¹ to nm
+                    r, g, b = _wavelength_to_rgb(wavelength_nm)
 
-                paragraph = row[4].paragraphs[0]
+                    paragraph = row[4].paragraphs[0]
 
-                # Try to render color chip image (like transition colors)
-                if project_dir:
-                    chip_path = _render_color_chip((r, g, b), project_dir, f"{label}_{wavelength_nm:.0f}nm")
-                    if chip_path and chip_path.exists():
-                        run_img = paragraph.add_run()
-                        run_img.add_picture(str(chip_path), width=Inches(0.25))
+                    # Try to render color chip image (like transition colors)
+                    if project_dir:
+                        chip_path = _render_color_chip((r, g, b), project_dir, f"{label}_{wavelength_nm:.0f}nm")
+                        if chip_path and chip_path.exists():
+                            run_img = paragraph.add_run()
+                            run_img.add_picture(str(chip_path), width=Inches(0.25))
+                        else:
+                            # Fallback: colored box symbol
+                            run_box = paragraph.add_run("■")
+                            run_box.font.color.rgb = RGBColor(r, g, b)
+                            run_box.font.bold = True
                     else:
-                        # Fallback: colored box symbol
+                        # No project_dir: use colored symbol
                         run_box = paragraph.add_run("■")
                         run_box.font.color.rgb = RGBColor(r, g, b)
                         run_box.font.bold = True
-                else:
-                    # No project_dir: use colored symbol
-                    run_box = paragraph.add_run("■")
-                    run_box.font.color.rgb = RGBColor(r, g, b)
-                    run_box.font.bold = True
 
-                # Add wavelength text after the image/symbol
-                run_nm = paragraph.add_run(f" {wavelength_nm:.1f} nm")
-            except (ValueError, ZeroDivisionError, TypeError):
+                    # Add wavelength text after the image/symbol
+                    run_nm = paragraph.add_run(f" {wavelength_nm:.1f} nm")
+                except (ValueError, ZeroDivisionError, TypeError):
+                    row[4].text = ""
+            else:
                 row[4].text = ""
-
-            # Adjust column indices for remaining columns
-            row[5].text = _format_soc(rec)
-            row[6].text = str(rec.get("fc_percent", ""))
-            row[7].text = str(rec.get("ht_percent", ""))
-        else:
-            # No color chips: original column layout
-            col_offset = 0 if not show_color_chips else 1
-            row[4 - col_offset].text = _format_soc(rec)
-            row[5 - col_offset].text = str(rec.get("fc_percent", ""))
-            row[6 - col_offset].text = str(rec.get("ht_percent", ""))
+        # else: Internal conversion - no additional columns
 
     for name, record in sorted(entries.items()):
         ms_comps = record.get("ms_components", {})
@@ -1447,7 +1452,7 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
             else:
                 # Spread labels horizontally for overlapping states
                 for j, idx in enumerate(group):
-                    offset = j * 0.15  # Horizontal spacing between labels
+                    offset = j * 0.30  # Horizontal spacing between labels (increased for better readability)
                     label_offsets.append(offset)
 
         return label_offsets
@@ -1793,7 +1798,7 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
     # Legend removed - each ISC/rISC transition has its own color and label
 
     plt.title("Energy Level Diagram (Optimized State Energies with ISC/rISC/IC rates)", fontsize=14, fontweight='bold')
-    plt.tight_layout()
+    plt.tight_layout(pad=2.0)  # Add padding to prevent title overlap with y-axis labels
 
     # Save plot
     try:
@@ -2728,7 +2733,7 @@ def generate_combined_docx_report(
     _add_plot_if_exists(doc, "Correlation: Vertical Excitations vs. Optimized State Energies", assets.correlation_png)
 
     # Rates
-    _add_rate_table(doc, "Intersystem crossing", data.get("intersystem_crossing", {}) or {})
+    _add_rate_table(doc, "Intersystem crossing", data.get("intersystem_crossing", {}) or {}, show_isc_columns=True)
     _add_rate_table(doc, "Internal conversion", data.get("internal_conversion", {}) or {})
     _add_rate_table(doc, "Fluorescence (radiative)", data.get("fluorescence_rates", {}) or {}, project_dir=project_dir, show_color_chips=True)
 
