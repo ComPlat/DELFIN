@@ -676,7 +676,7 @@ def _safe_keep_set(control_path: Path) -> set[str]:
 
 
 def _purge_workspace(root: Path, keep_names: set[str]) -> tuple[list[str], list[str]]:
-    """Remove DELFIN artifacts under root while preserving keep_names and unknown files."""
+    """Remove all workspace entries under root except keep_names."""
     removed: list[str] = []
     skipped: list[str] = []
     for entry in sorted(root.iterdir(), key=lambda p: p.name):
@@ -684,23 +684,17 @@ def _purge_workspace(root: Path, keep_names: set[str]) -> tuple[list[str], list[
         if name in keep_names:
             continue
         try:
-            if entry.is_symlink():
-                skipped.append(f"{name} (symlink)")
-                continue
+            is_symlink = entry.is_symlink()
         except OSError as exc:  # noqa: BLE001
             logger.warning("Failed to inspect %s: %s", entry, exc)
             skipped.append(name)
             continue
 
-        if not _is_workspace_artifact(entry):
-            skipped.append(name)
-            continue
-
         try:
-            if entry.is_dir():
-                shutil.rmtree(entry)
-            else:
+            if is_symlink or entry.is_file():
                 entry.unlink()
+            elif entry.is_dir():
+                shutil.rmtree(entry)
             removed.append(name)
         except FileNotFoundError:
             continue
@@ -773,8 +767,8 @@ def _confirm_purge(root: Path) -> bool:
 
     # Standard confirmation
     prompt = (
-        "This will delete DELFIN artifacts (OCCUPIER folders, *.inp/*.out, logs) while keeping "
-        "CONTROL.txt and the referenced input file. Continue? [y/N]: "
+        "This will delete all files/folders in the workspace while keeping CONTROL.txt and the "
+        "referenced input file. Continue? [y/N]: "
     )
     try:
         reply = input(prompt)
