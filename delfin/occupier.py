@@ -172,7 +172,7 @@ def _wait_for_geometry_source(
     timeout: Optional[float] = 900.0,
     failure_check: Optional[Callable[[], bool]] = None,
     completion_check: Optional[Callable[[], bool]] = None,
-    poll_interval: float = 2.0,
+    poll_interval: float = 30.0,
 ) -> Path:
     """Block until the source geometry file exists or timeout expires."""
     if source_idx <= 1:

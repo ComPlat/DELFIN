@@ -47,6 +47,30 @@ ORCA_PLOT_INPUT_TEMPLATE = (
     "11\n"
 )
 
+
+def _env_truthy(value: Optional[str]) -> Optional[bool]:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _should_monitor_orca_progress() -> bool:
+    """Decide if ORCA progress monitoring should run.
+
+    Defaults to disabled in batch environments to avoid extra filesystem I/O.
+    """
+    override = _env_truthy(os.getenv("DELFIN_ORCA_PROGRESS"))
+    if override is not None:
+        return override
+    if os.getenv("SLURM_JOB_ID") or os.getenv("PBS_JOBID") or os.getenv("LSB_JOBID"):
+        return False
+    return True
+
 _RUN_SCRATCH_DIR: Optional[Path] = None
 
 
@@ -266,14 +290,15 @@ def _run_orca_subprocess(
                 except Exception:
                     logger.debug("Failed to register ORCA subprocess for tracking", exc_info=True)
 
-            # Start progress monitoring thread
-            input_name = Path(input_file_path).stem
-            monitor_thread = threading.Thread(
-                target=_monitor_orca_progress,
-                args=(output_log, stop_event, input_name),
-                daemon=True
-            )
-            monitor_thread.start()
+            # Start progress monitoring thread (disabled by default in batch jobs)
+            if _should_monitor_orca_progress():
+                input_name = Path(input_file_path).stem
+                monitor_thread = threading.Thread(
+                    target=_monitor_orca_progress,
+                    args=(output_log, stop_event, input_name),
+                    daemon=True,
+                )
+                monitor_thread.start()
 
             # Wait for completion (check for shutdown request periodically)
             # This allows Ctrl+C to interrupt even when waiting for ORCA
@@ -394,7 +419,7 @@ def _monitor_orca_progress(output_file: str, stop_event: threading.Event, input_
 
     last_size = 0
     last_update_time = time.time()
-    update_interval = 5  # Update every 5 seconds (reduced from 60s)
+    update_interval = 300  # Update every 5 minutes (optimized for cluster I/O)
 
     # Track last displayed progress to avoid redundant updates
     last_progress_state = None
@@ -403,7 +428,7 @@ def _monitor_orca_progress(output_file: str, stop_event: threading.Event, input_
         try:
             # Wait for output file to exist
             if not os.path.exists(output_file):
-                time.sleep(2)
+                time.sleep(30)
                 continue
 
             current_size = os.path.getsize(output_file)
@@ -486,11 +511,11 @@ def _monitor_orca_progress(output_file: str, stop_event: threading.Event, input_
                 last_size = current_size
 
             # Sleep between checks
-            time.sleep(5)
+            time.sleep(60)
 
         except Exception as e:
             logger.debug(f"Progress monitor error: {e}")
-            time.sleep(5)
+            time.sleep(60)
 
     # Finalize progress display when stopping
     # This ensures clean output (newline in TTY mode)
