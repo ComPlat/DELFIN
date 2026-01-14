@@ -1276,18 +1276,18 @@ def _create_state_input_hybrid1(
     soscf_convfactor = config.get('deltaSCF_SOSCFConvFactor', 500)
     soscf_maxstep = config.get('deltaSCF_SOSCFMaxStep', 0.1)
 
-    # Try to derive alphaconf/betaconf from {state}_first_TDDFT.out (not S0.out!)
+    # Try to derive alphaconf/betaconf from S0.out
     alphaconf = None
     betaconf = None
-    first_out_path = esd_dir / f"{first_input_base}.out"
-    if first_out_path.exists():
-        result = _parse_tddft_and_derive_deltascf(first_out_path, state_upper)
+    s0_out_path = esd_dir / "S0.out"
+    if s0_out_path.exists():
+        result = _parse_tddft_and_derive_deltascf(s0_out_path, state_upper)
         if result:
             alphaconf, betaconf = result
 
     # Fallback configs - should rarely be used if TDDFT parsing works
     if alphaconf is None:
-        logger.warning(f"Could not parse ALPHACONF/BETACONF from {first_out_path}, using fallback")
+        logger.warning(f"Could not parse ALPHACONF/BETACONF from {s0_out_path}, using fallback")
         if state_upper.startswith('S'):
             alphaconf = "0,1"
             betaconf = "0"
