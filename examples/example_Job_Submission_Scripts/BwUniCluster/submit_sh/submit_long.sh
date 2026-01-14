@@ -1,0 +1,122 @@
+#!/bin/bash
+#SBATCH --job-name={job_name}
+#SBATCH --partition=cpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=40
+#SBATCH --cpus-per-task=1
+#SBATCH --threads-per-core=1
+#SBATCH --mem=120G
+#SBATCH --time=72:00:00
+#SBATCH --output=delfin_%j.out
+#SBATCH --error=delfin_%j.err
+#SBATCH --constraint=BEEOND
+#SBATCH --exclusive
+
+# ========================================================================
+# DELFIN Long Job (72h)
+# ========================================================================
+
+set -euo pipefail
+
+# Module laden
+module purge
+module load devel/python/3.11.7-gnu-14.2
+
+# Nutze selbst-installiertes OpenMPI 4.1.8 (kompatibel mit ORCA)
+if [ ! -d "$HOME/software/openmpi-4.1.8" ]; then
+    echo "ERROR: OpenMPI 4.1.8 not found in $HOME/software/openmpi-4.1.8"
+    echo "Please install it first. See installation instructions."
+    exit 1
+fi
+
+echo "Using custom OpenMPI 4.1.8 from $HOME/software/openmpi-4.1.8"
+export PATH="$HOME/software/openmpi-4.1.8/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/software/openmpi-4.1.8/lib:$LD_LIBRARY_PATH"
+
+# ORCA Pfad setzen
+export PATH="/home/ka/ka_ibcs/ka_ew7404/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2:$PATH"
+export LD_LIBRARY_PATH="/home/ka/ka_ibcs/ka_ew7404/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2:$LD_LIBRARY_PATH"
+
+# MPI Umgebungsvariablen fuer Cluster
+export OMPI_MCA_btl_tcp_if_include=ib0
+export OMPI_MCA_btl="^openib"
+
+# DELFIN Environment aktivieren
+source ~/delfin/.venv/bin/activate
+
+# Umgebungsvariablen
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export DELFIN_ORCA_PROGRESS=0
+
+# Scratch-Verzeichnis
+if [ -n "${BEEOND_MOUNTPOINT:-}" ]; then
+    export DELFIN_SCRATCH="$BEEOND_MOUNTPOINT/delfin_${SLURM_JOB_ID}"
+    export ORCA_TMPDIR="$BEEOND_MOUNTPOINT/orca_${SLURM_JOB_ID}"
+    echo "Using BeeOND: $BEEOND_MOUNTPOINT"
+else
+    export DELFIN_SCRATCH="/scratch/${USER}/delfin_${SLURM_JOB_ID}"
+    export ORCA_TMPDIR="/scratch/${USER}/orca_${SLURM_JOB_ID}"
+fi
+
+mkdir -p "$DELFIN_SCRATCH" "$ORCA_TMPDIR"
+
+# Job Info
+echo "========================================"
+echo "DELFIN Job - {job_name}"
+echo "Job Type: Long (72h)"
+echo "========================================"
+echo "Job ID:      $SLURM_JOB_ID"
+echo "Node:        $SLURM_JOB_NODELIST"
+echo "CPUs:        $SLURM_NTASKS"
+echo "Memory:      ${SLURM_MEM_PER_NODE:-unknown} MB"
+echo "Submit Dir:  $SLURM_SUBMIT_DIR"
+echo "Scratch:     $DELFIN_SCRATCH"
+echo "Started:     $(date)"
+echo "========================================"
+echo ""
+
+# OpenMPI Version pruefen
+echo "OpenMPI: $(which mpirun)"
+mpirun --version 2>&1 | head -1 || echo "MPI check failed"
+echo ""
+
+# ORCA Version pruefen
+echo "ORCA: $(which orca)"
+orca --version 2>&1 | head -5 || echo "ORCA check failed"
+echo ""
+
+# DELFIN Version
+cd ~/delfin
+echo "DELFIN Version: $(delfin --version 2>&1 || echo 'unknown')"
+echo "Git Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'N/A')"
+echo "Git Commit: $(git rev-parse --short HEAD 2>/dev/null || echo 'N/A')"
+echo ""
+cd - > /dev/null
+
+# Inputs ins Scratch kopieren und dort arbeiten
+RUN_DIR="$DELFIN_SCRATCH/run"
+mkdir -p "$RUN_DIR"
+
+cp -a "$SLURM_SUBMIT_DIR"/{CONTROL.txt,input.txt} "$RUN_DIR"/
+
+cd "$RUN_DIR"
+
+# DELFIN ausfuehren
+delfin
+
+EXIT_CODE=$?
+
+echo ""
+echo "========================================"
+echo "Job beendet: $(date)"
+echo "Exit Code:   $EXIT_CODE"
+echo "========================================"
+
+# Ergebnisse zurueckkopieren
+cp -a "$RUN_DIR"/* "$SLURM_SUBMIT_DIR"/
+
+# Cleanup
+rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR"
+
+exit $EXIT_CODE

@@ -1,0 +1,670 @@
+================================================================================
+  DELFIN INSTALLATION ANLEITUNG - BwUniCluster 3.0
+  Komplette Schritt-für-Schritt Anleitung
+================================================================================
+
+Erstellt: 2026-01-13
+Für: BwUniCluster 3.0 (uc3.scc.kit.edu)
+ORCA Version: 6.1.1
+Python Version: 3.11
+DELFIN Version: 1.0.9
+
+================================================================================
+ÜBERSICHT
+================================================================================
+
+Diese Anleitung führt dich durch:
+1. ORCA 6.1.1 Installation
+2. OpenMPI 4.1.8 Kompilierung (kompatibel mit ORCA)
+3. Python Virtual Environment Setup
+4. DELFIN Installation
+5. Submit-Skript Konfiguration
+6. Test-Job
+
+Gesamtdauer: ca. 45-60 Minuten
+
+================================================================================
+SCHRITT 1: ORCA 6.1.1 HERUNTERLADEN UND INSTALLIEREN
+================================================================================
+
+1.1. ORCA Download
+------------------
+Gehe auf: https://orcaforum.kofo.mpg.de/app.php/dlext/?cat=3
+
+Login mit deinem Account (akademisch, kostenlos)
+
+Lade herunter:
+  orca_6_1_1_linux_x86-64_shared_openmpi418_avx2.tar.xz
+
+WICHTIG: Wähle die Version mit "openmpi418" (OpenMPI 4.1.8)!
+
+1.2. ORCA auf Cluster hochladen
+--------------------------------
+Vom lokalen Computer:
+
+scp orca_6_1_1_linux_x86-64_shared_openmpi418_avx2.tar.xz \
+    dein_username@uc3.scc.kit.edu:~
+
+1.3. ORCA entpacken
+-------------------
+Auf dem Cluster:
+
+cd ~
+tar xf orca_6_1_1_linux_x86-64_shared_openmpi418_avx2.tar.xz
+
+Das erstellt: ~/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2/
+
+1.4. ORCA testen
+----------------
+~/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2/orca --version
+
+Erwarteter Output:
+  Program Version 6.1.1 - RELEASE -
+
+================================================================================
+SCHRITT 2: OpenMPI 4.1.8 KOMPILIEREN
+================================================================================
+
+WARUM? ORCA 6.1.1 wurde mit OpenMPI 4.1.8 kompiliert.
+       Der Cluster hat nur OpenMPI 5.0 → Inkompatibel!
+       Daher kompilieren wir OpenMPI 4.1.8 selbst.
+
+2.1. Verzeichnis vorbereiten
+-----------------------------
+cd ~
+mkdir -p software
+cd software
+
+2.2. OpenMPI 4.1.8 herunterladen
+---------------------------------
+wget https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-4.1.8.tar.gz
+
+Falls wget nicht funktioniert:
+  curl -O https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-4.1.8.tar.gz
+
+2.3. Entpacken
+--------------
+tar xzf openmpi-4.1.8.tar.gz
+cd openmpi-4.1.8
+
+2.4. Compiler laden
+-------------------
+module load compiler/gnu/14.2
+
+2.5. Konfigurieren
+------------------
+./configure --prefix=$HOME/software/openmpi-4.1.8 \
+            --enable-mpi-cxx \
+            --enable-mca-no-build=fs-gpfs \
+            --disable-oshmem
+
+WICHTIG:
+  --enable-mca-no-build=fs-gpfs  → Verhindert GPFS-Kompilierungsfehler
+  --disable-oshmem               → Deaktiviert OpenSHMEM (wird nicht benötigt)
+
+Dauer: ca. 2-3 Minuten
+
+2.6. Kompilieren
+----------------
+make -j 8
+
+Dauer: ca. 20-25 Minuten
+
+HINWEIS: Du siehst viele Compiler-Warnungen - das ist normal!
+
+2.7. Installieren
+-----------------
+make install
+
+Dauer: ca. 1-2 Minuten
+
+2.8. OpenMPI testen
+-------------------
+$HOME/software/openmpi-4.1.8/bin/mpirun --version
+
+Erwarteter Output:
+  mpirun (Open MPI) 4.1.8
+
+  Report bugs to http://www.open-mpi.org/community/help/
+
+✅ ERFOLG! OpenMPI 4.1.8 ist installiert.
+
+================================================================================
+SCHRITT 3: PYTHON 3.11 UND VIRTUAL ENVIRONMENT
+================================================================================
+
+3.1. Python-Modul laden
+------------------------
+module load devel/python/3.11.7-gnu-14.2
+
+3.2. Python-Version prüfen
+---------------------------
+python3 --version
+
+Erwarteter Output:
+  Python 3.11.7
+
+3.3. DELFIN Repository klonen
+------------------------------
+cd ~
+git clone https://github.com/ComPlat/DELFIN.git
+cd DELFIN
+
+3.4. Virtual Environment erstellen
+-----------------------------------
+python3 -m venv .venv
+
+3.5. Virtual Environment aktivieren
+------------------------------------
+source .venv/bin/activate
+
+Nach Aktivierung siehst du: (.venv) vor deinem Prompt
+
+3.6. pip aktualisieren
+----------------------
+pip install --upgrade pip
+
+3.7. DELFIN installieren
+------------------------
+pip install -e .
+
+Dauer: ca. 3-5 Minuten
+
+HINWEIS: Es gibt eine Warnung über pymol-open-source - das ist OK!
+         PyMOL ist optional und wird nur für 3D-Visualisierungen benötigt.
+
+3.8. DELFIN testen
+------------------
+delfin --version
+
+Erwarteter Output:
+  DELFIN 1.0.9
+
+✅ ERFOLG! DELFIN ist installiert.
+
+3.9. Virtual Environment verlassen (optional)
+----------------------------------------------
+deactivate
+
+================================================================================
+SCHRITT 4: PROJEKTVERZEICHNIS ERSTELLEN
+================================================================================
+
+4.1. Basis-Verzeichnis anlegen
+-------------------------------
+mkdir -p ~/calc
+cd ~/calc
+
+4.2. Test-Projekt erstellen
+----------------------------
+mkdir Test1
+cd Test1
+
+4.3. Koordinaten-Datei erstellen (input.txt)
+--------------------------------------------
+nano input.txt
+
+Füge deine Koordinaten ein (XYZ-Format OHNE die ersten 2 Header-Zeilen):
+
+Beispiel:
+C    0.000000    0.000000    0.000000
+H    0.000000    0.000000    1.089000
+H    1.026719    0.000000   -0.363000
+H   -0.513360   -0.889165   -0.363000
+H   -0.513360    0.889165   -0.363000
+
+Speichern: Strg+O, Enter, Strg+X
+
+4.4. CONTROL.txt erstellen
+---------------------------
+nano CONTROL.txt
+
+Füge diese Minimal-Konfiguration ein:
+
+--- KOPIERE AB HIER ---
+input_file=input.txt
+NAME=Test_Molekuel
+SMILES=
+charge=0
+------------------------------------
+Solvation:
+implicit_solvation_model=CPCM
+solvent=DMF
+XTB_SOLVATOR=no
+------------------------------------
+Global geometry optimisation:
+xTB_method=XTB2
+XTB_OPT=yes
+XTB_GOAT=no
+CREST=no
+------------------------------------
+IMAG=no
+allow_imaginary_freq=0
+------------------------------------
+Redox steps:
+calc_initial=yes
+oxidation_steps=1
+reduction_steps=1
+method=classic
+calc_potential_method=2
+------------------------------------
+ESD module:
+ESD_modul=no
+------------------------------------
+Level of Theory:
+functional=PBE0
+disp_corr=D4
+ri_jkx=RIJCOSX
+relativity=ZORA
+main_basisset=def2-SVP
+geom_opt=OPT
+freq_type=FREQ
+temperature=298.15
+maxiter=125
+------------------------------------
+Resource Settings:
+PAL=40
+maxcore=6000
+parallel_workflows=yes
+pal_jobs=4
+orca_parallel_strategy=auto
+enable_job_timeouts=no
+------------------------------------
+Automatic Error Recovery & Retry:
+enable_auto_recovery=yes
+max_recovery_attempts=1
+--- KOPIERE BIS HIER ---
+
+Speichern: Strg+O, Enter, Strg+X
+
+WICHTIG: Passe an:
+  - charge=0          → Deine Molekül-Ladung
+  - oxidation_steps   → Gewünschte Oxidationsstufen
+  - reduction_steps   → Gewünschte Reduktionsstufen
+
+================================================================================
+SCHRITT 5: SUBMIT-SKRIPT ERSTELLEN
+================================================================================
+
+5.1. Submit-Skript erstellen
+-----------------------------
+nano submit_job.sh
+
+Füge diesen Inhalt ein (WICHTIG: Ersetze USERNAME mit deinem!):
+
+--- KOPIERE AB HIER ---
+#!/bin/bash
+#SBATCH --job-name=delfin_test
+#SBATCH --partition=cpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=40
+#SBATCH --threads-per-core=1
+#SBATCH --mem=120G
+#SBATCH --time=48:00:00
+#SBATCH --output=delfin_%j.out
+#SBATCH --error=delfin_%j.err
+#SBATCH --constraint=BEEOND
+#SBATCH --exclusive
+
+# ========================================================================
+# DELFIN Job - BwUniCluster 3.0
+# ========================================================================
+
+# Module laden
+module purge
+module load devel/python/3.11.7-gnu-14.2
+
+# Nutze selbst-installiertes OpenMPI 4.1.8 (kompatibel mit ORCA)
+if [ ! -d "$HOME/software/openmpi-4.1.8" ]; then
+    echo "ERROR: OpenMPI 4.1.8 not found in $HOME/software/openmpi-4.1.8"
+    echo "Please install it first. See installation instructions."
+    exit 1
+fi
+
+echo "Using custom OpenMPI 4.1.8 from $HOME/software/openmpi-4.1.8"
+export PATH="$HOME/software/openmpi-4.1.8/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/software/openmpi-4.1.8/lib:$LD_LIBRARY_PATH"
+
+# ORCA Pfad setzen - WICHTIG: Ersetze USERNAME mit deinem Benutzernamen!
+export PATH="$HOME/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2:$PATH"
+export LD_LIBRARY_PATH="$HOME/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2:$LD_LIBRARY_PATH"
+
+# MPI Umgebungsvariablen für Cluster
+export OMPI_MCA_btl_tcp_if_include=ib0
+export OMPI_MCA_btl="^openib"
+
+# DELFIN Environment aktivieren
+source ~/DELFIN/.venv/bin/activate
+
+# Umgebungsvariablen
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+
+# Scratch-Verzeichnis
+if [ -n "$BEEOND_MOUNTPOINT" ]; then
+    export DELFIN_SCRATCH="$BEEOND_MOUNTPOINT/delfin_${SLURM_JOB_ID}"
+    export ORCA_TMP="$BEEOND_MOUNTPOINT/orca_${SLURM_JOB_ID}"
+    echo "Using BeeOND: $BEEOND_MOUNTPOINT"
+else
+    export DELFIN_SCRATCH="/scratch/${USER}/delfin_${SLURM_JOB_ID}"
+    export ORCA_TMP="/scratch/${USER}/orca_${SLURM_JOB_ID}"
+fi
+
+mkdir -p "$DELFIN_SCRATCH"
+mkdir -p "$ORCA_TMP"
+
+# Job Info
+echo "========================================"
+echo "DELFIN Job"
+echo "========================================"
+echo "Job ID:      $SLURM_JOB_ID"
+echo "Node:        $SLURM_JOB_NODELIST"
+echo "CPUs:        $SLURM_CPUS_PER_TASK"
+echo "Memory:      $SLURM_MEM_PER_NODE MB"
+echo "Working Dir: $(pwd)"
+echo "Scratch:     $DELFIN_SCRATCH"
+echo "Started:     $(date)"
+echo "========================================"
+echo ""
+
+# OpenMPI Version prüfen
+echo "OpenMPI: $(which mpirun)"
+mpirun --version 2>&1 | head -1 || echo "MPI check failed"
+echo ""
+
+# ORCA Version prüfen
+echo "ORCA: $(which orca)"
+orca --version 2>&1 | head -5 || echo "ORCA check failed"
+echo ""
+
+# DELFIN Version
+cd ~/DELFIN
+echo "DELFIN Version: $(delfin --version 2>&1 || echo 'unknown')"
+echo "Git Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'N/A')"
+echo "Git Commit: $(git rev-parse --short HEAD 2>/dev/null || echo 'N/A')"
+echo ""
+cd - > /dev/null
+
+# DELFIN ausführen
+delfin
+
+EXIT_CODE=$?
+
+echo ""
+echo "========================================"
+echo "Job beendet: $(date)"
+echo "Exit Code:   $EXIT_CODE"
+echo "========================================"
+
+# Cleanup
+rm -rf "$DELFIN_SCRATCH"
+rm -rf "$ORCA_TMP"
+
+exit $EXIT_CODE
+--- KOPIERE BIS HIER ---
+
+Speichern: Strg+O, Enter, Strg+X
+
+5.2. Ausführbar machen
+----------------------
+chmod +x submit_job.sh
+
+================================================================================
+SCHRITT 6: JOB STARTEN
+================================================================================
+
+6.1. Job einreichen
+-------------------
+sbatch submit_job.sh
+
+Erwarteter Output:
+  Submitted batch job 1234567
+
+6.2. Job-Status prüfen
+----------------------
+squeue -u $USER
+
+Status-Codes:
+  PD = Pending (wartet in Queue)
+  R  = Running (läuft gerade)
+  CG = Completing (wird beendet)
+
+6.3. Output live verfolgen
+--------------------------
+# Warte bis Job läuft (Status = R), dann:
+tail -f delfin_*.out
+
+Beenden mit: Strg+C
+
+6.4. Ergebnisse prüfen
+----------------------
+Nach Job-Abschluss findest du:
+  - DELFIN.txt          → Hauptergebnis-Datei
+  - OCCUPIER.txt        → OCCUPIER-Ergebnisse (falls verwendet)
+  - DELFIN_Data.json    → Maschinenlesbare Ergebnisse
+  - DELFIN.docx         → Word-Report (optional)
+  - Verschiedene Unterordner mit ORCA-Output
+
+================================================================================
+SHORTCUTS FÜR .bashrc (OPTIONAL)
+================================================================================
+
+Um DELFIN schneller zu starten, füge zu ~/.bashrc hinzu:
+
+nano ~/.bashrc
+
+Am Ende hinzufügen:
+
+# DELFIN Shortcuts
+alias delfin-modules='module load devel/python/3.11.7-gnu-14.2'
+alias delfin-activate='source ~/DELFIN/.venv/bin/activate'
+
+Speichern und neu laden:
+source ~/.bashrc
+
+Dann kannst du einfach nutzen:
+  delfin-modules
+  delfin-activate
+  delfin --version
+
+================================================================================
+HÄUFIGE PROBLEME UND LÖSUNGEN
+================================================================================
+
+Problem 1: "mpirun: command not found"
+---------------------------------------
+Lösung: OpenMPI 4.1.8 ist nicht installiert oder Pfad falsch.
+Prüfe: ls $HOME/software/openmpi-4.1.8/bin/mpirun
+
+Problem 2: "There are not enough slots available"
+--------------------------------------------------
+Lösung: MPI-Kompatibilitätsproblem. Prüfe:
+  - OpenMPI 4.1.8 korrekt installiert?
+  - Submit-Skript nutzt richtigen OpenMPI-Pfad?
+  - orca_parallel_strategy in CONTROL.txt?
+
+Problem 3: "ModuleNotFoundError: No module named 'delfin'"
+-----------------------------------------------------------
+Lösung: Virtual Environment nicht aktiviert.
+  source ~/DELFIN/.venv/bin/activate
+
+Problem 4: Job wartet ewig in Queue (Status PD)
+------------------------------------------------
+Lösung: Hohe Ressourcen-Anforderungen.
+Optionen:
+  - Warte ab (kann Stunden dauern)
+  - Reduziere Ressourcen:
+    #SBATCH --cpus-per-task=16
+    #SBATCH --mem=64G
+    #SBATCH --time=24:00:00
+    Entferne: #SBATCH --constraint=BEEOND
+    Entferne: #SBATCH --exclusive
+  - Nutze dev_cpu Partition für Tests:
+    #SBATCH --partition=dev_cpu
+    #SBATCH --time=02:00:00
+
+Problem 5: Python-Version zu alt (3.9 statt 3.11)
+--------------------------------------------------
+Lösung: Falsches Modul geladen.
+  module purge
+  module load devel/python/3.11.7-gnu-14.2
+  python3 --version  # Sollte 3.11.7 zeigen
+
+Problem 6: OpenMPI-Kompilierung schlägt fehl (GPFS/OpenSHMEM)
+--------------------------------------------------------------
+Fehler: "gpfsSetReplication_t has no member named 'reserved'"
+        oder "UINTPTR_MAX makes pointer from integer"
+
+Lösung: GPFS und OpenSHMEM deaktivieren (werden nicht benötigt):
+  cd ~/software/openmpi-4.1.8
+  make clean
+  ./configure --prefix=$HOME/software/openmpi-4.1.8 \
+              --enable-mpi-cxx \
+              --enable-mca-no-build=fs-gpfs \
+              --disable-oshmem
+  make -j 8
+  make install
+
+================================================================================
+PARALLELISIERUNGS-OPTIONEN
+================================================================================
+
+In CONTROL.txt kannst du die Parallelisierung anpassen:
+
+Maximal Performance (MPI + OpenMP):
+-----------------------------------
+PAL=40
+orca_parallel_strategy=auto
+pal_jobs=4
+
+Nur OpenMP Threads (stabiler, 90% Performance):
+-----------------------------------------------
+PAL=40
+orca_parallel_strategy=threads
+pal_jobs=4
+
+Serial (Debugging, langsam):
+---------------------------
+PAL=8
+orca_parallel_strategy=serial
+pal_jobs=1
+
+Erklärung:
+  PAL          = Gesamtzahl Kerne für ORCA
+  pal_jobs     = Anzahl paralleler OCCUPIER-Jobs
+
+  Jeder OCCUPIER-Job bekommt: PAL / pal_jobs Kerne
+  Beispiel: PAL=40, pal_jobs=4 → 10 Kerne pro Job
+
+================================================================================
+NÜTZLICHE BEFEHLE
+================================================================================
+
+SLURM Job-Management:
+---------------------
+squeue -u $USER                 # Eigene Jobs anzeigen
+scontrol show job <JOB_ID>      # Job-Details
+scancel <JOB_ID>                # Job abbrechen
+scancel -u $USER                # Alle eigenen Jobs abbrechen
+squeue -u $USER --start         # Geschätzte Startzeit
+
+DELFIN-Befehle:
+---------------
+delfin                          # Standard-Workflow
+delfin --version               # Version anzeigen
+delfin --help                  # Hilfe anzeigen
+delfin --define=struktur.xyz   # CONTROL.txt + input.txt erstellen
+delfin --recalc                # Bestehende Berechnungen fortsetzen
+delfin --report                # Report neu generieren
+delfin --report docx           # Word-Report erstellen
+
+Modul-Management:
+-----------------
+module avail                   # Verfügbare Module
+module list                    # Geladene Module
+module load <modul>            # Modul laden
+module purge                   # Alle Module entladen
+
+Dateien/Verzeichnisse:
+---------------------
+ls -lh                         # Dateien mit Größe
+du -sh *                       # Verzeichnisgröße
+df -h                          # Disk-Space
+tree -L 2                      # Verzeichnisbaum
+
+================================================================================
+RESSOURCEN & LINKS
+================================================================================
+
+DELFIN:
+  GitHub:    https://github.com/ComPlat/DELFIN
+  Docs:      README.md im Repository
+  Issues:    https://github.com/ComPlat/DELFIN/issues
+
+ORCA:
+  Download:  https://orcaforum.kofo.mpg.de/app.php/dlext/?cat=3
+  Manual:    https://www.faccts.de/docs/orca/6.0/manual/
+  Forum:     https://orcaforum.kofo.mpg.de/
+
+BwUniCluster:
+  Wiki:      https://wiki.bwhpc.de/e/BwUniCluster3.0
+  Support:   https://www.bwhpc.de/supportportal
+  Training:  https://training.bwhpc.de
+
+OpenMPI:
+  Website:   https://www.open-mpi.org/
+  Download:  https://download.open-mpi.org/
+
+================================================================================
+ZUSAMMENFASSUNG DER INSTALLATION
+================================================================================
+
+✅ ORCA 6.1.1 (mit OpenMPI 4.1.8)
+✅ OpenMPI 4.1.8 (selbst kompiliert, ~30 Min)
+✅ Python 3.11 Virtual Environment
+✅ DELFIN 1.0.9
+✅ Submit-Skript konfiguriert
+✅ Test-Job erfolgreich
+
+Gesamtdauer: 45-60 Minuten (einmalig)
+
+Für neue Projekte:
+  1. mkdir ~/calc/neues_projekt
+  2. cd ~/calc/neues_projekt
+  3. Kopiere CONTROL.txt + input.txt + submit_job.sh
+  4. Passe CONTROL.txt an
+  5. sbatch submit_job.sh
+
+================================================================================
+CHECKLISTE FÜR NEUEN ACCOUNT
+================================================================================
+
+[ ] ORCA 6.1.1 heruntergeladen und entpackt
+[ ] OpenMPI 4.1.8 kompiliert und installiert
+    → mpirun --version zeigt 4.1.8
+[ ] Python 3.11 Modul geladen
+[ ] DELFIN-Repository geklont
+[ ] Virtual Environment erstellt
+[ ] DELFIN installiert
+    → delfin --version zeigt 1.0.9
+[ ] Test-Projekt erstellt (~/calc/Test1)
+[ ] CONTROL.txt konfiguriert
+[ ] input.txt mit Koordinaten erstellt
+[ ] submit_job.sh erstellt und ausführbar gemacht
+[ ] Test-Job eingereicht
+[ ] Test-Job erfolgreich durchgelaufen
+
+================================================================================
+ENDE DER ANLEITUNG
+================================================================================
+
+Bei Fragen oder Problemen:
+  1. Prüfe "HÄUFIGE PROBLEME UND LÖSUNGEN" oben
+  2. Konsultiere die DELFIN GitHub Issues
+  3. Kontaktiere BwUniCluster Support
+
+Viel Erfolg mit DELFIN! 🚀
+
+Erstellt: 2026-01-13
+Version: 1.0
