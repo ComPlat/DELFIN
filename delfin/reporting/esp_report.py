@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import sys
@@ -51,6 +52,20 @@ def _orca_plot_binary() -> Optional[str]:
     direct = shutil.which("orca_plot")
     if direct:
         return direct
+    env_candidates = (
+        os.getenv("ORCA_PLOT"),
+        os.getenv("ORCA_DIR"),
+        os.getenv("ORCA_PATH"),
+        os.getenv("ORCA_ROOT"),
+        os.getenv("ORCA_HOME"),
+    )
+    for candidate in env_candidates:
+        if not candidate:
+            continue
+        base = Path(candidate).expanduser()
+        path = base if base.name == "orca_plot" else base / "orca_plot"
+        if path.exists():
+            return str(path)
     fallback = Path("/opt/orca/orca_plot")
     if fallback.exists():
         return str(fallback)
