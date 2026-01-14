@@ -34,8 +34,16 @@ export PATH="$HOME/software/openmpi-4.1.8/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/software/openmpi-4.1.8/lib:$LD_LIBRARY_PATH"
 
 # ORCA Pfad setzen
-export PATH="/home/ka/ka_ibcs/ka_ew7404/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2:$PATH"
-export LD_LIBRARY_PATH="/home/ka/ka_ibcs/ka_ew7404/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2:$LD_LIBRARY_PATH"
+ORCA_BASE="$HOME/software/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2"
+if [ ! -d "$ORCA_BASE" ]; then
+    echo "ERROR: ORCA not found in $ORCA_BASE"
+    echo "Please install ORCA 6.1.1 or update ORCA_BASE."
+    exit 1
+fi
+export PATH="$ORCA_BASE:$PATH"
+export LD_LIBRARY_PATH="$ORCA_BASE:$LD_LIBRARY_PATH"
+export ORCA_DIR="$ORCA_BASE"
+export ORCA_PLOT="$ORCA_BASE/orca_plot"
 
 # MPI Umgebungsvariablen fuer Cluster
 export OMPI_MCA_btl_tcp_if_include=ib0
