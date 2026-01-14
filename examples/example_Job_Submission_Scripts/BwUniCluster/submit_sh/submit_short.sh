@@ -23,21 +23,21 @@ module purge
 module load devel/python/3.11.7-gnu-14.2
 
 # Basisverzeichnis (nach Umzug angepasst)
-BASE_DIR="/pfs/data6/home/ka/ka_ibcs/ka_ew7404"
+BASE_DIR="/pfs/data6/home/ka/ka_ibcs/ka_ew7404/software"
 
 # Nutze selbst-installiertes OpenMPI 4.1.8 (kompatibel mit ORCA)
-if [ ! -d "$BASE_DIR/software/openmpi-4.1.8" ]; then
-    echo "ERROR: OpenMPI 4.1.8 not found in $BASE_DIR/software/openmpi-4.1.8"
+if [ ! -d "$BASE_DIR/openmpi-4.1.8" ]; then
+    echo "ERROR: OpenMPI 4.1.8 not found in $BASE_DIR/openmpi-4.1.8"
     echo "Please install it first. See installation instructions."
     exit 1
 fi
 
-echo "Using custom OpenMPI 4.1.8 from $BASE_DIR/software/openmpi-4.1.8"
-export PATH="$BASE_DIR/software/openmpi-4.1.8/bin:$PATH"
-export LD_LIBRARY_PATH="$BASE_DIR/software/openmpi-4.1.8/lib:$LD_LIBRARY_PATH"
+echo "Using custom OpenMPI 4.1.8 from $BASE_DIR/openmpi-4.1.8"
+export PATH="$BASE_DIR/openmpi-4.1.8/bin:$PATH"
+export LD_LIBRARY_PATH="$BASE_DIR/openmpi-4.1.8/lib:$LD_LIBRARY_PATH"
 
 # ORCA Pfad setzen
-ORCA_BASE="$BASE_DIR/software/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2"
+ORCA_BASE="$BASE_DIR/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2"
 if [ ! -d "$ORCA_BASE" ]; then
     echo "ERROR: ORCA not found in $ORCA_BASE"
     echo "Please install ORCA 6.1.1 or update ORCA_BASE."
