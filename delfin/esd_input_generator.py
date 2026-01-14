@@ -174,30 +174,45 @@ def _parse_tddft_and_derive_deltascf(s0_out_path: Path, state: str) -> Optional[
     logger.info(f"{state}: Dominant excitation {from_orb}{from_spin} -> {to_orb}{to_spin} (weight={weight:.4f})")
 
     # Calculate ALPHACONF/BETACONF based on excitation
-    # For Singlets (S1, S2, S3, ...): Standard excitation
-    # For Triplets (T2, T3, T4, ...): Spin-flip configuration (Beta → Alpha)
+    # n = homo_num - from_orb  # How many orbitals below HOMO
+    # m = to_orb - lumo_num    # How many orbitals above LUMO
     #
-    # Singlet examples (HOMO-n → LUMO+m):
-    #   HOMO→LUMO (n=0, m=0): alphaconf [0] + [1] = 0,1
-    #   HOMO-1→LUMO (n=1, m=0): alphaconf [0] + [1,1] = 0,1,1
+    # For Singlets (S1, S2, S3, ...): Standard single excitation
+    #   HOMO-n → LUMO+m: alphaconf [0]*(m+1) + [1]*(n+1), betaconf "0"
+    #   Examples:
+    #     HOMO→LUMO (n=0, m=0): alphaconf "0,1", betaconf "0"
+    #     HOMO-1→LUMO (n=1, m=0): alphaconf "0,1,1", betaconf "0"
     #
-    # Triplet spin-flip (T2+): Beta electron from HOMO-n → becomes Alpha in LUMO
-    #   T2 (n orbitals below HOMO): alphaconf [1]*2, betaconf [0] + [1]*n
-    #   T3 (n orbitals below HOMO): alphaconf [1]*3, betaconf [0] + [1]*n
-    #   Example: T2 with HOMO-3→LUMO (n=3): alphaconf 1,1, betaconf 0,1,1,1
+    # For Triplets (T1, T2, T3, ...): Two electrons with parallel spin
+    #   HOMO-n → LUMO+m:
+    #     ALPHACONF: "1,1" if m=0, else [0]*m + [1]
+    #     BETACONF: [0] + [1]*n
+    #   Examples:
+    #     T1 HOMO→LUMO (n=0, m=0): alphaconf "1,1", betaconf "0"
+    #     T2 HOMO→LUMO+1 (n=0, m=1): alphaconf "0,1", betaconf "0"
+    #     HOMO-3→LUMO+2 (n=3, m=2): alphaconf "0,0,1", betaconf "0,1,1,1"
 
     n = homo_num - from_orb  # How many orbitals below HOMO
     m = to_orb - lumo_num    # How many orbitals above LUMO
 
-    # Special handling for higher Triplet states (T2, T3, T4, ...)
-    if state_type == 'T' and state_num >= 2:
-        # Spin-flip configuration: Beta electron from HOMO-n → Alpha in LUMO
-        # ALPHACONF based on state number, BETACONF based on orbital distance
-        alphaconf_list = [1] * state_num  # state_num ones for Tn
-        alphaconf = ','.join(map(str, alphaconf_list))
-        betaconf_list = [0] + [1] * n  # 0 followed by n ones
+    # Special handling for ALL Triplet states (T1, T2, T3, ...)
+    if state_type == 'T':
+        # Triplet configuration for HOMO-n → LUMO+m excitation:
+        # ALPHACONF: "1,1" if m=0, else [0]*m + [1]
+        # BETACONF: [0] + [1]*n
+        # Examples:
+        #   T1 (HOMO→LUMO, n=0, m=0): alphaconf "1,1", betaconf "0"
+        #   T2 (HOMO→LUMO+1, n=0, m=1): alphaconf "0,1", betaconf "0"
+        #   HOMO-3→LUMO+2 (n=3, m=2): alphaconf "0,0,1", betaconf "0,1,1,1"
+        if m == 0:
+            alphaconf = "1,1"
+        else:
+            alphaconf_list = [0] * m + [1]
+            alphaconf = ','.join(map(str, alphaconf_list))
+
+        betaconf_list = [0] + [1] * n
         betaconf = ','.join(map(str, betaconf_list))
-        logger.info(f"{state}: Triplet spin-flip config - ALPHACONF {alphaconf}, BETACONF {betaconf}")
+        logger.info(f"{state}: Triplet config (HOMO-{n}→LUMO+{m}) - ALPHACONF {alphaconf}, BETACONF {betaconf}")
     elif from_spin == 'a':
         # Alpha excitation (standard for Singlets)
         alphaconf_list = [0] * (m + 1) + [1] * (n + 1)

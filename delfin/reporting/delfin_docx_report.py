@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 import json
@@ -22,6 +23,17 @@ except ImportError:  # pragma: no cover - optional dependency
     DOCX_AVAILABLE = False
 
 HARTREE_TO_EV = 27.211386245988
+
+
+def _orca_plot_binary() -> Optional[str]:
+    """Return a usable orca_plot executable if present."""
+    direct = shutil.which("orca_plot")
+    if direct:
+        return direct
+    fallback = Path("/opt/orca/orca_plot")
+    if fallback.exists():
+        return str(fallback)
+    return None
 
 
 def _translate_state(orca_state: str) -> str:
@@ -2380,8 +2392,13 @@ def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> 
             orca_input = f"1\n1\n2\n{abs_mo_number}\n4\n100\n11\n12\n"
 
             # Run orca_plot in interactive mode from ESD directory
+            orca_plot_exe = _orca_plot_binary()
+            if not orca_plot_exe:
+                logger.warning("orca_plot not found (PATH or /opt/orca/orca_plot); skipping MO cube generation")
+                continue
+
             result = subprocess.run(
-                ["/opt/orca/orca_plot", "S0.gbw", "-i"],
+                [orca_plot_exe, "S0.gbw", "-i"],
                 input=orca_input.encode(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
