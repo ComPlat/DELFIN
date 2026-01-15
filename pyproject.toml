@@ -21,13 +21,10 @@ dependencies = [
     "rdkit>=2023.3.1",
     "openbabel-wheel>=3.1.0",
     "python-docx>=0.8.11",
-    "pymol-open-source>=3.1.0a0"
+    "pymol-open-source>=3.0.0"
 ]
 
 [project.optional-dependencies]
-visualization = [
-    "pymol-open-source>=3.1.0a0"
-]
 dev = [
     "pytest>=6.0",
     "pytest-cov",

@@ -10,3 +10,5 @@ own_auto_tree.json
 __pycache__/
 *.py[cod]
 *$py.class
+
+.venv/
