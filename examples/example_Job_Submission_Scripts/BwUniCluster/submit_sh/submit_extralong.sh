@@ -24,8 +24,20 @@ module load devel/python/3.11.7-gnu-14.2
 
 # Basisverzeichnis automatisch ermitteln (relativ zum Skript-Standort)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DELFIN_DIR="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
-BASE_DIR="$(dirname "$DELFIN_DIR")"
+if [ -z "${SLURM_SUBMIT_DIR:-}" ]; then
+    echo "ERROR: SLURM_SUBMIT_DIR not set; cannot locate BASE_DIR"
+    exit 1
+fi
+SEARCH_DIR="$SLURM_SUBMIT_DIR"
+while [ "$SEARCH_DIR" != "/" ] && [ ! -d "$SEARCH_DIR/software/delfin" ]; do
+    SEARCH_DIR="$(dirname "$SEARCH_DIR")"
+done
+if [ ! -d "$SEARCH_DIR/software/delfin" ]; then
+    echo "ERROR: Could not locate software/delfin above $SLURM_SUBMIT_DIR"
+    exit 1
+fi
+BASE_DIR="$SEARCH_DIR/software"
+DELFIN_DIR="$BASE_DIR/delfin"
 
 # Nutze selbst-installiertes OpenMPI 4.1.8 (kompatibel mit ORCA)
 if [ ! -d "$BASE_DIR/openmpi-4.1.8" ]; then
@@ -55,7 +67,7 @@ export OMPI_MCA_btl_tcp_if_include=ib0
 export OMPI_MCA_btl="^openib"
 
 # DELFIN Environment aktivieren
-source "$BASE_DIR/delfin/.venv/bin/activate"
+source "$DELFIN_DIR/.venv/bin/activate"
 
 # Umgebungsvariablen
 export OMP_NUM_THREADS=1
@@ -101,7 +113,7 @@ orca --version 2>&1 | head -5 || echo "ORCA check failed"
 echo ""
 
 # DELFIN Version
-cd "$BASE_DIR/delfin"
+cd "$DELFIN_DIR"
 echo "DELFIN Version: $(delfin --version 2>&1 || echo 'unknown')"
 echo "Git Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'N/A')"
 echo "Git Commit: $(git rev-parse --short HEAD 2>/dev/null || echo 'N/A')"
