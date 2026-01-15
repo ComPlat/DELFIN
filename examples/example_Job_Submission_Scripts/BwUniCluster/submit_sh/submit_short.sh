@@ -22,8 +22,10 @@ set -euo pipefail
 module purge
 module load devel/python/3.11.7-gnu-14.2
 
-# Basisverzeichnis (nach Umzug angepasst)
-BASE_DIR="/pfs/data6/home/ka/ka_ibcs/ka_ew7404/software"
+# Basisverzeichnis automatisch ermitteln (relativ zum Skript-Standort)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DELFIN_DIR="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
+BASE_DIR="$(dirname "$DELFIN_DIR")"
 
 # Nutze selbst-installiertes OpenMPI 4.1.8 (kompatibel mit ORCA)
 if [ ! -d "$BASE_DIR/openmpi-4.1.8" ]; then
