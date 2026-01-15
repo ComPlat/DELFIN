@@ -59,6 +59,7 @@ source "$BASE_DIR/delfin/.venv/bin/activate"
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export DELFIN_ORCA_PROGRESS=0
+export MPLBACKEND=Agg
 
 # Scratch-Verzeichnis
 if [ -n "${BEEOND_MOUNTPOINT:-}" ]; then
