@@ -2,7 +2,850 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import difflib
+import re
 from typing import Any, Callable, Iterable, Mapping, MutableMapping
+
+ORCA_SOLVENTS = (
+    "1,1,1-trichloroethane",
+    "1,1,2-trichloroethane",
+    "1,2,4-trimethylbenzene",
+    "1,2-dibromoethane",
+    "1,2-dichloroethane",
+    "1,2-ethanediol",
+    "1,4-dioxane",
+    "dioxane",
+    "1-bromo-2-methylpropane",
+    "1-bromooctane",
+    "bromooctane",
+    "1-bromopentane",
+    "1-bromopropane",
+    "1-butanol",
+    "butanol",
+    "1-chlorohexane",
+    "chlorohexane",
+    "1-chloropentane",
+    "1-chloropropane",
+    "1-decanol",
+    "decanol",
+    "1-fluorooctane",
+    "1-heptanol",
+    "heptanol",
+    "1-hexanol",
+    "hexanol",
+    "1-hexene",
+    "1-hexyne",
+    "1-iodobutane",
+    "1-iodohexadecane",
+    "hexadecyliodide",
+    "1-iodopentane",
+    "1-iodopropane",
+    "1-nitropropane",
+    "1-nonanol",
+    "nonanol",
+    "1-octanol",
+    "octanol",
+    "1-pentanol",
+    "pentanol",
+    "1-pentene",
+    "1-propanol",
+    "propanol",
+    "2,2,2-trifluoroethanol",
+    "2,2,4-trimethylpentane",
+    "isooctane",
+    "2,4-dimethylpentane",
+    "2,4-dimethylpyridine",
+    "2,6-dimethylpyridine",
+    "2-bromopropane",
+    "2-butanol",
+    "secbutanol",
+    "2-chlorobutane",
+    "2-heptanone",
+    "2-hexanone",
+    "2-methoxyethanol",
+    "methoxyethanol",
+    "2-methyl-1-propanol",
+    "isobutanol",
+    "2-methyl-2-propanol",
+    "2-methylpentane",
+    "2-methylpyridine",
+    "2methylpyridine",
+    "2-nitropropane",
+    "2-octanone",
+    "2-pentanone",
+    "2-propanol",
+    "isopropanol",
+    "2-propen-1-ol",
+    "e-2-pentene",
+    "3-methylpyridine",
+    "3-pentanone",
+    "4-heptanone",
+    "4-methyl-2-pentanone",
+    "4methyl2pentanone",
+    "4-methylpyridine",
+    "5-nonanone",
+    "acetic acid",
+    "aceticacid",
+    "acetone",
+    "acetonitrile",
+    "mecn",
+    "ch3cn",
+    "acetophenone",
+    "ammonia",
+    "aniline",
+    "anisole",
+    "benzaldehyde",
+    "benzene",
+    "benzonitrile",
+    "benzyl alcohol",
+    "benzylalcohol",
+    "bromobenzene",
+    "bromoethane",
+    "bromoform",
+    "butanal",
+    "butanoic acid",
+    "butanone",
+    "butanonitrile",
+    "butyl ethanoate",
+    "butyl acetate",
+    "butylacetate",
+    "butylamine",
+    "n-butylbenzene",
+    "butylbenzene",
+    "sec-butylbenzene",
+    "secbutylbenzene",
+    "tert-butylbenzene",
+    "tbutylbenzene",
+    "carbon disulfide",
+    "carbondisulfide",
+    "cs2",
+    "carbon tetrachloride",
+    "ccl4",
+    "chlorobenzene",
+    "chloroform",
+    "chcl3",
+    "a-chlorotoluene",
+    "o-chlorotoluene",
+    "conductor",
+    "m-cresol",
+    "mcresol",
+    "o-cresol",
+    "cyclohexane",
+    "cyclohexanone",
+    "cyclopentane",
+    "cyclopentanol",
+    "cyclopentanone",
+    "decalin",
+    "cis-decalin",
+    "n-decane",
+    "decane",
+    "dibromomethane",
+    "dibutylether",
+    "o-dichlorobenzene",
+    "odichlorobenzene",
+    "e-1,2-dichloroethene",
+    "z-1,2-dichloroethene",
+    "dichloromethane",
+    "ch2cl2",
+    "dcm",
+    "diethyl ether",
+    "diethylether",
+    "diethyl sulfide",
+    "diethylamine",
+    "diiodomethane",
+    "diisopropyl ether",
+    "diisopropylether",
+    "cis-1,2-dimethylcyclohexane",
+    "dimethyl disulfide",
+    "n,n-dimethylacetamide",
+    "dimethylacetamide",
+    "n,n-dimethylformamide",
+    "dimethylformamide",
+    "dmf",
+    "dimethylsulfoxide",
+    "dmso",
+    "diphenylether",
+    "dipropylamine",
+    "n-dodecane",
+    "dodecane",
+    "ethanethiol",
+    "ethanol",
+    "ethyl acetate",
+    "ethylacetate",
+    "ethanoate",
+    "ethyl methanoate",
+    "ethyl phenyl ether",
+    "ethoxybenzene",
+    "ethylbenzene",
+    "fluorobenzene",
+    "formamide",
+    "formic acid",
+    "furan",
+    "furane",
+    "n-heptane",
+    "heptane",
+    "n-hexadecane",
+    "hexadecane",
+    "n-hexane",
+    "hexane",
+    "hexanoic acid",
+    "iodobenzene",
+    "iodoethane",
+    "iodomethane",
+    "isopropylbenzene",
+    "p-isopropyltoluene",
+    "isopropyltoluene",
+    "mesitylene",
+    "methanol",
+    "methyl benzoate",
+    "methyl butanoate",
+    "methyl ethanoate",
+    "methyl methanoate",
+    "methyl propanoate",
+    "n-methylaniline",
+    "methylcyclohexane",
+    "n-methylformamide",
+    "methylformamide",
+    "nitrobenzene",
+    "phno2",
+    "nitroethane",
+    "nitromethane",
+    "meno2",
+    "o-nitrotoluene",
+    "onitrotoluene",
+    "n-nonane",
+    "nonane",
+    "n-octane",
+    "octane",
+    "n-pentadecane",
+    "pentadecane",
+    "octanol(wet)",
+    "wetoctanol",
+    "woctanol",
+    "pentanal",
+    "n-pentane",
+    "pentane",
+    "pentanoic acid",
+    "pentyl ethanoate",
+    "pentylamine",
+    "perfluorobenzene",
+    "hexafluorobenzene",
+    "phenol",
+    "propanal",
+    "propanoic acid",
+    "propanonitrile",
+    "propyl ethanoate",
+    "propylamine",
+    "pyridine",
+    "tetrachloroethene",
+    "c2cl4",
+    "tetrahydrofuran",
+    "thf",
+    "tetrahydrothiophene-s,s-dioxide",
+    "tetrahydrothiophenedioxide",
+    "sulfolane",
+    "tetralin",
+    "thiophene",
+    "thiophenol",
+    "toluene",
+    "trans-decalin",
+    "tributylphosphate",
+    "trichloroethene",
+    "triethylamine",
+    "n-undecane",
+    "undecane",
+    "water",
+    "h2o",
+    "xylene",
+    "m-xylene",
+    "o-xylene",
+    "p-xylene",
+)
+
+_SOLVENTS_LOWER = {name.lower(): name for name in ORCA_SOLVENTS}
+
+ORCA_FUNCTIONALS = (
+    "HFS",
+    "LSD",
+    "VWN5",
+    "VWN3",
+    "PWLDA",
+    "BNULL",
+    "BVWN",
+    "BP",
+    "PW91",
+    "mPWPW",
+    "mPWLYP",
+    "BLYP",
+    "GP",
+    "GLYP",
+    "PBE",
+    "revPBE",
+    "RPBE",
+    "PWP",
+    "OLYP",
+    "OPBE",
+    "XLYP",
+    "B97D",
+    "PW86PBE",
+    "RPW86PBE",
+    "M06L",
+    "TPSS",
+    "revTPSS",
+    "SCANfunc",
+    "RSCAN",
+    "R2SCAN",
+    "B1LYP",
+    "B1P",
+    "G1LYP",
+    "G1P",
+    "B3LYP",
+    "B3P",
+    "G3LYP",
+    "G3P",
+    "PBE0",
+    "PWP1",
+    "mPW1PW",
+    "mPW1LYP",
+    "PW91_0",
+    "O3LYP",
+    "X3LYP",
+    "B97",
+    "BHANDHLYP",
+    "TPSSh",
+    "TPSS0",
+    "PW6B95",
+    "M06",
+    "M062X",
+    "r2SCANh",
+    "r2SCAN0",
+    "r2SCAN50",
+    "wB97",
+    "wB97X",
+    "CAM-B3LYP",
+    "CAMB3LYP",
+    "LC_BLYP",
+    "LC_PBE",
+    "wr2SCAN",
+)
+
+_FUNCTIONALS_LOWER = {name.lower(): name for name in ORCA_FUNCTIONALS}
+
+ORCA_BASIS_SETS = (
+    "STO-3G",
+    "MINI",
+    "MINIS",
+    "MINIX",
+    "MIDI",
+    "3-21G",
+    "3-21GSP",
+    "4-22GSP",
+    "6-31G",
+    "6-31G*",
+    "m6-31G",
+    "m6-31G*",
+    "6-31G**",
+    "6-31G(d)",
+    "6-31G(d,p)",
+    "6-31G(2d)",
+    "6-31G(2d,p)",
+    "6-31G(2d,2p)",
+    "6-31G(2df)",
+    "6-31G(2df,2p)",
+    "6-31G(2df,2pd)",
+    "6-31+G*",
+    "6-31+G**",
+    "6-31+G(d)",
+    "6-31+G(d,p)",
+    "6-31+G(2d)",
+    "6-31+G(2d,p)",
+    "6-31+G(2d,2p)",
+    "6-31+G(2df)",
+    "6-31+G(2df,2p)",
+    "6-31+G(2df,2pd)",
+    "6-31++G**",
+    "6-31++G(d,p)",
+    "6-31++G(2d,p)",
+    "6-31++G(2d,2p)",
+    "6-31++G(2df,2p)",
+    "6-31++G(2df,2pd)",
+    "6-311G",
+    "6-311G*",
+    "6-311G**",
+    "6-311G(d)",
+    "6-311G(d,p)",
+    "6-311G(2d)",
+    "6-311G(2d,p)",
+    "6-311G(2d,2p)",
+    "6-311G(2df)",
+    "6-311G(2df,2p)",
+    "6-311G(2df,2pd)",
+    "6-311G(3df)",
+    "6-311G(3df,3pd)",
+    "6-311+G*",
+    "6-311+G**",
+    "6-311+G(d)",
+    "6-311+G(d,p)",
+    "6-311+G(2d)",
+    "6-311+G(2d,p)",
+    "6-311+G(2d,2p)",
+    "6-311+G(2df)",
+    "6-311+G(2df,2p)",
+    "6-311+G(2df,2pd)",
+    "6-311+G(3df)",
+    "6-311+G(3df,2p)",
+    "6-311+G(3df,3pd)",
+    "6-311++G**",
+    "6-311++G(d,p)",
+    "6-311++G(2d,p)",
+    "6-311++G(2d,2p)",
+    "6-311++G(2df,2p)",
+    "6-311++G(2df,2pd)",
+    "6-311++G(3df,3pd)",
+    "SV",
+    "SV(P)",
+    "SVP",
+    "TZV",
+    "TZV(P)",
+    "TZVP",
+    "TZVPP",
+    "QZVP",
+    "QZVPP",
+    "DKH-SV(P)",
+    "DKH-SVP",
+    "DKH-TZV(P)",
+    "DKH-TZVP",
+    "DKH-TZVPP",
+    "DKH-QZVP",
+    "DKH-QZVPP",
+    "ZORA-SV(P)",
+    "ZORA-SVP",
+    "ZORA-TZV(P)",
+    "ZORA-TZVP",
+    "ZORA-TZVPP",
+    "ZORA-QZVP",
+    "ZORA-QZVPP",
+    "def2-mSVP",
+    "def2-mTZVP",
+    "def2-mTZVPP",
+    "def2-SV(P)",
+    "def2-SVP",
+    "def2-TZVP(-f)",
+    "def2-TZVP",
+    "def2-TZVPP",
+    "def2-QZVP",
+    "def2-QZVPP",
+    "def2-SVPD",
+    "def2-TZVPD",
+    "def2-TZVPPD",
+    "def2-QZVPD",
+    "def2-QZVPPD",
+    "dhf-SV(P)",
+    "dhf-SVP",
+    "dhf-TZVP",
+    "dhf-TZVPP",
+    "dhf-QZVP",
+    "dhf-QZVPP",
+    "dhf-SV(P)-2c",
+    "dhf-SVP-2c",
+    "dhf-TZVP-2c",
+    "dhf-TZVPP-2c",
+    "dhf-QZVP-2c",
+    "dhf-QZVPP-2c",
+    "DKH-def2-SV(P)",
+    "DKH-def2-SVP",
+    "DKH-def2-TZVP(-f)",
+    "DKH-def2-TZVP",
+    "DKH-def2-TZVPP",
+    "DKH-def2-QZVPP",
+    "ZORA-def2-SV(P)",
+    "ZORA-def2-SVP",
+    "ZORA-def2-TZVP(-f)",
+    "ZORA-def2-TZVP",
+    "ZORA-def2-TZVPP",
+    "ZORA-def2-QZVPP",
+    "ma-def2-mSVP",
+    "ma-def2-SV(P)",
+    "ma-def2-SVP",
+    "ma-def2-TZVP(-f)",
+    "ma-def2-TZVP",
+    "ma-def2-TZVPP",
+    "ma-def2-QZVP",
+    "ma-def2-QZVPP",
+    "ma-DKH-def2-SV(P)",
+    "ma-DKH-def2-SVP",
+    "ma-DKH-def2-TZVP(-f)",
+    "ma-DKH-def2-TZVP",
+    "ma-DKH-def2-TZVPP",
+    "ma-DKH-def2-QZVPP",
+    "ma-ZORA-def2-SV(P)",
+    "ma-ZORA-def2-SVP",
+    "ma-ZORA-def2-TZVP(-f)",
+    "ma-ZORA-def2-TZVP",
+    "ma-ZORA-def2-TZVPP",
+    "ma-ZORA-def2-QZVPP",
+    "old-SV",
+    "old-SV(P)",
+    "old-SVP",
+    "old-TZV",
+    "old-TZV(P)",
+    "old-TZVP",
+    "old-TZVPP",
+    "old-DKH-SV(P)",
+    "old-DKH-SVP",
+    "old-DKH-TZV(P)",
+    "old-DKH-TZVP",
+    "old-DKH-TZVPP",
+    "old-ZORA-SV(P)",
+    "old-ZORA-SVP",
+    "old-ZORA-TZV(P)",
+    "old-ZORA-TZVP",
+    "old-ZORA-TZVPP",
+    "ANO-SZ",
+    "ANO-pVDZ",
+    "ANO-pVTZ",
+    "ANO-pVQZ",
+    "ANO-pV5Z",
+    "ANO-pV6Z",
+    "aug-ANO-pVDZ",
+    "aug-ANO-pVTZ",
+    "aug-ANO-pVQZ",
+    "aug-ANO-pV5Z",
+    "saug-ANO-pVDZ",
+    "saug-ANO-pVTZ",
+    "saug-ANO-pVQZ",
+    "saug-ANO-pV5Z",
+    "ANO-RCC-DZP",
+    "ANO-RCC-TZP",
+    "ANO-RCC-QZP",
+    "ANO-RCC-Full",
+    "pc-0",
+    "pc-1",
+    "pc-2",
+    "pc-3",
+    "pc-4",
+    "aug-pc-0",
+    "aug-pc-1",
+    "aug-pc-2",
+    "aug-pc-3",
+    "aug-pc-4",
+    "pcJ-0",
+    "pcJ-1",
+    "pcJ-2",
+    "pcJ-3",
+    "pcJ-4",
+    "aug-pcJ-0",
+    "aug-pcJ-1",
+    "aug-pcJ-2",
+    "aug-pcJ-3",
+    "aug-pcJ-4",
+    "pcseg-0",
+    "pcseg-1",
+    "pcseg-2",
+    "pcseg-3",
+    "pcseg-4",
+    "aug-pcseg-0",
+    "aug-pcseg-1",
+    "aug-pcseg-2",
+    "aug-pcseg-3",
+    "aug-pcseg-4",
+    "pcSseg-0",
+    "pcSseg-1",
+    "pcSseg-2",
+    "pcSseg-3",
+    "pcSseg-4",
+    "aug-pcSseg-0",
+    "aug-pcSseg-1",
+    "aug-pcSseg-2",
+    "aug-pcSseg-3",
+    "aug-pcSseg-4",
+    "W1-mtsmall",
+    "W1-DZ",
+    "W1-TZ",
+    "W1-QZ",
+    "W1-Opt",
+    "Sapporo-DZP-2012",
+    "Sapporo-TZP-2012",
+    "Sapporo-QZP-2012",
+    "Sapporo-DKH3-DZP-2012",
+    "Sapporo-DKH3-TZP-2012",
+    "Sapporo-DKH3-QZP-2012",
+    "LANL08",
+    "LANL08(f)",
+    "LANL2DZ",
+    "LANL2TZ",
+    "LANL2TZ(f)",
+    "vDZP",
+    "def-TZVP",
+    "ma-def-TZVP",
+    "HGBS-5",
+    "HGBS-7",
+    "HGBS-9",
+    "HGBSP1-5",
+    "HGBSP1-7",
+    "HGBSP1-9",
+    "HGBSP2-5",
+    "HGBSP2-7",
+    "HGBSP2-9",
+    "HGBSP3-5",
+    "HGBSP3-7",
+    "HGBSP3-9",
+    "AHGBS-5",
+    "AHGBS-7",
+    "AHGBS-9",
+    "AHGBSP1-5",
+    "AHGBSP1-7",
+    "AHGBSP1-9",
+    "AHGBSP2-5",
+    "AHGBSP2-7",
+    "AHGBSP2-9",
+    "AHGBSP3-5",
+    "AHGBSP3-7",
+    "AHGBSP3-9",
+    "cc-pVDZ",
+    "cc-pVTZ",
+    "cc-pVQZ",
+    "cc-pV5Z",
+    "cc-pV6Z",
+    "aug-cc-pVDZ",
+    "aug-cc-pVTZ",
+    "aug-cc-pVQZ",
+    "aug-cc-pV5Z",
+    "aug-cc-pV6Z",
+    "cc-pVD(+d)Z",
+    "cc-pVT(+d)Z",
+    "cc-pVQ(+d)Z",
+    "cc-pV5(+d)Z",
+    "apr-cc-pV(Q+d)Z",
+    "may-cc-pV(T+d)Z",
+    "may-cc-pV(Q+d)Z",
+    "jun-cc-pV(D+d)Z",
+    "jun-cc-pV(T+d)Z",
+    "jun-cc-pV(Q+d)Z",
+    "jul-cc-pV(D+d)Z",
+    "jul-cc-pV(T+d)Z",
+    "jul-cc-pV(Q+d)Z",
+    "maug-cc-pV(D+d)Z",
+    "maug-cc-pV(T+d)Z",
+    "maug-cc-pV(Q+d)Z",
+    "aug-cc-pVD(+d)Z",
+    "aug-cc-pVT(+d)Z",
+    "aug-cc-pVQ(+d)Z",
+    "aug-cc-pV5(+d)Z",
+    "aug-cc-pV6(+d)Z",
+    "aug-cc-pVTZ-J",
+    "cc-pCVDZ",
+    "cc-pCVTZ",
+    "cc-pCVQZ",
+    "cc-pCV5Z",
+    "cc-pCV6Z",
+    "aug-cc-pCVDZ",
+    "aug-cc-pCVTZ",
+    "aug-cc-pCVQZ",
+    "aug-cc-pCV5Z",
+    "aug-cc-pCV6Z",
+    "cc-pwCVDZ",
+    "cc-pwCVTZ",
+    "cc-pwCVQZ",
+    "cc-pwCV5Z",
+    "aug-cc-pwCVDZ",
+    "aug-cc-pwCVTZ",
+    "aug-cc-pwCVQZ",
+    "aug-cc-pwCV5Z",
+    "cc-pVDZ-PP",
+    "cc-pVTZ-PP",
+    "cc-pVQZ-PP",
+    "cc-pV5Z-PP",
+    "aug-cc-pVDZ-PP",
+    "aug-cc-pVTZ-PP",
+    "aug-cc-pVQZ-PP",
+    "aug-cc-pV5Z-PP",
+    "cc-pCVDZ-PP",
+    "cc-pCVTZ-PP",
+    "cc-pCVQZ-PP",
+    "cc-pCV5Z-PP",
+    "aug-cc-pCVDZ-PP",
+    "aug-cc-pCVTZ-PP",
+    "aug-cc-pCVQZ-PP",
+    "aug-cc-pCV5Z-PP",
+    "cc-pwCVDZ-PP",
+    "cc-pwCVTZ-PP",
+    "cc-pwCVQZ-PP",
+    "cc-pwCV5Z-PP",
+    "aug-cc-pwCVDZ-PP",
+    "aug-cc-pwCVTZ-PP",
+    "aug-cc-pwCVQZ-PP",
+    "aug-cc-pwCV5Z-PP",
+    "cc-pVDZ-DK",
+    "cc-pVTZ-DK",
+    "cc-pVQZ-DK",
+    "cc-pV5Z-DK",
+    "cc-pVDZ-DK3",
+    "cc-pVTZ-DK3",
+    "cc-pVQZ-DK3",
+    "aug-cc-pVDZ-DK",
+    "aug-cc-pVTZ-DK",
+    "aug-cc-pVQZ-DK",
+    "aug-cc-pV5Z-DK",
+    "cc-pwCVDZ-DK",
+    "cc-pwCVTZ-DK",
+    "cc-pwCVQZ-DK",
+    "cc-pwCV5Z-DK",
+    "cc-pwCVDZ-DK3",
+    "cc-pwCVTZ-DK3",
+    "cc-pwCVQZ-DK3",
+    "aug-cc-pwCVDZ-DK",
+    "aug-cc-pwCVTZ-DK",
+    "aug-cc-pwCVQZ-DK",
+    "aug-cc-pwCV5Z-DK",
+    "cc-pVDZ-F12",
+    "cc-pVTZ-F12",
+    "cc-pVQZ-F12",
+    "cc-pVDZ-PP-F12",
+    "cc-pVTZ-PP-F12",
+    "cc-pVQZ-PP-F12",
+    "cc-pCVDZ-F12",
+    "cc-pCVTZ-F12",
+    "cc-pCVQZ-F12",
+    "haV(T+d)Z",
+    "haV(Q+d)Z",
+    "haV(5+d)Z",
+    "Partridge-1",
+    "Partridge-2",
+    "Partridge-3",
+    "Partridge-4",
+    "x2c-SV(P)all",
+    "x2c-SVPall",
+    "x2c-TZVPall",
+    "x2c-TZVPPall",
+    "x2c-QZVPall",
+    "x2c-QZVPPall",
+    "x2c-SV(P)all-2c",
+    "x2c-SVPall-2c",
+    "x2c-TZVPall-2c",
+    "x2c-TZVPPall-2c",
+    "x2c-QZVPall-2c",
+    "x2c-QZVPPall-2c",
+    "x2c-SV(P)all-s",
+    "x2c-SVPall-s",
+    "x2c-TZVPall-s",
+    "x2c-TZVPPall-s",
+    "x2c-QZVPall-s",
+    "x2c-QZVPPall-s",
+    "x2c-QZVPall-2c-s",
+    "x2c-QZVPPall-2c-s",
+    "SARC-DKH-SVP",
+    "SARC-DKH-TZVP",
+    "SARC-DKH-TZVPP",
+    "SARC-ZORA-SVP",
+    "SARC-ZORA-TZVP",
+    "SARC-ZORA-TZVPP",
+    "SARC2-DKH-QZV",
+    "SARC2-DKH-QZVP",
+    "SARC2-ZORA-QZV",
+    "SARC2-ZORA-QZVP",
+    "D95",
+    "D95p",
+    "EPR-II",
+    "EPR-III",
+    "IGLO-II",
+    "IGLO-III",
+    "UGBS",
+    "CP",
+    "CP(PPP)",
+    "Wachters+f",
+    "def2/J",
+    "def2-mTZVP/J",
+    "def2-mTZVPP/J",
+    "x2c/J",
+    "SARC/J",
+    "def2/JK",
+    "def2/JKsmall",
+    "cc-pVTZ/JK",
+    "cc-pVQZ/JK",
+    "cc-pV5Z/JK",
+    "aug-cc-pVTZ/JK",
+    "aug-cc-pVQZ/JK",
+    "aug-cc-pV5Z/JK",
+    "SARC2-DKH-QZV/JK",
+    "SARC2-DKH-QZVP/JK",
+    "SARC2-ZORA-QZV/JK",
+    "SARC2-ZORA-QZVP/JK",
+    "def2-SVP/C",
+    "def2-TZVP/C",
+    "def2-TZVPP/C",
+    "def2-QZVPP/C",
+    "def2-SVPD/C",
+    "def2-TZVPD/C",
+    "def2-TZVPPD/C",
+    "def2-QZVPPD/C",
+    "cc-pVDZ/C",
+    "cc-pVTZ/C",
+    "cc-pVQZ/C",
+    "cc-pV5Z/C",
+    "cc-pV6Z/C",
+    "aug-cc-pVDZ/C",
+    "aug-cc-pVTZ/C",
+    "aug-cc-pVQZ/C",
+    "aug-cc-pV5Z/C",
+    "aug-cc-pV6Z/C",
+    "cc-pwCVDZ/C",
+    "cc-pwCVTZ/C",
+    "cc-pwCVQZ/C",
+    "cc-pwCV5Z/C",
+    "aug-cc-pwCVDZ/C",
+    "aug-cc-pwCVTZ/C",
+    "aug-cc-pwCVQZ/C",
+    "aug-cc-pwCV5Z/C",
+    "cc-pVDZ-PP/C",
+    "cc-pVTZ-PP/C",
+    "cc-pVQZ-PP/C",
+    "aug-cc-pVDZ-PP/C",
+    "aug-cc-pVTZ-PP/C",
+    "aug-cc-pVQZ-PP/C",
+    "cc-pwCVDZ-PP/C",
+    "cc-pwCVTZ-PP/C",
+    "cc-pwCVQZ-PP/C",
+    "aug-cc-pwCVDZ-PP/C",
+    "aug-cc-pwCVTZ-PP/C",
+    "aug-cc-pwCVQZ-PP/C",
+    "cc-pVDZ-F12-MP2Fit",
+    "cc-pVTZ-F12-MP2Fit",
+    "cc-pVQZ-F12-MP2Fit",
+    "cc-pVDZ-PP-F12-MP2Fit",
+    "cc-pVTZ-PP-F12-MP2Fit",
+    "cc-pVQZ-PP-F12-MP2Fit",
+    "cc-pCVDZ-F12-MP2Fit",
+    "cc-pCVTZ-F12-MP2Fit",
+    "cc-pCVQZ-F12-MP2Fit",
+    "cc-pVDZ-F12-CABS",
+    "cc-pVTZ-F12-CABS",
+    "cc-pVQZ-F12-CABS",
+    "cc-pVDZ-F12-OptRI",
+    "cc-pVTZ-F12-OptRI",
+    "cc-pVQZ-F12-OptRI",
+    "cc-pVDZ-PP-F12-OptRI",
+    "cc-pVTZ-PP-F12-OptRI",
+    "cc-pVQZ-PP-F12-OptRI",
+    "aug-cc-pVDZ-PP-OptRI",
+    "aug-cc-pVTZ-PP-OptRI",
+    "aug-cc-pVQZ-PP-OptRI",
+    "aug-cc-pV5Z-PP-OptRI",
+    "cc-pCVDZ-F12-OptRI",
+    "cc-pCVTZ-F12-OptRI",
+    "cc-pCVQZ-F12-OptRI",
+    "aug-cc-pwCVDZ-PP-OptRI",
+    "aug-cc-pwCVTZ-PP-OptRI",
+    "aug-cc-pwCVQZ-PP-OptRI",
+    "aug-cc-pwCV5Z-PP-OptRI",
+)
+
+_BASIS_SETS_LOWER = {name.lower(): name for name in ORCA_BASIS_SETS}
+
+
+def _suggest_from_options(value: str, options: Iterable[str]) -> list[str]:
+    matches = difflib.get_close_matches(value, list(options), n=3, cutoff=0.6)
+    return matches
 
 
 @dataclass(frozen=True)
@@ -26,6 +869,15 @@ def _as_float(value: Any) -> float:
     return float(value)
 
 
+def _as_non_negative_float(value: Any) -> float:
+    if value is None or value == "":
+        return 0.0
+    parsed = float(value)
+    if parsed < 0:
+        raise ValueError("must be >= 0")
+    return parsed
+
+
 def _as_str(value: Any) -> str:
     if value is None:
         return ""
@@ -35,6 +887,82 @@ def _as_str(value: Any) -> str:
 def _as_yes_no(value: Any) -> str:
     text = str(value or "no").strip().lower()
     return "yes" if text in {"yes", "true", "1", "on"} else "no"
+
+
+def _as_charge(value: Any) -> int:
+    if value is None or value == "":
+        raise ValueError("must be an integer like -2, 0, or +3")
+    text = str(value).strip()
+    if not re.match(r"^[+-]?\d+$", text):
+        raise ValueError("must be an integer like -2, 0, or +3")
+    return int(text)
+
+
+def _as_xtb_method(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"XTB", "XTB2"}:
+        return text
+    raise ValueError("must be XTB or XTB2")
+
+
+def _as_implicit_solvation_model(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text == "":
+        return ""
+    if text == "C-PCM":
+        return "CPCM"
+    if text in {"CPCM", "SMD"}:
+        return text
+    raise ValueError("must be CPCM or SMD")
+
+
+def _as_solvent(value: Any) -> str:
+    text = str(value or "").strip()
+    if text == "":
+        return ""
+    key = text.lower()
+    if key in _SOLVENTS_LOWER:
+        return _SOLVENTS_LOWER[key]
+    suggestions = _suggest_from_options(key, _SOLVENTS_LOWER.keys())
+    if suggestions:
+        formatted = ", ".join(_SOLVENTS_LOWER[s] for s in suggestions)
+        raise ValueError(f"unknown solvent '{text}'. Did you mean: {formatted}")
+    raise ValueError(f"unknown solvent '{text}'")
+
+
+def _as_functional(value: Any) -> str:
+    text = str(value or "").strip()
+    if text == "":
+        raise ValueError("must be one of the ORCA functionals list")
+    key = text.lower()
+    if key in _FUNCTIONALS_LOWER:
+        return _FUNCTIONALS_LOWER[key]
+    suggestions = _suggest_from_options(key, _FUNCTIONALS_LOWER.keys())
+    if suggestions:
+        formatted = ", ".join(_FUNCTIONALS_LOWER[s] for s in suggestions)
+        raise ValueError(f"unknown functional '{text}'. Did you mean: {formatted}")
+    raise ValueError(f"unknown functional '{text}'")
+
+
+def _as_basis_set_optional(value: Any) -> str:
+    text = str(value or "").strip()
+    if text == "":
+        return ""
+    key = text.lower()
+    if key in _BASIS_SETS_LOWER:
+        return _BASIS_SETS_LOWER[key]
+    suggestions = _suggest_from_options(key, _BASIS_SETS_LOWER.keys())
+    if suggestions:
+        formatted = ", ".join(_BASIS_SETS_LOWER[s] for s in suggestions)
+        raise ValueError(f"unknown basis set '{text}'. Did you mean: {formatted}")
+    raise ValueError(f"unknown basis set '{text}'")
+
+
+def _as_basis_set_required(value: Any) -> str:
+    text = str(value or "").strip()
+    if text == "":
+        raise ValueError("must be a valid ORCA basis set")
+    return _as_basis_set_optional(text)
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -75,14 +1003,94 @@ def _as_imag_option(value: Any) -> int:
     return option
 
 
+def _as_method(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"classic", "manually", "occupier"}:
+        return text
+    raise ValueError("must be one of: classic, manually, OCCUPIER")
+
+
+def _as_esd_modus(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"tddft", "deltascf", "hybrid1"}:
+        return text
+    raise ValueError("must be one of: TDDFT, deltaSCF, hybrid1")
+
+
+def _as_properties_of_interest(value: Any) -> list[str] | str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, (list, tuple)):
+        items = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        text = str(value).strip()
+        if not text:
+            return ""
+        text = text.strip("[]").replace("'", "").replace('"', '')
+        items = [item.strip() for item in text.split(",") if item.strip()]
+    normalized = [item.upper() for item in items]
+    for item in normalized:
+        if item not in {"IP", "EA"}:
+            raise ValueError("must be IP, EA, both, or empty")
+    seen = set()
+    unique = []
+    for item in normalized:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return unique
+
+
+def _as_ics(value: Any) -> list[str] | str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, (list, tuple)):
+        items = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        text = str(value).strip()
+        if not text:
+            return ""
+        text = text.strip("[]").replace("'", "").replace('"', '')
+        items = [item.strip() for item in text.split(",") if item.strip()]
+    normalized = []
+    for item in items:
+        if not re.match(r"^[ST]\d+>(S1|T1)$", item):
+            raise ValueError("ICs must be transitions like S2>S1 or T2>T1")
+        normalized.append(item)
+    return normalized
+
+
+def _as_states(value: Any) -> list[str] | str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, (list, tuple)):
+        items = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        text = str(value).strip()
+        if not text:
+            return ""
+        text = text.strip("[]").replace("'", "").replace('"', '')
+        items = [item.strip() for item in text.split(",") if item.strip()]
+    normalized = []
+    for item in items:
+        match = re.match(r"^([ST])(\d+)$", item)
+        if not match:
+            raise ValueError("states must be S1..S6 or T1..T6")
+        idx = int(match.group(2))
+        if idx < 1 or idx > 6:
+            raise ValueError("states must be S1..S6 or T1..T6")
+        normalized.append(f"{match.group(1)}{idx}")
+    return normalized
+
+
 def _as_occupier_method(value: Any) -> str:
     text = str(value or "auto").strip().lower()
     if text in {"manual", "manually"}:
         return "manually"
     if text == "auto":
         return "auto"
-    # Default to "auto" for invalid values instead of raising error
-    return "auto"
+    raise ValueError("must be auto or manually")
 
 
 def _as_occupier_tree(value: Any) -> str:
@@ -142,17 +1150,21 @@ def _as_ap_method(value: Any) -> int | None:
 CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("NAME", _as_str, default=""),
     FieldSpec("SMILES", _as_str, default=""),
-    FieldSpec("charge", _as_int, required=True),
+    FieldSpec("charge", _as_charge, required=True),
     FieldSpec("multiplicity_global_opt", _as_int, allow_none=True),
     FieldSpec("PAL", _as_int, default=6),
     FieldSpec("number_explicit_solv_molecules", _as_int, default=0),
-    FieldSpec("method", _as_str, default="", allow_none=True),
+    FieldSpec("method", _as_method, required=True),
     FieldSpec("frequency_calculation", _as_yes_no, default="no"),
     FieldSpec("frequency_calculation_OCCUPIER", _as_yes_no, default="no"),
-    FieldSpec("xTB_method", _as_str, default="GFN2xTB"),
-    FieldSpec("functional", _as_str, default="PBE0"),
-    FieldSpec("main_basisset", _as_str, default="def2-SVP"),
-    FieldSpec("metal_basisset", _as_str, default=""),
+    FieldSpec("xTB_method", _as_xtb_method, default="XTB2"),
+    FieldSpec("implicit_solvation_model", _as_implicit_solvation_model, default="CPCM"),
+    FieldSpec("solvent", _as_solvent, default=""),
+    FieldSpec("functional", _as_functional, default="PBE0"),
+    FieldSpec("main_basisset", _as_basis_set_required, default="def2-SVP"),
+    FieldSpec("main_basisset_rel", _as_basis_set_optional, default=""),
+    FieldSpec("metal_basisset", _as_basis_set_optional, default=""),
+    FieldSpec("metal_basisset_rel", _as_basis_set_optional, default=""),
     FieldSpec("initial_guess", _as_str, default="PModel"),
     FieldSpec("relativity", _as_str, default="none"),
     FieldSpec("geom_opt", _as_str, default="OPT"),
@@ -160,15 +1172,19 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
     FieldSpec("IMAG_option", _as_imag_option, default=2),
+    FieldSpec("allow_imaginary_freq", _as_non_negative_float, default=0.0),
     FieldSpec("OCCUPIER_method", _as_occupier_method, default="auto"),
     FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep"),
     FieldSpec("OWN_progressive_from", _as_yes_no, default="no"),
     FieldSpec("OWN_TREE_PURE_WINDOW", _as_int, default=None, allow_none=True),
     FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),
+    FieldSpec("ESD_modus", _as_esd_modus, default="tddft"),
     FieldSpec("ESD_nroots", _as_int, default=15),
     FieldSpec("ESD_maxdim", _as_int, default=None, allow_none=True),
     FieldSpec("ESD_SOC", _as_yes_no, default="false"),
-    FieldSpec("properties_of_interest", _as_str, default=""),
+    FieldSpec("properties_of_interest", _as_properties_of_interest, default=""),
+    FieldSpec("ICs", _as_ics, default=""),
+    FieldSpec("states", _as_states, default=""),
 )
 
 
@@ -176,6 +1192,9 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     """Validate and coerce CONTROL configuration values."""
     errors: list[str] = []
     validated: dict[str, Any] = dict(config)
+
+    if "OCCUPIER_method" in config and str(config.get("OCCUPIER_method", "")).strip() == "":
+        errors.append("OCCUPIER_method must be auto or manually")
 
     # First pass: validate OCCUPIER_method to determine if tree validation is needed
     occupier_method_raw = config.get("OCCUPIER_method", None)

@@ -255,6 +255,11 @@ def _parse_control_file(file_path: str, *, keep_steps_literal: bool, content: Op
             idx += 1
             continue
 
+        if key == "charge":
+            config[key] = value
+            idx += 1
+            continue
+
         try:
             config[key] = ast.literal_eval(value)
         except Exception:
@@ -302,16 +307,51 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
 
 
 def validate_control_text(control_text: str) -> List[str]:
-    """Validate CONTROL.txt content and return a list of errors (empty if valid)."""
+    """Validate CONTROL.txt content and return a list of errors (empty if valid).
+
+    Collects ALL validation errors instead of stopping at the first one.
+    This includes placeholder errors AND field validation errors.
+    """
+    all_errors: List[str] = []
+
+    try:
+        _load_template_defaults()
+    except Exception as exc:
+        return [f"Failed to load template defaults: {exc}"]
+
     try:
         config = _parse_control_file("<in-memory>", keep_steps_literal=True, content=control_text)
-        user_keys = set(config.keys())
-        placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
-        _raise_if_missing_required(user_keys, placeholder_keys)
-        validate_control_config(config)
+    except Exception as exc:
+        return [f"Failed to parse CONTROL content: {exc}"]
+
+    user_keys = set(config.keys())
+    placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
+
+    # Collect placeholder errors (don't raise, just collect)
+    missing_required = _collect_missing_required_keys(user_keys, placeholder_keys)
+    for key in missing_required:
+        if key in placeholder_keys:
+            all_errors.append(f"Placeholder [{key.upper()}] must be replaced with an actual value")
+        else:
+            all_errors.append(f"Missing required key: {key}")
+
+    # Replace placeholders with valid dummy values for further validation
+    config_for_validation = dict(config)
+    for key in placeholder_keys:
+        if key in _PLACEHOLDER_VALIDATION_VALUES:
+            config_for_validation[key] = _PLACEHOLDER_VALIDATION_VALUES[key]
+
+    # Run full field validation to catch other errors (invalid functionals, solvents, etc.)
+    try:
+        validate_control_config(config_for_validation)
     except ValueError as exc:
-        return [err.strip() for err in str(exc).split(";") if err.strip()]
-    return []
+        # Split by semicolon and add each error
+        for err in str(exc).split(";"):
+            err = err.strip()
+            if err:
+                all_errors.append(err)
+
+    return all_errors
 
 
 def validate_control_file(file_path: str) -> List[str]:
