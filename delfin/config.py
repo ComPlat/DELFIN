@@ -300,6 +300,30 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
 
     return merged
 
+
+def validate_control_text(control_text: str) -> List[str]:
+    """Validate CONTROL.txt content and return a list of errors (empty if valid)."""
+    try:
+        config = _parse_control_file("<in-memory>", keep_steps_literal=True, content=control_text)
+        user_keys = set(config.keys())
+        placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
+        _raise_if_missing_required(user_keys, placeholder_keys)
+        validate_control_config(config)
+    except ValueError as exc:
+        return [err.strip() for err in str(exc).split(";") if err.strip()]
+    return []
+
+
+def validate_control_file(file_path: str) -> List[str]:
+    """Validate CONTROL.txt file and return a list of errors (empty if valid)."""
+    try:
+        read_control_file(file_path)
+    except FileNotFoundError:
+        return [f"CONTROL file not found: {file_path}"]
+    except ValueError as exc:
+        return [err.strip() for err in str(exc).split(";") if err.strip()]
+    return []
+
 def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     """Parse OCCUPIER-specific configuration file.
 
