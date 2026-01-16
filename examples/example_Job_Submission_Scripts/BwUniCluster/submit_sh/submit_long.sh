@@ -5,7 +5,7 @@
 #SBATCH --ntasks=40
 #SBATCH --cpus-per-task=1
 #SBATCH --threads-per-core=1
-#SBATCH --mem=120G
+#SBATCH --mem=240G
 #SBATCH --time=72:00:00
 #SBATCH --output=delfin_%j.out
 #SBATCH --error=delfin_%j.err

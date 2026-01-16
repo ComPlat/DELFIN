@@ -2332,10 +2332,14 @@ def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> 
         logger.warning(f"S0.gbw not found at {gbw_file}")
         return {}
 
-    # Find HOMO orbital number from S0.out
-    s0_out = project_dir / "ESD" / "S0.out"
-    if not s0_out.exists():
-        logger.warning(f"S0.out not found at {s0_out}")
+    # Find HOMO orbital number from S0.out (fallback to initial.out in project root)
+    s0_candidates = [
+        project_dir / "ESD" / "S0.out",
+        project_dir / "initial.out",
+    ]
+    s0_out = next((path for path in s0_candidates if path.exists()), None)
+    if not s0_out:
+        logger.warning("S0.out not found in ESD and no fallback initial.out in project root")
         return {}
 
     homo_number = None
