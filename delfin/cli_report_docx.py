@@ -186,11 +186,17 @@ def run_docx_report_mode(
 
     # Molecular orbital visualizations
     try:
+        import json
         from delfin.reporting.delfin_docx_report import _create_mo_visualizations
 
-        # Generate MOs for HOMO-3 to LUMO+3
-        orbital_indices = [-3, -2, -1, 0, 1, 2, 3, 4]
-        assets.mo_pngs = _create_mo_visualizations(workspace_root, orbital_indices)
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        mo_entries = (
+            data.get("ground_state_S0", {})
+            .get("orbitals", {})
+            .get("mo_window", [])
+            or []
+        )
+        assets.mo_pngs = _create_mo_visualizations(workspace_root, mo_entries)
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to generate MO visualizations: %s", exc, exc_info=True)
 

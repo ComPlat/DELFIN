@@ -346,6 +346,8 @@ def _run_orca_subprocess(
                 logger.error(f"Check {output_log} for error messages")
                 return False
 
+            _copy_densitiesinfo(input_file_path, scratch_subdir, working_dir)
+
             # BUGFIX: Ensure all MPI child processes are terminated
             # ORCA sometimes leaves MPI workers running even after main process exits
             # Give them a short grace period, then force cleanup
@@ -378,6 +380,28 @@ def _run_orca_subprocess(
     finally:
         # Ensure monitor thread is stopped
         stop_event.set()
+
+
+def _copy_densitiesinfo(input_file_path: str, scratch_subdir: Optional[Path], working_dir: Optional[Path]) -> None:
+    """Copy ORCA .densitiesinfo from scratch to the working directory if available."""
+    try:
+        scratch_dir = get_orca_scratch_dir()
+        if scratch_dir is None:
+            return
+        if scratch_subdir is not None:
+            scratch_dir = scratch_dir / scratch_subdir
+        input_path = Path(input_file_path)
+        target_dir = Path(working_dir) if working_dir is not None else input_path.parent
+        src = scratch_dir / f"{input_path.stem}.densitiesinfo"
+        dest = target_dir / src.name
+        if src.exists() and not dest.exists():
+            try:
+                shutil.copy2(src, dest)
+                logger.info("Copied %s to %s", src.name, target_dir)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Failed to copy %s: %s", src, exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to copy densitiesinfo: %s", exc)
         if monitor_thread and monitor_thread.is_alive():
             monitor_thread.join(timeout=1)
         if manager and registration_token:

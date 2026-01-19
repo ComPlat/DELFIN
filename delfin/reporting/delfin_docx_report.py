@@ -11,7 +11,6 @@ from typing import Any, Dict, Iterable, Optional
 import json
 
 from delfin.common.logging import get_logger
-from delfin.ir_spectrum import parse_ir_spectrum
 
 logger = get_logger(__name__)
 
@@ -238,36 +237,20 @@ def _mol_to_smiles(mol):
         return None
 
 
-def _generate_smiles_image(project_dir: Path) -> Optional[Path]:
-    """Render SMILES from input.txt (SMILES or XYZ body) to a PNG using RDKit."""
-    smiles_file = project_dir / "input.txt"
-    if not smiles_file.exists():
-        logger.warning("SMILES source 'input.txt' not found for RDKit rendering")
-        return None
-
-    try:
-        lines = [line.strip() for line in smiles_file.read_text(encoding="utf-8", errors="ignore").splitlines()]
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to read input.txt: %s", exc)
-        return None
-
-    smiles = ""
-    mol_from_xyz = None
-
-    # Detect if content looks like XYZ body (no header lines)
-    xyz_candidate = [ln for ln in lines if ln and not ln.startswith("#")]
-    if xyz_candidate and all(len(ln.split()) >= 4 and ln.split()[0][0].isalpha() for ln in xyz_candidate):
-        # Try XYZ -> Mol
-        mol_from_xyz = _xyz_body_to_mol(xyz_candidate)
+def _generate_smiles_image(project_dir: Path, input_data: Dict[str, Any]) -> Optional[Path]:
+    """Render SMILES or XYZ body from JSON input data to a PNG using RDKit."""
+    smiles = (input_data.get("smiles") or "").strip()
+    xyz_body = input_data.get("xyz_body") or []
+    mol_from_xyz = _xyz_body_to_mol(xyz_body) if xyz_body else None
 
     if mol_from_xyz:
-        smiles = _mol_to_smiles(mol_from_xyz) or ""
-    else:
-        # Fallback: treat first non-empty line as SMILES
-        smiles = next((ln for ln in lines if ln), "")
+        smiles = _mol_to_smiles(mol_from_xyz) or smiles
+    if not smiles and not mol_from_xyz:
+        logger.warning("No SMILES or XYZ data available in JSON input")
+        return None
 
     if not smiles:
-        logger.warning("No SMILES or usable XYZ detected in input.txt")
+        logger.warning("No SMILES available for RDKit rendering")
         return None
 
     try:
@@ -279,9 +262,9 @@ def _generate_smiles_image(project_dir: Path) -> Optional[Path]:
         logger.warning("RDKit not available for SMILES rendering: %s", exc)
         return None
 
-    mol = Chem.MolFromSmiles(smiles) if not mol_from_xyz else mol_from_xyz
+    mol = Chem.MolFromSmiles(smiles) if mol_from_xyz is None else mol_from_xyz
     if mol is None:
-        logger.warning("Invalid SMILES in input.txt: %s", smiles)
+        logger.warning("Invalid SMILES in JSON input: %s", smiles)
         return None
 
     try:
@@ -409,37 +392,18 @@ def _energy_ev(optimization: Dict[str, Any]) -> Optional[float]:
     return None
 
 
-def _parse_goat_conformer_count(project_dir: Path) -> Optional[int]:
-    """Parse 'Conformers below 3 kcal/mol: X' from XTB_GOAT output."""
-    goat_candidates = [
-        project_dir / "XTB_GOAT" / "output_XTB_GOAT.out",
-        project_dir / "XTB2_GOAT" / "output_XTB_GOAT.out",
-        project_dir / "output_XTB_GOAT.out",
-    ]
-
-    for goat_file in goat_candidates:
-        if not goat_file.exists():
-            continue
-        try:
-            content = goat_file.read_text(encoding="utf-8", errors="ignore")
-            match = re.search(r'Conformers below 3 kcal/mol:\s*(\d+)', content)
-            if match:
-                return int(match.group(1))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to parse GOAT conformer count from %s: %s", goat_file, exc)
-    return None
-
-
 def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Optional[str], list[tuple[str, float, tuple[int, int, int]]], list[tuple[str, float, tuple[int, int, int]]]]:
     meta = data.get("metadata", {}) or {}
+    control = (data.get("control", {}) or {}).get("validated", {}) or {}
+    input_data = data.get("input", {}) or {}
     name = meta.get("NAME") or meta.get("name") or project_dir.name
-    functional = meta.get("functional") or "unknown functional"
-    basis = meta.get("basis_set") or "unknown basis"
-    aux_basis = meta.get("auxiliary_basis")
-    ri_method = meta.get("ri_method")
-    solvent_model = meta.get("implicit_solvation")
-    solvent = meta.get("solvent")
-    dispersion = meta.get("dispersion_correction")
+    functional = control.get("functional") or meta.get("functional") or "unknown functional"
+    basis = control.get("main_basisset") or meta.get("basis_set") or "unknown basis"
+    aux_basis = control.get("aux_basis") or meta.get("auxiliary_basis")
+    ri_method = control.get("ri_jkx") or meta.get("ri_method")
+    solvent_model = control.get("implicit_solvation_model") or meta.get("implicit_solvation")
+    solvent = control.get("solvent") or meta.get("solvent")
+    dispersion = control.get("disp_corr") or meta.get("dispersion_correction")
 
     gs = data.get("ground_state_S0", {}) or {}
     gs_opt = gs.get("optimization", {}) or {}
@@ -451,28 +415,19 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
     lumo = gs_orb.get("lumo_eV")
     gap = gs_orb.get("gap_eV")
 
-    # Vibrational highlights from IR spectrum if available
+    # Vibrational highlights from JSON if available
     vib_frequencies: list[float] = []
     negative_freqs = 0
-    ir_file = None
-    for candidate in ["ESD/S0.out", "S0.out", "initial.out"]:
-        cand_path = project_dir / candidate
-        if cand_path.exists():
-            ir_file = cand_path
-            break
-    if ir_file:
-        try:
-            modes = parse_ir_spectrum(ir_file)
-            negative_freqs = sum(1 for m in modes if m.frequency_cm1 < 0)
-            vib_frequencies = sorted(
-                [m.frequency_cm1 for m in modes],
-                key=lambda x: x,
-            )
-            # Keep top 5 by intensity for summary
-            modes_sorted = sorted(modes, key=lambda m: m.intensity_km_mol, reverse=True)
-            vib_frequencies = [m.frequency_cm1 for m in modes_sorted[:5]]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("IR parsing failed for summary: %s", exc)
+    ir_data = data.get("vibrational_frequencies", {}) or {}
+    modes = ir_data.get("modes", []) or []
+    if modes:
+        negative_freqs = sum(1 for m in modes if (m.get("frequency_cm1") or 0) < 0)
+        modes_sorted = sorted(
+            modes,
+            key=lambda m: float(m.get("intensity_km_mol", 0.0) or 0.0),
+            reverse=True,
+        )
+        vib_frequencies = [m.get("frequency_cm1") for m in modes_sorted[:5] if m.get("frequency_cm1") is not None]
 
     excited = data.get("excited_states", {}) or {}
     excited_count = len(excited)
@@ -542,6 +497,8 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
     # Redox potentials from DELFIN.txt and OCCUPIER data
     delfin_summary = data.get("delfin_summary", {}) or {}
     redox_potentials_fc = delfin_summary.get("redox_potentials_vs_fc", {})
+    computed_redox = (data.get("computed", {}) or {}).get("redox_potentials", {}) or {}
+    computed_final = computed_redox.get("final", {}) or {}
     oxidized_states = data.get("oxidized_states", {}) or {}
     reduced_states = data.get("reduced_states", {}) or {}
     occupier_data = data.get("occupier", {}) or {}
@@ -555,27 +512,40 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         except Exception:
             return str(val) + suffix
 
-    # Parse GOAT conformer count if available
-    goat_conformer_count = _parse_goat_conformer_count(project_dir)
+    # GOAT conformer count from JSON (if available)
+    goat_conformer_count = meta.get("goat_conformer_count")
+    xtb_goat_enabled = str(control.get("XTB_GOAT", "")).strip().lower() in {"yes", "true", "1", "on"}
+    xtb_method_raw = str(control.get("xTB_method", "")).strip().upper()
+    if xtb_method_raw == "XTB2":
+        xtb_method_label = "GFN2-xTB"
+    elif xtb_method_raw == "XTB1":
+        xtb_method_label = "GFN1-xTB"
+    else:
+        xtb_method_label = "GFN-xTB"
 
     # Build summary
     parts = []
 
     # Opening statement about workflow
-    opening = "The SMILES of the target system were converted into 3D coordinates using RDKit. "
-    if goat_conformer_count is not None:
-        opening += (
-            f"A global geometry optimization with the GOAT algorithm and GFN-xTB in ORCA "
-            f"identified {goat_conformer_count} conformer{'s' if goat_conformer_count != 1 else ''} "
-            f"below 3 kcal/mol. The energetically lowest conformer provided the starting structure for subsequent high-level DFT calculations using ORCA. "
-        )
-    else:
-        opening += (
-            "A global geometry optimization with the GOAT algorithm and GFN-xTB in ORCA "
-            "provided the starting structure for subsequent high-level DFT calculations using ORCA. "
-        )
-    opening += "The entire workflow, from initial structure generation to high-level DFT calculations, was automated by DELFIN."
-    parts.append(opening)
+    opening_parts = []
+    if input_data.get("smiles"):
+        opening_parts.append("The SMILES of the target system were converted into 3D coordinates using RDKit.")
+    if xtb_goat_enabled:
+        if goat_conformer_count is not None:
+            opening_parts.append(
+                f"A global geometry optimization with the GOAT algorithm and {xtb_method_label} in ORCA "
+                f"identified {goat_conformer_count} conformer{'s' if goat_conformer_count != 1 else ''} "
+                f"below 3 kcal/mol. The energetically lowest conformer provided the starting structure for subsequent high-level DFT calculations using ORCA."
+            )
+        else:
+            opening_parts.append(
+                f"A global geometry optimization with the GOAT algorithm and {xtb_method_label} in ORCA "
+                "provided the starting structure for subsequent high-level DFT calculations using ORCA."
+            )
+    opening_parts.append(
+        "The entire workflow, from initial structure generation to high-level DFT calculations, was automated by DELFIN."
+    )
+    parts.append(" ".join(opening_parts))
 
     # Theory level with all details
     theory_parts = [f"{functional}/{basis}"]
@@ -643,7 +613,7 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
     if vib_frequencies:
         vib_list = ", ".join(f"{freq:.0f}" for freq in vib_frequencies)
         parts.append(f"The most intense vibrational frequencies are approximately {vib_list} cm⁻¹.")
-    if ir_file:
+    if modes:
         parts.append(f"Negative frequencies detected: {negative_freqs}.")
 
     # Excited states + TDDFT settings from S1
@@ -753,17 +723,22 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
             if charge is not None and energy is not None:
                 step_info = _step_label(state_name)
                 # Try to get OCCUPIER info for this state
-                occ_key = state_name.replace("_step_", "")
-                occ_info = occupier_data.get(occ_key, {})
+                occ_info = occupier_data.get(state_name, {})
+                if not occ_info:
+                    occ_key = state_name.replace("_step_", "")
+                    occ_info = occupier_data.get(occ_key, {})
                 preferred_idx = occ_info.get("preferred_index")
                 if preferred_idx is not None and occ_info.get("entries"):
                     preferred_entry = next((e for e in occ_info["entries"] if e.get("index") == preferred_idx), None)
                     if preferred_entry:
                         mult = preferred_entry.get("multiplicity", mult)
+                        bs_val = preferred_entry.get("BS", "")
                         unpaired_alpha = preferred_entry.get("unpaired_alpha")
                         unpaired_beta = preferred_entry.get("unpaired_beta")
                         spin_cont = preferred_entry.get("spin_contamination")
                         info = f"oxidation{step_info} (charge {charge:+d}, multiplicity {mult}"
+                        if bs_val:
+                            info += f", BS {bs_val}"
                         if unpaired_alpha is not None and unpaired_beta is not None:
                             info += f", α/β electrons: {unpaired_alpha}/{unpaired_beta}"
                         if spin_cont is not None:
@@ -782,17 +757,22 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
             energy = opt.get("hartree")
             if charge is not None and energy is not None:
                 step_info = _step_label(state_name)
-                occ_key = state_name.replace("_step_", "")
-                occ_info = occupier_data.get(occ_key, {})
+                occ_info = occupier_data.get(state_name, {})
+                if not occ_info:
+                    occ_key = state_name.replace("_step_", "")
+                    occ_info = occupier_data.get(occ_key, {})
                 preferred_idx = occ_info.get("preferred_index")
                 if preferred_idx is not None and occ_info.get("entries"):
                     preferred_entry = next((e for e in occ_info["entries"] if e.get("index") == preferred_idx), None)
                     if preferred_entry:
                         mult = preferred_entry.get("multiplicity", mult)
+                        bs_val = preferred_entry.get("BS", "")
                         unpaired_alpha = preferred_entry.get("unpaired_alpha")
                         unpaired_beta = preferred_entry.get("unpaired_beta")
                         spin_cont = preferred_entry.get("spin_contamination")
                         info = f"reduction{step_info} (charge {charge:+d}, multiplicity {mult}"
+                        if bs_val:
+                            info += f", BS {bs_val}"
                         if unpaired_alpha is not None and unpaired_beta is not None:
                             info += f", α/β electrons: {unpaired_alpha}/{unpaired_beta}"
                         if spin_cont is not None:
@@ -807,17 +787,38 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         if redox_parts:
             parts.append(f"Redox calculations were performed for {', '.join(redox_parts)}.")
 
-    if not redox_potentials_fc or (len(redox_potentials_fc) == 1 and 'E_ref' in redox_potentials_fc):
-        parts.append("Redox potentials were not calculated.")
+    if not computed_final and (not redox_potentials_fc or (len(redox_potentials_fc) == 1 and 'E_ref' in redox_potentials_fc)):
+        pass
 
     if not occupier_data:
-        parts.append("No spin state analysis were done using OCCUPIER.")
+        pass
 
     if control_flags.get("imag"):
         parts.append("IMAG was used to eliminate imaginary frequencies.")
 
-    # Add redox potentials vs Fc+/Fc from DELFIN.txt
-    if redox_potentials_fc and len(redox_potentials_fc) > 1:
+    # Add redox potentials (prefer computed values, fallback to DELFIN.txt)
+    computed_values = [computed_final.get(k) for k in ["E_red", "E_red_2", "E_red_3", "E_ox", "E_ox_2", "E_ox_3"]]
+    has_computed_redox = any(val is not None for val in computed_values)
+    if has_computed_redox:
+        redox_strs = []
+        label_map = {
+            "E_red": "E_red1",
+            "E_red_2": "E_red2",
+            "E_red_3": "E_red3",
+            "E_ox": "E_ox1",
+            "E_ox_2": "E_ox2",
+            "E_ox_3": "E_ox3",
+        }
+        for key in ['E_red', 'E_red_2', 'E_red_3', 'E_ox', 'E_ox_2', 'E_ox_3']:
+            if computed_final.get(key) is not None:
+                label = label_map.get(key, key)
+                redox_strs.append(f"{label}: {computed_final[key]:.3f} V")
+        e_ref = computed_redox.get("E_ref")
+        if e_ref is not None and redox_strs:
+            redox_strs.append(f"E_ref: {e_ref:.3f} V")
+        if redox_strs:
+            parts.append(f"Redox potentials (vs. Fc⁺/Fc): {', '.join(redox_strs)}.")
+    elif redox_potentials_fc and len(redox_potentials_fc) > 1:
         redox_strs = []
         label_map = {
             "E_red": "E_red1",
@@ -1241,92 +1242,77 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_
     _prevent_row_splits(table)
 
 
-def _extract_frontier_orbitals(orbital_data: Optional[Dict[str, Any]]) -> list[tuple[str, str, str]]:
-    """Extract LUMO+3 to HOMO-3 orbital energies from orbital data.
+def _extract_frontier_orbitals(orbital_data: Optional[Dict[str, Any]]) -> list[tuple[str, str, str, str]]:
+    """Extract MO window around SOMO/HOMO from orbital data.
 
     Returns:
-        List of tuples (Index, Energy, Orbital) where Orbital is empty string.
+        List of tuples (MO, Occupancy, Energy, Orbital).
     """
-    if not orbital_data or "orbital_list" not in orbital_data:
+    if not orbital_data:
         return []
 
-    orbital_list = orbital_data["orbital_list"]
-
-    # Find HOMO index (last occupied orbital)
-    homo_idx = None
-    for orbital in orbital_list:
-        if orbital.get("occupancy", 0) > 1e-3:
-            homo_idx = orbital.get("index")
-
-    if homo_idx is None:
+    window = orbital_data.get("mo_window") or []
+    if not window:
         return []
 
-    # Define target orbitals relative to HOMO (LUMO is HOMO+1)
-    target_orbitals = [
-        ("LUMO+3", homo_idx + 4),
-        ("LUMO+2", homo_idx + 3),
-        ("LUMO+1", homo_idx + 2),
-        ("LUMO", homo_idx + 1),
-        ("HOMO", homo_idx),
-        ("HOMO-1", homo_idx - 1),
-        ("HOMO-2", homo_idx - 2),
-        ("HOMO-3", homo_idx - 3),
-    ]
-
-    # Build index to orbital mapping
-    idx_to_orbital = {orb["index"]: orb for orb in orbital_list}
-
-    # Extract energies
     rows = []
-    for label, idx in target_orbitals:
-        if idx in idx_to_orbital:
-            energy_ev = idx_to_orbital[idx].get("energy_eV")
-            if energy_ev is not None:
-                energy_str = f"{energy_ev:.4f}"
-            else:
-                energy_str = "n/a"
+    for entry in window:
+        idx = entry.get("index")
+        spin = entry.get("spin")
+        label = entry.get("label")
+        occ = entry.get("occupancy")
+        energy_ev = entry.get("energy_eV")
+        if idx is None:
+            continue
+        if label:
+            mo_label = label
         else:
-            energy_str = "n/a"
-        rows.append((label, energy_str, ""))
+            mo_label = f"MO {idx}"
+            if spin:
+                mo_label = f"{mo_label} ({spin})"
+        occ_str = "n/a" if occ is None else f"{occ:.2f}"
+        energy_str = "n/a" if energy_ev is None else f"{energy_ev:.4f}"
+        rows.append((mo_label, occ_str, energy_str, ""))
 
     return rows
 
 
 def _add_frontier_orbital_table(doc: Document, orbital_data: Optional[Dict[str, Any]], mo_pngs: Dict[str, Path] | None = None) -> None:
-    """Add table showing frontier orbital energies (LUMO+3 to HOMO-3) with MO visualizations."""
+    """Add table showing MO energies around SOMO/HOMO with MO visualizations."""
     rows = _extract_frontier_orbitals(orbital_data)
     if not rows:
         return
 
     heading = doc.add_heading("Frontier Orbital Energies", level=2)
     _keep_heading_with_table(heading)
-    table = doc.add_table(rows=1, cols=3)
+    table = doc.add_table(rows=1, cols=4)
     table.style = "Light Grid Accent 1"
 
     # Header row
-    headers = ["Index", "Energy (eV)", "Orbital"]
+    headers = ["MO", "Occupancy", "Energy (eV)", "Orbital"]
     for idx, text in enumerate(headers):
         cell = table.rows[0].cells[idx]
         cell.text = text
     _style_header_row(table.rows[0])
 
     # Data rows
-    for label, energy, orbital in rows:
+    for label, occupancy, energy, orbital in rows:
         row_cells = table.add_row().cells
         row_cells[0].text = label
-        row_cells[1].text = energy
+        row_cells[1].text = occupancy
+        row_cells[2].text = energy
 
         # Add MO image if available
         if mo_pngs and label in mo_pngs:
             mo_png = mo_pngs[label]
             if mo_png.exists():
-                paragraph = row_cells[2].paragraphs[0]
+                paragraph = row_cells[3].paragraphs[0]
                 run = paragraph.add_run()
                 run.add_picture(str(mo_png), width=Inches(2.0))
             else:
-                row_cells[2].text = orbital
+                row_cells[3].text = orbital
         else:
-            row_cells[2].text = orbital
+            row_cells[3].text = orbital
 
     _prevent_row_splits(table)
 
@@ -2308,7 +2294,7 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
         return None
 
 
-def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> Dict[str, Path]:
+def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]]) -> Dict[str, Path]:
     """Generate molecular orbital visualizations using ORCA and PyMOL.
 
     Args:
@@ -2327,88 +2313,67 @@ def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> 
         logger.warning("PyMOL not available; skipping MO visualizations")
         return {}
 
+    # Try S0.gbw first, fallback to initial.gbw in parent directory
     gbw_file = project_dir / "ESD" / "S0.gbw"
     if not gbw_file.exists():
-        logger.warning(f"S0.gbw not found at {gbw_file}")
-        return {}
-
-    # Find HOMO orbital number from S0.out (fallback to initial.out in project root)
-    s0_candidates = [
-        project_dir / "ESD" / "S0.out",
-        project_dir / "initial.out",
-    ]
-    s0_out = next((path for path in s0_candidates if path.exists()), None)
-    if not s0_out:
-        logger.warning("S0.out not found in ESD and no fallback initial.out in project root")
-        return {}
-
-    homo_number = None
-    try:
-        with open(s0_out, 'r') as f:
-            lines = f.readlines()
-            for i, line in enumerate(lines):
-                if "ORBITAL ENERGIES" in line:
-                    # Find the last occupied orbital
-                    for j in range(i, min(i + 300, len(lines))):
-                        if "NO   OCC" in lines[j]:
-                            # Parse orbital lines
-                            for k in range(j + 1, min(j + 250, len(lines))):
-                                parts = lines[k].split()
-                                if len(parts) >= 2:
-                                    try:
-                                        orb_num = int(parts[0])
-                                        occ = float(parts[1])
-                                        # HOMO is the last orbital with occupation 2.0
-                                        if occ > 1.9:
-                                            homo_number = orb_num
-                                        elif occ < 0.1 and homo_number is not None:
-                                            # Found LUMO, stop searching
-                                            break
-                                    except (ValueError, IndexError):
-                                        continue
-                            break
-                    if homo_number is not None:
-                        break
-    except Exception as exc:
-        logger.error(f"Failed to find HOMO orbital number: {exc}")
-        return {}
-
-    if homo_number is None:
-        logger.warning("Could not determine HOMO orbital number")
-        return {}
-
-    logger.info(f"HOMO orbital number: {homo_number}")
+        gbw_file = project_dir / "initial.gbw"
+        if not gbw_file.exists():
+            logger.warning(f"S0.gbw not found in ESD and no initial.gbw fallback in {project_dir}")
+            return {}
 
     mo_images = {}
 
     # Work directly in ESD directory where .gbw file is located
     esd_dir = gbw_file.parent
+    run_dir = esd_dir / "run"
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        run_dir = esd_dir
 
-    for rel_idx in orbital_indices:
-        # Calculate absolute MO number
-        abs_mo_number = homo_number + rel_idx
+    # Ensure densitiesinfo is available where orca_plot expects it
+    dens_candidates = [
+        project_dir / f"{gbw_file.stem}.densitiesinfo",
+        esd_dir / f"{gbw_file.stem}.densitiesinfo",
+        project_dir / "initial.densitiesinfo",
+        esd_dir / "initial.densitiesinfo",
+    ]
+    dens_src = next((p for p in dens_candidates if p.exists()), None)
+    if dens_src is not None:
+        dests = {run_dir / dens_src.name, run_dir / f"{gbw_file.stem}.densitiesinfo"}
+        for dens_dest in dests:
+            if not dens_dest.exists():
+                try:
+                    shutil.copy2(dens_src, dens_dest)
+                except Exception:
+                    pass
 
-        # Determine orbital name
-        if rel_idx == 0:
-            mo_name = "HOMO"
-        elif rel_idx < 0:
-            mo_name = f"HOMO{rel_idx}"  # e.g., HOMO-1
-        elif rel_idx == 1:
-            mo_name = "LUMO"
+    for entry in mo_entries:
+        abs_mo_number = entry.get("index")
+        spin = entry.get("spin")
+        label = entry.get("label")
+        if abs_mo_number is None:
+            continue
+        if label:
+            mo_name = label
         else:
-            mo_name = f"LUMO+{rel_idx-1}"  # e.g., LUMO+1 for index 2
+            mo_name = f"MO {abs_mo_number}"
+            if spin:
+                mo_name = f"{mo_name} ({spin})"
 
-        logger.info(f"Generating MO visualization for {mo_name} (orbital {abs_mo_number})")
+        logger.info(f"Generating MO visualization for {mo_name}")
 
         try:
             # Prepare orca_plot input for interactive mode
             # Menu sequence:
             # 1 - Enter type of plot -> 1 (MO-PLOT)
             # 2 - Enter no of orbital -> abs_mo_number
+            # 3 - Enter operator of orbital (0=alpha,1=beta)
             # 4 - Enter number of grid intervals -> 100
             # 11 - Generate the plot
             # 12 - exit
-            orca_input = f"1\n1\n2\n{abs_mo_number}\n4\n100\n11\n12\n"
+            spin_op = 0 if spin in (None, "alpha") else 1
+            orca_input = f"1\n1\n2\n{abs_mo_number}\n3\n{spin_op}\n4\n100\n11\n12\n"
 
             # Run orca_plot in interactive mode from ESD directory
             orca_plot_exe = _orca_plot_binary()
@@ -2416,18 +2381,47 @@ def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> 
                 logger.warning("orca_plot not found (PATH or /opt/orca/orca_plot); skipping MO cube generation")
                 continue
 
+            env = os.environ.copy()
+            env["ORCA_SCRDIR"] = str(esd_dir)
+            env["ORCA_TMPDIR"] = str(esd_dir)
+            env.setdefault("TMPDIR", str(esd_dir))
             result = subprocess.run(
-                [orca_plot_exe, "S0.gbw", "-i"],
+                [orca_plot_exe, gbw_file.name, "-i"],
                 input=orca_input.encode(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=esd_dir,
+                env=env,
                 timeout=120
             )
 
             if result.returncode != 0:
-                logger.warning(f"orca_plot failed for {mo_name}: {result.stderr.decode()}")
-                continue
+                stderr_text = result.stderr.decode()
+                logger.warning(f"orca_plot failed for {mo_name}: {stderr_text}")
+                # Retry once if orca_plot expects a missing densitiesinfo at a recorded path
+                retry_path = None
+                match = re.search(r"Filename:\s*(\S+\.densitiesinfo)", stderr_text)
+                if match:
+                    retry_path = Path(match.group(1))
+                if retry_path and dens_src is not None:
+                    try:
+                        retry_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(dens_src, retry_path)
+                        logger.info("Copied %s to %s for orca_plot retry", dens_src.name, retry_path.parent)
+                        result = subprocess.run(
+                            [orca_plot_exe, gbw_file.name, "-i"],
+                            input=orca_input.encode(),
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            cwd=esd_dir,
+                            env=env,
+                            timeout=120
+                        )
+                    except Exception:
+                        pass
+                if result.returncode != 0:
+                    logger.warning(f"orca_plot failed for {mo_name} after retry: {result.stderr.decode()}")
+                    continue
 
             # Find generated cube file (ORCA creates S0.mo<X>a.cube or similar)
             cube_files = sorted(esd_dir.glob("*.cube"), key=lambda p: p.stat().st_mtime)
@@ -2441,9 +2435,14 @@ def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> 
             pymol.finish_launching(['pymol', '-c'])
             cmd.reinitialize()
 
-            # Load molecular structure from S0.xyz
-            xyz_file = project_dir / "ESD" / "S0.xyz"
-            if xyz_file.exists():
+            # Load molecular structure from S0.xyz or initial.xyz
+            xyz_candidates = [
+                project_dir / "ESD" / "S0.xyz",
+                project_dir / "initial.xyz",
+                gbw_file.with_suffix(".xyz"),
+            ]
+            xyz_file = next((p for p in xyz_candidates if p.exists()), None)
+            if xyz_file:
                 cmd.load(str(xyz_file), 'molecule')
 
                 # Display molecule as sticks
@@ -2488,7 +2487,8 @@ def _create_mo_visualizations(project_dir: Path, orbital_indices: list[int]) -> 
             cmd.zoom('all', buffer=2.5)
 
             # Render
-            output_png = project_dir / f"MO_{mo_name}.png"
+            safe_name = mo_name.replace(" ", "_").replace("(", "").replace(")", "")
+            output_png = project_dir / f"MO_{safe_name}.png"
             cmd.ray(1200, 1200)
             cmd.png(str(output_png), dpi=150)
 
@@ -2736,9 +2736,6 @@ def generate_combined_docx_report(
     if assets is None:
         assets = ReportAssets()
 
-    if assets.smiles_png is None:
-        assets.smiles_png = _generate_smiles_image(project_dir)
-
     if not json_path.exists():
         logger.error("JSON data file not found: %s", json_path)
         return None
@@ -2748,6 +2745,10 @@ def generate_combined_docx_report(
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to read %s: %s", json_path, exc)
         return None
+
+    if assets.smiles_png is None:
+        input_data = data.get("input", {}) or {}
+        assets.smiles_png = _generate_smiles_image(project_dir, input_data)
 
     doc = Document()
 
@@ -2812,7 +2813,7 @@ def generate_combined_docx_report(
 
     # SMILES picture (if available) near the top
     if assets.smiles_png and assets.smiles_png.exists():
-        doc.add_heading("Structure from SMILES (input.txt)", level=2)
+        doc.add_heading("Structure from SMILES", level=2)
         doc.add_picture(str(assets.smiles_png), width=Inches(2.25))
         doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
 

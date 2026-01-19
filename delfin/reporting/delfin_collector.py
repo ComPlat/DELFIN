@@ -23,6 +23,10 @@ from typing import Any, Dict, Optional
 from delfin.common.logging import get_logger
 from delfin.uv_vis_spectrum import parse_absorption_spectrum
 from delfin.utils import get_git_commit_info
+from delfin.config import read_control_file, _parse_control_file, get_E_ref
+from delfin.energies import find_gibbs_energy
+from delfin.cli_calculations import calculate_redox_potentials, select_final_potentials
+from delfin.ir_spectrum import parse_ir_spectrum
 
 logger = get_logger(__name__)
 
@@ -100,6 +104,212 @@ def parse_control_flags(project_dir: Path) -> Dict[str, Any]:
 
     return flags
 
+
+def parse_control_config(project_dir: Path) -> Dict[str, Any]:
+    """Parse CONTROL.txt and return parsed values and validated config."""
+    control = project_dir / "CONTROL.txt"
+    if not control.exists():
+        return {}
+
+    data: Dict[str, Any] = {"parsed": {}, "validated": {}}
+    try:
+        content = control.read_text(encoding="utf-8", errors="ignore")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to read CONTROL.txt: %s", exc)
+        content = ""
+
+    if content:
+        try:
+            data["parsed"] = _parse_control_file(
+                str(control),
+                keep_steps_literal=True,
+                content=content,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to parse CONTROL.txt (raw): %s", exc)
+            data["parsed"] = {}
+
+    try:
+        data["validated"] = read_control_file(str(control))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to parse CONTROL.txt (validated): %s", exc)
+        data["validated"] = {}
+
+    return data
+
+
+def parse_ir_spectrum_data(project_dir: Path) -> Optional[Dict[str, Any]]:
+    """Parse IR spectrum data from the first available frequency output."""
+    candidates = [
+        project_dir / "ESD" / "S0.out",
+        project_dir / "S0.out",
+        project_dir / "initial.out",
+    ]
+    output_file = next((path for path in candidates if path.exists()), None)
+    if not output_file:
+        return None
+
+    modes = parse_ir_spectrum(output_file)
+    if not modes:
+        return None
+
+    return {
+        "source_file": output_file.name,
+        "modes": [
+            {
+                "mode_number": m.mode_number,
+                "frequency_cm1": m.frequency_cm1,
+                "epsilon": m.epsilon,
+                "intensity_km_mol": m.intensity_km_mol,
+                "t_squared": m.t_squared,
+                "tx": m.tx,
+                "ty": m.ty,
+                "tz": m.tz,
+            }
+            for m in modes
+        ],
+    }
+
+
+def parse_goat_conformer_count(project_dir: Path) -> Optional[int]:
+    """Parse 'Conformers below 3 kcal/mol: X' from XTB_GOAT output."""
+    goat_candidates = [
+        project_dir / "XTB_GOAT" / "output_XTB_GOAT.out",
+        project_dir / "XTB2_GOAT" / "output_XTB_GOAT.out",
+        project_dir / "output_XTB_GOAT.out",
+    ]
+
+    for goat_file in goat_candidates:
+        if not goat_file.exists():
+            continue
+        try:
+            content = goat_file.read_text(encoding="utf-8", errors="ignore")
+            match = re.search(r'Conformers below 3 kcal/mol:\s*(\d+)', content)
+            if match:
+                return int(match.group(1))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to parse GOAT conformer count from %s: %s", goat_file, exc)
+    return None
+
+
+def parse_input_data(project_dir: Path, control_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse input file for SMILES or XYZ body and store minimal data for reporting."""
+    validated = control_config.get("validated", {}) if control_config else {}
+    input_entry = (validated.get("input_file") or "input.txt").strip() or "input.txt"
+    input_path = Path(input_entry)
+    if not input_path.is_absolute():
+        input_path = project_dir / input_path
+
+    data: Dict[str, Any] = {"source_file": input_path.name}
+    if not input_path.exists():
+        return data
+
+    try:
+        lines = [line.strip() for line in input_path.read_text(encoding="utf-8", errors="ignore").splitlines()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to read input file %s: %s", input_path, exc)
+        return data
+
+    content = [ln for ln in lines if ln and not ln.startswith("#")]
+    if content and all(len(ln.split()) >= 4 and ln.split()[0][0].isalpha() for ln in content):
+        data["xyz_body"] = content
+        return data
+
+    if content:
+        data["smiles"] = content[0]
+    return data
+
+
+def collect_gibbs_energies(project_dir: Path) -> Dict[str, Optional[float]]:
+    """Collect Gibbs free energies for ground/charged states."""
+    state_files = {
+        "0": project_dir / "initial.out",
+        "+1": project_dir / "ox_step_1.out",
+        "+2": project_dir / "ox_step_2.out",
+        "+3": project_dir / "ox_step_3.out",
+        "-1": project_dir / "red_step_1.out",
+        "-2": project_dir / "red_step_2.out",
+        "-3": project_dir / "red_step_3.out",
+    }
+
+    energies: Dict[str, Optional[float]] = {}
+    for key, path in state_files.items():
+        if not path.exists():
+            energies[key] = None
+            continue
+        energies[key] = find_gibbs_energy(str(path))
+
+    # Fallback: try ESD/S0.out for the neutral state if initial.out is missing
+    if energies.get("0") is None:
+        esd_s0 = project_dir / "ESD" / "S0.out"
+        if esd_s0.exists():
+            energies["0"] = find_gibbs_energy(str(esd_s0))
+
+    return energies
+
+
+def serialize_esd_summary(summary: Any) -> Dict[str, Any]:
+    """Serialize ESDSummary dataclasses to JSON-friendly dicts."""
+    if summary is None:
+        return {}
+
+    states = {}
+    for key, result in summary.states.items():
+        states[key] = {
+            "fspe_hartree": result.fspe,
+            "zpe_hartree": result.zpe,
+            "gibbs_hartree": result.gibbs,
+            "source_file": str(result.source),
+        }
+
+    isc = {}
+    for key, result in summary.isc.items():
+        isc[key] = {
+            "rate_s1": result.rate,
+            "temperature_K": result.temperature,
+            "delta_E_cm1": result.delta_cm1,
+            "soc_re_cm1": result.soc[0] if result.soc else None,
+            "soc_im_cm1": result.soc[1] if result.soc else None,
+            "fc_percent": result.fc_percent,
+            "ht_percent": result.ht_percent,
+            "source_file": str(result.source),
+        }
+
+    ic = {}
+    for key, result in summary.ic.items():
+        ic[key] = {
+            "rate_s1": result.rate,
+            "temperature_K": result.temperature,
+            "delta_E_cm1": result.delta_cm1,
+            "source_file": str(result.source),
+        }
+
+    fluor = {}
+    for key, result in summary.fluor.items():
+        fluor[key] = {
+            "rate_s1": result.rate,
+            "temperature_K": result.temperature,
+            "delta_E_cm1": result.delta_cm1,
+            "source_file": str(result.source),
+        }
+
+    phosp = {}
+    for key, result in summary.phosp.items():
+        phosp[key] = {
+            "sublevel_rates_s1": list(result.sublevel_rates),
+            "rate_mean_s1": result.rate_mean,
+            "temperature_K": result.temperature,
+            "delta_E_cm1": result.delta_cm1,
+            "source_file": str(result.source),
+        }
+
+    return {
+        "states": states,
+        "isc": isc,
+        "ic": ic,
+        "fluorescence": fluor,
+        "phosphorescence": phosp,
+    }
 
 def parse_initial_inp(project_dir: Path) -> Dict[str, Any]:
     """Parse initial.inp (or fallback S0.inp) file for metadata."""
@@ -455,23 +665,85 @@ def parse_orbitals(output_file: Path) -> Optional[Dict[str, Any]]:
         orbitals = []
         homo_energy = None
         lumo_energy = None
+        homo_index = None
+        somo_index = None
+        spin_polarized = any("spin" in entry for entry in orbital_list)
+        occupation_scheme = "RKS"
 
         for entry in orbital_list:
             orbitals.append(entry)
             occ = entry["occupancy"]
             energy_ev = entry["energy_eV"]
+            idx = entry["index"]
 
             if occ > 1e-3:
                 homo_energy = energy_ev
+                homo_index = idx
+                if occ <= 1.5:
+                    somo_index = idx
             elif lumo_energy is None:
                 lumo_energy = energy_ev
+            if not spin_polarized and 0.25 < occ < 1.75:
+                occupation_scheme = "UKS"
+
+        if spin_polarized:
+            occupation_scheme = "UKS"
+
+        center_index = somo_index if (spin_polarized and somo_index is not None) else homo_index
+        mo_window = []
+        if center_index is not None:
+            for rel in range(-5, 6):
+                idx = center_index + rel
+                if spin_polarized:
+                    for spin in ("alpha", "beta"):
+                        match = next(
+                            (o for o in orbitals if o.get("index") == idx and o.get("spin") == spin),
+                            None,
+                        )
+                        if match:
+                            mo_window.append(
+                                {
+                                    "index": idx,
+                                    "spin": spin,
+                                    "occupancy": match.get("occupancy"),
+                                    "energy_eV": match.get("energy_eV"),
+                                }
+                            )
+                else:
+                    match = next((o for o in orbitals if o.get("index") == idx), None)
+                    if match:
+                        label = None
+                        if homo_index is not None:
+                            offset = idx - homo_index
+                            if offset == 0:
+                                label = "HOMO"
+                            elif offset < 0:
+                                label = f"HOMO{offset}"
+                            elif offset == 1:
+                                label = "LUMO"
+                            else:
+                                label = f"LUMO+{offset-1}"
+                        mo_window.append(
+                            {
+                                "index": idx,
+                                "spin": None,
+                                "label": label,
+                                "occupancy": match.get("occupancy"),
+                                "energy_eV": match.get("energy_eV"),
+                            }
+                        )
 
         if homo_energy is not None and lumo_energy is not None:
             return {
                 "homo_eV": homo_energy,
                 "lumo_eV": lumo_energy,
                 "gap_eV": lumo_energy - homo_energy,
-                "orbital_list": orbitals
+                "orbital_list": orbitals,
+                "spin_polarized": spin_polarized,
+                "occupation_scheme": occupation_scheme,
+                "homo_index": homo_index,
+                "somo_index": somo_index,
+                "mo_window": mo_window,
             }
 
     except Exception as e:
@@ -542,6 +814,10 @@ def parse_occupier_folder(folder: Path) -> Optional[Dict[str, Any]]:
             mult_match = re.search(r"multiplicity\s+(\d+)", ln, re.IGNORECASE)
             if mult_match and block:
                 block["multiplicity"] = int(mult_match.group(1))
+                bs_match = re.search(r"BrokenSym\s+([-\d\s,]+)", ln, re.IGNORECASE)
+                if bs_match:
+                    bs_raw = bs_match.group(1).strip().replace(" ", "")
+                    block["BS"] = bs_raw
                 continue
 
             spin_match = re.search(r"Spin Contamination.*?:\s*([-\d.]+|N/A)", ln, re.IGNORECASE)
@@ -889,6 +1165,7 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     occupier_dir = project_dir / "OCCUPIER"
     summary_data = parse_esd_summary(project_dir)
     control_flags = parse_control_flags(project_dir)
+    control_config = parse_control_config(project_dir)
 
     # Read ESD_modus from CONTROL.txt to determine correct filenames for hybrid1 mode
     esd_mode = 'tddft'  # default
@@ -910,9 +1187,12 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     # Get git commit info for reproducibility tracking
     git_commit = get_git_commit_info()
 
+    # Use validated config if available for computed values
+    validated_config = control_config.get("validated", {}) if control_config else {}
     data = {
         "git_commit": git_commit,
         "metadata": parse_initial_inp(project_dir),
+        "input": {},
         "ground_state_S0": {},
         "excited_states": {},
         "oxidized_state": {},
@@ -929,7 +1209,20 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         "photophysical_rates": {},
         "delfin_summary": delfin_summary,
         "control_flags": control_flags,
+        "control": control_config,
+        "computed": {},
+        "esd_results": {},
     }
+
+    goat_conformer_count = parse_goat_conformer_count(project_dir)
+    if goat_conformer_count is not None:
+        data["metadata"]["goat_conformer_count"] = goat_conformer_count
+
+    data["input"] = parse_input_data(project_dir, control_config)
+
+    ir_data = parse_ir_spectrum_data(project_dir)
+    if ir_data:
+        data["vibrational_frequencies"] = ir_data
 
     # Parse S0 (fallback to initial.out if S0.out is missing)
     s0_candidates = [
@@ -1047,6 +1340,39 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     parse_charged_series("ox", data["oxidized_states"], "oxidized_state")
     parse_charged_series("red", data["reduced_states"], "reduced_state")
 
+    # Compute redox potentials from Gibbs energies (if possible)
+    gibbs_energies = collect_gibbs_energies(project_dir)
+    if any(val is not None for val in gibbs_energies.values()):
+        E_ref = get_E_ref(validated_config) if validated_config else None
+        if E_ref is not None:
+            m1_avg, m2_step, m3_mix, use_flags = calculate_redox_potentials(
+                validated_config,
+                gibbs_energies,
+                E_ref,
+            )
+            E_ox, E_ox_2, E_ox_3, E_red, E_red_2, E_red_3 = select_final_potentials(
+                m1_avg,
+                m2_step,
+                m3_mix,
+                use_flags,
+            )
+            data["computed"]["redox_potentials"] = {
+                "gibbs_energies_hartree": gibbs_energies,
+                "E_ref": E_ref,
+                "method_flags": use_flags,
+                "m1_avg": m1_avg,
+                "m2_step": m2_step,
+                "m3_mix": m3_mix,
+                "final": {
+                    "E_ox": E_ox,
+                    "E_ox_2": E_ox_2,
+                    "E_ox_3": E_ox_3,
+                    "E_red": E_red,
+                    "E_red_2": E_red_2,
+                    "E_red_3": E_red_3,
+                },
+            }
+
     # Parse excited states (S1-S6, T1-T6)
     for state in ["S1", "S2", "S3", "S4", "S5", "S6", "T1", "T2", "T3", "T4", "T5", "T6"]:
         # Resolve filename for hybrid1 mode: S1_second.out, T2_second.out, etc.
@@ -1130,6 +1456,48 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
             occupier_results[key] = parsed
     if occupier_results:
         data["occupier"] = occupier_results
+
+    # Collect ESD summary data from ESD outputs
+    try:
+        from delfin.esd_results import collect_esd_results
+        from delfin.esd_module import parse_esd_config
+
+        esd_enabled, esd_states, esd_iscs, esd_ics = parse_esd_config(validated_config)
+        if esd_enabled:
+            esd_summary = collect_esd_results(esd_dir, esd_states, esd_iscs, esd_ics, config=validated_config)
+            data["esd_results"] = serialize_esd_summary(esd_summary)
+
+            # Compute E_00 values if possible
+            states = esd_summary.states
+            s0_data = states.get("S0")
+            if s0_data and s0_data.fspe is not None and s0_data.zpe is not None:
+                e00: Dict[str, float] = {}
+                for key in ["S1", "S2", "T1", "T2"]:
+                    state_data = states.get(key)
+                    if state_data and state_data.fspe is not None and state_data.zpe is not None:
+                        val = ((state_data.fspe - s0_data.fspe) + (state_data.zpe - s0_data.zpe)) * HARTREE_TO_EV
+                        e00[key] = val
+                if e00:
+                    data["computed"]["E_00_eV"] = e00
+
+            redox = data["computed"].get("redox_potentials", {}).get("final", {})
+            if redox and data["computed"].get("E_00_eV"):
+                e00 = data["computed"]["E_00_eV"]
+                e_red = redox.get("E_red")
+                e_ox = redox.get("E_ox")
+                derived = {}
+                if e_red is not None and e00.get("S1") is not None:
+                    derived["E_red_star_S1"] = e_red + e00["S1"]
+                if e_red is not None and e00.get("T1") is not None:
+                    derived["E_red_star_T1"] = e_red + e00["T1"]
+                if e_ox is not None and e00.get("S1") is not None:
+                    derived["E_ox_star_S1"] = e_ox - e00["S1"]
+                if e_ox is not None and e00.get("T1") is not None:
+                    derived["E_ox_star_T1"] = e_ox - e00["T1"]
+                if derived:
+                    data["computed"]["redox_excited_state"] = derived
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to collect ESD summary data: %s", exc)
 
     # Parse ISC data
     isc_pairs = [("S1", "T1"), ("S1", "T2"), ("S2", "T1")]
