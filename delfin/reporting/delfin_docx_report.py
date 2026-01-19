@@ -164,6 +164,7 @@ def _add_key_value_table(doc: Document, title: str, rows: Iterable[tuple[str, st
     heading = doc.add_heading(title, level=2)
     _keep_heading_with_table(heading)
     table = doc.add_table(rows=0, cols=2)
+    table.autofit = True
     table.style = "Light Grid Accent 1"
     for key, value in rows:
         row_cells = table.add_row().cells
@@ -534,8 +535,8 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         if goat_conformer_count is not None:
             opening_parts.append(
                 f"A global geometry optimization with the GOAT algorithm and {xtb_method_label} in ORCA "
-                f"identified {goat_conformer_count} conformer{'s' if goat_conformer_count != 1 else ''} "
-                f"below 3 kcal/mol. The energetically lowest conformer provided the starting structure for subsequent high-level DFT calculations using ORCA."
+                f"identified {goat_conformer_count} conformer{'s' if goat_conformer_count != 1 else ''}. "
+                "The energetically lowest conformer provided the starting structure for subsequent high-level DFT calculations using ORCA."
             )
         else:
             opening_parts.append(
@@ -899,6 +900,38 @@ def _format_state_with_subscript(paragraph, state_text: str) -> None:
         run.font.bold = False
 
 
+def _format_charge_step_label(paragraph, state_text: str) -> bool:
+    """Format redox step labels like ox_step_1/red_step_2 as M^{+1}/M^{-2}."""
+    match = re.match(r'^(ox|red)_step_(\d+)$', state_text)
+    if not match:
+        return False
+    sign = "+" if match.group(1) == "ox" else "-"
+    step = match.group(2)
+    run1 = paragraph.add_run("M")
+    run1.font.bold = False
+    run2 = paragraph.add_run(f"{sign}{step}")
+    run2.font.superscript = True
+    run2.font.bold = False
+    return True
+
+
+def _format_m_charge_label(paragraph, charge: Any) -> bool:
+    """Format a charge label as M^{+n}/M^{-n}/M^{0}."""
+    if charge is None or charge == "":
+        return False
+    try:
+        charge_val = int(charge)
+    except Exception:
+        return False
+    sign = "+" if charge_val > 0 else ""
+    run1 = paragraph.add_run("M")
+    run1.font.bold = False
+    run2 = paragraph.add_run(f"{sign}{charge_val}")
+    run2.font.superscript = True
+    run2.font.bold = False
+    return True
+
+
 def _add_paragraph_with_subscript(doc: Document, text: str) -> None:
     """Add a paragraph with subscript formatting for markers like {sub:text}.
 
@@ -976,6 +1009,7 @@ def _add_state_table(doc: Document, title: str, states: Dict[str, Any]) -> None:
     _keep_heading_with_table(heading)
     table = doc.add_table(rows=1, cols=7)
     table.style = "Light Grid Accent 1"
+    table.autofit = True
     headers = ["State", "Type", "Charge", "Multiplicity", "Energy (Eh)", "ZPE (Eh)", "E₀ (Eh)"]
     for idx, text in enumerate(headers):
         cell = table.rows[0].cells[idx]
@@ -987,9 +1021,13 @@ def _add_state_table(doc: Document, title: str, states: Dict[str, Any]) -> None:
         thermo = entry.get("thermochemistry", {}) or {}
         row = table.add_row().cells
 
-        # Format State with subscript
+        # Format State with subscript or redox charge notation
         row[0].text = ""
-        _format_state_with_subscript(row[0].paragraphs[0], state_name)
+        spin_polarized = bool((entry.get("orbitals") or {}).get("spin_polarized"))
+        if state_name == "S0" and spin_polarized and _format_m_charge_label(row[0].paragraphs[0], opt.get("charge")):
+            pass
+        elif not _format_charge_step_label(row[0].paragraphs[0], state_name):
+            _format_state_with_subscript(row[0].paragraphs[0], state_name)
 
         row[1].text = str(entry.get("_type", ""))
         row[2].text = str(opt.get("charge", ""))
@@ -1078,6 +1116,7 @@ def _add_transition_table(
         return
     _add_heading_with_subscript(doc, title, level=3)
     table = doc.add_table(rows=1, cols=5)
+    table.autofit = True
     table.style = "Light Grid Accent 1"
     headers = ["Transition", "Energy (eV)", "Wavelength (nm)", "fosc", "Dominant Excitation"]
     for idx, text in enumerate(headers):
@@ -1144,6 +1183,7 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_
         num_cols = 4
 
     table = doc.add_table(rows=1, cols=num_cols)
+    table.autofit = True
     table.style = "Light Grid Accent 1"
 
     for idx, text in enumerate(headers):
@@ -1291,6 +1331,7 @@ def _add_frontier_orbital_table(doc: Document, orbital_data: Optional[Dict[str, 
     _keep_heading_with_table(heading)
     table = doc.add_table(rows=1, cols=4)
     table.style = "Light Grid Accent 1"
+    table.autofit = True
 
     # Header row
     headers = ["MO", "Occupancy", "Energy (eV)", "Orbital"]
