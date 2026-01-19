@@ -1205,11 +1205,20 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             occupier_method = "manually"
 
+    # Check if ESD_modul is enabled
+    esd_modul_raw = config.get("ESD_modul", "no")
+    esd_modul_enabled = str(esd_modul_raw).strip().lower() == "yes"
+
     for spec in CONTROL_FIELD_SPECS:
         # Skip OCCUPIER_tree validation if OCCUPIER_method is 'manually'
         if spec.name == "OCCUPIER_tree" and occupier_method == "manually":
             # Just set default without validation when manually mode
             validated[spec.name] = "deep"
+            continue
+
+        # Skip ESD_modus validation if ESD_modul is not enabled
+        if spec.name == "ESD_modus" and not esd_modul_enabled:
+            validated[spec.name] = spec.default
             continue
 
         raw = config.get(spec.name, None)
