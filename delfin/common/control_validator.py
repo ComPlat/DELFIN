@@ -323,7 +323,6 @@ ORCA_FUNCTIONALS = (
     "wB97",
     "wB97X",
     "CAM-B3LYP",
-    "CAMB3LYP",
     "LC_BLYP",
     "LC_PBE",
     "wr2SCAN",
