@@ -993,7 +993,11 @@ def _add_state_table(doc: Document, title: str, states: Dict[str, Any]) -> None:
 
         row[1].text = str(entry.get("_type", ""))
         row[2].text = str(opt.get("charge", ""))
-        row[3].text = str(opt.get("multiplicity", ""))
+        mult_text = str(opt.get("multiplicity", ""))
+        bs_val = entry.get("_bs")
+        if bs_val:
+            mult_text = f"{mult_text} (BS {bs_val})" if mult_text else f"BS {bs_val}"
+        row[3].text = mult_text
 
         # Energetics overview: show energies with fixed decimals for comparability
         hartree = opt.get("hartree")
@@ -2865,6 +2869,19 @@ def generate_combined_docx_report(
         row = dict(entry)
         row["_type"] = "Reduced"
         state_rows[name] = row
+
+    # Attach BS info from OCCUPIER preferred entries if present
+    occupier = data.get("occupier", {}) or {}
+    for state_name, row in state_rows.items():
+        occ_info = occupier.get(state_name, {})
+        if not occ_info:
+            continue
+        pref_idx = occ_info.get("preferred_index")
+        entries = occ_info.get("entries") or []
+        preferred = next((e for e in entries if e.get("index") == pref_idx), None)
+        bs_val = preferred.get("BS") if preferred else None
+        if bs_val:
+            row["_bs"] = bs_val
 
     # Add vertical excitation diagram
     _add_plot_if_exists(doc, "Vertical Excitation Energies", assets.vertical_excitation_png)
