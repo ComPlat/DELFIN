@@ -160,8 +160,11 @@ mpirun --version 2>&1 | head -1 || echo "MPI check failed"
 echo ""
 
 # Check ORCA version
-echo "ORCA: $(which orca)"
-orca --version 2>&1 | head -5 || echo "ORCA check failed"
+orca_path=$(command -v orca || true)
+echo "ORCA: ${orca_path:-not found}"
+if [ -n "$orca_path" ]; then
+    orca --version 2>&1 | head -5 || true
+fi
 echo ""
 
 # Check DELFIN version
