@@ -943,6 +943,16 @@ def _as_functional(value: Any) -> str:
     text = str(value or "").strip()
     if text == "":
         raise ValueError("must be one of the ORCA functionals list")
+    libxc_match = re.match(r"(?i)^libxc\((.+)\)$", text)
+    if libxc_match:
+        inner = libxc_match.group(1).strip()
+        if not inner:
+            raise ValueError("LibXC(...) requires a functional name inside parentheses")
+        inner_key = inner.lower()
+        if inner_key in _FUNCTIONALS_LOWER:
+            canonical = _FUNCTIONALS_LOWER[inner_key]
+            return f"LibXC({canonical})"
+        return f"LibXC({inner})"
     key = text.lower()
     if key in _FUNCTIONALS_LOWER:
         return _FUNCTIONALS_LOWER[key]
@@ -1224,7 +1234,11 @@ def validate_disp_corr_functional_combo(disp_corr: str, functional: str) -> list
     if not disp_corr:
         return warnings
 
-    func_upper = functional.upper().replace("_", "-")
+    func_text = functional.strip()
+    libxc_match = re.match(r"(?i)^libxc\((.+)\)$", func_text)
+    if libxc_match:
+        func_text = libxc_match.group(1).strip()
+    func_upper = func_text.upper().replace("_", "-")
     disp_upper = disp_corr.upper()
 
     if disp_upper == "D4":
