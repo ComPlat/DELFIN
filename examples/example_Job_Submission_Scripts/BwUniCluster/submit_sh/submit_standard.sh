@@ -64,11 +64,41 @@ export LD_LIBRARY_PATH="$ORCA_BASE:$LD_LIBRARY_PATH"
 export ORCA_DIR="$ORCA_BASE"
 export ORCA_PLOT="$ORCA_BASE/orca_plot"
 
-# MPI environment for BwUniCluster (Mellanox InfiniBand)
-# UCX for optimal performance with mlx5 HCAs
+# =============================================================================
+# MPI/UCX Configuration for ORCA on BwUniCluster (Mellanox InfiniBand)
+# =============================================================================
+
+# Core UCX transport settings
 export OMPI_MCA_pml=ucx
-export OMPI_MCA_btl=^vader,tcp,openib
+export OMPI_MCA_btl=^vader,tcp,openib,uct
 export UCX_NET_DEVICES=mlx5_0:1
+
+# UCX transport layers: rc_x (reliable), dc_x (scalable), sm (shared mem), self
+# rc_x is more stable, dc_x scales better for many processes
+# NOTE: If MPI crashes persist, remove dc_x for maximum stability: UCX_TLS=rc_x,sm,self
+export UCX_TLS=dc_x,rc_x,sm,self
+
+# UCX performance tuning for ORCA's communication patterns
+export UCX_RC_TIMEOUT=5s              # Balance between retry and failure detection
+export UCX_RC_RETRY_COUNT=7           # Default is 7, good balance
+export UCX_DC_MLX5_TIMEOUT=5s         # DC transport timeout
+export UCX_RNDV_THRESH=8192           # Rendezvous threshold for large messages
+export UCX_MEMTYPE_CACHE=n            # Disable for CPU-only (no GPU)
+
+# Memory registration for large ORCA arrays
+export UCX_IB_REG_METHODS=rcache,odp  # On-demand paging + registration cache
+export UCX_RCACHE_MAX_REGIONS=100000  # Plenty of regions for ORCA
+
+# OpenMPI settings optimized for ORCA
+export OMPI_MCA_mpi_show_mca_params_file=0
+export OMPI_MCA_mpi_abort_print_stack=1       # Stack trace for debugging crashes
+export OMPI_MCA_mpi_yield_when_idle=1         # Reduce CPU spinning
+export OMPI_MCA_coll_hcoll_enable=0           # Disable HCOLL (often problematic)
+
+# Process binding: let ORCA handle its own binding
+export OMPI_MCA_hwloc_base_binding_policy=none
+export OMPI_MCA_rmaps_base_mapping_policy=core
+export OMPI_MCA_rmaps_base_oversubscribe=true # Allow ORCA's dynamic parallelism
 
 # Activate DELFIN virtual environment
 source "$DELFIN_DIR/.venv/bin/activate"
