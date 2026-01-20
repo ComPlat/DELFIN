@@ -65,29 +65,12 @@ export ORCA_DIR="$ORCA_BASE"
 export ORCA_PLOT="$ORCA_BASE/orca_plot"
 
 # =============================================================================
-# MPI/UCX Configuration for ORCA on BwUniCluster (Mellanox InfiniBand)
+# MPI Configuration for ORCA on BwUniCluster
 # =============================================================================
 
-# Core UCX transport settings
-export OMPI_MCA_pml=ucx
-export OMPI_MCA_btl=^vader,tcp,openib,uct
-export UCX_NET_DEVICES=mlx5_0:1
-
-# UCX transport layers: rc_x (reliable), dc_x (scalable), sm (shared mem), self
-# rc_x is more stable, dc_x scales better for many processes
-# NOTE: If MPI crashes persist, remove dc_x for maximum stability: UCX_TLS=rc_x,sm,self
-export UCX_TLS=dc_x,rc_x,sm,self
-
-# UCX performance tuning for ORCA's communication patterns
-export UCX_RC_TIMEOUT=5s              # Balance between retry and failure detection
-export UCX_RC_RETRY_COUNT=7           # Default is 7, good balance
-export UCX_DC_MLX5_TIMEOUT=5s         # DC transport timeout
-export UCX_RNDV_THRESH=8192           # Rendezvous threshold for large messages
-export UCX_MEMTYPE_CACHE=n            # Disable for CPU-only (no GPU)
-
-# Memory registration for large ORCA arrays
-export UCX_IB_REG_METHODS=rcache,odp  # On-demand paging + registration cache
-export UCX_RCACHE_MAX_REGIONS=100000  # Plenty of regions for ORCA
+# Use ob1/tcp to avoid UCX device mismatches on mixed nodes
+export OMPI_MCA_pml=ob1
+export OMPI_MCA_btl=tcp,self,vader
 
 # OpenMPI settings optimized for ORCA
 export OMPI_MCA_mpi_show_mca_params_file=0
