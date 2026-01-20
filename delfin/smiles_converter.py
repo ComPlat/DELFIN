@@ -24,6 +24,60 @@ except ImportError:
     RDKIT_AVAILABLE = False
     logger.warning("RDKit not available - SMILES conversion will not work. Install with: pip install rdkit")
 
+# Try to import stk
+try:
+    import stk
+    STK_AVAILABLE = True
+except ImportError:
+    STK_AVAILABLE = False
+
+
+_METALS = [
+    'Li', 'Na', 'K', 'Rb', 'Cs', 'Be', 'Mg', 'Ca', 'Sr', 'Ba',
+    'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
+    'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd',
+    'La', 'Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy',
+    'Ho', 'Er', 'Tm', 'Yb', 'Lu', 'Hf', 'Ta', 'W', 'Re', 'Os',
+    'Ir', 'Pt', 'Au', 'Hg', 'Al', 'Ga', 'In', 'Tl', 'Sn', 'Pb',
+    'Bi', 'Po', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu'
+]
+
+
+def contains_metal(smiles: str) -> bool:
+    """Return True if SMILES likely contains a metal atom."""
+    for metal in _METALS:
+        if re.search(rf'\[{metal}[+\-\d\]@]', smiles, re.IGNORECASE):
+            return True
+        if re.search(rf'\[{metal}\]', smiles, re.IGNORECASE):
+            return True
+    return False
+
+
+def mol_from_smiles_rdkit(smiles: str, allow_metal: bool = False):
+    """Create RDKit Mol, with relaxed sanitizing for metal complexes."""
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is not None:
+            return mol, None
+        if not allow_metal:
+            return None, "Failed to parse SMILES string"
+        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        if mol is None:
+            return None, "Failed to parse SMILES (no sanitize)"
+        try:
+            Chem.SanitizeMol(
+                mol,
+                sanitizeOps=(
+                    Chem.SanitizeFlags.SANITIZE_ALL
+                    ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
+                    ^ Chem.SanitizeFlags.SANITIZE_KEKULIZE
+                ),
+            )
+            return mol, "partial sanitize"
+        except Exception:
+            return mol, "sanitize skipped"
+    except Exception as e:
+        return None, f"RDKit error: {e}"
 
 def is_smiles_string(content: str) -> bool:
     """Detect if input content is a SMILES string.
@@ -69,7 +123,7 @@ def is_smiles_string(content: str) -> bool:
         pass
 
     # Check for typical SMILES characters
-    smiles_chars = set('()[]=#@+-/\\>')
+    smiles_chars = set('()[]=#@+-/\\>%')
     has_smiles_chars = any(char in first_line for char in smiles_chars)
 
     # Check for aromatic notation (lowercase c, n, o, etc.) which is SMILES-specific
@@ -80,6 +134,7 @@ def is_smiles_string(content: str) -> bool:
     # (not followed by coordinates)
     organic_pattern = re.compile(r'[CcNnOoPpSsFfClBrI]')
     has_organic = bool(organic_pattern.search(first_line))
+    has_metal = contains_metal(first_line)
 
     # Check for numbered ring closures (like 1 in c1ccccc1)
     has_ring_numbers = bool(re.search(r'\d', first_line))
@@ -94,7 +149,7 @@ def is_smiles_string(content: str) -> bool:
     )
 
     # SMILES if: (special chars OR aromatic OR ring numbers OR simple token) AND has organic elements
-    return (has_smiles_chars or has_aromatic or has_ring_numbers or simple_token) and has_organic
+    return (has_smiles_chars or has_aromatic or has_ring_numbers or simple_token) and (has_organic or has_metal)
 
 
 def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
@@ -121,15 +176,36 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
         return None, error
 
     try:
-        # Parse SMILES
-        mol = Chem.MolFromSmiles(smiles)
+        has_metal = contains_metal(smiles)
+        method = None
+
+        # Try stk for metal complexes
+        mol = None
+        if has_metal and STK_AVAILABLE:
+            try:
+                bb = stk.BuildingBlock(smiles)
+                mol = bb.to_rdkit_mol()
+                if mol.GetNumConformers() == 0:
+                    AllChem.EmbedMolecule(mol, randomSeed=42, useRandomCoords=True)
+                method = "stk"
+            except Exception as e:
+                logger.info("stk conversion failed, falling back to RDKit: %s", e)
+                mol = None
+                method = None
+
         if mol is None:
-            error = f"Failed to parse SMILES string: {smiles}"
-            logger.error(error)
-            return None, error
+            mol, rdkit_note = mol_from_smiles_rdkit(smiles, allow_metal=has_metal)
+            if mol is None:
+                error = f"Failed to parse SMILES string: {rdkit_note}"
+                logger.error(error)
+                return None, error
+            method = "RDKit" if rdkit_note is None else f"RDKit ({rdkit_note})"
 
         # Add hydrogens
-        mol = Chem.AddHs(mol)
+        try:
+            mol = Chem.AddHs(mol)
+        except Exception:
+            pass
 
         # Generate 3D coordinates using ETKDG method
         # ETKDGv3 is the latest version with improved accuracy
@@ -151,11 +227,12 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
         # Optimize geometry with UFF force field for better starting structure
         # Note: UFF often fails for metal complexes, which is OK - the raw ETKDG
         # geometry is good enough for further optimization with xTB/GOAT/ORCA
-        try:
-            AllChem.UFFOptimizeMolecule(mol, maxIters=200)
-            logger.debug("UFF optimization successful")
-        except Exception as e:
-            logger.info(f"UFF optimization skipped (common for metal complexes): {e}")
+        if not has_metal:
+            try:
+                AllChem.UFFOptimizeMolecule(mol, maxIters=200)
+                logger.debug("UFF optimization successful")
+            except Exception as e:
+                logger.info(f"UFF optimization skipped (common for metal complexes): {e}")
 
         # Convert to XYZ format
         xyz_content = _mol_to_xyz(mol)
@@ -175,7 +252,7 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
 
         if output_path:
             Path(output_path).write_text(xyz_content, encoding='utf-8')
-            logger.info(f"Converted SMILES to XYZ: {output_path}")
+            logger.info(f"Converted SMILES to XYZ using {method}: {output_path}")
 
         return xyz_content, None
 
