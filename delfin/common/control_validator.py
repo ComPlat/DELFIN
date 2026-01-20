@@ -1035,6 +1035,141 @@ def _as_soscfhessup(value: Any) -> str:
     raise ValueError("must be LSR1, LBFGS, LPOWELL, or LBOFILL")
 
 
+_RELATIVITY_VALUES = {"ZORA", "X2C", "DKH", "DKH2"}
+
+
+def _as_relativity(value: Any) -> str:
+    """Coerce relativity: accepts ZORA, X2C, DKH (DKH2), or empty/none."""
+    if value is None or value == "":
+        return "none"
+    text = str(value).strip()
+    if not text:
+        return "none"
+    upper = text.upper()
+    if upper in {"NONE", "NO"}:
+        return "none"
+    if upper in _RELATIVITY_VALUES:
+        return upper
+    raise ValueError("must be ZORA, X2C, DKH, DKH2, or none")
+
+
+def _as_aux_jk(value: Any) -> str:
+    """Coerce aux_jk: accepts def2/J, def2/JK, or empty."""
+    if value is None or value == "":
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    upper = text.upper()
+    if upper == "DEF2/J":
+        return "def2/J"
+    if upper == "DEF2/JK":
+        return "def2/JK"
+    raise ValueError("must be def2/J or def2/JK")
+
+
+def _as_aux_jk_rel(value: Any) -> str:
+    """Coerce aux_jk_rel: accepts SARC/J, x2c/J, cc-pVTZ/C, or empty."""
+    if value is None or value == "":
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    upper = text.upper()
+    if upper == "SARC/J":
+        return "SARC/J"
+    if upper == "X2C/J":
+        return "x2c/J"
+    if upper == "CC-PVTZ/C":
+        return "cc-pVTZ/C"
+    raise ValueError("must be SARC/J, x2c/J, or cc-pVTZ/C")
+
+
+_GEOM_OPT_VALUES = {
+    "OPT",
+    "OPT TIGHTSCF",
+    "TIGHTOPT TIGHTSCF",
+    "VERYTIGHTOPT VERYTIGHTSCF",
+}
+
+
+def _as_geom_opt(value: Any) -> str:
+    """Coerce geom_opt tokens to allowed ORCA geometry optimization keywords."""
+    if value is None or value == "":
+        return "OPT"
+    text = str(value).strip()
+    if not text:
+        return "OPT"
+    normalized = " ".join(text.split()).upper()
+    if normalized in _GEOM_OPT_VALUES:
+        return normalized
+    raise ValueError(
+        "must be OPT, OPT TIGHTSCF, TIGHTOPT TIGHTSCF, or VERYTIGHTOPT VERYTIGHTSCF"
+    )
+
+
+def _as_freq_type(value: Any) -> str:
+    """Coerce freq_type: accepts FREQ or numFREQ."""
+    if value is None or value == "":
+        return "FREQ"
+    text = str(value).strip()
+    if not text:
+        return "FREQ"
+    upper = text.upper()
+    if upper in {"FREQ", "NUMFREQ"}:
+        return "numFREQ" if upper == "NUMFREQ" else "FREQ"
+    raise ValueError("must be FREQ or numFREQ")
+
+
+def _as_initial_guess(value: Any) -> str:
+    """Coerce initial_guess: accepts PAtom, PModel, Hueckel, or HCore."""
+    if value is None or value == "":
+        return "PModel"
+    text = str(value).strip()
+    if not text:
+        return "PModel"
+    upper = text.upper()
+    if upper in {"PATOM", "PMODEL", "HUECKEL", "HCORE"}:
+        if upper == "PATOM":
+            return "PAtom"
+        if upper == "PMODEL":
+            return "PModel"
+        if upper == "HUECKEL":
+            return "Hueckel"
+        return "HCore"
+    raise ValueError("must be PAtom, PModel, Hueckel, or HCore")
+
+
+_RI_JKX_KEYWORDS = {
+    "RI",
+    "NORI",
+    "SPLITRIJ",
+    "NOSPLITRIJ",
+    "NOSPLITRIJK",
+    "RIJONX",
+    "RIJDX",
+    "RIJCOSX",
+    "NORIJCOSX",
+    "NOCOSX",
+    "RIJK",
+    "NOSFITTING",
+}
+
+
+def _as_ri_jkx(value: Any) -> str:
+    """Coerce ri_jkx: accepts ORCA RI/SplitRIJ/RIJCOSX/RIJK style keywords or empty."""
+    if value is None or value == "":
+        return ""
+    text = str(value).strip()
+    normalized = re.sub(r"[-_\\s]", "", text).upper()
+    if normalized in _RI_JKX_KEYWORDS:
+        return text
+    raise ValueError(
+        "must be one of: RI, NORI, SplitRIJ, NoSplitRIJ/NoSplitRIJK, RIJONX, RIJDX, "
+        "RIJCOSX, NORIJCOSX, NOCOSX, RIJK/RI-JK, NoSFitting"
+    )
+
+
 # Dispersion correction: valid values and functional compatibility
 DISP_CORR_VALUES = {"D2", "D3", "D3BJ", "D3ZERO", "D30", "D3TZ", "D4", "ABC", "ATM", "NOVDW", ""}
 
@@ -1246,6 +1381,8 @@ def _as_ap_method(value: Any) -> int | None:
 
     if parsed <= 0:
         return None
+    if parsed not in {1, 2, 3}:
+        raise ValueError("must be 1, 2, 3, or none")
     return parsed
 
 
@@ -1263,14 +1400,18 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("implicit_solvation_model", _as_implicit_solvation_model, default="CPCM"),
     FieldSpec("solvent", _as_solvent, default=""),
     FieldSpec("functional", _as_functional, default="PBE0"),
+    FieldSpec("ri_jkx", _as_ri_jkx, default="RIJCOSX"),
+    FieldSpec("aux_jk", _as_aux_jk, default="def2/J"),
+    FieldSpec("aux_jk_rel", _as_aux_jk_rel, default="SARC/J"),
     FieldSpec("main_basisset", _as_basis_set_required, default="def2-SVP"),
     FieldSpec("main_basisset_rel", _as_basis_set_optional, default=""),
     FieldSpec("metal_basisset", _as_basis_set_optional, default=""),
     FieldSpec("metal_basisset_rel", _as_basis_set_optional, default=""),
-    FieldSpec("initial_guess", _as_str, default="PModel"),
-    FieldSpec("relativity", _as_str, default="none"),
-    FieldSpec("geom_opt", _as_str, default="OPT"),
-    FieldSpec("freq_type", _as_str, default="FREQ"),
+    FieldSpec("initial_guess", _as_initial_guess, default="PModel"),
+    FieldSpec("relativity", _as_relativity, default="none"),
+    FieldSpec("geom_opt", _as_geom_opt, default="OPT"),
+    FieldSpec("geom_opt_OCCUPIER", _as_geom_opt, default="OPT"),
+    FieldSpec("freq_type", _as_freq_type, default="FREQ"),
     FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
     FieldSpec("IMAG_option", _as_imag_option, default=2),
