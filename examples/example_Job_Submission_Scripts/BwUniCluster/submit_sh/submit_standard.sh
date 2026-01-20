@@ -62,9 +62,11 @@ export LD_LIBRARY_PATH="$ORCA_BASE:$LD_LIBRARY_PATH"
 export ORCA_DIR="$ORCA_BASE"
 export ORCA_PLOT="$ORCA_BASE/orca_plot"
 
-# MPI Umgebungsvariablen fuer Cluster
-export OMPI_MCA_btl_tcp_if_include=ib0
-export OMPI_MCA_btl="^openib"
+# MPI environment for BwUniCluster (Mellanox InfiniBand)
+# UCX for optimal performance with mlx5 HCAs
+export OMPI_MCA_pml=ucx
+export OMPI_MCA_btl=^vader,tcp,openib
+export UCX_NET_DEVICES=mlx5_0:1
 
 # DELFIN Environment aktivieren
 source "$DELFIN_DIR/.venv/bin/activate"
