@@ -273,6 +273,7 @@ ORCA_FUNCTIONALS = (
     "BNULL",
     "BVWN",
     "BP",
+    "BP86",
     "PW91",
     "mPWPW",
     "mPWLYP",
@@ -877,6 +878,15 @@ def _as_non_negative_float(value: Any) -> float:
     return parsed
 
 
+def _as_non_positive_float(value: Any) -> float:
+    if value is None or value == "":
+        return 0.0
+    parsed = float(value)
+    if parsed > 0:
+        raise ValueError("must be <= 0 (imaginary frequencies are negative)")
+    return parsed
+
+
 def _as_str(value: Any) -> str:
     if value is None:
         return ""
@@ -899,9 +909,9 @@ def _as_charge(value: Any) -> int:
 
 def _as_xtb_method(value: Any) -> str:
     text = str(value or "").strip().upper()
-    if text in {"XTB", "XTB2"}:
+    if text in {"XTB0", "XTB1", "XTB2", "XTBFF"}:
         return text
-    raise ValueError("must be XTB or XTB2")
+    raise ValueError("must be XTB0, XTB1, XTB2, or XTBFF")
 
 
 def _as_implicit_solvation_model(value: Any) -> str:
@@ -1000,6 +1010,99 @@ def _as_imag_option(value: Any) -> int:
     if option not in (1, 2):
         raise ValueError("must be 1 or 2")
     return option
+
+
+def _as_calc_potential_method(value: Any) -> int:
+    """Coerce calc_potential_method: accepts 1, 2, or 3."""
+    if value is None or value == "":
+        return 2
+    try:
+        val = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("must be 1, 2, or 3") from exc
+    if val not in (1, 2, 3):
+        raise ValueError("must be 1, 2, or 3")
+    return val
+
+
+def _as_soscfhessup(value: Any) -> str:
+    """Coerce deltaSCF_SOSCFHESSUP: accepts LSR1, LBFGS, LPOWELL, LBOFILL."""
+    if value is None or value == "":
+        return "LSR1"
+    text = str(value).strip().upper()
+    if text in {"LSR1", "LBFGS", "LPOWELL", "LBOFILL"}:
+        return text
+    raise ValueError("must be LSR1, LBFGS, LPOWELL, or LBOFILL")
+
+
+# Dispersion correction: valid values and functional compatibility
+DISP_CORR_VALUES = {"D2", "D3", "D3BJ", "D3ZERO", "D30", "D3TZ", "D4", "ABC", "ATM", "NOVDW", ""}
+
+# Functionals compatible with D4
+D4_FUNCTIONALS = {
+    "HF", "BLYP", "BPBE", "BP86", "BPW91", "GLYP", "LB94", "MPWLYP", "MPWPW", "OLYP",
+    "OPBE", "PBE", "RPBE", "REVPBE", "PW86PBE", "RPW86PBE", "PW91", "PW91P86", "XLYP",
+    "B97BECKE", "TPSS", "REVTPSS", "SCAN", "B1LYP", "B3LYP", "BHANDHLYP", "B1P", "B3P86",
+    "B1PW91", "B3PW91", "O3LYP", "REVPBE0", "REVPBE38", "PBE0", "PWP1", "PW1PW", "MPW1PW",
+    "MPW1LYP", "PW6B95", "TPSSH", "TPSS0", "X3LYP", "M06L", "M06", "WB97", "WB97X",
+    "B97M-D4", "CAM-B3LYP", "LC-BLYP", "B2PLYP", "B2GP-PLYP", "MPW2PLYP", "PWPB95",
+    "B97-D", "RSCAN", "R2SCAN", "R2SCANH", "R2SCAN0", "R2SCAN50", "WB97X-D4REV",
+    "WB97M-D4REV", "WR2SCAN", "R2SCAN0-DH", "R2SCAN-CIDH", "R2SCAN-QIDH", "R2SCAN0-2",
+    "PR2SCAN50", "KPR2SCAN50", "WPR2SCAN50", "PR2SCAN69", "REVDSD-PBEP86/2021",
+    "REVDOD-PBEP86/2021", "LRC-PBE",
+}
+
+# Functionals compatible with D3BJ
+D3BJ_FUNCTIONALS = {
+    "HF", "BP86", "BLYP", "REVPBE", "B97-D", "PBE", "RPBE", "RPW86PBE", "B3LYP",
+    "BHANDHLYP", "TPSS", "TPSS0", "PBE0", "REVPBE38", "PW6B95", "B2PLYP", "MPWLYP",
+    "OLYP", "BPBE", "OPBE", "B3PW91", "REVPBE0", "TPSSH", "CAM-B3LYP", "B2GP-PLYP",
+    "PWPB95", "SCAN", "RSCAN", "R2SCAN", "R2SCANH", "R2SCAN0", "R2SCAN50", "WR2SCAN",
+    "R2SCAN0-DH", "R2SCAN-CIDH", "R2SCAN-QIDH", "R2SCAN0-2", "PR2SCAN50", "KPR2SCAN50",
+    "WPR2SCAN50", "PR2SCAN69", "REVDSD-PBEP86/2021", "REVDOD-PBEP86/2021", "DSD-BLYP",
+    "DSD-BLYP/2013", "DSD-PBEB95", "DSD-PBEP86", "DSD-PBEP86/2013", "B97M-D3BJ",
+    "WB97X-D3BJ", "WB97M-D3BJ", "WB97X-2", "PBE0DH", "PBE02", "PBE-QIDH",
+}
+
+# Functionals compatible with D3ZERO (D3(0), D3)
+D3ZERO_FUNCTIONALS = {
+    "HF", "BLYP", "BP86", "B97-D", "REVPBE", "PBE", "RPBE", "TPSS", "B3LYP", "PBE0",
+    "PW6B95", "TPSS0", "B2PLYP", "B2GP-PLYP", "PWPB95", "MPWLYP", "BPBE", "BHANDHLYP",
+    "TPSSH", "REVPBE0", "REVPBE38", "RPW86PBE", "B3PW91", "M06L", "M06", "M062X",
+    "WB97X-D3", "CAM-B3LYP", "SCAN", "WB97X-2", "PBE0DH", "PBE02", "PBE-QIDH",
+}
+
+
+def _as_disp_corr(value: Any) -> str:
+    """Coerce disp_corr: accepts D2, D3, D3BJ, D3ZERO, D30, D3TZ, D4, ABC, ATM, NOVDW or empty."""
+    if value is None or value == "":
+        return ""
+    text = str(value).strip().upper()
+    if text in DISP_CORR_VALUES:
+        return text
+    raise ValueError("must be D2, D3, D3BJ, D3ZERO, D30, D3TZ, D4, ABC, ATM, NOVDW, or empty")
+
+
+def validate_disp_corr_functional_combo(disp_corr: str, functional: str) -> list[str]:
+    """Validate dispersion correction and functional combination. Returns list of warnings."""
+    warnings = []
+    if not disp_corr:
+        return warnings
+
+    func_upper = functional.upper().replace("_", "-")
+    disp_upper = disp_corr.upper()
+
+    if disp_upper == "D4":
+        if func_upper not in D4_FUNCTIONALS:
+            warnings.append(f"D4 dispersion may not be parametrized for functional '{functional}'")
+    elif disp_upper in {"D3BJ", "D3"}:
+        if func_upper not in D3BJ_FUNCTIONALS:
+            warnings.append(f"D3BJ dispersion may not be parametrized for functional '{functional}'")
+    elif disp_upper in {"D3ZERO", "D30"}:
+        if func_upper not in D3ZERO_FUNCTIONALS:
+            warnings.append(f"D3ZERO dispersion may not be parametrized for functional '{functional}'")
+
+    return warnings
 
 
 def _as_method(value: Any) -> str:
@@ -1171,7 +1274,9 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
     FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
     FieldSpec("IMAG_option", _as_imag_option, default=2),
-    FieldSpec("allow_imaginary_freq", _as_non_negative_float, default=0.0),
+    FieldSpec("allow_imaginary_freq", _as_non_positive_float, default=0.0),
+    FieldSpec("calc_potential_method", _as_calc_potential_method, default=2),
+    FieldSpec("deltaSCF_SOSCFHESSUP", _as_soscfhessup, default="LSR1"),
     FieldSpec("OCCUPIER_method", _as_occupier_method, default="auto"),
     FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep"),
     FieldSpec("OWN_progressive_from", _as_yes_no, default="no"),
@@ -1274,6 +1379,18 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
                     _validate_sequence_list(block["even_seq"], f"sequence block #{block_idx} even_seq")
                 if "odd_seq" in block:
                     _validate_sequence_list(block["odd_seq"], f"sequence block #{block_idx} odd_seq")
+
+    # Also report dispersion/functional compatibility if both fields parse.
+    disp_raw = config.get("disp_corr", "")
+    func_raw = config.get("functional", "")
+    try:
+        disp_val = _as_disp_corr(disp_raw)
+        func_val = _as_functional(func_raw)
+    except Exception:  # noqa: BLE001
+        disp_val = None
+        func_val = None
+    if disp_val is not None and func_val is not None:
+        errors.extend(validate_disp_corr_functional_combo(disp_val, func_val))
 
     if errors:
         raise ValueError("; ".join(errors))
