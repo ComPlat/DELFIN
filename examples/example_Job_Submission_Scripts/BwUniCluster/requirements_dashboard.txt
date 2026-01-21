@@ -1,0 +1,16 @@
+# Dashboard notebook runtime requirements
+jupyterlab==4.5.2
+notebook==7.5.2
+ipykernel==6.31.0
+ipywidgets==8.1.8
+ipython==8.18.1
+numpy==1.20.1
+
+# These are required by the dashboard but were not installed in this env.
+# Pin versions as needed (conda recommended for rdkit/stk).
+py3Dmol
+rdkit
+stk
+
+# Local package (install separately)
+# delfin (install with: pip install -e /path/to/software/delfin)
