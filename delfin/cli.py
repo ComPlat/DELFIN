@@ -514,6 +514,75 @@ def _run_co2_subcommand(argv: list[str]) -> int:
         return 1
 
 
+def _run_run_orca_subcommand(argv: list[str]) -> int:
+    """Handle `delfin run_orca` invocations - run ORCA with a .inp file."""
+    parser = argparse.ArgumentParser(
+        prog="delfin run_orca",
+        description="Run ORCA calculation with a .inp file in the current directory.",
+    )
+    parser.add_argument(
+        "input_file",
+        nargs="?",
+        default=None,
+        help="ORCA input file (.inp). If not specified, uses first .inp file in current directory.",
+    )
+    parser.add_argument(
+        "--input", "-i",
+        dest="input_opt",
+        default=None,
+        help="ORCA input file (.inp) - alternative to positional argument.",
+    )
+    parser.add_argument(
+        "--output", "-o",
+        default=None,
+        help="Output file path. Defaults to <basename>.out",
+    )
+    args = parser.parse_args(argv)
+
+    # Determine input file
+    input_file = args.input_file or args.input_opt
+    if input_file is None:
+        # Search for .inp file in current directory
+        inp_files = list(Path(".").glob("*.inp"))
+        if not inp_files:
+            print("Error: No .inp file found in current directory.")
+            print("Usage: delfin run_orca [input.inp] or delfin run_orca --input input.inp")
+            return 1
+        if len(inp_files) > 1:
+            print(f"Multiple .inp files found: {[f.name for f in inp_files]}")
+            print("Please specify which file to use: delfin run_orca <filename.inp>")
+            return 1
+        input_file = str(inp_files[0])
+
+    input_path = Path(input_file)
+    if not input_path.exists():
+        print(f"Error: Input file not found: {input_file}")
+        return 1
+
+    if not input_path.suffix.lower() == ".inp":
+        print(f"Warning: Input file does not have .inp extension: {input_file}")
+
+    # Determine output file
+    if args.output:
+        output_file = args.output
+    else:
+        output_file = str(input_path.with_suffix(".out"))
+
+    print(f"Running ORCA with input: {input_file}")
+    print(f"Output will be written to: {output_file}")
+
+    # Run ORCA using the existing run_orca function
+    success = run_orca(str(input_path), output_file)
+
+    if success:
+        print(f"ORCA calculation completed successfully.")
+        print(f"Results: {output_file}")
+        return 0
+    else:
+        print(f"ORCA calculation failed. Check {output_file} for details.")
+        return 1
+
+
 def _run_stop_subcommand(argv: list[str]) -> int:
     """Handle `delfin stop` invocations."""
     parser = argparse.ArgumentParser(
@@ -803,6 +872,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_stop_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "co2":
         return _run_co2_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "run_orca":
+        return _run_run_orca_subcommand(arg_list[1:])
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
     parser = _build_parser()
     args, unknown = parser.parse_known_args(arg_list)
