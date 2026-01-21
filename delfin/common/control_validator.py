@@ -1538,11 +1538,15 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     # Also report dispersion/functional compatibility if both fields parse.
     disp_raw = config.get("disp_corr", "")
     func_raw = config.get("functional", "")
+    disp_val = None
+    func_val = None
     try:
         disp_val = _as_disp_corr(disp_raw)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"disp_corr invalid: {disp_raw!r} ({exc})")
+    try:
         func_val = _as_functional(func_raw)
     except Exception:  # noqa: BLE001
-        disp_val = None
         func_val = None
     if disp_val is not None and func_val is not None:
         errors.extend(validate_disp_corr_functional_combo(disp_val, func_val))
