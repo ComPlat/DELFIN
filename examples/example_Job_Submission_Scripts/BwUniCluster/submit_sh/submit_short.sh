@@ -11,9 +11,11 @@
 #SBATCH --error=delfin_%j.err
 #SBATCH --constraint=BEEOND
 #SBATCH --exclusive
+#SBATCH --signal=B:SIGTERM@120
 
 # ========================================================================
 # DELFIN Short Job (24h)
+# Supports: DELFIN mode (CONTROL.txt + input.txt) or ORCA-only mode (*.inp)
 # ========================================================================
 
 set -euo pipefail
@@ -105,22 +107,38 @@ fi
 RUN_DIR="$DELFIN_SCRATCH/run"
 mkdir -p "$RUN_DIR" "$ORCA_TMPDIR"
 
-# Cleanup function for trap
+# Cleanup function for trap (handles SIGTERM from timeout, SIGINT, etc.)
 cleanup() {
+    local signal_name="${1:-UNKNOWN}"
     echo ""
     echo "========================================"
-    echo "Caught signal, running cleanup..."
+    echo "Caught $signal_name signal, running cleanup..."
     echo "========================================"
+
+    # Try DELFIN cleanup first (safe if not running DELFIN)
     cd "$RUN_DIR" 2>/dev/null && delfin --cleanup 2>/dev/null || true
-    # Copy results back before cleanup
-    cp -a "$RUN_DIR"/* "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+
+    # CRITICAL: Copy ALL results back before cleanup
+    echo "Copying results back to $SLURM_SUBMIT_DIR..."
+    if [ -d "$RUN_DIR" ]; then
+        # Remove useless .tmp files before copying (saves space and time)
+        find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
+        cp -a "$RUN_DIR"/* "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        echo "Results copied successfully."
+    else
+        echo "WARNING: RUN_DIR not found, nothing to copy."
+    fi
+
+    # Cleanup scratch (only after successful copy)
     rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" 2>/dev/null || true
-    echo "Cleanup completed."
+    echo "Cleanup completed at $(date)"
     exit 1
 }
 
-# Set trap for cleanup on termination signals
-trap cleanup SIGTERM SIGINT SIGHUP
+# Set trap for cleanup on termination signals (including SLURM timeout)
+trap 'cleanup SIGTERM' SIGTERM
+trap 'cleanup SIGINT' SIGINT
+trap 'cleanup SIGHUP' SIGHUP
 
 # Job info
 echo "========================================"
@@ -158,31 +176,57 @@ echo "Git Commit: $(git rev-parse --short HEAD 2>/dev/null || echo 'N/A')"
 echo ""
 cd - > /dev/null
 
-# Verify required input files exist
-if [ ! -f "$SLURM_SUBMIT_DIR/CONTROL.txt" ]; then
-    echo "ERROR: CONTROL.txt not found in $SLURM_SUBMIT_DIR"
-    exit 1
-fi
-if [ ! -f "$SLURM_SUBMIT_DIR/input.txt" ]; then
-    echo "ERROR: input.txt not found in $SLURM_SUBMIT_DIR"
+# Detect job mode: DELFIN (CONTROL.txt + input.txt) or ORCA-only (*.inp files)
+DELFIN_MODE=false
+ORCA_ONLY_MODE=false
+
+if [ -f "$SLURM_SUBMIT_DIR/CONTROL.txt" ] && [ -f "$SLURM_SUBMIT_DIR/input.txt" ]; then
+    DELFIN_MODE=true
+    echo "Mode: DELFIN (CONTROL.txt + input.txt found)"
+elif ls "$SLURM_SUBMIT_DIR"/*.inp 1>/dev/null 2>&1; then
+    ORCA_ONLY_MODE=true
+    echo "Mode: ORCA-only (*.inp files found, no CONTROL.txt)"
+else
+    echo "ERROR: No valid input files found in $SLURM_SUBMIT_DIR"
+    echo "       Expected either: CONTROL.txt + input.txt (DELFIN mode)"
+    echo "       Or: *.inp files (ORCA-only mode)"
     exit 1
 fi
 
-# Copy inputs to scratch and work there
-cp -a "$SLURM_SUBMIT_DIR/CONTROL.txt" "$SLURM_SUBMIT_DIR/input.txt" "$RUN_DIR"/
+# Copy ALL input files to scratch
+echo "Copying input files to scratch..."
+cp -a "$SLURM_SUBMIT_DIR"/* "$RUN_DIR"/ 2>/dev/null || true
+# Remove output files from previous runs (if any)
+rm -f "$RUN_DIR"/delfin_*.out "$RUN_DIR"/delfin_*.err 2>/dev/null || true
 
 cd "$RUN_DIR"
 
-# Run DELFIN
-delfin
-
-EXIT_CODE=$?
+# Run appropriate mode
+if [ "$DELFIN_MODE" = true ]; then
+    echo "Starting DELFIN..."
+    delfin
+    EXIT_CODE=$?
+elif [ "$ORCA_ONLY_MODE" = true ]; then
+    # Find the first .inp file and run ORCA directly
+    INP_FILE=$(ls *.inp 2>/dev/null | head -1)
+    if [ -z "$INP_FILE" ]; then
+        echo "ERROR: No .inp file found after copy"
+        exit 1
+    fi
+    OUT_FILE="${INP_FILE%.inp}.out"
+    echo "Starting ORCA: $INP_FILE -> $OUT_FILE"
+    "$ORCA_BASE/orca" "$INP_FILE" > "$OUT_FILE" 2>&1
+    EXIT_CODE=$?
+fi
 
 echo ""
 echo "========================================"
 echo "Job finished: $(date)"
 echo "Exit Code:   $EXIT_CODE"
 echo "========================================"
+
+# Remove useless .tmp files before copying (saves space and time)
+find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
 
 # Copy results back
 cp -a "$RUN_DIR"/* "$SLURM_SUBMIT_DIR"/
