@@ -68,15 +68,16 @@ export ORCA_PLOT="$ORCA_BASE/orca_plot"
 
 # =============================================================================
 # MPI Configuration for ORCA on BwUniCluster
+# Community-recommended stable settings (ORCA Input Library)
 # =============================================================================
 
-# Use ob1/tcp to avoid UCX device mismatches on mixed nodes
+# Use ob1 PML with self/tcp/sm - NO vader (causes crashes)
+# Reference: https://sites.google.com/site/orcainputlibrary/setting-up-orca
 export OMPI_MCA_pml=ob1
-export OMPI_MCA_btl=tcp,self,vader
+export OMPI_MCA_btl=self,tcp,sm
 
-# OpenMPI settings optimized for ORCA
+# OpenMPI settings optimized for ORCA stability
 export OMPI_MCA_mpi_show_mca_params_file=0
-export OMPI_MCA_mpi_abort_print_stack=1       # Stack trace for debugging crashes
 export OMPI_MCA_mpi_yield_when_idle=1         # Reduce CPU spinning
 export OMPI_MCA_coll_hcoll_enable=0           # Disable HCOLL (often problematic)
 
