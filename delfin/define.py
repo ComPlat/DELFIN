@@ -72,7 +72,7 @@ elprop_PolarQuadQuad=no
 --------------------
 deltaSCF Settings:
 deltaSCF_DOMOM=true
-deltaSCF_PMOM=true
+deltaSCF_PMOM=false
 deltaSCF_keepinitialref=true
 deltaSCF_SOSCFHESSUP=LSR1
 deltaSCF_keywords=FreezeAndRelease

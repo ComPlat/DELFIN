@@ -339,68 +339,78 @@ class RecoveryStrategy:
     def _scf_convergence_fixes(self) -> Dict:
         """Progressive fixes for SCF convergence failures.
 
-        Based on ORCA Manual recommendations:
-        - SlowConv/VerySlowConv are simple input keywords (! SlowConv)
-        - KDIIS as robust DIIS alternative (! KDIIS or %scf KDIIS end)
-        - SOSCF when DIIS stucks at ~0.001 (%scf SOSCF end)
-        - High damping (0.9+) for pathological cases
-        - GMF for deltaSCF calculations (helps with excited state convergence)
+        Based on ORCA Manual recommendations.
+        DeltaSCF/hybrid1 gets additional aggressive fixes; other jobs keep standard SCF fixes.
         """
         # Check if this is a deltaSCF (or hybrid1 deltaSCF step) calculation
         is_deltascf = self._is_deltascf()
 
-        if self.attempt == 1:
-            # Attempt 1: SlowConv keyword + increased MaxIter
-            # For deltaSCF: Add GMF to help with excited state convergence
-            keywords_to_add = ["SlowConv"]
-            maxiter = 400 if is_deltascf else 300
-
-            if is_deltascf and "gmf" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
-                keywords_to_add.append("GMF")
-                logger.info("Adding GMF keyword for deltaSCF calculation")
-
-            return {
-                "use_moread": True,
-                "keywords_add": keywords_to_add,
-                "scf_block": {
-                    "MaxIter": maxiter,
-                },
-            }
-        elif self.attempt == 2:
-            # Attempt 2: VerySlowConv + KDIIS + high damping
-            keywords_to_add = ["VerySlowConv", "KDIIS"]
-            maxiter = 600 if is_deltascf else 500
-
-            if is_deltascf and "gmf" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
-                keywords_to_add.append("GMF")
-
-            return {
-                "use_moread": True,
-                "keywords_add": keywords_to_add,
-                "scf_block": {
-                    "MaxIter": maxiter,
-                    "DampFac": 0.9,  # High damping factor (default: 0.7)
-                    "DampErr": 0.02,  # Keep damping longer
-                },
-            }
+        if is_deltascf:
+            if self.attempt == 1:
+                # Attempt 1: TightSCF/SlowConv + increased MaxIter
+                return {
+                    "use_moread": True,
+                    "keywords_add": ["TightSCF", "SlowConv"],
+                    "scf_block": {
+                        "MaxIter": 600,
+                    },
+                }
+            elif self.attempt == 2:
+                # Attempt 2: Disable DIIS/TRAH when they are problematic
+                return {
+                    "use_moread": True,
+                    "keywords_add": ["NoDIIS", "NoTRAH"],
+                    "scf_block": {
+                        "MaxIter": 800,
+                    },
+                }
+            else:
+                # Attempt 3+: FreezeAndRelease + GMF + very slow convergence + damping
+                logger.info("Adding FreezeAndRelease + GMF for deltaSCF recovery")
+                return {
+                    "use_moread": True,
+                    "keywords_add": ["VerySlowConv", "FreezeAndRelease", "GMF"],
+                    "scf_block": {
+                        "MaxIter": 1000,
+                        "SOSCF": True,  # %scf block parameter
+                        "DampFac": 0.9,  # High damping for pathological cases
+                        "DampErr": 0.02,
+                        "SOSCFHESSUP": "LBFGS",  # Switch from LSR1 to LBFGS
+                    },
+                }
         else:
-            # Attempt 3+: SOSCF (second-order) with very high damping
-            keywords_to_add = ["VerySlowConv"]
-            maxiter = 1000 if is_deltascf else 800
-
-            if is_deltascf and "gmf" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
-                keywords_to_add.append("GMF")
-
-            return {
-                "use_moread": True,
-                "keywords_add": keywords_to_add,
-                "scf_block": {
-                    "MaxIter": maxiter,
-                    "SOSCF": True,  # %scf block parameter
-                    "DampFac": 0.95,  # Very high damping for pathological cases
-                    "DampErr": 0.001,  # Damp until very converged
-                },
-            }
+            if self.attempt == 1:
+                # Attempt 1: SlowConv keyword + increased MaxIter
+                return {
+                    "use_moread": True,
+                    "keywords_add": ["SlowConv"],
+                    "scf_block": {
+                        "MaxIter": 300,
+                    },
+                }
+            elif self.attempt == 2:
+                # Attempt 2: VerySlowConv + KDIIS + high damping
+                return {
+                    "use_moread": True,
+                    "keywords_add": ["VerySlowConv", "KDIIS"],
+                    "scf_block": {
+                        "MaxIter": 500,
+                        "DampFac": 0.9,  # High damping factor (default: 0.7)
+                        "DampErr": 0.02,  # Keep damping longer
+                    },
+                }
+            else:
+                # Attempt 3+: SOSCF (second-order) with very high damping
+                return {
+                    "use_moread": True,
+                    "keywords_add": ["VerySlowConv"],
+                    "scf_block": {
+                        "MaxIter": 800,
+                        "SOSCF": True,  # %scf block parameter
+                        "DampFac": 0.95,  # Very high damping for pathological cases
+                        "DampErr": 0.001,  # Damp until very converged
+                    },
+                }
 
     def _leanscf_convergence_fixes(self) -> Dict:
         """Progressive fixes for LEANSCF (coupled-perturbed SCF) convergence failures.
@@ -411,57 +421,86 @@ class RecoveryStrategy:
         - Unstable wavefunctions
 
         Strategy:
-        - Attempt 1: Increase main SCF convergence (tighter threshold helps LEANSCF)
-        - Attempt 2: Add GMF for deltaSCF + tighten SCF further
-        - Attempt 3: Skip FREQ (use MOREAD to keep geometry)
+        - deltaSCF/hybrid1: tighter SCF, NoDIIS/NoTRAH, FreezeAndRelease+GMF+LBFGS
+        - other jobs: standard LEANSCF escalation, then skip FREQ
         """
         # Check if this is a deltaSCF (or hybrid1 deltaSCF step) calculation
         is_deltascf = self._is_deltascf()
 
-        if self.attempt == 1:
-            # Attempt 1: Tighter SCF convergence + increased MaxIter
-            # This helps LEANSCF by providing a better starting wavefunction
-            keywords_to_add = ["TightSCF", "SlowConv"]
-            maxiter = 500 if is_deltascf else 400
-
-            if is_deltascf and "gmf" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
-                keywords_to_add.append("GMF")
-                logger.info("Adding GMF keyword for deltaSCF LEANSCF convergence")
-
-            return {
-                "use_moread": True,
-                "keywords_add": keywords_to_add,
-                "scf_block": {
-                    "MaxIter": maxiter,
-                    "ConvForced": "true",  # Force convergence for better LEANSCF starting point
-                },
-            }
-
-        elif self.attempt == 2:
-            # Attempt 2: VeryTightSCF + high damping + GMF for deltaSCF
-            keywords_to_add = ["VeryTightSCF", "VerySlowConv"]
-            maxiter = 700 if is_deltascf else 600
-
-            if is_deltascf and "gmf" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
-                keywords_to_add.append("GMF")
-
-            return {
-                "use_moread": True,
-                "keywords_add": keywords_to_add,
-                "scf_block": {
-                    "MaxIter": maxiter,
-                    "ConvForced": "true",
-                    "DampFac": 0.9,  # High damping
-                    "DampErr": 0.01,
-                },
-            }
+        if is_deltascf:
+            if self.attempt == 1:
+                # Attempt 1: Tighter SCF convergence + increased MaxIter
+                return {
+                    "use_moread": True,
+                    "keywords_add": ["TightSCF", "SlowConv"],
+                    "scf_block": {
+                        "MaxIter": 600,
+                        "ConvForced": "true",  # Force convergence for better LEANSCF starting point
+                    },
+                }
+            elif self.attempt == 2:
+                # Attempt 2: Disable DIIS/TRAH for difficult deltaSCF
+                return {
+                    "use_moread": True,
+                    "keywords_add": ["NoDIIS", "NoTRAH"],
+                    "scf_block": {
+                        "MaxIter": 800,
+                        "ConvForced": "true",
+                        "DampFac": 0.9,  # High damping
+                        "DampErr": 0.01,
+                    },
+                }
+            elif self.attempt == 3:
+                # Attempt 3: FreezeAndRelease + GMF + strong damping
+                logger.info("Adding FreezeAndRelease + GMF for deltaSCF LEANSCF recovery")
+                return {
+                    "use_moread": True,
+                    "keywords_add": ["VerySlowConv", "FreezeAndRelease", "GMF"],
+                    "scf_block": {
+                        "MaxIter": 1000,
+                        "ConvForced": "true",
+                        "DampFac": 0.9,
+                        "DampErr": 0.02,
+                        "SOSCFHESSUP": "LBFGS",
+                    },
+                }
+            else:
+                # Attempt 4+: Skip FREQ entirely, just keep the optimized geometry
+                logger.info("LEANSCF failed repeatedly - skipping FREQ calculation")
+                return {
+                    "use_moread": True,
+                    "skip_freq": True,
+                }
         else:
-            # Attempt 3: Skip FREQ entirely, just keep the optimized geometry
-            logger.info("LEANSCF failed repeatedly - skipping FREQ calculation")
-            return {
-                "use_moread": True,
-                "skip_freq": True,
-            }
+            if self.attempt == 1:
+                # Attempt 1: Tighter SCF convergence + increased MaxIter
+                return {
+                    "use_moread": True,
+                    "keywords_add": ["TightSCF", "SlowConv"],
+                    "scf_block": {
+                        "MaxIter": 400,
+                        "ConvForced": "true",  # Force convergence for better LEANSCF starting point
+                    },
+                }
+            elif self.attempt == 2:
+                # Attempt 2: VeryTightSCF + high damping
+                return {
+                    "use_moread": True,
+                    "keywords_add": ["VeryTightSCF", "VerySlowConv"],
+                    "scf_block": {
+                        "MaxIter": 600,
+                        "ConvForced": "true",
+                        "DampFac": 0.9,  # High damping
+                        "DampErr": 0.01,
+                    },
+                }
+            else:
+                # Attempt 3+: Skip FREQ entirely, just keep the optimized geometry
+                logger.info("LEANSCF failed repeatedly - skipping FREQ calculation")
+                return {
+                    "use_moread": True,
+                    "skip_freq": True,
+                }
 
     def _is_deltascf(self) -> bool:
         """Return True if input indicates a deltaSCF (including hybrid1 deltaSCF step) job."""
