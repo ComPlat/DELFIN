@@ -159,7 +159,7 @@ sp_timeout_hours=3
 ------------------------------------
 Automatic Error Recovery & Retry:
 enable_auto_recovery=yes
-max_recovery_attempts=1
+max_recovery_attempts=3
 enable_adaptive_parallelism=yes
 enable_performance_metrics=yes
 ------------------------------------
