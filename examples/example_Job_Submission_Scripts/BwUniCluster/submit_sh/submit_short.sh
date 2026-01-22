@@ -203,6 +203,8 @@ rm -f "$RUN_DIR"/delfin_*.out "$RUN_DIR"/delfin_*.err 2>/dev/null || true
 cd "$RUN_DIR"
 
 # Run appropriate mode
+EXIT_CODE=0
+set +e
 if [ "$DELFIN_MODE" = true ]; then
     echo "Starting DELFIN..."
     delfin
@@ -212,13 +214,15 @@ elif [ "$ORCA_ONLY_MODE" = true ]; then
     INP_FILE=$(ls *.inp 2>/dev/null | head -1)
     if [ -z "$INP_FILE" ]; then
         echo "ERROR: No .inp file found after copy"
-        exit 1
+        EXIT_CODE=1
+    else
+        OUT_FILE="${INP_FILE%.inp}.out"
+        echo "Starting ORCA: $INP_FILE -> $OUT_FILE"
+        "$ORCA_BASE/orca" "$INP_FILE" > "$OUT_FILE" 2>&1
+        EXIT_CODE=$?
     fi
-    OUT_FILE="${INP_FILE%.inp}.out"
-    echo "Starting ORCA: $INP_FILE -> $OUT_FILE"
-    "$ORCA_BASE/orca" "$INP_FILE" > "$OUT_FILE" 2>&1
-    EXIT_CODE=$?
 fi
+set -e
 
 echo ""
 echo "========================================"
