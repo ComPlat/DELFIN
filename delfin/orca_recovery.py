@@ -880,6 +880,12 @@ class OrcaInputModifier:
             if in_geom:
                 if stripped == "*":
                     break
+                # Handle trailing geometry terminator stuck to the last coordinate line
+                if stripped.endswith("*") and not stripped.startswith("*") and len(stripped.split()) >= 4:
+                    cleaned = stripped[:-1].rstrip()
+                    if cleaned:
+                        parsed["geometry"].append(cleaned)
+                    break
                 parsed["geometry"].append(line.rstrip())
 
         return parsed
