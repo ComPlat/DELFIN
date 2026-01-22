@@ -71,10 +71,9 @@ export ORCA_PLOT="$ORCA_BASE/orca_plot"
 # Community-recommended stable settings (ORCA Input Library)
 # =============================================================================
 
-# Use ob1 PML with self/tcp/sm - NO vader (causes crashes)
-# Reference: https://sites.google.com/site/orcainputlibrary/setting-up-orca
+# Use ob1 PML with vader (shared memory) - sm was removed in OpenMPI 3.0
 export OMPI_MCA_pml=ob1
-export OMPI_MCA_btl=self,tcp,sm
+export OMPI_MCA_btl=self,tcp,vader
 
 # OpenMPI settings optimized for ORCA stability
 export OMPI_MCA_mpi_show_mca_params_file=0
