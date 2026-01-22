@@ -736,7 +736,19 @@ class OrcaInputModifier:
             "charge_mult": None,
             "raw_lines": lines,
             "comments": [],  # Store comment lines
+            "subsequent_jobs": None,  # Everything after $new_job (preserved verbatim)
         }
+
+        # First, check for $new_job and split the file
+        # Only parse the FIRST job, preserve everything after $new_job verbatim
+        full_content = ''.join(lines)
+        new_job_match = re.search(r'\n\s*\$new_job\s*\n', full_content, re.IGNORECASE)
+        if new_job_match:
+            first_job_content = full_content[:new_job_match.start()]
+            parsed["subsequent_jobs"] = full_content[new_job_match.start():]  # Include $new_job line
+            lines = first_job_content.split('\n')
+            lines = [line + '\n' for line in lines]  # Re-add newlines
+            logger.debug(f"Found $new_job - parsing only first job, preserving {len(parsed['subsequent_jobs'])} chars of subsequent jobs")
 
         # Parse comment lines and keyword line
         for line in lines:
@@ -1347,6 +1359,11 @@ class OrcaInputModifier:
                 f.write("\n")
                 for block_name in sorted(all_blocks):
                     f.write(parsed["blocks"][block_name] + "\n")
+
+            # CRITICAL: Append subsequent jobs ($new_job and everything after)
+            if parsed.get("subsequent_jobs"):
+                f.write(parsed["subsequent_jobs"])
+                logger.debug(f"Appended subsequent jobs to output")
 
 
 def prepare_input_for_continuation(
