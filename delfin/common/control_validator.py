@@ -1095,11 +1095,10 @@ def _as_aux_jk_rel(value: Any) -> str:
     raise ValueError("must be SARC/J, x2c/J, or cc-pVTZ/C")
 
 
-_GEOM_OPT_VALUES = {
+_GEOM_OPT_BASES = {
     "OPT",
-    "OPT TIGHTSCF",
-    "TIGHTOPT TIGHTSCF",
-    "VERYTIGHTOPT VERYTIGHTSCF",
+    "TIGHTOPT",
+    "VERYTIGHTOPT",
 }
 
 
@@ -1111,10 +1110,12 @@ def _as_geom_opt(value: Any) -> str:
     if not text:
         return "OPT"
     normalized = " ".join(text.split()).upper()
-    if normalized in _GEOM_OPT_VALUES:
+    tokens = normalized.split()
+    if tokens and tokens[0] in _GEOM_OPT_BASES:
+        # Allow additional ORCA keywords like NOTRAH, NODIIS, etc.
         return normalized
     raise ValueError(
-        "must be OPT, OPT TIGHTSCF, TIGHTOPT TIGHTSCF, or VERYTIGHTOPT VERYTIGHTSCF"
+        "must start with OPT, TIGHTOPT, or VERYTIGHTOPT (additional keywords allowed)"
     )
 
 
