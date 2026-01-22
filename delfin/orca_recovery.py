@@ -344,23 +344,20 @@ class RecoveryStrategy:
         - KDIIS as robust DIIS alternative (! KDIIS or %scf KDIIS end)
         - SOSCF when DIIS stucks at ~0.001 (%scf SOSCF end)
         - High damping (0.9+) for pathological cases
-        - GMX for deltaSCF calculations (helps with excited state convergence)
+        - GMF for deltaSCF calculations (helps with excited state convergence)
         """
-        # Check if this is a deltaSCF calculation
-        is_deltascf = False
-        if self.parsed_input and "keywords" in self.parsed_input:
-            keywords_lower = [k.lower() for k in self.parsed_input["keywords"]]
-            is_deltascf = "deltascf" in keywords_lower
+        # Check if this is a deltaSCF (or hybrid1 deltaSCF step) calculation
+        is_deltascf = self._is_deltascf()
 
         if self.attempt == 1:
             # Attempt 1: SlowConv keyword + increased MaxIter
-            # For deltaSCF: Add GMX to help with excited state convergence
+            # For deltaSCF: Add GMF to help with excited state convergence
             keywords_to_add = ["SlowConv"]
             maxiter = 400 if is_deltascf else 300
 
-            if is_deltascf and "gmx" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
-                keywords_to_add.append("GMX")
-                logger.info("Adding GMX keyword for deltaSCF calculation")
+            if is_deltascf and "gmf" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
+                keywords_to_add.append("GMF")
+                logger.info("Adding GMF keyword for deltaSCF calculation")
 
             return {
                 "use_moread": True,
@@ -374,8 +371,8 @@ class RecoveryStrategy:
             keywords_to_add = ["VerySlowConv", "KDIIS"]
             maxiter = 600 if is_deltascf else 500
 
-            if is_deltascf and "gmx" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
-                keywords_to_add.append("GMX")
+            if is_deltascf and "gmf" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
+                keywords_to_add.append("GMF")
 
             return {
                 "use_moread": True,
@@ -391,8 +388,8 @@ class RecoveryStrategy:
             keywords_to_add = ["VerySlowConv"]
             maxiter = 1000 if is_deltascf else 800
 
-            if is_deltascf and "gmx" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
-                keywords_to_add.append("GMX")
+            if is_deltascf and "gmf" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
+                keywords_to_add.append("GMF")
 
             return {
                 "use_moread": True,
@@ -415,14 +412,11 @@ class RecoveryStrategy:
 
         Strategy:
         - Attempt 1: Increase main SCF convergence (tighter threshold helps LEANSCF)
-        - Attempt 2: Add GMX for deltaSCF + tighten SCF further
+        - Attempt 2: Add GMF for deltaSCF + tighten SCF further
         - Attempt 3: Skip FREQ (use MOREAD to keep geometry)
         """
-        # Check if this is a deltaSCF calculation
-        is_deltascf = False
-        if self.parsed_input and "keywords" in self.parsed_input:
-            keywords_lower = [k.lower() for k in self.parsed_input["keywords"]]
-            is_deltascf = "deltascf" in keywords_lower
+        # Check if this is a deltaSCF (or hybrid1 deltaSCF step) calculation
+        is_deltascf = self._is_deltascf()
 
         if self.attempt == 1:
             # Attempt 1: Tighter SCF convergence + increased MaxIter
@@ -430,9 +424,9 @@ class RecoveryStrategy:
             keywords_to_add = ["TightSCF", "SlowConv"]
             maxiter = 500 if is_deltascf else 400
 
-            if is_deltascf and "gmx" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
-                keywords_to_add.append("GMX")
-                logger.info("Adding GMX keyword for deltaSCF LEANSCF convergence")
+            if is_deltascf and "gmf" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
+                keywords_to_add.append("GMF")
+                logger.info("Adding GMF keyword for deltaSCF LEANSCF convergence")
 
             return {
                 "use_moread": True,
@@ -442,13 +436,14 @@ class RecoveryStrategy:
                     "ConvForced": "true",  # Force convergence for better LEANSCF starting point
                 },
             }
+
         elif self.attempt == 2:
-            # Attempt 2: VeryTightSCF + high damping + GMX for deltaSCF
+            # Attempt 2: VeryTightSCF + high damping + GMF for deltaSCF
             keywords_to_add = ["VeryTightSCF", "VerySlowConv"]
             maxiter = 700 if is_deltascf else 600
 
-            if is_deltascf and "gmx" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
-                keywords_to_add.append("GMX")
+            if is_deltascf and "gmf" not in [k.lower() for k in self.parsed_input.get("keywords", [])]:
+                keywords_to_add.append("GMF")
 
             return {
                 "use_moread": True,
@@ -467,6 +462,16 @@ class RecoveryStrategy:
                 "use_moread": True,
                 "skip_freq": True,
             }
+
+    def _is_deltascf(self) -> bool:
+        """Return True if input indicates a deltaSCF (including hybrid1 deltaSCF step) job."""
+        if not self.parsed_input:
+            return False
+        keywords = [k.lower() for k in self.parsed_input.get("keywords", [])]
+        if "deltascf" in keywords:
+            return True
+        base_block = self.parsed_input.get("blocks", {}).get("base", "")
+        return "deltascf" in base_block.lower()
 
     def _trah_crash_fixes(self) -> Dict:
         """Fixes for TRAH segmentation faults.
