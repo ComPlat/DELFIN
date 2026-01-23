@@ -122,6 +122,24 @@ fi
 RUN_DIR="$DELFIN_SCRATCH/run"
 mkdir -p "$RUN_DIR" "$ORCA_TMPDIR"
 
+# Write SLURM reason/timelimit info into run dir for debugging.
+write_slurm_reason() {
+    local out_file="$RUN_DIR/slurm_reason.txt"
+    {
+        echo "Timestamp: $(date)"
+        echo "Job ID: ${SLURM_JOB_ID:-unknown}"
+        echo "Node: ${SLURM_JOB_NODELIST:-unknown}"
+        if command -v scontrol >/dev/null 2>&1 && [ -n "${SLURM_JOB_ID:-}" ]; then
+            scontrol show job "$SLURM_JOB_ID" 2>/dev/null | tr ' ' '\n' | egrep 'JobId=|JobName=|State=|Reason=|TimeLimit=|RunTime=|TimeMin=|StartTime=|EndTime=' || true
+        fi
+        if command -v sacct >/dev/null 2>&1 && [ -n "${SLURM_JOB_ID:-}" ]; then
+            sacct -j "$SLURM_JOB_ID" --format=JobID,JobName%30,State,ExitCode,Elapsed,Timelimit,ReqMem,MaxRSS,NodeList,Reason -P 2>/dev/null || true
+        fi
+    } > "$out_file" 2>/dev/null || true
+}
+
+write_slurm_reason
+
 # Cleanup function for trap (handles SIGTERM from timeout, SIGINT, etc.)
 cleanup() {
     local signal_name="${1:-UNKNOWN}"
@@ -132,6 +150,9 @@ cleanup() {
 
     # Try DELFIN cleanup first (safe if not running DELFIN)
     cd "$RUN_DIR" 2>/dev/null && delfin --cleanup 2>/dev/null || true
+
+    # Capture scheduler reason at shutdown.
+    write_slurm_reason
 
     # CRITICAL: Copy ALL results back before cleanup
     echo "Copying results back to $SLURM_SUBMIT_DIR..."
@@ -164,7 +185,12 @@ echo "Job ID:      $SLURM_JOB_ID"
 echo "Node:        $SLURM_JOB_NODELIST"
 echo "CPUs:        $SLURM_NTASKS"
 echo "Memory:      ${SLURM_MEM_PER_NODE:-unknown} MB"
-echo "Time Limit:  ${SLURM_TIMELIMIT:-unknown}"
+# SLURM_TIMELIMIT is not always set; fall back to scontrol for visibility.
+TIME_LIMIT="${SLURM_TIMELIMIT:-}"
+if [ -z "$TIME_LIMIT" ] && [ -n "${SLURM_JOB_ID:-}" ] && command -v scontrol >/dev/null 2>&1; then
+    TIME_LIMIT="$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null | awk -F= '/TimeLimit=/{print $2; exit}')"
+fi
+echo "Time Limit:  ${TIME_LIMIT:-unknown}"
 echo "Submit Dir:  $SLURM_SUBMIT_DIR"
 echo "Scratch:     $DELFIN_SCRATCH"
 echo "Started:     $(date)"
