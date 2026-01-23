@@ -91,6 +91,10 @@ export OMPI_MCA_mpi_show_mca_params_file=0
 export OMPI_MCA_mpi_yield_when_idle=1         # Reduce CPU spinning
 export OMPI_MCA_coll_hcoll_enable=0           # Disable HCOLL (often problematic)
 
+# Clear any inherited TCP interface include/exclude to avoid invalid if_inexclude warnings
+unset OMPI_MCA_btl_tcp_if_include
+unset OMPI_MCA_btl_tcp_if_exclude
+
 # Process binding: let ORCA handle its own binding
 export OMPI_MCA_hwloc_base_binding_policy=none
 export OMPI_MCA_rmaps_base_mapping_policy=core
