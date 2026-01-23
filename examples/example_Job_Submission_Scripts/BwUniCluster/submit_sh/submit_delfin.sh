@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name={job_name}
+#SBATCH --job-name=delfin_job
 #SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=40
 #SBATCH --cpus-per-task=1
 #SBATCH --threads-per-core=1
 #SBATCH --mem=240G
-#SBATCH --time=120:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=delfin_%j.out
 #SBATCH --error=delfin_%j.err
 #SBATCH --constraint=BEEOND
@@ -14,11 +14,22 @@
 #SBATCH --signal=B:SIGTERM@120
 
 # ========================================================================
-# DELFIN Extra Long Job (120h / 5 days)
-# Supports: DELFIN mode (CONTROL.txt + input.txt) or ORCA-only mode (*.inp)
+# DELFIN Central Submit Script
+# Supports all modes via environment variables:
+#   DELFIN_MODE: delfin | delfin-recalc | orca | auto (default: auto)
+#   DELFIN_INP_FILE: Specific .inp file for ORCA mode
+#   DELFIN_JOB_NAME: Job name for display (optional)
+#
+# Resource parameters are passed via sbatch command-line overrides:
+#   --time, --ntasks, --mem, --job-name
 # ========================================================================
 
 set -euo pipefail
+
+# === Configuration from environment variables ===
+MODE="${DELFIN_MODE:-auto}"
+INP_FILE="${DELFIN_INP_FILE:-}"
+DISPLAY_JOB_NAME="${DELFIN_JOB_NAME:-${SLURM_JOB_NAME:-delfin_job}}"
 
 # Load modules
 module purge
@@ -142,16 +153,20 @@ trap 'cleanup SIGHUP' SIGHUP
 
 # Job info
 echo "========================================"
-echo "DELFIN Job - {job_name}"
-echo "Job Type: Extra Long (120h / 5 days)"
+echo "DELFIN Job - $DISPLAY_JOB_NAME"
+echo "Mode: $MODE"
 echo "========================================"
 echo "Job ID:      $SLURM_JOB_ID"
 echo "Node:        $SLURM_JOB_NODELIST"
 echo "CPUs:        $SLURM_NTASKS"
 echo "Memory:      ${SLURM_MEM_PER_NODE:-unknown} MB"
+echo "Time Limit:  ${SLURM_TIMELIMIT:-unknown}"
 echo "Submit Dir:  $SLURM_SUBMIT_DIR"
 echo "Scratch:     $DELFIN_SCRATCH"
 echo "Started:     $(date)"
+if [ -n "$INP_FILE" ]; then
+    echo "Input File:  $INP_FILE"
+fi
 echo "========================================"
 echo ""
 
@@ -176,23 +191,6 @@ echo "Git Commit: $(git rev-parse --short HEAD 2>/dev/null || echo 'N/A')"
 echo ""
 cd - > /dev/null
 
-# Detect job mode: DELFIN (CONTROL.txt + input.txt) or ORCA-only (*.inp files)
-DELFIN_MODE=false
-ORCA_ONLY_MODE=false
-
-if [ -f "$SLURM_SUBMIT_DIR/CONTROL.txt" ] && [ -f "$SLURM_SUBMIT_DIR/input.txt" ]; then
-    DELFIN_MODE=true
-    echo "Mode: DELFIN (CONTROL.txt + input.txt found)"
-elif ls "$SLURM_SUBMIT_DIR"/*.inp 1>/dev/null 2>&1; then
-    ORCA_ONLY_MODE=true
-    echo "Mode: ORCA-only (*.inp files found, no CONTROL.txt)"
-else
-    echo "ERROR: No valid input files found in $SLURM_SUBMIT_DIR"
-    echo "       Expected either: CONTROL.txt + input.txt (DELFIN mode)"
-    echo "       Or: *.inp files (ORCA-only mode)"
-    exit 1
-fi
-
 # Copy ALL input files to scratch
 echo "Copying input files to scratch..."
 cp -a "$SLURM_SUBMIT_DIR"/* "$RUN_DIR"/ 2>/dev/null || true
@@ -201,26 +199,60 @@ rm -f "$RUN_DIR"/delfin_*.out "$RUN_DIR"/delfin_*.err 2>/dev/null || true
 
 cd "$RUN_DIR"
 
+# Auto-detect mode if set to "auto"
+if [ "$MODE" = "auto" ]; then
+    if [ -f "$SLURM_SUBMIT_DIR/CONTROL.txt" ] && [ -f "$SLURM_SUBMIT_DIR/input.txt" ]; then
+        MODE="delfin"
+        echo "Auto-detected mode: DELFIN (CONTROL.txt + input.txt found)"
+    elif ls "$SLURM_SUBMIT_DIR"/*.inp 1>/dev/null 2>&1; then
+        MODE="orca"
+        echo "Auto-detected mode: ORCA (*.inp files found, no CONTROL.txt)"
+    else
+        echo "ERROR: No valid input files found in $SLURM_SUBMIT_DIR"
+        echo "       Expected either: CONTROL.txt + input.txt (DELFIN mode)"
+        echo "       Or: *.inp files (ORCA-only mode)"
+        exit 1
+    fi
+fi
+
 # Run appropriate mode
 EXIT_CODE=0
 set +e
-if [ "$DELFIN_MODE" = true ]; then
-    echo "Starting DELFIN..."
-    delfin
-    EXIT_CODE=$?
-elif [ "$ORCA_ONLY_MODE" = true ]; then
-    # Find the first .inp file and run ORCA directly
-    INP_FILE=$(ls *.inp 2>/dev/null | head -1)
-    if [ -z "$INP_FILE" ]; then
-        echo "ERROR: No .inp file found after copy"
-        EXIT_CODE=1
-    else
-        OUT_FILE="${INP_FILE%.inp}.out"
-        echo "Starting ORCA: $INP_FILE -> $OUT_FILE"
-        "$ORCA_BASE/orca" "$INP_FILE" > "$OUT_FILE" 2>&1
+case "$MODE" in
+    delfin)
+        echo "Starting DELFIN..."
+        delfin
         EXIT_CODE=$?
-    fi
-fi
+        ;;
+    delfin-recalc)
+        echo "Starting DELFIN --recalc..."
+        delfin --recalc
+        EXIT_CODE=$?
+        ;;
+    orca)
+        # Use specified input file or find the first one
+        if [ -z "$INP_FILE" ]; then
+            INP_FILE=$(ls *.inp 2>/dev/null | head -1)
+        fi
+        if [ -z "$INP_FILE" ]; then
+            echo "ERROR: No .inp file found for ORCA mode"
+            EXIT_CODE=1
+        elif [ ! -f "$INP_FILE" ]; then
+            echo "ERROR: Specified input file not found: $INP_FILE"
+            EXIT_CODE=1
+        else
+            OUT_FILE="${INP_FILE%.inp}.out"
+            echo "Starting ORCA: $INP_FILE -> $OUT_FILE"
+            "$ORCA_BASE/orca" "$INP_FILE" > "$OUT_FILE" 2>&1
+            EXIT_CODE=$?
+        fi
+        ;;
+    *)
+        echo "ERROR: Unknown mode: $MODE"
+        echo "       Valid modes: delfin, delfin-recalc, orca, auto"
+        EXIT_CODE=1
+        ;;
+esac
 set -e
 
 echo ""
