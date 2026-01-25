@@ -159,7 +159,7 @@ cleanup() {
     if [ -d "$RUN_DIR" ]; then
         # Remove useless .tmp files before copying (saves space and time)
         find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
-        cp -a "$RUN_DIR"/* "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Results copied successfully."
     else
         echo "WARNING: RUN_DIR not found, nothing to copy."
@@ -171,7 +171,29 @@ cleanup() {
     exit 1
 }
 
+# Periodic copy-back to mitigate hard timeouts.
+periodic_copy() {
+    while true; do
+        sleep 7200
+        if [ -d "$RUN_DIR" ]; then
+            find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
+            rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        fi
+    done
+}
+
+# Start periodic copy-back in background.
+periodic_copy &
+PERIODIC_COPY_PID=$!
+
+stop_periodic_copy() {
+    if [ -n "${PERIODIC_COPY_PID:-}" ]; then
+        kill "$PERIODIC_COPY_PID" 2>/dev/null || true
+    fi
+}
+
 # Set trap for cleanup on termination signals (including SLURM timeout)
+trap 'stop_periodic_copy' EXIT
 trap 'cleanup SIGTERM' SIGTERM
 trap 'cleanup SIGINT' SIGINT
 trap 'cleanup SIGHUP' SIGHUP
@@ -295,7 +317,7 @@ echo "========================================"
 find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
 
 # Copy results back
-cp -a "$RUN_DIR"/* "$SLURM_SUBMIT_DIR"/
+rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
 
 # Cleanup scratch
 rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR"
