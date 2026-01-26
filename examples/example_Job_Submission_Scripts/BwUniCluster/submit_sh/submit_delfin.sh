@@ -10,7 +10,6 @@
 #SBATCH --output=delfin_%j.out
 #SBATCH --error=delfin_%j.err
 #SBATCH --constraint=BEEOND
-#SBATCH --exclusive
 #SBATCH --signal=B:SIGTERM@120
 
 # ========================================================================
@@ -22,9 +21,76 @@
 #
 # Resource parameters are passed via sbatch command-line overrides:
 #   --time, --ntasks, --mem, --job-name
+#
+# Auto resources (optional):
+#   DELFIN_AUTO_RESOURCES=1 ./submit_delfin.sh
+#   Uses CONTROL.txt PAL/maxcore to set --ntasks/--mem and adds --exclusive
+#   if the request is close to a full standard node.
+#   DELFIN_FORCE_EXCLUSIVE=1 forces --exclusive even for smaller requests.
 # ========================================================================
 
 set -euo pipefail
+
+# === Optional auto-submit with resources derived from CONTROL.txt ===
+if [ -z "${SLURM_JOB_ID:-}" ] && [ "${DELFIN_AUTO_RESOURCES:-0}" = "1" ]; then
+    control_file="${DELFIN_CONTROL:-$PWD/CONTROL.txt}"
+    pal_default=40
+    maxcore_default=6000
+    pal="$pal_default"
+    maxcore="$maxcore_default"
+    if [ -f "$control_file" ]; then
+        pal_found="$(awk -F= '/^[[:space:]]*PAL[[:space:]]*=/ {gsub(/[^0-9]/,"",$2); print $2; exit}' "$control_file")"
+        maxcore_found="$(awk -F= '/^[[:space:]]*maxcore[[:space:]]*=/ {gsub(/[^0-9]/,"",$2); print $2; exit}' "$control_file")"
+        if [ -n "$pal_found" ]; then
+            pal="$pal_found"
+        fi
+        if [ -n "$maxcore_found" ]; then
+            maxcore="$maxcore_found"
+        fi
+    fi
+
+    ntasks="$pal"
+    mem_mb=$((pal * maxcore))
+
+    node_cores=96
+    node_mem_mb=$((384 * 1024))
+    highmem_mb=$((2304 * 1024))
+    partition="${DELFIN_PARTITION:-cpu}"
+    exclusive=0
+    if [ "$mem_mb" -gt "$node_mem_mb" ] && [ "$partition" = "cpu" ]; then
+        partition="highmem"
+        node_mem_mb="$highmem_mb"
+    fi
+    if [ "$ntasks" -ge $((node_cores * 9 / 10)) ] || [ "$mem_mb" -ge $((node_mem_mb * 9 / 10)) ]; then
+        exclusive=1
+    fi
+    if [ "${DELFIN_FORCE_EXCLUSIVE:-0}" = "1" ]; then
+        exclusive=1
+    fi
+    if [ "$mem_mb" -gt "$node_mem_mb" ]; then
+        echo "ERROR: Requested mem ${mem_mb}MB exceeds partition capacity (${node_mem_mb}MB)."
+        echo "Set DELFIN_PARTITION=highmem (or adjust PAL/maxcore) and submit again."
+        exit 1
+    fi
+
+    sbatch_args=(
+        --partition="${partition}"
+        --nodes=1
+        --ntasks="${ntasks}"
+        --cpus-per-task=1
+        --threads-per-core=1
+        --mem="${mem_mb}M"
+    )
+    if [ "$exclusive" -eq 1 ]; then
+        sbatch_args+=(--exclusive)
+    fi
+    echo "Auto resources: PAL=${pal} maxcore=${maxcore} -> --ntasks=${ntasks} --mem=${mem_mb}M --partition=${partition}"
+    if [ "$exclusive" -eq 1 ]; then
+        echo "Auto resources: requesting --exclusive (near full node)"
+    fi
+    sbatch "${sbatch_args[@]}" "$0" "$@"
+    exit 0
+fi
 
 # === Configuration from environment variables ===
 MODE="${DELFIN_MODE:-auto}"
