@@ -242,6 +242,20 @@ def set_main_basisset(found_metals: List[str], config: Dict[str, Any]) -> Tuple[
     return main, metal
 
 
+def resolve_level_of_theory(
+    found_metals: List[str],
+    config: Dict[str, Any],
+    main_basisset: Optional[str] = None,
+    metal_basisset: Optional[str] = None,
+) -> Tuple[str, Optional[str], str, str]:
+    """Resolve basis and relativity tokens for ORCA input generation."""
+    auto_main, auto_metal = set_main_basisset(found_metals, config)
+    main = main_basisset or auto_main
+    metal = metal_basisset or auto_metal
+    rel_token, aux_jk, _ = select_rel_and_aux(found_metals, config)
+    return main, metal, rel_token, aux_jk
+
+
 # ------------------------------------------------------------------------------------
 # Electron counting (from CONTROL + geometry file)
 # ------------------------------------------------------------------------------------

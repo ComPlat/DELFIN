@@ -14,7 +14,7 @@ from delfin.global_manager import get_global_manager
 from delfin.global_scheduler import GlobalOrcaScheduler
 from delfin.imag import run_IMAG
 from delfin.parallel_classic_manually import WorkflowJob
-from delfin.utils import search_transition_metals, set_main_basisset
+from delfin.utils import search_transition_metals, resolve_level_of_theory
 
 logger = get_logger(__name__)
 
@@ -86,7 +86,9 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
         logger.info("No transition metals found")
 
     # Get basis sets
-    main_basisset, metal_basisset = set_main_basisset(metals, config)
+    main_basisset, metal_basisset, _rel_token, _aux_jk = resolve_level_of_theory(
+        metals, config
+    )
 
     # Determine which steps to process
     calc_initial = str(config.get("calc_initial", "yes")).lower() == "yes"

@@ -18,7 +18,7 @@ from delfin.global_manager import get_global_manager
 from .define import create_control_file
 from .cleanup import cleanup_all, cleanup_orca
 from .config import read_control_file, get_E_ref
-from .utils import search_transition_metals, set_main_basisset, calculate_total_electrons_txt, get_git_commit_info
+from .utils import search_transition_metals, resolve_level_of_theory, calculate_total_electrons_txt, get_git_commit_info
 from .orca import run_orca, cleanup_orca_scratch_dir
 from .xtb_crest import XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
 from .reporting import (
@@ -1221,7 +1221,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             logger.info("No transition metals found in the file.")
     
-        main_basisset, metal_basisset = set_main_basisset(metals, config)
+        main_basisset, metal_basisset, _rel_token, _aux_jk = resolve_level_of_theory(
+            metals, config
+        )
     
         D45_SET = {
             'Y','Zr','Nb','Mo','Tc','Ru','Rh','Pd','Ag','Cd',

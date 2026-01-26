@@ -894,7 +894,7 @@ def _create_s0_tddft_check_input(
     This creates a single-point TDDFT calculation on the optimized S0 geometry
     for identifying excited state energies.
     """
-    from delfin.xyz_io import select_rel_and_aux
+    from delfin.utils import resolve_level_of_theory
 
     functional = config.get('functional', 'PBE0')
     disp_corr = config.get('disp_corr', 'D4')
@@ -907,7 +907,9 @@ def _create_s0_tddft_check_input(
     esd_maxdim = config.get('ESD_maxdim', None)
     maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
 
-    _, aux_jk, _ = select_rel_and_aux(metals, config)
+    main_basis, _metal_basis, rel_token, aux_jk = resolve_level_of_theory(
+        metals, config, main_basisset, metal_basisset
+    )
 
     # Build solvation keyword
     from delfin.esd_input_generator import _build_solvation_keyword
@@ -917,7 +919,8 @@ def _create_s0_tddft_check_input(
     tddft_keywords = [
         functional,
         "RKS",
-        main_basisset,
+        rel_token,
+        main_basis,
         disp_corr,
         ri_jkx,
         aux_jk,
@@ -926,7 +929,7 @@ def _create_s0_tddft_check_input(
         tddft_keywords.append(solvation_kw)
 
     with open(output_path, 'w', encoding='utf-8') as f:
-        f.write("! " + " ".join(tddft_keywords) + "\n")
+        f.write("! " + " ".join(k for k in tddft_keywords if str(k).strip()) + "\n")
         f.write('%base "S0_TDDFT"\n')
         f.write(f"%pal nprocs {pal} end\n")
         f.write(f"%maxcore {maxcore}\n")

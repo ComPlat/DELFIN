@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, resolve_maxiter
 
 # import canonical selection helpers from utils
-from .utils import set_main_basisset, select_rel_and_aux
+from .utils import resolve_level_of_theory
 
 # Cache QMMM splits once detected so subsequent geometries (e.g. ORCA outputs without '$')
 # continue to receive the QM/XTB setup.
@@ -500,13 +500,10 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
     load_radii = enable_first and not sphere_scale_raw
     radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if load_radii else None
 
-    # decide main/metal bases per d3 vs. d4/5 policy; allow explicit overrides
-    auto_main, auto_metal = set_main_basisset(found_metals, config)
-    main  = main_basisset  or auto_main
-    metal = metal_basisset or auto_metal
-
-    # relativity & aux-JK selection (only active for 4d/5d per utils)
-    rel_token, aux_jk, _ = select_rel_and_aux(found_metals, config)
+    # decide main/metal bases and relativity per policy; allow explicit overrides
+    main, metal, rel_token, aux_jk = resolve_level_of_theory(
+        found_metals, config, main_basisset, metal_basisset
+    )
     implicit = _implicit_token(config, solvent)
 
     # include FREQ only if frequency_calculation_OCCUPIER=yes
@@ -565,13 +562,10 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
     load_radii = enable_first and not sphere_scale_raw
     radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if load_radii else None
 
-    # decide main/metal bases per d3 vs. d4/5 policy; allow explicit overrides
-    auto_main, auto_metal = set_main_basisset(found_metals, config)
-    main  = main_basisset  or auto_main
-    metal = metal_basisset or auto_metal
-
-    # relativity & aux-JK selection (only active for 4d/5d per utils)
-    rel_token, aux_jk, _ = select_rel_and_aux(found_metals, config)
+    # decide main/metal bases and relativity per policy; allow explicit overrides
+    main, metal, rel_token, aux_jk = resolve_level_of_theory(
+        found_metals, config, main_basisset, metal_basisset
+    )
     implicit = _implicit_token(config, solvent)
 
     # ALWAYS include FREQ
@@ -641,13 +635,10 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
     load_radii = enable_first and not sphere_scale_raw
     radii_all = _load_covalent_radii(config.get("covalent_radii_source", "pyykko2009")) if load_radii else None
 
-    # bases
-    auto_main, auto_metal = set_main_basisset(found_metals, config)
-    main  = main_basisset  or auto_main
-    metal = metal_basisset or auto_metal
-
-    # relativity + aux-JK
-    rel_token, aux_jk, _ = select_rel_and_aux(found_metals, config)
+    # bases + relativity
+    main, metal, rel_token, aux_jk = resolve_level_of_theory(
+        found_metals, config, main_basisset, metal_basisset
+    )
     implicit = _implicit_token(config, solvent)
 
     # method line with FREQ

@@ -14,7 +14,7 @@ from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, r
 from delfin.dynamic_pool import PoolJob, JobPriority
 from delfin.global_manager import get_global_manager
 
-from .utils import search_transition_metals, set_main_basisset, select_rel_and_aux
+from .utils import search_transition_metals, resolve_level_of_theory
 from .energies import find_electronic_energy
 from .orca import run_orca_IMAG, run_orca
 from .xyz_io import (
@@ -357,7 +357,9 @@ def _write_input_from_template(
         raw_geom_lines.append(f"{elem} {x} {y} {z}\n")
 
     found_metals_local = search_transition_metals(str(geom_source_path))
-    main_sel, metal_sel = set_main_basisset(found_metals_local, config)
+    main_sel, metal_sel, _rel_token, _aux_jk = resolve_level_of_theory(
+        found_metals_local, config
+    )
     metal_eff = metal_basisset or metal_sel
     enable_first = str(config.get("first_coordination_sphere_metal_basisset", "no")).lower() in (
         "yes",
@@ -1021,12 +1023,11 @@ def read_and_modify_xyz_IMAG(
     found_metals_local = search_transition_metals(input_file_path)
 
     # Resolve basis settings
-    main_sel, metal_sel = set_main_basisset(found_metals_local, config)
+    main_sel, metal_sel, rel_token, aux_jk_token = resolve_level_of_theory(
+        found_metals_local, config, main_basisset, metal_basisset
+    )
     main_eff = main_basisset or main_sel
     metal_eff = metal_basisset or metal_sel
-
-    # Relativity/AUX policy (3d → non-rel + aux_jk; 4d/5d → rel + aux_jk_rel)
-    rel_token, aux_jk_token, _ = select_rel_and_aux(found_metals_local, config)
 
     # implicit solvation
     implicit = ""

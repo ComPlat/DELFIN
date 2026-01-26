@@ -20,9 +20,8 @@ from .occupier_sequences import (
     remove_existing_sequence_blocks,
 )
 from .utils import (
-    set_main_basisset,
+    resolve_level_of_theory,
     search_transition_metals,
-    select_rel_and_aux,
 )
 from .reporting import generate_summary_report_OCCUPIER
 from .orca import run_orca
@@ -374,8 +373,10 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
         radii_all = None
         sphere_scale = float(sphere_scale_raw or 1.20)
 
-    # Relativity token + AUX-JK token follow 3d/4d5 policy
-    rel_token, aux_jk_token, _use_rel = select_rel_and_aux(found_metals or [], config)
+    # Relativity + basis set selection follow 3d/4d5 policy
+    main_basis, metal_basis, rel_token, aux_jk_token = resolve_level_of_theory(
+        found_metals or [], config, main_basisset, metal_basisset
+    )
 
     # Optional implicit solvent token
     implicit = ""
@@ -398,7 +399,7 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     tokens.extend([
         str(config['functional']),
         rel_token,
-        str(main_basisset),
+        str(main_basis),
         str(config.get('disp_corr', '')),
         str(config.get('ri_jkx', '')),
         aux_jk_token,
@@ -440,7 +441,7 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
 
     # First sphere indices (optional)
     first_sphere = set()
-    if enable_first and metal_indices and metal_basisset:
+    if enable_first and metal_indices and metal_basis:
         first_sphere = _first_coordination_sphere_indices(atoms, metal_indices, sphere_scale, radii_all)
 
     # Logging
@@ -458,14 +459,14 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
         if not ls:
             continue
         apply_metal_basis = False
-        if metal_basisset:
+        if metal_basis:
             if idx in metal_line_set:
                 apply_metal_basis = True
             elif enable_first and idx in sphere_line_set:
                 apply_metal_basis = True
 
         if apply_metal_basis:
-            line = line.rstrip() + f'   NewGTO "{metal_basisset}" end'
+            line = line.rstrip() + f'   NewGTO "{metal_basis}" end'
 
         modified_lines.append(line if line.endswith("\n") else line + "\n")
 
@@ -670,7 +671,7 @@ def run_OCCUPIER():
                                       config, additions):
         """
         Build the ORCA input with:
-          - global method line '!' using main_basisset and aux-JK (via select_rel_and_aux),
+          - global method line '!' using main_basisset and aux-JK (via resolve_level_of_theory),
           - per-atom NewGTO "metal_basisset" for metals (always),
           - optional per-atom NewGTO for the first coordination sphere.
         """
@@ -731,8 +732,10 @@ def run_OCCUPIER():
             radii_all = None
             sphere_scale = float(sphere_scale_raw or 1.20)
 
-        # Relativity token + AUX-JK token follow 3d/4d5 policy
-        rel_token, aux_jk_token, _use_rel = select_rel_and_aux(found_metals or [], config)
+        # Relativity + basis set selection follow 3d/4d5 policy
+        main_basis, metal_basis, rel_token, aux_jk_token = resolve_level_of_theory(
+            found_metals or [], config, main_basisset, metal_basisset
+        )
 
         # Optional implicit solvent token
         implicit = ""
@@ -755,7 +758,7 @@ def run_OCCUPIER():
         tokens.extend([
             str(config['functional']),
             rel_token,                       # '' or ZORA/X2C/DKH
-            str(main_basisset),
+            str(main_basis),
             str(config.get('disp_corr', '')),
             str(config.get('ri_jkx', '')),
             aux_jk_token,                    # '' or def2/J | SARC/J
@@ -797,7 +800,7 @@ def run_OCCUPIER():
 
         # First sphere indices (optional)
         first_sphere = set()
-        if enable_first and metal_indices and metal_basisset:
+        if enable_first and metal_indices and metal_basis:
             first_sphere = _first_coordination_sphere_indices(atoms, metal_indices, sphere_scale, radii_all)
 
         # Logging
@@ -815,14 +818,14 @@ def run_OCCUPIER():
             if not ls:
                 continue
             apply_metal_basis = False
-            if metal_basisset:
+            if metal_basis:
                 if idx in metal_line_set:
                     apply_metal_basis = True
                 elif enable_first and idx in sphere_line_set:
                     apply_metal_basis = True
 
             if apply_metal_basis:
-                line = line.rstrip() + f'   NewGTO "{metal_basisset}" end'
+                line = line.rstrip() + f'   NewGTO "{metal_basis}" end'
 
             modified_lines.append(line if line.endswith("\n") else line + "\n")
 
@@ -904,10 +907,9 @@ def run_OCCUPIER():
         metals = search_transition_metals(input_file)
 
         # Select orbital bases based on 3d/4d5 policy (from utils)
-        main_basisset, metal_basisset = set_main_basisset(metals, config)
-        # If no metals present, do not apply per-atom overrides
-        if not metals:
-            metal_basisset = None
+        main_basisset, metal_basisset, _rel_token, _aux_jk = resolve_level_of_theory(
+            metals, config
+        )
 
         species_delta = infer_species_delta(Path.cwd())
         seq_bundle = resolve_sequences_for_delta(config, species_delta)

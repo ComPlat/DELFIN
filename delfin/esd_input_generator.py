@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.common.orca_blocks import resolve_maxiter, collect_output_blocks
+from delfin.utils import resolve_level_of_theory
 
 logger = get_logger(__name__)
 
@@ -245,6 +246,7 @@ def _build_solvation_keyword(implicit_solvation_model: str, solvent: str) -> str
     if solvent and str(solvent).strip():
         return f"{model}({solvent})"
     return model
+
 
 
 def _format_ms_suffix(trootssl: int) -> str:
@@ -718,7 +720,9 @@ def _create_state_input_delta_scf(
     functional = config.get('functional', 'PBE0')
     disp_corr = config.get('disp_corr', 'D4')
     ri_jkx = config.get('ri_jkx', 'RIJCOSX')
-    aux_jk = config.get('aux_jk', 'def2/J')
+    main_basis, metal_basis, rel_token, aux_jk = resolve_level_of_theory(
+        metals, config, main_basisset, metal_basisset
+    )
 
     # Solvation
     implicit_solvation = config.get('implicit_solvation_model', '')
@@ -746,7 +750,8 @@ def _create_state_input_delta_scf(
     keywords = [
         functional,
         scf_type,
-        main_basisset,
+        rel_token,
+        main_basis,
         disp_corr,
         ri_jkx,
         aux_jk,
@@ -784,7 +789,7 @@ def _create_state_input_delta_scf(
         if deltascf_keywords:
             keywords.extend(deltascf_keywords.split())
 
-    simple_line = "! " + " ".join(keywords)
+    simple_line = "! " + " ".join(k for k in keywords if str(k).strip())
 
     # Blocks
     blocks = []
@@ -888,7 +893,7 @@ def _create_state_input_delta_scf(
     coord_lines = _apply_esd_newgto(
         coord_lines,
         found_metals=metals,
-        metal_basisset=metal_basisset,
+        metal_basisset=metal_basis,
         config=config,
     )
 
@@ -929,7 +934,8 @@ def _create_state_input_delta_scf(
             tddft_keywords = [
                 functional,
                 "RKS",
-                main_basisset,
+                rel_token,
+                main_basis,
                 disp_corr,
                 ri_jkx,
                 aux_jk,
@@ -937,7 +943,7 @@ def _create_state_input_delta_scf(
             # Add solvation keyword only if model is set
             if solvation_kw:
                 tddft_keywords.append(solvation_kw)
-            f.write("! " + " ".join(tddft_keywords) + "\n")
+            f.write("! " + " ".join(k for k in tddft_keywords if str(k).strip()) + "\n")
 
             # Base block for TDDFT check
             f.write(f'%base "S0_TDDFT"\n')
@@ -987,7 +993,8 @@ def _create_state_input_delta_scf(
             tddft_keywords = [
                 functional,
                 "RKS",
-                main_basisset,
+                rel_token,
+                main_basis,
                 disp_corr,
                 ri_jkx,
                 aux_jk,
@@ -995,7 +1002,7 @@ def _create_state_input_delta_scf(
             # Add solvation keyword only if model is set
             if solvation_kw:
                 tddft_keywords.append(solvation_kw)
-            f.write("! " + " ".join(tddft_keywords) + "\n")
+            f.write("! " + " ".join(k for k in tddft_keywords if str(k).strip()) + "\n")
 
             # Base block for TDDFT check
             f.write(f'%base "{state_upper}_TDDFT"\n')
@@ -1044,14 +1051,15 @@ def _create_state_input_delta_scf(
             tddft_keywords = [
                 functional,
                 "RKS",
-                main_basisset,
+                rel_token,
+                main_basis,
                 disp_corr,
                 ri_jkx,
                 aux_jk,
             ]
             if solvation_kw:
                 tddft_keywords.append(solvation_kw)
-            f.write("! " + " ".join(tddft_keywords) + "\n")
+            f.write("! " + " ".join(k for k in tddft_keywords if str(k).strip()) + "\n")
 
             # Base block for TDDFT check
             f.write(f'%base "{state_label}_TDDFT"\n')
@@ -1154,7 +1162,9 @@ def _create_state_input_hybrid1(
     functional = config.get('functional', 'PBE0')
     disp_corr = config.get('disp_corr', 'D4')
     ri_jkx = config.get('ri_jkx', 'RIJCOSX')
-    aux_jk = config.get('aux_jk', 'def2/J')
+    main_basis, metal_basis, rel_token, aux_jk = resolve_level_of_theory(
+        metals, config, main_basisset, metal_basisset
+    )
     implicit_solvation = config.get('implicit_solvation_model', '')
     geom_token = str(config.get('geom_opt', 'OPT')).strip() or "OPT"
     pal = config.get('PAL', 12)
@@ -1178,7 +1188,7 @@ def _create_state_input_hybrid1(
 
     # Build keyword line for first step (TDDFT OPT, no FREQ)
     # Use RKS for TDDFT (required for dosoc, identical to pure TDDFT mode)
-    keywords_first = [functional, "RKS", main_basisset, disp_corr, ri_jkx, aux_jk]
+    keywords_first = [functional, "RKS", rel_token, main_basis, disp_corr, ri_jkx, aux_jk]
     if solvation_kw:
         keywords_first.append(solvation_kw)
     keywords_first.append(geom_token)
@@ -1196,12 +1206,12 @@ def _create_state_input_hybrid1(
         raise
 
     coord_lines = _apply_esd_newgto(
-        coord_lines, found_metals=metals, metal_basisset=metal_basisset, config=config
+        coord_lines, found_metals=metals, metal_basisset=metal_basis, config=config
     )
 
     # Write first TDDFT input
     with open(input_file_first, 'w', encoding='utf-8') as f:
-        f.write("! " + " ".join(keywords_first) + "\n")
+        f.write("! " + " ".join(k for k in keywords_first if str(k).strip()) + "\n")
         f.write(f'%base "{first_input_base}"\n')
         f.write('%moinp "S0.gbw"\n')
         f.write(f"%pal nprocs {pal} end\n")
@@ -1265,7 +1275,7 @@ def _create_state_input_hybrid1(
         freq_type = 'FREQ'
 
     # Build keywords for second step (deltaSCF)
-    keywords_second = [functional, "UKS", main_basisset, disp_corr, ri_jkx, aux_jk]
+    keywords_second = [functional, "UKS", rel_token, main_basis, disp_corr, ri_jkx, aux_jk]
     if solvation_kw:
         keywords_second.append(solvation_kw)
     keywords_second.append(geom_token)
@@ -1322,7 +1332,7 @@ def _create_state_input_hybrid1(
 
     # Write second deltaSCF input
     with open(input_file_second, 'w', encoding='utf-8') as f:
-        f.write("! " + " ".join(keywords_second) + "\n")
+        f.write("! " + " ".join(k for k in keywords_second if str(k).strip()) + "\n")
         f.write(f'%base "{state_upper}_second_deltaSCF"\n')
         f.write(f'%moinp "{first_input_base}.gbw"\n')
         f.write(f"%pal nprocs {pal} end\n")
@@ -1372,7 +1382,9 @@ def _create_state_input_tddft(
     functional = config.get("functional", "PBE0")
     disp_corr = config.get("disp_corr", "D4")
     ri_jkx = config.get("ri_jkx", "RIJCOSX")
-    aux_jk = config.get("aux_jk", "def2/J")
+    main_basis, metal_basis, rel_token, aux_jk = resolve_level_of_theory(
+        metals, config, main_basisset, metal_basisset
+    )
     implicit_solvation = config.get("implicit_solvation_model", "")
     geom_token_raw = config.get("geom_opt", "OPT")
     geom_token = str(geom_token_raw).strip() or "OPT"
@@ -1400,7 +1412,8 @@ def _create_state_input_tddft(
         kw = [
             functional,
             scf_type,
-            main_basisset,
+            rel_token,
+            main_basis,
             disp_corr,
             ri_jkx,
             aux_jk,
@@ -1471,7 +1484,7 @@ def _create_state_input_tddft(
     coord_lines = _apply_esd_newgto(
         coord_lines,
         found_metals=metals,
-        metal_basisset=metal_basisset,
+        metal_basisset=metal_basis,
         config=config,
     )
 
@@ -1513,7 +1526,8 @@ def _create_state_input_tddft(
             keywords = [
                 functional,
                 "RKS",
-                main_basisset,
+                rel_token,
+                main_basis,
                 disp_corr,
                 ri_jkx,
                 aux_jk,
@@ -1524,7 +1538,7 @@ def _create_state_input_tddft(
                 keywords.append(geom_token)
             if esd_frequency_enabled:
                 keywords.append("FREQ")
-            f.write("! " + " ".join(keywords) + "\n")
+            f.write("! " + " ".join(k for k in keywords if str(k).strip()) + "\n")
             f.write('%base "S0"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
@@ -1551,14 +1565,15 @@ def _create_state_input_tddft(
             tddft_keywords = [
                 functional,
                 "RKS",
-                main_basisset,
+                rel_token,
+                main_basis,
                 disp_corr,
                 ri_jkx,
                 aux_jk,
             ]
             if solvation_kw:
                 tddft_keywords.append(solvation_kw)
-            f.write("! " + " ".join(tddft_keywords) + "\n")
+            f.write("! " + " ".join(k for k in tddft_keywords if str(k).strip()) + "\n")
             f.write('%base "S0_TDDFT"\n')
             f.write(f"%pal nprocs {pal} end\n")
             f.write(f"%maxcore {maxcore}\n")
@@ -1605,14 +1620,15 @@ def _create_state_input_tddft(
             tddft_keywords_check = [
                 functional,
                 "RKS",
-                main_basisset,
+                rel_token,
+                main_basis,
                 disp_corr,
                 ri_jkx,
                 aux_jk,
             ]
             if solvation_kw:
                 tddft_keywords_check.append(solvation_kw)
-            f.write("! " + " ".join(tddft_keywords_check) + "\n")
+            f.write("! " + " ".join(k for k in tddft_keywords_check if str(k).strip()) + "\n")
 
             f.write('%base "T1_TDDFT"\n')
             f.write(f"%pal nprocs {pal} end\n")
@@ -1828,14 +1844,17 @@ def create_isc_input(
     functional = config.get('functional', 'PBE0')
     disp_corr = config.get('disp_corr', 'D4')
     ri_jkx = config.get('ri_jkx', 'RIJCOSX')
-    aux_jk = config.get('aux_jk', 'def2/J')
+    main_basis, metal_basis, rel_token, aux_jk = resolve_level_of_theory(
+        metals, config, main_basisset, metal_basisset
+    )
     implicit_solvation = config.get('implicit_solvation_model', '')
 
     # Simple keyword line (restricted reference)
     keywords = [
         "RKS",
         functional,
-        main_basisset,
+        rel_token,
+        main_basis,
         disp_corr,
         ri_jkx,
         aux_jk,
@@ -1848,7 +1867,7 @@ def create_isc_input(
 
     keywords.append("ESD(ISC)")
 
-    simple_line = "! " + " ".join(keywords)
+    simple_line = "! " + " ".join(k for k in keywords if str(k).strip())
 
     # Blocks
     blocks = []
@@ -1928,7 +1947,7 @@ def create_isc_input(
     coord_lines = _apply_esd_newgto(
         coord_lines,
         found_metals=metals,
-        metal_basisset=metal_basisset,
+        metal_basisset=metal_basis,
         config=config,
     )
 
@@ -1999,13 +2018,16 @@ def create_ic_input(
     functional = config.get('functional', 'PBE0')
     disp_corr = config.get('disp_corr', 'D4')
     ri_jkx = config.get('ri_jkx', 'RIJCOSX')
-    aux_jk = config.get('aux_jk', 'def2/J')
+    main_basis, metal_basis, rel_token, aux_jk = resolve_level_of_theory(
+        metals, config, main_basisset, metal_basisset
+    )
     implicit_solvation = config.get('implicit_solvation_model', '')
 
     # Simple keyword line (no RKS/UKS flag - let ORCA decide based on multiplicity)
     keywords = [
         functional,
-        main_basisset,
+        rel_token,
+        main_basis,
         disp_corr,
         ri_jkx,
         aux_jk,
@@ -2018,7 +2040,7 @@ def create_ic_input(
 
     keywords.append("ESD(IC)")
 
-    simple_line = "! " + " ".join(keywords)
+    simple_line = "! " + " ".join(k for k in keywords if str(k).strip())
 
     # Blocks
     blocks = []
@@ -2103,7 +2125,7 @@ def create_ic_input(
     coord_lines = _apply_esd_newgto(
         coord_lines,
         found_metals=metals,
-        metal_basisset=metal_basisset,
+        metal_basisset=metal_basis,
         config=config,
     )
 
@@ -2166,12 +2188,15 @@ def create_fluor_input(
     functional = config.get("functional", "PBE0")
     disp_corr = config.get("disp_corr", "D4")
     ri_jkx = config.get("ri_jkx", "RIJCOSX")
-    aux_jk = config.get("aux_jk", "def2/J")
+    main_basis, metal_basis, rel_token, aux_jk = resolve_level_of_theory(
+        metals, config, main_basisset, metal_basisset
+    )
     implicit_solvation = config.get("implicit_solvation_model", "")
 
     keywords = [
         functional,
-        main_basisset,
+        rel_token,
+        main_basis,
         disp_corr,
         ri_jkx,
         aux_jk,
@@ -2187,7 +2212,7 @@ def create_fluor_input(
         keywords.append(solvation_kw)
 
     keywords.append("ESD(FLUOR)")
-    simple_line = "! " + " ".join(keywords)
+    simple_line = "! " + " ".join(k for k in keywords if str(k).strip())
 
     blocks: list[str] = []
     blocks.append(f'%base "{job_name}"')
@@ -2251,7 +2276,7 @@ def create_fluor_input(
     coord_lines = _apply_esd_newgto(
         coord_lines,
         found_metals=metals,
-        metal_basisset=metal_basisset,
+        metal_basisset=metal_basis,
         config=config,
     )
 
@@ -2304,12 +2329,15 @@ def create_phosp_input(
     functional = config.get("functional", "PBE0")
     disp_corr = config.get("disp_corr", "D4")
     ri_jkx = config.get("ri_jkx", "RIJCOSX")
-    aux_jk = config.get("aux_jk", "def2/J")
+    main_basis, metal_basis, rel_token, aux_jk = resolve_level_of_theory(
+        metals, config, main_basisset, metal_basisset
+    )
     implicit_solvation = config.get("implicit_solvation_model", "")
 
     keywords = [
         functional,
-        main_basisset,
+        rel_token,
+        main_basis,
         disp_corr,
         ri_jkx,
         aux_jk,
@@ -2331,7 +2359,7 @@ def create_phosp_input(
             esd_idx = len(keywords)
         keywords.insert(esd_idx, solvation_kw)
 
-    simple_line = "! " + " ".join(keywords)
+    simple_line = "! " + " ".join(k for k in keywords if str(k).strip())
 
     # Compute DELE (cm^-1) from electronic energies at optimized geometries (no ZPE)
     # Use T1.out and S0.out produced by state jobs.
@@ -2374,7 +2402,7 @@ def create_phosp_input(
     geom_coord_lines = _apply_esd_newgto(
         geom_coord_lines,
         found_metals=metals,
-        metal_basisset=metal_basisset,
+        metal_basisset=metal_basis,
         config=config,
     )
 
@@ -2484,7 +2512,6 @@ def append_properties_of_interest_jobs(
     functional = config.get('functional', 'PBE0')
     disp_corr = config.get('disp_corr', 'D4')
     ri_jkx = config.get('ri_jkx', 'RIJCOSX')
-    relativity = str(config.get('relativity', 'none')).strip().lower()
     implicit_solvation = config.get('implicit_solvation_model', '')
     pal = config.get('PAL', 6)
     maxcore = config.get('maxcore', 6000)
@@ -2493,20 +2520,9 @@ def append_properties_of_interest_jobs(
     # Build solvation keyword
     solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
 
-    # Determine basis sets and aux basis based on relativity
-    if relativity in ['zora', 'dkh', 'dkh2']:
-        # Use relativistic basis sets
-        if relativity == 'zora':
-            actual_main_basis = config.get('main_basisset_rel', f'ZORA-{main_basisset}')
-            aux_jk = config.get('aux_jk_rel', 'SARC/J')
-        else:  # DKH
-            actual_main_basis = config.get('main_basisset_rel', f'DKH-{main_basisset}')
-            aux_jk = config.get('aux_jk', 'def2/J')
-        relativity_keyword = relativity.upper()
-    else:
-        actual_main_basis = main_basisset
-        aux_jk = config.get('aux_jk', 'def2/J')
-        relativity_keyword = None
+    main_basis, metal_basis, rel_token, aux_jk = resolve_level_of_theory(
+        metals, config, main_basisset, metal_basisset
+    )
 
     # Calculate total electrons for multiplicity determination
     # For now, we use simple rules: odd electrons -> mult=2, even -> mult=1
@@ -2538,14 +2554,12 @@ def append_properties_of_interest_jobs(
             f.write(f"$new_job\n")
 
             # Build keyword line (without OPT/FREQ)
-            keywords = [functional, actual_main_basis, disp_corr, ri_jkx, aux_jk]
-            if relativity_keyword:
-                keywords.append(relativity_keyword)
+            keywords = [functional, rel_token, main_basis, disp_corr, ri_jkx, aux_jk]
             # Add solvation keyword only if model is set
             if solvation_kw:
                 keywords.append(solvation_kw)
 
-            f.write("! " + " ".join(keywords) + "\n")
+            f.write("! " + " ".join(k for k in keywords if str(k).strip()) + "\n")
 
             # Base name for output files
             base_name = Path(inp_file).stem  # e.g., 'S0'
@@ -2563,10 +2577,10 @@ def append_properties_of_interest_jobs(
                 f.write(block + "\n")
 
             # Add %basis block with NewGTO for metals if present
-            if metals and metal_basisset:
+            if metals and metal_basis:
                 f.write("\n%basis\n")
                 for metal in metals:
-                    f.write(f'  NewGTO {metal} "{metal_basisset}" end\n')
+                    f.write(f'  NewGTO {metal} "{metal_basis}" end\n')
                 f.write("end\n")
 
             # Geometry - use xyzfile to reference optimized geometry (filename only, no path)

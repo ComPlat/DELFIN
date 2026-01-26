@@ -1359,7 +1359,7 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
     from delfin.thread_safe_helpers import prepare_occ_folder_2_only_setup
     from delfin.occupier_flat_extraction import _create_occupier_fob_jobs, _update_runtime_cache
     from delfin.occupier import run_OCCUPIER
-    from delfin.utils import calculate_total_electrons_txt, search_transition_metals, set_main_basisset
+    from delfin.utils import calculate_total_electrons_txt, search_transition_metals, resolve_level_of_theory
 
     jobs: List[WorkflowJob] = []
     stage_completion: Dict[str, str] = {}
@@ -1381,7 +1381,9 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         metals = search_transition_metals(str(input_path))
     except Exception:
         metals = []
-    main_basisset, metal_basisset = set_main_basisset(metals, config)
+    main_basisset, metal_basisset, _rel_token, _aux_jk = resolve_level_of_theory(
+        metals, config
+    )
     solvent = str(config.get("solvent", ""))
 
     def compute_is_even(delta: int) -> Optional[bool]:
