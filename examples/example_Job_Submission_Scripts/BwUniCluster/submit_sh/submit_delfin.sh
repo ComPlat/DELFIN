@@ -186,9 +186,56 @@ periodic_copy() {
 periodic_copy &
 PERIODIC_COPY_PID=$!
 
+# Get walltime in seconds from SLURM
+get_walltime_seconds() {
+    local timelimit
+    timelimit=$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+' || echo "")
+    if [ -z "$timelimit" ] || [ "$timelimit" = "UNLIMITED" ]; then
+        echo "0"
+        return
+    fi
+    # Format: D-HH:MM:SS or HH:MM:SS or MM:SS
+    echo "$timelimit" | awk -F'[-:]' '{
+        if (NF==4) print $1*86400 + $2*3600 + $3*60 + $4
+        else if (NF==3) print $1*3600 + $2*60 + $3
+        else if (NF==2) print $1*60 + $2
+        else print 0
+    }'
+}
+
+# Schedule final backup 5 minutes before timeout
+SAFETY_MARGIN=300  # 5 minutes in seconds
+schedule_final_backup() {
+    local walltime_sec
+    walltime_sec=$(get_walltime_seconds)
+    if [ "$walltime_sec" -le "$SAFETY_MARGIN" ]; then
+        echo "Walltime too short for scheduled final backup, skipping."
+        return
+    fi
+    local wait_time=$((walltime_sec - SAFETY_MARGIN))
+    echo "Scheduled final backup in $((wait_time / 3600))h $((wait_time % 3600 / 60))m (5 min before timeout)"
+    sleep "$wait_time"
+    echo ""
+    echo "========================================"
+    echo "Final backup 5 min before timeout: $(date)"
+    echo "========================================"
+    if [ -d "$RUN_DIR" ]; then
+        find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
+        rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        echo "Final backup completed."
+    fi
+}
+
+# Start scheduled final backup in background
+schedule_final_backup &
+FINAL_BACKUP_PID=$!
+
 stop_periodic_copy() {
     if [ -n "${PERIODIC_COPY_PID:-}" ]; then
         kill "$PERIODIC_COPY_PID" 2>/dev/null || true
+    fi
+    if [ -n "${FINAL_BACKUP_PID:-}" ]; then
+        kill "$FINAL_BACKUP_PID" 2>/dev/null || true
     fi
 }
 
