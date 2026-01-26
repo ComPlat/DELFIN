@@ -9,24 +9,38 @@
 #SBATCH --time=48:00:00
 #SBATCH --output=delfin_%j.out
 #SBATCH --error=delfin_%j.err
-#SBATCH --constraint=BEEOND
 #SBATCH --signal=B:SIGTERM@120
+# Note: Add --constraint=BEEOND only for multi-node jobs that need shared scratch
+# For single-node jobs, $TMPDIR (local SSD) is faster and automatically available
 
 # ========================================================================
-# DELFIN Central Submit Script
-# Supports all modes via environment variables:
-#   DELFIN_MODE: delfin | delfin-recalc | orca | auto (default: auto)
+# DELFIN Central Submit Script for BwUniCluster
+# ========================================================================
+#
+# MODES (set via DELFIN_MODE environment variable):
+#   delfin | delfin-recalc | orca | auto (default: auto)
 #   DELFIN_INP_FILE: Specific .inp file for ORCA mode
 #   DELFIN_JOB_NAME: Job name for display (optional)
 #
-# Resource parameters are passed via sbatch command-line overrides:
+# RESOURCE PARAMETERS (via sbatch command-line overrides):
 #   --time, --ntasks, --mem, --job-name
 #
-# Auto resources (optional):
+# AUTO RESOURCES (optional):
 #   DELFIN_AUTO_RESOURCES=1 ./submit_delfin.sh
 #   Uses CONTROL.txt PAL/maxcore to set --ntasks/--mem and adds --exclusive
 #   if the request is close to a full standard node.
 #   DELFIN_FORCE_EXCLUSIVE=1 forces --exclusive even for smaller requests.
+#
+# SCRATCH DIRECTORY (automatic selection):
+#   1) BeeOND (if --constraint=BEEOND): Parallel SSD across all nodes
+#      - Best for multi-node jobs needing shared scratch
+#      - Add: sbatch --constraint=BEEOND submit_delfin.sh
+#   2) $TMPDIR (default): Local SSD on compute node
+#      - Fastest option for single-node jobs
+#      - Automatically cleaned after job
+#   3) /scratch (fallback): Network filesystem
+#      - Slower, only used if TMPDIR unavailable
+#
 # ========================================================================
 
 set -euo pipefail
@@ -177,13 +191,23 @@ export DELFIN_ORCA_PROGRESS=0
 export MPLBACKEND=Agg
 
 # Scratch directory setup
+# Priority: 1) BeeOND (for multi-node), 2) $TMPDIR (local SSD), 3) /scratch (network, last resort)
 if [ -n "${BEEOND_MOUNTPOINT:-}" ]; then
+    # BeeOND: parallel filesystem across all job nodes (best for multi-node)
     export DELFIN_SCRATCH="$BEEOND_MOUNTPOINT/delfin_${SLURM_JOB_ID}"
     export ORCA_TMPDIR="$BEEOND_MOUNTPOINT/orca_${SLURM_JOB_ID}"
-    echo "Using BeeOND: $BEEOND_MOUNTPOINT"
+    echo "Using BeeOND (parallel SSD): $BEEOND_MOUNTPOINT"
+elif [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
+    # $TMPDIR: local SSD on compute node (fastest for single-node jobs)
+    # Note: Only visible on local node, auto-cleaned after job
+    export DELFIN_SCRATCH="$TMPDIR/delfin"
+    export ORCA_TMPDIR="$TMPDIR/orca"
+    echo "Using local SSD (TMPDIR): $TMPDIR"
 else
+    # Fallback to /scratch (network filesystem - slower, avoid if possible)
     export DELFIN_SCRATCH="/scratch/${USER}/delfin_${SLURM_JOB_ID}"
     export ORCA_TMPDIR="/scratch/${USER}/orca_${SLURM_JOB_ID}"
+    echo "WARNING: Using /scratch (network filesystem) - consider using TMPDIR or BeeOND for better I/O performance"
 fi
 
 RUN_DIR="$DELFIN_SCRATCH/run"
