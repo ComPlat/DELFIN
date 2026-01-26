@@ -2373,8 +2373,12 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
     run_dir = esd_dir / "run"
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir_created = True
     except Exception:
         run_dir = esd_dir
+        run_dir_created = False
+
+    created_temp_files: list[Path] = []
 
     # Ensure densitiesinfo is available where orca_plot expects it
     dens_candidates = [
@@ -2390,6 +2394,7 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
             if not dens_dest.exists():
                 try:
                     shutil.copy2(dens_src, dens_dest)
+                    created_temp_files.append(dens_dest)
                 except Exception:
                     pass
 
@@ -2451,7 +2456,9 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
                 if retry_path and dens_src is not None:
                     try:
                         retry_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(dens_src, retry_path)
+                        if not retry_path.exists():
+                            shutil.copy2(dens_src, retry_path)
+                            created_temp_files.append(retry_path)
                         logger.info("Copied %s to %s for orca_plot retry", dens_src.name, retry_path.parent)
                         result = subprocess.run(
                             [orca_plot_exe, gbw_file.name, "-i"],
@@ -2537,9 +2544,17 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
             cmd.ray(1200, 1200)
             cmd.png(str(output_png), dpi=150)
 
-            # Clean up cube file
+            # Keep and rename cube file for later inspection
             if cube_file.exists():
-                cube_file.unlink()
+                cube_dir = project_dir / "MO_CUBES"
+                try:
+                    cube_dir.mkdir(parents=True, exist_ok=True)
+                    cube_dest = cube_dir / f"{safe_name}.cube"
+                    if cube_dest.exists():
+                        cube_dest.unlink()
+                    cube_file.replace(cube_dest)
+                except Exception:
+                    pass
 
             # Clean up PyMOL
             cmd.delete('all')
@@ -2551,6 +2566,19 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
         except Exception as exc:
             logger.error(f"Failed to create MO visualization for {mo_name}: {exc}")
             continue
+
+    for temp_path in created_temp_files:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except Exception:
+            pass
+    if run_dir_created:
+        try:
+            if run_dir.exists() and not any(run_dir.iterdir()):
+                run_dir.rmdir()
+        except Exception:
+            pass
 
     return mo_images
 
