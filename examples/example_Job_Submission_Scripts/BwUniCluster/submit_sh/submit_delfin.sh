@@ -29,6 +29,7 @@ set -euo pipefail
 # === Configuration from environment variables ===
 MODE="${DELFIN_MODE:-auto}"
 INP_FILE="${DELFIN_INP_FILE:-}"
+OVERRIDE="${DELFIN_OVERRIDE:-}"
 DISPLAY_JOB_NAME="${DELFIN_JOB_NAME:-${SLURM_JOB_NAME:-delfin_job}}"
 
 # Load modules
@@ -328,6 +329,16 @@ case "$MODE" in
         delfin --recalc
         EXIT_CODE=$?
         ;;
+    delfin-recalc-override)
+        if [ -z "$OVERRIDE" ]; then
+            echo "ERROR: DELFIN_OVERRIDE not set for delfin-recalc-override mode"
+            EXIT_CODE=1
+        else
+            echo "Starting DELFIN --recalc --occupier-override $OVERRIDE..."
+            delfin --recalc --occupier-override "$OVERRIDE"
+            EXIT_CODE=$?
+        fi
+        ;;
     orca)
         # Use specified input file or find the first one
         if [ -z "$INP_FILE" ]; then
@@ -348,7 +359,7 @@ case "$MODE" in
         ;;
     *)
         echo "ERROR: Unknown mode: $MODE"
-        echo "       Valid modes: delfin, delfin-recalc, orca, auto"
+        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, auto"
         EXIT_CODE=1
         ;;
 esac
