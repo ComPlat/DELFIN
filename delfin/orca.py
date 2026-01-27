@@ -107,10 +107,20 @@ def _ensure_orca_scratch_dir() -> Path:
     if _RUN_SCRATCH_DIR is not None:
         return _RUN_SCRATCH_DIR
 
+    slurm_tmp = os.environ.get("SLURM_TMPDIR")
+    slurm_job = os.environ.get("SLURM_JOB_ID")
+    slurm_fallback = None
+    if slurm_job:
+        candidate = Path(f"/scratch/slurm_tmpdir/job_{slurm_job}")
+        if candidate.exists():
+            slurm_fallback = str(candidate)
+
     base_candidates = [
         os.environ.get("ORCA_SCRDIR"),
         os.environ.get("ORCA_TMPDIR"),
         os.environ.get("DELFIN_SCRATCH"),
+        slurm_tmp,
+        slurm_fallback,
     ]
 
     for candidate in base_candidates:
