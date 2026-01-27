@@ -2,8 +2,8 @@
 #SBATCH --job-name=delfin_job
 #SBATCH --partition=cpu
 #SBATCH --nodes=1
-#SBATCH --ntasks=40
-#SBATCH --cpus-per-task=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=40
 #SBATCH --threads-per-core=1
 #SBATCH --mem=240G
 #SBATCH --time=48:00:00
@@ -23,7 +23,13 @@
 #   DELFIN_JOB_NAME: Job name for display (optional)
 #
 # RESOURCE PARAMETERS (via sbatch command-line overrides):
-#   --time, --ntasks, --mem, --job-name
+#   --time, --ntasks, --cpus-per-task, --mem, --job-name
+#
+# ORCA PARALLELISM NOTE (important):
+#   Prefer: --ntasks=1 --cpus-per-task=<PAL>
+#   Avoid:  --ntasks=<PAL> --cpus-per-task=1
+#   ORCA manages its own parallel workers and is more stable when PAL is
+#   expressed as cpus-per-task on a single task allocation.
 #
 # AUTO RESOURCES (optional):
 #   DELFIN_AUTO_RESOURCES=1 ./submit_delfin.sh
@@ -63,7 +69,10 @@ if [ -z "${SLURM_JOB_ID:-}" ] && [ "${DELFIN_AUTO_RESOURCES:-0}" = "1" ]; then
         fi
     fi
 
-    ntasks="$pal"
+    # ORCA is typically most stable with a single task and PAL expressed
+    # as cpus-per-task.
+    ntasks="1"
+    cpus_per_task="$pal"
     mem_mb=$((pal * maxcore))
 
     node_cores=96
@@ -75,7 +84,7 @@ if [ -z "${SLURM_JOB_ID:-}" ] && [ "${DELFIN_AUTO_RESOURCES:-0}" = "1" ]; then
         partition="highmem"
         node_mem_mb="$highmem_mb"
     fi
-    if [ "$ntasks" -ge $((node_cores * 9 / 10)) ] || [ "$mem_mb" -ge $((node_mem_mb * 9 / 10)) ]; then
+    if [ "$cpus_per_task" -ge $((node_cores * 9 / 10)) ] || [ "$mem_mb" -ge $((node_mem_mb * 9 / 10)) ]; then
         exclusive=1
     fi
     if [ "${DELFIN_FORCE_EXCLUSIVE:-0}" = "1" ]; then
@@ -91,14 +100,14 @@ if [ -z "${SLURM_JOB_ID:-}" ] && [ "${DELFIN_AUTO_RESOURCES:-0}" = "1" ]; then
         --partition="${partition}"
         --nodes=1
         --ntasks="${ntasks}"
-        --cpus-per-task=1
+        --cpus-per-task="${cpus_per_task}"
         --threads-per-core=1
         --mem="${mem_mb}M"
     )
     if [ "$exclusive" -eq 1 ]; then
         sbatch_args+=(--exclusive)
     fi
-    echo "Auto resources: PAL=${pal} maxcore=${maxcore} -> --ntasks=${ntasks} --mem=${mem_mb}M --partition=${partition}"
+    echo "Auto resources: PAL=${pal} maxcore=${maxcore} -> --ntasks=${ntasks} --cpus-per-task=${cpus_per_task} --mem=${mem_mb}M --partition=${partition}"
     if [ "$exclusive" -eq 1 ]; then
         echo "Auto resources: requesting --exclusive (near full node)"
     fi
@@ -111,6 +120,37 @@ MODE="${DELFIN_MODE:-auto}"
 INP_FILE="${DELFIN_INP_FILE:-}"
 OVERRIDE="${DELFIN_OVERRIDE:-}"
 DISPLAY_JOB_NAME="${DELFIN_JOB_NAME:-${SLURM_JOB_NAME:-delfin_job}}"
+
+# === PAL / SLURM sanity check (helps diagnose ORCA MPI/LINALG crashes) ===
+PAL_FROM_CONTROL=""
+MAXCORE_FROM_CONTROL=""
+CONTROL_PATH="${SLURM_SUBMIT_DIR:-$PWD}/CONTROL.txt"
+if [ -f "$CONTROL_PATH" ]; then
+    PAL_FROM_CONTROL="$(awk -F= '/^[[:space:]]*PAL[[:space:]]*=/ {gsub(/[^0-9]/,"",$2); print $2; exit}' "$CONTROL_PATH")"
+    MAXCORE_FROM_CONTROL="$(awk -F= '/^[[:space:]]*maxcore[[:space:]]*=/ {gsub(/[^0-9]/,"",$2); print $2; exit}' "$CONTROL_PATH")"
+fi
+
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    SLURM_TASKS="${SLURM_NTASKS:-1}"
+    SLURM_CPT="${SLURM_CPUS_PER_TASK:-1}"
+    if [ -n "$PAL_FROM_CONTROL" ]; then
+        if [ "$SLURM_TASKS" -gt 1 ] && [ "$SLURM_CPT" -eq 1 ]; then
+            echo "WARNING: SLURM allocation is --ntasks=${SLURM_TASKS} --cpus-per-task=${SLURM_CPT}."
+            echo "         For ORCA stability, prefer --ntasks=1 --cpus-per-task=${PAL_FROM_CONTROL}."
+            echo "         Mismatched task-style allocations can trigger ORCA linear algebra crashes"
+            echo "         (e.g., BLAS_CholeskySolution: Wrong RHS dimension)."
+        fi
+        if [ "$SLURM_TASKS" -ne 1 ] && [ "$SLURM_CPT" -ne "$PAL_FROM_CONTROL" ]; then
+            echo "WARNING: CONTROL.txt PAL=${PAL_FROM_CONTROL} but SLURM has ntasks=${SLURM_TASKS}, cpus-per-task=${SLURM_CPT}."
+            echo "         Suggested submit command:"
+            if [ -n "$MAXCORE_FROM_CONTROL" ]; then
+                echo "         sbatch --ntasks=1 --cpus-per-task=${PAL_FROM_CONTROL} --mem=$((PAL_FROM_CONTROL * MAXCORE_FROM_CONTROL))M \"$0\""
+            else
+                echo "         sbatch --ntasks=1 --cpus-per-task=${PAL_FROM_CONTROL} \"$0\""
+            fi
+        fi
+    fi
+fi
 
 # Load modules
 module purge
