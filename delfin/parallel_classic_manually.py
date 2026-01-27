@@ -1798,7 +1798,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 additions,
             )
             _update_pal_block(output_initial, cores)
-            if not run_orca(output_initial, 'initial.out'):
+            if not run_orca(output_initial, 'initial.out', isolate=True):
                 raise RuntimeError('ORCA terminated abnormally for initial.out')
             run_IMAG(
                 'initial.out',
@@ -1897,7 +1897,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                             metal_basisset=metal_basis,
                         )
 
-                if not run_orca(ox_inputs[idx], ox_outputs[idx]):
+                if not run_orca(ox_inputs[idx], ox_outputs[idx], isolate=True):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
                 run_IMAG(
                     ox_outputs[idx],
@@ -1980,7 +1980,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                             metal_basisset=metal_basis,
                         )
 
-                if not run_orca(red_inputs[idx], red_outputs[idx]):
+                if not run_orca(red_inputs[idx], red_outputs[idx], isolate=True):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
                 run_IMAG(
                     red_outputs[idx],
@@ -2060,7 +2060,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 ground_additions,
             )
             _update_pal_block(output_initial, cores)
-            if not run_orca(output_initial, 'initial.out'):
+            if not run_orca(output_initial, 'initial.out', isolate=True):
                 raise RuntimeError('ORCA terminated abnormally for initial.out')
             run_IMAG(
                 'initial.out',
@@ -2159,7 +2159,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                             metal_basisset=metal_basis,
                         )
 
-                if not run_orca(ox_inputs[idx], ox_outputs[idx]):
+                if not run_orca(ox_inputs[idx], ox_outputs[idx], isolate=True):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
                 run_IMAG(
                     ox_outputs[idx],
@@ -2242,7 +2242,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                             metal_basisset=metal_basis,
                         )
 
-                if not run_orca(red_inputs[idx], red_outputs[idx]):
+                if not run_orca(red_inputs[idx], red_outputs[idx], isolate=True):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
                 run_IMAG(
                     red_outputs[idx],

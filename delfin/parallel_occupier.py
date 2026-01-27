@@ -745,6 +745,7 @@ def build_occupier_jobs(
 
                 inp_initial = workspace_root / "initial.inp"
                 out_initial = workspace_root / "initial.out"
+                gbw_initial = workspace_root / "input_initial_OCCUPIER.gbw"
 
                 # In recalc mode, only regenerate .inp if this job is being forced
                 if _should_regenerate_inp(inp_initial, out_initial, config):
@@ -763,14 +764,23 @@ def build_occupier_jobs(
                     _update_pal_block(str(inp_initial), cores)
 
                     # Add %moinp block to reuse OCCUPIER wavefunction
-                    gbw_initial = workspace_root / "input_initial_OCCUPIER.gbw"
                     if not xtb_solvator_enabled and gbw_initial.exists():
-                        _add_moinp_block(str(inp_initial), str(gbw_initial))
+                        # Use relative GBW path so isolation can copy the dependency.
+                        _add_moinp_block(str(inp_initial), gbw_initial.name)
                         logger.info("[occupier_initial] Using GBW from OCCUPIER: %s", gbw_initial)
                     elif xtb_solvator_enabled:
                         logger.debug("[occupier_initial] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled")
 
-                if not run_orca(str(inp_initial), str(out_initial)):
+                initial_deps = None
+                if gbw_initial.exists() and not xtb_solvator_enabled:
+                    initial_deps = [gbw_initial.name]
+
+                if not run_orca(
+                    str(inp_initial),
+                    str(out_initial),
+                    isolate=True,
+                    copy_files=initial_deps,
+                ):
                     raise RuntimeError("ORCA terminated abnormally for initial.out")
                 run_IMAG(
                     str(workspace_root / "initial.out"),
@@ -903,6 +913,7 @@ def build_occupier_jobs(
                     # Use absolute path for inp to avoid race conditions with CWD changes
                     inp_abs = root_dir / inp
                     out_abs = root_dir / out
+                    gbw_ox = root_dir / f"input_ox_step_{idx}_OCCUPIER.gbw"
 
                     # In recalc mode, only regenerate .inp if this job is being forced
                     if _should_regenerate_inp(inp_abs, out_abs, config):
@@ -923,14 +934,19 @@ def build_occupier_jobs(
                         _update_pal_block(str(inp_abs), cores)
 
                         # Add %moinp block to reuse OCCUPIER wavefunction
-                        gbw_ox = root_dir / f"input_ox_step_{idx}_OCCUPIER.gbw"
                         if not xtb_solvator_enabled and gbw_ox.exists():
-                            _add_moinp_block(str(inp_abs), str(gbw_ox))
+                            # Use relative GBW path so isolation can copy the dependency.
+                            _add_moinp_block(str(inp_abs), gbw_ox.name)
                             logger.info("[occupier_ox%d] Using GBW from OCCUPIER: %s", idx, gbw_ox)
                         elif xtb_solvator_enabled and gbw_ox.exists():
                             logger.debug("[occupier_ox%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
 
-                    if not run_orca(str(inp_abs), str(out_abs)):
+                    # Collect dependency files for isolation
+                    ox_deps = None
+                    if gbw_ox.exists() and not xtb_solvator_enabled:
+                        ox_deps = [gbw_ox.name]
+
+                    if not run_orca(str(inp_abs), str(out_abs), isolate=True, copy_files=ox_deps):
                         raise RuntimeError(f"ORCA terminated abnormally for {out_abs}")
                     run_IMAG(
                         str(out_abs),
@@ -1065,6 +1081,7 @@ def build_occupier_jobs(
                     # Use absolute path for inp to avoid race conditions with CWD changes
                     inp_abs = root_dir / inp
                     out_abs = root_dir / out
+                    gbw_red = root_dir / f"input_red_step_{idx}_OCCUPIER.gbw"
 
                     # In recalc mode, only regenerate .inp if this job is being forced
                     if _should_regenerate_inp(inp_abs, out_abs, config):
@@ -1085,14 +1102,23 @@ def build_occupier_jobs(
                         _update_pal_block(str(inp_abs), cores)
 
                         # Add %moinp block to reuse OCCUPIER wavefunction
-                        gbw_red = root_dir / f"input_red_step_{idx}_OCCUPIER.gbw"
                         if not xtb_solvator_enabled and gbw_red.exists():
-                            _add_moinp_block(str(inp_abs), str(gbw_red))
+                            # Use relative GBW path so isolation can copy the dependency.
+                            _add_moinp_block(str(inp_abs), gbw_red.name)
                             logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
                         elif xtb_solvator_enabled and gbw_red.exists():
                             logger.debug("[occupier_red%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
 
-                    if not run_orca(str(inp_abs), str(out_abs)):
+                    red_deps = None
+                    if gbw_red.exists() and not xtb_solvator_enabled:
+                        red_deps = [gbw_red.name]
+
+                    if not run_orca(
+                        str(inp_abs),
+                        str(out_abs),
+                        isolate=True,
+                        copy_files=red_deps,
+                    ):
                         raise RuntimeError(f"ORCA terminated abnormally for {out_abs}")
                     run_IMAG(
                         str(out_abs),
@@ -1107,7 +1133,7 @@ def build_occupier_jobs(
                         additions_step,
                         step_name=f"red_step_{idx}",
                         source_input=str(inp_abs),
-                )
+                    )
                     logger.info(
                         "%s %s freq & geometry optimization anion (step %d) complete!",
                         functional,

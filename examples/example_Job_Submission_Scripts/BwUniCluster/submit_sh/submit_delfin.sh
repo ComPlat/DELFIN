@@ -196,19 +196,23 @@ if [ -n "${BEEOND_MOUNTPOINT:-}" ]; then
     # BeeOND: parallel filesystem across all job nodes (best for multi-node)
     export DELFIN_SCRATCH="$BEEOND_MOUNTPOINT/delfin_${SLURM_JOB_ID}"
     export ORCA_TMPDIR="$BEEOND_MOUNTPOINT/orca_${SLURM_JOB_ID}"
-    echo "Using BeeOND (parallel SSD): $BEEOND_MOUNTPOINT"
+    echo "Using BeeOND (parallel SSD): $BEEOND_MOUNTPOINT (job-isolated: ${SLURM_JOB_ID})"
 elif [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
     # $TMPDIR: local SSD on compute node (fastest for single-node jobs)
     # Note: Only visible on local node, auto-cleaned after job
-    export DELFIN_SCRATCH="$TMPDIR/delfin"
-    export ORCA_TMPDIR="$TMPDIR/orca"
-    echo "Using local SSD (TMPDIR): $TMPDIR"
+    # Use SLURM_JOB_ID to guarantee isolation even if TMPDIR is shared
+    export DELFIN_SCRATCH="$TMPDIR/delfin_${SLURM_JOB_ID}"
+    export ORCA_TMPDIR="$TMPDIR/orca_${SLURM_JOB_ID}"
+    echo "Using local SSD (TMPDIR): $TMPDIR (job-isolated: ${SLURM_JOB_ID})"
 else
     # Fallback to /scratch (network filesystem - slower, avoid if possible)
     export DELFIN_SCRATCH="/scratch/${USER}/delfin_${SLURM_JOB_ID}"
     export ORCA_TMPDIR="/scratch/${USER}/orca_${SLURM_JOB_ID}"
     echo "WARNING: Using /scratch (network filesystem) - consider using TMPDIR or BeeOND for better I/O performance"
 fi
+
+# Ensure delfin uses a unique run token for ORCA scratch isolation
+export DELFIN_RUN_TOKEN="slurm_${SLURM_JOB_ID}"
 
 RUN_DIR="$DELFIN_SCRATCH/run"
 mkdir -p "$RUN_DIR" "$ORCA_TMPDIR"

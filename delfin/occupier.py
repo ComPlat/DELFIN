@@ -1141,6 +1141,7 @@ def run_OCCUPIER():
             stem = _stem(idx)
             inp = f"{stem}.inp"
             out = f"output{'' if idx == 1 else idx}.out"
+            gbw_candidate = "input.gbw" if src_idx == 1 else f"input{src_idx}.gbw"
 
             def _work(cores: int) -> None:
                 if recalc and _has_ok_marker(out):
@@ -1153,10 +1154,10 @@ def run_OCCUPIER():
                 parts: list[str] = []
 
                 if pass_wf_enabled:
-                    gbw_candidate = "input.gbw" if src_idx == 1 else f"input{src_idx}.gbw"
                     gbw_path = resolve_path(gbw_candidate)
                     if gbw_path.exists():
-                        parts.append(f'%moinp "{gbw_path}"')
+                        # Use relative GBW path so isolation can copy the dependency.
+                        parts.append(f'%moinp "{gbw_candidate}"')
                     else:
                         logger.info(
                             "No GBW found for from=%s (%s) – starting with standard guess.",
@@ -1231,7 +1232,16 @@ def run_OCCUPIER():
                 check_and_warn_competing_processes(inp)
 
                 # Run ORCA and check if it succeeded
-                orca_success = run_orca(inp, out)
+                dep_files: Optional[List[str]] = None
+                if pass_wf_enabled and resolve_path(gbw_candidate).exists():
+                    dep_files = [gbw_candidate]
+
+                orca_success = run_orca(
+                    inp,
+                    out,
+                    isolate=True,
+                    copy_files=dep_files,
+                )
                 if not orca_success:
                     error_msg = f"ORCA failed for {inp}. Check {out} for errors."
                     logger.error(error_msg)

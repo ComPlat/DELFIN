@@ -628,6 +628,7 @@ def _run_sp_candidates_sequential(
             str(job.sp_input_path),
             str(job.sp_output_path),
             working_dir=job.sp_output_path.parent,
+            isolate=True,
         )
         if not sp_success:
             msg = f"Mode {job.mode_index}: single-point calculation failed; skipping."
@@ -688,6 +689,7 @@ def _run_sp_candidates_parallel(
                     str(cur_job.sp_input_path),
                     str(cur_job.sp_output_path),
                     working_dir=cur_job.sp_output_path.parent,
+                    isolate=True,
                 )
                 if not sp_success:
                     msg = f"Mode {cur_job.mode_index}: single-point calculation failed; skipping."
@@ -1600,7 +1602,14 @@ def run_IMAG(
                 logging.warning(
                     f"Iteration {iteration}: Expected GBW '{gbw_candidate}' missing; proceeding without MOREAD."
                 )
-            success = run_orca_IMAG(str(freq_input_path), iteration, working_dir=imag_folder)
+            dep_files = [gbw_candidate.name] if gbw_candidate.exists() else None
+            success = run_orca_IMAG(
+                str(freq_input_path),
+                iteration,
+                working_dir=imag_folder,
+                isolate=True,
+                copy_files=dep_files,
+            )
         else:
             # Skip running ORCA but mark as success since result already exists
             success = True
@@ -1638,7 +1647,14 @@ def run_IMAG(
                 )
                 if gbw_candidate.exists():
                     _inject_moinp_block(freq_input_path, gbw_candidate)
-                success = run_orca_IMAG(str(freq_input_path), iteration, working_dir=imag_folder)
+                dep_files = [gbw_candidate.name] if gbw_candidate.exists() else None
+                success = run_orca_IMAG(
+                    str(freq_input_path),
+                    iteration,
+                    working_dir=imag_folder,
+                    isolate=True,
+                    copy_files=dep_files,
+                )
 
             if not success:
                 logging.warning(f"Iteration {iteration}: frequency calculation failed; stopping IMAG loop.")

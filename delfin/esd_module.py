@@ -40,13 +40,20 @@ def _run_orca_esd(
     working_dir: Path,
     config: Dict[str, Any],
     scratch_subdir: Optional[Path] = None,
+    copy_files: Optional[List[str]] = None,
 ) -> bool:
-    """Run ORCA for ESD with intelligent recovery if enabled."""
+    """Run ORCA for ESD with intelligent recovery if enabled.
+
+    Args:
+        copy_files: Specific dependency files to copy (e.g., ["S1.gbw", "T1.xyz"]).
+    """
     return run_orca_with_intelligent_recovery(
         str(inp_file),
         str(out_file),
         scratch_subdir=scratch_subdir,
         working_dir=working_dir,
+        isolate=True,  # Prevent race conditions on parallel filesystems (Lustre)
+        copy_files=copy_files,
         config=config,
     )
 
@@ -312,10 +319,12 @@ def _populate_state_jobs(
                                 # Run only the TDDFT check
                                 tddft_output = esd_dir / "S0_TDDFT.out"
                                 logger.info(f"Running TDDFT check for S0 state identification in {esd_dir}")
+                                # S0 TDDFT check uses S0 files
                                 if not _run_orca_esd(
                                     tddft_input,
                                     tddft_output,
                                     working_dir=esd_dir,
+                                    copy_files=["S0.gbw", "S0.xyz"],
                                     config=config,
                                 ):
                                     raise RuntimeError("ORCA terminated abnormally for S0 TDDFT check")
@@ -364,10 +373,12 @@ def _populate_state_jobs(
 
                     logger.info(f"Running ORCA hybrid1 step 1 (TDDFT) for {st_upper} in {esd_dir}")
 
+                    # Hybrid1 step 1 depends on S0
                     if not _run_orca_esd(
                         abs_first_input,
                         abs_first_output,
                         working_dir=esd_dir,
+                        copy_files=["S0.gbw", "S0.xyz"],
                         config=config,
                     ):
                         raise RuntimeError(
@@ -387,10 +398,13 @@ def _populate_state_jobs(
 
                     logger.info(f"Running ORCA hybrid1 step 2 (deltaSCF) for {st_upper} in {esd_dir}")
 
+                    # Hybrid1 step 2 depends on step 1 output and S0
+                    step2_deps = ["S0.gbw", "S0.xyz", f"{st_upper}_first_TDDFT.gbw"]
                     if not _run_orca_esd(
                         abs_input,
                         abs_output,
                         working_dir=esd_dir,
+                        copy_files=step2_deps,
                         config=config,
                     ):
                         raise RuntimeError(
@@ -415,11 +429,17 @@ def _populate_state_jobs(
                     # Run ORCA with absolute paths (no chdir needed)
                     abs_output = output_file.resolve()
 
+                    # Excited states depend on S0 files (for TDDFT/reference)
+                    state_deps_files = None
+                    if st_upper != "S0":
+                        state_deps_files = ["S0.gbw", "S0.xyz"]
+
                     # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
                     if not _run_orca_esd(
                         abs_input,
                         abs_output,
                         working_dir=esd_dir,
+                        copy_files=state_deps_files,
                         config=config,
                     ):
                         raise RuntimeError(
@@ -462,10 +482,13 @@ def _populate_state_jobs(
 
                 _update_pal_block(str(tddft_input.resolve()), cores)
 
+                # TDDFT check needs the state's files and S0 reference
+                tddft_deps = [f"{st_upper}.gbw", f"{st_upper}.xyz", "S0.gbw"]
                 if not _run_orca_esd(
                     tddft_input.resolve(),
                     tddft_output.resolve(),
                     working_dir=esd_dir,
+                    copy_files=tddft_deps,
                     config=config,
                 ):
                     raise RuntimeError(
@@ -592,6 +615,12 @@ def _populate_isc_jobs(
 
                     logger.info(f"Running ORCA for ISC {isc_pair} (Ms={trootssl_val}) in {esd_dir}")
 
+                    # ISC depends on both initial and final state files
+                    isc_deps = [
+                        f"{init_st}.gbw", f"{init_st}.xyz", f"{init_st}.hess",
+                        f"{fin_st}.gbw", f"{fin_st}.xyz", f"{fin_st}.hess",
+                    ]
+
                     # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
                     scratch_token = Path("scratch") / f"ISC_{init_st}_{fin_st}_{ms_sfx}"
                     if not _run_orca_esd(
@@ -599,6 +628,7 @@ def _populate_isc_jobs(
                         output_file.resolve(),
                         scratch_subdir=scratch_token,
                         working_dir=esd_dir,
+                        copy_files=isc_deps,
                         config=config,
                     ):
                         raise RuntimeError(
@@ -713,6 +743,12 @@ def _populate_ic_jobs(
 
                 logger.info(f"Running ORCA for IC {ic_pair} in {esd_dir}")
 
+                # IC depends on both initial and final state files
+                ic_deps = [
+                    f"{init_st}.gbw", f"{init_st}.xyz", f"{init_st}.hess",
+                    f"{fin_st}.gbw", f"{fin_st}.xyz", f"{fin_st}.hess",
+                ]
+
                 # Run ORCA in ESD directory using working_dir parameter (no os.chdir needed)
                 scratch_token = Path("scratch") / f"IC_{init_st}_{fin_st}"
                 if not _run_orca_esd(
@@ -720,6 +756,7 @@ def _populate_ic_jobs(
                     output_file.resolve(),
                     scratch_subdir=scratch_token,
                     working_dir=esd_dir,
+                    copy_files=ic_deps,
                     config=config,
                 ):
                     raise RuntimeError(
@@ -787,12 +824,19 @@ def _populate_fluor_jobs(
         output_file = esd_dir / "S1_S0_FLUOR.out"
         logger.info("Running ORCA for fluorescence (S1→S0) in %s", esd_dir)
 
+        # Fluorescence depends on S0 and S1 files
+        fluor_deps = [
+            "S0.gbw", "S0.xyz", "S0.hess",
+            "S1.gbw", "S1.xyz", "S1.hess",
+        ]
+
         scratch_token = Path("scratch") / "FLUOR_S1_S0"
         if not _run_orca_esd(
             abs_input,
             output_file.resolve(),
             scratch_subdir=scratch_token,
             working_dir=esd_dir,
+            copy_files=fluor_deps,
             config=config,
         ):
             raise RuntimeError("ORCA terminated abnormally for fluorescence (S1→S0)")
@@ -851,12 +895,19 @@ def _populate_phosp_jobs(
         output_file = esd_dir / "T1_S0_PHOSP.out"
         logger.info("Running ORCA for phosphorescence (T1→S0) in %s", esd_dir)
 
+        # Phosphorescence depends on T1 and S0 files
+        phosp_deps = [
+            "S0.gbw", "S0.xyz", "S0.hess",
+            "T1.gbw", "T1.xyz", "T1.hess",
+        ]
+
         scratch_token = Path("scratch") / "PHOSP_T1_S0"
         if not _run_orca_esd(
             abs_input,
             output_file.resolve(),
             scratch_subdir=scratch_token,
             working_dir=esd_dir,
+            copy_files=phosp_deps,
             config=config,
         ):
             raise RuntimeError("ORCA terminated abnormally for phosphorescence (T1→S0)")

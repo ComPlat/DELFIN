@@ -570,7 +570,8 @@ def _create_occupier_fob_jobs(
                         gbw_candidate = "input.gbw" if _src_idx == 1 else f"input{_src_idx}.gbw"
                         gbw_path = target_folder / gbw_candidate
                         if gbw_path.exists():
-                            additions.append(f'%moinp "{gbw_path}"')
+                            # Use relative GBW path so isolation can copy the dependency.
+                            additions.append(f'%moinp "{gbw_candidate}"')
                             gbw_for_moread = gbw_path
                         else:
                             logger.info(
@@ -637,10 +638,16 @@ def _create_occupier_fob_jobs(
                 # Use intelligent recovery/retry pipeline if enabled in CONTROL.
                 # This will also reuse existing gbw via MOREAD when appropriate.
                 try:
+                    dep_files: Optional[List[str]] = None
+                    if pass_wf_enabled and gbw_for_moread is not None and gbw_for_moread.exists():
+                        dep_files = [gbw_for_moread.name]
+
                     success = run_orca_with_intelligent_recovery(
                         str(inp_path),
                         str(out_path),
                         working_dir=target_folder,
+                        isolate=True,
+                        copy_files=dep_files,
                         config=global_config,
                     )
                 except Exception as exc:  # noqa: BLE001

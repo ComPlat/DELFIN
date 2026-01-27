@@ -7,6 +7,7 @@ import threading
 import time
 import socket
 import shutil
+import uuid
 from pathlib import Path
 from shutil import which
 import tempfile
@@ -636,6 +637,120 @@ def _kill_process_group(process: subprocess.Popen) -> None:
         except Exception as e:
             logger.error(f"Error killing process group: {e}")
 
+def _run_orca_isolated(
+    orca_path: str,
+    input_path: Path,
+    output_path: Path,
+    timeout: Optional[int] = None,
+    *,
+    scratch_subdir: Optional[Path] = None,
+    copy_files: Optional[Iterable[str]] = None,
+) -> bool:
+    """Run ORCA in an isolated subdirectory to prevent race conditions.
+
+    Creates a temporary subdirectory, copies necessary files there, runs ORCA,
+    and copies results back. This is essential for parallel ORCA execution on
+    distributed filesystems like Lustre where file operations have latency.
+
+    Args:
+        orca_path: Path to ORCA executable
+        input_path: Absolute path to input file
+        output_path: Absolute path for output file
+        timeout: Optional timeout in seconds
+        scratch_subdir: Optional scratch subdirectory
+        copy_files: Specific files to copy (e.g., ["S1.gbw", "T1.xyz"]).
+                   If None, copies files with same basename as input.
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    basename = input_path.stem
+    parent_dir = input_path.parent
+    # Ensure uniqueness even when multiple jobs run in parallel threads.
+    run_token = uuid.uuid4().hex[:8]
+    thread_id = threading.get_ident()
+    iso_dir = parent_dir / f".orca_iso_{basename}_{os.getpid()}_{thread_id}_{run_token}"
+
+    try:
+        # Create isolated directory
+        iso_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Created isolated ORCA directory: {iso_dir}")
+
+        # Copy input file
+        iso_input = iso_dir / input_path.name
+        shutil.copy2(input_path, iso_input)
+
+        # Copy explicitly specified dependency files
+        if copy_files:
+            for file_name in copy_files:
+                src = parent_dir / file_name
+                if src.exists():
+                    dest = iso_dir / src.name
+                    if not dest.exists():
+                        shutil.copy2(src, dest)
+                        logger.debug(f"Copied dependency {src.name} to isolated directory")
+        else:
+            # Fallback: copy files with same basename (for jobs without explicit deps)
+            related_extensions = ['.gbw', '.xyz', '.hess']
+            for ext in related_extensions:
+                src = parent_dir / f"{basename}{ext}"
+                if src.exists():
+                    shutil.copy2(src, iso_dir / src.name)
+                    logger.debug(f"Copied {src.name} to isolated directory")
+
+        # Run ORCA in the isolated directory
+        iso_output = iso_dir / output_path.name
+        success = _run_orca_subprocess(
+            orca_path,
+            str(iso_input),
+            str(iso_output),
+            timeout,
+            scratch_subdir=scratch_subdir,
+            working_dir=iso_dir,
+        )
+
+        # Copy results back to original directory
+        # Output file
+        if iso_output.exists():
+            shutil.copy2(iso_output, output_path)
+
+        # Copy all regular files back to the original directory. This is more
+        # robust than enumerating extensions and ensures we don't miss files
+        # needed by subsequent steps (e.g., molden, trajectories, etc.).
+        for src in iso_dir.iterdir():
+            try:
+                if not src.is_file():
+                    continue
+            except OSError:
+                continue
+            if src == iso_input:
+                continue
+            dest = parent_dir / src.name
+            try:
+                shutil.copy2(src, dest)
+                logger.debug(f"Copied result {src.name} back from isolated directory")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"Could not copy {src} back to {dest}: {exc}")
+
+        if success:
+            logger.info(f"ORCA run successful for '{input_path.name}' (isolated)")
+
+        return success
+
+    except Exception as e:
+        logger.error(f"Error in isolated ORCA execution: {e}")
+        return False
+
+    finally:
+        # Cleanup isolated directory
+        try:
+            if iso_dir.exists():
+                shutil.rmtree(iso_dir)
+                logger.debug(f"Cleaned up isolated directory: {iso_dir}")
+        except Exception as e:
+            logger.warning(f"Could not clean up isolated directory {iso_dir}: {e}")
+
+
 def run_orca(
     input_file_path: str,
     output_log: str,
@@ -643,6 +758,8 @@ def run_orca(
     *,
     scratch_subdir: Optional[Path] = None,
     working_dir: Optional[Path] = None,
+    isolate: bool = False,
+    copy_files: Optional[Iterable[str]] = None,
 ) -> bool:
     """Execute ORCA calculation with specified input file.
 
@@ -653,6 +770,16 @@ def run_orca(
         input_file_path: Path to ORCA input file (.inp)
         output_log: Path for ORCA output file (.out)
         timeout: Optional timeout in seconds for ORCA calculation
+        scratch_subdir: Optional subdirectory for ORCA scratch files
+        working_dir: Optional working directory for ORCA execution
+        isolate: If True, run ORCA in an isolated temporary subdirectory.
+                 This prevents race conditions when multiple ORCA jobs run
+                 in parallel (e.g., on Lustre filesystems). Input files are
+                 copied to the isolated directory, ORCA runs there, and
+                 results are copied back.
+        copy_files: When isolate=True, specific dependency files to copy
+                   (e.g., ["S1.gbw", "T1.xyz"]). If None, copies files with
+                   same basename as input.
 
     Returns:
         bool: True if ORCA completed successfully, False otherwise
@@ -675,6 +802,18 @@ def run_orca(
             input_path = input_path.resolve()
         if not output_path.is_absolute():
             output_path = output_path.resolve()
+
+    # Isolated execution: run ORCA in a separate subdirectory to avoid
+    # race conditions on parallel filesystems (Lustre)
+    if isolate:
+        return _run_orca_isolated(
+            orca_path,
+            input_path,
+            output_path,
+            timeout,
+            scratch_subdir=scratch_subdir,
+            copy_files=copy_files,
+        )
 
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -705,6 +844,8 @@ def run_orca_with_intelligent_recovery(
     *,
     scratch_subdir: Optional[Path] = None,
     working_dir: Optional[Path] = None,
+    isolate: bool = False,
+    copy_files: Optional[Iterable[str]] = None,
     config: Optional[Dict] = None,
 ) -> bool:
     """Execute ORCA with intelligent error detection and automatic recovery.
@@ -728,6 +869,8 @@ def run_orca_with_intelligent_recovery(
         timeout: Optional timeout in seconds
         scratch_subdir: Optional scratch subdirectory
         working_dir: Optional working directory
+        isolate: If True, run ORCA in isolated subdirectory (for parallel execution)
+        copy_files: When isolate=True, specific dependency files to copy
         config: Configuration dict with recovery settings
 
     Returns:
@@ -762,6 +905,8 @@ def run_orca_with_intelligent_recovery(
             timeout,
             scratch_subdir=scratch_subdir,
             working_dir=working_dir,
+            isolate=isolate,
+            copy_files=copy_files,
         )
 
     # Intelligent recovery is enabled
@@ -800,6 +945,8 @@ def run_orca_with_intelligent_recovery(
             timeout,
             scratch_subdir=scratch_subdir,
             working_dir=working_dir,
+            isolate=isolate,
+            copy_files=copy_files,
         )
 
         if success:
@@ -905,7 +1052,14 @@ def _parse_bool_config(value) -> bool:
     return bool(value)
 
 
-def run_orca_IMAG(input_file_path: str, iteration: int, *, working_dir: Optional[Path] = None) -> bool:
+def run_orca_IMAG(
+    input_file_path: str,
+    iteration: int,
+    *,
+    working_dir: Optional[Path] = None,
+    isolate: bool = True,
+    copy_files: Optional[Iterable[str]] = None,
+) -> bool:
     """Execute ORCA calculation for imaginary frequency workflow.
 
     Specialized ORCA runner for IMAG workflow with iteration-specific
@@ -915,6 +1069,8 @@ def run_orca_IMAG(input_file_path: str, iteration: int, *, working_dir: Optional
         input_file_path: Path to ORCA input file
         iteration: Iteration number for output file naming
         working_dir: Directory in which ORCA should be executed
+        isolate: If True, run in an isolated subdirectory
+        copy_files: Optional dependency files to copy when isolating
     """
     orca_path = find_orca_executable()
     if not orca_path:
@@ -933,12 +1089,25 @@ def run_orca_IMAG(input_file_path: str, iteration: int, *, working_dir: Optional
         if not input_path.is_absolute():
             input_path = input_path.resolve()
 
-    if _run_orca_subprocess(
-        orca_path,
-        str(input_path),
-        str(output_log_path),
-        working_dir=working_dir,
-    ):
+    if not output_log_path.is_absolute():
+        output_log_path = output_log_path.resolve()
+
+    if isolate:
+        success = _run_orca_isolated(
+            orca_path,
+            input_path,
+            output_log_path,
+            copy_files=copy_files,
+        )
+    else:
+        success = _run_orca_subprocess(
+            orca_path,
+            str(input_path),
+            str(output_log_path),
+            working_dir=working_dir,
+        )
+
+    if success:
         logger.info(f"ORCA run successful for '{input_file_path}', output saved to '{output_log_path}'")
         return True
 
