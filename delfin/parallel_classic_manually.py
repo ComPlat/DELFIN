@@ -1828,6 +1828,23 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
     red_inputs = {1: kwargs['output_file6'], 2: kwargs['output_file7'], 3: kwargs['output_file8']}
     red_outputs = {1: "red_step_1.out", 2: "red_step_2.out", 3: "red_step_3.out"}
 
+    def _resolve_classic_step1_geom(source: str, idx: int) -> str:
+        """For classic step 1, fall back to ESD/S0.xyz if initial.xyz is missing."""
+        if idx != 1:
+            return source
+        src_path = Path(source)
+        if src_path.exists():
+            return source
+        esd_s0 = Path("ESD") / "S0.xyz"
+        if esd_s0.exists():
+            logger.warning(
+                "Classic step 1 geometry %s missing; falling back to %s",
+                src_path,
+                esd_s0,
+            )
+            return str(esd_s0)
+        return source
+
     for step in (1, 2, 3):
         if not _step_enabled(config.get('oxidation_steps'), step):
             continue
@@ -1847,7 +1864,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 multiplicity = 1 if total_electrons % 2 == 0 else 2
 
                 read_xyz_and_create_input3(
-                    ox_sources[idx],
+                    _resolve_classic_step1_geom(ox_sources[idx], idx),
                     ox_inputs[idx],
                     charge,
                     multiplicity,
@@ -1930,7 +1947,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 multiplicity = 1 if total_electrons % 2 == 0 else 2
 
                 read_xyz_and_create_input3(
-                    red_sources[idx],
+                    _resolve_classic_step1_geom(red_sources[idx], idx),
                     red_inputs[idx],
                     charge,
                     multiplicity,
@@ -2073,6 +2090,23 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
     red_inputs = {1: kwargs['output_file6'], 2: kwargs['output_file7'], 3: kwargs['output_file8']}
     red_outputs = {1: "red_step_1.out", 2: "red_step_2.out", 3: "red_step_3.out"}
 
+    def _resolve_classic_step1_geom(source: str, idx: int) -> str:
+        """For classic step 1, fall back to ESD/S0.xyz if initial.xyz is missing."""
+        if idx != 1:
+            return source
+        src_path = Path(source)
+        if src_path.exists():
+            return source
+        esd_s0 = Path("ESD") / "S0.xyz"
+        if esd_s0.exists():
+            logger.warning(
+                "Classic step 1 geometry %s missing; falling back to %s",
+                src_path,
+                esd_s0,
+            )
+            return str(esd_s0)
+        return source
+
     for step in (1, 2, 3):
         if not _step_enabled(config.get('oxidation_steps'), step):
             continue
@@ -2092,7 +2126,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 additions = _extract_manual_additions(config.get(add_key, ""))
 
                 read_xyz_and_create_input3(
-                    ox_sources[idx],
+                    _resolve_classic_step1_geom(ox_sources[idx], idx),
                     ox_inputs[idx],
                     charge,
                     multiplicity,
@@ -2175,7 +2209,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 additions = _extract_manual_additions(config.get(add_key, ""))
 
                 read_xyz_and_create_input3(
-                    red_sources[idx],
+                    _resolve_classic_step1_geom(red_sources[idx], idx),
                     red_inputs[idx],
                     charge,
                     multiplicity,
