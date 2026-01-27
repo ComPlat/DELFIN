@@ -688,18 +688,28 @@ def collect_gibbs_energies(ctx: PipelineContext) -> Dict[str, Optional[float]]:
 
     # Determine working directory from control file path
     working_dir = ctx.control_file_path.parent
+    esd_enabled, _, _, _ = parse_esd_config(ctx.config)
 
     for key, filename in file_map.items():
         path = working_dir / filename
 
-        # Special handling for initial.out: use ESD/S0.out if initial.out doesn't exist and ESD is enabled
-        if key == '0' and not path.exists():
-            esd_enabled, _, _, _ = parse_esd_config(ctx.config)
+        # Special handling for ground state Gibbs energy: try sensible fallbacks
+        if key == '0':
+            ground_candidates = [path]
             if esd_enabled:
-                esd_s0_path = working_dir / "ESD" / "S0.out"
-                if esd_s0_path.exists():
-                    path = esd_s0_path
-                    logger.info("Using ESD/S0.out for ground state Gibbs energy (initial.out not found)")
+                ground_candidates.append(working_dir / "ESD" / "S0.out")
+            # OCCUPIER workflows may store the initial result in a subfolder
+            ground_candidates.append(working_dir / "initial_OCCUPIER" / "initial.out")
+
+            for candidate in ground_candidates:
+                if candidate.exists():
+                    if candidate != path:
+                        logger.info(
+                            "Using %s for ground state Gibbs energy (initial.out not found)",
+                            candidate.relative_to(working_dir),
+                        )
+                    path = candidate
+                    break
 
         if not path.exists():
             energies[key] = None
