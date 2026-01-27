@@ -232,6 +232,10 @@ export MPLBACKEND=Agg
 
 # Scratch directory setup
 # Priority: 1) BeeOND (for multi-node), 2) $TMPDIR (local SSD), 3) /scratch (network, last resort)
+# Normalize TMPDIR to SLURM_TMPDIR when available
+if [ -z "${TMPDIR:-}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
+    export TMPDIR="$SLURM_TMPDIR"
+fi
 if [ -n "${BEEOND_MOUNTPOINT:-}" ]; then
     # BeeOND: parallel filesystem across all job nodes (best for multi-node)
     export DELFIN_SCRATCH="$BEEOND_MOUNTPOINT/delfin_${SLURM_JOB_ID}"
@@ -250,6 +254,9 @@ else
     export ORCA_TMPDIR="/scratch/${USER}/orca_${SLURM_JOB_ID}"
     echo "WARNING: Using /scratch (network filesystem) - consider using TMPDIR or BeeOND for better I/O performance"
 fi
+
+# ORCA honors both ORCA_TMPDIR and ORCA_SCRDIR; set both for consistency.
+export ORCA_SCRDIR="$ORCA_TMPDIR"
 
 # Ensure delfin uses a unique run token for ORCA scratch isolation
 export DELFIN_RUN_TOKEN="slurm_${SLURM_JOB_ID}"
