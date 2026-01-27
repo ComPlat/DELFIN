@@ -743,12 +743,42 @@ def _run_orca_isolated(
 
     finally:
         # Cleanup isolated directory
+        _cleanup_isolated_dir(iso_dir)
+
+
+def _cleanup_isolated_dir(iso_dir: Path) -> None:
+    if not iso_dir.exists():
+        return
+    last_exc: Optional[Exception] = None
+    for attempt in range(3):
         try:
-            if iso_dir.exists():
-                shutil.rmtree(iso_dir)
-                logger.debug(f"Cleaned up isolated directory: {iso_dir}")
-        except Exception as e:
-            logger.warning(f"Could not clean up isolated directory {iso_dir}: {e}")
+            shutil.rmtree(iso_dir)
+            logger.debug(f"Cleaned up isolated directory: {iso_dir}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            try:
+                for root, dirs, files in os.walk(iso_dir, topdown=False):
+                    for name in files:
+                        try:
+                            os.chmod(Path(root) / name, 0o600)
+                        except Exception:
+                            pass
+                    for name in dirs:
+                        try:
+                            os.chmod(Path(root) / name, 0o700)
+                        except Exception:
+                            pass
+                try:
+                    os.chmod(iso_dir, 0o700)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            if attempt < 2:
+                time.sleep(0.2 * (attempt + 1))
+    if last_exc is not None:
+        logger.warning(f"Could not clean up isolated directory {iso_dir}: {last_exc}")
 
 
 def run_orca(
