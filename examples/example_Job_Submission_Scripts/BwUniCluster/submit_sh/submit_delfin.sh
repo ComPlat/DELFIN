@@ -186,11 +186,12 @@ echo "Using custom OpenMPI 4.1.8 from $BASE_DIR/openmpi-4.1.8"
 export PATH="$BASE_DIR/openmpi-4.1.8/bin:$PATH"
 export LD_LIBRARY_PATH="$BASE_DIR/openmpi-4.1.8/lib:$LD_LIBRARY_PATH"
 
-# Set ORCA path
-ORCA_BASE="$BASE_DIR/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2"
+# Set ORCA path (allow override from environment)
+ORCA_BASE_DEFAULT="$BASE_DIR/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2"
+ORCA_BASE="${DELFIN_ORCA_BASE:-$ORCA_BASE_DEFAULT}"
 if [ ! -d "$ORCA_BASE" ]; then
     echo "ERROR: ORCA not found in $ORCA_BASE"
-    echo "Please install ORCA 6.1.1 or update ORCA_BASE."
+    echo "Please install ORCA or set DELFIN_ORCA_BASE."
     exit 1
 fi
 export PATH="$ORCA_BASE:$PATH"
