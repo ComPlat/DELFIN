@@ -303,8 +303,6 @@ cleanup() {
     # CRITICAL: Copy ALL results back before cleanup
     echo "Copying results back to $SLURM_SUBMIT_DIR..."
     if [ -d "$RUN_DIR" ]; then
-        # Remove useless .tmp files before copying (saves space and time)
-        find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
         rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Results copied successfully."
     else
@@ -322,7 +320,6 @@ periodic_copy() {
     while true; do
         sleep 7200
         if [ -d "$RUN_DIR" ]; then
-            find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
             rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         fi
     done
@@ -366,7 +363,6 @@ schedule_final_backup() {
     echo "Final backup 5 min before timeout: $(date)"
     echo "========================================"
     if [ -d "$RUN_DIR" ]; then
-        find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
         rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Final backup completed."
     fi
@@ -515,9 +511,6 @@ echo "========================================"
 echo "Job finished: $(date)"
 echo "Exit Code:   $EXIT_CODE"
 echo "========================================"
-
-# Remove useless .tmp files before copying (saves space and time)
-find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
 
 # Copy results back
 rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
