@@ -1064,7 +1064,7 @@ def _as_relativity(value: Any) -> str:
 
 
 def _as_aux_jk(value: Any) -> str:
-    """Coerce aux_jk: accepts def2/J, def2/JK, or empty."""
+    """Coerce aux_jk: accepts def2/J, def2/JK, AutoAux, or empty."""
     if value is None or value == "":
         return ""
     text = str(value).strip()
@@ -1075,11 +1075,13 @@ def _as_aux_jk(value: Any) -> str:
         return "def2/J"
     if upper == "DEF2/JK":
         return "def2/JK"
-    raise ValueError("must be def2/J or def2/JK")
+    if upper == "AUTOAUX":
+        return "AutoAux"
+    raise ValueError("must be def2/J, def2/JK, AutoAux, or empty")
 
 
 def _as_aux_jk_rel(value: Any) -> str:
-    """Coerce aux_jk_rel: accepts SARC/J, x2c/J, cc-pVTZ/C, or empty."""
+    """Coerce aux_jk_rel: accepts SARC/J, x2c/J, cc-pVTZ/C, AutoAux, or empty."""
     if value is None or value == "":
         return ""
     text = str(value).strip()
@@ -1092,7 +1094,9 @@ def _as_aux_jk_rel(value: Any) -> str:
         return "x2c/J"
     if upper == "CC-PVTZ/C":
         return "cc-pVTZ/C"
-    raise ValueError("must be SARC/J, x2c/J, or cc-pVTZ/C")
+    if upper == "AUTOAUX":
+        return "AutoAux"
+    raise ValueError("must be SARC/J, x2c/J, cc-pVTZ/C, AutoAux, or empty")
 
 
 _GEOM_OPT_BASES = {
