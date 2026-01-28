@@ -80,7 +80,10 @@ if [ -z "${SLURM_JOB_ID:-}" ] && [ "${DELFIN_AUTO_RESOURCES:-0}" = "1" ]; then
     highmem_mb=$((2304 * 1024))
     partition="${DELFIN_PARTITION:-cpu}"
     exclusive=0
-    if [ "$mem_mb" -gt "$node_mem_mb" ] && [ "$partition" = "cpu" ]; then
+    if [ "$maxcore" -ge 9500 ] && [ "$partition" = "cpu" ]; then
+        partition="highmem"
+        node_mem_mb="$highmem_mb"
+    elif [ "$mem_mb" -gt "$node_mem_mb" ] && [ "$partition" = "cpu" ]; then
         partition="highmem"
         node_mem_mb="$highmem_mb"
     fi
