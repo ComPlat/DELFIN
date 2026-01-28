@@ -345,9 +345,18 @@ def _run_orca_subprocess(
             if monitor_thread:
                 monitor_thread.join(timeout=2)
 
+            # Always ensure MPI processes are terminated, even on failure
+            def _cleanup_process_group():
+                time.sleep(0.5)  # Brief grace period for clean MPI shutdown
+                try:
+                    _ensure_process_group_terminated(process, grace_timeout=2.0)
+                except Exception as e:
+                    logger.debug(f"Process cleanup: {e}")
+
             if return_code != 0:
                 logger.error(f"ORCA failed with return code {return_code} for {input_file_path}")
                 logger.error(f"Check {output_log} for details")
+                _cleanup_process_group()
                 return False
 
             # Check if ORCA actually terminated normally
@@ -355,18 +364,12 @@ def _run_orca_subprocess(
             if not success_marker:
                 logger.error(f"ORCA did not terminate normally for {input_file_path}")
                 logger.error(f"Check {output_log} for error messages")
+                _cleanup_process_group()
                 return False
 
             _copy_densitiesinfo(input_file_path, scratch_subdir, working_dir)
 
-            # BUGFIX: Ensure all MPI child processes are terminated
-            # ORCA sometimes leaves MPI workers running even after main process exits
-            # Give them a short grace period, then force cleanup
-            time.sleep(0.5)  # Brief grace period for clean MPI shutdown
-            try:
-                _ensure_process_group_terminated(process, grace_timeout=2.0)
-            except Exception as e:
-                logger.debug(f"Process cleanup after successful ORCA run: {e}")
+            _cleanup_process_group()
 
             return True
 
@@ -709,13 +712,16 @@ def _run_orca_isolated(
                     logger.debug(f"Copied {src.name} to isolated directory")
 
         # Run ORCA in the isolated directory
+        # Each isolated job gets its own scratch subdirectory to prevent
+        # temp file collisions (e.g., V-matrix) between parallel ORCA jobs
         iso_output = iso_dir / output_path.name
+        effective_scratch = scratch_subdir if scratch_subdir else Path(iso_dir.name)
         success = _run_orca_subprocess(
             orca_path,
             str(iso_input),
             str(iso_output),
             timeout,
-            scratch_subdir=scratch_subdir,
+            scratch_subdir=effective_scratch,
             working_dir=iso_dir,
         )
 
@@ -756,17 +762,36 @@ def _run_orca_isolated(
         _cleanup_isolated_dir(iso_dir)
 
 
-def _cleanup_isolated_dir(iso_dir: Path) -> None:
+def _cleanup_isolated_dir(iso_dir: Path, initial_delay: float = 0.5) -> None:
+    """Remove an isolated ORCA working directory.
+
+    Uses multiple retry attempts with increasing delays to handle
+    distributed filesystems (Lustre, NFS) where file handles may
+    not be released immediately after process termination.
+
+    Args:
+        iso_dir: Path to the isolated directory to remove.
+        initial_delay: Seconds to wait before first deletion attempt,
+                       allowing MPI processes and file handles to close.
+    """
     if not iso_dir.exists():
         return
+
+    # Initial delay to let MPI processes and file handles close
+    if initial_delay > 0:
+        time.sleep(initial_delay)
+
     last_exc: Optional[Exception] = None
-    for attempt in range(3):
+    # More attempts with longer delays for distributed filesystems
+    max_attempts = 5
+    for attempt in range(max_attempts):
         try:
             shutil.rmtree(iso_dir)
             logger.debug(f"Cleaned up isolated directory: {iso_dir}")
             return
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            # Try to fix permissions before next attempt
             try:
                 for root, dirs, files in os.walk(iso_dir, topdown=False):
                     for name in files:
@@ -785,8 +810,15 @@ def _cleanup_isolated_dir(iso_dir: Path) -> None:
                     pass
             except Exception:
                 pass
-            if attempt < 2:
-                time.sleep(0.2 * (attempt + 1))
+            if attempt < max_attempts - 1:
+                # Exponential backoff: 1s, 2s, 4s, 8s
+                delay = min(1.0 * (2 ** attempt), 10.0)
+                logger.debug(
+                    f"Cleanup attempt {attempt + 1} failed for {iso_dir}, "
+                    f"retrying in {delay:.1f}s: {exc}"
+                )
+                time.sleep(delay)
+
     if last_exc is not None:
         logger.warning(f"Could not clean up isolated directory {iso_dir}: {last_exc}")
 

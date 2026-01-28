@@ -301,7 +301,7 @@ cleanup() {
     if [ -d "$RUN_DIR" ]; then
         # Remove useless .tmp files before copying (saves space and time)
         find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
-        rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Results copied successfully."
     else
         echo "WARNING: RUN_DIR not found, nothing to copy."
@@ -319,7 +319,7 @@ periodic_copy() {
         sleep 7200
         if [ -d "$RUN_DIR" ]; then
             find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
-            rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+            rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         fi
     done
 }
@@ -363,7 +363,7 @@ schedule_final_backup() {
     echo "========================================"
     if [ -d "$RUN_DIR" ]; then
         find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
-        rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Final backup completed."
     fi
 }
@@ -516,7 +516,7 @@ echo "========================================"
 find "$RUN_DIR" -name "*.tmp" -delete 2>/dev/null || true
 
 # Copy results back
-rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
+rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
 
 # Cleanup scratch
 rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR"
