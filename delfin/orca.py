@@ -679,6 +679,17 @@ def _run_orca_isolated(
     """
     basename = input_path.stem
     parent_dir = input_path.parent
+
+    # Verify all required dependency files exist before creating isolated directory
+    if copy_files:
+        missing_files = [f for f in copy_files if not (parent_dir / f).exists()]
+        if missing_files:
+            logger.error(
+                f"Cannot run isolated ORCA for '{input_path.name}': "
+                f"missing dependency files: {missing_files}"
+            )
+            return False
+
     # Ensure uniqueness even when multiple jobs run in parallel threads.
     run_token = uuid.uuid4().hex[:8]
     thread_id = threading.get_ident()
