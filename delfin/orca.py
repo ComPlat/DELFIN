@@ -710,12 +710,15 @@ def _run_orca_isolated(
             iso_inp_content = iso_input.read_text(encoding='utf-8', errors='replace')
             modified = False
 
-            # Rewrite %moinp "file.gbw" -> %moinp "../file.gbw"
+            # Rewrite %moinp paths to work from isolated subdirectory
+            # - Absolute paths (/scratch/...) stay unchanged
+            # - Relative paths (file.gbw) become ../file.gbw
+            # - Parent paths (../file.gbw) become ../../file.gbw
             def rewrite_moinp(m):
                 filename = m.group(1)
-                if not filename.startswith(('/', '..')):
-                    return f'%moinp "../{filename}"'
-                return m.group(0)
+                if filename.startswith('/'):
+                    return m.group(0)  # Absolute path - unchanged
+                return f'%moinp "../{filename}"'  # Add ../ prefix
             new_content, n = re.subn(r'%moinp\s+"([^"]+)"', rewrite_moinp, iso_inp_content, flags=re.IGNORECASE)
             if n > 0:
                 iso_inp_content = new_content
@@ -730,21 +733,21 @@ def _run_orca_isolated(
 
             def rewrite_xyzfile(m):
                 prefix, charge, mult, filename = m.group(1), m.group(2), m.group(3), m.group(4)
-                if not filename.startswith(('/', '..')):
-                    return f'{prefix}xyzfile {charge} {mult} ../{filename}'
-                return m.group(0)
+                if filename.startswith('/'):
+                    return m.group(0)  # Absolute path - unchanged
+                return f'{prefix}xyzfile {charge} {mult} ../{filename}'  # Add ../ prefix
             new_first_job, n = re.subn(r'(\*\s*)xyzfile\s+(\S+)\s+(\S+)\s+(\S+)', rewrite_xyzfile, first_job, flags=re.IGNORECASE)
             if n > 0:
                 iso_inp_content = new_first_job + rest
                 modified = True
                 logger.debug(f"Rewrote {n} xyzfile reference(s) to use ../ path")
 
-            # Rewrite "file.hess" -> "../file.hess"
+            # Rewrite "file.hess" -> "../file.hess" (or "../../file.hess" if already relative)
             def rewrite_hess(m):
                 filename = m.group(1)
-                if not filename.startswith(('/', '..')):
-                    return f'"../{filename}"'
-                return m.group(0)
+                if filename.startswith('/'):
+                    return m.group(0)  # Absolute path - unchanged
+                return f'"../{filename}"'  # Add ../ prefix
             new_content, n = re.subn(r'"([^"]+\.hess)"', rewrite_hess, iso_inp_content, flags=re.IGNORECASE)
             if n > 0:
                 iso_inp_content = new_content
