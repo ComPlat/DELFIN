@@ -700,50 +700,62 @@ def _run_orca_isolated(
         iso_dir.mkdir(parents=True, exist_ok=True)
         logger.debug(f"Created isolated ORCA directory: {iso_dir}")
 
-        # Copy input file
+        # Copy input file only (dependencies are accessed via ../ paths)
         iso_input = iso_dir / input_path.name
         shutil.copy2(input_path, iso_input)
 
-        # Copy explicitly specified dependency files
-        if copy_files:
-            for file_name in copy_files:
-                src = parent_dir / file_name
-                if src.exists():
-                    dest = iso_dir / src.name
-                    if not dest.exists():
-                        shutil.copy2(src, dest)
-                        logger.debug(f"Copied dependency {src.name} to isolated directory")
-        else:
-            # Fallback: copy files with same basename (for jobs without explicit deps)
-            related_extensions = ['.gbw', '.xyz', '.hess']
-            for ext in related_extensions:
-                src = parent_dir / f"{basename}{ext}"
-                if src.exists():
-                    shutil.copy2(src, iso_dir / src.name)
-                    logger.debug(f"Copied {src.name} to isolated directory")
+        # Rewrite file references in the copied input to use ../ paths
+        # This avoids copying large files (GBW can be GB!) while maintaining isolation
+        try:
+            iso_inp_content = iso_input.read_text(encoding='utf-8', errors='replace')
+            modified = False
 
-            # CRITICAL: Also copy *_old.gbw files for MOREAD recovery
-            # These are created by the recovery logic and referenced via %moinp
-            for old_gbw in parent_dir.glob("*_old.gbw"):
-                dest = iso_dir / old_gbw.name
-                if not dest.exists():
-                    shutil.copy2(old_gbw, dest)
-                    logger.debug(f"Copied recovery dependency {old_gbw.name} to isolated directory")
+            # Rewrite %moinp "file.gbw" -> %moinp "../file.gbw"
+            def rewrite_moinp(m):
+                filename = m.group(1)
+                if not filename.startswith(('/', '..')):
+                    return f'%moinp "../{filename}"'
+                return m.group(0)
+            new_content, n = re.subn(r'%moinp\s+"([^"]+)"', rewrite_moinp, iso_inp_content, flags=re.IGNORECASE)
+            if n > 0:
+                iso_inp_content = new_content
+                modified = True
+                logger.debug(f"Rewrote {n} %moinp reference(s) to use ../ path")
 
-            # Also check input file for %moinp references and copy those
-            try:
-                inp_content = input_path.read_text(encoding='utf-8', errors='replace')
-                import re
-                moinp_match = re.search(r'%moinp\s+"([^"]+)"', inp_content, re.IGNORECASE)
-                if moinp_match:
-                    moinp_file = parent_dir / moinp_match.group(1)
-                    if moinp_file.exists():
-                        dest = iso_dir / moinp_file.name
-                        if not dest.exists():
-                            shutil.copy2(moinp_file, dest)
-                            logger.debug(f"Copied %moinp dependency {moinp_file.name} to isolated directory")
-            except Exception as e:
-                logger.debug(f"Could not parse input for %moinp: {e}")
+            # Rewrite "* xyzfile charge mult file.xyz" (only first job, not after $new_job)
+            new_job_match = re.search(r'\$new_job', iso_inp_content, re.IGNORECASE)
+            first_job_end = new_job_match.start() if new_job_match else len(iso_inp_content)
+            first_job = iso_inp_content[:first_job_end]
+            rest = iso_inp_content[first_job_end:]
+
+            def rewrite_xyzfile(m):
+                prefix, charge, mult, filename = m.group(1), m.group(2), m.group(3), m.group(4)
+                if not filename.startswith(('/', '..')):
+                    return f'{prefix}xyzfile {charge} {mult} ../{filename}'
+                return m.group(0)
+            new_first_job, n = re.subn(r'(\*\s*)xyzfile\s+(\S+)\s+(\S+)\s+(\S+)', rewrite_xyzfile, first_job, flags=re.IGNORECASE)
+            if n > 0:
+                iso_inp_content = new_first_job + rest
+                modified = True
+                logger.debug(f"Rewrote {n} xyzfile reference(s) to use ../ path")
+
+            # Rewrite "file.hess" -> "../file.hess"
+            def rewrite_hess(m):
+                filename = m.group(1)
+                if not filename.startswith(('/', '..')):
+                    return f'"../{filename}"'
+                return m.group(0)
+            new_content, n = re.subn(r'"([^"]+\.hess)"', rewrite_hess, iso_inp_content, flags=re.IGNORECASE)
+            if n > 0:
+                iso_inp_content = new_content
+                modified = True
+                logger.debug(f"Rewrote {n} .hess reference(s) to use ../ path")
+
+            # Write back if modified
+            if modified:
+                iso_input.write_text(iso_inp_content, encoding='utf-8')
+        except Exception as e:
+            logger.debug(f"Could not rewrite paths in input: {e}")
 
         # Run ORCA in the isolated directory
         # Each isolated job gets its own scratch subdirectory to prevent
@@ -1137,24 +1149,6 @@ def run_orca_with_intelligent_recovery(
 
         # Use modified input for next attempt
         current_inp = new_inp
-
-        # CRITICAL: Update copy_files to include newly created *_old.gbw dependencies
-        # The recovery logic creates backups like S0_old.gbw, T1_old.gbw etc. that
-        # must be copied to the isolated directory for MOREAD to work.
-        if isolate:
-            # Collect all *_old.gbw files that exist in the working directory
-            old_gbw_files = list(work_dir.glob("*_old.gbw"))
-            if old_gbw_files:
-                # Build updated copy_files list
-                existing_copy_files = set(copy_files) if copy_files else set()
-                for gbw in old_gbw_files:
-                    existing_copy_files.add(gbw.name)
-                # Also ensure the new retry input's .xyz is included if it exists
-                retry_xyz = new_inp.with_suffix('.xyz')
-                if retry_xyz.exists():
-                    existing_copy_files.add(retry_xyz.name)
-                copy_files = list(existing_copy_files)
-                logger.info(f"Updated copy_files for isolated retry: {[f for f in copy_files if '_old.gbw' in f]}")
 
         logger.info(f"Retrying with recovery input: {new_inp.name}")
 
