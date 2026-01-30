@@ -722,6 +722,29 @@ def _run_orca_isolated(
                     shutil.copy2(src, iso_dir / src.name)
                     logger.debug(f"Copied {src.name} to isolated directory")
 
+            # CRITICAL: Also copy *_old.gbw files for MOREAD recovery
+            # These are created by the recovery logic and referenced via %moinp
+            for old_gbw in parent_dir.glob("*_old.gbw"):
+                dest = iso_dir / old_gbw.name
+                if not dest.exists():
+                    shutil.copy2(old_gbw, dest)
+                    logger.debug(f"Copied recovery dependency {old_gbw.name} to isolated directory")
+
+            # Also check input file for %moinp references and copy those
+            try:
+                inp_content = input_path.read_text(encoding='utf-8', errors='replace')
+                import re
+                moinp_match = re.search(r'%moinp\s+"([^"]+)"', inp_content, re.IGNORECASE)
+                if moinp_match:
+                    moinp_file = parent_dir / moinp_match.group(1)
+                    if moinp_file.exists():
+                        dest = iso_dir / moinp_file.name
+                        if not dest.exists():
+                            shutil.copy2(moinp_file, dest)
+                            logger.debug(f"Copied %moinp dependency {moinp_file.name} to isolated directory")
+            except Exception as e:
+                logger.debug(f"Could not parse input for %moinp: {e}")
+
         # Run ORCA in the isolated directory
         # Each isolated job gets its own scratch subdirectory to prevent
         # temp file collisions (e.g., V-matrix) between parallel ORCA jobs
@@ -1114,6 +1137,24 @@ def run_orca_with_intelligent_recovery(
 
         # Use modified input for next attempt
         current_inp = new_inp
+
+        # CRITICAL: Update copy_files to include newly created *_old.gbw dependencies
+        # The recovery logic creates backups like S0_old.gbw, T1_old.gbw etc. that
+        # must be copied to the isolated directory for MOREAD to work.
+        if isolate:
+            # Collect all *_old.gbw files that exist in the working directory
+            old_gbw_files = list(work_dir.glob("*_old.gbw"))
+            if old_gbw_files:
+                # Build updated copy_files list
+                existing_copy_files = set(copy_files) if copy_files else set()
+                for gbw in old_gbw_files:
+                    existing_copy_files.add(gbw.name)
+                # Also ensure the new retry input's .xyz is included if it exists
+                retry_xyz = new_inp.with_suffix('.xyz')
+                if retry_xyz.exists():
+                    existing_copy_files.add(retry_xyz.name)
+                copy_files = list(existing_copy_files)
+                logger.info(f"Updated copy_files for isolated retry: {[f for f in copy_files if '_old.gbw' in f]}")
 
         logger.info(f"Retrying with recovery input: {new_inp.name}")
 
