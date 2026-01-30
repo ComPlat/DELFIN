@@ -503,6 +503,38 @@ def _resolve_temperature_K(config: Dict[str, Any], default: float = 298.15) -> f
     return float(default)
 
 
+def _format_basis_block_for_metals(
+    metals: List[str],
+    metal_basisset: Optional[str],
+) -> str:
+    """Generate a %basis block for metals when using xyzfile (no inline coords).
+
+    When using '* xyzfile' instead of inline coordinates, we cannot attach
+    NewGTO directives to individual atoms. Instead, we use a %basis block.
+
+    Args:
+        metals: List of metal symbols (e.g., ['Ir', 'Pt'])
+        metal_basisset: Basis set for metals (e.g., 'SARC-ZORA-TZVP')
+
+    Returns:
+        %basis block string, or empty string if no metals/basis
+    """
+    if not metals or not metal_basisset:
+        return ""
+
+    # Deduplicate and normalize metal symbols
+    unique_metals = sorted(set(m.strip().capitalize() for m in metals if m.strip()))
+    if not unique_metals:
+        return ""
+
+    lines = ["%basis"]
+    for metal in unique_metals:
+        lines.append(f'  NewGTO {metal} "{metal_basisset}" end')
+    lines.append("end")
+
+    return "\n".join(lines) + "\n"
+
+
 def _apply_esd_newgto(
     coord_lines: List[str],
     *,
@@ -971,6 +1003,11 @@ def _create_state_input_delta_scf(
             f.write(f"  dosoc {dosoc_value}\n")
             f.write("end\n")
 
+            # Add %basis block for metals when using xyzfile
+            basis_block = _format_basis_block_for_metals(metals, metal_basis)
+            if basis_block:
+                f.write(f"\n{basis_block}")
+
             # Geometry reference - use optimized S0.xyz
             f.write("\n")
             f.write(f"* xyzfile {charge} 1 S0.xyz\n")
@@ -1028,6 +1065,12 @@ def _create_state_input_delta_scf(
             f.write(f"  dosoc {dosoc_value}\n")
             f.write("end\n")
 
+            # Add %basis block for metals when using xyzfile
+            basis_block = _format_basis_block_for_metals(metals, metal_basis)
+            if basis_block:
+                f.write("\n")
+                f.write(basis_block)
+
             # Geometry reference - always multiplicity 1 (closed shell) for TDDFT
             f.write("\n")
             f.write(f"* xyzfile {charge} 1 {state_xyz_file}\n")
@@ -1084,6 +1127,12 @@ def _create_state_input_delta_scf(
             f.write("  triplets true\n")
             f.write(f"  dosoc {dosoc_value}\n")
             f.write("end\n")
+
+            # Add %basis block for metals when using xyzfile
+            basis_block = _format_basis_block_for_metals(metals, metal_basis)
+            if basis_block:
+                f.write("\n")
+                f.write(basis_block)
 
             # Geometry reference - always multiplicity 1 (closed shell) for TDDFT
             f.write("\n")
@@ -1355,6 +1404,11 @@ def _create_state_input_hybrid1(
         f.write(f"  SOSCFMaxStep {soscf_maxstep}\n")
         f.write("end\n")
 
+        # Add %basis block for metals when using xyzfile
+        basis_block = _format_basis_block_for_metals(metals, metal_basisset)
+        if basis_block:
+            f.write(f"\n{basis_block}")
+
         # Coordinates - read from first step output
         # For now, we'll use the same coords as first step; ORCA will update from .gbw
         f.write(f"\n* xyzfile {charge} {multiplicity_deltascf} {first_input_base}.xyz\n")
@@ -1580,6 +1634,10 @@ def _create_state_input_tddft(
             _write_output_blocks(f)
             _write_tddft_block(f, triplets=True)
             f.write("\n")
+            basis_block = _format_basis_block_for_metals(metals, metal_basis)
+            if basis_block:
+                f.write(basis_block)
+                f.write("\n")
             f.write(f"* xyzfile {charge} 1 S0.xyz\n")
         elif state_upper == "S1":
             f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
@@ -1645,6 +1703,10 @@ def _create_state_input_tddft(
             f.write("  dosoc false\n")
             f.write("end\n")
 
+            basis_block = _format_basis_block_for_metals(metals, metal_basis)
+            if basis_block:
+                f.write("\n")
+                f.write(basis_block)
             f.write(f"\n* xyzfile {charge} 1 T1.xyz\n")
         elif state_upper == "T2":
             f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
