@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .config import OCCUPIER_parser
+from .common.paths import ensure_relative_link
 from .occupier import run_OCCUPIER
 from .occupier_sequences import (
     infer_species_delta,
@@ -107,14 +108,22 @@ def read_occupier_file(
             if verbose:
                 print(f"Source file {source_file} not found.")
 
-        # Also copy the corresponding GBW file for wavefunction reuse
+        # Also link the corresponding GBW file for wavefunction reuse (avoid large copies)
         gbw_filename = "input.gbw" if min_fspe_index == 1 else f"input{min_fspe_index}.gbw"
         source_gbw = folder / gbw_filename
         destination_gbw = parent_folder / f"input_{folder.name}.gbw"
         if source_gbw.is_file():
-            shutil.copy(source_gbw, destination_gbw)
-            if verbose:
-                print(f"File {source_gbw} was successfully copied to {destination_gbw}.")
+            if ensure_relative_link(source_gbw, destination_gbw):
+                if verbose:
+                    print(f"Linked {source_gbw} → {destination_gbw}.")
+            else:
+                try:
+                    shutil.copy2(source_gbw, destination_gbw)
+                    if verbose:
+                        print(f"Copied {source_gbw} → {destination_gbw} (link failed).")
+                except OSError:
+                    if verbose:
+                        print(f"GBW link/copy failed for {source_gbw} → {destination_gbw} (will use standard guess).")
         else:
             if verbose:
                 print(f"GBW file {source_gbw} not found (will use standard guess).")

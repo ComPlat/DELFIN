@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, List
 
 from delfin.common.logging import get_logger
 from delfin.config import OCCUPIER_parser
+from delfin.common.paths import ensure_relative_link
 from delfin.copy_helpers import read_occupier_file
 from delfin.occupier_sequences import (
     infer_species_delta,
@@ -147,13 +148,24 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
         else:
             logger.warning(f"Preferred geometry file not found: {preferred_parent_xyz}")
 
-        # Copy preferred GBW file for wavefunction reuse
-        preferred_parent_gbw = original_cwd / f"input_{source_occ_folder}.gbw"
+        # Link preferred GBW file for wavefunction reuse (avoid large copies)
+        gbw_filename = "input.gbw" if min_fspe_index == 1 else f"input{min_fspe_index}.gbw"
+        preferred_parent_gbw = source_path / gbw_filename
         target_input_gbw = folder / "input.gbw"
 
         if preferred_parent_gbw.exists():
-            shutil.copy(preferred_parent_gbw, target_input_gbw)
-            print(f"Copied preferred GBW to {folder}/input.gbw")
+            if ensure_relative_link(preferred_parent_gbw, target_input_gbw):
+                print(f"Linked preferred GBW to {folder}/input.gbw")
+            else:
+                try:
+                    shutil.copy2(preferred_parent_gbw, target_input_gbw)
+                    print(f"Copied preferred GBW to {folder}/input.gbw (link failed)")
+                except OSError:
+                    logger.info(
+                        "Preferred GBW link/copy failed: %s → %s (will use standard guess)",
+                        preferred_parent_gbw,
+                        target_input_gbw,
+                    )
         else:
             logger.info(f"Preferred GBW file not found: {preferred_parent_gbw} (will use standard guess)")
 

@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import threading
 
 from delfin.common.logging import get_logger
+from delfin.common.paths import ensure_relative_link
 from delfin.esd_input_generator import (
     create_fluor_input,
     create_ic_input,
@@ -306,7 +307,18 @@ def _populate_state_jobs(
                                 s0_gbw = esd_dir / "S0.gbw"
                                 s0_hess = esd_dir / "S0.hess"
                                 shutil.copy2(initial_out, s0_out)
-                                shutil.copy2(initial_gbw, s0_gbw)
+                                if not ensure_relative_link(initial_gbw, s0_gbw):
+                                    try:
+                                        shutil.copy2(initial_gbw, s0_gbw)
+                                        logger.warning(
+                                            "S0.gbw copied from %s → %s (link failed).",
+                                            initial_gbw,
+                                            s0_gbw,
+                                        )
+                                    except OSError as exc:
+                                        raise RuntimeError(
+                                            f"Failed to link/copy {initial_gbw} → {s0_gbw} for deltaSCF reuse: {exc}"
+                                        ) from exc
                                 shutil.copy2(initial_hess, s0_hess)
                                 logger.info(f"[deltaSCF optimization] Reused initial.{{out,gbw,hess}} → S0.* (skipping redundant Opt+Freq)")
 

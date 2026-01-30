@@ -41,9 +41,37 @@ def scratch_path(*parts: Union[str, Path], create: bool = False) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
+
+def ensure_relative_link(src: Union[str, Path], dest: Union[str, Path]) -> bool:
+    """Create a relative symlink (or hardlink fallback) at dest pointing to src.
+
+    Returns True if dest already exists or the link was created successfully.
+    """
+    src_path = Path(src)
+    dest_path = Path(dest)
+
+    if dest_path.exists() or dest_path.is_symlink():
+        return True
+    if not src_path.exists():
+        return False
+
+    try:
+        rel = os.path.relpath(src_path, start=dest_path.parent)
+        dest_path.symlink_to(rel)
+        return True
+    except OSError:
+        pass
+
+    try:
+        os.link(src_path, dest_path)
+        return True
+    except OSError:
+        return False
+
 __all__ = [
     "SCRATCH_ENV",
     "resolve_path",
     "get_runtime_dir",
     "scratch_path",
+    "ensure_relative_link",
 ]

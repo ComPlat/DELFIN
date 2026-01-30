@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from delfin.common.logging import get_logger
+from delfin.common.paths import ensure_relative_link
 from delfin.config import OCCUPIER_parser
 from delfin.copy_helpers import read_occupier_file
 from delfin.orca import run_orca_with_intelligent_recovery
@@ -67,10 +68,23 @@ def _fallback_propagate_geometry(folder_name: str, folder_path: Path) -> None:
         src_gbw = folder_path / "input.gbw"
         dest_gbw = folder_path.parent / f"input_{folder_name}.gbw"
         if src_gbw.exists():
-            try:
-                shutil.copyfile(src_gbw, dest_gbw)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[%s] Failed to propagate fallback GBW %s → %s: %s", folder_name, src_gbw, dest_gbw, exc)
+            if not ensure_relative_link(src_gbw, dest_gbw):
+                try:
+                    shutil.copyfile(src_gbw, dest_gbw)
+                    logger.warning(
+                        "[%s] Fallback GBW copied %s → %s (link failed).",
+                        folder_name,
+                        src_gbw,
+                        dest_gbw,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[%s] Failed to link/copy fallback GBW %s → %s: %s",
+                        folder_name,
+                        src_gbw,
+                        dest_gbw,
+                        exc,
+                    )
 
 
 def _has_ok_marker(path: Path) -> bool:
