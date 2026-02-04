@@ -379,6 +379,18 @@ def calculate_beta_properties(
     # Calculate β'_zzz in dipole-aligned coordinate system
     beta_zzz_aligned = calculate_beta_zzz_aligned(beta_tensor, dipole_x, dipole_y, dipole_z)
 
+    # Values in esu
+    beta_tot_esu = beta_tot * AU_TO_ESU
+    beta_mu_esu = beta_mu * AU_TO_ESU
+    beta_zzz_esu = beta_zzz * AU_TO_ESU
+    beta_zzz_aligned_esu = beta_zzz_aligned * AU_TO_ESU
+
+    # Values in 10^-30 esu (multiply by 1e3)
+    beta_tot_esu_30 = beta_tot_esu * 1e3
+    beta_mu_esu_30 = beta_mu_esu * 1e3
+    beta_zzz_aligned_esu_30 = beta_zzz_aligned_esu * 1e3
+    beta_zzz_aligned_esu_30_kleinman = beta_zzz_aligned_esu_30 / 2
+
     return {
         'beta_x_au': beta_x,
         'beta_y_au': beta_y,
@@ -390,10 +402,15 @@ def calculate_beta_properties(
         'beta_x_esu': beta_x * AU_TO_ESU,
         'beta_y_esu': beta_y * AU_TO_ESU,
         'beta_z_esu': beta_z * AU_TO_ESU,
-        'beta_tot_esu': beta_tot * AU_TO_ESU,
-        'beta_mu_esu': beta_mu * AU_TO_ESU,
-        'beta_zzz_esu': beta_zzz * AU_TO_ESU,
-        'beta_zzz_aligned_esu': beta_zzz_aligned * AU_TO_ESU,
+        'beta_tot_esu': beta_tot_esu,
+        'beta_mu_esu': beta_mu_esu,
+        'beta_zzz_esu': beta_zzz_esu,
+        'beta_zzz_aligned_esu': beta_zzz_aligned_esu,
+        # Values in 10^-30 esu
+        'beta_tot_esu_30': beta_tot_esu_30,
+        'beta_mu_esu_30': beta_mu_esu_30,
+        'beta_zzz_aligned_esu_30': beta_zzz_aligned_esu_30,
+        'beta_zzz_aligned_esu_30_kleinman': beta_zzz_aligned_esu_30_kleinman,
     }
 
 
