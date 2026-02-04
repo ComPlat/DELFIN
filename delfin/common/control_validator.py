@@ -926,7 +926,12 @@ def _as_implicit_solvation_model(value: Any) -> str:
 
 
 def _as_solvent(value: Any) -> str:
-    text = str(value or "").strip()
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return ""
+        text = ",".join(str(item).strip() for item in value if str(item).strip()).strip()
+    else:
+        text = str(value or "").strip()
     if text == "":
         return ""
     key = text.lower()
