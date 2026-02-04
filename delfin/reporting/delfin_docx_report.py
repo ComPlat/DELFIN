@@ -597,14 +597,14 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         beta_mu_esu = hyperpol.get("beta_mu_esu")
         beta_zzz_aligned_esu = hyperpol.get("beta_zzz_aligned_esu")
         if beta_tot_esu is not None:
-            # Convert to 10^-30 esu (multiply by 1000)
-            beta_tot_30 = beta_tot_esu * 1e3
+            # Convert to 10^-30 esu (multiply by 1e30 to get coefficient)
+            beta_tot_30 = beta_tot_esu * 1e30
             parts.append(f"The static hyperpolarizability β{{sub:tot}} is {beta_tot_30:.2f} × 10⁻³⁰ esu.")
         if beta_mu_esu is not None:
-            beta_mu_30 = beta_mu_esu * 1e3
+            beta_mu_30 = beta_mu_esu * 1e30
             parts.append(f"The dipole-projected hyperpolarizability β{{sub:μ}} is {beta_mu_30:.2f} × 10⁻³⁰ esu.")
         if beta_zzz_aligned_esu is not None:
-            beta_zzz_aligned_30 = beta_zzz_aligned_esu * 1e3
+            beta_zzz_aligned_30 = beta_zzz_aligned_esu * 1e30
             beta_zzz_aligned_30_half = beta_zzz_aligned_30 / 2
             parts.append(f"The dipole-aligned hyperpolarizability β'{{sub:zzz}} is {beta_zzz_aligned_30:.2f} × 10⁻³⁰ esu. Under Kleinman symmetry (static limit), β'{{sub:zzz}}/2 = {beta_zzz_aligned_30_half:.2f} × 10⁻³⁰ esu.")
 

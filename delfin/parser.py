@@ -385,10 +385,10 @@ def calculate_beta_properties(
     beta_zzz_esu = beta_zzz * AU_TO_ESU
     beta_zzz_aligned_esu = beta_zzz_aligned * AU_TO_ESU
 
-    # Values in 10^-30 esu (multiply by 1e3)
-    beta_tot_esu_30 = beta_tot_esu * 1e3
-    beta_mu_esu_30 = beta_mu_esu * 1e3
-    beta_zzz_aligned_esu_30 = beta_zzz_aligned_esu * 1e3
+    # Values in 10^-30 esu (multiply by 1e30 to get coefficient)
+    beta_tot_esu_30 = beta_tot_esu * 1e30
+    beta_mu_esu_30 = beta_mu_esu * 1e30
+    beta_zzz_aligned_esu_30 = beta_zzz_aligned_esu * 1e30
     beta_zzz_aligned_esu_30_kleinman = beta_zzz_aligned_esu_30 / 2
 
     return {
