@@ -62,21 +62,181 @@ def _is_simple_organometallic(smiles: str) -> bool:
 
 
 def _prefer_no_sanitize(smiles: str) -> bool:
-    """Heuristic: avoid initial sanitize for neutral Ni/Co + [N] SMILES."""
-    if ('[Ni]' in smiles or '[Co]' in smiles) and '[N]' in smiles:
-        if '[N-]' not in smiles and '[Ni+' not in smiles and '[Co+' not in smiles:
+    """Heuristic: avoid initial sanitize for neutral metal + [N] SMILES."""
+    # Check for any neutral metal pattern
+    has_neutral_metal = any(f'[{m}]' in smiles for m in _METALS)
+    has_neutral_n = '[N]' in smiles
+
+    if has_neutral_metal and has_neutral_n:
+        # Only prefer no-sanitize if no charged forms are present
+        has_charged = '[N-]' in smiles or any(f'[{m}+' in smiles or f'[{m}-' in smiles for m in _METALS)
+        if not has_charged:
             return True
     return False
 
 
+def _is_metal_nitrogen_complex(smiles: str) -> bool:
+    """Check if SMILES represents a metal-nitrogen coordination complex.
+
+    Matches both neutral ([Metal]) and charged ([Metal+2], [Metal-]) notations,
+    as well as stereochemical variants ([Metal@@+2], etc.) for all metals.
+    """
+    # Build pattern for all metals (neutral or charged, with optional stereochemistry)
+    metal_pattern = '|'.join(re.escape(m) for m in _METALS)
+    has_metal = bool(re.search(rf'\[(?:{metal_pattern})(?:@+|@@)?(?:[+-]\d*)?\]', smiles))
+
+    # Check for coordinating nitrogen (neutral [N] or negative [N-] or ring-closing N)
+    has_coord_n = '[N]' in smiles or '[N-]' in smiles or bool(re.search(r'N\d+=', smiles))
+
+    return has_metal and has_coord_n
+
+
+def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """Try multiple parsing strategies for metal complexes.
+
+    This function tries different approaches in order of preference:
+    1. stk (if available) - often handles complex coordination well
+    2. RDKit with normalized (charged) SMILES
+    3. RDKit with denormalized (neutral) SMILES
+    4. RDKit with original SMILES + partial sanitize
+    5. RDKit unsanitized fallback
+
+    Returns:
+        Tuple of (xyz_content, error_message)
+    """
+    errors = []
+    normalized = _normalize_metal_smiles(smiles)
+    denormalized = _denormalize_metal_smiles(smiles)
+
+    # Build list of SMILES variants to try (original + alternatives)
+    smiles_variants = [smiles]
+    if normalized and normalized not in smiles_variants:
+        smiles_variants.append(normalized)
+    if denormalized and denormalized not in smiles_variants:
+        smiles_variants.append(denormalized)
+
+    # Strategy 1: Try stk first (good for metal complexes)
+    if STK_AVAILABLE:
+        for smi in smiles_variants:
+            try:
+                bb = stk.BuildingBlock(smi)
+                mol = bb.to_rdkit_mol()
+                if mol is not None:
+                    # Process with dative bond conversion
+                    mol = Chem.RemoveHs(mol)
+                    mol = _convert_metal_bonds_to_dative(mol)
+                    mol.UpdatePropertyCache(strict=False)
+                    mol = Chem.AddHs(mol, addCoords=True)
+
+                    # Embed if needed
+                    if mol.GetNumConformers() == 0:
+                        params = AllChem.ETKDGv3()
+                        params.randomSeed = 42
+                        params.useRandomCoords = True
+                        result = AllChem.EmbedMolecule(mol, params)
+                        if result != 0:
+                            continue
+
+                    xyz_content = _mol_to_xyz(mol)
+                    if output_path:
+                        Path(output_path).write_text(xyz_content, encoding='utf-8')
+                        logger.info(f"Converted SMILES to XYZ using stk: {output_path}")
+                    return xyz_content, None
+            except Exception as e:
+                errors.append(f"stk({smi[:30]}...): {e}")
+
+    # Strategy 2: RDKit with partial sanitize
+    for smi in smiles_variants:
+        try:
+            mol, note = mol_from_smiles_rdkit(smi, allow_metal=True)
+            if mol is not None:
+                mol = Chem.RemoveHs(mol)
+                mol = _convert_metal_bonds_to_dative(mol)
+                mol.UpdatePropertyCache(strict=False)
+                mol = Chem.AddHs(mol, addCoords=True)
+
+                params = AllChem.ETKDGv3()
+                params.randomSeed = 42
+                params.useRandomCoords = True
+                result = AllChem.EmbedMolecule(mol, params)
+                if result == 0:
+                    xyz_content = _mol_to_xyz(mol)
+                    if output_path:
+                        Path(output_path).write_text(xyz_content, encoding='utf-8')
+                        logger.info(f"Converted SMILES to XYZ using RDKit partial sanitize: {output_path}")
+                    return xyz_content, None
+        except Exception as e:
+            errors.append(f"RDKit-partial({smi[:30]}...): {e}")
+
+    # Strategy 3: Unsanitized fallback
+    for smi in smiles_variants:
+        xyz_content, err = _smiles_to_xyz_unsanitized_fallback(smi)
+        if xyz_content:
+            if output_path:
+                Path(output_path).write_text(xyz_content, encoding='utf-8')
+                logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
+            return xyz_content, None
+        if err:
+            errors.append(f"unsanitized({smi[:30]}...): {err}")
+
+    return None, f"All strategies failed: {'; '.join(errors)}"
+
+
 def _normalize_metal_smiles(smiles: str) -> Optional[str]:
-    """Normalize neutral Ni/Co SMILES to charged form as a fallback."""
-    if '[Ni]' not in smiles and '[Co]' not in smiles:
-        return None
-    if '[Ni+' in smiles or '[Co+' in smiles or '[N-]' in smiles:
-        return None
-    normalized = smiles.replace('[Ni]', '[Ni+2]').replace('[Co]', '[Co+2]').replace('[N]', '[N-]')
+    """Normalize neutral metal SMILES to charged form as a fallback.
+
+    Converts common neutral metal notations to their typical charged forms:
+    - Ni, Co, Fe → +2
+    - Ru, Rh, Ir → +3
+    - Neutral [N] → [N-] for coordination
+    """
+    # Common oxidation states for metals in coordination complexes
+    metal_charges = {
+        'Ni': '+2', 'Co': '+2', 'Fe': '+2', 'Cu': '+2', 'Zn': '+2',
+        'Mn': '+2', 'Cr': '+3', 'Ru': '+2', 'Rh': '+3', 'Ir': '+3',
+        'Pd': '+2', 'Pt': '+2', 'Au': '+3', 'Ag': '+1',
+    }
+
+    normalized = smiles
+    found_neutral_metal = False
+
+    for metal, charge in metal_charges.items():
+        neutral_pattern = f'[{metal}]'
+        if neutral_pattern in normalized:
+            # Check if already has a charged version
+            if f'[{metal}+' not in smiles and f'[{metal}-' not in smiles:
+                normalized = normalized.replace(neutral_pattern, f'[{metal}{charge}]')
+                found_neutral_metal = True
+
+    # Also convert neutral [N] to [N-] for coordination
+    if found_neutral_metal and '[N]' in normalized and '[N-]' not in smiles:
+        normalized = normalized.replace('[N]', '[N-]')
+
     return normalized if normalized != smiles else None
+
+
+def _denormalize_metal_smiles(smiles: str) -> Optional[str]:
+    """Convert charged metal SMILES back to neutral form as a fallback.
+
+    Handles various charge notations including stereochemistry markers for all metals.
+    """
+    # Check if we have any charged notation
+    if not re.search(r'\[[A-Z][a-z]?(?:@+|@@)?[+-]\d*\]', smiles) and '[N-]' not in smiles:
+        return None
+
+    denorm = smiles
+
+    # Convert charged metals to neutral (handle stereochemistry)
+    # Pattern matches: [Metal@+2], [Metal@@+3], [Metal+2], [Metal+], [Metal-], etc.
+    for metal in _METALS:
+        # Pattern: [Metal with optional stereochemistry and charge]
+        pattern = rf'\[{metal}(?:@+|@@)?[+-]\d*\]'
+        denorm = re.sub(pattern, f'[{metal}]', denorm)
+
+    # Convert [N-] back to [N]
+    denorm = denorm.replace('[N-]', '[N]')
+
+    return denorm if denorm != smiles else None
 
 
 def _strip_h_on_metal_halogen(mol):
@@ -228,10 +388,12 @@ def mol_from_smiles_rdkit(smiles: str, allow_metal: bool = False):
         except Exception:
             pass
         # Update property cache to compute implicit H counts for AddHs
-        try:
-            mol.UpdatePropertyCache(strict=False)
-        except Exception:
-            pass
+        # Avoid property-cache updates for neutral Ni/Co+[N] SMILES to prevent valence errors
+        if not _prefer_no_sanitize(smiles):
+            try:
+                mol.UpdatePropertyCache(strict=False)
+            except Exception:
+                pass
         return mol, "partial sanitize"
     except Exception as e:
         return None, f"RDKit error: {e}"
@@ -335,6 +497,12 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
     try:
         has_metal = contains_metal(smiles)
         method = None
+
+        # For metal-nitrogen coordination complexes (both neutral and charged notation),
+        # use the multi-strategy approach that tries multiple parsing methods
+        if _is_metal_nitrogen_complex(smiles):
+            logger.info("Detected metal-nitrogen complex, using multi-strategy approach")
+            return _try_multiple_strategies(smiles, output_path)
 
         # Parse SMILES - try stk first for metal complexes, then RDKit
         mol = None
@@ -583,7 +751,14 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
     try:
         normalized = _normalize_metal_smiles(smiles)
         smiles_try = normalized or smiles
-        mol = Chem.MolFromSmiles(smiles_try, sanitize=False)
+        try:
+            params = Chem.SmilesParserParams()
+            params.sanitize = False
+            params.removeHs = False
+            params.strictParsing = False
+            mol = Chem.MolFromSmiles(smiles_try, params)
+        except Exception:
+            mol = Chem.MolFromSmiles(smiles_try, sanitize=False)
         if mol is None:
             return None, "Failed to parse SMILES (no sanitize)"
         try:
@@ -613,22 +788,44 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
         if result != 0:
             return None, "Failed to generate 3D coordinates (unsanitized)"
 
-        # Try to add hydrogens after embedding; if this fails, keep heavy-atom-only
-        try:
-            mol_h = Chem.AddHs(mol)
-            # Re-embed to place H coordinates
+        # Try to add hydrogens after embedding unless this is a neutral Ni/Co+[N] case
+        if not _prefer_no_sanitize(smiles):
             try:
-                result_h = AllChem.EmbedMolecule(mol_h, useRandomCoords=True, randomSeed=42)
-            except TypeError:
-                result_h = AllChem.EmbedMolecule(mol_h, useRandomCoords=True)
-            if result_h == 0:
-                mol = mol_h
-        except Exception:
-            pass
+                mol_h = Chem.AddHs(mol)
+                # Re-embed to place H coordinates
+                try:
+                    result_h = AllChem.EmbedMolecule(mol_h, useRandomCoords=True, randomSeed=42)
+                except TypeError:
+                    result_h = AllChem.EmbedMolecule(mol_h, useRandomCoords=True)
+                if result_h == 0:
+                    mol = mol_h
+            except Exception:
+                pass
 
         xyz_content = _mol_to_xyz(mol)
         return xyz_content, None
     except Exception as e:
+        # Extra-permissive fallback for explicit valence errors
+        if "Explicit valence" in str(e):
+            try:
+                normalized = _normalize_metal_smiles(smiles)
+                smiles_try = normalized or smiles
+                mol = Chem.MolFromSmiles(smiles_try, sanitize=False)
+                if mol is None:
+                    return None, "Failed to parse SMILES (no sanitize)"
+                # Disable implicit H handling to avoid valence checks
+                for atom in mol.GetAtoms():
+                    atom.SetNoImplicit(True)
+                    atom.SetNumExplicitHs(0)
+                try:
+                    result = AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+                except TypeError:
+                    result = AllChem.EmbedMolecule(mol, useRandomCoords=True)
+                if result == 0:
+                    xyz_content = _mol_to_xyz(mol)
+                    return xyz_content, None
+            except Exception:
+                pass
         return None, f"Unsanitized fallback error: {e}"
 
 
