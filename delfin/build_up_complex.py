@@ -34,32 +34,31 @@ logger = get_logger(__name__)
 
 
 def extract_ligands_from_complex(smiles: str) -> Tuple[
-    Optional[str],  # metal_symbol
-    Optional[int],  # metal_charge
+    Optional[List[Tuple[str, int]]],  # metals: list of (symbol, charge)
     Optional[List[str]],  # ligand_smiles_list
     Optional[str],  # error_message
 ]:
-    """Extract metal and ligands from a metal complex SMILES.
+    """Extract metals and ligands from a metal complex SMILES.
 
     Based on ChemDarwin's extract_ligands_from_complex function.
+    Supports single and multi-metal complexes.
 
     Args:
         smiles: SMILES string of the metal complex
 
     Returns:
-        Tuple of (metal_symbol, metal_charge, ligand_smiles_list, error_message)
-        - metal_symbol: Element symbol of the metal (e.g., "Mn")
-        - metal_charge: Formal charge of the metal
+        Tuple of (metals, ligand_smiles_list, error_message)
+        - metals: List of (symbol, charge) tuples for each metal
         - ligand_smiles_list: List of SMILES strings for each ligand
         - error_message: Error description if failed, None on success
     """
     if not RDKIT_AVAILABLE:
-        return None, None, None, "RDKit not available"
+        return None, None, "RDKit not available"
 
     # Parse without sanitization for metal complexes
     mol = Chem.MolFromSmiles(smiles, sanitize=False)
     if mol is None:
-        return None, None, None, "Could not parse SMILES"
+        return None, None, "Could not parse SMILES"
 
     # Find metal atom(s)
     metal_atoms = []
@@ -68,13 +67,13 @@ def extract_ligands_from_complex(smiles: str) -> Tuple[
             metal_atoms.append(atom.GetIdx())
 
     if not metal_atoms:
-        return None, None, None, "No metal found in SMILES"
+        return None, None, "No metal found in SMILES"
 
-    # For now, handle single metal center
-    metal_idx = metal_atoms[0]
-    metal_atom = mol.GetAtomWithIdx(metal_idx)
-    metal_symbol = metal_atom.GetSymbol()
-    metal_charge = metal_atom.GetFormalCharge()
+    # Collect metal info
+    metals = []
+    for metal_idx in metal_atoms:
+        metal_atom = mol.GetAtomWithIdx(metal_idx)
+        metals.append((metal_atom.GetSymbol(), metal_atom.GetFormalCharge()))
 
     # Capture original atom properties FIRST
     orig_props = {}
@@ -91,27 +90,41 @@ def extract_ligands_from_complex(smiles: str) -> Tuple[
     # Create editable mol
     edit_mol = Chem.RWMol(mol)
 
-    # Remove bonds to metal first
+    # Remove bonds to ALL metals first
     bonds_to_remove = []
     for bond in edit_mol.GetBonds():
-        if bond.GetBeginAtomIdx() == metal_idx or bond.GetEndAtomIdx() == metal_idx:
-            bonds_to_remove.append((bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()))
+        begin_idx = bond.GetBeginAtomIdx()
+        end_idx = bond.GetEndAtomIdx()
+        if begin_idx in metal_atoms or end_idx in metal_atoms:
+            bonds_to_remove.append((begin_idx, end_idx))
 
     for b in bonds_to_remove:
         edit_mol.RemoveBond(b[0], b[1])
 
-    # Remove metal atom (this shifts indices!)
-    edit_mol.RemoveAtom(metal_idx)
+    # Remove metal atoms (in reverse order to preserve indices)
+    for metal_idx in sorted(metal_atoms, reverse=True):
+        edit_mol.RemoveAtom(metal_idx)
 
     # Get fragments (ligands)
     try:
         mol_no_metal = edit_mol.GetMol()
 
+        # Build index mapping: old_idx -> new_idx after metal removal
+        removed_count = 0
+        idx_map = {}
+        for old_idx in range(len(orig_props)):
+            if old_idx in metal_atoms:
+                removed_count += 1
+            else:
+                idx_map[old_idx] = old_idx - removed_count
+
         # Apply original atom properties
         for old_idx, props in orig_props.items():
-            if old_idx == metal_idx:
+            if old_idx in metal_atoms:
                 continue
-            new_idx = old_idx - 1 if old_idx > metal_idx else old_idx
+            new_idx = idx_map.get(old_idx)
+            if new_idx is None:
+                continue
             try:
                 a = mol_no_metal.GetAtomWithIdx(new_idx)
                 a.SetFormalCharge(props['formal_charge'])
@@ -136,10 +149,10 @@ def extract_ligands_from_complex(smiles: str) -> Tuple[
             smi = Chem.MolToSmiles(frag_mol, canonical=True)
             ligand_smiles.append(smi)
 
-        return metal_symbol, metal_charge, ligand_smiles, None
+        return metals, ligand_smiles, None
 
     except Exception as e:
-        return None, None, None, str(e)
+        return None, None, str(e)
 
 
 def get_ligand_charge(smiles: str) -> int:
@@ -163,6 +176,36 @@ def get_ligand_charge(smiles: str) -> int:
         total_charge += atom.GetFormalCharge()
 
     return total_charge
+
+
+def get_ligand_size(smiles: str) -> int:
+    """Calculate the size of a ligand (number of atoms including hydrogens).
+
+    Args:
+        smiles: SMILES string of the ligand
+
+    Returns:
+        Number of atoms (including implicit hydrogens)
+    """
+    if not RDKIT_AVAILABLE:
+        return 0
+
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        if mol is None:
+            return 0
+
+        # Add hydrogens to get total atom count
+        try:
+            mol = Chem.AddHs(mol)
+        except Exception:
+            pass
+
+        return mol.GetNumAtoms()
+    except Exception:
+        return 0
 
 
 def ligand_to_xyz(smiles: str, output_path: Path) -> Tuple[bool, Optional[str]]:
@@ -355,6 +398,71 @@ def extract_optimized_xyz(orca_out: Path, output_xyz: Path) -> bool:
     return False
 
 
+def _run_docker_step(
+    builder_dir: Path,
+    step: int,
+    host_xyz: str,
+    guest_xyz: str,
+    host_charge: int,
+    guest_charge: int,
+    multiplicity: int,
+    description: str,
+    dry_run: bool,
+    pal: int,
+    maxcore: int,
+) -> Tuple[bool, str, int]:
+    """Run a single DOCKER step.
+
+    Returns:
+        Tuple of (success, output_xyz_name, new_charge)
+    """
+    step_input = builder_dir / f"step_{step}.inp"
+    step_output = builder_dir / f"step_{step}.out"
+    step_xyz = builder_dir / f"step_{step}.xyz"
+
+    logger.info(f"\n=== Step {step}: {description} ===")
+
+    # Create ORCA input
+    create_docker_input(
+        host_xyz=host_xyz,
+        guest_xyz=guest_xyz,
+        guest_charge=guest_charge,
+        host_charge=host_charge,
+        multiplicity=multiplicity,
+        output_path=step_input,
+        pal=pal,
+        maxcore=maxcore,
+    )
+    logger.info(f"Created {step_input.name}")
+    logger.info(f"  Host: {host_xyz} (charge: {host_charge:+d})")
+    logger.info(f"  Guest: {guest_xyz} (charge: {guest_charge:+d})")
+
+    new_charge = host_charge + guest_charge
+
+    if dry_run:
+        logger.info(f"[DRY RUN] Would run ORCA for step {step}")
+        shutil.copy(builder_dir / host_xyz, step_xyz)
+    else:
+        logger.info(f"Running ORCA for step {step}...")
+        success = run_orca(
+            str(step_input),
+            str(step_output),
+            working_dir=builder_dir,
+        )
+
+        if not success:
+            logger.error(f"ORCA failed for step {step}")
+            return False, "", 0
+
+        if not extract_optimized_xyz(step_output, step_xyz):
+            logger.error(f"Could not extract geometry from step {step}")
+            return False, "", 0
+
+        logger.info(f"Step {step} completed successfully")
+
+    return True, f"step_{step}.xyz", new_charge
+
+
 def run_build_up(
     smiles: str,
     builder_dir: Path,
@@ -364,6 +472,10 @@ def run_build_up(
     maxcore: int = 4000,
 ) -> bool:
     """Run the full complex build-up workflow.
+
+    Workflow depends on number of metals:
+    - Mono-metal: Metal as host, ligands docked by size (largest first)
+    - Multi-metal: Largest ligand as host, then metals, then remaining ligands
 
     Args:
         smiles: SMILES string of the metal complex
@@ -387,100 +499,145 @@ def run_build_up(
             logger.error("ORCA executable not found")
             return False
 
-    # Extract metal and ligands
+    # Extract metals and ligands
     logger.info(f"Parsing complex SMILES: {smiles}")
-    metal, metal_charge, ligands, error = extract_ligands_from_complex(smiles)
+    metals, ligands, error = extract_ligands_from_complex(smiles)
 
     if error:
         logger.error(f"Failed to extract ligands: {error}")
+        return False
+
+    if not metals:
+        logger.error("No metals found in complex")
         return False
 
     if not ligands:
         logger.error("No ligands found in complex")
         return False
 
-    logger.info(f"Found metal: {metal} (charge: {metal_charge:+d})")
+    # Log metals
+    for i, (metal_symbol, metal_charge) in enumerate(metals, 1):
+        logger.info(f"Found metal {i}: {metal_symbol} (charge: {metal_charge:+d})")
     logger.info(f"Found {len(ligands)} ligand(s)")
 
     # Create builder directory
     builder_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Created builder directory: {builder_dir}")
 
-    # Calculate ligand charges
-    ligand_charges = []
-    for i, lig_smiles in enumerate(ligands, 1):
+    # Calculate ligand charges and sizes, then sort by size (largest first)
+    ligand_info = []
+    for lig_smiles in ligands:
         charge = get_ligand_charge(lig_smiles)
-        ligand_charges.append(charge)
-        logger.info(f"  Ligand {i}: {lig_smiles} (charge: {charge:+d})")
+        size = get_ligand_size(lig_smiles)
+        ligand_info.append({
+            'smiles': lig_smiles,
+            'charge': charge,
+            'size': size,
+        })
 
-    # Generate ligand XYZ files
-    for i, lig_smiles in enumerate(ligands, 1):
+    # Sort by size descending (largest first)
+    ligand_info.sort(key=lambda x: x['size'], reverse=True)
+
+    for i, info in enumerate(ligand_info, 1):
+        logger.info(f"  Ligand {i}: {info['smiles']} (charge: {info['charge']:+d}, size: {info['size']} atoms)")
+
+    # Generate ligand XYZ files (numbered by sorted order)
+    for i, info in enumerate(ligand_info, 1):
         lig_xyz = builder_dir / f"ligand{i}.xyz"
-        success, error = ligand_to_xyz(lig_smiles, lig_xyz)
+        success, err = ligand_to_xyz(info['smiles'], lig_xyz)
         if not success:
-            logger.error(f"Failed to convert ligand {i} to XYZ: {error}")
+            logger.error(f"Failed to convert ligand {i} to XYZ: {err}")
             return False
+        info['xyz'] = f"ligand{i}.xyz"
         logger.info(f"Created {lig_xyz.name}")
 
-    # Create initial metal structure
-    metal_xyz = builder_dir / "metal.xyz"
-    create_metal_xyz(metal, metal_xyz)
-    logger.info(f"Created {metal_xyz.name}")
+    # Create metal XYZ files
+    for i, (metal_symbol, metal_charge) in enumerate(metals, 1):
+        metal_xyz = builder_dir / f"metal{i}.xyz"
+        create_metal_xyz(metal_symbol, metal_xyz)
+        logger.info(f"Created metal{i}.xyz ({metal_symbol})")
 
-    # Build up complex step by step
-    current_host = "metal.xyz"
-    current_charge = metal_charge if metal_charge else 0
+    # === Build-up workflow ===
+    step = 0
+    is_multi_metal = len(metals) > 1
 
-    for step, (lig_smiles, lig_charge) in enumerate(zip(ligands, ligand_charges), 1):
-        logger.info(f"\n=== Step {step}: Adding ligand {step} ===")
+    if is_multi_metal:
+        # Multi-metal: Largest ligand as host, then metals, then remaining ligands
+        logger.info("\n=== Multi-metal workflow ===")
 
-        guest_xyz = f"ligand{step}.xyz"
-        step_input = builder_dir / f"step_{step}.inp"
-        step_output = builder_dir / f"step_{step}.out"
-        step_xyz = builder_dir / f"step_{step}.xyz"
+        # Start with largest ligand as host
+        first_ligand = ligand_info[0]
+        current_host = first_ligand['xyz']
+        current_charge = first_ligand['charge']
+        logger.info(f"Starting with largest ligand: {first_ligand['smiles']} ({first_ligand['size']} atoms)")
 
-        # Create ORCA input
-        create_docker_input(
-            host_xyz=current_host,
-            guest_xyz=guest_xyz,
-            guest_charge=lig_charge,
-            host_charge=current_charge,
-            multiplicity=multiplicity,
-            output_path=step_input,
-            pal=pal,
-            maxcore=maxcore,
-        )
-        logger.info(f"Created {step_input.name}")
-        logger.info(f"  Host: {current_host} (charge: {current_charge:+d})")
-        logger.info(f"  Guest: {guest_xyz} (charge: {lig_charge:+d})")
-
-        if dry_run:
-            logger.info(f"[DRY RUN] Would run ORCA for step {step}")
-            # Create a dummy output for the next step
-            shutil.copy(builder_dir / current_host, step_xyz)
-        else:
-            # Run ORCA
-            logger.info(f"Running ORCA for step {step}...")
-            success = run_orca(
-                str(step_input),
-                str(step_output),
-                working_dir=builder_dir,
+        # Dock metals onto the growing complex
+        for i, (metal_symbol, metal_charge) in enumerate(metals, 1):
+            step += 1
+            success, new_host, current_charge = _run_docker_step(
+                builder_dir=builder_dir,
+                step=step,
+                host_xyz=current_host,
+                guest_xyz=f"metal{i}.xyz",
+                host_charge=current_charge,
+                guest_charge=metal_charge,
+                multiplicity=multiplicity,
+                description=f"Docking metal {i} ({metal_symbol})",
+                dry_run=dry_run,
+                pal=pal,
+                maxcore=maxcore,
             )
-
             if not success:
-                logger.error(f"ORCA failed for step {step}")
                 return False
+            current_host = new_host
 
-            # Extract optimized geometry
-            if not extract_optimized_xyz(step_output, step_xyz):
-                logger.error(f"Could not extract geometry from step {step}")
+        # Dock remaining ligands (skip first, already used as host)
+        for i, info in enumerate(ligand_info[1:], 2):
+            step += 1
+            success, new_host, current_charge = _run_docker_step(
+                builder_dir=builder_dir,
+                step=step,
+                host_xyz=current_host,
+                guest_xyz=info['xyz'],
+                host_charge=current_charge,
+                guest_charge=info['charge'],
+                multiplicity=multiplicity,
+                description=f"Docking ligand {i} ({info['size']} atoms)",
+                dry_run=dry_run,
+                pal=pal,
+                maxcore=maxcore,
+            )
+            if not success:
                 return False
+            current_host = new_host
 
-            logger.info(f"Step {step} completed successfully")
+    else:
+        # Mono-metal: Metal as host, ligands docked by size (largest first)
+        logger.info("\n=== Mono-metal workflow ===")
 
-        # Update for next step
-        current_host = f"step_{step}.xyz"
-        current_charge += lig_charge
+        metal_symbol, metal_charge = metals[0]
+        current_host = "metal1.xyz"
+        current_charge = metal_charge
+
+        # Dock ligands onto metal (already sorted by size)
+        for i, info in enumerate(ligand_info, 1):
+            step += 1
+            success, new_host, current_charge = _run_docker_step(
+                builder_dir=builder_dir,
+                step=step,
+                host_xyz=current_host,
+                guest_xyz=info['xyz'],
+                host_charge=current_charge,
+                guest_charge=info['charge'],
+                multiplicity=multiplicity,
+                description=f"Docking ligand {i} ({info['size']} atoms)",
+                dry_run=dry_run,
+                pal=pal,
+                maxcore=maxcore,
+            )
+            if not success:
+                return False
+            current_host = new_host
 
     logger.info(f"\n=== Build-up complete ===")
     logger.info(f"Final structure: {builder_dir / current_host}")
