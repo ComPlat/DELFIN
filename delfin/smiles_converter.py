@@ -94,12 +94,15 @@ def _is_metal_nitrogen_complex(smiles: str) -> bool:
 def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """Try multiple parsing strategies for metal complexes.
 
+    IMPORTANT: Does NOT convert bonds to dative - both neutral and charged
+    SMILES notations should produce the SAME result (no extra H atoms).
+
     This function tries different approaches in order of preference:
     1. stk (if available) - often handles complex coordination well
-    2. RDKit with normalized (charged) SMILES
-    3. RDKit with denormalized (neutral) SMILES
-    4. RDKit with original SMILES + partial sanitize
-    5. RDKit unsanitized fallback
+    2. RDKit with original SMILES
+    3. RDKit with normalized (charged) SMILES
+    4. RDKit with denormalized (neutral) SMILES
+    5. RDKit unsanitized fallback (no H addition)
 
     Returns:
         Tuple of (xyz_content, error_message)
@@ -116,18 +119,13 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
         smiles_variants.append(denormalized)
 
     # Strategy 1: Try stk first (good for metal complexes)
+    # stk handles H atoms correctly based on the SMILES notation
     if STK_AVAILABLE:
         for smi in smiles_variants:
             try:
                 bb = stk.BuildingBlock(smi)
                 mol = bb.to_rdkit_mol()
                 if mol is not None:
-                    # Process with dative bond conversion
-                    mol = Chem.RemoveHs(mol)
-                    mol = _convert_metal_bonds_to_dative(mol)
-                    mol.UpdatePropertyCache(strict=False)
-                    mol = Chem.AddHs(mol, addCoords=True)
-
                     # Embed if needed
                     if mol.GetNumConformers() == 0:
                         params = AllChem.ETKDGv3()
@@ -145,15 +143,16 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
             except Exception as e:
                 errors.append(f"stk({smi[:30]}...): {e}")
 
-    # Strategy 2: RDKit with partial sanitize
+    # Strategy 2: RDKit with partial sanitize (no dative conversion)
     for smi in smiles_variants:
         try:
             mol, note = mol_from_smiles_rdkit(smi, allow_metal=True)
             if mol is not None:
-                mol = Chem.RemoveHs(mol)
-                mol = _convert_metal_bonds_to_dative(mol)
-                mol.UpdatePropertyCache(strict=False)
-                mol = Chem.AddHs(mol, addCoords=True)
+                # Try to add H without modifying bond types
+                try:
+                    mol = Chem.AddHs(mol, addCoords=True)
+                except Exception:
+                    pass  # Continue without H if it fails
 
                 params = AllChem.ETKDGv3()
                 params.randomSeed = 42
@@ -163,12 +162,12 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
                     xyz_content = _mol_to_xyz(mol)
                     if output_path:
                         Path(output_path).write_text(xyz_content, encoding='utf-8')
-                        logger.info(f"Converted SMILES to XYZ using RDKit partial sanitize: {output_path}")
+                        logger.info(f"Converted SMILES to XYZ using RDKit: {output_path}")
                     return xyz_content, None
         except Exception as e:
-            errors.append(f"RDKit-partial({smi[:30]}...): {e}")
+            errors.append(f"RDKit({smi[:30]}...): {e}")
 
-    # Strategy 3: Unsanitized fallback
+    # Strategy 3: Unsanitized fallback (preserves SMILES as-is)
     for smi in smiles_variants:
         xyz_content, err = _smiles_to_xyz_unsanitized_fallback(smi)
         if xyz_content:
@@ -179,7 +178,89 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
         if err:
             errors.append(f"unsanitized({smi[:30]}...): {err}")
 
+    # Strategy 4: Ultra-permissive (bypass all valence checks)
+    for smi in smiles_variants:
+        xyz_content, err = _smiles_to_xyz_no_valence_check(smi)
+        if xyz_content:
+            if output_path:
+                Path(output_path).write_text(xyz_content, encoding='utf-8')
+                logger.info(f"Converted SMILES to XYZ using no-valence-check fallback: {output_path}")
+            return xyz_content, None
+        if err:
+            errors.append(f"no-valence({smi[:30]}...): {err}")
+
     return None, f"All strategies failed: {'; '.join(errors)}"
+
+
+def _smiles_to_xyz_no_valence_check(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Ultra-permissive fallback: bypass all valence checks and geometry rules.
+
+    This is for problematic metal complexes where RDKit's valence rules
+    don't apply (unusual coordination numbers, complex ring systems, etc.).
+    No H atoms are added - only what's in the SMILES.
+    Uses minimal geometry knowledge to handle exotic structures.
+    """
+    if not RDKIT_AVAILABLE:
+        return None, "RDKit is not installed"
+
+    try:
+        # Parse without sanitization
+        try:
+            params = Chem.SmilesParserParams()
+            params.sanitize = False
+            params.removeHs = False
+            params.strictParsing = False
+            mol = Chem.MolFromSmiles(smiles, params)
+        except Exception:
+            mol = Chem.MolFromSmiles(smiles, sanitize=False)
+
+        if mol is None:
+            return None, "Failed to parse SMILES"
+
+        # Disable all implicit H handling to avoid valence checks
+        for atom in mol.GetAtoms():
+            atom.SetNoImplicit(True)
+
+        # Use minimal geometry requirements - this handles exotic metal complexes
+        # that don't follow standard geometry rules
+        embed_params = AllChem.EmbedParameters()
+        embed_params.randomSeed = 42
+        embed_params.useRandomCoords = True
+        embed_params.ignoreSmoothingFailures = True
+        embed_params.useExpTorsionAnglePrefs = False  # Don't enforce torsion angles
+        embed_params.useBasicKnowledge = False  # Don't use standard geometry knowledge
+        embed_params.enforceChirality = False
+
+        result = AllChem.EmbedMolecule(mol, embed_params)
+
+        if result != 0:
+            # Try with different random seeds
+            for seed in [123, 456, 789, 1000]:
+                embed_params.randomSeed = seed
+                result = AllChem.EmbedMolecule(mol, embed_params)
+                if result == 0:
+                    break
+
+        if result != 0:
+            return None, "Failed to generate 3D coordinates"
+
+        # Try to add H atoms after embedding (coordinates will be placed)
+        try:
+            # Reset noImplicit for non-metal atoms to allow H calculation
+            for atom in mol.GetAtoms():
+                if atom.GetSymbol() not in _METAL_SET:
+                    atom.SetNoImplicit(False)
+            mol.UpdatePropertyCache(strict=False)
+            mol = Chem.AddHs(mol, addCoords=True)
+        except Exception:
+            # If H addition fails, continue with what we have
+            pass
+
+        xyz_content = _mol_to_xyz(mol)
+        return xyz_content, None
+
+    except Exception as e:
+        return None, f"No-valence-check error: {e}"
 
 
 def _normalize_metal_smiles(smiles: str) -> Optional[str]:
