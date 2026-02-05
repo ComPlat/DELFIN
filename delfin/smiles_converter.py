@@ -332,7 +332,7 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
         if mol is None:
             mol, rdkit_note = mol_from_smiles_rdkit(smiles, allow_metal=has_metal)
             if mol is None:
-                if rdkit_note and "Explicit valence" in rdkit_note:
+                if rdkit_note and ("Explicit valence" in rdkit_note or "kekulize" in rdkit_note):
                     legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
                     if legacy_err is None and legacy_xyz:
                         if output_path:
@@ -457,6 +457,14 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
         return xyz_content, None
 
     except Exception as e:
+        msg = str(e)
+        if "kekulize" in msg or "Explicit valence" in msg:
+            legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
+            if legacy_err is None and legacy_xyz:
+                if output_path:
+                    Path(output_path).write_text(legacy_xyz, encoding='utf-8')
+                    logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
+                return legacy_xyz, None
         error = f"Error converting SMILES to XYZ: {e}"
         logger.error(error, exc_info=True)
         return None, error
@@ -533,7 +541,7 @@ def _smiles_to_xyz_legacy(smiles: str, has_metal: bool) -> Tuple[Optional[str], 
 
 
 def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Optional[str]]:
-    """Last-resort fallback: embed without sanitization (handles valence errors)."""
+    """Last-resort fallback: embed without sanitization (handles valence/kekulize errors)."""
     if not RDKIT_AVAILABLE:
         return None, "RDKit is not installed"
 
@@ -567,6 +575,19 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
 
         if result != 0:
             return None, "Failed to generate 3D coordinates (unsanitized)"
+
+        # Try to add hydrogens after embedding; if this fails, keep heavy-atom-only
+        try:
+            mol_h = Chem.AddHs(mol)
+            # Re-embed to place H coordinates
+            try:
+                result_h = AllChem.EmbedMolecule(mol_h, useRandomCoords=True, randomSeed=42)
+            except TypeError:
+                result_h = AllChem.EmbedMolecule(mol_h, useRandomCoords=True)
+            if result_h == 0:
+                mol = mol_h
+        except Exception:
+            pass
 
         xyz_content = _mol_to_xyz(mol)
         return xyz_content, None
