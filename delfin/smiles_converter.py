@@ -314,7 +314,17 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
             result = AllChem.EmbedMolecule(mol, AllChem.ETKDG())
 
         if result != 0:
+            # Fallback to legacy embedding logic (used in older dashboards)
+            logger.warning("ETKDG embedding failed, trying legacy SMILES embedding fallback")
+            legacy_xyz, legacy_err = _smiles_to_xyz_legacy(smiles, has_metal=has_metal)
+            if legacy_err is None and legacy_xyz:
+                if output_path:
+                    Path(output_path).write_text(legacy_xyz, encoding='utf-8')
+                    logger.info(f"Converted SMILES to XYZ using legacy fallback: {output_path}")
+                return legacy_xyz, None
             error = f"Failed to generate 3D coordinates for SMILES: {smiles}"
+            if legacy_err:
+                error = f"{error} (legacy fallback failed: {legacy_err})"
             logger.error(error)
             return None, error
 
@@ -354,6 +364,76 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
         error = f"Error converting SMILES to XYZ: {e}"
         logger.error(error, exc_info=True)
         return None, error
+
+
+def _smiles_to_xyz_legacy(smiles: str, has_metal: bool) -> Tuple[Optional[str], Optional[str]]:
+    """Legacy embedding fallback (matches older dashboard behavior)."""
+    if not RDKIT_AVAILABLE:
+        return None, "RDKit is not installed"
+
+    stk_error = None
+    mol = None
+
+    # Try stk first for metal complexes
+    if has_metal and STK_AVAILABLE:
+        try:
+            bb = stk.BuildingBlock(smiles)
+            mol = bb.to_rdkit_mol()
+            if mol.GetNumConformers() == 0:
+                AllChem.EmbedMolecule(mol, randomSeed=42, useRandomCoords=True)
+        except Exception as e:
+            stk_error = str(e)
+            mol = None
+
+    # RDKit fallback
+    if mol is None:
+        mol, rdkit_note = mol_from_smiles_rdkit(smiles, allow_metal=has_metal)
+        if mol is None:
+            if stk_error:
+                return None, f"RDKit: {rdkit_note}; stk: {stk_error}"
+            return None, rdkit_note
+
+        try:
+            mol = Chem.AddHs(mol)
+        except Exception:
+            pass
+
+        try:
+            params = AllChem.ETKDGv3()
+            params.randomSeed = 42
+            params.useRandomCoords = True
+            try:
+                params.maxAttempts = 100
+            except Exception:
+                pass
+
+            try:
+                result = AllChem.EmbedMolecule(mol, params, maxAttempts=50)
+            except TypeError:
+                result = AllChem.EmbedMolecule(mol, params)
+
+            if result == -1:
+                params2 = AllChem.ETKDGv3()
+                params2.randomSeed = 42
+                params2.useRandomCoords = True
+                try:
+                    params2.maxAttempts = 200
+                except Exception:
+                    pass
+                try:
+                    result = AllChem.EmbedMolecule(mol, params2, maxAttempts=200)
+                except TypeError:
+                    result = AllChem.EmbedMolecule(mol, params2)
+                if result == -1:
+                    return None, "Legacy embed failed to generate 3D structure"
+        except Exception as e:
+            return None, f"Legacy RDKit error: {e}"
+
+    try:
+        xyz_content = _mol_to_xyz(mol)
+        return xyz_content, None
+    except Exception as e:
+        return None, f"Legacy coordinate error: {e}"
 
 
 def _mol_to_xyz(mol) -> str:
