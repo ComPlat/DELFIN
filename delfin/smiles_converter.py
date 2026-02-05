@@ -43,6 +43,69 @@ _METALS = [
 ]
 
 _METAL_SET = set(_METALS)
+_ORGANOMETALLIC_METALS = {'Li', 'Na', 'K', 'Mg', 'Zn', 'Al'}
+_HALOGENS = {'F', 'Cl', 'Br', 'I'}
+
+
+def _is_simple_organometallic(smiles: str) -> bool:
+    """Heuristic: simple organometallics like C[Mg]Br where adding Hs is wrong."""
+    # Look for bracketed metals commonly used in organometallic reagents
+    for m in _ORGANOMETALLIC_METALS:
+        if f'[{m}]' in smiles:
+            # If a halogen is present, it's likely a reagent like Grignard
+            if any(h in smiles for h in _HALOGENS):
+                return True
+            # Direct carbon-metal pattern (very rough)
+            if f'C[{m}]' in smiles or f'[{m}]C' in smiles:
+                return True
+    return False
+
+
+def _strip_h_on_metal_halogen(mol):
+    """Remove hydrogens attached to metals/halogens (keep H on carbon)."""
+    if not RDKIT_AVAILABLE:
+        return mol
+    rwmol = Chem.RWMol(mol)
+    to_remove = []
+    for atom in rwmol.GetAtoms():
+        if atom.GetSymbol() == 'H':
+            nbrs = atom.GetNeighbors()
+            if not nbrs:
+                continue
+            nbr = nbrs[0]
+            sym = nbr.GetSymbol()
+            if sym in _METAL_SET or sym in _HALOGENS:
+                to_remove.append(atom.GetIdx())
+    for idx in sorted(to_remove, reverse=True):
+        rwmol.RemoveAtom(idx)
+    return rwmol.GetMol()
+
+
+def _fix_organometallic_carbon_h(mol):
+    """Ensure carbon bonded to a metal has a reasonable number of H atoms."""
+    if not RDKIT_AVAILABLE:
+        return mol
+    rwmol = Chem.RWMol(mol)
+    to_remove = []
+    for atom in rwmol.GetAtoms():
+        if atom.GetSymbol() != 'C':
+            continue
+        # Check if carbon is bonded to a metal
+        nbrs = atom.GetNeighbors()
+        if not any(n.GetSymbol() in _METAL_SET for n in nbrs):
+            continue
+        # Count heavy (non-H) neighbors
+        heavy_nbrs = [n for n in nbrs if n.GetSymbol() != 'H']
+        desired_h = max(0, 4 - len(heavy_nbrs))
+        h_nbrs = [n for n in nbrs if n.GetSymbol() == 'H']
+        if len(h_nbrs) > desired_h:
+            # Remove extra H atoms (deterministically by index)
+            remove_count = len(h_nbrs) - desired_h
+            for h in sorted(h_nbrs, key=lambda a: a.GetIdx())[:remove_count]:
+                to_remove.append(h.GetIdx())
+    for idx in sorted(set(to_remove), reverse=True):
+        rwmol.RemoveAtom(idx)
+    return rwmol.GetMol()
 
 
 def _convert_metal_bonds_to_dative(mol):
@@ -292,13 +355,25 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                 mol = _convert_metal_bonds_to_dative(mol)
                 mol.UpdatePropertyCache(strict=False)
 
-                # Now add hydrogens with correct valence calculation
-                mol = Chem.AddHs(mol, addCoords=True)
+                # For simple organometallics (e.g., Grignard), add Hs but strip
+                # any hydrogens attached to metals/halogens.
+                if _is_simple_organometallic(smiles):
+                    mol = Chem.AddHs(mol, addCoords=True)
+                    mol = _strip_h_on_metal_halogen(mol)
+                    mol = _fix_organometallic_carbon_h(mol)
+                else:
+                    # Now add hydrogens with correct valence calculation
+                    mol = Chem.AddHs(mol, addCoords=True)
             except Exception as e:
                 logger.warning(f"Could not fix metal coordination hydrogens: {e}")
                 # Fallback: just try to add Hs
                 try:
-                    mol = Chem.AddHs(mol, addCoords=True)
+                    if _is_simple_organometallic(smiles):
+                        mol = Chem.AddHs(mol, addCoords=True)
+                        mol = _strip_h_on_metal_halogen(mol)
+                        mol = _fix_organometallic_carbon_h(mol)
+                    else:
+                        mol = Chem.AddHs(mol, addCoords=True)
                 except Exception as e2:
                     if "Explicit valence" in str(e2):
                         legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
