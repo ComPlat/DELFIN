@@ -269,6 +269,13 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
         if mol is None:
             mol, rdkit_note = mol_from_smiles_rdkit(smiles, allow_metal=has_metal)
             if mol is None:
+                if rdkit_note and "Explicit valence" in rdkit_note:
+                    legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
+                    if legacy_err is None and legacy_xyz:
+                        if output_path:
+                            Path(output_path).write_text(legacy_xyz, encoding='utf-8')
+                            logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
+                        return legacy_xyz, None
                 error = f"Failed to parse SMILES string: {rdkit_note}"
                 logger.error(error)
                 return None, error
@@ -292,13 +299,27 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                 # Fallback: just try to add Hs
                 try:
                     mol = Chem.AddHs(mol, addCoords=True)
-                except Exception:
+                except Exception as e2:
+                    if "Explicit valence" in str(e2):
+                        legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
+                        if legacy_err is None and legacy_xyz:
+                            if output_path:
+                                Path(output_path).write_text(legacy_xyz, encoding='utf-8')
+                                logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
+                            return legacy_xyz, None
                     pass
         else:
             # Non-metal molecules: just add hydrogens normally
             try:
                 mol = Chem.AddHs(mol, addCoords=True)
-            except Exception:
+            except Exception as e:
+                if "Explicit valence" in str(e):
+                    legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
+                    if legacy_err is None and legacy_xyz:
+                        if output_path:
+                            Path(output_path).write_text(legacy_xyz, encoding='utf-8')
+                            logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
+                        return legacy_xyz, None
                 pass
 
         # Generate 3D coordinates using ETKDG method
@@ -434,6 +455,48 @@ def _smiles_to_xyz_legacy(smiles: str, has_metal: bool) -> Tuple[Optional[str], 
         return xyz_content, None
     except Exception as e:
         return None, f"Legacy coordinate error: {e}"
+
+
+def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Last-resort fallback: embed without sanitization (handles valence errors)."""
+    if not RDKIT_AVAILABLE:
+        return None, "RDKit is not installed"
+
+    try:
+        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        if mol is None:
+            return None, "Failed to parse SMILES (no sanitize)"
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+
+        params = AllChem.ETKDGv3()
+        params.randomSeed = 42
+        params.useRandomCoords = True
+        try:
+            params.maxAttempts = 200
+        except Exception:
+            pass
+
+        try:
+            result = AllChem.EmbedMolecule(mol, params, maxAttempts=200)
+        except TypeError:
+            result = AllChem.EmbedMolecule(mol, params)
+
+        if result != 0:
+            try:
+                result = AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+            except TypeError:
+                result = AllChem.EmbedMolecule(mol, useRandomCoords=True)
+
+        if result != 0:
+            return None, "Failed to generate 3D coordinates (unsanitized)"
+
+        xyz_content = _mol_to_xyz(mol)
+        return xyz_content, None
+    except Exception as e:
+        return None, f"Unsanitized fallback error: {e}"
 
 
 def _mol_to_xyz(mol) -> str:
