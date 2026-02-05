@@ -287,12 +287,16 @@ def _fix_organometallic_carbon_h(mol):
 
 
 def _convert_metal_bonds_to_dative(mol):
-    """Convert single bonds to metals to dative bonds.
+    """Convert single bonds from NEUTRAL atoms to metals to dative bonds.
 
     RDKit counts metal coordination bonds towards the valence of ligand atoms,
-    but these are dative bonds that should not count towards ligand valence.
+    but dative/coordinative bonds should not count towards ligand valence.
     By converting SINGLE bonds to DATIVE bonds, RDKit correctly calculates
     implicit hydrogens on the ligand atoms.
+
+    IMPORTANT: Only NEUTRAL atoms get their bonds converted to dative.
+    - [N] bound to metal → dative bond → H atoms calculated normally
+    - [N+] bound to metal → remains covalent → no extra H atoms
 
     Based on RDKit Cookbook: https://www.rdkit.org/docs/Cookbook.html
 
@@ -307,7 +311,7 @@ def _convert_metal_bonds_to_dative(mol):
 
     rwmol = Chem.RWMol(mol)
 
-    # Find all single bonds between metals and non-metals
+    # Find all single bonds between metals and NEUTRAL non-metals
     bonds_to_convert = []
     for bond in rwmol.GetBonds():
         if bond.GetBondType() != Chem.BondType.SINGLE:
@@ -322,11 +326,17 @@ def _convert_metal_bonds_to_dative(mol):
         is_metal_2 = s2 in _METAL_SET
 
         if is_metal_1 != is_metal_2:  # XOR - exactly one is metal
-            bonds_to_convert.append((
-                bond.GetBeginAtomIdx(),
-                bond.GetEndAtomIdx(),
-                is_metal_1  # True if atom1 is the metal
-            ))
+            # Determine which atom is the ligand (non-metal)
+            ligand_atom = a2 if is_metal_1 else a1
+
+            # Only convert if the ligand atom is NEUTRAL (no formal charge)
+            # Charged atoms like [N+] have covalent bonds that should stay covalent
+            if ligand_atom.GetFormalCharge() == 0:
+                bonds_to_convert.append((
+                    bond.GetBeginAtomIdx(),
+                    bond.GetEndAtomIdx(),
+                    is_metal_1  # True if atom1 is the metal
+                ))
 
     if not bonds_to_convert:
         return mol
@@ -344,12 +354,13 @@ def _convert_metal_bonds_to_dative(mol):
     result_mol = rwmol.GetMol()
 
     # Reset atom properties to allow recalculation of implicit hydrogens
-    # This is necessary because stk/previous processing may have "frozen" the H counts
+    # Only for NEUTRAL atoms - charged atoms should keep their state
     for atom in result_mol.GetAtoms():
-        atom.SetNoImplicit(False)
-        atom.SetNumExplicitHs(0)
+        if atom.GetFormalCharge() == 0 and atom.GetSymbol() not in _METAL_SET:
+            atom.SetNoImplicit(False)
+            atom.SetNumExplicitHs(0)
 
-    logger.info(f"Converted {len(bonds_to_convert)} metal bonds to dative bonds")
+    logger.info(f"Converted {len(bonds_to_convert)} neutral ligand-metal bonds to dative bonds")
 
     return result_mol
 
