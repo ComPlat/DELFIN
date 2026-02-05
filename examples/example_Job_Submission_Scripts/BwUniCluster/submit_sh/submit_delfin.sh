@@ -18,7 +18,8 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | orca | auto (default: auto)
+#   delfin | delfin-recalc | orca | build | auto (default: auto)
+#   BUILD_MULTIPLICITY: Spin multiplicity for build mode (default: 1)
 #   DELFIN_INP_FILE: Specific .inp file for ORCA mode
 #   DELFIN_JOB_NAME: Job name for display (optional)
 #
@@ -498,9 +499,17 @@ case "$MODE" in
             EXIT_CODE=$?
         fi
         ;;
+    build)
+        # Build up metal complex step by step using XTB DOCKER
+        BUILD_MULT="${BUILD_MULTIPLICITY:-1}"
+        echo "Starting delfin-build (complex build-up)..."
+        echo "  Multiplicity: $BUILD_MULT"
+        python -m delfin.build_up_complex input.txt --directory builder --multiplicity "$BUILD_MULT" --verbose
+        EXIT_CODE=$?
+        ;;
     *)
         echo "ERROR: Unknown mode: $MODE"
-        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, auto"
+        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, build, auto"
         EXIT_CODE=1
         ;;
 esac

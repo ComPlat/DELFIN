@@ -39,6 +39,7 @@ delfin = "delfin.main:main"
 delfin_ESD = "delfin.cli_esd_report:main"
 delfin_IR = "delfin.cli_ir_report:main"
 delfin-json = "delfin.cli_delfin_collect:main"
+delfin-build = "delfin.build_up_complex:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
