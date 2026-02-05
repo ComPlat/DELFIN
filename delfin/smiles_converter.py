@@ -42,6 +42,76 @@ _METALS = [
     'Bi', 'Po', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu'
 ]
 
+_METAL_SET = set(_METALS)
+
+
+def _convert_metal_bonds_to_dative(mol):
+    """Convert single bonds to metals to dative bonds.
+
+    RDKit counts metal coordination bonds towards the valence of ligand atoms,
+    but these are dative bonds that should not count towards ligand valence.
+    By converting SINGLE bonds to DATIVE bonds, RDKit correctly calculates
+    implicit hydrogens on the ligand atoms.
+
+    Based on RDKit Cookbook: https://www.rdkit.org/docs/Cookbook.html
+
+    Args:
+        mol: RDKit Mol object (will be modified)
+
+    Returns:
+        RDKit Mol object with dative bonds to metals
+    """
+    if not RDKIT_AVAILABLE:
+        return mol
+
+    rwmol = Chem.RWMol(mol)
+
+    # Find all single bonds between metals and non-metals
+    bonds_to_convert = []
+    for bond in rwmol.GetBonds():
+        if bond.GetBondType() != Chem.BondType.SINGLE:
+            continue
+
+        a1 = bond.GetBeginAtom()
+        a2 = bond.GetEndAtom()
+        s1, s2 = a1.GetSymbol(), a2.GetSymbol()
+
+        # Check if one is metal and one is not
+        is_metal_1 = s1 in _METAL_SET
+        is_metal_2 = s2 in _METAL_SET
+
+        if is_metal_1 != is_metal_2:  # XOR - exactly one is metal
+            bonds_to_convert.append((
+                bond.GetBeginAtomIdx(),
+                bond.GetEndAtomIdx(),
+                is_metal_1  # True if atom1 is the metal
+            ))
+
+    if not bonds_to_convert:
+        return mol
+
+    # Convert bonds to dative (ligand -> metal direction)
+    for idx1, idx2, atom1_is_metal in bonds_to_convert:
+        rwmol.RemoveBond(idx1, idx2)
+        if atom1_is_metal:
+            # atom2 is ligand, atom1 is metal: ligand -> metal
+            rwmol.AddBond(idx2, idx1, Chem.BondType.DATIVE)
+        else:
+            # atom1 is ligand, atom2 is metal: ligand -> metal
+            rwmol.AddBond(idx1, idx2, Chem.BondType.DATIVE)
+
+    result_mol = rwmol.GetMol()
+
+    # Reset atom properties to allow recalculation of implicit hydrogens
+    # This is necessary because stk/previous processing may have "frozen" the H counts
+    for atom in result_mol.GetAtoms():
+        atom.SetNoImplicit(False)
+        atom.SetNumExplicitHs(0)
+
+    logger.info(f"Converted {len(bonds_to_convert)} metal bonds to dative bonds")
+
+    return result_mol
+
 
 def contains_metal(smiles: str) -> bool:
     """Return True if SMILES likely contains a metal atom."""
@@ -73,9 +143,14 @@ def mol_from_smiles_rdkit(smiles: str, allow_metal: bool = False):
                     ^ Chem.SanitizeFlags.SANITIZE_KEKULIZE
                 ),
             )
-            return mol, "partial sanitize"
         except Exception:
-            return mol, "sanitize skipped"
+            pass
+        # Update property cache to compute implicit H counts for AddHs
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        return mol, "partial sanitize"
     except Exception as e:
         return None, f"RDKit error: {e}"
 
@@ -179,14 +254,12 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
         has_metal = contains_metal(smiles)
         method = None
 
-        # Try stk for metal complexes
+        # Parse SMILES - try stk first for metal complexes, then RDKit
         mol = None
         if has_metal and STK_AVAILABLE:
             try:
                 bb = stk.BuildingBlock(smiles)
                 mol = bb.to_rdkit_mol()
-                if mol.GetNumConformers() == 0:
-                    AllChem.EmbedMolecule(mol, randomSeed=42, useRandomCoords=True)
                 method = "stk"
             except Exception as e:
                 logger.info("stk conversion failed, falling back to RDKit: %s", e)
@@ -201,11 +274,32 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                 return None, error
             method = "RDKit" if rdkit_note is None else f"RDKit ({rdkit_note})"
 
-        # Add hydrogens
-        try:
-            mol = Chem.AddHs(mol)
-        except Exception:
-            pass
+        # For metal complexes: convert bonds to dative and recalculate hydrogens
+        # This fixes the issue where metal coordination bonds are counted towards ligand valence
+        if has_metal:
+            try:
+                # Remove existing explicit H atoms first (stk may have added incorrect ones)
+                mol = Chem.RemoveHs(mol)
+
+                # Convert single bonds to metals to dative bonds
+                mol = _convert_metal_bonds_to_dative(mol)
+                mol.UpdatePropertyCache(strict=False)
+
+                # Now add hydrogens with correct valence calculation
+                mol = Chem.AddHs(mol, addCoords=True)
+            except Exception as e:
+                logger.warning(f"Could not fix metal coordination hydrogens: {e}")
+                # Fallback: just try to add Hs
+                try:
+                    mol = Chem.AddHs(mol, addCoords=True)
+                except Exception:
+                    pass
+        else:
+            # Non-metal molecules: just add hydrogens normally
+            try:
+                mol = Chem.AddHs(mol, addCoords=True)
+            except Exception:
+                pass
 
         # Generate 3D coordinates using ETKDG method
         # ETKDGv3 is the latest version with improved accuracy
