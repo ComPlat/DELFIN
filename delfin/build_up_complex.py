@@ -326,6 +326,92 @@ END
     output_path.write_text(content, encoding='utf-8')
 
 
+def create_goat_input(
+    xyz_file: str,
+    charge: int,
+    multiplicity: int,
+    output_path: Path,
+    pal: int = 32,
+    maxcore: int = 4000,
+) -> None:
+    """Create ORCA input file for XTB2 GOAT global optimization.
+
+    Args:
+        xyz_file: Filename of the structure to optimize
+        charge: Total charge
+        multiplicity: Spin multiplicity
+        output_path: Path to write the ORCA input file
+        pal: Number of parallel processes
+        maxcore: Memory per core in MB
+    """
+    content = f"""! XTB2 GOAT
+
+%PAL NPROCS {pal} END
+%MAXCORE {maxcore}
+
+* XYZFile {charge} {multiplicity} {xyz_file}
+"""
+    output_path.write_text(content, encoding='utf-8')
+
+
+def run_goat_optimization(
+    builder_dir: Path,
+    xyz_file: str,
+    charge: int,
+    multiplicity: int,
+    pal: int,
+    maxcore: int,
+    prefix: str = "goat",
+) -> Tuple[bool, Optional[str]]:
+    """Run GOAT global optimization on a structure.
+
+    Args:
+        builder_dir: Working directory
+        xyz_file: Input XYZ filename (relative to builder_dir)
+        charge: Total charge
+        multiplicity: Spin multiplicity
+        pal: Number of parallel processes
+        maxcore: Memory per core in MB
+        prefix: Prefix for output files
+
+    Returns:
+        Tuple of (success, optimized_xyz_filename or None)
+    """
+    goat_input = builder_dir / f"{prefix}.inp"
+    goat_output = builder_dir / f"{prefix}.out"
+    goat_result = builder_dir / f"{prefix}.globalminimum.xyz"
+
+    create_goat_input(
+        xyz_file=xyz_file,
+        charge=charge,
+        multiplicity=multiplicity,
+        output_path=goat_input,
+        pal=pal,
+        maxcore=maxcore,
+    )
+
+    logger.info(f"Running GOAT optimization on {xyz_file}...")
+    success = run_orca(
+        str(goat_input),
+        str(goat_output),
+        working_dir=builder_dir,
+    )
+
+    if not success:
+        logger.error(f"GOAT optimization failed for {xyz_file}")
+        return False, None
+
+    if not goat_result.exists():
+        logger.error(f"GOAT result file not found: {goat_result}")
+        return False, None
+
+    # Copy result back to original xyz file
+    shutil.copy(goat_result, builder_dir / xyz_file)
+    logger.info(f"GOAT optimization completed, updated {xyz_file}")
+
+    return True, xyz_file
+
+
 def parse_xyz_to_content(xyz_path: Path) -> Tuple[int, str, List[str]]:
     """Parse XYZ file and return atom count, comment, and coordinate lines.
 
@@ -410,8 +496,12 @@ def _run_docker_step(
     dry_run: bool,
     pal: int,
     maxcore: int,
+    use_goat: bool = False,
 ) -> Tuple[bool, str, int]:
-    """Run a single DOCKER step.
+    """Run a single DOCKER step, optionally followed by GOAT optimization.
+
+    Args:
+        use_goat: If True, run GOAT global optimization after docking
 
     Returns:
         Tuple of (success, output_xyz_name, new_charge)
@@ -441,6 +531,8 @@ def _run_docker_step(
 
     if dry_run:
         logger.info(f"[DRY RUN] Would run ORCA for step {step}")
+        if use_goat:
+            logger.info(f"[DRY RUN] Would run GOAT optimization after docking")
         shutil.copy(builder_dir / host_xyz, step_xyz)
     else:
         logger.info(f"Running ORCA for step {step}...")
@@ -458,7 +550,21 @@ def _run_docker_step(
             logger.error(f"Could not extract geometry from step {step}")
             return False, "", 0
 
-        logger.info(f"Step {step} completed successfully")
+        logger.info(f"Step {step} docking completed successfully")
+
+        # Run GOAT optimization if requested
+        if use_goat:
+            goat_success, _ = run_goat_optimization(
+                builder_dir=builder_dir,
+                xyz_file=f"step_{step}.xyz",
+                charge=new_charge,
+                multiplicity=multiplicity,
+                pal=pal,
+                maxcore=maxcore,
+                prefix=f"step_{step}_goat",
+            )
+            if not goat_success:
+                logger.warning(f"GOAT optimization failed for step {step}, continuing with docked structure")
 
     return True, f"step_{step}.xyz", new_charge
 
@@ -470,6 +576,7 @@ def run_build_up(
     dry_run: bool = False,
     pal: int = 32,
     maxcore: int = 4000,
+    use_goat: bool = False,
 ) -> bool:
     """Run the full complex build-up workflow.
 
@@ -484,6 +591,7 @@ def run_build_up(
         dry_run: If True, only create input files but don't run ORCA
         pal: Number of parallel processes (default: 32)
         maxcore: Memory per core in MB (default: 4000)
+        use_goat: If True, run GOAT global optimization after each docking step
 
     Returns:
         True if successful
@@ -542,14 +650,44 @@ def run_build_up(
         logger.info(f"  Ligand {i}: {info['smiles']} (charge: {info['charge']:+d}, size: {info['size']} atoms)")
 
     # Generate ligand XYZ files (numbered by sorted order)
+    # Track already optimized SMILES to avoid duplicate GOAT runs
+    goat_cache: Dict[str, str] = {}  # smiles -> optimized xyz filename
+
     for i, info in enumerate(ligand_info, 1):
         lig_xyz = builder_dir / f"ligand{i}.xyz"
-        success, err = ligand_to_xyz(info['smiles'], lig_xyz)
-        if not success:
-            logger.error(f"Failed to convert ligand {i} to XYZ: {err}")
-            return False
         info['xyz'] = f"ligand{i}.xyz"
-        logger.info(f"Created {lig_xyz.name}")
+        smiles_key = info['smiles']
+
+        # Check if this SMILES was already GOAT-optimized
+        if use_goat and smiles_key in goat_cache:
+            # Copy from already optimized ligand
+            src_xyz = builder_dir / goat_cache[smiles_key]
+            shutil.copy(src_xyz, lig_xyz)
+            logger.info(f"Created {lig_xyz.name} (copied from {goat_cache[smiles_key]}, same SMILES)")
+        else:
+            # Generate new XYZ
+            success, err = ligand_to_xyz(info['smiles'], lig_xyz)
+            if not success:
+                logger.error(f"Failed to convert ligand {i} to XYZ: {err}")
+                return False
+            logger.info(f"Created {lig_xyz.name}")
+
+            # Optionally run GOAT on ligands (only for first occurrence of each SMILES)
+            if use_goat and not dry_run:
+                goat_success, _ = run_goat_optimization(
+                    builder_dir=builder_dir,
+                    xyz_file=info['xyz'],
+                    charge=info['charge'],
+                    multiplicity=1,  # Ligands typically singlet
+                    pal=pal,
+                    maxcore=maxcore,
+                    prefix=f"ligand{i}_goat",
+                )
+                if goat_success:
+                    logger.info(f"GOAT optimized {info['xyz']}")
+                    goat_cache[smiles_key] = info['xyz']  # Cache for duplicates
+                else:
+                    logger.warning(f"GOAT failed for {info['xyz']}, using RDKit geometry")
 
     # Create metal XYZ files
     for i, (metal_symbol, metal_charge) in enumerate(metals, 1):
@@ -586,6 +724,7 @@ def run_build_up(
                 dry_run=dry_run,
                 pal=pal,
                 maxcore=maxcore,
+                use_goat=use_goat,
             )
             if not success:
                 return False
@@ -606,6 +745,7 @@ def run_build_up(
                 dry_run=dry_run,
                 pal=pal,
                 maxcore=maxcore,
+                use_goat=use_goat,
             )
             if not success:
                 return False
@@ -634,6 +774,7 @@ def run_build_up(
                 dry_run=dry_run,
                 pal=pal,
                 maxcore=maxcore,
+                use_goat=use_goat,
             )
             if not success:
                 return False
@@ -699,6 +840,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Enable verbose output",
     )
+    parser.add_argument(
+        "--goat",
+        action="store_true",
+        help="Run GOAT global optimization on ligands and after each docking step",
+    )
 
     args = parser.parse_args(argv)
 
@@ -742,6 +888,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         dry_run=args.dry_run,
         pal=args.pal,
         maxcore=args.maxcore,
+        use_goat=args.goat,
     )
 
     return 0 if success else 1
