@@ -61,6 +61,24 @@ def _is_simple_organometallic(smiles: str) -> bool:
     return False
 
 
+def _prefer_no_sanitize(smiles: str) -> bool:
+    """Heuristic: avoid initial sanitize for neutral Ni/Co + [N] SMILES."""
+    if ('[Ni]' in smiles or '[Co]' in smiles) and '[N]' in smiles:
+        if '[N-]' not in smiles and '[Ni+' not in smiles and '[Co+' not in smiles:
+            return True
+    return False
+
+
+def _normalize_metal_smiles(smiles: str) -> Optional[str]:
+    """Normalize neutral Ni/Co SMILES to charged form as a fallback."""
+    if '[Ni]' not in smiles and '[Co]' not in smiles:
+        return None
+    if '[Ni+' in smiles or '[Co+' in smiles or '[N-]' in smiles:
+        return None
+    normalized = smiles.replace('[Ni]', '[Ni+2]').replace('[Co]', '[Co+2]').replace('[N]', '[N-]')
+    return normalized if normalized != smiles else None
+
+
 def _strip_h_on_metal_halogen(mol):
     """Remove hydrogens attached to metals/halogens (keep H on carbon)."""
     if not RDKIT_AVAILABLE:
@@ -189,9 +207,10 @@ def contains_metal(smiles: str) -> bool:
 def mol_from_smiles_rdkit(smiles: str, allow_metal: bool = False):
     """Create RDKit Mol, with relaxed sanitizing for metal complexes."""
     try:
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is not None:
-            return mol, None
+        if not _prefer_no_sanitize(smiles):
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is not None:
+                return mol, None
         if not allow_metal:
             return None, "Failed to parse SMILES string"
         mol = Chem.MolFromSmiles(smiles, sanitize=False)
@@ -319,6 +338,7 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
 
         # Parse SMILES - try stk first for metal complexes, then RDKit
         mol = None
+        normalized_smiles = _normalize_metal_smiles(smiles)
         if has_metal and STK_AVAILABLE:
             try:
                 bb = stk.BuildingBlock(smiles)
@@ -329,9 +349,24 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                 mol = None
                 method = None
 
+        if mol is None and normalized_smiles:
+            mol, rdkit_note = mol_from_smiles_rdkit(normalized_smiles, allow_metal=True)
+            if mol is not None:
+                method = "RDKit (normalized metal SMILES)"
+
         if mol is None:
             mol, rdkit_note = mol_from_smiles_rdkit(smiles, allow_metal=has_metal)
             if mol is None:
+                # Try normalized charged form for neutral metal SMILES
+                if normalized_smiles:
+                    mol2, rdkit_note2 = mol_from_smiles_rdkit(normalized_smiles, allow_metal=True)
+                    if mol2 is not None:
+                        mol = mol2
+                        method = "RDKit (normalized metal SMILES)"
+                        rdkit_note = None
+                    else:
+                        rdkit_note = rdkit_note2 or rdkit_note
+
                 if rdkit_note and ("Explicit valence" in rdkit_note or "kekulize" in rdkit_note):
                     legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
                     if legacy_err is None and legacy_xyz:
@@ -546,7 +581,9 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
         return None, "RDKit is not installed"
 
     try:
-        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        normalized = _normalize_metal_smiles(smiles)
+        smiles_try = normalized or smiles
+        mol = Chem.MolFromSmiles(smiles_try, sanitize=False)
         if mol is None:
             return None, "Failed to parse SMILES (no sanitize)"
         try:
