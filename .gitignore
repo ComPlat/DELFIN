@@ -12,3 +12,6 @@ __pycache__/
 *$py.class
 
 .venv/
+
+# Local server config
+pyproject_qmserver.toml

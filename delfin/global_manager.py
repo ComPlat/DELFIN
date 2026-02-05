@@ -731,7 +731,7 @@ class GlobalJobManager:
         if not records:
             return
 
-        logger.warning("Terminating %d tracked ORCA process group(s) (%s)", len(records), reason)
+        logger.debug("Terminating %d tracked ORCA process group(s) (%s)", len(records), reason)
         for record in records:
             self._terminate_tracked_process(record)
 

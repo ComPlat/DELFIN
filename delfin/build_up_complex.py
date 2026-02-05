@@ -268,7 +268,7 @@ def create_docker_input(
         pal: Number of parallel processes (default: 32)
         maxcore: Memory per core in MB (default: 4000)
     """
-    content = f"""! XTB
+    content = f"""! XTB2
 
 %PAL NPROCS {pal} END
 %MAXCORE {maxcore}
@@ -319,6 +319,7 @@ def extract_optimized_xyz(orca_out: Path, output_xyz: Path) -> bool:
 
     # Try various possible output files
     possible_xyz = [
+        parent / f"{base}.docker.xyz",  # XTB DOCKER output
         parent / f"{base}.xyz",
         parent / f"{base}_trj.xyz",
         parent / f"{base}_dock.xyz",
