@@ -827,59 +827,177 @@ def run_build_up(
     is_multi_metal = len(metals) > 1
 
     if is_multi_metal:
-        # Multi-metal: First ligand by charge/size as host, then metals, then remaining ligands
+        # Multi-metal: Prefer grouping identical metal-ligand fragments to avoid redundant docking
         logger.info("\n=== Multi-metal workflow ===")
 
-        # Start with first ligand in sorted order as host
-        first_ligand = ligand_info[0]
-        current_host = first_ligand['xyz']
-        current_charge = first_ligand['charge']
-        logger.info(
-            f"Starting with first ligand (charge-priority): {first_ligand['smiles']} "
-            f"(charge: {first_ligand['charge']:+d}, size: {first_ligand['size']} atoms)"
-        )
+        unique_metals = {(m[0], m[1]) for m in metals}
+        single_metal_type = len(unique_metals) == 1
 
-        # Dock metals onto the growing complex
-        for i, (metal_symbol, metal_charge) in enumerate(metals, 1):
-            step += 1
-            success, new_host, current_charge = _run_docker_step(
-                builder_dir=builder_dir,
-                step=step,
-                host_xyz=current_host,
-                guest_xyz=f"metal{i}.xyz",
-                host_charge=current_charge,
-                guest_charge=metal_charge,
-                multiplicity=multiplicity,
-                description=f"Docking metal {i} ({metal_symbol})",
-                dry_run=dry_run,
-                pal=pal,
-                maxcore=maxcore,
-                use_goat=use_goat,
-            )
-            if not success:
-                return False
-            current_host = new_host
+        # Build SMILES -> entries mapping (order preserved from ligand_info)
+        smiles_to_entries: Dict[str, List[Dict]] = {}
+        smiles_order: List[str] = []
+        for info in ligand_info:
+            smi = info['smiles']
+            if smi not in smiles_to_entries:
+                smiles_to_entries[smi] = []
+                smiles_order.append(smi)
+            smiles_to_entries[smi].append(info)
 
-        # Dock remaining ligands (skip first, already used as host)
-        for i, info in enumerate(ligand_info[1:], 2):
-            step += 1
-            success, new_host, current_charge = _run_docker_step(
-                builder_dir=builder_dir,
-                step=step,
-                host_xyz=current_host,
-                guest_xyz=info['xyz'],
-                host_charge=current_charge,
-                guest_charge=info['charge'],
-                multiplicity=multiplicity,
-                description=f"Docking ligand {i} ({info['size']} atoms)",
-                dry_run=dry_run,
-                pal=pal,
-                maxcore=maxcore,
-                use_goat=use_goat,
+        if single_metal_type:
+            n_metals = len(metals)
+            per_metal: Dict[str, int] = {
+                smi: len(entries) // n_metals for smi, entries in smiles_to_entries.items()
+            }
+            has_groupable = any(v > 0 for v in per_metal.values())
+        else:
+            has_groupable = False
+
+        if single_metal_type and has_groupable:
+            # Build one representative metal-ligand unit, then reuse it for identical metals
+            metal_symbol, metal_charge = metals[0]
+            logger.info(
+                f"Grouping identical metals: {n_metals} x {metal_symbol} (charge: {metal_charge:+d})"
             )
-            if not success:
-                return False
-            current_host = new_host
+
+            used_idx: Dict[str, int] = {smi: 0 for smi in smiles_to_entries}
+
+            # 1) Build base unit: M + (per_metal ligands for each identical SMILES)
+            current_host = "metal1.xyz"
+            current_charge = metal_charge
+            logger.info("Building base unit from shared ligands")
+            for smi in smiles_order:
+                repeat = per_metal.get(smi, 0)
+                for _ in range(repeat):
+                    info = smiles_to_entries[smi][used_idx[smi]]
+                    used_idx[smi] += 1
+                    step += 1
+                    success, new_host, current_charge = _run_docker_step(
+                        builder_dir=builder_dir,
+                        step=step,
+                        host_xyz=current_host,
+                        guest_xyz=info['xyz'],
+                        host_charge=current_charge,
+                        guest_charge=info['charge'],
+                        multiplicity=multiplicity,
+                        description=f"Docking ligand for unit ({smi})",
+                        dry_run=dry_run,
+                        pal=pal,
+                        maxcore=maxcore,
+                        use_goat=use_goat,
+                    )
+                    if not success:
+                        return False
+                    current_host = new_host
+
+            unit_xyz = current_host
+            unit_charge = current_charge
+            logger.info(f"Base unit ready: {unit_xyz} (charge: {unit_charge:+d})")
+
+            # 2) Dock remaining ligands (those not distributed equally across metals)
+            logger.info("Docking remaining ligands onto base unit")
+            for smi in smiles_order:
+                total = len(smiles_to_entries[smi])
+                remaining = total - per_metal.get(smi, 0) * n_metals
+                for _ in range(remaining):
+                    info = smiles_to_entries[smi][used_idx[smi]]
+                    used_idx[smi] += 1
+                    step += 1
+                    success, new_host, current_charge = _run_docker_step(
+                        builder_dir=builder_dir,
+                        step=step,
+                        host_xyz=current_host,
+                        guest_xyz=info['xyz'],
+                        host_charge=current_charge,
+                        guest_charge=info['charge'],
+                        multiplicity=multiplicity,
+                        description=f"Docking remaining ligand ({smi})",
+                        dry_run=dry_run,
+                        pal=pal,
+                        maxcore=maxcore,
+                        use_goat=use_goat,
+                    )
+                    if not success:
+                        return False
+                    current_host = new_host
+
+            # 3) Attach the remaining identical units
+            logger.info("Docking remaining identical metal-ligand units")
+            for i in range(2, n_metals + 1):
+                unit_copy = f"unit_{i}.xyz"
+                shutil.copy(builder_dir / unit_xyz, builder_dir / unit_copy)
+                step += 1
+                success, new_host, current_charge = _run_docker_step(
+                    builder_dir=builder_dir,
+                    step=step,
+                    host_xyz=current_host,
+                    guest_xyz=unit_copy,
+                    host_charge=current_charge,
+                    guest_charge=unit_charge,
+                    multiplicity=multiplicity,
+                    description=f"Docking unit {i} (identical fragment)",
+                    dry_run=dry_run,
+                    pal=pal,
+                    maxcore=maxcore,
+                    use_goat=use_goat,
+                )
+                if not success:
+                    return False
+                current_host = new_host
+
+        else:
+            # Fallback: First ligand by charge/size as host, then metals, then remaining ligands
+            logger.info("Fallback multi-metal workflow (no grouping possible)")
+
+            # Start with first ligand in sorted order as host
+            first_ligand = ligand_info[0]
+            current_host = first_ligand['xyz']
+            current_charge = first_ligand['charge']
+            logger.info(
+                f"Starting with first ligand (charge-priority): {first_ligand['smiles']} "
+                f"(charge: {first_ligand['charge']:+d}, size: {first_ligand['size']} atoms)"
+            )
+
+            # Dock metals onto the growing complex
+            for i, (metal_symbol, metal_charge) in enumerate(metals, 1):
+                step += 1
+                success, new_host, current_charge = _run_docker_step(
+                    builder_dir=builder_dir,
+                    step=step,
+                    host_xyz=current_host,
+                    guest_xyz=f"metal{i}.xyz",
+                    host_charge=current_charge,
+                    guest_charge=metal_charge,
+                    multiplicity=multiplicity,
+                    description=f"Docking metal {i} ({metal_symbol})",
+                    dry_run=dry_run,
+                    pal=pal,
+                    maxcore=maxcore,
+                    use_goat=use_goat,
+                )
+                if not success:
+                    return False
+                current_host = new_host
+
+            # Dock remaining ligands (skip first, already used as host)
+            for i, info in enumerate(ligand_info[1:], 2):
+                step += 1
+                success, new_host, current_charge = _run_docker_step(
+                    builder_dir=builder_dir,
+                    step=step,
+                    host_xyz=current_host,
+                    guest_xyz=info['xyz'],
+                    host_charge=current_charge,
+                    guest_charge=info['charge'],
+                    multiplicity=multiplicity,
+                    description=f"Docking ligand {i} ({info['size']} atoms)",
+                    dry_run=dry_run,
+                    pal=pal,
+                    maxcore=maxcore,
+                    use_goat=use_goat,
+                )
+                if not success:
+                    return False
+                current_host = new_host
 
     else:
         # Mono-metal: Metal as host, ligands docked by charge/size order
