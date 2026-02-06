@@ -33,6 +33,50 @@ if RDKIT_AVAILABLE:
 logger = get_logger(__name__)
 
 
+
+def _find_repo_root(start: Path) -> Path | None:
+    cur = start.resolve()
+    for _ in range(8):
+        if (cur / ".git").exists():
+            return cur
+        if cur == cur.parent:
+            break
+        cur = cur.parent
+    return None
+
+
+def _get_git_commit() -> str:
+    repo = _find_repo_root(Path(__file__).parent)
+    if not repo:
+        return "unknown"
+    try:
+        import subprocess
+        out = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo)
+        return out.decode().strip()
+    except Exception:
+        return "unknown"
+
+
+def _write_build_info(builder_dir: Path, cmdline: str | None) -> None:
+    try:
+        from datetime import datetime
+        import socket
+        from delfin import __version__
+
+        info_path = builder_dir / "infos.txt"
+        lines = []
+        lines.append(f"timestamp: {datetime.now().isoformat(timespec='seconds')}")
+        lines.append(f"host: {socket.gethostname()}")
+        lines.append(f"delfin_version: {__version__}")
+        lines.append(f"git_commit: {_get_git_commit()}")
+        if cmdline:
+            lines.append(f"command: {cmdline}")
+        info_path.write_text("\n".join(lines) + "\n")
+    except Exception:
+        # Best-effort only
+        pass
+
+
 def extract_ligands_from_complex(smiles: str) -> Tuple[
     Optional[List[Tuple[str, int]]],  # metals: list of (symbol, charge)
     Optional[List[str]],  # ligand_smiles_list
