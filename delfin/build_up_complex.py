@@ -698,6 +698,7 @@ def run_build_up(
     maxcore: int = 4000,
     use_goat: bool = False,
     skip_ligand_goat: bool = False,
+    cmdline: str | None = None,
 ) -> bool:
     """Run the full complex build-up workflow.
 
@@ -753,6 +754,7 @@ def run_build_up(
     # Create builder directory
     builder_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Created builder directory: {builder_dir}")
+    _write_build_info(builder_dir, cmdline)
 
     # Calculate ligand charges and sizes, then sort by charge (charged first, neutral last),
     # and by size (largest first) as secondary criterion.
@@ -1047,6 +1049,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         maxcore=args.maxcore,
         use_goat=args.goat,
         skip_ligand_goat=args.no_ligand_goat,
+        cmdline=" ".join(sys.argv),
     )
 
     return 0 if success else 1
