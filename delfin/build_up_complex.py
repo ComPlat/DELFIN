@@ -90,14 +90,20 @@ def extract_ligands_from_complex(smiles: str) -> Tuple[
     # Create editable mol
     edit_mol = Chem.RWMol(mol)
 
-    # Remove bonds to ALL metals first
+    # Find coordinating atoms (atoms bonded to metals) BEFORE removing bonds
+    coordinating_atoms = set()
     bonds_to_remove = []
     for bond in edit_mol.GetBonds():
         begin_idx = bond.GetBeginAtomIdx()
         end_idx = bond.GetEndAtomIdx()
-        if begin_idx in metal_atoms or end_idx in metal_atoms:
+        if begin_idx in metal_atoms:
+            coordinating_atoms.add(end_idx)
+            bonds_to_remove.append((begin_idx, end_idx))
+        elif end_idx in metal_atoms:
+            coordinating_atoms.add(begin_idx)
             bonds_to_remove.append((begin_idx, end_idx))
 
+    # Remove bonds to ALL metals
     for b in bonds_to_remove:
         edit_mol.RemoveBond(b[0], b[1])
 
@@ -119,6 +125,7 @@ def extract_ligands_from_complex(smiles: str) -> Tuple[
                 idx_map[old_idx] = old_idx - removed_count
 
         # Apply original atom properties
+        # For coordinating atoms: we need to handle the lost metal bond
         for old_idx, props in orig_props.items():
             if old_idx in metal_atoms:
                 continue
@@ -127,10 +134,18 @@ def extract_ligands_from_complex(smiles: str) -> Tuple[
                 continue
             try:
                 a = mol_no_metal.GetAtomWithIdx(new_idx)
-                a.SetFormalCharge(props['formal_charge'])
-                a.SetNumExplicitHs(props['explicit_h'])
-                a.SetNoImplicit(props['no_implicit'])
                 a.SetNumRadicalElectrons(props['rad_e'])
+
+                if old_idx in coordinating_atoms:
+                    # Coordinating atom lost a bond to metal
+                    # Set NoImplicit=True and explicit Hs to 0 to prevent H addition
+                    a.SetFormalCharge(props['formal_charge'])
+                    a.SetNumExplicitHs(0)
+                    a.SetNoImplicit(True)
+                else:
+                    a.SetFormalCharge(props['formal_charge'])
+                    a.SetNumExplicitHs(props['explicit_h'])
+                    a.SetNoImplicit(props['no_implicit'])
             except Exception:
                 pass
 
@@ -211,6 +226,8 @@ def get_ligand_size(smiles: str) -> int:
 def ligand_to_xyz(smiles: str, output_path: Path) -> Tuple[bool, Optional[str]]:
     """Convert a ligand SMILES to XYZ file.
 
+    Handles coordinating atoms (from metal complexes) that should not receive H atoms.
+
     Args:
         smiles: SMILES string of the ligand
         output_path: Path to write the XYZ file
@@ -222,12 +239,26 @@ def ligand_to_xyz(smiles: str, output_path: Path) -> Tuple[bool, Optional[str]]:
         return False, "RDKit not available"
 
     try:
-        # Try normal parsing first
+        # First, try normal parsing (sanitized) - works for most ligands
         mol = Chem.MolFromSmiles(smiles)
+        atoms_no_h = []
+
         if mol is None:
-            # Try without sanitization
+            # Try parsing without sanitization (for complex ligands with unusual valences)
             mol = Chem.MolFromSmiles(smiles, sanitize=False)
             if mol is not None:
+                # Find atoms that should NOT get H added (NoImplicit=True)
+                for atom in mol.GetAtoms():
+                    if atom.GetNoImplicit():
+                        atoms_no_h.append(atom.GetIdx())
+
+                # Try to sanitize (may partially fail, but that's ok)
+                try:
+                    Chem.SanitizeMol(mol, sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^
+                                     Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+                except Exception:
+                    pass
+
                 try:
                     mol.UpdatePropertyCache(strict=False)
                 except Exception:
@@ -236,9 +267,16 @@ def ligand_to_xyz(smiles: str, output_path: Path) -> Tuple[bool, Optional[str]]:
         if mol is None:
             return False, f"Could not parse SMILES: {smiles}"
 
-        # Add hydrogens
+        # Add hydrogens only to atoms that are not marked as NoImplicit
         try:
-            mol = Chem.AddHs(mol)
+            if atoms_no_h:
+                # Get list of atoms that CAN receive H
+                all_atoms = set(range(mol.GetNumAtoms()))
+                atoms_with_h = list(all_atoms - set(atoms_no_h))
+                if atoms_with_h:
+                    mol = Chem.AddHs(mol, onlyOnAtoms=atoms_with_h)
+            else:
+                mol = Chem.AddHs(mol)
         except Exception:
             pass
 
@@ -258,7 +296,11 @@ def ligand_to_xyz(smiles: str, output_path: Path) -> Tuple[bool, Optional[str]]:
         try:
             AllChem.UFFOptimizeMolecule(mol, maxIters=200)
         except Exception:
-            pass
+            # Try MMFF as fallback
+            try:
+                AllChem.MMFFOptimizeMolecule(mol, maxIters=200)
+            except Exception:
+                pass  # Skip optimization if both fail
 
         # Write XYZ file
         conf = mol.GetConformer()
@@ -577,6 +619,7 @@ def run_build_up(
     pal: int = 32,
     maxcore: int = 4000,
     use_goat: bool = False,
+    skip_ligand_goat: bool = False,
 ) -> bool:
     """Run the full complex build-up workflow.
 
@@ -592,6 +635,7 @@ def run_build_up(
         pal: Number of parallel processes (default: 32)
         maxcore: Memory per core in MB (default: 4000)
         use_goat: If True, run GOAT global optimization after each docking step
+        skip_ligand_goat: If True, skip GOAT for initial ligand structures
 
     Returns:
         True if successful
@@ -652,6 +696,7 @@ def run_build_up(
     # Generate ligand XYZ files (numbered by sorted order)
     # Track already optimized SMILES to avoid duplicate GOAT runs
     goat_cache: Dict[str, str] = {}  # smiles -> optimized xyz filename
+    run_ligand_goat = use_goat and not skip_ligand_goat
 
     for i, info in enumerate(ligand_info, 1):
         lig_xyz = builder_dir / f"ligand{i}.xyz"
@@ -659,7 +704,7 @@ def run_build_up(
         smiles_key = info['smiles']
 
         # Check if this SMILES was already GOAT-optimized
-        if use_goat and smiles_key in goat_cache:
+        if run_ligand_goat and smiles_key in goat_cache:
             # Copy from already optimized ligand
             src_xyz = builder_dir / goat_cache[smiles_key]
             shutil.copy(src_xyz, lig_xyz)
@@ -673,7 +718,7 @@ def run_build_up(
             logger.info(f"Created {lig_xyz.name}")
 
             # Optionally run GOAT on ligands (only for first occurrence of each SMILES)
-            if use_goat and not dry_run:
+            if run_ligand_goat and not dry_run:
                 goat_success, _ = run_goat_optimization(
                     builder_dir=builder_dir,
                     xyz_file=info['xyz'],
@@ -845,6 +890,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Run GOAT global optimization on ligands and after each docking step",
     )
+    parser.add_argument(
+        "--no-ligand-goat",
+        action="store_true",
+        help="Skip GOAT optimization for initial ligand structures (use with --goat)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -889,6 +939,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         pal=args.pal,
         maxcore=args.maxcore,
         use_goat=args.goat,
+        skip_ligand_goat=args.no_ligand_goat,
     )
 
     return 0 if success else 1
