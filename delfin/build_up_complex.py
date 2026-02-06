@@ -396,6 +396,21 @@ def create_goat_input(
     output_path.write_text(content, encoding='utf-8')
 
 
+def _orca_terminated_normally(out_path: Path) -> bool:
+    if not out_path.exists():
+        return False
+    try:
+        with out_path.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            # Read last 8KB (or full file if smaller)
+            f.seek(max(size - 8192, 0))
+            tail = f.read().decode("utf-8", errors="ignore")
+        return "****ORCA TERMINATED NORMALLY****" in tail
+    except Exception:
+        return False
+
+
 def run_goat_optimization(
     builder_dir: Path,
     xyz_file: str,
@@ -431,6 +446,12 @@ def run_goat_optimization(
         pal=pal,
         maxcore=maxcore,
     )
+
+    # Recalc logic: skip GOAT if previous output terminated normally and result exists
+    if _orca_terminated_normally(goat_output) and goat_result.exists():
+        logger.info(f"Skipping GOAT: found normal termination in {goat_output.name}")
+        shutil.copy(goat_result, builder_dir / xyz_file)
+        return True, xyz_file
 
     logger.info(f"Running GOAT optimization on {xyz_file}...")
     success = run_orca(
@@ -577,36 +598,49 @@ def _run_docker_step(
             logger.info(f"[DRY RUN] Would run GOAT optimization after docking")
         shutil.copy(builder_dir / host_xyz, step_xyz)
     else:
-        logger.info(f"Running ORCA for step {step}...")
-        success = run_orca(
-            str(step_input),
-            str(step_output),
-            working_dir=builder_dir,
-        )
+        # Recalc logic: skip ORCA if previous output terminated normally
+        if _orca_terminated_normally(step_output):
+            logger.info(f"Skipping ORCA for step {step}: found normal termination in {step_output.name}")
+            if not step_xyz.exists():
+                if not extract_optimized_xyz(step_output, step_xyz):
+                    logger.warning(f"Could not extract geometry from {step_output.name}; rerunning ORCA")
+                else:
+                    logger.info(f"Extracted geometry to {step_xyz.name}")
+        if not step_xyz.exists():
+            logger.info(f"Running ORCA for step {step}...")
+            success = run_orca(
+                str(step_input),
+                str(step_output),
+                working_dir=builder_dir,
+            )
 
-        if not success:
-            logger.error(f"ORCA failed for step {step}")
-            return False, "", 0
+            if not success:
+                logger.error(f"ORCA failed for step {step}")
+                return False, "", 0
 
-        if not extract_optimized_xyz(step_output, step_xyz):
-            logger.error(f"Could not extract geometry from step {step}")
-            return False, "", 0
+            if not extract_optimized_xyz(step_output, step_xyz):
+                logger.error(f"Could not extract geometry from step {step}")
+                return False, "", 0
 
-        logger.info(f"Step {step} docking completed successfully")
+            logger.info(f"Step {step} docking completed successfully")
 
         # Run GOAT optimization if requested
         if use_goat:
-            goat_success, _ = run_goat_optimization(
-                builder_dir=builder_dir,
-                xyz_file=f"step_{step}.xyz",
-                charge=new_charge,
-                multiplicity=multiplicity,
-                pal=pal,
-                maxcore=maxcore,
-                prefix=f"step_{step}_goat",
-            )
-            if not goat_success:
-                logger.warning(f"GOAT optimization failed for step {step}, continuing with docked structure")
+            goat_result = builder_dir / f"step_{step}_goat.globalminimum.xyz"
+            if goat_result.exists():
+                logger.info(f"Skipping GOAT for step {step}: found {goat_result.name}")
+            else:
+                goat_success, _ = run_goat_optimization(
+                    builder_dir=builder_dir,
+                    xyz_file=f"step_{step}.xyz",
+                    charge=new_charge,
+                    multiplicity=multiplicity,
+                    pal=pal,
+                    maxcore=maxcore,
+                    prefix=f"step_{step}_goat",
+                )
+                if not goat_success:
+                    logger.warning(f"GOAT optimization failed for step {step}, continuing with docked structure")
 
     return True, f"step_{step}.xyz", new_charge
 
@@ -676,7 +710,8 @@ def run_build_up(
     builder_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Created builder directory: {builder_dir}")
 
-    # Calculate ligand charges and sizes, then sort by size (largest first)
+    # Calculate ligand charges and sizes, then sort by charge (charged first, neutral last),
+    # and by size (largest first) as secondary criterion.
     ligand_info = []
     for lig_smiles in ligands:
         charge = get_ligand_charge(lig_smiles)
@@ -687,8 +722,9 @@ def run_build_up(
             'size': size,
         })
 
-    # Sort by size descending (largest first)
-    ligand_info.sort(key=lambda x: x['size'], reverse=True)
+    # Sort: charged first, neutral last; within same charge sort by size descending
+    # (charge value order: more negative first, then positive).
+    ligand_info.sort(key=lambda x: (x['charge'] == 0, x['charge'], -x['size']))
 
     for i, info in enumerate(ligand_info, 1):
         logger.info(f"  Ligand {i}: {info['smiles']} (charge: {info['charge']:+d}, size: {info['size']} atoms)")
@@ -745,14 +781,17 @@ def run_build_up(
     is_multi_metal = len(metals) > 1
 
     if is_multi_metal:
-        # Multi-metal: Largest ligand as host, then metals, then remaining ligands
+        # Multi-metal: First ligand by charge/size as host, then metals, then remaining ligands
         logger.info("\n=== Multi-metal workflow ===")
 
-        # Start with largest ligand as host
+        # Start with first ligand in sorted order as host
         first_ligand = ligand_info[0]
         current_host = first_ligand['xyz']
         current_charge = first_ligand['charge']
-        logger.info(f"Starting with largest ligand: {first_ligand['smiles']} ({first_ligand['size']} atoms)")
+        logger.info(
+            f"Starting with first ligand (charge-priority): {first_ligand['smiles']} "
+            f"(charge: {first_ligand['charge']:+d}, size: {first_ligand['size']} atoms)"
+        )
 
         # Dock metals onto the growing complex
         for i, (metal_symbol, metal_charge) in enumerate(metals, 1):
@@ -797,14 +836,14 @@ def run_build_up(
             current_host = new_host
 
     else:
-        # Mono-metal: Metal as host, ligands docked by size (largest first)
+        # Mono-metal: Metal as host, ligands docked by charge/size order
         logger.info("\n=== Mono-metal workflow ===")
 
         metal_symbol, metal_charge = metals[0]
         current_host = "metal1.xyz"
         current_charge = metal_charge
 
-        # Dock ligands onto metal (already sorted by size)
+        # Dock ligands onto metal (already sorted by charge/size)
         for i, info in enumerate(ligand_info, 1):
             step += 1
             success, new_host, current_charge = _run_docker_step(
@@ -828,6 +867,30 @@ def run_build_up(
     logger.info(f"\n=== Build-up complete ===")
     logger.info(f"Final structure: {builder_dir / current_host}")
     logger.info(f"Final charge: {current_charge:+d}")
+
+    # Export final structure to parent directory
+    try:
+        parent_dir = builder_dir.parent
+        if use_goat and not dry_run and step > 0:
+            final_xyz = builder_dir / f"step_{step}_goat.globalminimum.xyz"
+        else:
+            final_xyz = builder_dir / current_host
+
+        if final_xyz.exists():
+            out_xyz = parent_dir / "build_complex.xyz"
+            shutil.copy(final_xyz, out_xyz)
+
+            # Write input.txt with XYZ content excluding the first two lines
+            lines = final_xyz.read_text().splitlines()
+            coord_lines = lines[2:] if len(lines) >= 2 else []
+            (parent_dir / "input.txt").write_text("\n".join(coord_lines).strip() + ("\n" if coord_lines else ""))
+
+            logger.info(f"Exported final structure to {out_xyz}")
+            logger.info(f"Exported coordinates to {parent_dir / 'input.txt'}")
+        else:
+            logger.warning(f"Final structure not found: {final_xyz}")
+    except Exception as exc:
+        logger.warning(f"Failed to export final structure: {exc}")
 
     return True
 
