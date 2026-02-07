@@ -267,6 +267,25 @@ def get_ligand_size(smiles: str) -> int:
         return 0
 
 
+def _is_halide_or_pseudohalide(smiles: str) -> bool:
+    """Heuristic to flag halides and common pseudohalides for late docking."""
+    smi = smiles.strip()
+
+    # Halides (monoatomic anions)
+    halides = {"[F-]", "[Cl-]", "[Br-]", "[I-]"}
+    if smi in halides:
+        return True
+
+    # Common pseudohalides: CN-, SCN-, OCN-, N3- (various SMILES orderings)
+    pseudohalides = {
+        "[N-]#C", "[C-]#N",          # cyanide
+        "N#C[S-]", "[S-]C#N",        # thiocyanate
+        "N#C[O-]", "[O-]C#N",        # cyanate
+        "[N-]=[N+]=N", "[N-][N+]#N", "N=[N+]=[N-]",  # azide
+    }
+    return smi in pseudohalides
+
+
 def ligand_to_xyz(smiles: str, output_path: Path) -> Tuple[bool, Optional[str]]:
     """Convert a ligand SMILES to XYZ file.
 
@@ -403,7 +422,8 @@ def create_docker_input(
 %MAXCORE {maxcore}
 
 %DOCKER
-    GUEST "{guest_xyz}"
+    DOCKLEVEL      COMPLETE   
+    GUEST          "{guest_xyz}"
     GuestCharge    {guest_charge}
 END
 
@@ -768,9 +788,18 @@ def run_build_up(
             'size': size,
         })
 
-    # Sort: charged first, neutral last; within same charge sort by size descending
-    # (charge value order: more negative first, then positive).
-    ligand_info.sort(key=lambda x: (x['charge'] == 0, x['charge'], -x['size']))
+    # Sort:
+    # 1) Non-halide/pseudohalide ligands first (avoid early "placeholders")
+    # 2) Charged first, neutral last; more negative first
+    # 3) Within same charge, largest first
+    ligand_info.sort(
+        key=lambda x: (
+            _is_halide_or_pseudohalide(x['smiles']),
+            x['charge'] == 0,
+            x['charge'],
+            -x['size'],
+        )
+    )
 
     for i, info in enumerate(ligand_info, 1):
         logger.info(f"  Ligand {i}: {info['smiles']} (charge: {info['charge']:+d}, size: {info['size']} atoms)")
