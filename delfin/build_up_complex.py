@@ -450,7 +450,7 @@ def create_goat_input(
         pal: Number of parallel processes
         maxcore: Memory per core in MB
     """
-    content = f"""! XTB2 GOAT ALPB(DMF)
+    content = f"""! XTB2 GOAT-Explore ALPB(DMF)
 
 %PAL NPROCS {pal} END
 %MAXCORE {maxcore}
