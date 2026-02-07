@@ -397,7 +397,7 @@ def create_docker_input(
         pal: Number of parallel processes (default: 32)
         maxcore: Memory per core in MB (default: 4000)
     """
-    content = f"""! XTB2
+    content = f"""! XTB2 ALPB(DMF)
 
 %PAL NPROCS {pal} END
 %MAXCORE {maxcore}
@@ -430,7 +430,7 @@ def create_goat_input(
         pal: Number of parallel processes
         maxcore: Memory per core in MB
     """
-    content = f"""! XTB2 GOAT
+    content = f"""! XTB2 GOAT ALPB(DMF)
 
 %PAL NPROCS {pal} END
 %MAXCORE {maxcore}
@@ -1044,13 +1044,13 @@ def run_build_up(
             out_xyz = parent_dir / "build_complex.xyz"
             shutil.copy(final_xyz, out_xyz)
 
-            # Write input.txt with XYZ content excluding the first two lines
+            # Write start.txt with XYZ content excluding the first two lines
             lines = final_xyz.read_text().splitlines()
             coord_lines = lines[2:] if len(lines) >= 2 else []
-            (parent_dir / "input.txt").write_text("\n".join(coord_lines).strip() + ("\n" if coord_lines else ""))
+            (parent_dir / "start.txt").write_text("\n".join(coord_lines).strip() + ("\n" if coord_lines else ""))
 
             logger.info(f"Exported final structure to {out_xyz}")
-            logger.info(f"Exported coordinates to {parent_dir / 'input.txt'}")
+            logger.info(f"Exported coordinates to {parent_dir / 'start.txt'}")
         else:
             logger.warning(f"Final structure not found: {final_xyz}")
     except Exception as exc:
