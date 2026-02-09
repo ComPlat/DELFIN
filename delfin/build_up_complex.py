@@ -439,7 +439,6 @@ def create_goat_input(
     output_path: Path,
     pal: int = 32,
     maxcore: int = 4000,
-    explore: bool = False,
 ) -> None:
     """Create ORCA input file for XTB2 GOAT global optimization.
 
@@ -450,16 +449,26 @@ def create_goat_input(
         output_path: Path to write the ORCA input file
         pal: Number of parallel processes
         maxcore: Memory per core in MB
-        explore: If True, use GOAT-Explore instead of GOAT
     """
-    goat_keyword = "GOAT-Explore" if explore else "GOAT"
-    content = f"""! XTB2 {goat_keyword} ALPB(DMF)
+    content = """! XTB2 GOAT ALPB(DMF)
 
 %PAL NPROCS {pal} END
 %MAXCORE {maxcore}
 
+%GOAT
+  FREEFRAGMENTS TRUE
+  MAXTOPODIFF 6
+END
+
 * XYZFile {charge} {multiplicity} {xyz_file}
 """
+    content = content.format(
+        pal=pal,
+        maxcore=maxcore,
+        charge=charge,
+        multiplicity=multiplicity,
+        xyz_file=xyz_file,
+    )
     output_path.write_text(content, encoding='utf-8')
 
 
@@ -486,7 +495,6 @@ def run_goat_optimization(
     pal: int,
     maxcore: int,
     prefix: str = "goat",
-    explore: bool = False,
 ) -> Tuple[bool, Optional[str]]:
     """Run GOAT global optimization on a structure.
 
@@ -498,7 +506,6 @@ def run_goat_optimization(
         pal: Number of parallel processes
         maxcore: Memory per core in MB
         prefix: Prefix for output files
-        explore: If True, use GOAT-Explore instead of GOAT
 
     Returns:
         Tuple of (success, optimized_xyz_filename or None)
@@ -514,7 +521,6 @@ def run_goat_optimization(
         output_path=goat_input,
         pal=pal,
         maxcore=maxcore,
-        explore=explore,
     )
 
     # Recalc logic: skip GOAT if previous output terminated normally and result exists
@@ -708,7 +714,6 @@ def _run_docker_step(
                     pal=pal,
                     maxcore=maxcore,
                     prefix=f"step_{step}_goat",
-                    explore=True,
                 )
                 if not goat_success:
                     logger.warning(f"GOAT optimization failed for step {step}, continuing with docked structure")
