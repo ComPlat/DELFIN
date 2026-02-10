@@ -443,6 +443,8 @@ def create_goat_input(
     maxcore: int = 4000,
     include_goat_block: bool = True,
     uphill_atoms: Optional[List[int]] = None,
+    restrictive: bool = False,
+    skip_initial_opt: bool = False,
 ) -> None:
     """Create ORCA input file for XTB2 GOAT global optimization.
 
@@ -463,14 +465,17 @@ def create_goat_input(
 """
     if include_goat_block:
         goat_lines = ["%GOAT\n"]
-        if uphill_atoms:
-            uphill_str = _format_atom_indices(uphill_atoms)
-            # Escape braces to avoid str.format() interpreting them
-            goat_lines.append(f"  UPHILLATOMS {{{{{uphill_str}}}}} END\n")
-        goat_lines.append("  FREEFRAGMENTS TRUE\n")
-        goat_lines.append("  MAXTOPODIFF 6\n")
-        goat_lines.append("  FREEZEBONDS TRUE\n")
-        goat_lines.append("  FREEHETEROATOMS TRUE\n")
+        if skip_initial_opt:
+            goat_lines.append("  SKIPINITIALOPT TRUE\n")
+        if not restrictive:
+            if uphill_atoms:
+                uphill_str = _format_atom_indices(uphill_atoms)
+                # Escape braces to avoid str.format() interpreting them
+                goat_lines.append(f"  UPHILLATOMS {{{{{uphill_str}}}}} END\n")
+            goat_lines.append("  FREEFRAGMENTS TRUE\n")
+            goat_lines.append("  MAXTOPODIFF 6\n")
+            goat_lines.append("  FREEZEBONDS TRUE\n")
+            goat_lines.append("  FREEHETEROATOMS TRUE\n")
         goat_lines.append("END\n\n")
         content = content.replace(
             "* XYZFile {charge} {multiplicity} {xyz_file}\n",
@@ -513,6 +518,8 @@ def run_goat_optimization(
     uphill_atoms: Optional[List[int]] = None,
     uphill_from_xyz: bool = False,
     uphill_include_metals: bool = True,
+    restrictive: bool = False,
+    skip_initial_opt: bool = False,
 ) -> Tuple[bool, Optional[str]]:
     """Run GOAT global optimization on a structure.
 
@@ -546,6 +553,8 @@ def run_goat_optimization(
         maxcore=maxcore,
         include_goat_block=include_goat_block,
         uphill_atoms=uphill_atoms,
+        restrictive=restrictive,
+        skip_initial_opt=skip_initial_opt,
     )
 
     # Recalc logic: skip GOAT if previous output terminated normally and result exists
@@ -590,6 +599,53 @@ def parse_xyz_to_content(xyz_path: Path) -> Tuple[int, str, List[str]]:
     comment = lines[1].strip() if len(lines) > 1 else ""
     coords = lines[2:2 + atom_count] if len(lines) > 2 else []
     return atom_count, comment, coords
+
+
+def _extract_lowest_energy_xyz_from_trajectory(traj_xyz: Path, out_xyz: Path) -> bool:
+    """Extract the lowest-energy structure from a multi-XYZ trajectory file."""
+    if not traj_xyz.exists():
+        return False
+    try:
+        lines = traj_xyz.read_text(encoding="utf-8", errors="ignore").splitlines()
+        if not lines:
+            return False
+        i = 0
+        best_energy = None
+        best_block = None
+        energy_re = re.compile(r"Epreopt=([+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)")
+        while i < len(lines):
+            try:
+                atom_count = int(lines[i].strip())
+            except Exception:
+                break
+            if atom_count <= 0:
+                break
+            start = i
+            end = i + 2 + atom_count
+            if end > len(lines):
+                break
+            comment = lines[i + 1] if i + 1 < len(lines) else ""
+            energy = None
+            m = energy_re.search(comment)
+            if m:
+                try:
+                    energy = float(m.group(1))
+                except Exception:
+                    energy = None
+            if energy is not None:
+                if best_energy is None or energy < best_energy:
+                    best_energy = energy
+                    best_block = lines[start:end]
+            elif best_block is None:
+                # Fallback: keep first block if no energies found yet
+                best_block = lines[start:end]
+            i = end
+        if not best_block:
+            return False
+        out_xyz.write_text("\n".join(best_block) + "\n", encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 
 def _format_atom_indices(indices: List[int]) -> str:
@@ -748,6 +804,8 @@ def _run_docker_step(
     maxcore: int,
     use_goat: bool = False,
     uphill_include_metals: bool = False,
+    step_goat_preoptimized: bool = False,
+    step_goat_swarm: bool = False,
 ) -> Tuple[bool, str, int]:
     """Run a single DOCKER step, optionally followed by GOAT optimization.
 
@@ -818,9 +876,29 @@ def _run_docker_step(
             if goat_result.exists():
                 logger.info(f"Skipping GOAT for step {step}: found {goat_result.name}")
             else:
+                goat_xyz = f"step_{step}.xyz"
+                if step_goat_preoptimized or step_goat_swarm:
+                    if step_goat_swarm:
+                        traj_name = f"step_{step}.docker.struc1.all.swarm.xyz"
+                        out_name = f"step_{step}.swarm_best.xyz"
+                        src_label = "swarm"
+                    else:
+                        traj_name = f"step_{step}.docker.struc1.all.preoptimized.xyz"
+                        out_name = f"step_{step}.preopt_first.xyz"
+                        src_label = "preoptimized"
+                    traj_path = builder_dir / traj_name
+                    out_path = builder_dir / out_name
+                    if _extract_lowest_energy_xyz_from_trajectory(traj_path, out_path):
+                        goat_xyz = out_path.name
+                        logger.info(f"Using lowest-energy {src_label} structure for GOAT: {traj_path.name}")
+                    else:
+                        logger.warning(
+                            f"{src_label.capitalize()} trajectory not found or invalid: {traj_path.name}; "
+                            f"falling back to {goat_xyz}"
+                        )
                 goat_success, _ = run_goat_optimization(
                     builder_dir=builder_dir,
-                    xyz_file=f"step_{step}.xyz",
+                    xyz_file=goat_xyz,
                     charge=new_charge,
                     multiplicity=multiplicity,
                     pal=pal,
@@ -828,6 +906,8 @@ def _run_docker_step(
                     prefix=f"step_{step}_goat",
                     uphill_from_xyz=True,
                     uphill_include_metals=uphill_include_metals,
+                    restrictive=step_goat_preoptimized or step_goat_swarm,
+                    skip_initial_opt=step_goat_preoptimized or step_goat_swarm,
                 )
                 if not goat_success:
                     logger.warning(f"GOAT optimization failed for step {step}, continuing with docked structure")
@@ -845,6 +925,8 @@ def run_build_up(
     use_goat: bool = False,
     skip_ligand_goat: bool = False,
     uphill_include_metals: bool = False,
+    step_goat_preoptimized: bool = False,
+    step_goat_swarm: bool = False,
     cmdline: str | None = None,
 ) -> bool:
     """Run the full complex build-up workflow.
@@ -863,6 +945,8 @@ def run_build_up(
         use_goat: If True, run GOAT global optimization after each docking step
         skip_ligand_goat: If True, skip GOAT for initial ligand structures
         uphill_include_metals: If True, include metal atoms in UPHILLATOMS
+        step_goat_preoptimized: If True, use lowest-energy preoptimized trajectory structure for GOAT steps
+        step_goat_swarm: If True, use lowest-energy swarm trajectory structure for GOAT steps
 
     Returns:
         True if successful
@@ -1043,6 +1127,8 @@ def run_build_up(
                         maxcore=maxcore,
                         use_goat=use_goat,
                         uphill_include_metals=uphill_include_metals,
+                        step_goat_preoptimized=step_goat_preoptimized,
+                        step_goat_swarm=step_goat_swarm,
                     )
                     if not success:
                         return False
@@ -1075,6 +1161,8 @@ def run_build_up(
                         maxcore=maxcore,
                         use_goat=use_goat,
                         uphill_include_metals=uphill_include_metals,
+                        step_goat_preoptimized=step_goat_preoptimized,
+                        step_goat_swarm=step_goat_swarm,
                     )
                     if not success:
                         return False
@@ -1100,6 +1188,8 @@ def run_build_up(
                     maxcore=maxcore,
                     use_goat=use_goat,
                     uphill_include_metals=uphill_include_metals,
+                    step_goat_preoptimized=step_goat_preoptimized,
+                    step_goat_swarm=step_goat_swarm,
                 )
                 if not success:
                     return False
@@ -1135,6 +1225,8 @@ def run_build_up(
                     maxcore=maxcore,
                     use_goat=use_goat,
                     uphill_include_metals=uphill_include_metals,
+                    step_goat_preoptimized=step_goat_preoptimized,
+                    step_goat_swarm=step_goat_swarm,
                 )
                 if not success:
                     return False
@@ -1157,6 +1249,8 @@ def run_build_up(
                     maxcore=maxcore,
                     use_goat=use_goat,
                     uphill_include_metals=uphill_include_metals,
+                    step_goat_preoptimized=step_goat_preoptimized,
+                    step_goat_swarm=step_goat_swarm,
                 )
                 if not success:
                     return False
@@ -1187,6 +1281,8 @@ def run_build_up(
                 maxcore=maxcore,
                 use_goat=use_goat,
                 uphill_include_metals=uphill_include_metals,
+                step_goat_preoptimized=step_goat_preoptimized,
+                step_goat_swarm=step_goat_swarm,
             )
             if not success:
                 return False
@@ -1291,6 +1387,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Include metal atoms in UPHILLATOMS for GOAT (default: false)",
     )
+    parser.add_argument(
+        "--step-goat-preoptimized",
+        action="store_true",
+        help=(
+            "Use lowest-energy structure from preoptimized trajectory "
+            "(step_N.docker.struc1.all.preoptimized.xyz) for GOAT steps and run "
+            "restrictive GOAT with SKIPINITIALOPT"
+        ),
+    )
+    parser.add_argument(
+        "--step-goat-swarm",
+        action="store_true",
+        help=(
+            "Use lowest-energy structure from swarm trajectory "
+            "(step_N.docker.struc1.all.swarm.xyz) for GOAT steps and run "
+            "restrictive GOAT with SKIPINITIALOPT"
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -1337,6 +1451,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         use_goat=args.goat,
         skip_ligand_goat=args.no_ligand_goat,
         uphill_include_metals=args.uphill_include_metals,
+        step_goat_preoptimized=args.step_goat_preoptimized,
+        step_goat_swarm=args.step_goat_swarm,
         cmdline=" ".join(sys.argv),
     )
 
