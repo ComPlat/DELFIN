@@ -15,6 +15,7 @@ Workflow:
 from __future__ import annotations
 
 import argparse
+import math
 import logging
 import re
 import shutil
@@ -24,7 +25,8 @@ from typing import Optional, Tuple, List, Dict
 
 from delfin.common.logging import configure_logging, get_logger
 from delfin.orca import run_orca, find_orca_executable
-from delfin.smiles_converter import RDKIT_AVAILABLE, contains_metal, _METALS
+from delfin.smiles_converter import RDKIT_AVAILABLE, contains_metal, _METALS, _METAL_SET
+from delfin.xyz_io import _load_covalent_radii, _COVALENT_RADII_FALLBACK
 
 if RDKIT_AVAILABLE:
     from rdkit import Chem
@@ -439,6 +441,8 @@ def create_goat_input(
     output_path: Path,
     pal: int = 32,
     maxcore: int = 4000,
+    include_goat_block: bool = True,
+    uphill_atoms: Optional[List[int]] = None,
 ) -> None:
     """Create ORCA input file for XTB2 GOAT global optimization.
 
@@ -455,13 +459,23 @@ def create_goat_input(
 %PAL NPROCS {pal} END
 %MAXCORE {maxcore}
 
-%GOAT
-  FREEFRAGMENTS TRUE
-  MAXTOPODIFF 6
-END
-
 * XYZFile {charge} {multiplicity} {xyz_file}
 """
+    if include_goat_block:
+        goat_lines = ["%GOAT\n"]
+        if uphill_atoms:
+            uphill_str = _format_atom_indices(uphill_atoms)
+            # Escape braces to avoid str.format() interpreting them
+            goat_lines.append(f"  UPHILLATOMS {{{{{uphill_str}}}}} END\n")
+        goat_lines.append("  FREEFRAGMENTS TRUE\n")
+        goat_lines.append("  MAXTOPODIFF 6\n")
+        goat_lines.append("  FREEZEBONDS TRUE\n")
+        goat_lines.append("  FREEHETEROATOMS TRUE\n")
+        goat_lines.append("END\n\n")
+        content = content.replace(
+            "* XYZFile {charge} {multiplicity} {xyz_file}\n",
+            "".join(goat_lines) + "* XYZFile {charge} {multiplicity} {xyz_file}\n",
+        )
     content = content.format(
         pal=pal,
         maxcore=maxcore,
@@ -495,6 +509,10 @@ def run_goat_optimization(
     pal: int,
     maxcore: int,
     prefix: str = "goat",
+    include_goat_block: bool = True,
+    uphill_atoms: Optional[List[int]] = None,
+    uphill_from_xyz: bool = False,
+    uphill_include_metals: bool = True,
 ) -> Tuple[bool, Optional[str]]:
     """Run GOAT global optimization on a structure.
 
@@ -514,6 +532,11 @@ def run_goat_optimization(
     goat_output = builder_dir / f"{prefix}.out"
     goat_result = builder_dir / f"{prefix}.globalminimum.xyz"
 
+    if include_goat_block and uphill_from_xyz:
+        uphill_atoms = _compute_uphill_atoms(
+            builder_dir / xyz_file,
+            include_metals=uphill_include_metals,
+        )
     create_goat_input(
         xyz_file=xyz_file,
         charge=charge,
@@ -521,6 +544,8 @@ def run_goat_optimization(
         output_path=goat_input,
         pal=pal,
         maxcore=maxcore,
+        include_goat_block=include_goat_block,
+        uphill_atoms=uphill_atoms,
     )
 
     # Recalc logic: skip GOAT if previous output terminated normally and result exists
@@ -565,6 +590,92 @@ def parse_xyz_to_content(xyz_path: Path) -> Tuple[int, str, List[str]]:
     comment = lines[1].strip() if len(lines) > 1 else ""
     coords = lines[2:2 + atom_count] if len(lines) > 2 else []
     return atom_count, comment, coords
+
+
+def _format_atom_indices(indices: List[int]) -> str:
+    """Format 1-based atom indices as ORCA range string (e.g., '1:3 5 7:9')."""
+    if not indices:
+        return ""
+    idx = sorted(set(int(i) for i in indices))
+    parts: List[str] = []
+    start = prev = idx[0]
+    for cur in idx[1:]:
+        if cur == prev + 1:
+            prev = cur
+            continue
+        parts.append(f"{start}:{prev}" if start != prev else f"{start}")
+        start = prev = cur
+    parts.append(f"{start}:{prev}" if start != prev else f"{start}")
+    return " ".join(parts)
+
+
+def _compute_uphill_atoms(
+    xyz_path: Path,
+    scale: float = 1.3,
+    sphere_depth: int = 2,
+    include_metals: bool = True,
+    exclude_h: bool = True,
+) -> List[int]:
+    """Return 1-based indices of metals + coordination spheres up to sphere_depth."""
+    _, _, coord_lines = parse_xyz_to_content(xyz_path)
+    atoms = []
+    for line in coord_lines:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        elem = re.match(r"([A-Za-z]{1,2})", parts[0])
+        if not elem:
+            continue
+        sym = elem.group(1)
+        try:
+            x, y, z = map(float, parts[1:4])
+        except ValueError:
+            continue
+        atoms.append({"elem": sym, "x": x, "y": y, "z": z})
+
+    if not atoms:
+        return []
+
+    radii = _load_covalent_radii("pyykko2009") or _COVALENT_RADII_FALLBACK
+
+    def _rcov(sym: str) -> float:
+        return float(radii.get(sym, 1.20))
+
+    def _dist(a, b) -> float:
+        return math.sqrt((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2 + (a["z"] - b["z"]) ** 2)
+
+    metal_indices = [i for i, a in enumerate(atoms) if a["elem"] in _METAL_SET]
+    if not metal_indices:
+        return []
+
+    # iterative sphere expansion
+    selected = set(metal_indices if include_metals else [])
+    frontier = set(metal_indices)
+    depth = max(1, int(sphere_depth))
+    for _ in range(depth):
+        next_frontier = set()
+        for im in frontier:
+            m = atoms[im]
+            r_m = _rcov(m["elem"])
+            for i, a in enumerate(atoms):
+                if i == im:
+                    continue
+                r_a = _rcov(a["elem"])
+                if _dist(m, a) <= scale * (r_m + r_a):
+                    if i not in selected:
+                        next_frontier.add(i)
+        selected.update(next_frontier)
+        frontier = next_frontier
+        if not frontier:
+            break
+
+    # convert to 1-based indices for ORCA, optionally drop metals
+    if not include_metals:
+        selected = {i for i in selected if i not in metal_indices}
+    if exclude_h:
+        selected = {i for i in selected if atoms[i]["elem"] != "H"}
+    uphill = sorted(i + 1 for i in selected)
+    return uphill
 
 
 def extract_optimized_xyz(orca_out: Path, output_xyz: Path) -> bool:
@@ -636,6 +747,7 @@ def _run_docker_step(
     pal: int,
     maxcore: int,
     use_goat: bool = False,
+    uphill_include_metals: bool = False,
 ) -> Tuple[bool, str, int]:
     """Run a single DOCKER step, optionally followed by GOAT optimization.
 
@@ -714,6 +826,8 @@ def _run_docker_step(
                     pal=pal,
                     maxcore=maxcore,
                     prefix=f"step_{step}_goat",
+                    uphill_from_xyz=True,
+                    uphill_include_metals=uphill_include_metals,
                 )
                 if not goat_success:
                     logger.warning(f"GOAT optimization failed for step {step}, continuing with docked structure")
@@ -730,6 +844,7 @@ def run_build_up(
     maxcore: int = 4000,
     use_goat: bool = False,
     skip_ligand_goat: bool = False,
+    uphill_include_metals: bool = False,
     cmdline: str | None = None,
 ) -> bool:
     """Run the full complex build-up workflow.
@@ -747,6 +862,7 @@ def run_build_up(
         maxcore: Memory per core in MB (default: 4000)
         use_goat: If True, run GOAT global optimization after each docking step
         skip_ligand_goat: If True, skip GOAT for initial ligand structures
+        uphill_include_metals: If True, include metal atoms in UPHILLATOMS
 
     Returns:
         True if successful
@@ -850,6 +966,7 @@ def run_build_up(
                     pal=pal,
                     maxcore=maxcore,
                     prefix=f"ligand{i}_goat",
+                    include_goat_block=False,
                 )
                 if goat_success:
                     logger.info(f"GOAT optimized {info['xyz']}")
@@ -925,6 +1042,7 @@ def run_build_up(
                         pal=pal,
                         maxcore=maxcore,
                         use_goat=use_goat,
+                        uphill_include_metals=uphill_include_metals,
                     )
                     if not success:
                         return False
@@ -956,6 +1074,7 @@ def run_build_up(
                         pal=pal,
                         maxcore=maxcore,
                         use_goat=use_goat,
+                        uphill_include_metals=uphill_include_metals,
                     )
                     if not success:
                         return False
@@ -980,6 +1099,7 @@ def run_build_up(
                     pal=pal,
                     maxcore=maxcore,
                     use_goat=use_goat,
+                    uphill_include_metals=uphill_include_metals,
                 )
                 if not success:
                     return False
@@ -1014,6 +1134,7 @@ def run_build_up(
                     pal=pal,
                     maxcore=maxcore,
                     use_goat=use_goat,
+                    uphill_include_metals=uphill_include_metals,
                 )
                 if not success:
                     return False
@@ -1035,6 +1156,7 @@ def run_build_up(
                     pal=pal,
                     maxcore=maxcore,
                     use_goat=use_goat,
+                    uphill_include_metals=uphill_include_metals,
                 )
                 if not success:
                     return False
@@ -1064,6 +1186,7 @@ def run_build_up(
                 pal=pal,
                 maxcore=maxcore,
                 use_goat=use_goat,
+                uphill_include_metals=uphill_include_metals,
             )
             if not success:
                 return False
@@ -1163,6 +1286,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Skip GOAT optimization for initial ligand structures (use with --goat)",
     )
+    parser.add_argument(
+        "--uphill-include-metals",
+        action="store_true",
+        help="Include metal atoms in UPHILLATOMS for GOAT (default: false)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -1208,6 +1336,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         maxcore=args.maxcore,
         use_goat=args.goat,
         skip_ligand_goat=args.no_ligand_goat,
+        uphill_include_metals=args.uphill_include_metals,
         cmdline=" ".join(sys.argv),
     )
 
