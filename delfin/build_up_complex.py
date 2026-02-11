@@ -404,7 +404,7 @@ def create_docker_input(
     multiplicity: int,
     output_path: Path,
     pal: int = 32,
-    maxcore: int = 4000,
+    maxcore: int = 1000,
 ) -> None:
     """Create ORCA input file for XTB DOCKER calculation.
 
@@ -416,7 +416,7 @@ def create_docker_input(
         multiplicity: Spin multiplicity
         output_path: Path to write the ORCA input file
         pal: Number of parallel processes (default: 32)
-        maxcore: Memory per core in MB (default: 4000)
+        maxcore: Memory per core in MB (default: 1000)
     """
     content = f"""! XTB2 ALPB(DMF)
 
@@ -440,7 +440,7 @@ def create_goat_input(
     multiplicity: int,
     output_path: Path,
     pal: int = 32,
-    maxcore: int = 4000,
+    maxcore: int = 1000,
     include_goat_block: bool = True,
     uphill_atoms: Optional[List[int]] = None,
     topobreak_atoms: Optional[List[int]] = None,
@@ -933,7 +933,7 @@ def run_build_up(
     multiplicity: int = 1,
     dry_run: bool = False,
     pal: int = 32,
-    maxcore: int = 4000,
+    maxcore: int = 1000,
     use_goat: bool = False,
     skip_ligand_goat: bool = False,
     uphill_include_metals: bool = False,
@@ -953,7 +953,7 @@ def run_build_up(
         multiplicity: Spin multiplicity (default: 1)
         dry_run: If True, only create input files but don't run ORCA
         pal: Number of parallel processes (default: 32)
-        maxcore: Memory per core in MB (default: 4000)
+        maxcore: Memory per core in MB (default: 1000)
         use_goat: If True, run GOAT global optimization after each docking step
         skip_ligand_goat: If True, skip GOAT for initial ligand structures
         uphill_include_metals: If True, include metal atoms in UPHILLATOMS
@@ -1390,8 +1390,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--maxcore",
         type=int,
-        default=4000,
-        help="Memory per core in MB (default: 4000)",
+        default=1000,
+        help="Memory per core in MB (default: 1000)",
     )
     parser.add_argument(
         "-v", "--verbose",
