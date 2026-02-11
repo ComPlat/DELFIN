@@ -504,7 +504,7 @@ case "$MODE" in
         BUILD_MULT="${BUILD_MULTIPLICITY:-1}"
         echo "Starting delfin-build (complex build-up)..."
         echo "  Multiplicity: $BUILD_MULT"
-        python -m delfin.build_up_complex input.txt --directory builder --multiplicity "$BUILD_MULT" --verbose
+        python -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
         EXIT_CODE=$?
         ;;
     *)

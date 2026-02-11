@@ -443,6 +443,7 @@ def create_goat_input(
     maxcore: int = 4000,
     include_goat_block: bool = True,
     uphill_atoms: Optional[List[int]] = None,
+    topobreak_atoms: Optional[List[int]] = None,
     restrictive: bool = False,
     skip_initial_opt: bool = False,
 ) -> None:
@@ -473,9 +474,13 @@ def create_goat_input(
                 # Escape braces to avoid str.format() interpreting them
                 goat_lines.append(f"  UPHILLATOMS {{{{{uphill_str}}}}} END\n")
             goat_lines.append("  FREEFRAGMENTS TRUE\n")
-            goat_lines.append("  MAXTOPODIFF 6\n")
-            goat_lines.append("  FREEZEBONDS TRUE\n")
+            goat_lines.append("  FREEZEBONDS FALSE\n")
+            goat_lines.append("  FREEZEANGLES FALSE\n")
             goat_lines.append("  FREEHETEROATOMS TRUE\n")
+            goat_lines.append("  MAXTOPODIFF 6\n")
+            if topobreak_atoms:
+                topobreak_str = _format_atom_indices(topobreak_atoms)
+                goat_lines.append(f"  TOPOBREAK {{{{{topobreak_str}}}}} END\n")
         goat_lines.append("END\n\n")
         content = content.replace(
             "* XYZFile {charge} {multiplicity} {xyz_file}\n",
@@ -539,10 +544,16 @@ def run_goat_optimization(
     goat_output = builder_dir / f"{prefix}.out"
     goat_result = builder_dir / f"{prefix}.globalminimum.xyz"
 
+    topobreak_atoms: Optional[List[int]] = None
     if include_goat_block and uphill_from_xyz:
         uphill_atoms = _compute_uphill_atoms(
             builder_dir / xyz_file,
             include_metals=uphill_include_metals,
+        )
+        # Always set TOPOBREAK to UPHILLATOMS including metals.
+        topobreak_atoms = _compute_uphill_atoms(
+            builder_dir / xyz_file,
+            include_metals=True,
         )
     create_goat_input(
         xyz_file=xyz_file,
@@ -553,6 +564,7 @@ def run_goat_optimization(
         maxcore=maxcore,
         include_goat_block=include_goat_block,
         uphill_atoms=uphill_atoms,
+        topobreak_atoms=topobreak_atoms,
         restrictive=restrictive,
         skip_initial_opt=skip_initial_opt,
     )
