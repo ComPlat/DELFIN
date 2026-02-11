@@ -23,7 +23,7 @@ def create_tab(ctx):
     Returns ``(tab_widget, refs_dict)``.
     """
     # -- layout constants ---------------------------------------------------
-    CALC_CONTENT_HEIGHT = 650
+    CALC_CONTENT_HEIGHT = 760
     CALC_LEFT_DEFAULT = 320
     CALC_LEFT_MIN = 240
     CALC_LEFT_MAX = 520
@@ -1745,6 +1745,11 @@ def create_tab(ctx):
         '.calc-left .widget-vbox { overflow:hidden !important; }'
         '.calc-left code { display:block !important; overflow:hidden !important;'
         ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
+        '.calc-splitter { width:8px; height:100%; cursor:col-resize;'
+        ' background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);'
+        ' border-radius:4px; display:block; }'
+        '.calc-splitter:hover { background:linear-gradient('
+        'to right, #d0d0d0, #f0f0f0, #d0d0d0); }'
         '</style>'
     )
 
@@ -1771,19 +1776,10 @@ def create_tab(ctx):
         overflow_x='hidden', overflow_y='hidden',
     ))
 
-    calc_splitter = widgets.IntSlider(
-        value=CALC_LEFT_DEFAULT, min=CALC_LEFT_MIN, max=CALC_LEFT_MAX, step=20,
-        orientation='vertical', description='',
-        layout=widgets.Layout(height=f'{CALC_CONTENT_HEIGHT + 120}px', width='20px'),
+    calc_splitter = widgets.HTML(
+        "<div class='calc-splitter' title='Drag to resize'></div>",
+        layout=widgets.Layout(height='100%', width='12px', margin='0 4px'),
     )
-
-    def _on_split_change(change):
-        w = change['new']
-        calc_left.layout.flex = f'0 0 {w}px'
-        calc_left.layout.min_width = f'{w}px'
-        calc_left.layout.max_width = f'{w}px'
-
-    calc_splitter.observe(_on_split_change, names='value')
 
     tab_widget = widgets.VBox([
         calc_css,
@@ -1797,11 +1793,47 @@ def create_tab(ctx):
         ),
     ], layout=widgets.Layout(
         padding='10px', overflow_x='hidden',
-        width='100%', max_width='100%', height='900px',
+        width='100%', max_width='100%', height='1020px',
     ))
     tab_widget.add_class('calc-tab')
     calc_left.add_class('calc-left')
     calc_right.add_class('calc-right')
+
+    # Enable draggable splitter (no visible slider)
+    _run_js(f"""
+    setTimeout(function() {{
+        const left = document.querySelector('.calc-left');
+        const right = document.querySelector('.calc-right');
+        const splitter = document.querySelector('.calc-splitter');
+        if (!left || !right || !splitter) return;
+        if (splitter.dataset.bound === '1') return;
+        splitter.dataset.bound = '1';
+
+        const minW = {CALC_LEFT_MIN};
+        const maxW = {CALC_LEFT_MAX};
+
+        function onMove(e) {{
+            const box = left.parentElement.getBoundingClientRect();
+            let w = e.clientX - box.left;
+            if (w < minW) w = minW;
+            if (w > maxW) w = maxW;
+            left.style.flex = '0 0 ' + w + 'px';
+            left.style.minWidth = w + 'px';
+            left.style.maxWidth = w + 'px';
+        }}
+
+        function onUp() {{
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        }}
+
+        splitter.addEventListener('mousedown', function(e) {{
+            e.preventDefault();
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        }});
+    }}, 0);
+    """)
 
     return tab_widget, {
         'calc_list_directory': calc_list_directory,
