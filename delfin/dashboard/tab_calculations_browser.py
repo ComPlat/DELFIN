@@ -22,6 +22,11 @@ def create_tab(ctx):
 
     Returns ``(tab_widget, refs_dict)``.
     """
+    # -- layout constants ---------------------------------------------------
+    CALC_CONTENT_HEIGHT = 650
+    CALC_LEFT_DEFAULT = 320
+    CALC_LEFT_MIN = 240
+    CALC_LEFT_MAX = 520
     # -- state (closure-captured) -------------------------------------------
     state = {
         'current_path': '',
@@ -96,13 +101,18 @@ def create_tab(ctx):
     # File list
     calc_file_list = widgets.Select(
         options=[], rows=22,
-        layout=widgets.Layout(width='100%', height='520px', margin='-4px 0 0 0'),
+        layout=widgets.Layout(
+            width='100%', height=f'{CALC_CONTENT_HEIGHT}px', margin='-4px 0 0 0'
+        ),
     )
 
     # Content area
     calc_content_area = widgets.HTML(
         value='',
-        layout=widgets.Layout(width='100%', display='block', overflow_x='hidden'),
+        layout=widgets.Layout(
+            width='100%', display='block', overflow_x='hidden',
+            height=f'{CALC_CONTENT_HEIGHT}px',
+        ),
     )
 
     # Molecule viewer
@@ -198,7 +208,9 @@ def create_tab(ctx):
     )
     calc_edit_area = widgets.Textarea(
         value='',
-        layout=widgets.Layout(width='100%', height='520px', display='none'),
+        layout=widgets.Layout(
+            width='100%', height=f'{CALC_CONTENT_HEIGHT}px', display='none'
+        ),
     )
 
     # Content navigation
@@ -320,8 +332,9 @@ def create_tab(ctx):
 
     def calc_set_message(message):
         calc_content_area.value = (
-            "<div style='height:520px; overflow-y:auto; border:1px solid #ddd; padding:6px;"
-            " font-family:monospace; white-space:pre; background:#fafafa;'>"
+            f"<div style='height:{CALC_CONTENT_HEIGHT}px; overflow-y:auto;"
+            " border:1px solid #ddd; padding:6px; font-family:monospace;"
+            " white-space:pre; background:#fafafa;'>"
             f"{_html.escape(message)}"
             "</div>"
         )
@@ -349,8 +362,9 @@ def create_tab(ctx):
             ".calc-match { background: #fff59d; padding: 0 2px; }"
             ".calc-match.current { background: #ffcc80; }"
             "</style>"
-            "<div id='calc-content-box' style='height:520px; overflow-y:auto; overflow-x:hidden;"
-            " border:1px solid #ddd; padding:6px; background:#fafafa; width:100%; box-sizing:border-box;'>"
+            f"<div id='calc-content-box' style='height:{CALC_CONTENT_HEIGHT}px;"
+            " overflow-y:auto; overflow-x:hidden; border:1px solid #ddd; padding:6px;"
+            " background:#fafafa; width:100%; box-sizing:border-box;'>"
             "<div id='calc-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
             " word-break:break-word; font-family:monospace; font-size:12px; line-height:1.3;'>"
             f"{_html.escape(text)}"
@@ -1404,7 +1418,7 @@ def create_tab(ctx):
                 calc_content_area.value = (
                     "<div style='border:1px solid #ddd; padding:6px; background:#fafafa;'>"
                     f"<img src='data:image/png;base64,{b64}' style='max-width:50%;"
-                    f" max-height:520px; height:auto; display:block;' />"
+                    f" max-height:{CALC_CONTENT_HEIGHT}px; height:auto; display:block;' />"
                     "</div>"
                 )
                 calc_update_view()
@@ -1447,7 +1461,7 @@ def create_tab(ctx):
                             b64 = base64.b64encode(data).decode('ascii')
                             display(HTML(
                                 f"<img src='data:image/png;base64,{b64}'"
-                                f" style='max-width:100%; max-height:520px; height:auto;"
+                                f" style='max-width:100%; max-height:{CALC_CONTENT_HEIGHT}px; height:auto;"
                                 f" display:block;' />"
                             ))
                         else:
@@ -1529,7 +1543,7 @@ def create_tab(ctx):
                     f' ({size_str}{img_info})'
                 )
                 calc_content_area.value = (
-                    f"<div id='calc-content-box' style='height:520px; overflow-y:auto;"
+                    f"<div id='calc-content-box' style='height:{CALC_CONTENT_HEIGHT}px; overflow-y:auto;"
                     f" overflow-x:hidden; border:1px solid #ddd; background:#fafafa;"
                     f" width:100%; box-sizing:border-box;'>{styled_html}</div>"
                 )
@@ -1689,7 +1703,9 @@ def create_tab(ctx):
         calc_filter_sort_row,
         calc_file_list,
     ], layout=widgets.Layout(
-        flex='0 0 260px', min_width='220px', max_width='300px',
+        flex=f'0 0 {CALC_LEFT_DEFAULT}px',
+        min_width=f'{CALC_LEFT_MIN}px',
+        max_width=f'{CALC_LEFT_MAX}px',
         padding='5px', overflow_x='hidden', overflow_y='hidden',
     ))
 
@@ -1755,19 +1771,33 @@ def create_tab(ctx):
         overflow_x='hidden', overflow_y='hidden',
     ))
 
+    calc_splitter = widgets.IntSlider(
+        value=CALC_LEFT_DEFAULT, min=CALC_LEFT_MIN, max=CALC_LEFT_MAX, step=20,
+        orientation='vertical', description='',
+        layout=widgets.Layout(height=f'{CALC_CONTENT_HEIGHT + 120}px', width='20px'),
+    )
+
+    def _on_split_change(change):
+        w = change['new']
+        calc_left.layout.flex = f'0 0 {w}px'
+        calc_left.layout.min_width = f'{w}px'
+        calc_left.layout.max_width = f'{w}px'
+
+    calc_splitter.observe(_on_split_change, names='value')
+
     tab_widget = widgets.VBox([
         calc_css,
         widgets.HTML('<h3>📂 Calculations Browser</h3>'),
         widgets.HBox(
-            [calc_left, calc_right],
+            [calc_left, calc_splitter, calc_right],
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden',
-                align_items='stretch', gap='16px',
+                align_items='stretch', gap='12px',
             ),
         ),
     ], layout=widgets.Layout(
         padding='10px', overflow_x='hidden',
-        width='100%', max_width='100%', height='780px',
+        width='100%', max_width='100%', height='900px',
     ))
     tab_widget.add_class('calc-tab')
     calc_left.add_class('calc-left')
