@@ -25,7 +25,7 @@ def create_tab(ctx):
     # -- layout constants ---------------------------------------------------
     CALC_CONTENT_HEIGHT = 760
     CALC_LEFT_DEFAULT = 320
-    CALC_LEFT_MIN = 240
+    CALC_LEFT_MIN = 320
     CALC_LEFT_MAX = 520
     # -- state (closure-captured) -------------------------------------------
     state = {
@@ -1778,7 +1778,7 @@ def create_tab(ctx):
 
     calc_splitter = widgets.HTML(
         "<div class='calc-splitter' title='Drag to resize'></div>",
-        layout=widgets.Layout(height='100%', width='12px', margin='0 4px'),
+        layout=widgets.Layout(height='100%', width='6px', margin='0 2px'),
     )
 
     tab_widget = widgets.VBox([
