@@ -322,7 +322,22 @@ def _find_only_goat_template(notebook_dir):
 
 def _find_run_script(notebook_dir):
     """Locate ``run_local.sh`` for the local backend."""
-    for candidate in [notebook_dir / 'run_local.sh', Path.cwd() / 'run_local.sh']:
+    candidates = [notebook_dir / 'run_local.sh', Path.cwd() / 'run_local.sh']
+    # Look in repo examples
+    repo_dir = _find_delfin_root()
+    if repo_dir:
+        candidates.append(
+            repo_dir / 'examples' / 'example_Job_Submission_Scripts'
+            / 'LocalServer' / 'run_local.sh'
+        )
+    # Look in software/delfin if installed under a root_dir
+    root_dir = _find_root_dir(notebook_dir)
+    if root_dir:
+        candidates.append(
+            root_dir / 'software' / 'delfin' / 'examples'
+            / 'example_Job_Submission_Scripts' / 'LocalServer' / 'run_local.sh'
+        )
+    for candidate in candidates:
         if candidate.exists():
             return candidate
     return notebook_dir / 'run_local.sh'

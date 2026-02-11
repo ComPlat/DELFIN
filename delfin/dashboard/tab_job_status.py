@@ -67,6 +67,67 @@ def create_tab(ctx):
         except Exception:
             return None
 
+    def _parse_control_resources(text):
+        pal = None
+        maxcore = None
+        time_limit = None
+        m = re.search(r'^\s*PAL\s*=\s*(\d+)', text, flags=re.MULTILINE)
+        if m:
+            pal = int(m.group(1))
+        m = re.search(r'^\s*maxcore\s*=\s*(\d+)', text, flags=re.MULTILINE)
+        if m:
+            maxcore = int(m.group(1))
+        m = re.search(r'^\s*job_timeout_hours\s*=\s*(\d+)', text, flags=re.MULTILINE)
+        if m:
+            time_limit = f"{int(m.group(1))}:00:00"
+        return pal, maxcore, time_limit
+
+    def _parse_orca_resources(text):
+        pal = None
+        maxcore = None
+        # %pal nprocs N
+        m = re.search(r'^\s*%pal\b.*?nprocs\s+(\d+)', text, flags=re.IGNORECASE | re.MULTILINE)
+        if m:
+            pal = int(m.group(1))
+        # %maxcore N or maxcore N
+        m = re.search(r'^\s*%maxcore\s+(\d+)', text, flags=re.IGNORECASE | re.MULTILINE)
+        if m:
+            maxcore = int(m.group(1))
+        else:
+            m = re.search(r'^\s*maxcore\s+(\d+)', text, flags=re.IGNORECASE | re.MULTILINE)
+            if m:
+                maxcore = int(m.group(1))
+        return pal, maxcore
+
+    def _extract_resources_for_root(root_dir):
+        """Try to extract PAL/maxcore/time_limit from CONTROL.txt or ORCA inputs."""
+        pal = None
+        maxcore = None
+        time_limit = None
+
+        candidates = [Path(root_dir) / 'CONTROL.txt', Path(root_dir) / 'builder' / 'CONTROL.txt']
+        for p in candidates:
+            if p.exists():
+                try:
+                    text = p.read_text()
+                    pal, maxcore, time_limit = _parse_control_resources(text)
+                    return pal, maxcore, time_limit
+                except Exception:
+                    pass
+
+        # Fallback: parse an ORCA input in builder or root
+        inp_candidates = []
+        for d in [Path(root_dir) / 'builder', Path(root_dir)]:
+            if d.exists():
+                inp_candidates.extend(sorted(d.glob('*.inp')))
+        if inp_candidates:
+            try:
+                text = inp_candidates[-1].read_text()
+                pal, maxcore = _parse_orca_resources(text)
+            except Exception:
+                pass
+        return pal, maxcore, time_limit
+
     def _detect_running_processes():
         """Fallback: detect running ORCA/DELFIN processes when queue is empty."""
         user = os.environ.get('USER') or os.getlogin()
@@ -199,7 +260,12 @@ def create_tab(ctx):
                 maxcore=0,
                 time_limit='-',
                 job_dir=info.get('job_dir', ''),
-                extra={'command': info.get('command', ''), 'proc_count': info.get('count', 1)},
+                extra={
+                    'command': info.get('command', ''),
+                    'proc_count': info.get('count', 1),
+                    'pid': info.get('pid'),
+                    'pgid': info.get('pgid'),
+                },
             ))
         return detected
 
@@ -242,6 +308,8 @@ def create_tab(ctx):
                 continue
             seen_dirs.add(root_dir)
 
+            pal, maxcore, time_limit = _extract_resources_for_root(root_dir)
+
             job_id = data['_next_job_id']
             data['_next_job_id'] = job_id + 1
             # Try to back-calculate start_time from elapsed seconds
@@ -252,19 +320,27 @@ def create_tab(ctx):
                 elapsed = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
                 start_time = (now - timedelta(seconds=elapsed)).isoformat()
 
+            # Use representative PID to keep status tracking alive
+            rep_pid = None
+            if isinstance(job.extra, dict):
+                rep_pid = job.extra.get('pid')
+            if rep_pid is None:
+                # Fallback to PGID if PID isn't available
+                rep_pid = int(str(job.job_id).split(':')[-1]) if str(job.job_id).startswith('pgid:') else None
+
             data['jobs'].append({
                 'job_id': job_id,
                 'name': Path(root_dir).name if root_dir else job.name,
                 'mode': 'detected',
-                'pid': int(str(job.job_id).split(':')[-1]) if str(job.job_id).startswith('pgid:') is False else None,
+                'pid': int(rep_pid) if rep_pid else None,
                 'pgid': int(str(job.job_id).split(':')[-1]) if str(job.job_id).startswith('pgid:') else None,
                 'status': 'RUNNING',
                 'submit_time': now.isoformat(),
                 'start_time': start_time,
                 'job_dir': root_dir or job.job_dir,
-                'time_limit': '-',
-                'pal': 0,
-                'maxcore': 0,
+                'time_limit': time_limit or '-',
+                'pal': pal or 0,
+                'maxcore': maxcore or 0,
                 'inp_file': None,
                 'override': None,
                 'build_mult': None,
