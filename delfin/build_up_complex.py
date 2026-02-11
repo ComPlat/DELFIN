@@ -1000,8 +1000,11 @@ def run_build_up(
     logger.info(f"Created builder directory: {builder_dir}")
     _write_build_info(builder_dir, cmdline)
 
-    # Calculate ligand charges and sizes, then sort by charge (charged first, neutral last),
-    # and by size (largest first) as secondary criterion.
+    # Calculate ligand charges and sizes. Sorting prefers:
+    # 1) Non-halide/pseudohalide ligands
+    # 2) Very large ligands first if there's a strong size disparity
+    # 3) Charged first, neutral last; more negative first
+    # 4) Within same charge, largest first
     ligand_info = []
     for lig_smiles in ligands:
         charge = get_ligand_charge(lig_smiles)
@@ -1012,13 +1015,24 @@ def run_build_up(
             'size': size,
         })
 
-    # Sort:
-    # 1) Non-halide/pseudohalide ligands first (avoid early "placeholders")
-    # 2) Charged first, neutral last; more negative first
-    # 3) Within same charge, largest first
+    # Detect strong size disparity -> prioritize very large ligands first
+    sizes = sorted(info['size'] for info in ligand_info)
+    if sizes:
+        mid = len(sizes) // 2
+        if len(sizes) % 2 == 0:
+            median_size = 0.5 * (sizes[mid - 1] + sizes[mid])
+        else:
+            median_size = float(sizes[mid])
+    else:
+        median_size = 0.0
+    large_cutoff = median_size * 1.5 if median_size > 0 else 0.0
+    for info in ligand_info:
+        info['is_large'] = info['size'] >= large_cutoff
+
     ligand_info.sort(
         key=lambda x: (
             _is_halide_or_pseudohalide(x['smiles']),
+            not x.get('is_large', False),
             x['charge'] == 0,
             x['charge'],
             -x['size'],
