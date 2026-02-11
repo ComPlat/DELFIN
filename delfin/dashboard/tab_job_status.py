@@ -1,13 +1,17 @@
 """Job Status tab: view and cancel running/pending jobs."""
 
 import html as _html
-from datetime import datetime
+import os
+import re
+import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import ipywidgets as widgets
 from IPython.display import clear_output
 
 from .constants import STATUS_COLORS, JOB_TABLE_CSS
+from .backend_base import JobInfo
 
 
 def create_tab(ctx):
@@ -33,6 +37,11 @@ def create_tab(ctx):
         layout=widgets.Layout(width='150px'),
     )
 
+    rebuild_button = widgets.Button(
+        description='REBUILD QUEUE', button_style='warning',
+        layout=widgets.Layout(width='170px'),
+    )
+
     cancel_button = widgets.Button(
         description='CANCEL JOB', button_style='danger',
         layout=widgets.Layout(width='150px'),
@@ -42,6 +51,232 @@ def create_tab(ctx):
     state = {'job_data': []}
 
     # -- handlers -------------------------------------------------------
+    def _pid_elapsed_seconds(pid):
+        """Best-effort elapsed seconds from /proc; fall back to None."""
+        try:
+            # /proc/uptime gives system uptime in seconds
+            with open('/proc/uptime', 'r') as f:
+                uptime = float(f.read().split()[0])
+            with open(f'/proc/{pid}/stat', 'r') as f:
+                stat = f.read().split()
+            # starttime is field 22 (index 21) in clock ticks
+            start_ticks = int(stat[21])
+            clk_tck = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
+            elapsed = max(0, int(uptime - (start_ticks / clk_tck)))
+            return elapsed
+        except Exception:
+            return None
+
+    def _detect_running_processes():
+        """Fallback: detect running ORCA/DELFIN processes when queue is empty."""
+        user = os.environ.get('USER') or os.getlogin()
+        cmd = ['ps', '-u', user, '-o', 'pid=,pgid=,etimes=,command=']
+        try:
+            result = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False
+            )
+            if result.returncode != 0:
+                return []
+        except Exception:
+            return []
+
+        patterns = (
+            '/opt/orca',
+            'orca_numfreq',
+            'orca_esd',
+            'delfin.build_up_complex',
+            'delfin-build',
+        )
+        detected = []
+        calc_root = str(ctx.calc_dir) if getattr(ctx, 'calc_dir', None) else ''
+        by_dir = {}
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 3)
+            if len(parts) < 4:
+                continue
+            pid, pgid, etimes, command = parts
+            if not any(p in command for p in patterns):
+                continue
+
+            job_dir = ''
+            try:
+                job_dir = os.readlink(f'/proc/{pid}/cwd')
+            except Exception:
+                pass
+
+            # Try to extract an input file or working path from the command
+            name = ''
+            m = re.search(r'(/[^\\s]+\\.(?:inp|cisinp\\.tmp|goat|xyz))', command)
+            if m:
+                name = Path(m.group(1)).name
+                if not job_dir:
+                    try:
+                        job_dir = str(Path(m.group(1)).parent)
+                    except Exception:
+                        pass
+
+            # If we still don't have a directory, try to extract any absolute path
+            if not job_dir:
+                m2 = re.search(r'(/[^\\s]+)', command)
+                if m2:
+                    p = Path(m2.group(1))
+                    if p.exists():
+                        job_dir = str(p.parent)
+
+            if calc_root:
+                if not job_dir:
+                    # No directory and we only want calc jobs
+                    continue
+                if not job_dir.startswith(calc_root):
+                    # Only show calc jobs to reduce noise
+                    continue
+
+            # Derive a human-friendly job name from calc directory
+            if calc_root and job_dir.startswith(calc_root):
+                try:
+                    rel = Path(job_dir).relative_to(calc_root)
+                    # e.g., Ir_8/builder -> Ir_8
+                    if len(rel.parts) >= 1:
+                        name = rel.parts[0]
+                except Exception:
+                    pass
+
+            if not name and job_dir:
+                name = Path(job_dir).name
+            if not name:
+                name = 'detected_process'
+
+            # Collapse multiple worker processes by job directory
+            key = job_dir
+            et = _pid_elapsed_seconds(pid)
+            if et is None:
+                try:
+                    et = int(etimes)
+                except Exception:
+                    et = 0
+            if key not in by_dir:
+                by_dir[key] = {
+                    'pid': pid,
+                    'pgid': pgid,
+                    'etimes': et,
+                    'name': name,
+                    'job_dir': job_dir,
+                    'command': command,
+                    'count': 1,
+                }
+            else:
+                by_dir[key]['count'] += 1
+                # Keep the longest-running process as the representative
+                if et > by_dir[key]['etimes']:
+                    by_dir[key].update({
+                        'pid': pid,
+                        'pgid': pgid,
+                        'etimes': et,
+                        'command': command,
+                    })
+
+        for job_dir, info in by_dir.items():
+            et = info.get('etimes', 0)
+            try:
+                hours = et // 3600
+                mins = (et % 3600) // 60
+                secs = et % 60
+                etime_display = f'{hours:02d}:{mins:02d}:{secs:02d}'
+            except Exception:
+                etime_display = str(et)
+
+            detected.append(JobInfo(
+                job_id=f'pgid:{info.get("pgid", info.get("pid"))}',
+                name=info.get('name', 'detected_process'),
+                mode='detected',
+                status='RUNNING',
+                submit_time=f'elapsed {etime_display}',
+                start_time='',
+                pal=0,
+                maxcore=0,
+                time_limit='-',
+                job_dir=info.get('job_dir', ''),
+                extra={'command': info.get('command', ''), 'proc_count': info.get('count', 1)},
+            ))
+        return detected
+
+    def _rebuild_queue_from_detected():
+        """Rebuild local queue JSON from detected running processes."""
+        if not hasattr(ctx.backend, 'jobs_file'):
+            return False, 'Queue rebuild only supported for local backend.'
+        detected = _detect_running_processes()
+        if not detected:
+            return False, 'No running processes detected to rebuild.'
+
+        jobs_file = ctx.backend.jobs_file
+        try:
+            if jobs_file.exists():
+                import json
+                data = json.loads(jobs_file.read_text())
+            else:
+                data = {}
+        except Exception:
+            data = {}
+
+        # Reset queue to avoid duplicates or stale FAILED entries
+        data = {'_next_job_id': 1001, 'jobs': []}
+
+        now = datetime.now()
+        seen_dirs = set()
+        for job in detected:
+            # Normalize to calc root directory for clarity
+            job_dir = job.job_dir or ''
+            if getattr(ctx, 'calc_dir', None):
+                try:
+                    rel = Path(job_dir).relative_to(ctx.calc_dir)
+                    root_dir = str(Path(ctx.calc_dir) / rel.parts[0])
+                except Exception:
+                    root_dir = job_dir
+            else:
+                root_dir = job_dir
+
+            if root_dir in seen_dirs:
+                continue
+            seen_dirs.add(root_dir)
+
+            job_id = data['_next_job_id']
+            data['_next_job_id'] = job_id + 1
+            # Try to back-calculate start_time from elapsed seconds
+            start_time = None
+            elapsed = 0
+            m = re.search(r'elapsed\\s+(\\d+):(\\d+):(\\d+)', job.submit_time or '')
+            if m:
+                elapsed = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+                start_time = (now - timedelta(seconds=elapsed)).isoformat()
+
+            data['jobs'].append({
+                'job_id': job_id,
+                'name': Path(root_dir).name if root_dir else job.name,
+                'mode': 'detected',
+                'pid': int(str(job.job_id).split(':')[-1]) if str(job.job_id).startswith('pgid:') is False else None,
+                'pgid': int(str(job.job_id).split(':')[-1]) if str(job.job_id).startswith('pgid:') else None,
+                'status': 'RUNNING',
+                'submit_time': now.isoformat(),
+                'start_time': start_time,
+                'job_dir': root_dir or job.job_dir,
+                'time_limit': '-',
+                'pal': 0,
+                'maxcore': 0,
+                'inp_file': None,
+                'override': None,
+                'build_mult': None,
+                'log_file': None,
+            })
+
+        try:
+            jobs_file.write_text(__import__('json').dumps(data, indent=2, default=str))
+            return True, f'Rebuilt queue with {len(detected)} running job(s).'
+        except Exception as e:
+            return False, f'Failed to write queue: {e}'
+
     def refresh_job_list(button=None):
         with job_status_output:
             clear_output()
@@ -51,10 +286,23 @@ def create_tab(ctx):
             state['job_data'] = jobs
 
             if not jobs:
-                job_table_html.value = '<p><i>No jobs found.</i></p>'
-                job_start_html.value = ''
-                job_dropdown.options = []
-                return
+                # Fallback: detect running processes if local queue is empty
+                is_local = not ctx.backend.supports_turbomole  # heuristic
+                detected = _detect_running_processes() if is_local else []
+                if detected:
+                    jobs = detected
+                    state['job_data'] = jobs
+                    job_start_html.value = (
+                        '<div style="margin-top:10px;padding:10px;'
+                        'background-color:#e3f2fd;border:1px solid #90caf9;border-radius:4px;">'
+                        '<b>Note:</b> Local queue is empty. Showing running processes detected '
+                        'on this machine (not from the job queue).</div>'
+                    )
+                else:
+                    job_table_html.value = '<p><i>No jobs found.</i></p>'
+                    job_start_html.value = ''
+                    job_dropdown.options = []
+                    return
 
             dropdown_options = []
 
@@ -200,9 +448,21 @@ def create_tab(ctx):
             if success:
                 refresh_job_list()
 
+    def rebuild_queue(button):
+        with job_status_output:
+            clear_output()
+            ok, msg = _rebuild_queue_from_detected()
+            print(msg)
+            if ok:
+                refresh_job_list()
+
     # -- wiring ---------------------------------------------------------
     refresh_button.on_click(refresh_job_list)
     cancel_button.on_click(cancel_selected_job)
+    # Only enable rebuild in local backend
+    is_local_backend = not ctx.backend.supports_turbomole  # heuristic
+    if is_local_backend:
+        rebuild_button.on_click(rebuild_queue)
     refresh_job_list()
 
     # -- layout ---------------------------------------------------------
@@ -211,7 +471,7 @@ def create_tab(ctx):
         widgets.HTML('<p>Select a job and click CANCEL to cancel it. Click REFRESH to update.</p>'),
         job_table_html, job_start_html,
         widgets.HBox(
-            [job_dropdown, cancel_button, refresh_button],
+            [job_dropdown, cancel_button, refresh_button] + ([rebuild_button] if is_local_backend else []),
             layout=widgets.Layout(margin='10px 0', align_items='center'),
         ),
         job_status_output,
