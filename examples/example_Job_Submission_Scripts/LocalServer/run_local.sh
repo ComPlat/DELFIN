@@ -126,7 +126,17 @@ case "$MODE" in
         BUILD_MULT="${BUILD_MULTIPLICITY:-1}"
         echo "Starting delfin-build (complex build-up)..."
         echo "  Multiplicity: $BUILD_MULT"
-        python -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
+        # Ensure DELFIN environment is active (non-interactive safe)
+        MAMBA_EXE="/home/qmchem_max/micromamba/bin/micromamba"
+        if [ -x "$MAMBA_EXE" ]; then
+            eval "$($MAMBA_EXE shell hook -s bash)"
+            micromamba activate delfin
+        fi
+        PYTHON_BIN="$(command -v python || true)"
+        if [ -x "/home/qmchem_max/micromamba/envs/delfin/bin/python" ]; then
+            PYTHON_BIN="/home/qmchem_max/micromamba/envs/delfin/bin/python"
+        fi
+        "$PYTHON_BIN" -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
         EXIT_CODE=$?
         ;;
     *)
