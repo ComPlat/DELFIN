@@ -97,7 +97,14 @@ def create_tab(ctx):
 
             with job_status_output:
                 clear_output()
-                print(f'{len(jobs)} job(s) found')
+                running = sum(1 for j in jobs if j.status == 'RUNNING')
+                pending = sum(1 for j in jobs if j.status == 'PENDING')
+                parts = [f'{len(jobs)} job(s) shown']
+                if running:
+                    parts.append(f'{running} running')
+                if pending:
+                    parts.append(f'{pending} in queue')
+                print(', '.join(parts))
 
         except Exception as e:
             with job_status_output:

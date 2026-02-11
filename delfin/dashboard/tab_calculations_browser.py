@@ -979,8 +979,8 @@ def create_tab(ctx):
                     job_name=job_name,
                     inp_file=f'{job_name}.inp',
                     time_limit=slurm_time,
-                    pal=pal_used or 4,
-                    maxcore=maxcore_used or 4000,
+                    pal=pal_used or 40,
+                    maxcore=maxcore_used or 6000,
                 )
             except Exception as exc:
                 calc_override_status.value = (
@@ -1145,8 +1145,8 @@ def create_tab(ctx):
                 job_name=job_name,
                 inp_file=f'{job_name}.inp',
                 time_limit=slurm_time,
-                pal=pal_used or 4,
-                maxcore=maxcore_used or 4000,
+                pal=pal_used or 40,
+                maxcore=maxcore_used or 6000,
             )
         except Exception as exc:
             calc_recalc_status.value = (
@@ -1590,8 +1590,8 @@ def create_tab(ctx):
                             view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
                             view.zoomTo()
                             view.show()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    calc_set_message(f'Error: {exc}')
 
             # .inp files: try to show molecule + enable recalc
             elif suffix == '.inp':
@@ -1619,8 +1619,8 @@ def create_tab(ctx):
                             view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
                             view.zoomTo()
                             view.show()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    calc_set_message(f'Error: {exc}')
 
             if suffix == '.inp':
                 state['selected_inp_path'] = full_path
