@@ -24,6 +24,8 @@ def create_tab(ctx):
     """
     # -- layout constants ---------------------------------------------------
     CALC_CONTENT_HEIGHT = 760
+    CALC_MOL_SIZE = 620
+    CALC_MOL_ZOOM = 0.9
     CALC_LEFT_DEFAULT = 320
     CALC_LEFT_MIN = 320
     CALC_LEFT_MAX = 520
@@ -41,6 +43,7 @@ def create_tab(ctx):
         'xyz_frames': [],
         'xyz_current_frame': [0],
         'report_running': {},
+        'traj_viewer_ready': False,
     }
 
     # -- widgets ------------------------------------------------------------
@@ -122,7 +125,9 @@ def create_tab(ctx):
     )
     calc_mol_viewer = widgets.Output(
         layout=widgets.Layout(
-            width='520px', height='520px', border='2px solid #1976d2',
+            width=f'{CALC_MOL_SIZE}px',
+            height=f'{CALC_MOL_SIZE}px',
+            border='2px solid #1976d2',
             overflow='hidden', padding='0', border_radius='0',
         ),
     )
@@ -278,7 +283,7 @@ def create_tab(ctx):
         calc_xyz_controls,
         calc_coord_controls,
         calc_mol_viewer,
-    ], layout=widgets.Layout(display='none', margin='0 0 10px 0', width='100%', align_items='flex-start'))
+    ], layout=widgets.Layout(display='none', margin='0 0 10px 0', width='100%', align_items='flex-end'))
 
     calc_content_toolbar = widgets.HBox([
         calc_top_btn, calc_bottom_btn,
@@ -462,11 +467,24 @@ def create_tab(ctx):
             coords.append(line.rstrip())
         return coords if coords else None
 
-    def calc_build_xyz_from_input(text, title='input.txt'):
+    def calc_build_xyz_from_input(text, title='input.txt', base_dir=None):
         coords = calc_extract_orca_xyz_block(text)
         if coords:
             atom_count = len(coords)
             return f"{atom_count}\n{title}\n" + '\n'.join(coords)
+        # ORCA: XYZFile reference
+        m = re.search(r'^\s*\*\s*xyzfile\s+-?\d+\s+\d+\s+(\S+)',
+                      text, flags=re.IGNORECASE | re.MULTILINE)
+        if m:
+            xyz_path = m.group(1)
+            try:
+                p = Path(xyz_path)
+                if not p.is_absolute() and base_dir:
+                    p = Path(base_dir) / p
+                if p.exists():
+                    return p.read_text(errors='ignore')
+            except Exception:
+                pass
         lines = [ln for ln in text.strip().splitlines() if ln.strip()]
         if not lines:
             return None
@@ -494,40 +512,54 @@ def create_tab(ctx):
             f"{_html.escape(comment[:100])}{'...' if len(comment) > 100 else ''}"
         )
 
-        if initial_load:
-            full_xyz = ""
-            for comm, block, natoms in frames:
-                full_xyz += f"{natoms}\n{comm}\n{block}\n"
+        # Trajectory: use JS viewer and keep orientation when switching frames
+        if len(frames) > 1:
+            if initial_load or not state['traj_viewer_ready']:
+                full_xyz = ""
+                for comm, block, natoms in frames:
+                    full_xyz += f"{natoms}\n{comm}\n{block}\n"
+                calc_mol_viewer.clear_output()
+                with calc_mol_viewer:
+                    viewer_id = "calc_trj_viewer"
+                    html_content = f"""
+                    <div id="{viewer_id}" style="width:{CALC_MOL_SIZE}px;height:{CALC_MOL_SIZE}px;position:relative;"></div>
+                    <script>
+                    (function() {{
+                        var viewer = $3Dmol.createViewer("{viewer_id}", {{backgroundColor: "white"}});
+                        var xyz = `{full_xyz}`;
+                        viewer.addModelsAsFrames(xyz, "xyz");
+                        viewer.setStyle({{}}, {{stick: {{radius: 0.1}}, sphere: {{scale: 0.25}}}});
+                        viewer.zoomTo();
+                        viewer.zoom({CALC_MOL_ZOOM});
+                        viewer.setFrame(0);
+                        viewer.render();
+                        window.calc_trj_viewer = viewer;
+                    }})();
+                    </script>
+                    """
+                    display(HTML(html_content))
+                state['traj_viewer_ready'] = True
+            else:
+                _run_js(f"""
+                setTimeout(function(){{
+                    if (window.calc_trj_viewer) {{
+                        window.calc_trj_viewer.setFrame({idx});
+                        window.calc_trj_viewer.render();
+                    }}
+                }}, 0);
+                """)
+            return
 
-            calc_mol_viewer.clear_output()
-            with calc_mol_viewer:
-                viewer_id = "calc_trj_viewer"
-                html_content = f"""
-                <div id="{viewer_id}" style="width:520px;height:520px;position:relative;"></div>
-                <script>
-                (function() {{
-                    var viewer = $3Dmol.createViewer("{viewer_id}", {{backgroundColor: "white"}});
-                    var xyz = `{full_xyz}`;
-                    viewer.addModelsAsFrames(xyz, "xyz");
-                    viewer.setStyle({{}}, {{stick: {{radius: 0.1}}, sphere: {{scale: 0.25}}}});
-                    viewer.zoomTo();
-                    viewer.setFrame(0);
-                    viewer.render();
-                    window.calc_trj_viewer = viewer;
-                }})();
-                </script>
-                """
-                display(HTML(html_content))
-        else:
-            with calc_mol_viewer:
-                display(HTML(f"""
-                <script>
-                if(window.calc_trj_viewer) {{
-                    window.calc_trj_viewer.setFrame({idx});
-                    window.calc_trj_viewer.render();
-                }}
-                </script>
-                """))
+        # Single frame: render with py3Dmol
+        xyz_content = f"{n_atoms}\n{comment}\n{xyz_block}\n"
+        calc_mol_viewer.clear_output()
+        with calc_mol_viewer:
+            view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
+            view.addModel(xyz_content, 'xyz')
+            view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
+            view.zoomTo()
+            view.zoom(CALC_MOL_ZOOM)
+            view.show()
 
     # -- ORCA terminated check ----------------------------------------------
     def calc_orca_terminated_normally(path):
@@ -1319,7 +1351,7 @@ def create_tab(ctx):
         # --- Turbomole coord file ---
         if name_lower == 'coord':
             calc_view_toggle.disabled = False
-            calc_view_toggle.value = False
+            calc_view_toggle.value = True
             calc_update_view()
             try:
                 content = full_path.read_text()
@@ -1340,10 +1372,11 @@ def create_tab(ctx):
                     calc_coord_controls.layout.display = 'flex'
                     with calc_mol_viewer:
                         clear_output(wait=True)
-                        view = py3Dmol.view(width=520, height=520)
+                        view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
                         view.addModel(xyz_data, 'xyz')
                         view.setStyle({}, {'stick': {'radius': 0.15}, 'sphere': {'scale': 0.25}})
                         view.zoomTo()
+                        view.zoom(CALC_MOL_ZOOM)
                         view.show()
                 else:
                     calc_file_info.value = f'<b>{_html.escape(name)}</b> (could not parse)'
@@ -1354,7 +1387,7 @@ def create_tab(ctx):
         # --- XYZ file (with trajectory support) ---
         if suffix == '.xyz':
             calc_view_toggle.disabled = False
-            calc_view_toggle.value = False
+            calc_view_toggle.value = True
             calc_update_view()
             try:
                 content = full_path.read_text()
@@ -1396,10 +1429,11 @@ def create_tab(ctx):
                         calc_xyz_controls.layout.display = 'none'
                     calc_xyz_frame_label.value = ''
                     with calc_mol_viewer:
-                        view = py3Dmol.view(width=520, height=520)
+                        view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
                         view.addModel(content, 'xyz')
                         view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
                         view.zoomTo()
+                        view.zoom(CALC_MOL_ZOOM)
                         view.show()
                 calc_render_content(scroll_to='top')
             except Exception as e:
@@ -1471,12 +1505,13 @@ def create_tab(ctx):
                     state['file_content'] = ''
                     calc_set_message('Cube file loaded. Toggle Visualize to render isosurfaces.')
                     with calc_mol_viewer:
-                        view = py3Dmol.view(width=520, height=520)
+                        view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
                         view.addModel(content, 'cube')
                         view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
                         view.addVolumetricData(content, 'cube', {'isoval': 0.02, 'color': '#0026ff', 'opacity': 0.85})
                         view.addVolumetricData(content, 'cube', {'isoval': -0.02, 'color': '#b00010', 'opacity': 0.85})
                         view.zoomTo()
+                        view.zoom(CALC_MOL_ZOOM)
                         view.show()
             except Exception as e:
                 calc_set_message(f'Error: {e}')
@@ -1581,10 +1616,12 @@ def create_tab(ctx):
             # input.txt: try to show molecule
             if name == 'input.txt':
                 calc_view_toggle.disabled = False
-                calc_view_toggle.value = False
+                calc_view_toggle.value = True
                 calc_update_view()
                 try:
-                    xyz_content = calc_build_xyz_from_input(content, title=name)
+                    xyz_content = calc_build_xyz_from_input(
+                        content, title=name, base_dir=full_path.parent
+                    )
                     if xyz_content:
                         state['xyz_frames'].clear()
                         state['xyz_frames'].extend(parse_xyz_frames(xyz_content))
@@ -1599,10 +1636,11 @@ def create_tab(ctx):
                             calc_xyz_controls.layout.display = 'none'
                         calc_xyz_frame_label.value = ''
                         with calc_mol_viewer:
-                            view = py3Dmol.view(width=520, height=520)
+                            view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
                             view.addModel(xyz_content, 'xyz')
                             view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
                             view.zoomTo()
+                            view.zoom(CALC_MOL_ZOOM)
                             view.show()
                 except Exception as exc:
                     calc_set_message(f'Error: {exc}')
@@ -1610,7 +1648,9 @@ def create_tab(ctx):
             # .inp files: try to show molecule + enable recalc
             elif suffix == '.inp':
                 try:
-                    xyz_content = calc_build_xyz_from_input(content, title=name)
+                    xyz_content = calc_build_xyz_from_input(
+                        content, title=name, base_dir=full_path.parent
+                    )
                     if xyz_content:
                         state['xyz_frames'].clear()
                         state['xyz_frames'].extend(parse_xyz_frames(xyz_content))
@@ -1625,13 +1665,14 @@ def create_tab(ctx):
                             calc_xyz_controls.layout.display = 'none'
                         calc_xyz_frame_label.value = ''
                         calc_view_toggle.disabled = False
-                        calc_view_toggle.value = False
+                        calc_view_toggle.value = True
                         calc_update_view()
                         with calc_mol_viewer:
-                            view = py3Dmol.view(width=520, height=520)
+                            view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
                             view.addModel(xyz_content, 'xyz')
                             view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
                             view.zoomTo()
+                            view.zoom(CALC_MOL_ZOOM)
                             view.show()
                 except Exception as exc:
                     calc_set_message(f'Error: {exc}')
