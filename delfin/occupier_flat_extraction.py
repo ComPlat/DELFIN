@@ -212,10 +212,10 @@ def _update_runtime_cache(
         _fallback_propagate_geometry(folder_name, folder_path)
         return
 
-    multiplicity = additions = preferred_index = gbw_path = None
+    multiplicity = broken_sym = preferred_index = gbw_path = None
     if isinstance(result, (list, tuple)):
         if len(result) >= 3:
-            multiplicity, additions, preferred_index = result[:3]
+            multiplicity, broken_sym, preferred_index = result[:3]
             if len(result) >= 4:
                 gbw_path = result[3]
         else:
@@ -242,7 +242,7 @@ def _update_runtime_cache(
 
     occ_results[folder_name] = {
         "multiplicity": mult_int,
-        "additions": (additions or "").strip(),
+        "broken_sym": (broken_sym or "").strip(),
         "preferred_index": preferred_index,
         "gbw_path": str(gbw_path) if gbw_path else None,
     }
@@ -579,13 +579,13 @@ def _create_occupier_fob_jobs(
                 gbw_for_moread: Optional[Path] = None
 
                 if not reuse_existing_inp:
-                    additions: List[str] = []
+                    broken_sym: List[str] = []
                     if pass_wf_enabled:
                         gbw_candidate = "input.gbw" if _src_idx == 1 else f"input{_src_idx}.gbw"
                         gbw_path = target_folder / gbw_candidate
                         if gbw_path.exists():
                             # Use relative GBW path so isolation can copy the dependency.
-                            additions.append(f'%moinp "{gbw_candidate}"')
+                            broken_sym.append(f'%moinp "{gbw_candidate}"')
                             gbw_for_moread = gbw_path
                         else:
                             logger.info(
@@ -599,9 +599,9 @@ def _create_occupier_fob_jobs(
                         scf_lines = [f"  BrokenSym {_bs_token}"]
                         if not freq_enabled and ap_method:
                             scf_lines.append(f"  APMethod {ap_method}")
-                        additions.append("%scf\n" + "\n".join(scf_lines) + "\nend")
+                        broken_sym.append("%scf\n" + "\n".join(scf_lines) + "\nend")
 
-                    additions_str = "\n".join(additions)
+                    broken_sym_str = "\n".join(broken_sym)
 
                     # Change to target directory only for read_and_modify_file_OCCUPIER
                     # which expects to work in the target directory
@@ -619,7 +619,7 @@ def _create_occupier_fob_jobs(
                                 metal_basisset,
                                 main_basisset,
                                 global_config,
-                                additions_str,
+                                broken_sym_str,
                             )
                         finally:
                             os.chdir(prev_cwd)

@@ -471,7 +471,7 @@ def _run_co2_subcommand(argv: list[str]) -> int:
         help="Metal symbol (replaces [METAL] in template), e.g., Fe.",
     )
     parser.add_argument(
-        "--additions",
+        "--broken_sym",
         type=str,
         help="Additional ORCA keywords (e.g., '%%SCF BrokenSym 5,5 END' for broken symmetry).",
     )
@@ -492,7 +492,7 @@ def _run_co2_subcommand(argv: list[str]) -> int:
                 multiplicity=args.multiplicity,
                 solvent=args.solvent,
                 metal=args.metal,
-                additions=args.additions,
+                broken_sym=args.broken_sym,
                 overwrite=args.force,
             )
             return 0
@@ -1128,7 +1128,6 @@ def main(argv: list[str] | None = None) -> int:
             'reduction_steps': '',
             'parallel_workflows': 'yes',
             'pal_jobs': None,
-            'additions_TDDFT': '',
             'DONTO': 'FALSE',
             'DOSOC': 'TRUE',
             'FOLLOWIROOT': 'TRUE',

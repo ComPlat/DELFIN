@@ -30,7 +30,7 @@ def read_occupier_file(
     folder_name,
     file_name,
     multiplicity,
-    additions,
+    broken_sym,
     min_fspe_index,
     config,
     verbose: bool = True,
@@ -93,7 +93,7 @@ def read_occupier_file(
         return None, None, None, None
     multiplicity = entry["m"]
     bs = entry.get("BS", "")
-    additions = f"%scf BrokenSym {bs} end" if bs else ""
+    broken_sym = f"%scf BrokenSym {bs} end" if bs else ""
     input_filename = "input.xyz" if min_fspe_index == 1 else f"input{min_fspe_index}.xyz"
     source_file = folder / input_filename
     parent_folder = folder.parent
@@ -141,12 +141,12 @@ def read_occupier_file(
         print(f"  Folder:         {folder}")
         print(f"  min_fspe_index: {min_fspe_index}")
         print(f"  parity:         {parity}")
-        print(f"  additions:      {additions or '(none)'}")
+        print(f"  broken_sym:      {broken_sym or '(none)'}")
         print(f"  multiplicity:   {multiplicity}")
         if gbw_path:
             print(f"  GBW file:       {gbw_path}")
         print()
-    return multiplicity, additions, min_fspe_index, gbw_path
+    return multiplicity, broken_sym, min_fspe_index, gbw_path
 
 
 def extract_preferred_spin(folder: Path) -> Tuple[Optional[int], Optional[str]]:
@@ -350,7 +350,7 @@ def prepare_occ_folder_2(folder_name, source_occ_folder, charge_delta=0, config=
         print(f"read_occupier_file failed for '{source_occ_folder}'. Abort.")
         sys.exit(1)
     os.chdir(folder)
-    multiplicity_src, additions_src, min_fspe_index, _gbw_path = res
+    multiplicity_src, broken_sym_src, min_fspe_index, _gbw_path = res
     preferred_parent_xyz = Path("..") / f"input_{source_occ_folder}.xyz"
     if not preferred_parent_xyz.exists():
         alt1 = Path("..") / f"geom{min_fspe_index}.xyz"

@@ -201,11 +201,12 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             config['_used_combined_occupier'] = True
 
         if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == "yes":
-            multiplicity_0, additions_0, _, gbw_initial = read_occupier_file(
+            multiplicity_0, broken_sym_0, _, gbw_initial = read_occupier_file(
                 "initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config
             )
             ctx.extra['multiplicity_0'] = multiplicity_0
-            ctx.extra['additions_0'] = additions_0
+            ctx.extra['broken_sym_0'] = broken_sym_0
+            ctx.extra['ground_broken_sym'] = broken_sym_0
             ctx.extra['gbw_initial'] = gbw_initial
 
             copy_if_exists("./initial_OCCUPIER", "initial.out", "initial.xyz")
@@ -290,11 +291,12 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             else:
                 logger.info("Reusing existing OCCUPIER oxidation/reduction workflows")
 
-        multiplicity_0, additions_0, _, gbw_initial = read_occupier_file(
+        multiplicity_0, broken_sym_0, _, gbw_initial = read_occupier_file(
             "initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config
         )
         ctx.extra['multiplicity_0'] = multiplicity_0
-        ctx.extra['additions_0'] = additions_0
+        ctx.extra['broken_sym_0'] = broken_sym_0
+        ctx.extra['ground_broken_sym'] = broken_sym_0
         ctx.extra['gbw_initial'] = gbw_initial
 
         preferred_parent_xyz = Path("input_initial_OCCUPIER.xyz")
@@ -433,7 +435,7 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
         'metals': ctx.metals,
         'metal_basisset': ctx.metal_basisset,
         'main_basisset': ctx.main_basisset,
-        'additions': "",
+        'broken_sym': "",
         'input_file_path': ctx.input_file,
         'output_initial': ctx.file_bundle.output_initial,
         'ground_multiplicity': ground_multiplicity,
@@ -576,11 +578,11 @@ def run_manual_phase(ctx: PipelineContext) -> Dict[str, Any]:
         'metals': ctx.metals,
         'metal_basisset': ctx.metal_basisset,
         'main_basisset': ctx.main_basisset,
-        'additions': ctx.extra.get('ground_additions', ""),
+        'broken_sym': ctx.extra.get('ground_broken_sym', ""),
         'input_file_path': ctx.input_file,
         'output_initial': ctx.file_bundle.output_initial,
         'ground_multiplicity': config.get('multiplicity_0', 1),
-        'ground_additions': ctx.extra.get('ground_additions', ""),
+        'ground_broken_sym': ctx.extra.get('ground_broken_sym', ""),
         'include_excited_jobs': True,
     }
 

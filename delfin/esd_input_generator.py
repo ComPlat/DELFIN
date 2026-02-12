@@ -935,7 +935,7 @@ def _create_state_input_delta_scf(
         for block in blocks:
             f.write(block + "\n")
 
-        # Add custom additions for S0 state if specified in CONTROL
+        # Add custom broken_sym for S0 state if specified in CONTROL
         if state_upper == "S0":
             # Generate %elprop block from elprop_properties config
             elprop_block = generate_elprop_block(config)
@@ -1598,7 +1598,7 @@ def _create_state_input_tddft(
             f.write(f"%maxcore {maxcore}\n")
             _write_output_blocks(f)
 
-            # Add custom additions for S0 state if specified in CONTROL
+            # Add custom broken_sym for S0 state if specified in CONTROL
             # Generate %elprop block from elprop_properties config
             elprop_block = generate_elprop_block(config)
             if elprop_block:

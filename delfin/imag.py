@@ -261,7 +261,7 @@ def _write_input_from_template(
     template_ctx,
     coords,
     output_path: Path | str,
-    additions_text: str,
+    broken_sym_text: str,
     geom_source_path: Path | str,
     config,
     main_basisset,
@@ -400,14 +400,14 @@ def _write_input_from_template(
         )
         return False
 
-    additions_text = additions_text.strip()
-    if additions_text:
-        additions_lines = [ln if ln.endswith("\n") else ln + "\n" for ln in additions_text.splitlines()]
+    broken_sym_text = broken_sym_text.strip()
+    if broken_sym_text:
+        broken_sym_lines = [ln if ln.endswith("\n") else ln + "\n" for ln in broken_sym_text.splitlines()]
         existing_normalized = {line.strip().lower() for line in lines}
-        additions_lines = [ln for ln in additions_lines if ln.strip().lower() not in existing_normalized]
-        if additions_lines:
+        broken_sym_lines = [ln for ln in broken_sym_lines if ln.strip().lower() not in existing_normalized]
+        if broken_sym_lines:
             insertion_index = geom_start - 1 if geom_start > 0 else 0
-            lines = lines[:insertion_index] + additions_lines + lines[insertion_index:]
+            lines = lines[:insertion_index] + broken_sym_lines + lines[insertion_index:]
 
     try:
         with Path(output_path).open("w", encoding="utf-8") as fh:
@@ -418,21 +418,21 @@ def _write_input_from_template(
         return False
 
 
-def _normalize_additions_payload(additions) -> str:
-    if not additions:
+def _normalize_broken_sym_payload(broken_sym) -> str:
+    if not broken_sym:
         return ""
-    if isinstance(additions, str):
-        candidate = additions.strip()
-    if isinstance(additions, dict):
+    if isinstance(broken_sym, str):
+        candidate = broken_sym.strip()
+    if isinstance(broken_sym, dict):
         chunks = []
-        for key, value in additions.items():
+        for key, value in broken_sym.items():
             key_str = str(key).strip()
             val_str = str(value).strip()
             if key_str and val_str:
                 chunks.append(f"{key_str}={val_str}")
         candidate = "\n".join(chunks)
     else:
-        candidate = str(additions).strip()
+        candidate = str(broken_sym).strip()
 
     if not candidate:
         return ""
@@ -1000,7 +1000,7 @@ def read_and_modify_xyz_IMAG(
     config,
     main_basisset,
     metal_basisset,
-    additions,
+    broken_sym,
     pal_override=None,
     maxcore_override=None,
     include_freq: bool = True,
@@ -1010,7 +1010,7 @@ def read_and_modify_xyz_IMAG(
 
     The builder now mirrors the generic OCCUPIER writers, including support for
     QM/XTB splits and cached %QMMM blocks, while still allowing per-iteration
-    overrides supplied via ``additions``.
+    overrides supplied via ``broken_sym``.
     """
     try:
         with open(input_file_path, "r") as file:
@@ -1069,7 +1069,7 @@ def read_and_modify_xyz_IMAG(
     pal_val = int(pal_override) if pal_override is not None else int(config["PAL"])
     maxcore_val = int(maxcore_override) if maxcore_override is not None else int(config["maxcore"])
     builder.add_resources(maxcore_val, pal_val, resolve_maxiter(config))
-    builder.add_additions(additions)
+    builder.add_broken_sym(broken_sym)
 
     if include_freq:
         # Add %freq block with temperature (IMAG always uses FREQ)
@@ -1150,7 +1150,7 @@ def run_IMAG(
     config,
     main_basisset,
     metal_basisset,
-    additions,
+    broken_sym,
     step_name="initial",
     source_input=None,
     pal_override=None,
@@ -1284,7 +1284,7 @@ def run_IMAG(
         geometry_source: Path,
         destination_path: Path,
         include_freq: bool,
-        additions_payload: str,
+        broken_sym_payload: str,
         *,
         geom_override: str | None = None,
         pal_override_local: int | None = None,
@@ -1298,7 +1298,7 @@ def run_IMAG(
                 template_ctx,
                 coords,
                 destination_path,
-                additions_payload,
+                broken_sym_payload,
                 geometry_source,
                 config,
                 main_basisset,
@@ -1320,13 +1320,13 @@ def run_IMAG(
                 config,
                 main_basisset,
                 metal_basisset,
-                additions_payload,
+                broken_sym_payload,
                 pal_override=pal_override_local if pal_override_local is not None else pal_override,
                 maxcore_override=maxcore_override_local if maxcore_override_local is not None else maxcore_override,
                 geom_override=geom_override,
                 include_freq=include_freq,
             )
-        return additions_payload
+        return broken_sym_payload
 
     if original_out.exists():
         try:
@@ -1339,7 +1339,7 @@ def run_IMAG(
         except Exception as exc:
             logging.debug(f"Failed to archive original input '{template_ctx['path']}': {exc}")
 
-    additions_base = _normalize_additions_payload(additions)
+    broken_sym_base = _normalize_broken_sym_payload(broken_sym)
 
     best_energy = find_electronic_energy(str(original_out))
     if best_energy is None:
@@ -1428,7 +1428,7 @@ def run_IMAG(
 
     iteration = 0
     last_success_iteration = 0
-    additions_eff = additions_base
+    broken_sym_eff = broken_sym_base
 
     while True:
         modes = [
@@ -1495,7 +1495,7 @@ def run_IMAG(
                         candidate_geom,
                         sp_input_path,
                         include_freq=False,
-                        additions_payload=additions_eff,
+                        broken_sym_payload=broken_sym_eff,
                         geom_override=candidate_geom_override,
                         pal_override_local=pal_override,
                         maxcore_override_local=maxcore_effective,
@@ -1550,7 +1550,7 @@ def run_IMAG(
 
         # RECALC mode: Check if frequency calculation was already completed successfully
         freq_calc_needed = True
-        additions_current = additions_eff
+        broken_sym_current = broken_sym_eff
         gbw_candidate = best_candidate.sp_output.with_suffix(".gbw")
 
         if recalc and freq_output_path.exists():
@@ -1591,7 +1591,7 @@ def run_IMAG(
                 freq_geometry_source,
                 freq_input_path,
                 include_freq=True,
-                additions_payload=additions_current,
+                broken_sym_payload=broken_sym_current,
                 geom_override=None,
                 pal_override_local=pal_override,
                 maxcore_override_local=maxcore_effective,
@@ -1624,13 +1624,13 @@ def run_IMAG(
                 except Exception as exc:
                     logging.debug(f"Iteration {iteration}: failed to inspect IMAG log: {exc}")
 
-            if geometry_mismatch and additions_current and freq_calc_needed:
+            if geometry_mismatch and broken_sym_current and freq_calc_needed:
                 logging.warning(
-                    f"Iteration {iteration}: geometry mismatch detected; retrying without supplemental additions."
+                    f"Iteration {iteration}: geometry mismatch detected; retrying without supplemental broken_sym."
                 )
-                additions_current = ""
-                additions_eff = ""
-                additions_base = ""
+                broken_sym_current = ""
+                broken_sym_eff = ""
+                broken_sym_base = ""
                 freq_geometry_source = (
                     best_candidate.optimized_geometry
                     if best_candidate.optimized_geometry and Path(best_candidate.optimized_geometry).exists()
@@ -1640,7 +1640,7 @@ def run_IMAG(
                     freq_geometry_source,
                     freq_input_path,
                     include_freq=True,
-                    additions_payload=additions_current,
+                    broken_sym_payload=broken_sym_current,
                     geom_override=None,
                     pal_override_local=pal_override,
                     maxcore_override_local=maxcore_effective,

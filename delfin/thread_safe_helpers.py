@@ -88,7 +88,7 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
             return None
 
         try:
-            multiplicity_src, additions_src, min_fspe_index, _gbw_path = res
+            multiplicity_src, broken_sym_src, min_fspe_index, _gbw_path = res
         except (ValueError, TypeError):
             logger.error(
                 "OCCUPIER results for '%s' are incomplete (expected 4 values, got %s)",
@@ -104,7 +104,7 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
             _print_preferred_settings(
                 source_path,
                 multiplicity_src,
-                additions_src,
+                broken_sym_src,
                 min_fspe_index,
                 config,
             )
@@ -237,7 +237,7 @@ def read_occupier_file_threadsafe(folder_path: Path, file_name: str,
                               preferred_index_override=preferred_index_override)
 
 
-def _print_preferred_settings(folder: Path, multiplicity, additions, min_fspe_index, config: Dict[str, Any]) -> None:
+def _print_preferred_settings(folder: Path, multiplicity, broken_sym, min_fspe_index, config: Dict[str, Any]) -> None:
     if multiplicity is None and min_fspe_index is None:
         return
 
@@ -268,7 +268,7 @@ def _print_preferred_settings(folder: Path, multiplicity, additions, min_fspe_in
             print(f"  min_fspe_index: {min_fspe_index}")
         if parity:
             print(f"  parity:         {parity}")
-        print(f"  additions:      {additions or '(none)'}")
+        print(f"  broken_sym:      {broken_sym or '(none)'}")
         if multiplicity is not None:
             print(f"  multiplicity:   {multiplicity}")
         print()

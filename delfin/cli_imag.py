@@ -101,36 +101,49 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
     # Build list of steps to process
     steps_to_process = []
 
+    def _read_manual_broken_sym(step_type: str, idx: int | None = None) -> str:
+        if step_type == "initial":
+            keys = ["BrokenSym_0"]
+        elif step_type == "ox" and idx is not None:
+            keys = [f"BrokenSym_ox{idx}"]
+        elif step_type == "red" and idx is not None:
+            keys = [f"BrokenSym_red{idx}"]
+        else:
+            return ""
+        for key in keys:
+            value = str(config.get(key, "")).strip()
+            if value:
+                return value
+        return ""
+
     if calc_initial and imag_scope in ["initial", "all"]:
         steps_to_process.append({
             "name": "initial",
             "inp_file": "initial.inp",
             "out_file": "initial.out",
             "hess_file": "initial.hess",
-            "additions": str(config.get("additions_0", "")).strip(),
+            "broken_sym": _read_manual_broken_sym("initial"),
         })
 
     if imag_scope == "all":
         # Add oxidation steps
         for idx in ox_steps:
-            add_key = f"additions_ox{idx}"
             steps_to_process.append({
                 "name": f"ox_step_{idx}",
                 "inp_file": f"ox_step_{idx}.inp",
                 "out_file": f"ox_step_{idx}.out",
                 "hess_file": f"ox_step_{idx}.hess",
-                "additions": str(config.get(add_key, "")).strip(),
+                "broken_sym": _read_manual_broken_sym("ox", idx),
             })
 
         # Add reduction steps
         for idx in red_steps:
-            add_key = f"additions_red{idx}"
             steps_to_process.append({
                 "name": f"red_step_{idx}",
                 "inp_file": f"red_step_{idx}.inp",
                 "out_file": f"red_step_{idx}.out",
                 "hess_file": f"red_step_{idx}.hess",
-                "additions": str(config.get(add_key, "")).strip(),
+                "broken_sym": _read_manual_broken_sym("red", idx),
             })
 
     if not steps_to_process:
@@ -189,11 +202,11 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
             step_charge, step_mult = _extract_charge_mult_from_inp(inp_file)
             logger.info("Charge: %d, Multiplicity: %d (from %s)", step_charge, step_mult, inp_file.name)
 
-            additions = step["additions"]
+            broken_sym = step["broken_sym"]
 
             hess_base = str(hess_file).replace(".hess", "")
             job_id = f"imag_{step['name']}"
-            additions_payload = additions
+            broken_sym_payload = broken_sym
 
             cores_min, cores_opt, cores_max = scheduler.manager.derive_core_bounds(
                 hint=f"IMAG {step['name']}"
@@ -204,7 +217,7 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
                           hess: str,
                           step_charge_val: int,
                           step_mult_val: int,
-                          additions_val,
+                          broken_sym_val,
                           metals_val: list[str]):
                 def _work(cores: int) -> None:
                     logger.info("[IMAG] %s → start (cores=%d)", step_name, cores)
@@ -218,7 +231,7 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
                         config,
                         main_basisset,
                         metal_basisset,
-                        additions_val,
+                        broken_sym_val,
                         step_name=step_name,
                         source_input=str(inp_file),
                         pal_override=cores,
@@ -234,7 +247,7 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
                 hess_base,
                 step_charge,
                 step_mult,
-                additions_payload,
+                broken_sym_payload,
                 metals_list.copy(),
             )
 

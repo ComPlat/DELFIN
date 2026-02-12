@@ -265,7 +265,7 @@ class _WorkflowManager:
             )
 
             # Flush if we haven't logged in a while (500ms threshold)
-            # This ensures quick feedback while still batching rapid additions
+            # This ensures quick feedback while still batching rapid broken_sym
             time_since_last_log = time.time() - self._last_registration_log_time
             if time_since_last_log > 0.5:
                 self._flush_pending_registrations()
@@ -1753,7 +1753,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
     metals = kwargs['metals']
     metal_basis = kwargs['metal_basisset']
     main_basis = kwargs['main_basisset']
-    additions = kwargs['additions']
+    broken_sym = kwargs['broken_sym']
     total_electrons_txt = kwargs['total_electrons_txt']
     include_excited = bool(kwargs.get('include_excited_jobs', False))
 
@@ -1795,7 +1795,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 metal_basis,
                 main_basis,
                 config,
-                additions,
+                broken_sym,
             )
             _update_pal_block(output_initial, cores)
             if not run_orca(output_initial, 'initial.out', isolate=True):
@@ -1810,7 +1810,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 config,
                 main_basis,
                 metal_basis,
-                additions,
+                broken_sym,
                 source_input='initial.inp',
             )
 
@@ -1873,7 +1873,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     metal_basis,
                     main_basis,
                     config,
-                    additions,
+                    broken_sym,
                 )
                 _update_pal_block(ox_inputs[idx], cores)
 
@@ -1909,7 +1909,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     config,
                     main_basis,
                     metal_basis,
-                    additions,
+                    broken_sym,
                     step_name=f"ox_step_{idx}",
                     source_input=ox_inputs[idx],
                 )
@@ -1956,7 +1956,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     metal_basis,
                     main_basis,
                     config,
-                    additions,
+                    broken_sym,
                 )
                 _update_pal_block(red_inputs[idx], cores)
 
@@ -1992,7 +1992,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     config,
                     main_basis,
                     metal_basis,
-                    additions,
+                    broken_sym,
                     step_name=f"red_step_{idx}",
                     source_input=red_inputs[idx],
                 )
@@ -2021,7 +2021,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
     include_excited = bool(kwargs.get('include_excited_jobs', False))
     base_charge = _parse_int(config.get('charge'))
     base_multiplicity = _parse_int(kwargs.get('ground_multiplicity'), fallback=1)
-    ground_additions = kwargs.get('ground_additions', '')
+    ground_broken_sym = kwargs.get('ground_broken_sym', '')
     initial_job_id: Optional[str] = None
 
     def _add_job(job_id: str, description: str, work: Callable[[int], None],
@@ -2057,7 +2057,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 metal_basis,
                 main_basis,
                 config,
-                ground_additions,
+                ground_broken_sym,
             )
             _update_pal_block(output_initial, cores)
             if not run_orca(output_initial, 'initial.out', isolate=True):
@@ -2072,7 +2072,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 config,
                 main_basis,
                 metal_basis,
-                ground_additions,
+                ground_broken_sym,
                 source_input=output_initial,
             )
 
@@ -2116,14 +2116,14 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
             dependencies.add(initial_job_id)
         cores_min, cores_opt, cores_max = manager.derive_core_bounds()
 
-        additions_key = f"additions_ox{step}"
+        broken_sym_key = f"BrokenSym_ox{step}"
         multiplicity_key = f"multiplicity_ox{step}"
 
-        def make_work(idx: int, add_key: str, mult_key: str) -> Callable[[int], None]:
+        def make_work(idx: int, bs_key: str, mult_key: str) -> Callable[[int], None]:
             def _work(cores: int) -> None:
                 charge = base_charge + idx
                 multiplicity = _parse_int(config.get(mult_key), fallback=1)
-                additions = _extract_manual_additions(config.get(add_key, ""))
+                broken_sym = _extract_manual_broken_sym(config.get(bs_key, ""))
 
                 read_xyz_and_create_input3(
                     _resolve_classic_step1_geom(ox_sources[idx], idx),
@@ -2135,7 +2135,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                     metal_basis,
                     main_basis,
                     config,
-                    additions,
+                    broken_sym,
                 )
                 _update_pal_block(ox_inputs[idx], cores)
 
@@ -2171,7 +2171,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                     config,
                     main_basis,
                     metal_basis,
-                    additions,
+                    broken_sym,
                     step_name=f"ox_step_{idx}",
                     source_input=ox_inputs[idx],
                 )
@@ -2181,7 +2181,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
         manager.add_job(
             WorkflowJob(
                 job_id=f"manual_ox{step}",
-                work=make_work(step, additions_key, multiplicity_key),
+                work=make_work(step, broken_sym_key, multiplicity_key),
                 description=f"manual oxidation step {step}",
                 dependencies=dependencies,
                 cores_min=cores_min,
@@ -2199,14 +2199,14 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
             dependencies.add(initial_job_id)
         cores_min, cores_opt, cores_max = manager.derive_core_bounds()
 
-        additions_key = f"additions_red{step}"
+        broken_sym_key = f"BrokenSym_red{step}"
         multiplicity_key = f"multiplicity_red{step}"
 
-        def make_work(idx: int, add_key: str, mult_key: str) -> Callable[[int], None]:
+        def make_work(idx: int, bs_key: str, mult_key: str) -> Callable[[int], None]:
             def _work(cores: int) -> None:
                 charge = base_charge - idx
                 multiplicity = _parse_int(config.get(mult_key), fallback=1)
-                additions = _extract_manual_additions(config.get(add_key, ""))
+                broken_sym = _extract_manual_broken_sym(config.get(bs_key, ""))
 
                 read_xyz_and_create_input3(
                     _resolve_classic_step1_geom(red_sources[idx], idx),
@@ -2218,7 +2218,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                     metal_basis,
                     main_basis,
                     config,
-                    additions,
+                    broken_sym,
                 )
                 _update_pal_block(red_inputs[idx], cores)
 
@@ -2254,7 +2254,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                     config,
                     main_basis,
                     metal_basis,
-                    additions,
+                    broken_sym,
                     step_name=f"red_step_{idx}",
                     source_input=red_inputs[idx],
                 )
@@ -2264,7 +2264,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
         manager.add_job(
             WorkflowJob(
                 job_id=f"manual_red{step}",
-                work=make_work(step, additions_key, multiplicity_key),
+                work=make_work(step, broken_sym_key, multiplicity_key),
                 description=f"manual reduction step {step}",
                 dependencies=dependencies,
                 cores_min=cores_min,
@@ -2381,7 +2381,7 @@ def _verify_orca_output(path: str) -> bool:
         return False
 
 
-def _extract_manual_additions(raw: Any) -> str:
+def _extract_manual_broken_sym(raw: Any) -> str:
     if raw is None:
         return ""
     if isinstance(raw, str):

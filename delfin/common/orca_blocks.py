@@ -48,11 +48,11 @@ class OrcaInputBuilder:
         if maxiter is not None:
             self._lines.append(f"%scf maxiter {maxiter} end\n")
 
-    def add_additions(self, additions: str) -> None:
-        if additions:
-            stripped = additions.strip()
+    def add_broken_sym(self, broken_sym: str) -> None:
+        if broken_sym:
+            stripped = broken_sym.strip()
             if stripped:
-                self._lines.append(additions if additions.endswith("\n") else f"{additions}\n")
+                self._lines.append(broken_sym if broken_sym.endswith("\n") else f"{broken_sym}\n")
 
     def add_block(self, block: str) -> None:
         if block:

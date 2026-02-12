@@ -480,7 +480,7 @@ def _apply_per_atom_newgto(geom_lines: List[str], found_metals: List[str],
 # -------------------------------------------------------------------------
 
 def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity, solvent,
-                         found_metals, metal_basisset, main_basisset, config, additions):
+                         found_metals, metal_basisset, main_basisset, config, broken_sym):
     """
     Build a generic ORCA input from an existing coordinate file (plain XYZ-like block).
     Applies: new '!' line (with ri_jkx/aux_jk/relativity via utils), optional print blocks,
@@ -522,7 +522,7 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
     output_blocks = collect_output_blocks(config, allow=True)
     builder = OrcaInputBuilder(bang)
     builder.add_resources(config['maxcore'], config['PAL'], resolve_maxiter(config))
-    builder.add_additions(additions)
+    builder.add_broken_sym(broken_sym)
     if include_freq:
         builder.add_block(_build_freq_block(config))
     builder.add_blocks(output_blocks)
@@ -540,7 +540,7 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
         file.writelines(lines)
 
 def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplicity, solvent,
-                         found_metals, metal_basisset, main_basisset, config, additions):
+                         found_metals, metal_basisset, main_basisset, config, broken_sym):
     """
     Build a generic ORCA input from an existing coordinate file (plain XYZ-like block).
     Applies: new '!' line (with ri_jkx/aux_jk/relativity via utils), optional print blocks,
@@ -594,7 +594,7 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
     output_blocks = collect_output_blocks(config, allow=True)
     builder = OrcaInputBuilder(bang)
     builder.add_resources(config['maxcore'], config['PAL'], resolve_maxiter(config))
-    builder.add_additions(additions)
+    builder.add_broken_sym(broken_sym)
     if include_freq:
         builder.add_block(_build_freq_block(config))
     builder.add_blocks(output_blocks)
@@ -613,7 +613,7 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
 
 
 def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge: int, multiplicity: int,
-                               solvent: str, found_metals: List[str], metal_basisset: Optional[str], main_basisset: str, config: Dict[str, Any], additions: str) -> None:
+                               solvent: str, found_metals: List[str], metal_basisset: Optional[str], main_basisset: str, config: Dict[str, Any], broken_sym: str) -> None:
     """
     Frequency job builder (adds FREQ). Uses new CONTROL keys and per-atom basis tagging.
     """
@@ -657,7 +657,7 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
     output_blocks = collect_output_blocks(config, allow=True)
     builder = OrcaInputBuilder(bang)
     builder.add_resources(config['maxcore'], config['PAL'], resolve_maxiter(config))
-    builder.add_additions(additions)
+    builder.add_broken_sym(broken_sym)
     if include_freq:
         builder.add_block(_build_freq_block(config))
     builder.add_blocks(output_blocks)

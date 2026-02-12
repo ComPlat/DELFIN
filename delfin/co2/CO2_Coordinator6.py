@@ -26,7 +26,7 @@ from functools import partial
 # === Templates erzeugen (--define) ===========================================
 def write_default_files(control_path="CONTROL.txt", co2_path="co2.xyz",
                         charge=None, multiplicity=None, solvent=None, metal=None,
-                        additions=None, overwrite=False):
+                        broken_sym=None, overwrite=False):
     # 'metal=auto' signals runtime detection from the xyz (see main()).
     control_template = """# Input / Output
 ------------------------------------
@@ -38,7 +38,7 @@ co2=co2.xyz
 ------------------------------------
 charge=[CHARGE]
 multiplicity=[MULTIPLICITY]
-additions=
+broken_sym=
 
 # Solvation
 ------------------------------------
@@ -101,7 +101,7 @@ max_workers=4
 # Alternative keywords (commented examples)
 # orientation_job=GFN2-XTB
 # scan_job=GFN2-XTB OPT
-# additions=%SCF BrokenSym M,N END
+# broken_sym=%SCF BrokenSym M,N END
 #
 # Parallelization notes:
 # - Each worker uses PAL cores for ORCA
@@ -124,9 +124,9 @@ max_workers=4
         metal_str = str(metal).strip()
         control_template = control_template.replace("metal=auto", f"metal={metal_str}")
 
-    if additions is not None:
-        additions_str = str(additions).strip()
-        control_template = control_template.replace("additions=", f"additions={additions_str}")
+    if broken_sym is not None:
+        broken_sym_str = str(broken_sym).strip()
+        control_template = control_template.replace("broken_sym=", f"broken_sym={broken_sym_str}")
 
     co2_xyz = """3
 
@@ -195,7 +195,7 @@ def read_control_file(path="CONTROL.txt"):
             params[key] = int(params[key])
 
     # Optional: /n durch Zeilenumbruch ersetzen
-    for key in ["orca_keywords", "rot_orca_keywords", "additions"]:
+    for key in ["orca_keywords", "rot_orca_keywords", "broken_sym"]:
         if key in params and isinstance(params[key], str):
             params[key] = params[key].replace("/n", "\n")
 
@@ -833,7 +833,7 @@ def build_orca_keywords(config, job_spec):
     return " ".join(tokens).strip()
 
 
-def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB SP ALPB(DMF)", additions="",
+def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB SP ALPB(DMF)", broken_sym="",
                                 charge=-2, multiplicity=1, PAL=8, maxcore=2000, tag="calc",
                                 metal_symbol=None, metal_basis=None, control_args=None,
                                 qmmm_range: Optional[Tuple[int, int]] = None):
@@ -853,8 +853,8 @@ def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB
         lines.append(block)
     lines.append(f"%maxcore {maxcore}\n")
     lines.append(f"%pal nprocs {PAL} end\n")
-    if additions:
-        add = additions if additions.endswith("\n") else additions + "\n"
+    if broken_sym:
+        add = broken_sym if broken_sym.endswith("\n") else broken_sym + "\n"
         lines.append(add)
 
     lines.extend(_build_qmmm_block_lines(qmmm_range))
@@ -883,11 +883,11 @@ def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB
 
 
 def write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index, start_distance, end_distance=1.7, steps=5,
-                             orca_keywords="GFN2-XTB OPT ALPB(DMF)", additions="",
+                             orca_keywords="GFN2-XTB OPT ALPB(DMF)", broken_sym="",
                              charge=-2, multiplicity=3, PAL=4, maxcore=2000,
                              metal_symbol=None, metal_basis=None, control_args=None,
                              qmmm_range: Optional[Tuple[int, int]] = None):
-    additions_line = additions if additions else ""
+    broken_sym_line = broken_sym if broken_sym else ""
     # For QM/MM workflows we keep the 0-based indexing convention throughout.
     i_orca = metal_index
     j_orca = co2_c_index
@@ -900,8 +900,8 @@ def write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index, start_di
         sections.append(block)
     sections.append(f"%maxcore {maxcore}\n")
     sections.append(f"%pal nprocs {PAL} end\n")
-    if additions_line:
-        add = additions_line if additions_line.endswith("\n") else additions_line + "\n"
+    if broken_sym_line:
+        add = broken_sym_line if broken_sym_line.endswith("\n") else broken_sym_line + "\n"
         sections.append(add)
     sections.extend(_build_qmmm_block_lines(qmmm_range))
     sections.append("%geom\n")
@@ -1001,7 +1001,7 @@ def plot_orientation_result(csv_path, png_path):
     print(f"[OK] Orientation plot saved: {png_path}")
 
 def _calculate_single_angle(ang, base_atoms, co2_indices, charge, multiplicity, PAL, maxcore,
-                           orca_keywords, additions, metal_symbol, metal_basis, control_args,
+                           orca_keywords, broken_sym, metal_symbol, metal_basis, control_args,
                            qmmm_range, qm_separator, recalc_mode=False):
     """
     Worker function to calculate energy for a single angle.
@@ -1037,7 +1037,7 @@ def _calculate_single_angle(ang, base_atoms, co2_indices, charge, multiplicity, 
         xyz_path,
         ang_dir,
         orca_keywords=orca_keywords,
-        additions=additions,
+        broken_sym=broken_sym,
         charge=charge, multiplicity=multiplicity,
         PAL=PAL, maxcore=maxcore, tag="calc",
         metal_symbol=metal_symbol, metal_basis=metal_basis,
@@ -1054,7 +1054,7 @@ def _calculate_single_angle(ang, base_atoms, co2_indices, charge, multiplicity, 
 
 # === Orientation scan (0–180°, SPs) ===
 def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indices, charge, multiplicity,
-                                       PAL, maxcore, orca_keywords, additions,
+                                       PAL, maxcore, orca_keywords, broken_sym,
                                        angle_step_deg=10, angle_range_deg=180,
                                        metal_symbol=None, metal_basis=None,
                                        control_args=None, qmmm_range=None, qm_separator="$",
@@ -1086,7 +1086,7 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
                             base_atoms=base_atoms, co2_indices=co2_indices,
                             charge=charge, multiplicity=multiplicity,
                             PAL=PAL, maxcore=maxcore,
-                            orca_keywords=orca_keywords, additions=additions,
+                            orca_keywords=orca_keywords, broken_sym=broken_sym,
                             metal_symbol=metal_symbol, metal_basis=metal_basis,
                             control_args=control_args, qmmm_range=qmmm_range,
                             qm_separator=qm_separator, recalc_mode=recalc_mode)
@@ -1105,7 +1105,7 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
         for ang in angles:
             ang, E, xyz_path = _calculate_single_angle(
                 ang, base_atoms, co2_indices, charge, multiplicity, PAL, maxcore,
-                orca_keywords, additions, metal_symbol, metal_basis, control_args,
+                orca_keywords, broken_sym, metal_symbol, metal_basis, control_args,
                 qmmm_range, qm_separator, recalc_mode
             )
             results.append((ang, E, xyz_path))
@@ -1226,11 +1226,11 @@ def main():
     if not scan_orca_keywords:
         raise ValueError("Keine gültigen ORCA-Schlüsselwörter für den Distanzscan gefunden. Bitte CONTROL-Einträge prüfen.")
 
-    additions_raw = args.get("additions", "")
-    additions = _apply_metal_placeholder(additions_raw)
+    broken_sym_raw = args.get("broken_sym", "")
+    broken_sym = _apply_metal_placeholder(broken_sym_raw)
 
-    if metal_symbol is None and isinstance(additions_raw, str) and "[METAL]" in additions_raw:
-        print("[WARN] Platzhalter [METAL] in 'additions' nicht ersetzt. Bitte Metall manuell angeben.")
+    if metal_symbol is None and isinstance(broken_sym_raw, str) and "[METAL]" in broken_sym_raw:
+        print("[WARN] Platzhalter [METAL] in 'broken_sym' nicht ersetzt. Bitte Metall manuell angeben.")
 
     # Charge/mult etc.
     charge = args.get("charge", -2)
@@ -1321,7 +1321,7 @@ def main():
             charge=charge, multiplicity=multiplicity,
             PAL=PAL, maxcore=maxcore,
             orca_keywords=rot_orca_keywords,
-            additions=additions,
+            broken_sym=broken_sym,
             angle_step_deg=rot_step_deg,
             angle_range_deg=rot_range_deg,
             metal_symbol=metal_symbol,
@@ -1354,7 +1354,7 @@ def main():
         end_distance=scan_end,
         steps=scan_steps,
         orca_keywords=scan_orca_keywords,
-        additions=additions,
+        broken_sym=broken_sym,
         charge=charge,
         multiplicity=multiplicity,
         PAL=PAL,

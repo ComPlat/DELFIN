@@ -319,7 +319,7 @@ def _first_coordination_sphere_indices(atoms, metal_indices, scale, radii_map):
 
 def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multiplicity,
                                   solvent, found_metals, metal_basisset, main_basisset,
-                                  config, additions):
+                                  config, broken_sym):
     """Build the ORCA input with per-atom NewGTO for metals and first coordination sphere."""
     xyz_file = "input.xyz" if from_index == 1 else f"input{from_index}.xyz"
 
@@ -412,7 +412,7 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     bang = " ".join(t for t in tokens if t).replace("  ", " ").strip()
 
     modified_lines = []
-    if additions and "moinp" in additions.lower():
+    if broken_sym and "moinp" in broken_sym.lower():
         bang += " MORead"
     modified_lines.append(bang + "\n")
 
@@ -422,8 +422,8 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     modified_lines.append(f"%maxcore {config['maxcore']}\n")
 
     # Extra blocks (e.g., %moinp, %scf BrokenSym, etc.)
-    if additions and additions.strip():
-        modified_lines.append(f"{additions.strip()}\n")
+    if broken_sym and broken_sym.strip():
+        modified_lines.append(f"{broken_sym.strip()}\n")
 
     # Add %freq block with temperature if FREQ is enabled
     if freq_flag:
@@ -668,7 +668,7 @@ def run_OCCUPIER():
 
     def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multiplicity,
                                       solvent, found_metals, metal_basisset, main_basisset,
-                                      config, additions):
+                                      config, broken_sym):
         """
         Build the ORCA input with:
           - global method line '!' using main_basisset and aux-JK (via resolve_level_of_theory),
@@ -771,7 +771,7 @@ def run_OCCUPIER():
         bang = " ".join(t for t in tokens if t).replace("  ", " ").strip()
 
         modified_lines = []
-        if additions and "moinp" in additions.lower():
+        if broken_sym and "moinp" in broken_sym.lower():
             bang += " MORead"
         modified_lines.append(bang + "\n")
 
@@ -781,8 +781,8 @@ def run_OCCUPIER():
         modified_lines.append(f"%maxcore {config['maxcore']}\n")
 
         # Extra blocks (e.g., %moinp, %scf BrokenSym, etc.)
-        if additions and additions.strip():
-            modified_lines.append(f"{additions.strip()}\n")
+        if broken_sym and broken_sym.strip():
+            modified_lines.append(f"{broken_sym.strip()}\n")
 
         # Add %freq block with temperature if FREQ is enabled
         if freq_flag:
@@ -1171,7 +1171,7 @@ def run_OCCUPIER():
                         scf_lines.append(f"  APMethod {apm}")
                     parts.append("%scf\n" + "\n".join(scf_lines) + "\nend")
 
-                additions = "\n".join(parts)
+                broken_sym = "\n".join(parts)
 
                 workdir = Path.cwd()
                 label = workdir.name or "occupier_core"
@@ -1212,7 +1212,7 @@ def run_OCCUPIER():
                     metal_basisset,
                     main_basisset,
                     config,
-                    additions,
+                    broken_sym,
                 )
 
                 if not Path(inp).exists():

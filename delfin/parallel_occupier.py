@@ -587,13 +587,13 @@ def build_occupier_jobs(
         )
         return derived
 
-    def _control_additions(step_type: str, step: Optional[int] = None) -> str:
+    def _control_broken_sym(step_type: str, step: Optional[int] = None) -> str:
         if step_type == "initial":
-            keys = ["additions_0"]
+            keys = ["BrokenSym_0"]
         elif step_type == "ox":
-            keys = [f"additions_ox{step}"] if step else []
+            keys = [f"BrokenSym_ox{step}"] if step else []
         else:
-            keys = [f"additions_red{step}"] if step else []
+            keys = [f"BrokenSym_red{step}"] if step else []
         for key in keys:
             value = config.get(key)
             if value is None:
@@ -613,7 +613,11 @@ def build_occupier_jobs(
                     first, second = bs_match.groups()
                     return f"%scf BrokenSym {first},{second} end"
                 if re.search(r"[A-Za-z]", stripped):
-                    logger.debug("[occupier] Ignoring non-numeric OCCUPIER additions '%s' from CONTROL key %s.", stripped, key)
+                    logger.debug(
+                        "[occupier] Ignoring non-numeric OCCUPIER BrokenSym value '%s' from CONTROL key %s.",
+                        stripped,
+                        key,
+                    )
                     continue
                 return stripped
             if isinstance(value, (list, tuple)):
@@ -623,7 +627,7 @@ def build_occupier_jobs(
         return ""
 
     def read_occ_from_control(step_type: str, step: Optional[int] = None) -> tuple[int, str, Optional[int]]:
-        return _control_multiplicity(step_type, step), _control_additions(step_type, step), None
+        return _control_multiplicity(step_type, step), _control_broken_sym(step_type, step), None
 
     def read_occ(folder: str, step_type: str, step: Optional[int]) -> tuple[int, str, Optional[int]]:
         folder_path = Path(folder)
@@ -631,7 +635,7 @@ def build_occupier_jobs(
         cached = occ_results.get(folder)
         if cached:
             cached_mult = cached.get("multiplicity")
-            cached_adds = cached.get("additions", "")
+            cached_adds = cached.get("broken_sym", "")
             cached_index = cached.get("preferred_index")
             if cached_mult is not None:
                 return cached_mult, cached_adds, cached_index
@@ -666,7 +670,7 @@ def build_occupier_jobs(
                 f"Unable to read OCCUPIER results for '{folder}'."
             )
 
-        multiplicity, additions, min_fspe_index, _gbw_path = result
+        multiplicity, broken_sym, min_fspe_index, _gbw_path = result
         try:
             multiplicity_int = int(multiplicity)  # type: ignore[arg-type]
         except (TypeError, ValueError):
@@ -674,13 +678,13 @@ def build_occupier_jobs(
                 f"Preferred multiplicity missing or invalid in OCCUPIER results for '{folder}'."
             ) from None
 
-        additions_str = additions.strip() if isinstance(additions, str) else ""
+        broken_sym_str = broken_sym.strip() if isinstance(broken_sym, str) else ""
         occ_results[folder] = {
             "multiplicity": multiplicity_int,
-            "additions": additions_str,
+            "broken_sym": broken_sym_str,
             "preferred_index": min_fspe_index,
         }
-        return multiplicity_int, additions_str, min_fspe_index
+        return multiplicity_int, broken_sym_str, min_fspe_index
 
     solvent = context.solvent
     metals = context.metals
@@ -689,16 +693,16 @@ def build_occupier_jobs(
     base_charge = context.charge
     functional = config.get('functional', 'ORCA')
 
-    # Cache OCCUPIER outcomes (multiplicity/additions/index) for reuse by post-jobs
+    # Cache OCCUPIER outcomes (multiplicity/broken_sym/index) for reuse by post-jobs
     occ_results: Dict[str, Dict[str, Any]] = config.setdefault('_occ_results_runtime', {})
 
     calc_initial_flag = str(config.get('calc_initial', 'yes')).strip().lower()
     xtb_solvator_enabled = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
     if calc_initial_flag == 'yes' or xtb_solvator_enabled:
         try:
-            multiplicity_0, additions_0, _ = read_occ("initial_OCCUPIER", "initial", None)
+            multiplicity_0, broken_sym_0, _ = read_occ("initial_OCCUPIER", "initial", None)
         except RuntimeError:
-            multiplicity_0, additions_0, _ = read_occ_from_control("initial", None)
+            multiplicity_0, broken_sym_0, _ = read_occ_from_control("initial", None)
 
         if xtb_solvator_enabled:
             solvated_xyz = Path("XTB_SOLVATOR") / "XTB_SOLVATOR.solvator.xyz"
@@ -716,19 +720,19 @@ def build_occupier_jobs(
 
         def run_initial(cores: int,
                         _mult=multiplicity_0,
-                        _adds=additions_0) -> None:
+                        _broken_sym=broken_sym_0) -> None:
             with _use_workspace():
                 logger.info("[occupier] Preparing initial frequency job")
                 mult_val = _mult
-                adds_val = _adds
+                broken_sym_val = _broken_sym
                 try:
                     dyn_mult, dyn_adds, _ = read_occ("initial_OCCUPIER", "initial", None)
                     if dyn_mult:
                         mult_val = dyn_mult
                     if isinstance(dyn_adds, str):
-                        adds_val = dyn_adds
+                        broken_sym_val = dyn_adds
                 except Exception:  # noqa: BLE001
-                    logger.debug("[occupier] Using fallback multiplicity/additions for initial job", exc_info=True)
+                    logger.debug("[occupier] Using fallback multiplicity/broken_sym for initial job", exc_info=True)
 
                 geom_source: Path = workspace_root / "input_initial_OCCUPIER.xyz"
                 if xtb_solvator_enabled:
@@ -759,7 +763,7 @@ def build_occupier_jobs(
                         metal_basis,
                         main_basis,
                         config,
-                        adds_val,
+                        broken_sym_val,
                     )
                     _update_pal_block(str(inp_initial), cores)
 
@@ -792,7 +796,7 @@ def build_occupier_jobs(
                     config,
                     main_basis,
                     metal_basis,
-                    adds_val,
+                    broken_sym_val,
                     source_input=str(workspace_root / "initial.inp"),
                 )
                 logger.info(
@@ -824,9 +828,9 @@ def build_occupier_jobs(
     for step in oxidation_steps:
         folder = f"ox_step_{step}_OCCUPIER"
         try:
-            multiplicity_step, additions_step, _ = read_occ(folder, "ox", step)
+            multiplicity_step, broken_sym_step, _ = read_occ(folder, "ox", step)
         except RuntimeError:
-            multiplicity_step, additions_step, _ = read_occ_from_control("ox", step)
+            multiplicity_step, broken_sym_step, _ = read_occ_from_control("ox", step)
         if step == 1:
             requires: Set[str] = set()
             explicit_deps: Set[str] = set()
@@ -871,7 +875,7 @@ def build_occupier_jobs(
                         if isinstance(refreshed_adds, str):
                             dyn_adds = refreshed_adds
                     except Exception:  # noqa: BLE001
-                        logger.debug("[occupier] Using fallback multiplicity/additions for ox_step_%d", idx, exc_info=True)
+                        logger.debug("[occupier] Using fallback multiplicity/broken_sym for ox_step_%d", idx, exc_info=True)
 
                     # Determine geometry paths using absolute paths from root_dir
                     if use_solvator:
@@ -958,7 +962,7 @@ def build_occupier_jobs(
                         config,
                         main_basis,
                         metal_basis,
-                        additions_step,
+                        broken_sym_step,
                         step_name=f"ox_step_{idx}",
                         source_input=str(inp_abs),
                     )
@@ -982,7 +986,7 @@ def build_occupier_jobs(
         register_descriptor(JobDescriptor(
             job_id=f"occupier_ox_{step}",
             description=f"oxidation step {step}",
-            work=make_oxidation_work(step, multiplicity_step, additions_step, inp_path, out_path, step_charge, xtb_solvator_enabled),
+            work=make_oxidation_work(step, multiplicity_step, broken_sym_step, inp_path, out_path, step_charge, xtb_solvator_enabled),
             produces={out_path, f"ox_step_{step}.xyz"},
             requires=requires,
             explicit_dependencies=explicit_deps,
@@ -992,9 +996,9 @@ def build_occupier_jobs(
     for step in reduction_steps:
         folder = f"red_step_{step}_OCCUPIER"
         try:
-            multiplicity_step, additions_step, _ = read_occ(folder, "red", step)
+            multiplicity_step, broken_sym_step, _ = read_occ(folder, "red", step)
         except RuntimeError:
-            multiplicity_step, additions_step, _ = read_occ_from_control("red", step)
+            multiplicity_step, broken_sym_step, _ = read_occ_from_control("red", step)
         if step == 1:
             requires: Set[str] = set()
             explicit_deps: Set[str] = set()
@@ -1039,7 +1043,7 @@ def build_occupier_jobs(
                         if isinstance(refreshed_adds, str):
                             dyn_adds = refreshed_adds
                     except Exception:  # noqa: BLE001
-                        logger.debug("[occupier] Using fallback multiplicity/additions for red_step_%d", idx, exc_info=True)
+                        logger.debug("[occupier] Using fallback multiplicity/broken_sym for red_step_%d", idx, exc_info=True)
 
                 # Determine geometry paths using absolute paths from root_dir
                     if use_solvator:
@@ -1130,7 +1134,7 @@ def build_occupier_jobs(
                         config,
                         main_basis,
                         metal_basis,
-                        additions_step,
+                        broken_sym_step,
                         step_name=f"red_step_{idx}",
                         source_input=str(inp_abs),
                     )
@@ -1154,7 +1158,7 @@ def build_occupier_jobs(
         register_descriptor(JobDescriptor(
             job_id=f"occupier_red_{step}",
             description=f"reduction step {step}",
-            work=make_reduction_work(step, multiplicity_step, additions_step, inp_path, out_path, step_charge, xtb_solvator_enabled),
+            work=make_reduction_work(step, multiplicity_step, broken_sym_step, inp_path, out_path, step_charge, xtb_solvator_enabled),
             produces={out_path, f"red_step_{step}.xyz"},
             requires=requires,
             explicit_dependencies=explicit_deps,
@@ -1824,10 +1828,10 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         except (TypeError, ValueError):
             mult_int = None
 
-        additions_str = raw_adds.strip() if isinstance(raw_adds, str) else ""
+        broken_sym_str = raw_adds.strip() if isinstance(raw_adds, str) else ""
         occ_results[folder_name] = {
             "multiplicity": mult_int,
-            "additions": additions_str,
+            "broken_sym": broken_sym_str,
             "preferred_index": preferred_index,
             "gbw_path": str(gbw_path) if gbw_path else None,
         }

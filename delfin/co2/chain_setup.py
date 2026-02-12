@@ -30,13 +30,13 @@ def species_delta_to_name(delta: int) -> str:
 # ---------------------------------------------------------------------------
 
 _MANUAL_KEY_MAP = {
-    0: ("multiplicity_0", "additions_0"),
-    -1: ("multiplicity_red1", "additions_red1"),
-    -2: ("multiplicity_red2", "additions_red2"),
-    -3: ("multiplicity_red3", "additions_red3"),
-    1: ("multiplicity_ox1", "additions_ox1"),
-    2: ("multiplicity_ox2", "additions_ox2"),
-    3: ("multiplicity_ox3", "additions_ox3"),
+    0: ("multiplicity_0", "BrokenSym_0"),
+    -1: ("multiplicity_red1", "BrokenSym_red1"),
+    -2: ("multiplicity_red2", "BrokenSym_red2"),
+    -3: ("multiplicity_red3", "BrokenSym_red3"),
+    1: ("multiplicity_ox1", "BrokenSym_ox1"),
+    2: ("multiplicity_ox2", "BrokenSym_ox2"),
+    3: ("multiplicity_ox3", "BrokenSym_ox3"),
 }
 
 
@@ -95,11 +95,11 @@ def _spin_from_occupier_txt(
 def _spin_from_control_manual(
     ctrl: Dict[str, str], delta: int,
 ) -> Tuple[Optional[int], Optional[str]]:
-    """Fallback: read multiplicity/additions from CONTROL.txt MANUALLY section."""
+    """Fallback: read multiplicity/BrokenSym from CONTROL.txt MANUALLY section."""
     keys = _MANUAL_KEY_MAP.get(delta)
     if not keys:
         return None, None
-    mult_key, add_key = keys
+    mult_key, broken_sym_key = keys
     mult_raw = ctrl.get(mult_key, "").strip()
     if not mult_raw:
         return None, None
@@ -107,11 +107,11 @@ def _spin_from_control_manual(
         m = int(mult_raw)
     except ValueError:
         return None, None
-    additions = ctrl.get(add_key, "").strip()
-    # Extract BS label from additions like "%scf BrokenSym 2,1 end"
+    broken_sym = ctrl.get(broken_sym_key, "").strip()
+    # Extract BS label from text like "%scf BrokenSym 2,1 end"
     bs = ""
-    if additions:
-        match = re.search(r"BrokenSym\s+([0-9,]+)", additions, re.IGNORECASE)
+    if broken_sym:
+        match = re.search(r"BrokenSym\s+([0-9,]+)", broken_sym, re.IGNORECASE)
         if match:
             bs = match.group(1)
     return m, bs
@@ -176,7 +176,7 @@ O      0.000000    0.000000    4.160000
 def _build_co2_control(
     charge: int,
     multiplicity: int,
-    additions: str,
+    broken_sym: str,
     delfin_ctrl: Dict[str, str],
 ) -> str:
     """Assemble a CO2 Coordinator CONTROL.txt string."""
@@ -194,12 +194,12 @@ def _build_co2_control(
     # Fixed fields
     merged["charge"] = str(charge)
     merged["multiplicity"] = str(multiplicity)
-    merged["additions"] = additions
+    merged["broken_sym"] = broken_sym
 
     # Group keys into sections (mirrors the CO2 template layout)
     sections = [
         ("# Input / Output", ["xyz", "out", "co2"]),
-        ("# Charge & Multiplicity", ["charge", "multiplicity", "additions"]),
+        ("# Charge & Multiplicity", ["charge", "multiplicity", "broken_sym"]),
         ("# Solvation", ["implicit_solvation_model", "solvent"]),
         ("# Orientation Scan (single points)", ["orientation_distance", "rot_step_deg", "rot_range_deg"]),
         ("# Method Settings", [
@@ -273,10 +273,10 @@ def setup_co2_from_delfin(job_dir: str | Path, species_delta: int) -> Path:
         )
 
     bs = bs or ""
-    additions = f"%scf BrokenSym {bs} end" if bs else ""
+    broken_sym = f"%scf BrokenSym {bs} end" if bs else ""
     print(f"[CO2 chain] Species: {species_name} (delta={species_delta})")
     print(f"[CO2 chain] Multiplicity: {mult}, BS: {bs or '(none)'} (source: {source})")
-    print(f"[CO2 chain] Additions: {additions or '(none)'}")
+    print(f"[CO2 chain] BrokenSym: {broken_sym or '(none)'}")
 
     # 3. Compute charge
     base_charge_raw = delfin_ctrl.get("charge", "0")
@@ -303,7 +303,7 @@ def setup_co2_from_delfin(job_dir: str | Path, species_delta: int) -> Path:
     print("[CO2 chain] Created CO2_coordination/co2.xyz")
 
     # 7. Generate CO2 CONTROL.txt
-    co2_control = _build_co2_control(co2_charge, mult, additions, delfin_ctrl)
+    co2_control = _build_co2_control(co2_charge, mult, broken_sym, delfin_ctrl)
     (co2_dir / "CONTROL.txt").write_text(co2_control, encoding="utf-8")
     print("[CO2 chain] Created CO2_coordination/CONTROL.txt")
 
