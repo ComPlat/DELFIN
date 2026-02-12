@@ -98,7 +98,7 @@ def create_tab(ctx):
 
     orca_file_upload = widgets.FileUpload(
         accept='', multiple=True, description='Extra Files:',
-        layout=widgets.Layout(width='100%', height='80px'), style=ws,
+        layout=widgets.Layout(width='50%', height='30px'), style=ws,
     )
     orca_uploaded_files_label = widgets.HTML(
         value='<i>Drag & drop files here (e.g. .gbw, .xyz, .hess)</i>',
@@ -413,7 +413,7 @@ def create_tab(ctx):
         widgets.HBox([orca_pal, orca_maxcore]),
         widgets.HBox([orca_slurm_time]),
         widgets.VBox([orca_file_upload, orca_uploaded_files_label],
-                     layout=widgets.Layout(margin='0 0 -5px 120px')),
+                     layout=widgets.Layout(margin='0 0 -5px 120px', overflow='hidden')),
         widgets.HBox([orca_path_files]),
         widgets.HBox([orca_generate_btn, orca_save_btn, orca_submit_btn],
                      layout=widgets.Layout(margin='0 0 0 120px')),
