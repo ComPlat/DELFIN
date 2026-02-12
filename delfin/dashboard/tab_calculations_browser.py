@@ -560,37 +560,18 @@ def create_tab(ctx):
         ctx.run_js(script)
 
     def _render_3dmol(data, fmt='xyz', stick_radius=0.1, sphere_scale=0.25,
-                      extra_js=''):
-        """Render a 3D molecule in calc_mol_viewer using raw $3Dmol JS.
-
-        The viewer instance is stored in ``window._calcMolViewer`` so the
-        global resize function can call ``viewer.resize()`` afterwards.
-        """
-        safe = data.replace('\\', '\\\\').replace('`', '\\`').replace('${', '\\${')
+                      extra_fn=None):
+        """Render a 3D molecule via py3Dmol with dynamic resize afterwards."""
         calc_mol_viewer.clear_output()
         with calc_mol_viewer:
-            display(HTML(
-                f"<div id='calc_mol_3d' style='width:{CALC_MOL_SIZE}px;height:{CALC_MOL_SIZE}px;"
-                f"position:relative;'></div>"
-                f"<script>"
-                f"(function(){{"
-                f"var tries=0;"
-                f"function init(){{"
-                f"var el=document.getElementById('calc_mol_3d');"
-                f"if(!el||typeof $3Dmol==='undefined'){{if(++tries<50)setTimeout(init,100);return;}}"
-                f"var v=$3Dmol.createViewer('calc_mol_3d',{{backgroundColor:'white'}});"
-                f"var moldata=`{safe}`;"
-                f"v.addModel(moldata,'{fmt}');"
-                f"v.setStyle({{}},{{stick:{{radius:{stick_radius}}},sphere:{{scale:{sphere_scale}}}}});"
-                f"{extra_js}"
-                f"v.zoomTo();v.zoom({CALC_MOL_ZOOM});v.render();"
-                f"window._calcMolViewer=v;"
-                f"if(window.calcResizeMolViewer)setTimeout(window.calcResizeMolViewer,200);"
-                f"}}"
-                f"setTimeout(init,0);"
-                f"}})();"
-                f"</script>"
-            ))
+            view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
+            view.addModel(data, fmt)
+            view.setStyle({}, {'stick': {'radius': stick_radius}, 'sphere': {'scale': sphere_scale}})
+            if extra_fn:
+                extra_fn(view, data)
+            view.zoomTo()
+            view.zoom(CALC_MOL_ZOOM)
+            view.show()
 
     def _set_view_toggle(value, disabled=None):
         """Set visualize toggle without triggering multiple UI refreshes."""
@@ -865,7 +846,7 @@ def create_tab(ctx):
                 """)
             return
 
-        # Single frame: render with raw $3Dmol
+        # Single frame: render with py3Dmol
         xyz_content = f"{n_atoms}\n{comment}\n{xyz_block}\n"
         _render_3dmol(xyz_content)
 
@@ -1826,13 +1807,10 @@ def create_tab(ctx):
                     content = full_path.read_text()
                     state['file_content'] = ''
                     calc_set_message('Cube file loaded. Toggle Visualize to render isosurfaces.')
-                    _render_3dmol(
-                        content, fmt='cube',
-                        extra_js=(
-                            'v.addVolumetricData(moldata,"cube",{isoval:0.02,color:"#0026ff",opacity:0.85});'
-                            'v.addVolumetricData(moldata,"cube",{isoval:-0.02,color:"#b00010",opacity:0.85});'
-                        ),
-                    )
+                    def _cube_extra(view, raw):
+                        view.addVolumetricData(raw, 'cube', {'isoval': 0.02, 'color': '#0026ff', 'opacity': 0.85})
+                        view.addVolumetricData(raw, 'cube', {'isoval': -0.02, 'color': '#b00010', 'opacity': 0.85})
+                    _render_3dmol(content, fmt='cube', extra_fn=_cube_extra)
             except Exception as e:
                 calc_set_message(f'Error: {e}')
             return
@@ -2231,8 +2209,30 @@ def create_tab(ctx):
     """)
 
     # Dynamic mol-viewer resize: keep square, flush with left panel bottom
+    # Also monkey-patch $3Dmol.createViewer to capture viewer instances.
     _run_js("""
     setTimeout(function() {
+        /* Monkey-patch $3Dmol.createViewer to store every new viewer */
+        function patchCreateViewer() {
+            if (typeof $3Dmol !== 'undefined' && !$3Dmol._patched) {
+                var orig = $3Dmol.createViewer;
+                $3Dmol.createViewer = function() {
+                    var v = orig.apply(this, arguments);
+                    window._calcMolViewer = v;
+                    setTimeout(function() {
+                        if (window.calcResizeMolViewer) window.calcResizeMolViewer();
+                    }, 300);
+                    return v;
+                };
+                $3Dmol._patched = true;
+            }
+        }
+        patchCreateViewer();
+        var patchInterval = setInterval(function() {
+            patchCreateViewer();
+            if (typeof $3Dmol !== 'undefined' && $3Dmol._patched) clearInterval(patchInterval);
+        }, 500);
+
         window.calcResizeMolViewer = function() {
             var left = document.querySelector('.calc-left');
             var mv = document.querySelector('.calc-mol-viewer');
@@ -2248,7 +2248,7 @@ def create_tab(ctx):
             if (size < 200) size = 200;
             mv.style.width = size + 'px';
             mv.style.height = size + 'px';
-            var inner = mv.querySelector('[id^="calc_mol_3d"], [id^="calc_trj"]');
+            var inner = mv.querySelector('[id^="3dmolviewer"], [id^="calc_trj"]');
             if (inner) { inner.style.width = size + 'px'; inner.style.height = size + 'px'; }
             var v = window._calcMolViewer || window.calc_trj_viewer;
             if (v && typeof v.resize === 'function') { v.resize(); v.render(); }
