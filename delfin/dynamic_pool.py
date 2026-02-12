@@ -450,44 +450,65 @@ class DynamicCorePool:
                 min(new_job.cores_max, available_cores)
             )
 
-    def _try_start_next_job(self) -> bool:
-        """Try to start the next job from the queue."""
+    def _try_start_best_fitting_job(self) -> bool:
+        """Scan the entire queue and start the best fitting job.
+
+        Instead of only checking the top job (head-of-line blocking),
+        this drains the queue, iterates in priority order, and starts
+        the first job that fits the currently available resources.
+        Jobs that don't fit are returned to the queue without penalty.
+        """
+        # Drain all jobs from the queue into a temporary list
+        candidates = []
         try:
-            # Get next job (blocks briefly)
-            _, scheduled_time, _, job = self._job_queue.get(timeout=0.1)
+            while True:
+                item = self._job_queue.get_nowait()
+                candidates.append(item)
+        except queue.Empty:
+            pass
 
-            now = time.time()
+        if not candidates:
+            return False
+
+        # candidates are already (priority_value, scheduled_time, counter, job) tuples
+        # PriorityQueue guarantees they come out sorted, but we sort explicitly
+        # to be safe after draining
+        candidates.sort()
+
+        now = time.time()
+        started_job = False
+        remaining = []
+
+        for priority_value, scheduled_time, counter, job in candidates:
+            # Already started a job this round — keep remaining jobs as-is
+            if started_job:
+                remaining.append((priority_value, scheduled_time, counter, job))
+                continue
+
+            # Respect retry backoff schedule
             if scheduled_time > now:
-                # Not ready yet; put it back and wait for the next cycle
-                self._job_queue.put((job.priority.value, scheduled_time, next(self._job_counter), job))
-                return False
+                remaining.append((priority_value, scheduled_time, counter, job))
+                continue
 
+            # Try to allocate resources for this job
             cores = self._calculate_optimal_allocation(job)
             if cores is not None:
+                # This job fits — start it
                 job.retry_count = 0
                 job.next_retry_time = 0.0
                 self._start_job(job, cores)
-                return True
-
-            # Unable to start due to resource limits; backoff briefly
-            job.retry_count += 1
-            # Prevent overflow by limiting retry_count in the exponential calculation
-            limited_retry_count = min(job.retry_count - 1, 10)  # Cap at 2^10 = 1024
-
-            # Use shorter delays for the first few retries, then cap at 1s instead of 2s
-            if job.retry_count <= 3:
-                # Fast retries for first attempts (100ms, 200ms, 400ms)
-                delay = min(0.1 * (2 ** limited_retry_count), 0.5)
+                started_job = True
+                # Don't add to remaining — it's running now
             else:
-                # Slower retries after initial attempts, max 1s
-                delay = min(0.2 * (2 ** limited_retry_count), 1.0)
+                # Job doesn't fit right now — re-queue without backoff penalty
+                # (it's not the job's fault resources are occupied)
+                remaining.append((priority_value, scheduled_time, counter, job))
 
-            job.next_retry_time = now + delay
-            self._job_queue.put((job.priority.value, job.next_retry_time, next(self._job_counter), job))
-            return False
+        # Put all non-started jobs back into the queue
+        for item in remaining:
+            self._job_queue.put(item)
 
-        except queue.Empty:
-            return False
+        return started_job
 
     def _start_job(self, job: PoolJob, allocated_cores: int):
         """Start a job with allocated resources (either from pool or borrowed from parent)."""
@@ -980,8 +1001,8 @@ class DynamicCorePool:
                 f"Starvation prevention: Boosted priority for {boosted_count} job(s). "
                 f"Re-queuing to apply new priorities."
             )
-            # Note: The priority boost will take effect on the next retry
-            # when the job is re-queued in _try_start_next_job()
+            # Note: The priority boost will take effect on the next scheduling pass
+            # when the queue is scanned in _try_start_best_fitting_job()
 
     def _check_failure_rate_and_adapt(self):
         """Adapt parallelism based on failure rate (graceful degradation).
@@ -1245,26 +1266,14 @@ class DynamicCorePool:
         """Start as many queued jobs as resources allow."""
         if self._shutdown:
             return
-        # Keep trying to pack jobs until we can't start any more
         while True:
-            started_any = False
-            # Inner loop: try to start jobs until no more will fit
-            while True:
-                with self._lock:
-                    if self._job_queue.empty() or len(self._running_jobs) >= self.max_concurrent_jobs:
-                        break
-                if self._try_start_next_job():
-                    started_any = True
-                else:
-                    # Failed to start - either resources exhausted or job needs retry
+            with self._lock:
+                if self._job_queue.empty() or len(self._running_jobs) >= self.max_concurrent_jobs:
                     break
-
-            # If we started nothing in this round, we're done
-            if not started_any:
-                break
-
-            # We started something - try another round to pack more jobs
-            # This handles cases where starting a small job frees up space for others
+            if self._try_start_best_fitting_job():
+                continue  # Started a job — try to pack more
+            else:
+                break  # Nothing fits — done for now
 
     def _scheduler_loop(self):
         """Reactively schedule jobs when resources or queue state changes."""

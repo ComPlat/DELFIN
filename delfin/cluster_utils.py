@@ -179,7 +179,7 @@ def auto_configure_resources(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Auto-configure PAL (CPU cores)
     if cluster_info['cpus_available'] and not config.get('PAL'):
-        suggested_pal = min(cluster_info['cpus_available'], 16)  # Cap at 16 for stability
+        suggested_pal = cluster_info['cpus_available']
         updated_config['PAL'] = suggested_pal
         logger.info(f"Auto-detected {cluster_info['cpus_available']} CPUs, setting PAL={suggested_pal}")
 

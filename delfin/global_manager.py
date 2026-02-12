@@ -333,7 +333,18 @@ class GlobalJobManager:
         if parallel_token == "disable":
             pal_jobs = 1
         if pal_jobs <= 0:
-            pal_jobs = max(1, min(4, max(1, pal // 2)))
+            if pal <= 4:
+                pal_jobs = 1
+            elif pal <= 8:
+                pal_jobs = 2
+            elif pal <= 16:
+                pal_jobs = max(2, pal // 6)
+            elif pal <= 32:
+                pal_jobs = max(2, pal // 8)
+            elif pal <= 64:
+                pal_jobs = max(3, pal // 10)
+            else:
+                pal_jobs = max(4, pal // 12)
         pal_jobs = max(1, min(pal_jobs, pal))
 
         cfg.update({
