@@ -151,6 +151,18 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         children.append(tab_tm)
         titles.append('TURBOMOLE Builder')
 
+    # ChemDarwin tab (optional, local only)
+    tab_cd = None
+    try:
+        from . import tab_chemdarwin
+        tab_cd, _ = tab_chemdarwin.create_tab(ctx)
+    except Exception:
+        tab_cd = None
+
+    if tab_cd is not None:
+        children.append(tab_cd)
+        titles.append('ChemDarwin')
+
     children.append(tab5)
     titles.append('Calculations')
 
