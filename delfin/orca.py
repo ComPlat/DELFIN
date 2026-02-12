@@ -1,3 +1,4 @@
+import ast
 import os
 import re
 import signal
@@ -11,7 +12,7 @@ import uuid
 from pathlib import Path
 from shutil import which
 import tempfile
-from typing import Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 try:
     import psutil
@@ -31,6 +32,12 @@ from delfin.orca_recovery import (
 
 logger = get_logger(__name__)
 
+_OVERRIDE_KEY_RE = re.compile(r"^(keyword|addition)\s*:\s*(.+)$", re.IGNORECASE)
+_BASE_LINE_RE = re.compile(r'^\s*%base\s+"([^"]+)"', re.IGNORECASE)
+_BASE_LINE_FALLBACK_RE = re.compile(r"^\s*%base\s+(\S+)", re.IGNORECASE)
+_CONTROL_OVERRIDE_CACHE: Dict[Path, Tuple[float, Dict[str, List[str]], Dict[str, List[str]]]] = {}
+_CONTROL_OVERRIDE_LOCK = threading.Lock()
+
 # Compile regex patterns at module level for performance
 _CPHF_PATTERN = re.compile(r'ITERATION\s+(\d+):.*?\(\s*[\d.]+\s+sec\s+(\d+)/(\d+)\s+done\)')
 _FREQ_PATTERN = re.compile(r'(\d+)\s+\(of\s+(\d+)\)')
@@ -47,6 +54,315 @@ ORCA_PLOT_INPUT_TEMPLATE = (
     "10\n"
     "11\n"
 )
+
+
+def _normalize_override_target(raw: str) -> str:
+    """Normalize override target names (base labels or input stems)."""
+    text = str(raw or "").strip().strip('"').strip("'")
+    text = Path(text).name
+    if text.lower().endswith(".inp"):
+        text = text[:-4]
+    return text.strip().lower()
+
+
+def _target_aliases(raw: str) -> List[str]:
+    """Return aliases to make OCCUPIER name matching robust."""
+    norm = _normalize_override_target(raw)
+    if not norm:
+        return []
+    aliases = {norm}
+    if norm.endswith("_occupier"):
+        aliases.add(norm[:-9])
+    else:
+        aliases.add(norm + "_occupier")
+    return [a for a in aliases if a]
+
+
+def _find_control_file(start_dir: Path) -> Optional[Path]:
+    """Find CONTROL.txt by walking from start_dir to parent directories."""
+    current = start_dir.resolve()
+    for _ in range(10):
+        candidate = current / "CONTROL.txt"
+        if candidate.exists():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
+def _parse_override_value(lines: List[str], start_idx: int, initial_value: str) -> Tuple[Any, int]:
+    """Parse one override value; supports multiline list literals."""
+    value = initial_value.strip()
+    if value.startswith("["):
+        buffer = value + "\n"
+        depth = value.count("[") - value.count("]")
+        idx = start_idx + 1
+        while idx < len(lines) and depth > 0:
+            line = lines[idx]
+            buffer += line
+            depth += line.count("[") - line.count("]")
+            idx += 1
+        try:
+            return ast.literal_eval(buffer), idx
+        except Exception:
+            # Fallback for relaxed syntax like:
+            # addition:initial=[%moinp
+            #   file.gbw
+            # end]
+            raw = buffer.strip()
+            if raw.startswith("[") and raw.endswith("]"):
+                inner = raw[1:-1].strip()
+                if not inner:
+                    return [], idx
+                return [inner], idx
+            return value, idx
+
+    try:
+        return ast.literal_eval(value), start_idx + 1
+    except Exception:
+        return value, start_idx + 1
+
+
+def _flatten_text_values(value: Any) -> List[str]:
+    """Flatten scalar/list override values into a list of non-empty strings."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        out: List[str] = []
+        for item in value:
+            out.extend(_flatten_text_values(item))
+        return out
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _parse_control_overrides(control_path: Path) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    """Parse keyword:/addition: overrides from CONTROL.txt."""
+    try:
+        mtime = control_path.stat().st_mtime
+    except Exception:
+        return {}, {}
+
+    with _CONTROL_OVERRIDE_LOCK:
+        cached = _CONTROL_OVERRIDE_CACHE.get(control_path)
+        if cached and cached[0] == mtime:
+            return cached[1], cached[2]
+
+    try:
+        lines = control_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+    except Exception:
+        return {}, {}
+
+    keyword_map: Dict[str, List[str]] = {}
+    addition_map: Dict[str, List[str]] = {}
+
+    idx = 0
+    total = len(lines)
+    while idx < total:
+        raw_line = lines[idx]
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in raw_line:
+            idx += 1
+            continue
+
+        key_raw, value_raw = raw_line.split("=", 1)
+        key = key_raw.strip()
+        match = _OVERRIDE_KEY_RE.match(key)
+        if not match:
+            idx += 1
+            continue
+
+        kind = match.group(1).lower()
+        target = _normalize_override_target(match.group(2))
+        if not target:
+            idx += 1
+            continue
+
+        parsed_value, next_idx = _parse_override_value(lines, idx, value_raw)
+        values = _flatten_text_values(parsed_value)
+        if values:
+            target_map = keyword_map if kind == "keyword" else addition_map
+            target_map.setdefault(target, []).extend(values)
+        idx = next_idx
+
+    with _CONTROL_OVERRIDE_LOCK:
+        _CONTROL_OVERRIDE_CACHE[control_path] = (mtime, keyword_map, addition_map)
+
+    return keyword_map, addition_map
+
+
+def _extract_base_label(section_lines: List[str]) -> Optional[str]:
+    """Extract %base label from one ORCA job section."""
+    for line in section_lines:
+        m = _BASE_LINE_RE.match(line)
+        if m:
+            return m.group(1).strip()
+        m = _BASE_LINE_FALLBACK_RE.match(line)
+        if m:
+            return m.group(1).strip().strip('"').strip("'")
+    return None
+
+
+def _append_keyword_to_bang_line(bang_line: str, additions: List[str]) -> str:
+    """Append keyword snippets to ORCA ! line without duplicates."""
+    updated = bang_line.rstrip("\n")
+    for add in additions:
+        token = " ".join(add.split())
+        if not token:
+            continue
+        if token in updated:
+            continue
+        if not updated.endswith(" "):
+            updated += " "
+        updated += token
+    return updated + "\n"
+
+
+def _normalize_addition_lines(additions: List[str]) -> List[str]:
+    """Normalize additional block lines for insertion after !."""
+    lines: List[str] = []
+    for add in additions:
+        for part in str(add).splitlines():
+            stripped = part.rstrip()
+            if stripped:
+                lines.append(stripped + "\n")
+    return lines
+
+
+def _split_job_sections(lines: List[str]) -> List[Tuple[List[str], Optional[str]]]:
+    """Split ORCA input into job sections and $new_job separators."""
+    parts: List[Tuple[List[str], Optional[str]]] = []
+    current: List[str] = []
+    for line in lines:
+        if line.strip().lower() == "$new_job":
+            parts.append((current, None))
+            parts.append(([line], "$new_job"))
+            current = []
+        else:
+            current.append(line)
+    parts.append((current, None))
+    return parts
+
+
+def _apply_overrides_to_section(
+    section_lines: List[str],
+    *,
+    file_stem: str,
+    keyword_map: Dict[str, List[str]],
+    addition_map: Dict[str, List[str]],
+) -> Tuple[List[str], bool]:
+    """Apply matching keyword/addition overrides to one ORCA job section."""
+    if not section_lines:
+        return section_lines, False
+
+    base_label = _extract_base_label(section_lines)
+    # Prefer %base-scoped overrides whenever a base label is present.
+    # Fall back to file-stem matching only for sections without %base.
+    if base_label:
+        candidates: List[str] = _target_aliases(base_label)
+    else:
+        candidates = _target_aliases(file_stem)
+
+    seen = set()
+    ordered_candidates: List[str] = []
+    for cand in candidates:
+        if cand and cand not in seen:
+            seen.add(cand)
+            ordered_candidates.append(cand)
+
+    keyword_values: List[str] = []
+    addition_values: List[str] = []
+    for cand in ordered_candidates:
+        keyword_values.extend(keyword_map.get(cand, []))
+        addition_values.extend(addition_map.get(cand, []))
+
+    if not keyword_values and not addition_values:
+        return section_lines, False
+
+    bang_idx: Optional[int] = None
+    for idx, line in enumerate(section_lines):
+        if line.lstrip().startswith("!"):
+            bang_idx = idx
+            break
+    if bang_idx is None:
+        return section_lines, False
+
+    updated = list(section_lines)
+    changed = False
+
+    if keyword_values:
+        new_bang = _append_keyword_to_bang_line(updated[bang_idx], keyword_values)
+        if new_bang != updated[bang_idx]:
+            updated[bang_idx] = new_bang
+            changed = True
+
+    if addition_values:
+        block_lines = _normalize_addition_lines(addition_values)
+        if block_lines:
+            block_text = "".join(block_lines)
+            section_text = "".join(updated)
+            if block_text not in section_text:
+                insert_idx = bang_idx + 1
+                updated = updated[:insert_idx] + block_lines + updated[insert_idx:]
+                changed = True
+
+    return updated, changed
+
+
+def _apply_control_overrides_to_input(input_path: Path, working_dir: Optional[Path]) -> None:
+    """
+    Apply CONTROL-based keyword/addition overrides directly to an ORCA input file.
+
+    Supported keys in CONTROL.txt:
+    - keyword:<BASE_OR_NAME> = [...]
+    - addition:<BASE_OR_NAME> = [...]
+    """
+    if not input_path.exists():
+        return
+
+    search_start = (working_dir or input_path.parent) if isinstance(working_dir, Path) else input_path.parent
+    control_path = _find_control_file(search_start)
+    if not control_path:
+        return
+
+    keyword_map, addition_map = _parse_control_overrides(control_path)
+    if not keyword_map and not addition_map:
+        return
+
+    try:
+        lines = input_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to read %s for override patching: %s", input_path, exc)
+        return
+
+    parts = _split_job_sections(lines)
+    updated_lines: List[str] = []
+    changed_any = False
+    file_stem = input_path.stem
+
+    for part_lines, marker in parts:
+        if marker == "$new_job":
+            updated_lines.extend(part_lines)
+            continue
+        updated_part, changed = _apply_overrides_to_section(
+            part_lines,
+            file_stem=file_stem,
+            keyword_map=keyword_map,
+            addition_map=addition_map,
+        )
+        updated_lines.extend(updated_part)
+        changed_any = changed_any or changed
+
+    if not changed_any:
+        return
+
+    try:
+        input_path.write_text("".join(updated_lines), encoding="utf-8")
+        logger.info("Applied CONTROL input overrides to %s", input_path.name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to write overrides for %s: %s", input_path, exc)
 
 
 def _env_truthy(value: Optional[str]) -> Optional[bool]:
@@ -923,6 +1239,9 @@ def run_orca(
             input_path = input_path.resolve()
         if not output_path.is_absolute():
             output_path = output_path.resolve()
+
+    # Apply CONTROL overrides like keyword:<base>=... / addition:<base>=...
+    _apply_control_overrides_to_input(input_path, working_dir)
 
     # Isolated execution: run ORCA in a separate subdirectory to avoid
     # race conditions on parallel filesystems (Lustre)
