@@ -32,7 +32,7 @@ from delfin.orca_recovery import (
 
 logger = get_logger(__name__)
 
-_OVERRIDE_KEY_RE = re.compile(r"^(keyword|addition)\s*:\s*(.+)$", re.IGNORECASE)
+_OVERRIDE_KEY_RE = re.compile(r"^(keyword|addition|additions)\s*:\s*(.+)$", re.IGNORECASE)
 _BASE_LINE_RE = re.compile(r'^\s*%base\s+"([^"]+)"', re.IGNORECASE)
 _BASE_LINE_FALLBACK_RE = re.compile(r"^\s*%base\s+(\S+)", re.IGNORECASE)
 _CONTROL_OVERRIDE_CACHE: Dict[Path, Tuple[float, Dict[str, List[str]], Dict[str, List[str]]]] = {}

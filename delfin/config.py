@@ -14,11 +14,42 @@ logger = get_logger(__name__)
 
 
 _SEQUENCE_BLOCK_HEADER = re.compile(r"^\s*([+\-0-9,\s]+)=\[\s*$")
+_OVERRIDE_KEY_PREFIX = re.compile(r"^(keyword|additions?)\s*:", re.IGNORECASE)
+_OVERRIDE_KEY_PATTERN = re.compile(r"^(keyword|additions?)\s*:\s*([A-Za-z0-9_.-]+)$", re.IGNORECASE)
 _TEMPLATE_DEFAULTS_CACHE: Optional[Dict[str, Any]] = None
 _TEMPLATE_REQUIRED_KEYS: Set[str] = set()
 _PLACEHOLDER_VALIDATION_VALUES: Dict[str, Any] = {
     "charge": 0,
     "solvent": "DMF",
+}
+_KNOWN_ORCA_OVERRIDE_BASENAMES: Set[str] = {
+    "basename",
+    "xtb",
+    "xtb_goat",
+    "xtb_solvator",
+    "xtb2",
+    "xtb2_goat",
+    "initial",
+    "ox_step_1",
+    "ox_step_2",
+    "ox_step_3",
+    "red_step_1",
+    "red_step_2",
+    "red_step_3",
+    "initial_occupier",
+    "ox_step_1_occupier",
+    "ox_step_2_occupier",
+    "ox_step_3_occupier",
+    "red_step_1_occupier",
+    "red_step_2_occupier",
+    "red_step_3_occupier",
+    "s0",
+    "s0_tddft",
+    "s1",
+    "t1",
+    "s1_tddft",
+    "t1_tddft",
+    "genolate",
 }
 
 
@@ -27,6 +58,55 @@ def _is_placeholder_value(value: Any) -> bool:
         return False
     stripped = value.strip()
     return bool(stripped.startswith("[") and stripped.endswith("]") and len(stripped) > 2)
+
+
+def _is_override_value_supported(value: Any) -> bool:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_is_override_value_supported(item) for item in value)
+    return False
+
+
+def _normalize_override_basename(value: str) -> str:
+    name = str(value or "").strip().strip('"').strip("'")
+    if name.lower().endswith(".inp"):
+        name = name[:-4]
+    return name.lower()
+
+
+def _validate_orca_override_entries(config: Dict[str, Any]) -> List[str]:
+    """Validate free-form ORCA override entries like additions:<basename>=..."""
+    errors: List[str] = []
+
+    for raw_key, raw_value in config.items():
+        key = str(raw_key).strip()
+        if not key or not _OVERRIDE_KEY_PREFIX.match(key):
+            continue
+
+        match = _OVERRIDE_KEY_PATTERN.match(key)
+        if not match:
+            errors.append(
+                f"Invalid ORCA override key: {key!r} "
+                "(expected additions:<basename>=[] or addition:/keyword: legacy syntax)."
+            )
+            continue
+
+        basename = _normalize_override_basename(match.group(2))
+        if basename not in _KNOWN_ORCA_OVERRIDE_BASENAMES:
+            errors.append(
+                f"Unknown ORCA override basename: {match.group(2)!r}. "
+                "Use an existing DELFIN basename (e.g. initial, ox_step_1, red_step_1, S0, ...)."
+            )
+            continue
+
+        if not _is_override_value_supported(raw_value):
+            errors.append(
+                f"Invalid ORCA override value for {key!r}: expected string/list syntax "
+                "(e.g. additions:basename=[...])."
+            )
+
+    return errors
 
 
 def _collect_literal_list(lines: List[str], start_idx: int, initial_value: str) -> Tuple[List[Any], int]:
@@ -289,6 +369,9 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     sanitized = remove_existing_sequence_blocks(Path(file_path), persist=False)
     text = sanitized or Path(file_path).read_text(encoding="utf-8")
     config = _parse_control_file(file_path, keep_steps_literal=True, content=text)
+    override_errors = _validate_orca_override_entries(config)
+    if override_errors:
+        raise ValueError("; ".join(override_errors))
     user_keys = set(config.keys())
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
     defaults = _load_template_defaults()
@@ -323,6 +406,8 @@ def validate_control_text(control_text: str) -> List[str]:
         config = _parse_control_file("<in-memory>", keep_steps_literal=True, content=control_text)
     except Exception as exc:
         return [f"Failed to parse CONTROL content: {exc}"]
+
+    all_errors.extend(_validate_orca_override_entries(config))
 
     user_keys = set(config.keys())
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
@@ -378,6 +463,9 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     sanitized = remove_existing_sequence_blocks(Path(path), persist=False)
     text = sanitized or Path(path).read_text(encoding="utf-8")
     config = _parse_control_file(path, keep_steps_literal=False, content=text)
+    override_errors = _validate_orca_override_entries(config)
+    if override_errors:
+        raise ValueError("; ".join(override_errors))
     user_keys = set(config.keys())
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
     defaults = _load_template_defaults()
