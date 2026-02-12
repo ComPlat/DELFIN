@@ -29,7 +29,8 @@ def create_tab(ctx):
     """
     # -- layout constants ---------------------------------------------------
     CALC_CONTENT_HEIGHT = 760
-    CALC_MOL_SIZE = 480
+    CALC_MOL_SIZE = 460
+    CALC_MOL_DYNAMIC_SCALE = 0.9725
     CALC_MOL_ZOOM = 0.9
     CALC_LEFT_DEFAULT = 320
     CALC_LEFT_MIN = 320
@@ -2266,7 +2267,7 @@ def create_tab(ctx):
             if (mvRect.top === 0 && mvRect.height === 0) return;
             var availH = leftRect.bottom - mvRect.top - 6;
             var availW = mv.parentElement.getBoundingClientRect().width - 4;
-            var h = Math.floor(availH * 0.975);
+            var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
             var w = Math.floor(Math.min(h * 1.2, availW));
             if (h < 200) h = 200;
             if (w < 240) w = 240;
