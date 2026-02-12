@@ -2248,12 +2248,14 @@ def create_tab(ctx):
             if (mvRect.top === 0 && mvRect.height === 0) return;
             var availH = leftRect.bottom - mvRect.top - 6;
             var availW = mv.parentElement.getBoundingClientRect().width - 4;
-            var size = Math.floor(Math.min(availH, availW) * 0.975);
-            if (size < 200) size = 200;
-            mv.style.width = size + 'px';
-            mv.style.height = size + 'px';
+            var h = Math.floor(availH * 0.975);
+            var w = Math.floor(Math.min(h * 1.2, availW));
+            if (h < 200) h = 200;
+            if (w < 240) w = 240;
+            mv.style.width = w + 'px';
+            mv.style.height = h + 'px';
             var inner = mv.querySelector('[id^="3dmolviewer"], [id^="calc_trj"]');
-            if (inner) { inner.style.width = size + 'px'; inner.style.height = size + 'px'; }
+            if (inner) { inner.style.width = w + 'px'; inner.style.height = h + 'px'; }
             var v = window._calcMolViewer || window.calc_trj_viewer;
             if (v && typeof v.resize === 'function') { v.resize(); v.render(); }
         };
