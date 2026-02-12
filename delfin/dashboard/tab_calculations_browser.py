@@ -2,6 +2,7 @@
 
 import base64
 import html as _html
+import json
 import re
 import shutil
 import subprocess
@@ -16,6 +17,9 @@ from .constants import CALC_SEARCH_OPTIONS
 from .input_processing import parse_inp_resources, parse_resource_settings
 from .helpers import disable_spellcheck
 from .molecule_viewer import coord_to_xyz, parse_xyz_frames
+from rdkit import Chem, RDLogger
+from rdkit.Chem import rdDepictor
+from rdkit.Chem.Draw import MolToImage
 
 
 def create_tab(ctx):
@@ -45,6 +49,14 @@ def create_tab(ctx):
         'xyz_current_frame': [0],
         'report_running': {},
         'traj_viewer_ready': False,
+        'preselect': {
+            'active': False,
+            'entries': [],
+            'index': 0,
+            'decisions': {},
+            'csv_path': '',
+            'job_dir': '',
+        },
     }
 
     # -- widgets ------------------------------------------------------------
@@ -279,6 +291,29 @@ def create_tab(ctx):
         layout=widgets.Layout(width='100%', visibility='hidden'),
     )
 
+    # -- preselection widgets ----------------------------------------------
+    calc_preselect_title = widgets.HTML('<b>Preselection</b>')
+    calc_preselect_progress = widgets.HTML('')
+    calc_preselect_info = widgets.HTML('')
+    calc_preselect_img = widgets.Output()
+    calc_preselect_yes = widgets.Button(
+        description='Yes', button_style='success',
+        layout=widgets.Layout(width='80px', height='30px'),
+    )
+    calc_preselect_no = widgets.Button(
+        description='No', button_style='danger',
+        layout=widgets.Layout(width='80px', height='30px'),
+    )
+    calc_preselect_status = widgets.HTML('')
+    calc_preselect_container = widgets.VBox([
+        calc_preselect_title,
+        calc_preselect_progress,
+        calc_preselect_info,
+        calc_preselect_img,
+        widgets.HBox([calc_preselect_yes, calc_preselect_no], layout=widgets.Layout(gap='10px')),
+        calc_preselect_status,
+    ], layout=widgets.Layout(display='none', margin='10px 0', width='100%'))
+
     # -- compound layout widgets (must be defined before closures that use them)
     calc_mol_container = widgets.VBox([
         calc_mol_label,
@@ -308,6 +343,206 @@ def create_tab(ctx):
     ))
 
     # -- helper closures ----------------------------------------------------
+    RDLogger.DisableLog('rdApp.*')
+
+    def _calc_is_complete_mutation_csv(selected_name):
+        return selected_name and selected_name.lower() == 'complete_mutation_space.csv'
+
+    def _calc_get_selected_path():
+        selected = calc_file_list.value
+        if not selected or selected.startswith('('):
+            return None
+        name = selected[2:].strip()
+        return (
+            (_calc_dir() / state['current_path'] / name)
+            if state['current_path']
+            else (_calc_dir() / name)
+        )
+
+    def _calc_parse_mutation_csv(csv_path):
+        entries = []
+        try:
+            lines = csv_path.read_text(encoding='utf-8', errors='ignore').splitlines()
+        except Exception:
+            return entries
+        for line in lines:
+            if not line.strip():
+                continue
+            if line.lower().startswith('label;smiles'):
+                continue
+            if ';' not in line:
+                continue
+            label, smiles = line.split(';', 1)
+            label = label.strip()
+            smiles = smiles.strip()
+            if not smiles:
+                continue
+            entries.append((label, smiles))
+        return entries
+
+    def _calc_read_decision_file(path):
+        entries = set()
+        if not path.exists():
+            return entries
+        try:
+            lines = path.read_text(encoding='utf-8', errors='ignore').splitlines()
+        except Exception:
+            return entries
+        for line in lines:
+            if not line.strip():
+                continue
+            if line.lower().startswith('label;smiles'):
+                continue
+            if ';' not in line:
+                continue
+            label, smiles = line.split(';', 1)
+            label = label.strip()
+            smiles = smiles.strip()
+            if label or smiles:
+                entries.add((label, smiles))
+        return entries
+
+    def _calc_next_preselect_index(start_idx):
+        entries = state['preselect']['entries']
+        decisions = state['preselect']['decisions']
+        idx = max(0, start_idx)
+        while idx < len(entries):
+            if str(idx) not in decisions:
+                return idx
+            idx += 1
+        return len(entries)
+
+    def _calc_preselect_write_outputs():
+        entries = state['preselect']['entries']
+        decisions = state['preselect']['decisions']
+        job_dir = Path(state['preselect']['job_dir'])
+        if not job_dir:
+            return
+        preselected_path = job_dir / 'preselected_mutation_space.csv'
+        rejected_path = job_dir / 'rejected_mutation_space.csv'
+        yes_lines = ['Label;SMILES']
+        no_lines = ['Label;SMILES']
+        for i, (label, smiles) in enumerate(entries):
+            decision = decisions.get(str(i))
+            if decision == 'yes':
+                yes_lines.append(f'{label};{smiles}')
+            elif decision == 'no':
+                no_lines.append(f'{label};{smiles}')
+        preselected_path.write_text('\n'.join(yes_lines), encoding='utf-8')
+        rejected_path.write_text('\n'.join(no_lines), encoding='utf-8')
+
+    def _calc_preselect_save_state():
+        job_dir = Path(state['preselect']['job_dir'])
+        if not job_dir:
+            return
+        state_path = job_dir / 'selection_state.json'
+        payload = {
+            'csv_path': state['preselect']['csv_path'],
+            'index': state['preselect']['index'],
+            'decisions': state['preselect']['decisions'],
+        }
+        state_path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+
+    def _calc_preselect_load(csv_path):
+        entries = _calc_parse_mutation_csv(csv_path)
+        job_dir = csv_path.parent
+        state_path = job_dir / 'selection_state.json'
+        decisions = {}
+        index = 0
+
+        if state_path.exists():
+            try:
+                data = json.loads(state_path.read_text(encoding='utf-8', errors='ignore'))
+                if data.get('csv_path') == str(csv_path):
+                    decisions = data.get('decisions', {}) or {}
+                    index = int(data.get('index', 0))
+            except Exception:
+                decisions = {}
+
+        if not decisions:
+            yes_set = _calc_read_decision_file(job_dir / 'preselected_mutation_space.csv')
+            no_set = _calc_read_decision_file(job_dir / 'rejected_mutation_space.csv')
+            for i, entry in enumerate(entries):
+                if entry in yes_set:
+                    decisions[str(i)] = 'yes'
+                elif entry in no_set:
+                    decisions[str(i)] = 'no'
+
+        state['preselect']['entries'] = entries
+        state['preselect']['decisions'] = decisions
+        state['preselect']['csv_path'] = str(csv_path)
+        state['preselect']['job_dir'] = str(job_dir)
+        state['preselect']['index'] = _calc_next_preselect_index(index)
+        calc_preselect_title.value = f'<b>Preselection:</b> {csv_path.name}'
+
+    def _calc_preselect_render_current():
+        entries = state['preselect']['entries']
+        idx = state['preselect']['index']
+        total = len(entries)
+        if total == 0:
+            calc_preselect_progress.value = '<b>No entries found.</b>'
+            calc_preselect_info.value = ''
+            calc_preselect_status.value = '<span style="color:#d32f2f;">Empty or invalid CSV.</span>'
+            calc_preselect_yes.disabled = True
+            calc_preselect_no.disabled = True
+            with calc_preselect_img:
+                clear_output(wait=True)
+            return
+        if idx >= total:
+            calc_preselect_progress.value = f'<b>Done.</b> ({total} / {total})'
+            calc_preselect_info.value = ''
+            calc_preselect_status.value = '<span style="color:green;">All entries processed.</span>'
+            calc_preselect_yes.disabled = True
+            calc_preselect_no.disabled = True
+            with calc_preselect_img:
+                clear_output(wait=True)
+            return
+
+        label, smiles = entries[idx]
+        calc_preselect_progress.value = f'<b>{idx + 1} / {total}</b>'
+        calc_preselect_info.value = (
+            f'<div><b>Label:</b> {_html.escape(label)}</div>'
+            f'<div><b>SMILES:</b> <code>{_html.escape(smiles)}</code></div>'
+        )
+        calc_preselect_status.value = ''
+        calc_preselect_yes.disabled = False
+        calc_preselect_no.disabled = False
+        with calc_preselect_img:
+            clear_output(wait=True)
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                mol = Chem.MolFromSmiles(smiles, sanitize=False)
+            if mol is None:
+                display(HTML('<i>Invalid SMILES</i>'))
+            else:
+                try:
+                    rdDepictor.Compute2DCoords(mol)
+                except Exception:
+                    pass
+                img = MolToImage(mol, size=(360, 360))
+                display(img)
+
+    def _calc_preselect_show(show):
+        if show:
+            calc_preselect_container.layout.display = 'block'
+            calc_content_area.layout.display = 'none'
+            calc_content_label.layout.display = 'none'
+            calc_mol_container.layout.display = 'none'
+            calc_edit_area.layout.display = 'none'
+        else:
+            calc_preselect_container.layout.display = 'none'
+
+    def _calc_preselect_decide(decision):
+        entries = state['preselect']['entries']
+        idx = state['preselect']['index']
+        if idx >= len(entries):
+            return
+        state['preselect']['decisions'][str(idx)] = decision
+        state['preselect']['index'] = _calc_next_preselect_index(idx + 1)
+        _calc_preselect_write_outputs()
+        _calc_preselect_save_state()
+        _calc_preselect_render_current()
+
     def _run_js(script):
         ctx.run_js(script)
 
@@ -777,6 +1012,13 @@ def create_tab(ctx):
     def calc_update_options_dropdown():
         selected = calc_file_list.value
         sel_lower = selected.lower() if selected else ''
+        if selected:
+            name = selected[2:].strip()
+            if _calc_is_complete_mutation_csv(name):
+                calc_options_dropdown.options = ['(Options)', 'Preselection']
+                calc_options_dropdown.value = '(Options)'
+                calc_options_dropdown.layout.visibility = 'visible'
+                return
         if selected and 'OCCUPIER.txt' in selected:
             calc_options_dropdown.options = ['(Options)', 'Override']
             calc_options_dropdown.value = '(Options)'
@@ -975,6 +1217,7 @@ def create_tab(ctx):
             calc_override_status.layout.visibility = 'visible'
             calc_override_status.value = ''
             calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
             calc_content_area.layout.display = 'block'
             selected = calc_file_list.value
             if selected:
@@ -989,7 +1232,23 @@ def create_tab(ctx):
             calc_override_status.value = ''
             calc_edit_area.value = state['file_content']
             calc_edit_area.layout.display = 'block'
+            _calc_preselect_show(False)
             calc_content_area.layout.display = 'none'
+        elif change['new'] == 'Preselection':
+            calc_override_input.layout.visibility = 'hidden'
+            calc_override_time.layout.visibility = 'hidden'
+            calc_override_btn.layout.visibility = 'hidden'
+            calc_override_status.layout.visibility = 'hidden'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            csv_path = _calc_get_selected_path()
+            if not csv_path or not csv_path.exists():
+                calc_preselect_status.value = '<span style="color:#d32f2f;">File not found.</span>'
+                _calc_preselect_show(True)
+                return
+            _calc_preselect_load(csv_path)
+            _calc_preselect_show(True)
+            _calc_preselect_render_current()
         else:
             calc_override_input.layout.visibility = 'hidden'
             calc_override_time.layout.visibility = 'hidden'
@@ -997,6 +1256,7 @@ def create_tab(ctx):
             calc_override_status.layout.visibility = 'hidden'
             calc_override_status.value = ''
             calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
             calc_content_area.layout.display = 'block'
 
     def calc_on_override_start(button):
@@ -1353,6 +1613,7 @@ def create_tab(ctx):
         calc_path_display.value = ''
         state['file_content'] = ''
         calc_reset_recalc_state()
+        _calc_preselect_show(False)
 
         # Reset xyz trajectory controls
         state['xyz_frames'].clear()
@@ -1746,6 +2007,8 @@ def create_tab(ctx):
     calc_folder_search.observe(calc_filter_file_list, names='value')
     calc_options_dropdown.observe(calc_on_options_change, names='value')
     calc_override_btn.on_click(calc_on_override_start)
+    calc_preselect_yes.on_click(lambda _b: _calc_preselect_decide('yes'))
+    calc_preselect_no.on_click(lambda _b: _calc_preselect_decide('no'))
     calc_sort_dropdown.observe(calc_on_sort_change, names='value')
     calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
     calc_xyz_copy_btn.on_click(calc_on_xyz_copy)
@@ -1838,6 +2101,7 @@ def create_tab(ctx):
         calc_path_display,
         calc_mol_container,
         calc_content_label,
+        calc_preselect_container,
         calc_delete_confirm,
         calc_delete_status,
         calc_recalc_toolbar,
