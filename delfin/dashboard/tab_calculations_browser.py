@@ -29,7 +29,7 @@ def create_tab(ctx):
     """
     # -- layout constants ---------------------------------------------------
     CALC_CONTENT_HEIGHT = 760
-    CALC_MOL_SIZE = 620
+    CALC_MOL_SIZE = 480
     CALC_MOL_ZOOM = 0.9
     CALC_LEFT_DEFAULT = 320
     CALC_LEFT_MIN = 320
@@ -146,12 +146,11 @@ def create_tab(ctx):
     )
     calc_mol_viewer = widgets.Output(
         layout=widgets.Layout(
-            width=f'{CALC_MOL_SIZE}px',
-            height=f'{CALC_MOL_SIZE}px',
             border='2px solid #1976d2',
             overflow='hidden', padding='0', border_radius='0',
         ),
     )
+    calc_mol_viewer.add_class('calc-mol-viewer')
 
     # XYZ trajectory controls
     calc_xyz_frame_label = widgets.HTML(
@@ -559,6 +558,39 @@ def create_tab(ctx):
     def _run_js(script):
         ctx.run_js(script)
 
+    def _render_3dmol(data, fmt='xyz', stick_radius=0.1, sphere_scale=0.25,
+                      extra_js=''):
+        """Render a 3D molecule in calc_mol_viewer using raw $3Dmol JS.
+
+        The viewer instance is stored in ``window._calcMolViewer`` so the
+        global resize function can call ``viewer.resize()`` afterwards.
+        """
+        safe = data.replace('\\', '\\\\').replace('`', '\\`').replace('${', '\\${')
+        calc_mol_viewer.clear_output()
+        with calc_mol_viewer:
+            display(HTML(
+                f"<div id='calc_mol_3d' style='width:100%;height:100%;"
+                f"position:relative;'></div>"
+                f"<script>"
+                f"(function(){{"
+                f"var tries=0;"
+                f"function init(){{"
+                f"var el=document.getElementById('calc_mol_3d');"
+                f"if(!el||typeof $3Dmol==='undefined'){{if(++tries<50)setTimeout(init,100);return;}}"
+                f"var v=$3Dmol.createViewer('calc_mol_3d',{{backgroundColor:'white'}});"
+                f"var moldata=`{safe}`;"
+                f"v.addModel(moldata,'{fmt}');"
+                f"v.setStyle({{}},{{stick:{{radius:{stick_radius}}},sphere:{{scale:{sphere_scale}}}}});"
+                f"{extra_js}"
+                f"v.zoomTo();v.zoom({CALC_MOL_ZOOM});v.render();"
+                f"window._calcMolViewer=v;"
+                f"if(window.calcResizeMolViewer)setTimeout(window.calcResizeMolViewer,200);"
+                f"}}"
+                f"setTimeout(init,0);"
+                f"}})();"
+                f"</script>"
+            ))
+
     def _set_view_toggle(value, disabled=None):
         """Set visualize toggle without triggering multiple UI refreshes."""
         try:
@@ -790,7 +822,7 @@ def create_tab(ctx):
                 with calc_mol_viewer:
                     viewer_id = "calc_trj_viewer"
                     html_content = f"""
-                    <div id="{viewer_id}" style="width:{CALC_MOL_SIZE}px;height:{CALC_MOL_SIZE}px;position:relative;"></div>
+                    <div id="{viewer_id}" style="width:100%;height:100%;position:relative;"></div>
                     <script>
                     (function() {{
                         var tries = 0;
@@ -812,6 +844,8 @@ def create_tab(ctx):
                             viewer.setFrame(0);
                             viewer.render();
                             window.calc_trj_viewer = viewer;
+                            window._calcMolViewer = viewer;
+                            if (window.calcResizeMolViewer) setTimeout(window.calcResizeMolViewer, 200);
                         }}
                         setTimeout(initViewer, 0);
                     }})();
@@ -830,16 +864,9 @@ def create_tab(ctx):
                 """)
             return
 
-        # Single frame: render with py3Dmol
+        # Single frame: render with raw $3Dmol
         xyz_content = f"{n_atoms}\n{comment}\n{xyz_block}\n"
-        calc_mol_viewer.clear_output()
-        with calc_mol_viewer:
-            view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
-            view.addModel(xyz_content, 'xyz')
-            view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
-            view.zoomTo()
-            view.zoom(CALC_MOL_ZOOM)
-            view.show()
+        _render_3dmol(xyz_content)
 
     # -- ORCA terminated check ----------------------------------------------
     def calc_orca_terminated_normally(path):
@@ -1677,14 +1704,7 @@ def create_tab(ctx):
                     state['xyz_current_frame'][0] = 0
                     calc_xyz_controls.layout.display = 'none'
                     calc_coord_controls.layout.display = 'flex'
-                    with calc_mol_viewer:
-                        clear_output(wait=True)
-                        view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
-                        view.addModel(xyz_data, 'xyz')
-                        view.setStyle({}, {'stick': {'radius': 0.15}, 'sphere': {'scale': 0.25}})
-                        view.zoomTo()
-                        view.zoom(CALC_MOL_ZOOM)
-                        view.show()
+                    _render_3dmol(xyz_data, stick_radius=0.15)
                 else:
                     calc_file_info.value = f'<b>{_html.escape(name)}</b> (could not parse)'
             except Exception as e:
@@ -1736,13 +1756,7 @@ def create_tab(ctx):
                     else:
                         calc_xyz_controls.layout.display = 'none'
                     calc_xyz_frame_label.value = ''
-                    with calc_mol_viewer:
-                        view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
-                        view.addModel(content, 'xyz')
-                        view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
-                        view.zoomTo()
-                        view.zoom(CALC_MOL_ZOOM)
-                        view.show()
+                    _render_3dmol(content)
                 calc_render_content(scroll_to='top')
             except Exception as e:
                 calc_set_message(f'Error: {e}')
@@ -1811,15 +1825,13 @@ def create_tab(ctx):
                     content = full_path.read_text()
                     state['file_content'] = ''
                     calc_set_message('Cube file loaded. Toggle Visualize to render isosurfaces.')
-                    with calc_mol_viewer:
-                        view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
-                        view.addModel(content, 'cube')
-                        view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
-                        view.addVolumetricData(content, 'cube', {'isoval': 0.02, 'color': '#0026ff', 'opacity': 0.85})
-                        view.addVolumetricData(content, 'cube', {'isoval': -0.02, 'color': '#b00010', 'opacity': 0.85})
-                        view.zoomTo()
-                        view.zoom(CALC_MOL_ZOOM)
-                        view.show()
+                    _render_3dmol(
+                        content, fmt='cube',
+                        extra_js=(
+                            'v.addVolumetricData(moldata,"cube",{isoval:0.02,color:"#0026ff",opacity:0.85});'
+                            'v.addVolumetricData(moldata,"cube",{isoval:-0.02,color:"#b00010",opacity:0.85});'
+                        ),
+                    )
             except Exception as e:
                 calc_set_message(f'Error: {e}')
             return
@@ -1943,13 +1955,7 @@ def create_tab(ctx):
                         else:
                             calc_xyz_controls.layout.display = 'none'
                         calc_xyz_frame_label.value = ''
-                        with calc_mol_viewer:
-                            view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
-                            view.addModel(xyz_content, 'xyz')
-                            view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
-                            view.zoomTo()
-                            view.zoom(CALC_MOL_ZOOM)
-                            view.show()
+                        _render_3dmol(xyz_content)
                 except Exception as exc:
                     calc_set_message(f'Error: {exc}')
 
@@ -1972,13 +1978,7 @@ def create_tab(ctx):
                         else:
                             calc_xyz_controls.layout.display = 'none'
                         calc_xyz_frame_label.value = ''
-                        with calc_mol_viewer:
-                            view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
-                            view.addModel(xyz_content, 'xyz')
-                            view.setStyle({'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
-                            view.zoomTo()
-                            view.zoom(CALC_MOL_ZOOM)
-                            view.show()
+                        _render_3dmol(xyz_content)
                         _set_view_toggle(False, False)
                     else:
                         _set_view_toggle(False, True)
@@ -2133,6 +2133,7 @@ def create_tab(ctx):
         ' border-radius:4px; display:block; }'
         '.calc-splitter:hover { background:linear-gradient('
         'to right, #d0d0d0, #f0f0f0, #d0d0d0); }'
+        '.calc-mol-viewer { overflow:hidden !important; }'
         '</style>'
     )
 
@@ -2226,6 +2227,41 @@ def create_tab(ctx):
             document.addEventListener('mouseup', onUp);
         }});
     }}, 0);
+    """)
+
+    # Dynamic mol-viewer resize: keep square, flush with left panel bottom
+    _run_js("""
+    setTimeout(function() {
+        window.calcResizeMolViewer = function() {
+            var left = document.querySelector('.calc-left');
+            var mv = document.querySelector('.calc-mol-viewer');
+            if (!left || !mv || mv.offsetParent === null) return;
+            var container = mv.closest('.widget-vbox');
+            if (!container || container.style.display === 'none') return;
+            var leftRect = left.getBoundingClientRect();
+            var mvRect = mv.getBoundingClientRect();
+            if (mvRect.top === 0 && mvRect.height === 0) return;
+            var availH = leftRect.bottom - mvRect.top - 6;
+            var availW = mv.parentElement.getBoundingClientRect().width - 4;
+            var size = Math.floor(Math.min(availH, availW));
+            if (size < 200) size = 200;
+            mv.style.width = size + 'px';
+            mv.style.height = size + 'px';
+            var inner = mv.querySelector('[id^="calc_mol_3d"], [id^="calc_trj"]');
+            if (inner) { inner.style.width = size + 'px'; inner.style.height = size + 'px'; }
+            var v = window._calcMolViewer || window.calc_trj_viewer;
+            if (v && typeof v.resize === 'function') { v.resize(); v.render(); }
+        };
+        window.addEventListener('resize', function() {
+            setTimeout(window.calcResizeMolViewer, 100);
+        });
+        var tab = document.querySelector('.calc-tab');
+        if (tab) {
+            new MutationObserver(function() {
+                setTimeout(window.calcResizeMolViewer, 200);
+            }).observe(tab, {attributes: true, subtree: true, attributeFilter: ['style']});
+        }
+    }, 0);
     """)
 
     return tab_widget, {
