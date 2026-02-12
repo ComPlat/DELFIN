@@ -2177,75 +2177,68 @@ def create_tab(ctx):
     calc_right.add_class('calc-right')
     calc_content_area.add_class('calc-content-area')
 
-    # Enable draggable splitter (no visible slider)
+    # Enable draggable splitter + dynamic mol-viewer resize + $3Dmol patch
+    # NOTE: must be a SINGLE _run_js call because run_js uses clear_output.
     _run_js(f"""
     setTimeout(function() {{
-        const left = document.querySelector('.calc-left');
-        const right = document.querySelector('.calc-right');
-        const splitter = document.querySelector('.calc-splitter');
-        if (!left || !right || !splitter) return;
-        if (splitter.dataset.bound === '1') return;
-        splitter.dataset.bound = '1';
-
-        const minW = {CALC_LEFT_MIN};
-        const maxW = {CALC_LEFT_MAX};
-
-        function onMove(e) {{
-            const box = left.parentElement.getBoundingClientRect();
-            let w = e.clientX - box.left;
-            if (w < minW) w = minW;
-            if (w > maxW) w = maxW;
-            left.style.flex = '0 0 ' + w + 'px';
-            left.style.minWidth = w + 'px';
-            left.style.maxWidth = w + 'px';
+        /* --- Splitter drag logic --- */
+        var left = document.querySelector('.calc-left');
+        var right = document.querySelector('.calc-right');
+        var splitter = document.querySelector('.calc-splitter');
+        if (left && right && splitter && splitter.dataset.bound !== '1') {{
+            splitter.dataset.bound = '1';
+            var minW = {CALC_LEFT_MIN};
+            var maxW = {CALC_LEFT_MAX};
+            function onMove(e) {{
+                var box = left.parentElement.getBoundingClientRect();
+                var w = e.clientX - box.left;
+                if (w < minW) w = minW;
+                if (w > maxW) w = maxW;
+                left.style.flex = '0 0 ' + w + 'px';
+                left.style.minWidth = w + 'px';
+                left.style.maxWidth = w + 'px';
+            }}
+            function onUp() {{
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+                if (window.calcResizeMolViewer) setTimeout(window.calcResizeMolViewer, 50);
+            }}
+            splitter.addEventListener('mousedown', function(e) {{
+                e.preventDefault();
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            }});
         }}
 
-        function onUp() {{
-            document.removeEventListener('mousemove', onMove);
-            document.removeEventListener('mouseup', onUp);
-            if (window.calcResizeMolViewer) setTimeout(window.calcResizeMolViewer, 50);
-        }}
-
-        splitter.addEventListener('mousedown', function(e) {{
-            e.preventDefault();
-            document.addEventListener('mousemove', onMove);
-            document.addEventListener('mouseup', onUp);
-        }});
-    }}, 0);
-    """)
-
-    # Dynamic mol-viewer resize: keep square, flush with left panel bottom
-    # Also monkey-patch $3Dmol.createViewer to capture viewer instances.
-    _run_js("""
-    setTimeout(function() {
-        /* Monkey-patch $3Dmol.createViewer to store every new viewer */
-        function patchCreateViewer() {
-            if (typeof $3Dmol !== 'undefined' && !$3Dmol._patched) {
+        /* --- Monkey-patch $3Dmol.createViewer to store viewer instances --- */
+        function patchCreateViewer() {{
+            if (typeof $3Dmol !== 'undefined' && !$3Dmol._patched) {{
                 var orig = $3Dmol.createViewer;
-                $3Dmol.createViewer = function() {
+                $3Dmol.createViewer = function() {{
                     var v = orig.apply(this, arguments);
                     window._calcMolViewer = v;
-                    setTimeout(function() {
+                    setTimeout(function() {{
                         if (window.calcResizeMolViewer) window.calcResizeMolViewer();
-                    }, 300);
+                    }}, 300);
                     return v;
-                };
+                }};
                 $3Dmol._patched = true;
-            }
-        }
+            }}
+        }}
         patchCreateViewer();
-        var patchInterval = setInterval(function() {
+        var patchInterval = setInterval(function() {{
             patchCreateViewer();
             if (typeof $3Dmol !== 'undefined' && $3Dmol._patched) clearInterval(patchInterval);
-        }, 500);
+        }}, 500);
 
-        window.calcResizeMolViewer = function() {
-            var left = document.querySelector('.calc-left');
+        /* --- Dynamic mol-viewer resize --- */
+        window.calcResizeMolViewer = function() {{
+            var lft = document.querySelector('.calc-left');
             var mv = document.querySelector('.calc-mol-viewer');
-            if (!left || !mv || mv.offsetParent === null) return;
+            if (!lft || !mv || mv.offsetParent === null) return;
             var container = mv.closest('.widget-vbox');
             if (!container || container.style.display === 'none') return;
-            var leftRect = left.getBoundingClientRect();
+            var leftRect = lft.getBoundingClientRect();
             var mvRect = mv.getBoundingClientRect();
             if (mvRect.top === 0 && mvRect.height === 0) return;
             var availH = leftRect.bottom - mvRect.top - 6;
@@ -2257,20 +2250,20 @@ def create_tab(ctx):
             mv.style.width = w + 'px';
             mv.style.height = h + 'px';
             var inner = mv.querySelector('[id^="3dmolviewer"], [id^="calc_trj"]');
-            if (inner) { inner.style.width = w + 'px'; inner.style.height = h + 'px'; }
+            if (inner) {{ inner.style.width = w + 'px'; inner.style.height = h + 'px'; }}
             var v = window._calcMolViewer || window.calc_trj_viewer;
-            if (v && typeof v.resize === 'function') { v.resize(); v.render(); }
-        };
-        window.addEventListener('resize', function() {
+            if (v && typeof v.resize === 'function') {{ v.resize(); v.render(); }}
+        }};
+        window.addEventListener('resize', function() {{
             setTimeout(window.calcResizeMolViewer, 100);
-        });
+        }});
         var tab = document.querySelector('.calc-tab');
-        if (tab) {
-            new MutationObserver(function() {
+        if (tab) {{
+            new MutationObserver(function() {{
                 setTimeout(window.calcResizeMolViewer, 200);
-            }).observe(tab, {attributes: true, subtree: true, attributeFilter: ['style']});
-        }
-    }, 0);
+            }}).observe(tab, {{attributes: true, subtree: true, attributeFilter: ['style']}});
+        }}
+    }}, 0);
     """)
 
     return tab_widget, {
