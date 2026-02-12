@@ -126,7 +126,7 @@ def create_tab(ctx):
     calc_file_list = widgets.Select(
         options=[], rows=22,
         layout=widgets.Layout(
-            width='100%', height=f'{CALC_CONTENT_HEIGHT}px', margin='-4px 0 0 0'
+            width='100%', flex='1 1 0', min_height='0', margin='-4px 0 0 0'
         ),
     )
 
@@ -135,7 +135,7 @@ def create_tab(ctx):
         value='',
         layout=widgets.Layout(
             width='100%', display='block', overflow_x='hidden',
-            height=f'{CALC_CONTENT_HEIGHT}px',
+            flex='1 1 0', min_height='0',
         ),
     )
 
@@ -235,10 +235,11 @@ def create_tab(ctx):
     calc_edit_area = widgets.Textarea(
         value='',
         layout=widgets.Layout(
-            width='100%', height=f'{CALC_CONTENT_HEIGHT}px', display='none'
+            width='100%', flex='1 1 0', min_height='0', display='none'
         ),
     )
     calc_edit_area.add_class('delfin-nospell')
+    calc_edit_area.add_class('calc-edit-area')
     disable_spellcheck(ctx)
 
     # Content navigation
@@ -601,7 +602,7 @@ def create_tab(ctx):
 
     def calc_set_message(message):
         calc_content_area.value = (
-            f"<div style='height:{CALC_CONTENT_HEIGHT}px; overflow-y:auto;"
+            "<div style='height:100%; overflow-y:auto;"
             " border:1px solid #ddd; padding:6px; font-family:monospace;"
             " white-space:pre; background:#fafafa;'>"
             f"{_html.escape(message)}"
@@ -631,7 +632,7 @@ def create_tab(ctx):
             ".calc-match { background: #fff59d; padding: 0 2px; }"
             ".calc-match.current { background: #ffcc80; }"
             "</style>"
-            f"<div id='calc-content-box' style='height:{CALC_CONTENT_HEIGHT}px;"
+            "<div id='calc-content-box' style='height:100%;"
             " overflow-y:auto; overflow-x:hidden; border:1px solid #ddd; padding:6px;"
             " background:#fafafa; width:100%; box-sizing:border-box;'>"
             "<div id='calc-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
@@ -1884,9 +1885,9 @@ def create_tab(ctx):
                     f' ({size_str}{img_info})'
                 )
                 calc_content_area.value = (
-                    f"<div id='calc-content-box' style='height:{CALC_CONTENT_HEIGHT}px; overflow-y:auto;"
-                    f" overflow-x:hidden; border:1px solid #ddd; background:#fafafa;"
-                    f" width:100%; box-sizing:border-box;'>{styled_html}</div>"
+                    "<div id='calc-content-box' style='height:100%; overflow-y:auto;"
+                    " overflow-x:hidden; border:1px solid #ddd; background:#fafafa;"
+                    " width:100%; box-sizing:border-box;'>" + styled_html + "</div>"
                 )
                 calc_copy_btn.disabled = False
                 calc_copy_path_btn.disabled = False
@@ -2066,8 +2067,19 @@ def create_tab(ctx):
         '<style>'
         '#calc-content-box { overflow-x:hidden !important; }'
         '.calc-tab, .calc-tab * { overflow-x:hidden !important; box-sizing:border-box; }'
-        '.calc-tab { overflow:hidden !important; }'
-        '.calc-right { overflow:hidden !important; }'
+        '.calc-tab { overflow:hidden !important;'
+        ' height:calc(100vh - 120px) !important;'
+        ' max-height:calc(100vh - 120px) !important;'
+        ' display:flex !important; flex-direction:column !important; }'
+        '.calc-right { overflow:hidden !important;'
+        ' display:flex !important; flex-direction:column !important; }'
+        '.calc-left { display:flex !important; flex-direction:column !important; }'
+        '.calc-left .widget-select { flex:1 1 0 !important; min-height:0 !important; }'
+        '.calc-left .widget-select select { height:100% !important; }'
+        '.calc-content-area { flex:1 1 0 !important; min-height:0 !important;'
+        ' overflow-y:auto !important; overflow-x:hidden !important; }'
+        '.calc-content-area .widget-html-content { height:100%; }'
+        '.calc-edit-area textarea { height:100% !important; }'
         '.calc-tab .widget-vbox, .calc-tab .widget-hbox { overflow-y:hidden !important; }'
         '.calc-right .widget-output, .calc-right .jupyter-widgets-output-area { overflow:hidden !important; }'
         '.calc-right .widget-output .output_area { overflow:hidden !important; }'
@@ -2168,15 +2180,17 @@ def create_tab(ctx):
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden',
                 align_items='stretch', gap='12px',
+                flex='1 1 0', min_height='0',
             ),
         ),
     ], layout=widgets.Layout(
         padding='10px', overflow_x='hidden',
-        width='100%', max_width='100%', height='1020px',
+        width='100%', max_width='100%',
     ))
     tab_widget.add_class('calc-tab')
     calc_left.add_class('calc-left')
     calc_right.add_class('calc-right')
+    calc_content_area.add_class('calc-content-area')
 
     # Enable draggable splitter (no visible slider)
     _run_js(f"""
