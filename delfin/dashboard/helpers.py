@@ -81,6 +81,15 @@ def parse_time_to_seconds(time_str):
         return 48 * 3600
 
 
+def _append_js(ctx, script):
+    """Append JavaScript to the shared output without clearing prior JS."""
+    if not script:
+        return
+    from IPython.display import Javascript, display
+    with ctx.js_output:
+        display(Javascript(script))
+
+
 def disable_spellcheck(ctx, class_name='delfin-nospell'):
     """Disable spellcheck for textareas with the given CSS class.
 
@@ -115,7 +124,7 @@ def disable_spellcheck(ctx, class_name='delfin-nospell'):
         window.__delfinSpellcheckObserver = obs;
     }})();
     """
-    ctx.run_js(script)
+    _append_js(ctx, script)
 
 
 def disable_spellcheck_global(ctx):
@@ -148,4 +157,4 @@ def disable_spellcheck_global(ctx):
         window.__delfinSpellcheckObserverAll = obs;
     })();
     """
-    ctx.run_js(script)
+    _append_js(ctx, script)
