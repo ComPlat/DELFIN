@@ -35,7 +35,8 @@ class JobBackend(ABC):
     @abstractmethod
     def submit_delfin(self, job_dir, job_name, mode='delfin',
                       time_limit='48:00:00', pal=40, maxcore=6000,
-                      override=None, build_mult=None) -> SubmitResult:
+                      override=None, build_mult=None,
+                      co2_species_delta=None) -> SubmitResult:
         """Submit a DELFIN calculation job."""
 
     @abstractmethod

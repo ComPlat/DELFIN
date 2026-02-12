@@ -115,6 +115,8 @@ class LocalJobBackend(JobBackend):
             env['DELFIN_OVERRIDE'] = job['override']
         if job.get('build_mult') is not None:
             env['BUILD_MULTIPLICITY'] = str(job['build_mult'])
+        if job.get('co2_species_delta') is not None:
+            env['DELFIN_CO2_SPECIES_DELTA'] = str(job['co2_species_delta'])
 
         try:
             log_file = Path(job['job_dir']) / f'delfin_{job["job_id"]}.out'
@@ -179,7 +181,7 @@ class LocalJobBackend(JobBackend):
     # ------------------------------------------------------------------
     def _enqueue(self, job_dir, mode, job_name, inp_file=None,
                  time_limit='48:00:00', override=None, build_mult=None,
-                 pal=40, maxcore=6000):
+                 pal=40, maxcore=6000, co2_species_delta=None):
         if not self.run_script.exists():
             return SubmitResult(1, stderr=f'Run script not found: {self.run_script}')
 
@@ -204,6 +206,7 @@ class LocalJobBackend(JobBackend):
                 'inp_file': inp_file,
                 'override': override,
                 'build_mult': build_mult,
+                'co2_species_delta': co2_species_delta,
                 'log_file': None,
             }
             data['jobs'].append(job_entry)
@@ -217,11 +220,13 @@ class LocalJobBackend(JobBackend):
     # ------------------------------------------------------------------
     def submit_delfin(self, job_dir, job_name, mode='delfin',
                       time_limit='48:00:00', pal=40, maxcore=6000,
-                      override=None, build_mult=None) -> SubmitResult:
+                      override=None, build_mult=None,
+                      co2_species_delta=None) -> SubmitResult:
         return self._enqueue(
             job_dir, mode, job_name,
             time_limit=time_limit, override=override,
             build_mult=build_mult, pal=pal, maxcore=maxcore,
+            co2_species_delta=co2_species_delta,
         )
 
     def submit_orca(self, job_dir, job_name, inp_file,

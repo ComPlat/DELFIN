@@ -18,8 +18,9 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | orca | build | auto (default: auto)
+#   delfin | delfin-recalc | orca | build | delfin-co2-chain | auto (default: auto)
 #   BUILD_MULTIPLICITY: Spin multiplicity for build mode (default: 1)
+#   DELFIN_CO2_SPECIES_DELTA: Redox species delta for delfin-co2-chain mode (default: 0)
 #   DELFIN_INP_FILE: Specific .inp file for ORCA mode
 #   DELFIN_JOB_NAME: Job name for display (optional)
 #
@@ -507,9 +508,37 @@ case "$MODE" in
         python -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
         EXIT_CODE=$?
         ;;
+    delfin-co2-chain)
+        CO2_SPECIES_DELTA="${DELFIN_CO2_SPECIES_DELTA:-0}"
+        echo "Starting DELFIN + CO2 Coordinator chain..."
+        echo "  CO2 Species Delta: $CO2_SPECIES_DELTA"
+
+        # Step 1: DELFIN
+        echo "=== Step 1/2: Running DELFIN ==="
+        delfin
+        DELFIN_EXIT=$?
+        if [ "$DELFIN_EXIT" -ne 0 ]; then
+            echo "ERROR: DELFIN failed (exit $DELFIN_EXIT). CO2 Coordinator skipped."
+            EXIT_CODE=$DELFIN_EXIT
+        else
+            # Step 2: Chain Setup + CO2 Coordinator
+            echo "=== Step 2/2: CO2 Coordinator ==="
+            python -m delfin.co2.chain_setup "$CO2_SPECIES_DELTA"
+            SETUP_EXIT=$?
+            if [ "$SETUP_EXIT" -ne 0 ]; then
+                echo "ERROR: CO2 setup failed (exit $SETUP_EXIT)"
+                EXIT_CODE=$SETUP_EXIT
+            else
+                cd CO2_coordination
+                delfin co2
+                EXIT_CODE=$?
+                cd ..
+            fi
+        fi
+        ;;
     *)
         echo "ERROR: Unknown mode: $MODE"
-        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, build, auto"
+        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, build, delfin-co2-chain, auto"
         EXIT_CODE=1
         ;;
 esac

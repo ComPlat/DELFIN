@@ -84,7 +84,8 @@ class SlurmJobBackend(JobBackend):
     # ------------------------------------------------------------------
     def submit_delfin(self, job_dir, job_name, mode='delfin',
                       time_limit='48:00:00', pal=40, maxcore=6000,
-                      override=None, build_mult=None) -> SubmitResult:
+                      override=None, build_mult=None,
+                      co2_species_delta=None) -> SubmitResult:
         env_vars = f'DELFIN_MODE={mode},DELFIN_JOB_NAME={job_name}'
         if self.orca_base:
             env_vars += f',DELFIN_ORCA_BASE={self.orca_base}'
@@ -92,6 +93,8 @@ class SlurmJobBackend(JobBackend):
             env_vars += f',DELFIN_OVERRIDE={override}'
         if build_mult is not None:
             env_vars += f',BUILD_MULTIPLICITY={build_mult}'
+        if co2_species_delta is not None:
+            env_vars += f',DELFIN_CO2_SPECIES_DELTA={co2_species_delta}'
 
         pal_used, mem_used = self._resolve_resources(job_dir, pal=pal, maxcore=maxcore)
         result = self._sbatch(

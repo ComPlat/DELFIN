@@ -129,6 +129,16 @@ def create_tab(ctx):
     )
     only_goat_output = widgets.Output()
 
+    co2_species_delta = widgets.IntText(
+        value=-2, description='Species delta:',
+        style=COMMON_STYLE, layout=widgets.Layout(width='180px'),
+    )
+    co2_submit_button = widgets.Button(
+        description='SUBMIT DELFIN + CO2', button_style='success',
+        layout=widgets.Layout(width='180px'),
+    )
+    co2_output = widgets.Output()
+
     # -- state ----------------------------------------------------------
     state = {
         'converted_xyz_cache': {'smiles': None, 'xyz': None},
@@ -477,6 +487,7 @@ def create_tab(ctx):
         custom_time_widget.value = 72
         only_goat_charge.value = 0
         only_goat_solvent.value = ''
+        co2_species_delta.value = -2
         state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
         with mol_output:
             clear_output()
@@ -654,6 +665,80 @@ def create_tab(ctx):
             except Exception as e:
                 print(f'Error creating job: {e}')
 
+    def handle_co2_chain_submit(button):
+        with co2_output:
+            clear_output()
+            job_name = job_name_widget.value.strip()
+            raw_input = coords_widget.value.strip()
+            control_content = control_widget.value
+            delta = co2_species_delta.value
+
+            if not job_name:
+                print('Error: Job name cannot be empty!')
+                return
+            if not raw_input:
+                print('Error: Input (coordinates or SMILES) cannot be empty!')
+                return
+
+            control_errors = validate_control_text(control_content)
+            if control_errors:
+                print('CONTROL.txt validation failed:')
+                for err in control_errors:
+                    print(f'- {err}')
+                return
+
+            input_content, input_type = clean_input_data(raw_input)
+            cache = state['converted_xyz_cache']
+            if input_type == 'smiles' and cache.get('xyz'):
+                input_content = cache['xyz']
+
+            if not input_content:
+                print('Error: No valid input found!')
+                return
+
+            safe_job_name = ''.join(c for c in job_name if c.isalnum() or c in ('_', '-'))
+            if not safe_job_name:
+                print('Error: Job name contains only invalid characters!')
+                return
+
+            job_dir = ctx.calc_dir / safe_job_name
+            time_limit = resolve_time_limit(job_type_widget, custom_time_widget, '48:00:00')
+
+            try:
+                job_dir.mkdir(parents=True, exist_ok=True)
+
+                if cache.get('smiles'):
+                    control_content = control_content.replace(
+                        'SMILES=', f"SMILES={cache['smiles']}",
+                    )
+
+                (job_dir / 'CONTROL.txt').write_text(control_content)
+                (job_dir / 'input.txt').write_text(input_content)
+
+                pal, maxcore = parse_resource_settings(control_content)
+                result = ctx.backend.submit_delfin(
+                    job_dir=job_dir, job_name=safe_job_name,
+                    mode='delfin-co2-chain',
+                    time_limit=time_limit, pal=pal or 40, maxcore=maxcore or 6000,
+                    co2_species_delta=delta,
+                )
+
+                if result.returncode == 0:
+                    job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                    print('DELFIN + CO2 chain job submitted!')
+                    print(f'Job ID: {job_id}')
+                    print(f'Time Limit: {time_limit}')
+                    print(f'CO2 Species Delta: {delta}')
+                    print(f'Directory: {job_dir}')
+                    print('')
+                    print('Check status in Job Status tab')
+                    reset_form()
+                else:
+                    print('Error submitting job:')
+                    print(result.stderr)
+            except Exception as e:
+                print(f'Error creating job: {e}')
+
     # -- wiring ---------------------------------------------------------
     xyz_copy_btn.on_click(on_xyz_copy)
     coords_widget.observe(update_molecule_view, names='value')
@@ -663,6 +748,7 @@ def create_tab(ctx):
     smiles_prev_button.on_click(handle_smiles_prev)
     smiles_next_button.on_click(handle_smiles_next)
     only_goat_submit_button.on_click(handle_only_goat_submit)
+    co2_submit_button.on_click(handle_co2_chain_submit)
     validate_button.on_click(handle_validate_control)
     submit_button.on_click(handle_submit)
 
@@ -698,6 +784,10 @@ def create_tab(ctx):
         widgets.HTML('<b>Only GOAT:</b>'),
         widgets.HBox([only_goat_charge, only_goat_solvent, only_goat_submit_button]),
         only_goat_output,
+        spacer_large,
+        widgets.HTML('<b>CO2 Coordinator:</b>'),
+        widgets.HBox([co2_species_delta, co2_submit_button]),
+        co2_output,
     ], layout=widgets.Layout(width='50%', padding='10px'))
 
     tab_widget = widgets.HBox([submit_left, submit_right])
