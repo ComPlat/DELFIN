@@ -1952,7 +1952,7 @@ def create_tab(ctx):
                 except Exception as exc:
                     calc_set_message(f'Error: {exc}')
 
-            # .inp files: try to show molecule + enable recalc
+            # .inp files: prepare visualization but do not auto-open it
             elif suffix == '.inp':
                 try:
                     xyz_content = calc_build_xyz_from_input(
@@ -1971,8 +1971,6 @@ def create_tab(ctx):
                         else:
                             calc_xyz_controls.layout.display = 'none'
                         calc_xyz_frame_label.value = ''
-                        _set_view_toggle(True, False)
-                        calc_update_view()
                         with calc_mol_viewer:
                             view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
                             view.addModel(xyz_content, 'xyz')
@@ -1980,8 +1978,14 @@ def create_tab(ctx):
                             view.zoomTo()
                             view.zoom(CALC_MOL_ZOOM)
                             view.show()
+                        _set_view_toggle(False, False)
+                    else:
+                        _set_view_toggle(False, True)
                 except Exception as exc:
+                    _set_view_toggle(False, True)
                     calc_set_message(f'Error: {exc}')
+                calc_mol_container.layout.display = 'none'
+                calc_content_area.layout.display = 'block'
 
             if suffix == '.inp':
                 state['selected_inp_path'] = full_path
