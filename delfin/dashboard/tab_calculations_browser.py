@@ -280,23 +280,24 @@ def create_tab(ctx):
     # OCCUPIER Override widgets
     calc_options_dropdown = widgets.Dropdown(
         options=['(Options)'], value='(Options)',
-        layout=widgets.Layout(width='150px', min_width='150px', height='26px', visibility='hidden'),
+        layout=widgets.Layout(width='150px', min_width='150px', height='26px', display='none'),
     )
+    calc_options_dropdown.add_class('calc-options-dropdown')
     calc_override_input = widgets.Text(
         value='', placeholder='STAGE=INDEX',
-        layout=widgets.Layout(width='140px', min_width='140px', height='26px', visibility='hidden'),
+        layout=widgets.Layout(width='140px', min_width='140px', height='26px', display='none'),
     )
     calc_override_time = widgets.Text(
         value='08:00:00', placeholder='HH:MM:SS',
-        layout=widgets.Layout(width='80px', min_width='80px', height='26px', visibility='hidden'),
+        layout=widgets.Layout(width='80px', min_width='80px', height='26px', display='none'),
     )
     calc_override_btn = widgets.Button(
         description='Submit', button_style='success',
-        layout=widgets.Layout(width='70px', min_width='70px', height='26px', visibility='hidden'),
+        layout=widgets.Layout(width='70px', min_width='70px', height='26px', display='none'),
     )
     calc_override_status = widgets.HTML(
         value='',
-        layout=widgets.Layout(width='100%', visibility='hidden'),
+        layout=widgets.Layout(width='100%', display='none'),
     )
 
     # -- preselection widgets ----------------------------------------------
@@ -339,7 +340,10 @@ def create_tab(ctx):
         calc_prev_btn, calc_next_btn,
         calc_options_dropdown, calc_override_input, calc_override_time, calc_override_btn,
         calc_search_result,
-    ], layout=widgets.Layout(margin='5px 0', width='100%', overflow_x='hidden', gap='6px'))
+    ], layout=widgets.Layout(
+        margin='5px 0', width='100%', overflow_x='hidden', gap='6px',
+        flex_flow='row wrap', align_items='center',
+    ))
 
     calc_recalc_toolbar = widgets.HBox([
         calc_recalc_time,
@@ -1025,24 +1029,24 @@ def create_tab(ctx):
             if _calc_is_complete_mutation_csv(name):
                 calc_options_dropdown.options = ['(Options)', 'Preselection']
                 calc_options_dropdown.value = '(Options)'
-                calc_options_dropdown.layout.visibility = 'visible'
+                calc_options_dropdown.layout.display = 'block'
                 return
         if selected and 'OCCUPIER.txt' in selected:
             calc_options_dropdown.options = ['(Options)', 'Override']
             calc_options_dropdown.value = '(Options)'
-            calc_options_dropdown.layout.visibility = 'visible'
+            calc_options_dropdown.layout.display = 'block'
         elif selected and ('CONTROL.txt' in selected or sel_lower.endswith('.inp')):
             calc_options_dropdown.options = ['(Options)', 'Recalc']
             calc_options_dropdown.value = '(Options)'
-            calc_options_dropdown.layout.visibility = 'visible'
+            calc_options_dropdown.layout.display = 'block'
         else:
             calc_options_dropdown.options = ['(Options)']
             calc_options_dropdown.value = '(Options)'
-            calc_options_dropdown.layout.visibility = 'hidden'
-            calc_override_input.layout.visibility = 'hidden'
-            calc_override_time.layout.visibility = 'hidden'
-            calc_override_btn.layout.visibility = 'hidden'
-            calc_override_status.layout.visibility = 'hidden'
+            calc_options_dropdown.layout.display = 'none'
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
             calc_override_status.value = ''
             calc_edit_area.layout.display = 'none'
             if not calc_view_toggle.value and not state['recalc_active']:
@@ -1219,10 +1223,10 @@ def create_tab(ctx):
 
     def calc_on_options_change(change):
         if change['new'] == 'Override':
-            calc_override_input.layout.visibility = 'visible'
-            calc_override_time.layout.visibility = 'visible'
-            calc_override_btn.layout.visibility = 'visible'
-            calc_override_status.layout.visibility = 'visible'
+            calc_override_input.layout.display = 'block'
+            calc_override_time.layout.display = 'block'
+            calc_override_btn.layout.display = 'block'
+            calc_override_status.layout.display = 'block'
             calc_override_status.value = ''
             calc_edit_area.layout.display = 'none'
             _calc_preselect_show(False)
@@ -1233,20 +1237,20 @@ def create_tab(ctx):
                 stage_name = name.replace('_OCCUPIER.txt', '').replace('OCCUPIER.txt', '')
                 calc_override_input.value = f'{stage_name}=' if stage_name else ''
         elif change['new'] == 'Recalc':
-            calc_override_input.layout.visibility = 'hidden'
-            calc_override_time.layout.visibility = 'visible'
-            calc_override_btn.layout.visibility = 'visible'
-            calc_override_status.layout.visibility = 'visible'
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'block'
+            calc_override_btn.layout.display = 'block'
+            calc_override_status.layout.display = 'block'
             calc_override_status.value = ''
             calc_edit_area.value = state['file_content']
             calc_edit_area.layout.display = 'block'
             _calc_preselect_show(False)
             calc_content_area.layout.display = 'none'
         elif change['new'] == 'Preselection':
-            calc_override_input.layout.visibility = 'hidden'
-            calc_override_time.layout.visibility = 'hidden'
-            calc_override_btn.layout.visibility = 'hidden'
-            calc_override_status.layout.visibility = 'hidden'
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
             calc_override_status.value = ''
             calc_edit_area.layout.display = 'none'
             csv_path = _calc_get_selected_path()
@@ -1258,10 +1262,10 @@ def create_tab(ctx):
             _calc_preselect_show(True)
             _calc_preselect_render_current()
         else:
-            calc_override_input.layout.visibility = 'hidden'
-            calc_override_time.layout.visibility = 'hidden'
-            calc_override_btn.layout.visibility = 'hidden'
-            calc_override_status.layout.visibility = 'hidden'
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
             calc_override_status.value = ''
             calc_edit_area.layout.display = 'none'
             _calc_preselect_show(False)
@@ -2089,6 +2093,13 @@ def create_tab(ctx):
         '.calc-right .widget-text input'
         ' { overflow-x:hidden !important; overflow-y:hidden !important; }'
         '.calc-tab .widget-text { overflow:visible !important; }'
+        '.calc-tab .widget-dropdown { height:26px !important; }'
+        '.calc-tab .widget-dropdown select { '
+        'height:26px !important; max-height:26px !important; line-height:26px !important; '
+        'overflow:hidden !important; padding:0 6px !important; }'
+        '.calc-tab .widget-dropdown, .calc-tab .widget-dropdown select { overflow:hidden !important; }'
+        '.calc-options-dropdown { width:150px !important; min-width:150px !important; }'
+        '.calc-options-dropdown select { width:150px !important; max-width:150px !important; }'
         '.calc-left .widget-text { width:auto !important; }'
         '.calc-left .widget-text input { width:100% !important; }'
         '.calc-filter-row > .widget-text { width:calc(100% - 94px) !important; }'
