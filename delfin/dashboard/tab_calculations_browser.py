@@ -102,17 +102,25 @@ def create_tab(ctx):
     # Filter & sort
     calc_folder_search = widgets.Text(
         placeholder='Filter files...', continuous_update=True,
-        layout=widgets.Layout(flex='1', height='28px', overflow_x='hidden', margin='0', padding='0'),
+        layout=widgets.Layout(
+            flex='1 1 auto', min_width='0', width='auto', max_width='100%',
+            height='28px', overflow_x='hidden', margin='0', padding='0',
+        ),
     )
     calc_sort_dropdown = widgets.Dropdown(
         options=[('A-Z', 'name'), ('Newest', 'date_desc'), ('Oldest', 'date_asc')],
         value='name',
-        layout=widgets.Layout(width='30%', height='26px'),
+        layout=widgets.Layout(width='90px', min_width='90px', height='26px', margin='0 0 0 4px'),
     )
     calc_filter_sort_row = widgets.HBox(
         [calc_folder_search, calc_sort_dropdown],
-        layout=widgets.Layout(width='100%', margin='0 0 8px 0', gap='4px'),
+        layout=widgets.Layout(
+            width='100%', margin='0 0 8px 0',
+            align_items='center', justify_content='flex-start',
+            overflow_x='hidden',
+        ),
     )
+    calc_filter_sort_row.add_class('calc-filter-row')
 
     # File list
     calc_file_list = widgets.Select(
@@ -178,15 +186,15 @@ def create_tab(ctx):
     # Copy / path / report buttons
     calc_copy_path_btn = widgets.Button(
         description='PATH', button_style='',
-        layout=widgets.Layout(width='70px', height='26px'), disabled=True,
+        layout=widgets.Layout(width='70px', min_width='70px', height='26px'), disabled=True,
     )
     calc_copy_btn = widgets.Button(
         description='Copy', button_style='info',
-        layout=widgets.Layout(width='80px', height='26px'), disabled=True,
+        layout=widgets.Layout(width='80px', min_width='80px', height='26px'), disabled=True,
     )
     calc_report_btn = widgets.Button(
         description='Report', button_style='success',
-        layout=widgets.Layout(width='80px', height='26px'), disabled=True,
+        layout=widgets.Layout(width='80px', min_width='80px', height='26px'), disabled=True,
     )
     calc_report_status = widgets.HTML(
         value='', layout=widgets.Layout(width='100%'),
@@ -205,17 +213,17 @@ def create_tab(ctx):
     )
     calc_view_toggle = widgets.ToggleButton(
         description='Visualize', value=False, disabled=True, button_style='warning',
-        layout=widgets.Layout(width='110px', height='26px'),
+        layout=widgets.Layout(width='110px', min_width='110px', height='26px'),
     )
 
     # Recalc widgets
     calc_recalc_btn = widgets.Button(
         description='Recalc', button_style='warning',
-        layout=widgets.Layout(width='80px', height='26px'), disabled=True,
+        layout=widgets.Layout(width='80px', min_width='80px', height='26px'), disabled=True,
     )
     calc_submit_recalc_btn = widgets.Button(
         description='Submit Recalc', button_style='success',
-        layout=widgets.Layout(width='130px', height='26px'), disabled=True,
+        layout=widgets.Layout(width='130px', min_width='130px', height='26px'), disabled=True,
     )
     calc_recalc_time = widgets.Text(
         value='24:00:00', description='Time limit',
@@ -236,34 +244,34 @@ def create_tab(ctx):
     # Content navigation
     calc_top_btn = widgets.Button(
         description='⬆ Top',
-        layout=widgets.Layout(width='95px', height='26px'),
+        layout=widgets.Layout(width='95px', min_width='95px', height='26px'),
     )
     calc_bottom_btn = widgets.Button(
         description='⬇ End',
-        layout=widgets.Layout(width='95px', height='26px'),
+        layout=widgets.Layout(width='95px', min_width='95px', height='26px'),
     )
 
     # Content search
     calc_search_input = widgets.Text(
         placeholder='Search in file...', continuous_update=False,
-        layout=widgets.Layout(width='140px', height='26px'),
+        layout=widgets.Layout(width='140px', min_width='140px', height='26px'),
     )
     calc_search_suggest = widgets.Dropdown(
         options=['(Select)'] + CALC_SEARCH_OPTIONS,
         value='(Select)',
-        layout=widgets.Layout(width='200px', height='26px'),
+        layout=widgets.Layout(width='200px', min_width='200px', height='26px'),
     )
     calc_search_btn = widgets.Button(
         description='🔍',
-        layout=widgets.Layout(width='85px', height='26px'),
+        layout=widgets.Layout(width='85px', min_width='85px', height='26px'),
     )
     calc_prev_btn = widgets.Button(
         description='◀',
-        layout=widgets.Layout(width='58px', height='26px'), disabled=True,
+        layout=widgets.Layout(width='58px', min_width='58px', height='26px'), disabled=True,
     )
     calc_next_btn = widgets.Button(
         description='▶',
-        layout=widgets.Layout(width='58px', height='26px'), disabled=True,
+        layout=widgets.Layout(width='58px', min_width='58px', height='26px'), disabled=True,
     )
     calc_search_result = widgets.HTML(
         value='', layout=widgets.Layout(width='180px', min_width='180px'),
@@ -272,19 +280,19 @@ def create_tab(ctx):
     # OCCUPIER Override widgets
     calc_options_dropdown = widgets.Dropdown(
         options=['(Options)'], value='(Options)',
-        layout=widgets.Layout(width='150px', height='26px', visibility='hidden'),
+        layout=widgets.Layout(width='150px', min_width='150px', height='26px', visibility='hidden'),
     )
     calc_override_input = widgets.Text(
         value='', placeholder='STAGE=INDEX',
-        layout=widgets.Layout(width='140px', height='26px', visibility='hidden'),
+        layout=widgets.Layout(width='140px', min_width='140px', height='26px', visibility='hidden'),
     )
     calc_override_time = widgets.Text(
         value='08:00:00', placeholder='HH:MM:SS',
-        layout=widgets.Layout(width='80px', height='26px', visibility='hidden'),
+        layout=widgets.Layout(width='80px', min_width='80px', height='26px', visibility='hidden'),
     )
     calc_override_btn = widgets.Button(
         description='Submit', button_style='success',
-        layout=widgets.Layout(width='70px', height='26px', visibility='hidden'),
+        layout=widgets.Layout(width='70px', min_width='70px', height='26px', visibility='hidden'),
     )
     calc_override_status = widgets.HTML(
         value='',
@@ -2070,11 +2078,19 @@ def create_tab(ctx):
         ' { overflow-x:hidden !important; }'
         '.calc-left .widget-select select'
         ' { text-overflow: ellipsis; white-space: nowrap; }'
+        '.calc-left .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
+        '.calc-left .widget-text input { width:100% !important; }'
+        '.calc-filter-row { width:100% !important; display:flex !important; }'
+        '.calc-filter-row > .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
+        '.calc-filter-row > .widget-text input { width:100% !important; }'
+        '.calc-filter-row > .widget-dropdown { flex:0 0 auto !important; }'
         '.calc-left .widget-text input'
         ' { overflow-x:hidden !important; overflow-y:hidden !important; text-overflow: ellipsis; }'
         '.calc-right .widget-text input'
         ' { overflow-x:hidden !important; overflow-y:hidden !important; }'
         '.calc-tab .widget-text { overflow:visible !important; }'
+        '.calc-tab .widget-button { flex:0 0 auto !important; }'
+        '.calc-tab .widget-dropdown, .calc-tab .widget-text { flex:0 0 auto !important; }'
         '.calc-tab input { overflow:hidden !important; height:26px !important;'
         ' line-height:26px !important; padding:0 6px !important; box-sizing:border-box !important; }'
         '.calc-tab input::-webkit-scrollbar { width:0; height:0; display:none; }'
@@ -2095,9 +2111,16 @@ def create_tab(ctx):
             calc_file_info,
             widgets.HBox(
                 [calc_copy_path_btn, calc_copy_btn, calc_report_btn, calc_view_toggle],
-                layout=widgets.Layout(gap='10px'),
+                layout=widgets.Layout(
+                    gap='10px',
+                    flex_flow='row wrap',
+                    justify_content='flex-end',
+                    align_items='center',
+                    width='100%',
+                    overflow_x='hidden',
+                ),
             ),
-        ], layout=widgets.Layout(align_items='center', justify_content='space-between')),
+        ], layout=widgets.Layout(align_items='center', justify_content='space-between', width='100%')),
         calc_path_display,
         calc_mol_container,
         calc_content_label,
