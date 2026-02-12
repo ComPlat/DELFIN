@@ -311,6 +311,20 @@ def create_tab(ctx):
     def _run_js(script):
         ctx.run_js(script)
 
+    def _set_view_toggle(value, disabled=None):
+        """Set visualize toggle without triggering multiple UI refreshes."""
+        try:
+            calc_view_toggle.unobserve(_on_view_toggle, names='value')
+        except Exception:
+            pass
+        if disabled is not None:
+            calc_view_toggle.disabled = disabled
+        calc_view_toggle.value = value
+        calc_view_toggle.observe(_on_view_toggle, names='value')
+
+    def _on_view_toggle(change=None):
+        calc_update_view()
+
     def _calc_dir():
         return ctx.calc_dir
 
@@ -500,6 +514,9 @@ def create_tab(ctx):
         frames = state['xyz_frames']
         if not frames:
             return
+        # Ensure viewer area is visible before rendering to avoid flicker.
+        calc_mol_container.layout.display = 'block'
+        calc_content_area.layout.display = 'none'
         idx = state['xyz_current_frame'][0]
         if idx < 0 or idx >= len(frames):
             return
@@ -528,15 +545,27 @@ def create_tab(ctx):
                     <div id="{viewer_id}" style="width:{CALC_MOL_SIZE}px;height:{CALC_MOL_SIZE}px;position:relative;"></div>
                     <script>
                     (function() {{
-                        var viewer = $3Dmol.createViewer("{viewer_id}", {{backgroundColor: "white"}});
-                        var xyz = `{full_xyz}`;
-                        viewer.addModelsAsFrames(xyz, "xyz");
-                        viewer.setStyle({{}}, {{stick: {{radius: 0.1}}, sphere: {{scale: 0.25}}}});
-                        viewer.zoomTo();
-                        viewer.zoom({CALC_MOL_ZOOM});
-                        viewer.setFrame(0);
-                        viewer.render();
-                        window.calc_trj_viewer = viewer;
+                        var tries = 0;
+                        function initViewer() {{
+                            var el = document.getElementById("{viewer_id}");
+                            if (!el || typeof $3Dmol === "undefined") {{
+                                tries += 1;
+                                if (tries < 50) {{
+                                    setTimeout(initViewer, 100);
+                                }}
+                                return;
+                            }}
+                            var viewer = $3Dmol.createViewer("{viewer_id}", {{backgroundColor: "white"}});
+                            var xyz = `{full_xyz}`;
+                            viewer.addModelsAsFrames(xyz, "xyz");
+                            viewer.setStyle({{}}, {{stick: {{radius: 0.1}}, sphere: {{scale: 0.25}}}});
+                            viewer.zoomTo();
+                            viewer.zoom({CALC_MOL_ZOOM});
+                            viewer.setFrame(0);
+                            viewer.render();
+                            window.calc_trj_viewer = viewer;
+                        }}
+                        setTimeout(initViewer, 0);
                     }})();
                     </script>
                     """
@@ -592,8 +621,7 @@ def create_tab(ctx):
         calc_folder_search.value = ''
         calc_prev_btn.disabled = True
         calc_next_btn.disabled = True
-        calc_view_toggle.value = False
-        calc_view_toggle.disabled = True
+        _set_view_toggle(False, True)
         calc_copy_btn.disabled = True
         calc_copy_path_btn.disabled = True
         calc_update_view()
@@ -767,7 +795,8 @@ def create_tab(ctx):
             calc_override_status.layout.visibility = 'hidden'
             calc_override_status.value = ''
             calc_edit_area.layout.display = 'none'
-            calc_content_area.layout.display = 'block'
+            if not calc_view_toggle.value and not state['recalc_active']:
+                calc_content_area.layout.display = 'block'
 
     # -- event handlers -----------------------------------------------------
     def calc_on_back(b):
@@ -1159,7 +1188,7 @@ def create_tab(ctx):
         calc_edit_area.value = content
         state['recalc_active'] = True
         calc_submit_recalc_btn.disabled = False
-        calc_view_toggle.value = False
+        _set_view_toggle(False, False)
         calc_content_label.value = '<b>📄 File Content (editable):</b>'
         calc_update_view()
 
@@ -1314,12 +1343,12 @@ def create_tab(ctx):
         calc_delete_hide_confirm()
         calc_update_options_dropdown()
 
-        # Reset display
+        # Reset display (avoid flashing text area before viewer is ready)
         calc_mol_viewer.clear_output()
         calc_mol_container.layout.display = 'none'
-        calc_content_area.layout.display = 'block'
-        calc_view_toggle.value = False
-        calc_view_toggle.disabled = True
+        calc_content_area.layout.display = 'none'
+        calc_content_label.layout.display = 'none'
+        _set_view_toggle(False, True)
         calc_file_info.value = ''
         calc_path_display.value = ''
         state['file_content'] = ''
@@ -1353,8 +1382,9 @@ def create_tab(ctx):
 
         # --- Turbomole coord file ---
         if name_lower == 'coord':
-            calc_view_toggle.disabled = False
-            calc_view_toggle.value = True
+            _set_view_toggle(True, False)
+            calc_mol_container.layout.display = 'block'
+            calc_content_area.layout.display = 'none'
             calc_update_view()
             try:
                 content = full_path.read_text()
@@ -1389,8 +1419,9 @@ def create_tab(ctx):
 
         # --- XYZ file (with trajectory support) ---
         if suffix == '.xyz':
-            calc_view_toggle.disabled = False
-            calc_view_toggle.value = True
+            _set_view_toggle(True, False)
+            calc_mol_container.layout.display = 'block'
+            calc_content_area.layout.display = 'none'
             calc_update_view()
             try:
                 content = full_path.read_text()
@@ -1465,8 +1496,7 @@ def create_tab(ctx):
 
         # --- Cube/Cub volumetric data ---
         if suffix in ['.cube', '.cub']:
-            calc_view_toggle.disabled = False
-            calc_view_toggle.value = False
+            _set_view_toggle(False, False)
             calc_update_view()
             try:
                 calc_file_info.value = (
@@ -1618,8 +1648,9 @@ def create_tab(ctx):
 
             # input.txt: try to show molecule
             if name == 'input.txt':
-                calc_view_toggle.disabled = False
-                calc_view_toggle.value = True
+                _set_view_toggle(True, False)
+                calc_mol_container.layout.display = 'block'
+                calc_content_area.layout.display = 'none'
                 calc_update_view()
                 try:
                     xyz_content = calc_build_xyz_from_input(
@@ -1667,8 +1698,7 @@ def create_tab(ctx):
                         else:
                             calc_xyz_controls.layout.display = 'none'
                         calc_xyz_frame_label.value = ''
-                        calc_view_toggle.disabled = False
-                        calc_view_toggle.value = True
+                        _set_view_toggle(True, False)
                         calc_update_view()
                         with calc_mol_viewer:
                             view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
@@ -1704,7 +1734,7 @@ def create_tab(ctx):
     calc_search_btn.on_click(calc_do_search)
     calc_search_input.observe(lambda change: calc_do_search(), names='value')
     calc_search_suggest.observe(calc_on_suggest, names='value')
-    calc_view_toggle.observe(lambda change: calc_update_view(), names='value')
+    calc_view_toggle.observe(_on_view_toggle, names='value')
     calc_prev_btn.on_click(calc_prev_match)
     calc_next_btn.on_click(calc_next_match)
     calc_recalc_btn.on_click(calc_on_recalc_click)
