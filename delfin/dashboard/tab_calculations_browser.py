@@ -2112,7 +2112,11 @@ def create_tab(ctx):
         ' border-radius:4px; display:block; }'
         '.calc-splitter:hover { background:linear-gradient('
         'to right, #d0d0d0, #f0f0f0, #d0d0d0); }'
-        '.calc-mol-viewer { overflow:hidden !important; }'
+        '.calc-mol-viewer { overflow:hidden !important; padding:0 !important; }'
+        '.calc-mol-viewer .output_area, .calc-mol-viewer .output_subarea,'
+        ' .calc-mol-viewer .output_wrapper, .calc-mol-viewer .jp-OutputArea-child,'
+        ' .calc-mol-viewer .jp-OutputArea-output'
+        ' { padding:0 !important; margin:0 !important; }'
         '</style>'
     )
 
@@ -2244,7 +2248,7 @@ def create_tab(ctx):
             if (mvRect.top === 0 && mvRect.height === 0) return;
             var availH = leftRect.bottom - mvRect.top - 6;
             var availW = mv.parentElement.getBoundingClientRect().width - 4;
-            var size = Math.floor(Math.min(availH, availW) * 0.95);
+            var size = Math.floor(Math.min(availH, availW) * 0.975);
             if (size < 200) size = 200;
             mv.style.width = size + 'px';
             mv.style.height = size + 'px';
