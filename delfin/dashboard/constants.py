@@ -268,6 +268,16 @@ odd_seq = [
 ]
 --------------------
 ORCA base overrides (optional):
+keyword:XTB=[]
+addition:XTB=[]
+keyword:XTB_GOAT=[]
+addition:XTB_GOAT=[]
+keyword:XTB_SOLVATOR=[]
+addition:XTB_SOLVATOR=[]
+keyword:XTB2=[]
+addition:XTB2=[]
+keyword:XTB2_GOAT=[]
+addition:XTB2_GOAT=[]
 keyword:initial=[]
 addition:initial=[]
 keyword:ox_step_1=[]
@@ -514,6 +524,16 @@ odd_seq = [
 ]
 --------------------
 ORCA base overrides (optional):
+keyword:XTB=[]
+addition:XTB=[]
+keyword:XTB_GOAT=[]
+addition:XTB_GOAT=[]
+keyword:XTB_SOLVATOR=[]
+addition:XTB_SOLVATOR=[]
+keyword:XTB2=[]
+addition:XTB2=[]
+keyword:XTB2_GOAT=[]
+addition:XTB2_GOAT=[]
 keyword:initial=[]
 addition:initial=[]
 keyword:ox_step_1=[]
