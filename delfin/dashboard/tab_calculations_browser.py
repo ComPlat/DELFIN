@@ -2109,9 +2109,10 @@ def create_tab(ctx):
         ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
         '.calc-splitter { width:8px; height:100%; cursor:col-resize;'
         ' background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);'
-        ' border-radius:4px; display:block; }'
+        ' border-radius:4px; display:block;'
+        ' z-index:10; pointer-events:auto !important; position:relative; }'
         '.calc-splitter:hover { background:linear-gradient('
-        'to right, #d0d0d0, #f0f0f0, #d0d0d0); }'
+        'to right, #b0b0b0, #e0e0e0, #b0b0b0); }'
         '.calc-mol-viewer { overflow:hidden !important; padding:0 !important; }'
         '.calc-mol-viewer .output_area, .calc-mol-viewer .output_subarea,'
         ' .calc-mol-viewer .output_wrapper, .calc-mol-viewer .jp-OutputArea-child,'
@@ -2153,7 +2154,7 @@ def create_tab(ctx):
 
     calc_splitter = widgets.HTML(
         "<div class='calc-splitter' title='Drag to resize'></div>",
-        layout=widgets.Layout(height='100%', width='6px', margin='0 2px'),
+        layout=widgets.Layout(height='100%', width='10px', margin='0', overflow='visible'),
     )
 
     tab_widget = widgets.VBox([
@@ -2202,6 +2203,7 @@ def create_tab(ctx):
         function onUp() {{
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onUp);
+            if (window.calcResizeMolViewer) setTimeout(window.calcResizeMolViewer, 50);
         }}
 
         splitter.addEventListener('mousedown', function(e) {{
