@@ -14,7 +14,7 @@ import py3Dmol
 from IPython.display import HTML, clear_output, display
 
 from .constants import CALC_SEARCH_OPTIONS
-from .input_processing import parse_inp_resources, parse_resource_settings
+from .input_processing import parse_inp_resources, parse_resource_settings, smiles_to_xyz
 from .helpers import disable_spellcheck
 from .molecule_viewer import coord_to_xyz, parse_xyz_frames
 from rdkit import Chem, RDLogger
@@ -305,7 +305,12 @@ def create_tab(ctx):
     calc_preselect_title = widgets.HTML('<b>Preselection</b>')
     calc_preselect_progress = widgets.HTML('')
     calc_preselect_info = widgets.HTML('')
-    calc_preselect_img = widgets.Output()
+    calc_preselect_img = widgets.Output(layout=widgets.Layout(
+        margin='0', padding='0', border='1px solid #ccc',
+    ))
+    calc_preselect_3d = widgets.Output(layout=widgets.Layout(
+        margin='0', padding='0', border='1px solid #ccc',
+    ))
     calc_preselect_yes = widgets.Button(
         description='Yes', button_style='success',
         layout=widgets.Layout(width='80px', height='30px'),
@@ -319,7 +324,7 @@ def create_tab(ctx):
         calc_preselect_title,
         calc_preselect_progress,
         calc_preselect_info,
-        calc_preselect_img,
+        widgets.HBox([calc_preselect_img, calc_preselect_3d], layout=widgets.Layout(gap='0px')),
         widgets.HBox([calc_preselect_yes, calc_preselect_no], layout=widgets.Layout(gap='10px')),
         calc_preselect_status,
     ], layout=widgets.Layout(display='none', margin='10px 0', width='100%'))
@@ -500,6 +505,8 @@ def create_tab(ctx):
             calc_preselect_no.disabled = True
             with calc_preselect_img:
                 clear_output(wait=True)
+            with calc_preselect_3d:
+                clear_output(wait=True)
             return
         if idx >= total:
             calc_preselect_progress.value = f'<b>Done.</b> ({total} / {total})'
@@ -508,6 +515,8 @@ def create_tab(ctx):
             calc_preselect_yes.disabled = True
             calc_preselect_no.disabled = True
             with calc_preselect_img:
+                clear_output(wait=True)
+            with calc_preselect_3d:
                 clear_output(wait=True)
             return
 
@@ -534,6 +543,20 @@ def create_tab(ctx):
                     pass
                 img = MolToImage(mol, size=(360, 360))
                 display(img)
+
+        with calc_preselect_3d:
+            clear_output(wait=True)
+            xyz_string, num_atoms, _method, error = smiles_to_xyz(smiles)
+            if error or not xyz_string:
+                display(HTML('<i>3D conversion failed</i>'))
+            else:
+                xyz_data = f"{num_atoms}\n{label}\n{xyz_string}"
+                view = py3Dmol.view(width=720, height=360)
+                view.addModel(xyz_data, 'xyz')
+                view.setStyle({}, {'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
+                view.zoomTo()
+                view.zoom(1.4)
+                view.show()
 
     def _calc_preselect_show(show):
         if show:
