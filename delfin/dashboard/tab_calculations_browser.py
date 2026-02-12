@@ -146,6 +146,7 @@ def create_tab(ctx):
     )
     calc_mol_viewer = widgets.Output(
         layout=widgets.Layout(
+            width=f'{CALC_MOL_SIZE}px', height=f'{CALC_MOL_SIZE}px',
             border='2px solid #1976d2',
             overflow='hidden', padding='0', border_radius='0',
         ),
@@ -569,7 +570,7 @@ def create_tab(ctx):
         calc_mol_viewer.clear_output()
         with calc_mol_viewer:
             display(HTML(
-                f"<div id='calc_mol_3d' style='width:100%;height:100%;"
+                f"<div id='calc_mol_3d' style='width:{CALC_MOL_SIZE}px;height:{CALC_MOL_SIZE}px;"
                 f"position:relative;'></div>"
                 f"<script>"
                 f"(function(){{"
@@ -822,7 +823,7 @@ def create_tab(ctx):
                 with calc_mol_viewer:
                     viewer_id = "calc_trj_viewer"
                     html_content = f"""
-                    <div id="{viewer_id}" style="width:100%;height:100%;position:relative;"></div>
+                    <div id="{viewer_id}" style="width:{CALC_MOL_SIZE}px;height:{CALC_MOL_SIZE}px;position:relative;"></div>
                     <script>
                     (function() {{
                         var tries = 0;
@@ -2243,7 +2244,7 @@ def create_tab(ctx):
             if (mvRect.top === 0 && mvRect.height === 0) return;
             var availH = leftRect.bottom - mvRect.top - 6;
             var availW = mv.parentElement.getBoundingClientRect().width - 4;
-            var size = Math.floor(Math.min(availH, availW));
+            var size = Math.floor(Math.min(availH, availW) * 0.95);
             if (size < 200) size = 200;
             mv.style.width = size + 'px';
             mv.style.height = size + 'px';
