@@ -477,7 +477,7 @@ def create_goat_input(
             goat_lines.append("  FREEZEBONDS FALSE\n")
             goat_lines.append("  FREEZEANGLES FALSE\n")
             goat_lines.append("  FREEHETEROATOMS TRUE\n")
-            goat_lines.append("  MAXTOPODIFF 6\n")
+            goat_lines.append("  MAXTOPODIFF 2\n")
             if topobreak_atoms:
                 topobreak_str = _format_atom_indices(topobreak_atoms)
                 goat_lines.append(f"  TOPOBREAK {{{{{topobreak_str}}}}} END\n")
