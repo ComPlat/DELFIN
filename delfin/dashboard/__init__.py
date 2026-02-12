@@ -17,7 +17,7 @@ from IPython.display import clear_output, display
 
 from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
 from .context import DashboardContext
-from .helpers import create_busy_css
+from .helpers import create_busy_css, disable_spellcheck_global
 
 from . import (
     tab_calculations_browser,
@@ -153,6 +153,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     children.append(tab5)
     titles.append('Calculations')
+
+    # Disable spellcheck in all textareas (browser-level red underlines).
+    disable_spellcheck_global(ctx)
 
     tabs = widgets.Tab(children=children)
     for i, title in enumerate(titles):

@@ -5,7 +5,7 @@ from IPython.display import clear_output
 
 from delfin.config import validate_control_text
 
-from .helpers import resolve_time_limit, create_time_limit_widgets
+from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck
 from .input_processing import parse_resource_settings
 
 
@@ -31,6 +31,8 @@ def create_tab(ctx):
         layout=widgets.Layout(width='500px', height='400px'),
         style={'description_width': 'initial'},
     )
+    recalc_control_widget.add_class('delfin-nospell')
+    disable_spellcheck(ctx)
 
     recalc_button = widgets.Button(
         description='SUBMIT RECALC', button_style='warning',

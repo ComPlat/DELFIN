@@ -14,6 +14,7 @@ from IPython.display import HTML, clear_output, display
 
 from .constants import CALC_SEARCH_OPTIONS
 from .input_processing import parse_inp_resources, parse_resource_settings
+from .helpers import disable_spellcheck
 from .molecule_viewer import coord_to_xyz, parse_xyz_frames
 
 
@@ -217,6 +218,8 @@ def create_tab(ctx):
             width='100%', height=f'{CALC_CONTENT_HEIGHT}px', display='none'
         ),
     )
+    calc_edit_area.add_class('delfin-nospell')
+    disable_spellcheck(ctx)
 
     # Content navigation
     calc_top_btn = widgets.Button(

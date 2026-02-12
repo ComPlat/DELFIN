@@ -10,7 +10,7 @@ from delfin.config import validate_control_text
 from delfin.smiles_converter import contains_metal
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
-from .helpers import resolve_time_limit, create_time_limit_widgets
+from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck
 from .input_processing import (
     smiles_to_xyz, is_smiles, clean_input_data, parse_resource_settings,
 )
@@ -89,6 +89,8 @@ def create_tab(ctx):
         layout=widgets.Layout(width='500px', height='500px'),
         style=COMMON_STYLE,
     )
+    control_widget.add_class('delfin-nospell')
+    disable_spellcheck(ctx)
 
     submit_button = widgets.Button(
         description='SUBMIT JOB', button_style='primary',

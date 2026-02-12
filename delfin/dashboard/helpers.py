@@ -79,3 +79,73 @@ def parse_time_to_seconds(time_str):
             return int(parts[0]) * 3600
     except (ValueError, IndexError):
         return 48 * 3600
+
+
+def disable_spellcheck(ctx, class_name='delfin-nospell'):
+    """Disable spellcheck for textareas with the given CSS class.
+
+    Note: ipywidgets attaches custom classes to the widget container, not
+    the underlying <textarea>, so we target ".class textarea".
+    """
+    script = f"""
+    (function() {{
+        if (window.__delfinSpellcheckObserver) return;
+        function disableTextarea(el) {{
+            if (!el || el.tagName !== 'TEXTAREA') return;
+            el.setAttribute('spellcheck', 'false');
+            el.spellcheck = false;
+        }}
+        function scan(root) {{
+            if (!root || !root.querySelectorAll) return;
+            root.querySelectorAll('.{class_name} textarea').forEach(disableTextarea);
+        }}
+        scan(document);
+        const obs = new MutationObserver(function(muts) {{
+            muts.forEach(function(m) {{
+                m.addedNodes && m.addedNodes.forEach(function(node) {{
+                    if (!node || node.nodeType !== 1) return;
+                    if (node.matches && node.matches('.{class_name} textarea')) {{
+                        disableTextarea(node);
+                    }}
+                    scan(node);
+                }});
+            }});
+        }});
+        obs.observe(document.documentElement, {{ childList: true, subtree: true }});
+        window.__delfinSpellcheckObserver = obs;
+    }})();
+    """
+    ctx.run_js(script)
+
+
+def disable_spellcheck_global(ctx):
+    """Disable spellcheck for all textareas in the dashboard."""
+    script = """
+    (function() {
+        if (window.__delfinSpellcheckObserverAll) return;
+        function disableTextarea(el) {
+            if (!el || el.tagName !== 'TEXTAREA') return;
+            el.setAttribute('spellcheck', 'false');
+            el.spellcheck = false;
+        }
+        function scan(root) {
+            if (!root || !root.querySelectorAll) return;
+            root.querySelectorAll('textarea').forEach(disableTextarea);
+        }
+        scan(document);
+        const obs = new MutationObserver(function(muts) {
+            muts.forEach(function(m) {
+                m.addedNodes && m.addedNodes.forEach(function(node) {
+                    if (!node || node.nodeType !== 1) return;
+                    if (node.matches && node.matches('textarea')) {
+                        disableTextarea(node);
+                    }
+                    scan(node);
+                });
+            });
+        });
+        obs.observe(document.documentElement, { childList: true, subtree: true });
+        window.__delfinSpellcheckObserverAll = obs;
+    })();
+    """
+    ctx.run_js(script)
