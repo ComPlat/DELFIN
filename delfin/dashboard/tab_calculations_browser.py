@@ -2492,11 +2492,11 @@ def create_tab(ctx):
                 _set_view_toggle(False, False)
                 _calc_preselect_show(False)
 
-            # input.txt: try to show molecule
-            if name == 'input.txt':
+            # input.txt/start.txt: show coordinates in molecule viewer
+            if name in ('input.txt', 'start.txt'):
                 # For SMILES-only input.txt, open the same side-by-side 2D/3D visual mode
                 # used for mutation-space CSV browsing.
-                if is_smiles(content):
+                if name == 'input.txt' and is_smiles(content):
                     _set_view_toggle(True, False)
                     _on_view_toggle()
                     return
