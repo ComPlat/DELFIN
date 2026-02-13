@@ -66,6 +66,63 @@ echo "mpirun: $(command -v mpirun || echo 'not found')"
 echo "delfin: $(command -v delfin || echo 'not found')"
 echo ""
 
+resolve_delfin_python() {
+    local delfin_bin="$1"
+    local shebang_line shebang candidate env_py
+
+    shebang_line="$(head -n 1 "$delfin_bin" 2>/dev/null || true)"
+    if [ "${shebang_line#\#!}" != "$shebang_line" ]; then
+        shebang="${shebang_line#\#!}"
+        candidate="${shebang%% *}"
+        if [ "$candidate" = "/usr/bin/env" ]; then
+            env_py="$(printf '%s\n' "$shebang" | awk '{print $2}')"
+            if [ -n "$env_py" ]; then
+                candidate="$(command -v "$env_py" 2>/dev/null || true)"
+            else
+                candidate=""
+            fi
+        fi
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+            if "$candidate" -c 'import delfin' >/dev/null 2>&1; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+        fi
+    fi
+
+    for candidate in \
+        "$(dirname "$delfin_bin")/python" \
+        "$(dirname "$delfin_bin")/python3" \
+        "$(command -v python3 2>/dev/null || true)" \
+        "$(command -v python 2>/dev/null || true)"; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+            if "$candidate" -c 'import delfin' >/dev/null 2>&1; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
+DELFIN_BIN="$(command -v delfin || true)"
+if [ -z "$DELFIN_BIN" ] || [ ! -x "$DELFIN_BIN" ]; then
+    echo "ERROR: delfin executable not found in PATH"
+    echo 1 > ".exit_code_${JOB_ID}"
+    exit 1
+fi
+if ! DELFIN_PYTHON="$(resolve_delfin_python "$DELFIN_BIN")"; then
+    echo "ERROR: Could not resolve a Python interpreter that can import delfin."
+    echo "       DELFIN executable: $DELFIN_BIN"
+    echo 1 > ".exit_code_${JOB_ID}"
+    exit 1
+fi
+export PATH="$(dirname "$DELFIN_BIN"):$PATH"
+echo "Using DELFIN executable: $DELFIN_BIN"
+echo "Using DELFIN Python:     $DELFIN_PYTHON"
+echo ""
+
 # Auto-detect mode if set to "auto"
 if [ "$MODE" = "auto" ]; then
     if [ -f "CONTROL.txt" ] && [ -f "input.txt" ]; then
@@ -88,12 +145,12 @@ set +e
 case "$MODE" in
     delfin)
         echo "Starting DELFIN..."
-        delfin
+        "$DELFIN_BIN"
         EXIT_CODE=$?
         ;;
     delfin-recalc)
         echo "Starting DELFIN --recalc..."
-        delfin --recalc
+        "$DELFIN_BIN" --recalc
         EXIT_CODE=$?
         ;;
     delfin-recalc-override)
@@ -102,7 +159,7 @@ case "$MODE" in
             EXIT_CODE=1
         else
             echo "Starting DELFIN --recalc --occupier-override $OVERRIDE..."
-            delfin --recalc --occupier-override "$OVERRIDE"
+            "$DELFIN_BIN" --recalc --occupier-override "$OVERRIDE"
             EXIT_CODE=$?
         fi
         ;;
@@ -128,13 +185,6 @@ case "$MODE" in
         echo "Starting delfin-build (complex build-up)..."
         echo "  Multiplicity: $BUILD_MULT"
 
-        # Resolve the Python that belongs to the delfin installation
-        # (bare `python` may point to a different env like chemdarwin)
-        DELFIN_PYTHON="$(head -1 "$(command -v delfin)" | sed 's/^#!//')"
-        if [ ! -x "$DELFIN_PYTHON" ]; then
-            DELFIN_PYTHON="$(command -v python)"
-        fi
-
         "$DELFIN_PYTHON" -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
         EXIT_CODE=$?
         ;;
@@ -143,16 +193,9 @@ case "$MODE" in
         echo "Starting DELFIN + CO2 Coordinator chain..."
         echo "  CO2 Species Delta: $CO2_SPECIES_DELTA"
 
-        # Resolve the Python that belongs to the delfin installation
-        # (bare `python` may point to a different env like chemdarwin)
-        DELFIN_PYTHON="$(head -1 "$(command -v delfin)" | sed 's/^#!//')"
-        if [ ! -x "$DELFIN_PYTHON" ]; then
-            DELFIN_PYTHON="$(command -v python)"
-        fi
-
         # Step 1: DELFIN
         echo "=== Step 1/2: Running DELFIN ==="
-        delfin
+        "$DELFIN_BIN"
         DELFIN_EXIT=$?
         if [ "$DELFIN_EXIT" -ne 0 ]; then
             echo "ERROR: DELFIN failed (exit $DELFIN_EXIT). CO2 Coordinator skipped."
@@ -167,7 +210,7 @@ case "$MODE" in
                 EXIT_CODE=$SETUP_EXIT
             else
                 cd CO2_coordination
-                delfin co2
+                "$DELFIN_BIN" co2
                 EXIT_CODE=$?
                 cd ..
             fi
