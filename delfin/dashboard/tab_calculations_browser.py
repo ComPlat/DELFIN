@@ -2504,9 +2504,11 @@ def create_tab(ctx):
                     f' ({size_str})'
                 )
                 calc_content_area.value = (
-                    "<div style='border:1px solid #ddd; padding:6px; background:#fafafa;'>"
-                    f"<img src='data:image/png;base64,{b64}' style='max-width:50%;"
-                    f" max-height:{CALC_CONTENT_HEIGHT}px; height:auto; display:block;' />"
+                    "<div style='height:100%; width:100%; border:1px solid #ddd; padding:6px;"
+                    " background:#fafafa; box-sizing:border-box; display:flex;"
+                    " align-items:center; justify-content:center; overflow:hidden;'>"
+                    f"<img src='data:image/png;base64,{b64}' style='max-width:100%; max-height:100%;"
+                    " width:auto; height:auto; object-fit:contain; display:block;' />"
                     "</div>"
                 )
                 calc_update_view()
