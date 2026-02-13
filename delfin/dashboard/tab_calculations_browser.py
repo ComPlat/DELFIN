@@ -505,6 +505,15 @@ def create_tab(ctx):
             or _calc_is_rejected_mutation_csv(selected_name)
         )
 
+    def _calc_mode_for_mutation_csv_name(selected_name):
+        if _calc_is_complete_mutation_csv(selected_name):
+            return 'complete_visualize'
+        if _calc_is_preselected_mutation_csv(selected_name):
+            return 'preselected_visualize'
+        if _calc_is_rejected_mutation_csv(selected_name):
+            return 'rejected_visualize'
+        return None
+
     def _calc_get_selected_path():
         selected = calc_file_list.value
         if not selected or selected.startswith('('):
@@ -910,7 +919,12 @@ def create_tab(ctx):
         calc_preselect_status.value = status_msg
 
     def _calc_preselect_close_view(_btn=None):
-        calc_options_dropdown.value = '(Options)'
+        if calc_options_dropdown.value != '(Options)':
+            calc_options_dropdown.value = '(Options)'
+            return
+        _set_view_toggle(False, False)
+        _calc_preselect_show(False)
+        calc_update_view()
 
     def _calc_preselect_decide(decision):
         if state['preselect'].get('mode', '') != 'complete_preselection':
@@ -1021,7 +1035,34 @@ def create_tab(ctx):
         calc_view_toggle.value = value
         calc_view_toggle.observe(_on_view_toggle, names='value')
 
+    def _calc_open_mutation_visualize_from_selected():
+        selected = calc_file_list.value
+        if not selected or selected.startswith('('):
+            return False
+        name = selected[2:].strip()
+        mode = _calc_mode_for_mutation_csv_name(name)
+        if not mode:
+            return False
+        csv_path = _calc_get_selected_path()
+        if not csv_path or not csv_path.exists():
+            calc_preselect_status.value = '<span style="color:#d32f2f;">File not found.</span>'
+            _calc_preselect_show(True)
+            return True
+        _calc_preselect_load(csv_path, mode=mode)
+        _calc_preselect_show(True)
+        _calc_preselect_render_current()
+        return True
+
     def _on_view_toggle(change=None):
+        if calc_view_toggle.value:
+            if _calc_open_mutation_visualize_from_selected():
+                return
+        else:
+            selected = calc_file_list.value
+            if selected and not selected.startswith('('):
+                name = selected[2:].strip()
+                if _calc_is_mutation_csv(name):
+                    _calc_preselect_show(False)
         calc_update_view()
 
     def _calc_dir():
@@ -2411,6 +2452,10 @@ def create_tab(ctx):
                 f' ({size_str}, {len(lines)} lines)'
             )
             calc_render_content(scroll_to='top')
+
+            if _calc_is_mutation_csv(name):
+                _set_view_toggle(False, False)
+                _calc_preselect_show(False)
 
             # input.txt: try to show molecule
             if name == 'input.txt':
