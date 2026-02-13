@@ -315,21 +315,35 @@ def create_tab(ctx):
     calc_preselect_progress = widgets.HTML('')
     calc_preselect_info = widgets.HTML('')
     calc_preselect_img = widgets.Output(layout=widgets.Layout(
-        width=f'{CALC_PRESELECT_VIZ_SIZE}px',
-        height=f'{CALC_PRESELECT_VIZ_SIZE}px',
-        max_width='100%',
+        width='100%',
+        height='auto',
         margin='0', padding='0', border='1px solid #ccc', overflow='hidden',
         display='flex', align_items='center', justify_content='center',
     ))
     calc_preselect_img.add_class('calc-preselect-viz')
     calc_preselect_3d = widgets.Output(layout=widgets.Layout(
-        width=f'{CALC_PRESELECT_VIZ_SIZE}px',
-        height=f'{CALC_PRESELECT_VIZ_SIZE}px',
-        max_width='100%',
+        width='100%',
+        height='auto',
         margin='0', padding='0', border='1px solid #ccc', overflow='hidden',
         display='flex', align_items='center', justify_content='center',
     ))
     calc_preselect_3d.add_class('calc-preselect-viz')
+    calc_preselect_img_wrap = widgets.Box(
+        [calc_preselect_img],
+        layout=widgets.Layout(
+            flex='1 1 220px', min_width='180px', max_width=f'{CALC_PRESELECT_VIZ_SIZE}px',
+            width='100%', overflow='hidden',
+        ),
+    )
+    calc_preselect_img_wrap.add_class('calc-preselect-viz-wrap')
+    calc_preselect_3d_wrap = widgets.Box(
+        [calc_preselect_3d],
+        layout=widgets.Layout(
+            flex='1 1 220px', min_width='180px', max_width=f'{CALC_PRESELECT_VIZ_SIZE}px',
+            width='100%', overflow='hidden',
+        ),
+    )
+    calc_preselect_3d_wrap.add_class('calc-preselect-viz-wrap')
     calc_preselect_yes = widgets.Button(
         description='Yes', button_style='success',
         layout=widgets.Layout(width='80px', height='30px'),
@@ -360,7 +374,7 @@ def create_tab(ctx):
         calc_preselect_progress,
         calc_preselect_info,
         widgets.HBox(
-            [calc_preselect_img, calc_preselect_3d],
+            [calc_preselect_img_wrap, calc_preselect_3d_wrap],
             layout=widgets.Layout(gap='20px', overflow_x='hidden', flex_flow='row wrap'),
         ),
         widgets.HBox(
@@ -428,7 +442,7 @@ def create_tab(ctx):
             pass
         return Chem.MolFromSmiles(smiles, sanitize=False)
 
-    def _calc_preselect_smiles_to_3d_view(smiles, width, height):
+    def _calc_preselect_smiles_to_3d_molblock(smiles):
         is_complex = contains_metal(smiles)
         mol = None
         if is_complex:
@@ -469,30 +483,9 @@ def create_tab(ctx):
             except Exception:
                 pass
         try:
-            mol_block = Chem.MolToMolBlock(mol)
+            return Chem.MolToMolBlock(mol)
         except Exception:
             return None
-        viewer = py3Dmol.view(width=width, height=height)
-        viewer.addModel(mol_block, 'mol')
-        viewer.setStyle(
-            {},
-            {
-                'stick': {
-                    'colorscheme': 'Jmol',
-                    'radius': 0.11,
-                    'singleBonds': False,
-                    'doubleBondScaling': 0.65,
-                    'tripleBondScaling': 0.65,
-                },
-                'sphere': {'colorscheme': 'Jmol', 'scale': 0.28},
-            },
-        )
-        viewer.setBackgroundColor('white')
-        viewer.zoomTo()
-        viewer.center()
-        viewer.zoom(0.90)
-        viewer.render()
-        return viewer
 
     def _calc_is_complete_mutation_csv(selected_name):
         return selected_name and selected_name.lower() == 'complete_mutation_space.csv'
@@ -826,13 +819,65 @@ def create_tab(ctx):
 
         with calc_preselect_3d:
             clear_output(wait=True)
-            viewer = _calc_preselect_smiles_to_3d_view(
-                smiles, width=CALC_PRESELECT_VIZ_SIZE, height=CALC_PRESELECT_VIZ_SIZE,
-            )
-            if viewer is None:
+            mol_block = _calc_preselect_smiles_to_3d_molblock(smiles)
+            if mol_block is None:
                 display(HTML('<i>3D conversion failed</i>'))
             else:
-                viewer.show()
+                _mol3d_counter[0] += 1
+                viewer_id = f"calc_preselect_3dmol_{_mol3d_counter[0]}"
+                mol_json = json.dumps(mol_block)
+                display(HTML(f"""
+                    <div id="{viewer_id}" style="width:100%;height:100%;position:relative;"></div>
+                    <script>
+                    if (typeof $3Dmol === "undefined") {{
+                        var _s = document.createElement("script");
+                        _s.src = "https://3Dmol.org/build/3Dmol-min.js";
+                        document.head.appendChild(_s);
+                    }}
+                    (function() {{
+                        var tries = 0;
+                        function initViewer() {{
+                            var el = document.getElementById("{viewer_id}");
+                            var box = el ? el.closest('.calc-preselect-viz') : null;
+                            if (!el || typeof $3Dmol === "undefined"
+                                || !box || box.offsetParent === null) {{
+                                tries += 1;
+                                if (tries < 80) setTimeout(initViewer, 50);
+                                return;
+                            }}
+                            var rect = box.getBoundingClientRect();
+                            var side = Math.floor(Math.min(rect.width || 0, rect.height || 0));
+                            if (side >= 100) {{
+                                el.style.width = side + 'px';
+                                el.style.height = side + 'px';
+                            }}
+                            var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                            var molData = {mol_json};
+                            viewer.addModel(molData, "mol");
+                            viewer.setStyle({{}}, {{
+                                stick: {{
+                                    colorscheme: "Jmol",
+                                    radius: 0.11,
+                                    singleBonds: false,
+                                    doubleBondScaling: 0.65,
+                                    tripleBondScaling: 0.65
+                                }},
+                                sphere: {{colorscheme: "Jmol", scale: 0.28}}
+                            }});
+                            viewer.zoomTo();
+                            viewer.center();
+                            viewer.zoom(0.90);
+                            viewer.render();
+                            window._calcPreselect3dViewer = viewer;
+                            window._calcPreselect3dElId = "{viewer_id}";
+                            if (window.calcResizePreselect3D) {{
+                                setTimeout(window.calcResizePreselect3D, 120);
+                            }}
+                        }}
+                        setTimeout(initViewer, 0);
+                    }})();
+                    </script>
+                """))
 
     def _calc_preselect_show(show):
         if show:
@@ -841,8 +886,21 @@ def create_tab(ctx):
             calc_content_label.layout.display = 'none'
             calc_mol_container.layout.display = 'none'
             calc_edit_area.layout.display = 'none'
+            # In preselect/visualize mode the content toolbar (Top/End/Search) is redundant.
+            calc_content_toolbar.layout.display = 'none'
+            calc_recalc_toolbar.layout.display = 'none'
         else:
             calc_preselect_container.layout.display = 'none'
+            # Restore toolbars based on current mode.
+            if state['recalc_active']:
+                calc_content_toolbar.layout.display = 'none'
+                calc_recalc_toolbar.layout.display = 'flex'
+            elif calc_view_toggle.value:
+                calc_content_toolbar.layout.display = 'none'
+                calc_recalc_toolbar.layout.display = 'none'
+            else:
+                calc_content_toolbar.layout.display = 'flex'
+                calc_recalc_toolbar.layout.display = 'none'
 
     def _calc_preselect_prev_entry(_btn=None):
         entries = state['preselect']['entries']
@@ -2774,11 +2832,18 @@ def create_tab(ctx):
         ' .calc-mol-viewer .jp-OutputArea-output'
         ' { padding:0 !important; margin:0 !important; }'
         '.calc-preselect-viz { overflow:hidden !important; padding:0 !important; margin:0 !important; }'
+        '.calc-preselect-viz-wrap { flex:1 1 220px !important; min-width:180px !important;'
+        f' max-width:min({CALC_PRESELECT_VIZ_SIZE}px, 42vh) !important; width:100% !important; }}'
+        '.calc-preselect-viz { width:100% !important; aspect-ratio:1 / 1 !important;'
+        ' height:auto !important; max-width:100% !important; }'
         '.calc-preselect-viz .output_area, .calc-preselect-viz .output_subarea,'
         ' .calc-preselect-viz .output_wrapper, .calc-preselect-viz .jp-OutputArea-child,'
         ' .calc-preselect-viz .jp-OutputArea-output'
         ' { padding:0 !important; margin:0 !important; width:100% !important;'
         ' height:100% !important; overflow:hidden !important; }'
+        '.calc-preselect-viz img { width:100% !important; height:100% !important; object-fit:contain !important; }'
+        '.calc-preselect-viz [id^="3dmolviewer"], .calc-preselect-viz canvas {'
+        ' width:100% !important; height:100% !important; }'
         '</style>'
     )
 
@@ -2918,10 +2983,36 @@ def create_tab(ctx):
         window.addEventListener('resize', function() {{
             setTimeout(window.calcResizeMolViewer, 100);
         }});
+        window.calcResizePreselect3D = function() {{
+            var v = window._calcPreselect3dViewer;
+            var elId = window._calcPreselect3dElId;
+            if (!v || !elId) return;
+            var el = document.getElementById(elId);
+            var box = el ? el.closest('.calc-preselect-viz') : null;
+            if (!el || !box || box.offsetParent === null) return;
+            var rect = box.getBoundingClientRect();
+            var side = Math.floor(Math.min(rect.width || 0, rect.height || 0));
+            if (side >= 100) {{
+                el.style.width = side + 'px';
+                el.style.height = side + 'px';
+            }}
+            if (typeof v.resize === 'function') {{
+                v.resize();
+                v.render();
+            }}
+        }};
+        window.addEventListener('resize', function() {{
+            setTimeout(function() {{
+                if (window.calcResizePreselect3D) window.calcResizePreselect3D();
+            }}, 120);
+        }});
         var tab = document.querySelector('.calc-tab');
         if (tab) {{
             new MutationObserver(function() {{
                 setTimeout(window.calcResizeMolViewer, 200);
+                setTimeout(function() {{
+                    if (window.calcResizePreselect3D) window.calcResizePreselect3D();
+                }}, 220);
             }}).observe(tab, {{attributes: true, subtree: true, attributeFilter: ['style']}});
         }}
     }}, 0);
