@@ -145,6 +145,13 @@ case "$MODE" in
         echo "Starting DELFIN + CO2 Coordinator chain..."
         echo "  CO2 Species Delta: $CO2_SPECIES_DELTA"
 
+        # Resolve the Python that belongs to the delfin installation
+        # (bare `python` may point to a different env like chemdarwin)
+        DELFIN_PYTHON="$(head -1 "$(command -v delfin)" | sed 's/^#!//')"
+        if [ ! -x "$DELFIN_PYTHON" ]; then
+            DELFIN_PYTHON="$(command -v python)"
+        fi
+
         # Step 1: DELFIN
         echo "=== Step 1/2: Running DELFIN ==="
         delfin
@@ -155,7 +162,7 @@ case "$MODE" in
         else
             # Step 2: Chain Setup + CO2 Coordinator
             echo "=== Step 2/2: CO2 Coordinator ==="
-            python -m delfin.co2.chain_setup "$CO2_SPECIES_DELTA"
+            "$DELFIN_PYTHON" -m delfin.co2.chain_setup "$CO2_SPECIES_DELTA"
             SETUP_EXIT=$?
             if [ "$SETUP_EXIT" -ne 0 ]; then
                 echo "ERROR: CO2 setup failed (exit $SETUP_EXIT)"
