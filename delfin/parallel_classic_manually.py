@@ -1250,10 +1250,12 @@ class _WorkflowManager:
                             job.cores_max,
                         )
 
-            # Cap jobs with preserve_cores_optimal to enforce asymmetric allocation
-            # Otherwise dynamic pool might expand them
+            # When multiple jobs are packed together, cap ALL of them so the
+            # pool does not expand one job at the expense of others.  For a
+            # single ready job, honour the original preserve_cores_optimal flag.
+            multi_packed = len(jobs_sorted) > 1
             caps = {
-                job.job_id: job.preserve_cores_optimal
+                job.job_id: (multi_packed or job.preserve_cores_optimal)
                 for job in jobs_sorted
             }
 

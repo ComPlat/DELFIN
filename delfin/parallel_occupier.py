@@ -1672,6 +1672,16 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
                         skip = True
                         break
                     remapped.add(mapped)
+                elif dep.startswith("occupier_ox_") or dep.startswith("occupier_red_"):
+                    # Drop stale sequential post-processing deps.  In the
+                    # FoB OCCUPIER workflow each post-processing job gets
+                    # its geometry + GBW from its own FoB best selection,
+                    # not from the previous step's post-processing output.
+                    logger.debug(
+                        "[occupier_flat] Dropping stale sequential dep %s from %s",
+                        dep,
+                        job.job_id,
+                    )
                 else:
                     remapped.add(dep)
             if skip:
@@ -2144,6 +2154,29 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
 
             filtered_jobs = [job for job in new_jobs if _is_stage_job(job.job_id)]
 
+            # Strip stale sequential post-processing deps (same fix as the
+            # eager path).  Each post-processing job only needs its own
+            # occ_proc_* result, not the previous step's post-processing.
+            for job in filtered_jobs:
+                stale = {
+                    d for d in job.dependencies
+                    if d.startswith("occupier_ox_") or d.startswith("occupier_red_")
+                }
+                if stale:
+                    job.dependencies -= stale
+                    logger.debug(
+                        "[combined] Deferred: dropped stale deps %s from %s",
+                        sorted(stale),
+                        job.job_id,
+                    )
+                # Ensure the correct occ_proc dependency is present
+                if job.job_id.startswith("occupier_ox_"):
+                    s = job.job_id.replace("occupier_ox_", "")
+                    job.dependencies.add(f"occ_proc_ox_{s}")
+                elif job.job_id.startswith("occupier_red_"):
+                    s = job.job_id.replace("occupier_red_", "")
+                    job.dependencies.add(f"occ_proc_red_{s}")
+
             candidate_jobs = [job.job_id for job in filtered_jobs]
             logger.info("[combined] Candidate jobs for stage %s: %s", key, candidate_jobs or "<none>")
             added_any = False
@@ -2256,26 +2289,39 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
         # Since WorkflowJob doesn't have a produces field, we'll infer from job_id
         pass
 
-    # Update dependencies for post-processing jobs based on file requirements
+    # Update dependencies for post-processing jobs based on file requirements.
+    # In the combined OCCUPIER workflow each post-processing ORCA job (freq+opt)
+    # only depends on its OWN occ_proc_* result (geometry + GBW from OCCUPIER),
+    # NOT on the previous step's post-processing job.  The old sequential
+    # dependencies (e.g. occupier_red_2 → occupier_red_1) are therefore removed
+    # and replaced by the correct occ_proc_* dependency.
     for job in postprocessing_jobs:
-        # The job already has dependencies based on file requirements
-        # We need to map those file requirements to OCCUPIER process dependencies
+        # Start fresh: only keep dependencies that are NOT stale cross-step
+        # post-processing references (occupier_ox_N, occupier_red_N).
+        new_deps: Set[str] = set()
+        for dep in job.dependencies:
+            # Drop old sequential post-processing deps like "occupier_red_1",
+            # "occupier_ox_1" etc. – they were inherited from the non-OCCUPIER
+            # code path where step N needs step N-1's .out file.  In the
+            # combined OCCUPIER workflow every step gets its geometry directly
+            # from its own occ_proc_* result.
+            if dep.startswith("occupier_ox_") or dep.startswith("occupier_red_"):
+                logger.debug(
+                    "[combined] Dropping stale sequential dep %s from %s",
+                    dep,
+                    job.job_id,
+                )
+                continue
+            new_deps.add(dep)
 
-        # Create a new set of dependencies
-        new_deps = set(job.dependencies)
-
-        # Check if this is a post-processing job that needs its OCCUPIER counterpart
+        # Wire the correct OCCUPIER process dependency
         if job.job_id.startswith("occupier_"):
-            # Map to corresponding OCCUPIER process
             if job.job_id == "occupier_initial":
                 new_deps.add("occ_proc_initial")
-            elif job.job_id == "occupier_t1_state":
-                new_deps.add("occ_proc_initial")
-            elif job.job_id == "occupier_t1_emission":
-                new_deps.add("occ_proc_initial")
-            elif job.job_id == "occupier_s1_state":
-                new_deps.add("occ_proc_initial")
-            elif job.job_id == "occupier_s1_emission":
+            elif job.job_id in {
+                "occupier_t1_state", "occupier_t1_emission",
+                "occupier_s1_state", "occupier_s1_emission",
+            }:
                 new_deps.add("occ_proc_initial")
             elif job.job_id.startswith("occupier_ox_"):
                 step = job.job_id.replace("occupier_ox_", "")
@@ -2284,7 +2330,6 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
                 step = job.job_id.replace("occupier_red_", "")
                 new_deps.add(f"occ_proc_red_{step}")
 
-        # Update the job's dependencies
         job.dependencies = new_deps
         logger.debug(
             "[combined] Updated dependencies for %s: %s",
