@@ -14,7 +14,13 @@ import py3Dmol
 from IPython.display import HTML, clear_output, display
 
 from .constants import CALC_SEARCH_OPTIONS
-from .input_processing import parse_inp_resources, parse_resource_settings, smiles_to_xyz, contains_metal
+from .input_processing import (
+    parse_inp_resources,
+    parse_resource_settings,
+    smiles_to_xyz,
+    contains_metal,
+    is_smiles,
+)
 from .helpers import disable_spellcheck
 from .molecule_viewer import coord_to_xyz, parse_xyz_frames
 from rdkit import Chem, RDLogger
@@ -1042,7 +1048,32 @@ def create_tab(ctx):
         name = selected[2:].strip()
         mode = _calc_mode_for_mutation_csv_name(name)
         if not mode:
-            return False
+            if name.lower() != 'input.txt':
+                return False
+            input_path = _calc_get_selected_path()
+            if not input_path or not input_path.exists():
+                return False
+            input_text = state.get('file_content', '')
+            if not input_text:
+                try:
+                    input_text = input_path.read_text(errors='ignore')
+                except Exception:
+                    input_text = ''
+            if not is_smiles(input_text):
+                return False
+            smiles_lines = [ln.strip() for ln in input_text.splitlines() if ln.strip()]
+            if not smiles_lines:
+                return False
+            state['preselect']['entries'] = [('input_smiles', smiles_lines[0])]
+            state['preselect']['decisions'] = {}
+            state['preselect']['csv_path'] = str(input_path)
+            state['preselect']['job_dir'] = str(input_path.parent)
+            state['preselect']['mode'] = 'complete_visualize'
+            state['preselect']['index'] = 0
+            calc_preselect_title.value = '<b>Visualize:</b> input.txt (SMILES)'
+            _calc_preselect_show(True)
+            _calc_preselect_render_current()
+            return True
         csv_path = _calc_get_selected_path()
         if not csv_path or not csv_path.exists():
             calc_preselect_status.value = '<span style="color:#d32f2f;">File not found.</span>'
@@ -1058,11 +1089,8 @@ def create_tab(ctx):
             if _calc_open_mutation_visualize_from_selected():
                 return
         else:
-            selected = calc_file_list.value
-            if selected and not selected.startswith('('):
-                name = selected[2:].strip()
-                if _calc_is_mutation_csv(name):
-                    _calc_preselect_show(False)
+            if calc_preselect_container.layout.display != 'none':
+                _calc_preselect_show(False)
         calc_update_view()
 
     def _calc_dir():
@@ -1247,6 +1275,13 @@ def create_tab(ctx):
             return None
         if re.fullmatch(r'\d+', lines[0].strip()):
             return '\n'.join(lines)
+        # input.txt may contain only a SMILES string (optionally with short comment lines).
+        # Convert to XYZ so it can be visualized like regular coordinates.
+        if is_smiles(text):
+            smiles_line = lines[0].strip()
+            xyz_string, num_atoms, _method, error = smiles_to_xyz(smiles_line)
+            if not error and xyz_string:
+                return f"{num_atoms}\n{title}\n{xyz_string}"
         atom_count = len(lines)
         return f"{atom_count}\n{title}\n" + '\n'.join(lines)
 
@@ -2459,6 +2494,13 @@ def create_tab(ctx):
 
             # input.txt: try to show molecule
             if name == 'input.txt':
+                # For SMILES-only input.txt, open the same side-by-side 2D/3D visual mode
+                # used for mutation-space CSV browsing.
+                if is_smiles(content):
+                    _set_view_toggle(True, False)
+                    _on_view_toggle()
+                    return
+
                 _set_view_toggle(True, False)
                 calc_mol_container.layout.display = 'block'
                 calc_content_area.layout.display = 'none'
