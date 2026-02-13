@@ -1835,6 +1835,8 @@ def create_tab(ctx):
                         view.addVolumetricData(raw, 'cube', {'isoval': 0.02, 'color': '#0026ff', 'opacity': 0.85})
                         view.addVolumetricData(raw, 'cube', {'isoval': -0.02, 'color': '#b00010', 'opacity': 0.85})
                     _render_3dmol(content, fmt='cube', extra_fn=_cube_extra)
+                # Trigger dynamic resize after volumetric data is loaded
+                _run_js("setTimeout(function(){ if(window.calcResizeMolViewer) window.calcResizeMolViewer(); }, 600);")
             except Exception as e:
                 calc_set_message(f'Error: {e}')
             return
