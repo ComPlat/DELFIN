@@ -147,7 +147,7 @@ def create_tab(ctx):
     )
     calc_mol_viewer = widgets.Output(
         layout=widgets.Layout(
-            width=f'{CALC_MOL_SIZE}px', height=f'{CALC_MOL_SIZE}px',
+            width='100%',
             border='2px solid #1976d2',
             overflow='hidden', padding='0', border_radius='0',
         ),
@@ -583,19 +583,87 @@ def create_tab(ctx):
     def _run_js(script):
         ctx.run_js(script)
 
+    _mol3d_counter = [0]
+
     def _render_3dmol(data, fmt='xyz', stick_radius=0.1, sphere_scale=0.25,
                       extra_fn=None):
-        """Render a 3D molecule via py3Dmol with dynamic resize afterwards."""
+        """Render a 3D molecule via JS with correct initial sizing."""
+        import json
+        _mol3d_counter[0] += 1
+        viewer_id = f"mol3d_{_mol3d_counter[0]}"
+        data_json = json.dumps(data)
+
+        volumetric_js = ""
+        if fmt == 'cube':
+            volumetric_js = (
+                "viewer.addVolumetricData(molData,'cube',"
+                "{isoval:0.02,color:'#0026ff',opacity:0.85});"
+                "viewer.addVolumetricData(molData,'cube',"
+                "{isoval:-0.02,color:'#b00010',opacity:0.85});"
+            )
+
+        html = f"""
+        <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
+        <script>
+        if (typeof $3Dmol === "undefined") {{
+            var _s = document.createElement("script");
+            _s.src = "https://3Dmol.org/build/3Dmol-min.js";
+            document.head.appendChild(_s);
+        }}
+        (function() {{
+            var tries = 0;
+            function initViewer() {{
+                var el = document.getElementById("{viewer_id}");
+                var mv = el ? el.closest('.calc-mol-viewer') : null;
+                if (!el || typeof $3Dmol === "undefined"
+                    || !mv || mv.offsetParent === null) {{
+                    tries += 1;
+                    if (tries < 80) setTimeout(initViewer, 50);
+                    return;
+                }}
+                /* Compute correct size from layout before creating viewer */
+                var lft = document.querySelector('.calc-left');
+                if (lft) {{
+                    var leftRect = lft.getBoundingClientRect();
+                    var mvRect = mv.getBoundingClientRect();
+                    if (mvRect.top > 0 || mvRect.height > 0) {{
+                        var availH = leftRect.bottom - mvRect.top - 6;
+                        var availW = mv.parentElement
+                            ? mv.parentElement.getBoundingClientRect().width - 4
+                            : mvRect.width;
+                        var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
+                        var w = Math.floor(Math.min(h * 1.2, availW));
+                        if (h >= 200 && w >= 240) {{
+                            mv.style.width = w + 'px';
+                            mv.style.height = h + 'px';
+                            el.style.width = w + 'px';
+                            el.style.height = h + 'px';
+                        }}
+                    }}
+                }}
+                var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                var molData = {data_json};
+                viewer.addModel(molData, "{fmt}");
+                viewer.setStyle({{}}, {{
+                    stick: {{radius: {stick_radius}}},
+                    sphere: {{scale: {sphere_scale}}}
+                }});
+                {volumetric_js}
+                viewer.zoomTo();
+                viewer.zoom({CALC_MOL_ZOOM});
+                viewer.render();
+                window._calcMolViewer = viewer;
+                if (window.calcResizeMolViewer) {{
+                    setTimeout(window.calcResizeMolViewer, 200);
+                }}
+            }}
+            setTimeout(initViewer, 0);
+        }})();
+        </script>
+        """
         calc_mol_viewer.clear_output()
         with calc_mol_viewer:
-            view = py3Dmol.view(width=CALC_MOL_SIZE, height=CALC_MOL_SIZE)
-            view.addModel(data, fmt)
-            view.setStyle({}, {'stick': {'radius': stick_radius}, 'sphere': {'scale': sphere_scale}})
-            if extra_fn:
-                extra_fn(view, data)
-            view.zoomTo()
-            view.zoom(CALC_MOL_ZOOM)
-            view.show()
+            display(HTML(html))
 
     def _set_view_toggle(value, disabled=None):
         """Set visualize toggle without triggering multiple UI refreshes."""
@@ -828,7 +896,7 @@ def create_tab(ctx):
                 with calc_mol_viewer:
                     viewer_id = "calc_trj_viewer"
                     html_content = f"""
-                    <div id="{viewer_id}" style="width:{CALC_MOL_SIZE}px;height:{CALC_MOL_SIZE}px;position:relative;"></div>
+                    <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
                     <script>
                     (function() {{
                         var tries = 0;
@@ -2139,11 +2207,7 @@ def create_tab(ctx):
         ' z-index:10; pointer-events:auto !important; position:relative; }'
         '.calc-splitter:hover { background:linear-gradient('
         'to right, #b0b0b0, #e0e0e0, #b0b0b0); }'
-        '.calc-mol-viewer { overflow:hidden !important; padding:0 !important;'
-        ' transition: width 0.25s ease-out, height 0.25s ease-out; }'
-        '.calc-mol-viewer [id^="3dmolviewer"],'
-        ' .calc-mol-viewer [id^="calc_trj"]'
-        ' { transition: width 0.25s ease-out, height 0.25s ease-out; }'
+        '.calc-mol-viewer { overflow:hidden !important; padding:0 !important; }'
         '.calc-mol-viewer .output_area, .calc-mol-viewer .output_subarea,'
         ' .calc-mol-viewer .output_wrapper, .calc-mol-viewer .jp-OutputArea-child,'
         ' .calc-mol-viewer .jp-OutputArea-output'
@@ -2282,11 +2346,7 @@ def create_tab(ctx):
             var inner = mv.querySelector('[id^="3dmolviewer"], [id^="calc_trj"]');
             if (inner) {{ inner.style.width = w + 'px'; inner.style.height = h + 'px'; }}
             var v = window._calcMolViewer || window.calc_trj_viewer;
-            if (v && typeof v.resize === 'function') {{
-                v.resize(); v.render();
-                /* Re-render after CSS transition finishes (250ms) */
-                setTimeout(function() {{ v.resize(); v.render(); }}, 280);
-            }}
+            if (v && typeof v.resize === 'function') {{ v.resize(); v.render(); }}
         }};
         window.addEventListener('resize', function() {{
             setTimeout(window.calcResizeMolViewer, 100);
