@@ -935,6 +935,16 @@ def write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index, start_di
                        stdout=f, stderr=subprocess.STDOUT)
 
 # === Plot ===
+def _apply_common_scan_plot_style(ax, xlabel, ylabel, title):
+    """Apply a consistent visual style for CO2 scan plots."""
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title, fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+
 def plot_scan_result(datapath):
     if not os.path.exists(datapath):
         print(f"[WARNING] File '{datapath}' not found – no plot generated.")
@@ -944,15 +954,23 @@ def plot_scan_result(datapath):
     distances = data[:, 0]
     energies_kcal = data[:, 1] * 627.509  # Eh → kcal/mol
 
-    # --- absolut ---
-    plt.figure()
-    plt.plot(distances, energies_kcal, marker='o')
-    plt.xlabel("M–C distance [Å]")
-    plt.ylabel("Energy [kcal/mol]")
-    plt.title("Relaxed Surface Scan (absolute)")
-    plt.grid()
-    plt.tight_layout()
-    plt.savefig("relaxed_surface_scan/scan_absolute.png")
+    # --- absolute ---
+    fig_abs, ax_abs = plt.subplots(figsize=(8, 5))
+    ax_abs.plot(
+        distances, energies_kcal,
+        color='#1976d2', linewidth=2.0,
+        marker='o', markersize=5,
+        markerfacecolor='white', markeredgecolor='#1976d2', markeredgewidth=1.2,
+    )
+    _apply_common_scan_plot_style(
+        ax_abs,
+        "M–C distance [Å]",
+        "Energy [kcal/mol]",
+        "Relaxed Surface Scan (absolute)",
+    )
+    fig_abs.tight_layout()
+    fig_abs.savefig("relaxed_surface_scan/scan_absolute.png", dpi=300, bbox_inches='tight')
+    plt.close(fig_abs)
 
     # --- relativ zum ersten Punkt (typisch 5 Å) ---
     ref_idx = 0
@@ -960,14 +978,22 @@ def plot_scan_result(datapath):
     ref_E = energies_kcal[ref_idx]
     rel_energies = energies_kcal - ref_E
 
-    plt.figure()
-    plt.plot(distances, rel_energies, marker='o')
-    plt.xlabel("M–C distance [Å]")
-    plt.ylabel("ΔE [kcal/mol] (rel. to first point)")
-    plt.title(f"Relaxed Surface Scan (ΔE vs {ref_d:.2f} Å)")
-    plt.grid()
-    plt.tight_layout()
-    plt.savefig("relaxed_surface_scan/scan_relative.png")
+    fig_rel, ax_rel = plt.subplots(figsize=(8, 5))
+    ax_rel.plot(
+        distances, rel_energies,
+        color='#1976d2', linewidth=2.0,
+        marker='o', markersize=5,
+        markerfacecolor='white', markeredgecolor='#1976d2', markeredgewidth=1.2,
+    )
+    _apply_common_scan_plot_style(
+        ax_rel,
+        "M–C distance [Å]",
+        "ΔE [kcal/mol] (rel. to first point)",
+        f"Relaxed Surface Scan (ΔE vs {ref_d:.2f} Å)",
+    )
+    fig_rel.tight_layout()
+    fig_rel.savefig("relaxed_surface_scan/scan_relative.png", dpi=300, bbox_inches='tight')
+    plt.close(fig_rel)
 
     print("[OK] Plots saved: scan_absolute.png, scan_relative.png")
 
@@ -989,15 +1015,22 @@ def plot_orientation_result(csv_path, png_path):
         print(f"[WARN] No valid data points to plot in {csv_path}")
         return
 
-    plt.figure()
-    plt.plot(ang_valid, rel_valid, marker='o')
-    plt.xlabel("Rotation angle about z [deg]")
-    plt.ylabel("ΔE [kcal/mol] (rel. to min)")
-    plt.title("CO₂ orientation scan (fixed distance)")
-    plt.grid()
-    plt.tight_layout()
-    plt.savefig(png_path)
-    plt.close()
+    fig_orient, ax_orient = plt.subplots(figsize=(8, 5))
+    ax_orient.plot(
+        ang_valid, rel_valid,
+        color='#1976d2', linewidth=2.0,
+        marker='o', markersize=5,
+        markerfacecolor='white', markeredgecolor='#1976d2', markeredgewidth=1.2,
+    )
+    _apply_common_scan_plot_style(
+        ax_orient,
+        "Rotation angle about z [deg]",
+        "ΔE [kcal/mol] (rel. to min)",
+        "CO₂ orientation scan (fixed distance)",
+    )
+    fig_orient.tight_layout()
+    fig_orient.savefig(png_path, dpi=300, bbox_inches='tight')
+    plt.close(fig_orient)
     print(f"[OK] Orientation plot saved: {png_path}")
 
 def _calculate_single_angle(ang, base_atoms, co2_indices, charge, multiplicity, PAL, maxcore,

@@ -2215,7 +2215,7 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
         cmd.show('sticks', 'molecule')
         cmd.show('spheres', 'molecule')
         cmd.set('sphere_scale', 0.25)
-        cmd.set('stick_radius', 0.15)
+        cmd.set('stick_radius', 0.1)
         cmd.set('stick_quality', 15)
         cmd.set('sphere_quality', 3)
 
@@ -2234,13 +2234,9 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
 
         # Enable ray tracing settings for high quality
         cmd.set('ray_trace_mode', 1)
-        cmd.set('ray_shadows', 1)
+        cmd.set('ray_shadows', 0)
         cmd.set('ray_opaque_background', 1)
         cmd.set('antialias', 2)
-        cmd.set('ambient', 0.4)
-        cmd.set('direct', 0.6)
-        cmd.set('specular', 0.5)
-        cmd.set('shininess', 10)
         cmd.set('depth_cue', 0)
 
         # Draw dipole moment vector as CGO (Compiled Graphics Object)
@@ -2252,27 +2248,28 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
         arrow_end = center + dipole_vec_scaled
 
         # Arrow shaft radius and cone dimensions
-        shaft_radius = 0.15
-        cone_radius = 0.3
+        shaft_radius = 0.1
+        cone_radius = 0.22
         cone_length = 0.8
 
         # Calculate cone base position
         arrow_direction = dipole_vec_scaled / np.linalg.norm(dipole_vec_scaled)
         cone_base = arrow_end - arrow_direction * cone_length
 
-        # Create CGO arrow (red color: RGB = 1.0, 0.0, 0.0)
+        # Use same red hue as volumetric negative phase (#b00010)
+        r, g, b = 0.690, 0.0, 0.063
         arrow_obj = [
-            COLOR, 1.0, 0.0, 0.0,  # Red color
+            COLOR, r, g, b,
             CYLINDER, float(arrow_start[0]), float(arrow_start[1]), float(arrow_start[2]),
                      float(cone_base[0]), float(cone_base[1]), float(cone_base[2]),
                      shaft_radius,
-                     1.0, 0.0, 0.0,  # Start color (red)
-                     1.0, 0.0, 0.0,  # End color (red)
+                     r, g, b,
+                     r, g, b,
             CONE, float(cone_base[0]), float(cone_base[1]), float(cone_base[2]),
                  float(arrow_end[0]), float(arrow_end[1]), float(arrow_end[2]),
                  cone_radius, 0.0,
-                 1.0, 0.0, 0.0,  # Base color (red)
-                 1.0, 0.0, 0.0,  # Tip color (red)
+                 r, g, b,
+                 r, g, b,
                  1.0, 1.0,  # Caps
         ]
         cmd.load_cgo(arrow_obj, 'dipole_arrow')
