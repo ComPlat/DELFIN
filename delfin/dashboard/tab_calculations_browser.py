@@ -956,6 +956,7 @@ def create_tab(ctx):
         import json
         _mol3d_counter[0] += 1
         viewer_id = f"mol3d_{_mol3d_counter[0]}"
+        wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
         data_json = json.dumps(data)
         view_scope_json = json.dumps(state.get('current_path') or '/')
 
@@ -969,7 +970,9 @@ def create_tab(ctx):
             )
 
         html = f"""
-        <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
+        <div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">
+            <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
+        </div>
         <script>
         if (typeof $3Dmol === "undefined") {{
             var _s = document.createElement("script");
@@ -1039,6 +1042,10 @@ def create_tab(ctx):
                 viewer.render();
                 window._calcMolViewer = viewer;
                 window._calcMolViewScopeKey = viewScope;
+                var wrappers = document.querySelectorAll('.calc-mol-stage-wrapper');
+                wrappers.forEach(function(w) {{
+                    if (w.id !== "{wrapper_id}") w.remove();
+                }});
                 if (window.calcResizeMolViewer) {{
                     setTimeout(window.calcResizeMolViewer, 200);
                 }}
@@ -1047,7 +1054,6 @@ def create_tab(ctx):
         }})();
         </script>
         """
-        calc_mol_viewer.clear_output()
         with calc_mol_viewer:
             display(HTML(html))
 
@@ -1334,12 +1340,15 @@ def create_tab(ctx):
                 full_xyz = ""
                 for comm, block, natoms in frames:
                     full_xyz += f"{natoms}\n{comm}\n{block}\n"
+                _mol3d_counter[0] += 1
+                viewer_id = f"calc_trj_viewer_{_mol3d_counter[0]}"
+                wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
                 view_scope_json = json.dumps(state.get('current_path') or '/')
-                calc_mol_viewer.clear_output()
                 with calc_mol_viewer:
-                    viewer_id = "calc_trj_viewer"
                     html_content = f"""
-                    <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
+                    <div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">
+                        <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
+                    </div>
                     <script>
                     if (typeof $3Dmol === "undefined") {{
                         var _s = document.createElement("script");
@@ -1407,6 +1416,10 @@ def create_tab(ctx):
                             window.calc_trj_viewer = viewer;
                             window._calcMolViewer = viewer;
                             window._calcMolViewScopeKey = viewScope;
+                            var wrappers = document.querySelectorAll('.calc-mol-stage-wrapper');
+                            wrappers.forEach(function(w) {{
+                                if (w.id !== "{wrapper_id}") w.remove();
+                            }});
                             if (window.calcResizeMolViewer) setTimeout(window.calcResizeMolViewer, 200);
                         }}
                         setTimeout(initViewer, 0);
@@ -2242,12 +2255,20 @@ def create_tab(ctx):
         calc_delete_hide_confirm()
         calc_update_options_dropdown()
 
+        next_suffix = full_path.suffix.lower()
+        next_name_lower = full_path.name.lower()
+        keep_previous_viewer_during_load = (
+            next_name_lower == 'coord' or next_suffix in ['.xyz', '.cube', '.cub']
+        )
+
         # Reset display (avoid flashing text area before viewer is ready)
-        calc_mol_viewer.clear_output()
-        calc_mol_container.layout.display = 'none'
+        if not keep_previous_viewer_during_load:
+            calc_mol_viewer.clear_output()
+            calc_mol_container.layout.display = 'none'
         calc_content_area.layout.display = 'none'
         calc_content_label.layout.display = 'none'
-        _set_view_toggle(False, True)
+        if not keep_previous_viewer_during_load:
+            _set_view_toggle(False, True)
         calc_file_info.value = ''
         calc_path_display.value = ''
         state['file_content'] = ''
