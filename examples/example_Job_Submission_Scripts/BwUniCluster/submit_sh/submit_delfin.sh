@@ -458,6 +458,13 @@ if [ "$MODE" = "auto" ]; then
     fi
 fi
 
+# Resolve the Python that belongs to the delfin installation
+# (bare `python` may point to a different conda/mamba env)
+DELFIN_PYTHON="$(head -1 "$(command -v delfin)" | sed 's/^#!//')"
+if [ ! -x "$DELFIN_PYTHON" ]; then
+    DELFIN_PYTHON="$(command -v python)"
+fi
+
 # Run appropriate mode
 EXIT_CODE=0
 set +e
@@ -505,7 +512,7 @@ case "$MODE" in
         BUILD_MULT="${BUILD_MULTIPLICITY:-1}"
         echo "Starting delfin-build (complex build-up)..."
         echo "  Multiplicity: $BUILD_MULT"
-        python -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
+        "$DELFIN_PYTHON" -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
         EXIT_CODE=$?
         ;;
     delfin-co2-chain)
@@ -523,7 +530,7 @@ case "$MODE" in
         else
             # Step 2: Chain Setup + CO2 Coordinator
             echo "=== Step 2/2: CO2 Coordinator ==="
-            python -m delfin.co2.chain_setup "$CO2_SPECIES_DELTA"
+            "$DELFIN_PYTHON" -m delfin.co2.chain_setup "$CO2_SPECIES_DELTA"
             SETUP_EXIT=$?
             if [ "$SETUP_EXIT" -ne 0 ]; then
                 echo "ERROR: CO2 setup failed (exit $SETUP_EXIT)"
