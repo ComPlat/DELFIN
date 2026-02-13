@@ -2139,7 +2139,11 @@ def create_tab(ctx):
         ' z-index:10; pointer-events:auto !important; position:relative; }'
         '.calc-splitter:hover { background:linear-gradient('
         'to right, #b0b0b0, #e0e0e0, #b0b0b0); }'
-        '.calc-mol-viewer { overflow:hidden !important; padding:0 !important; }'
+        '.calc-mol-viewer { overflow:hidden !important; padding:0 !important;'
+        ' transition: width 0.25s ease-out, height 0.25s ease-out; }'
+        '.calc-mol-viewer [id^="3dmolviewer"],'
+        ' .calc-mol-viewer [id^="calc_trj"]'
+        ' { transition: width 0.25s ease-out, height 0.25s ease-out; }'
         '.calc-mol-viewer .output_area, .calc-mol-viewer .output_subarea,'
         ' .calc-mol-viewer .output_wrapper, .calc-mol-viewer .jp-OutputArea-child,'
         ' .calc-mol-viewer .jp-OutputArea-output'
@@ -2278,7 +2282,11 @@ def create_tab(ctx):
             var inner = mv.querySelector('[id^="3dmolviewer"], [id^="calc_trj"]');
             if (inner) {{ inner.style.width = w + 'px'; inner.style.height = h + 'px'; }}
             var v = window._calcMolViewer || window.calc_trj_viewer;
-            if (v && typeof v.resize === 'function') {{ v.resize(); v.render(); }}
+            if (v && typeof v.resize === 'function') {{
+                v.resize(); v.render();
+                /* Re-render after CSS transition finishes (250ms) */
+                setTimeout(function() {{ v.resize(); v.render(); }}, 280);
+            }}
         }};
         window.addEventListener('resize', function() {{
             setTimeout(window.calcResizeMolViewer, 100);
