@@ -2416,11 +2416,11 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
             # 1 - Enter type of plot -> 1 (MO-PLOT)
             # 2 - Enter no of orbital -> abs_mo_number
             # 3 - Enter operator of orbital (0=alpha,1=beta)
-            # 4 - Enter number of grid intervals -> 100
+            # 4 - Enter number of grid intervals -> 70
             # 11 - Generate the plot
             # 12 - exit
             spin_op = 0 if spin in (None, "alpha") else 1
-            orca_input = f"1\n1\n2\n{abs_mo_number}\n3\n{spin_op}\n4\n100\n11\n12\n"
+            orca_input = f"1\n1\n2\n{abs_mo_number}\n3\n{spin_op}\n4\n70\n11\n12\n"
 
             # Run orca_plot in interactive mode from ESD directory
             orca_plot_exe = _orca_plot_binary()

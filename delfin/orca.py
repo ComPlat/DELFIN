@@ -46,7 +46,7 @@ ORCA_PLOT_INPUT_TEMPLATE = (
     "1\n"
     "1\n"
     "4\n"
-    "100\n"
+    "70\n"
     "5\n"
     "7\n"
     "2\n"
