@@ -1790,7 +1790,9 @@ def create_tab(ctx):
 
         # --- Cube/Cub volumetric data ---
         if suffix in ['.cube', '.cub']:
-            _set_view_toggle(False, False)
+            _set_view_toggle(True, False)
+            calc_mol_container.layout.display = 'block'
+            calc_content_area.layout.display = 'none'
             calc_update_view()
             try:
                 calc_file_info.value = (
@@ -1814,7 +1816,6 @@ def create_tab(ctx):
                         workspace_root = full_path.parent
 
                     rendered = generate_esp_png_for_state(workspace_root, 'S0')
-                    calc_set_message('ESP rendered via DELFIN report pipeline. Toggle Visualize to view.')
                     state['file_content'] = ''
                     with calc_mol_viewer:
                         if rendered and rendered.exists():
@@ -1830,7 +1831,6 @@ def create_tab(ctx):
                 else:
                     content = full_path.read_text()
                     state['file_content'] = ''
-                    calc_set_message('Cube file loaded. Toggle Visualize to render isosurfaces.')
                     def _cube_extra(view, raw):
                         view.addVolumetricData(raw, 'cube', {'isoval': 0.02, 'color': '#0026ff', 'opacity': 0.85})
                         view.addVolumetricData(raw, 'cube', {'isoval': -0.02, 'color': '#b00010', 'opacity': 0.85})
