@@ -10,7 +10,6 @@ import threading
 from pathlib import Path
 
 import ipywidgets as widgets
-import py3Dmol
 from IPython.display import HTML, clear_output, display
 
 from .constants import CALC_SEARCH_OPTIONS
@@ -65,6 +64,8 @@ def create_tab(ctx):
             'csv_path': '',
             'job_dir': '',
             'mode': 'complete_preselection',
+            'molblock_cache': {},
+            'regen_seed_counter': 0,
         },
     }
 
@@ -368,6 +369,10 @@ def create_tab(ctx):
         description='Close', button_style='',
         layout=widgets.Layout(width='90px', height='30px'),
     )
+    calc_preselect_new3d = widgets.Button(
+        description='New 3D Structure', button_style='info',
+        layout=widgets.Layout(width='150px', height='30px'),
+    )
     calc_preselect_status = widgets.HTML('')
     calc_preselect_container = widgets.VBox([
         calc_preselect_title,
@@ -380,7 +385,7 @@ def create_tab(ctx):
         widgets.HBox(
             [
                 calc_preselect_prev, calc_preselect_next, calc_preselect_close,
-                calc_preselect_move, calc_preselect_yes, calc_preselect_no,
+                calc_preselect_new3d, calc_preselect_move, calc_preselect_yes, calc_preselect_no,
             ],
             layout=widgets.Layout(gap='10px', flex_flow='row wrap'),
         ),
@@ -442,7 +447,11 @@ def create_tab(ctx):
             pass
         return Chem.MolFromSmiles(smiles, sanitize=False)
 
-    def _calc_preselect_smiles_to_3d_molblock(smiles):
+    def _calc_preselect_smiles_to_3d_molblock(smiles, seed=42):
+        try:
+            seed = int(seed)
+        except Exception:
+            seed = 42
         is_complex = contains_metal(smiles)
         mol = None
         if is_complex:
@@ -456,11 +465,11 @@ def create_tab(ctx):
             try:
                 params = AllChem.ETKDGv3()
                 params.useRandomCoords = True
-                params.randomSeed = 42
+                params.randomSeed = seed
                 params.maxIterations = 500
                 conf_id = AllChem.EmbedMolecule(mol, params)
                 if conf_id < 0:
-                    AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+                    AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=seed)
             except Exception:
                 try:
                     rdDepictor.Compute2DCoords(mol)
@@ -478,7 +487,12 @@ def create_tab(ctx):
                     return None
             try:
                 mol = Chem.AddHs(mol)
-                AllChem.EmbedMolecule(mol, AllChem.ETKDG())
+                params = AllChem.ETKDGv3() if hasattr(AllChem, 'ETKDGv3') else AllChem.ETKDG()
+                params.useRandomCoords = True
+                params.randomSeed = seed
+                conf_id = AllChem.EmbedMolecule(mol, params)
+                if conf_id < 0:
+                    AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=seed)
                 AllChem.MMFFOptimizeMolecule(mol)
             except Exception:
                 pass
@@ -713,7 +727,89 @@ def create_tab(ctx):
         state['preselect']['job_dir'] = str(job_dir)
         state['preselect']['mode'] = mode
         state['preselect']['index'] = index
+        state['preselect']['molblock_cache'] = {}
+        state['preselect']['regen_seed_counter'] = 0
         calc_preselect_title.value = _calc_preselect_title_for_mode(mode, csv_path.name)
+
+    def _calc_preselect_cache_key(index):
+        return f"{state['preselect'].get('csv_path', '')}::{int(index)}"
+
+    def _calc_preselect_get_or_build_molblock(index, smiles, force_new=False):
+        cache = state['preselect'].setdefault('molblock_cache', {})
+        key = _calc_preselect_cache_key(index)
+        if not force_new and key in cache:
+            return cache.get(key)
+        seed = 42
+        if force_new:
+            state['preselect']['regen_seed_counter'] = state['preselect'].get('regen_seed_counter', 0) + 1
+            seed += state['preselect']['regen_seed_counter']
+        mol_block = _calc_preselect_smiles_to_3d_molblock(smiles, seed=seed)
+        if mol_block is not None:
+            cache[key] = mol_block
+        return mol_block
+
+    def _calc_preselect_render_3d_molblock(mol_block):
+        with calc_preselect_3d:
+            clear_output(wait=True)
+            if mol_block is None:
+                display(HTML('<i>3D conversion failed</i>'))
+                return
+
+            _mol3d_counter[0] += 1
+            viewer_id = f"calc_preselect_3dmol_{_mol3d_counter[0]}"
+            mol_json = json.dumps(mol_block)
+            display(HTML(f"""
+                <div id="{viewer_id}" style="width:100%;height:100%;position:relative;"></div>
+                <script>
+                if (typeof $3Dmol === "undefined") {{
+                    var _s = document.createElement("script");
+                    _s.src = "https://3Dmol.org/build/3Dmol-min.js";
+                    document.head.appendChild(_s);
+                }}
+                (function() {{
+                    var tries = 0;
+                    function initViewer() {{
+                        var el = document.getElementById("{viewer_id}");
+                        var box = el ? el.closest('.calc-preselect-viz') : null;
+                        if (!el || typeof $3Dmol === "undefined"
+                            || !box || box.offsetParent === null) {{
+                            tries += 1;
+                            if (tries < 80) setTimeout(initViewer, 50);
+                            return;
+                        }}
+                        var rect = box.getBoundingClientRect();
+                        var side = Math.floor(Math.min(rect.width || 0, rect.height || 0));
+                        if (side >= 100) {{
+                            el.style.width = side + 'px';
+                            el.style.height = side + 'px';
+                        }}
+                        var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                        var molData = {mol_json};
+                        viewer.addModel(molData, "mol");
+                        viewer.setStyle({{}}, {{
+                            stick: {{
+                                colorscheme: "Jmol",
+                                radius: 0.11,
+                                singleBonds: false,
+                                doubleBondScaling: 0.65,
+                                tripleBondScaling: 0.65
+                            }},
+                            sphere: {{colorscheme: "Jmol", scale: 0.28}}
+                        }});
+                        viewer.zoomTo();
+                        viewer.center();
+                        viewer.zoom(0.90);
+                        viewer.render();
+                        window._calcPreselect3dViewer = viewer;
+                        window._calcPreselect3dElId = "{viewer_id}";
+                        if (window.calcResizePreselect3D) {{
+                            setTimeout(window.calcResizePreselect3D, 120);
+                        }}
+                    }}
+                    setTimeout(initViewer, 0);
+                }})();
+                </script>
+            """))
 
     def _calc_preselect_render_current():
         mode = state['preselect'].get('mode', 'complete_preselection')
@@ -749,6 +845,7 @@ def create_tab(ctx):
             calc_preselect_yes.disabled = True
             calc_preselect_no.disabled = True
             calc_preselect_move.disabled = True
+            calc_preselect_new3d.disabled = True
             with calc_preselect_img:
                 clear_output(wait=True)
             with calc_preselect_3d:
@@ -764,6 +861,7 @@ def create_tab(ctx):
             calc_preselect_yes.disabled = True
             calc_preselect_no.disabled = True
             calc_preselect_move.disabled = True
+            calc_preselect_new3d.disabled = True
             with calc_preselect_img:
                 clear_output(wait=True)
             with calc_preselect_3d:
@@ -801,6 +899,7 @@ def create_tab(ctx):
         calc_preselect_yes.disabled = not is_complete_preselection
         calc_preselect_no.disabled = not is_complete_preselection
         calc_preselect_move.disabled = not (is_preselected_visualize or is_rejected_visualize)
+        calc_preselect_new3d.disabled = False
 
         with calc_preselect_img:
             clear_output(wait=True)
@@ -817,67 +916,21 @@ def create_tab(ctx):
                 img = MolToImage(mol, size=(CALC_PRESELECT_VIZ_SIZE, CALC_PRESELECT_VIZ_SIZE))
                 display(img)
 
-        with calc_preselect_3d:
-            clear_output(wait=True)
-            mol_block = _calc_preselect_smiles_to_3d_molblock(smiles)
-            if mol_block is None:
-                display(HTML('<i>3D conversion failed</i>'))
-            else:
-                _mol3d_counter[0] += 1
-                viewer_id = f"calc_preselect_3dmol_{_mol3d_counter[0]}"
-                mol_json = json.dumps(mol_block)
-                display(HTML(f"""
-                    <div id="{viewer_id}" style="width:100%;height:100%;position:relative;"></div>
-                    <script>
-                    if (typeof $3Dmol === "undefined") {{
-                        var _s = document.createElement("script");
-                        _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-                        document.head.appendChild(_s);
-                    }}
-                    (function() {{
-                        var tries = 0;
-                        function initViewer() {{
-                            var el = document.getElementById("{viewer_id}");
-                            var box = el ? el.closest('.calc-preselect-viz') : null;
-                            if (!el || typeof $3Dmol === "undefined"
-                                || !box || box.offsetParent === null) {{
-                                tries += 1;
-                                if (tries < 80) setTimeout(initViewer, 50);
-                                return;
-                            }}
-                            var rect = box.getBoundingClientRect();
-                            var side = Math.floor(Math.min(rect.width || 0, rect.height || 0));
-                            if (side >= 100) {{
-                                el.style.width = side + 'px';
-                                el.style.height = side + 'px';
-                            }}
-                            var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
-                            var molData = {mol_json};
-                            viewer.addModel(molData, "mol");
-                            viewer.setStyle({{}}, {{
-                                stick: {{
-                                    colorscheme: "Jmol",
-                                    radius: 0.11,
-                                    singleBonds: false,
-                                    doubleBondScaling: 0.65,
-                                    tripleBondScaling: 0.65
-                                }},
-                                sphere: {{colorscheme: "Jmol", scale: 0.28}}
-                            }});
-                            viewer.zoomTo();
-                            viewer.center();
-                            viewer.zoom(0.90);
-                            viewer.render();
-                            window._calcPreselect3dViewer = viewer;
-                            window._calcPreselect3dElId = "{viewer_id}";
-                            if (window.calcResizePreselect3D) {{
-                                setTimeout(window.calcResizePreselect3D, 120);
-                            }}
-                        }}
-                        setTimeout(initViewer, 0);
-                    }})();
-                    </script>
-                """))
+        mol_block = _calc_preselect_get_or_build_molblock(idx, smiles, force_new=False)
+        _calc_preselect_render_3d_molblock(mol_block)
+
+    def _calc_preselect_new_3d_structure(_btn=None):
+        entries = state['preselect']['entries']
+        idx = state['preselect']['index']
+        if idx < 0 or idx >= len(entries):
+            return
+        _label, smiles = entries[idx]
+        mol_block = _calc_preselect_get_or_build_molblock(idx, smiles, force_new=True)
+        if mol_block is None:
+            calc_preselect_status.value = '<span style="color:#d32f2f;">New 3D generation failed.</span>'
+            return
+        _calc_preselect_render_3d_molblock(mol_block)
+        calc_preselect_status.value = '<span style="color:#555;">New 3D structure generated.</span>'
 
     def _calc_preselect_show(show):
         if show:
@@ -1154,6 +1207,8 @@ def create_tab(ctx):
             state['preselect']['job_dir'] = str(input_path.parent)
             state['preselect']['mode'] = 'complete_visualize'
             state['preselect']['index'] = 0
+            state['preselect']['molblock_cache'] = {}
+            state['preselect']['regen_seed_counter'] = 0
             calc_preselect_title.value = '<b>Visualize:</b> input.txt (SMILES)'
             _calc_preselect_show(True)
             _calc_preselect_render_current()
@@ -2717,6 +2772,7 @@ def create_tab(ctx):
     calc_preselect_next.on_click(_calc_preselect_next_entry)
     calc_preselect_move.on_click(_calc_preselect_move_current)
     calc_preselect_close.on_click(_calc_preselect_close_view)
+    calc_preselect_new3d.on_click(_calc_preselect_new_3d_structure)
     calc_sort_dropdown.observe(calc_on_sort_change, names='value')
     calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
     calc_xyz_copy_btn.on_click(calc_on_xyz_copy)
