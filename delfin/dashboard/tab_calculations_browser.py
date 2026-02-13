@@ -898,18 +898,43 @@ def create_tab(ctx):
                     html_content = f"""
                     <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
                     <script>
+                    if (typeof $3Dmol === "undefined") {{
+                        var _s = document.createElement("script");
+                        _s.src = "https://3Dmol.org/build/3Dmol-min.js";
+                        document.head.appendChild(_s);
+                    }}
                     (function() {{
                         var tries = 0;
                         function initViewer() {{
                             var el = document.getElementById("{viewer_id}");
-                            if (!el || typeof $3Dmol === "undefined") {{
+                            var mv = el ? el.closest('.calc-mol-viewer') : null;
+                            if (!el || typeof $3Dmol === "undefined"
+                                || !mv || mv.offsetParent === null) {{
                                 tries += 1;
-                                if (tries < 50) {{
-                                    setTimeout(initViewer, 100);
-                                }}
+                                if (tries < 80) setTimeout(initViewer, 50);
                                 return;
                             }}
-                            var viewer = $3Dmol.createViewer("{viewer_id}", {{backgroundColor: "white"}});
+                            /* Pre-size to correct dimensions */
+                            var lft = document.querySelector('.calc-left');
+                            if (lft) {{
+                                var leftRect = lft.getBoundingClientRect();
+                                var mvRect = mv.getBoundingClientRect();
+                                if (mvRect.top > 0 || mvRect.height > 0) {{
+                                    var availH = leftRect.bottom - mvRect.top - 6;
+                                    var availW = mv.parentElement
+                                        ? mv.parentElement.getBoundingClientRect().width - 4
+                                        : mvRect.width;
+                                    var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
+                                    var w = Math.floor(Math.min(h * 1.2, availW));
+                                    if (h >= 200 && w >= 240) {{
+                                        mv.style.width = w + 'px';
+                                        mv.style.height = h + 'px';
+                                        el.style.width = w + 'px';
+                                        el.style.height = h + 'px';
+                                    }}
+                                }}
+                            }}
+                            var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
                             var xyz = `{full_xyz}`;
                             viewer.addModelsAsFrames(xyz, "xyz");
                             viewer.setStyle({{}}, {{stick: {{radius: 0.1}}, sphere: {{scale: 0.25}}}});
@@ -2207,7 +2232,8 @@ def create_tab(ctx):
         ' z-index:10; pointer-events:auto !important; position:relative; }'
         '.calc-splitter:hover { background:linear-gradient('
         'to right, #b0b0b0, #e0e0e0, #b0b0b0); }'
-        '.calc-mol-viewer { overflow:hidden !important; padding:0 !important; }'
+        '.calc-mol-viewer { overflow:hidden !important; padding:0 !important;'
+        ' transition: height 0.15s ease-out; }'
         '.calc-mol-viewer .output_area, .calc-mol-viewer .output_subarea,'
         ' .calc-mol-viewer .output_wrapper, .calc-mol-viewer .jp-OutputArea-child,'
         ' .calc-mol-viewer .jp-OutputArea-output'
