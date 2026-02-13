@@ -2497,7 +2497,7 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
                 # Display molecule as sticks
                 cmd.hide('everything', 'molecule')
                 cmd.show('sticks', 'molecule')
-                cmd.set('stick_radius', 0.15)
+                cmd.set('stick_radius', 0.1)
                 cmd.set('stick_quality', 15)
 
                 # Set element colors
@@ -2510,17 +2510,18 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
             # Load cube file for MO isosurface
             cmd.load(str(cube_file), 'orbital')
 
-            # Create isosurface
-            cmd.isosurface('positive', 'orbital', 0.03)
-            cmd.isosurface('negative', 'orbital', -0.03)
+            # Match 3D viewer volumetric defaults as closely as PyMOL allows
+            cmd.isosurface('positive', 'orbital', 0.02)
+            cmd.isosurface('negative', 'orbital', -0.02)
 
-            # Color isosurfaces (blue for positive, red for negative)
-            cmd.color('blue', 'positive')
-            cmd.color('red', 'negative')
+            cmd.set_color('delfin_mo_pos', [0.0, 0.149, 1.0])   # #0026ff
+            cmd.set_color('delfin_mo_neg', [0.690, 0.0, 0.063])  # #b00010
+            cmd.color('delfin_mo_pos', 'positive')
+            cmd.color('delfin_mo_neg', 'negative')
 
-            # Set transparency for isosurfaces
-            cmd.set('transparency', 0.3, 'positive')
-            cmd.set('transparency', 0.3, 'negative')
+            # 3Dmol uses opacity=0.85 -> PyMOL transparency=0.15
+            cmd.set('transparency', 0.15, 'positive')
+            cmd.set('transparency', 0.15, 'negative')
 
             # Set background to white
             cmd.bg_color('white')
