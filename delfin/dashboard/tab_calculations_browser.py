@@ -957,6 +957,7 @@ def create_tab(ctx):
         _mol3d_counter[0] += 1
         viewer_id = f"mol3d_{_mol3d_counter[0]}"
         data_json = json.dumps(data)
+        view_scope_json = json.dumps(state.get('current_path') or '/')
 
         volumetric_js = ""
         if fmt == 'cube':
@@ -1006,6 +1007,16 @@ def create_tab(ctx):
                         }}
                     }}
                 }}
+                window._calcMolViewStateByScope = window._calcMolViewStateByScope || {{}};
+                var viewScope = {view_scope_json};
+                var previousViewer = window._calcMolViewer || window.calc_trj_viewer;
+                var previousScope = window._calcMolViewScopeKey || viewScope;
+                if (previousViewer && typeof previousViewer.getView === 'function') {{
+                    try {{
+                        window._calcMolViewStateByScope[previousScope] = previousViewer.getView();
+                    }} catch (_e) {{}}
+                }}
+                var savedView = window._calcMolViewStateByScope[viewScope] || null;
                 var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
                 var molData = {data_json};
                 viewer.addModel(molData, "{fmt}");
@@ -1014,10 +1025,20 @@ def create_tab(ctx):
                     sphere: {{scale: {sphere_scale}}}
                 }});
                 {volumetric_js}
-                viewer.zoomTo();
-                viewer.zoom({CALC_MOL_ZOOM});
+                if (savedView && typeof viewer.setView === 'function') {{
+                    try {{
+                        viewer.setView(savedView);
+                    }} catch (_e) {{
+                        viewer.zoomTo();
+                        viewer.zoom({CALC_MOL_ZOOM});
+                    }}
+                }} else {{
+                    viewer.zoomTo();
+                    viewer.zoom({CALC_MOL_ZOOM});
+                }}
                 viewer.render();
                 window._calcMolViewer = viewer;
+                window._calcMolViewScopeKey = viewScope;
                 if (window.calcResizeMolViewer) {{
                     setTimeout(window.calcResizeMolViewer, 200);
                 }}
@@ -1313,6 +1334,7 @@ def create_tab(ctx):
                 full_xyz = ""
                 for comm, block, natoms in frames:
                     full_xyz += f"{natoms}\n{comm}\n{block}\n"
+                view_scope_json = json.dumps(state.get('current_path') or '/')
                 calc_mol_viewer.clear_output()
                 with calc_mol_viewer:
                     viewer_id = "calc_trj_viewer"
@@ -1355,16 +1377,36 @@ def create_tab(ctx):
                                     }}
                                 }}
                             }}
+                            window._calcMolViewStateByScope = window._calcMolViewStateByScope || {{}};
+                            var viewScope = {view_scope_json};
+                            var previousViewer = window._calcMolViewer || window.calc_trj_viewer;
+                            var previousScope = window._calcMolViewScopeKey || viewScope;
+                            if (previousViewer && typeof previousViewer.getView === 'function') {{
+                                try {{
+                                    window._calcMolViewStateByScope[previousScope] = previousViewer.getView();
+                                }} catch (_e) {{}}
+                            }}
+                            var savedView = window._calcMolViewStateByScope[viewScope] || null;
                             var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
                             var xyz = `{full_xyz}`;
                             viewer.addModelsAsFrames(xyz, "xyz");
                             viewer.setStyle({{}}, {{stick: {{radius: 0.1}}, sphere: {{scale: 0.25}}}});
-                            viewer.zoomTo();
-                            viewer.zoom({CALC_MOL_ZOOM});
-                            viewer.setFrame(0);
+                            if (savedView && typeof viewer.setView === 'function') {{
+                                try {{
+                                    viewer.setView(savedView);
+                                }} catch (_e) {{
+                                    viewer.zoomTo();
+                                    viewer.zoom({CALC_MOL_ZOOM});
+                                }}
+                            }} else {{
+                                viewer.zoomTo();
+                                viewer.zoom({CALC_MOL_ZOOM});
+                            }}
+                            viewer.setFrame({idx});
                             viewer.render();
                             window.calc_trj_viewer = viewer;
                             window._calcMolViewer = viewer;
+                            window._calcMolViewScopeKey = viewScope;
                             if (window.calcResizeMolViewer) setTimeout(window.calcResizeMolViewer, 200);
                         }}
                         setTimeout(initViewer, 0);
