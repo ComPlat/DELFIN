@@ -30,6 +30,10 @@ def create_busy_css():
         "to { transform: rotate(360deg); } }"
         ".widget-textarea textarea { resize: none !important; }"
         "textarea { resize: none !important; }"
+        ".delfin-time-limit-toggle .widget-toggle-button:nth-of-type(n+4), "
+        ".delfin-time-limit-toggle.widget-toggle-buttons "
+        ".widget-toggle-button:nth-of-type(n+4) { "
+        "margin-top: 6px !important; }"
         "</style>"
     )
 
@@ -51,11 +55,12 @@ def create_time_limit_widgets(style=None):
         button_style='',
         layout=widgets.Layout(width='550px'),
     )
+    toggle.add_class('delfin-time-limit-toggle')
 
     custom = widgets.BoundedIntText(
         value=72, min=1, max=720, step=1,
         description='Hours:',
-        layout=widgets.Layout(width='180px', display='none'),
+        layout=widgets.Layout(width='180px', display='none', margin='6px 0 0 0'),
         style=style,
     )
 

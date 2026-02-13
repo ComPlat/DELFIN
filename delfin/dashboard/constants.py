@@ -270,7 +270,7 @@ odd_seq = [
 ORCA base overrides (optional):
 keyword:basename=[]
 additions:basename=[]
-]"""
+"""
 
 # ---------------------------------------------------------------------------
 # Only GOAT template (XTB_GOAT=yes, no redox steps)
@@ -478,4 +478,4 @@ odd_seq = [
 ORCA base overrides (optional):
 keyword:basename=[]
 additions:basename=[]
-]"""
+"""
