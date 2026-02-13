@@ -364,11 +364,10 @@ def create_tab(ctx):
             layout=widgets.Layout(gap='20px', overflow_x='hidden', flex_flow='row wrap'),
         ),
         widgets.HBox(
-            [calc_preselect_prev, calc_preselect_next, calc_preselect_close],
-            layout=widgets.Layout(gap='10px', flex_flow='row wrap'),
-        ),
-        widgets.HBox(
-            [calc_preselect_yes, calc_preselect_no, calc_preselect_move],
+            [
+                calc_preselect_prev, calc_preselect_next, calc_preselect_close,
+                calc_preselect_move, calc_preselect_yes, calc_preselect_no,
+            ],
             layout=widgets.Layout(gap='10px', flex_flow='row wrap'),
         ),
         calc_preselect_status,
