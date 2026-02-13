@@ -14,11 +14,11 @@ import py3Dmol
 from IPython.display import HTML, clear_output, display
 
 from .constants import CALC_SEARCH_OPTIONS
-from .input_processing import parse_inp_resources, parse_resource_settings, smiles_to_xyz
+from .input_processing import parse_inp_resources, parse_resource_settings, smiles_to_xyz, contains_metal
 from .helpers import disable_spellcheck
 from .molecule_viewer import coord_to_xyz, parse_xyz_frames
 from rdkit import Chem, RDLogger
-from rdkit.Chem import rdDepictor
+from rdkit.Chem import rdDepictor, AllChem
 from rdkit.Chem.Draw import MolToImage
 
 
@@ -35,6 +35,7 @@ def create_tab(ctx):
     CALC_LEFT_DEFAULT = 320
     CALC_LEFT_MIN = 320
     CALC_LEFT_MAX = 520
+    CALC_PRESELECT_VIZ_SIZE = 520
     # -- state (closure-captured) -------------------------------------------
     state = {
         'current_path': '',
@@ -307,11 +308,21 @@ def create_tab(ctx):
     calc_preselect_progress = widgets.HTML('')
     calc_preselect_info = widgets.HTML('')
     calc_preselect_img = widgets.Output(layout=widgets.Layout(
-        margin='0', padding='0', border='1px solid #ccc',
+        width=f'{CALC_PRESELECT_VIZ_SIZE}px',
+        height=f'{CALC_PRESELECT_VIZ_SIZE}px',
+        max_width='100%',
+        margin='0', padding='0', border='1px solid #ccc', overflow='hidden',
+        display='flex', align_items='center', justify_content='center',
     ))
+    calc_preselect_img.add_class('calc-preselect-viz')
     calc_preselect_3d = widgets.Output(layout=widgets.Layout(
-        margin='0', padding='0', border='1px solid #ccc',
+        width=f'{CALC_PRESELECT_VIZ_SIZE}px',
+        height=f'{CALC_PRESELECT_VIZ_SIZE}px',
+        max_width='100%',
+        margin='0', padding='0', border='1px solid #ccc', overflow='hidden',
+        display='flex', align_items='center', justify_content='center',
     ))
+    calc_preselect_3d.add_class('calc-preselect-viz')
     calc_preselect_yes = widgets.Button(
         description='Yes', button_style='success',
         layout=widgets.Layout(width='80px', height='30px'),
@@ -325,7 +336,10 @@ def create_tab(ctx):
         calc_preselect_title,
         calc_preselect_progress,
         calc_preselect_info,
-        widgets.HBox([calc_preselect_img, calc_preselect_3d], layout=widgets.Layout(gap='0px')),
+        widgets.HBox(
+            [calc_preselect_img, calc_preselect_3d],
+            layout=widgets.Layout(gap='20px', overflow_x='hidden', flex_flow='row wrap'),
+        ),
         widgets.HBox([calc_preselect_yes, calc_preselect_no], layout=widgets.Layout(gap='10px')),
         calc_preselect_status,
     ], layout=widgets.Layout(display='none', margin='10px 0', width='100%'))
@@ -363,6 +377,93 @@ def create_tab(ctx):
 
     # -- helper closures ----------------------------------------------------
     RDLogger.DisableLog('rdApp.*')
+
+    def _calc_parse_complex_mol(smiles):
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is not None:
+            return mol
+        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        if mol is None:
+            return None
+        try:
+            Chem.SanitizeMol(mol, sanitizeOps=(
+                Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_KEKULIZE
+            ))
+            return mol
+        except Exception:
+            pass
+        try:
+            mol.UpdatePropertyCache(strict=False)
+            return mol
+        except Exception:
+            pass
+        return Chem.MolFromSmiles(smiles, sanitize=False)
+
+    def _calc_preselect_smiles_to_3d_view(smiles, width, height):
+        is_complex = contains_metal(smiles)
+        mol = None
+        if is_complex:
+            mol = _calc_parse_complex_mol(smiles)
+            if mol is None:
+                return None
+            try:
+                mol = Chem.AddHs(mol, addCoords=False)
+            except Exception:
+                pass
+            try:
+                params = AllChem.ETKDGv3()
+                params.useRandomCoords = True
+                params.randomSeed = 42
+                params.maxIterations = 500
+                conf_id = AllChem.EmbedMolecule(mol, params)
+                if conf_id < 0:
+                    AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+            except Exception:
+                try:
+                    rdDepictor.Compute2DCoords(mol)
+                    conf = mol.GetConformer()
+                    for i in range(mol.GetNumAtoms()):
+                        pos = conf.GetAtomPosition(i)
+                        conf.SetAtomPosition(i, (pos.x, pos.y, 0.0))
+                except Exception:
+                    return None
+        else:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                mol = Chem.MolFromSmiles(smiles, sanitize=False)
+                if mol is None:
+                    return None
+            try:
+                mol = Chem.AddHs(mol)
+                AllChem.EmbedMolecule(mol, AllChem.ETKDG())
+                AllChem.MMFFOptimizeMolecule(mol)
+            except Exception:
+                pass
+        try:
+            mol_block = Chem.MolToMolBlock(mol)
+        except Exception:
+            return None
+        viewer = py3Dmol.view(width=width, height=height)
+        viewer.addModel(mol_block, 'mol')
+        viewer.setStyle(
+            {},
+            {
+                'stick': {
+                    'colorscheme': 'Jmol',
+                    'radius': 0.11,
+                    'singleBonds': False,
+                    'doubleBondScaling': 0.65,
+                    'tripleBondScaling': 0.65,
+                },
+                'sphere': {'colorscheme': 'Jmol', 'scale': 0.28},
+            },
+        )
+        viewer.setBackgroundColor('white')
+        viewer.zoomTo()
+        viewer.center()
+        viewer.zoom(0.90)
+        viewer.render()
+        return viewer
 
     def _calc_is_complete_mutation_csv(selected_name):
         return selected_name and selected_name.lower() == 'complete_mutation_space.csv'
@@ -542,22 +643,18 @@ def create_tab(ctx):
                     rdDepictor.Compute2DCoords(mol)
                 except Exception:
                     pass
-                img = MolToImage(mol, size=(360, 360))
+                img = MolToImage(mol, size=(CALC_PRESELECT_VIZ_SIZE, CALC_PRESELECT_VIZ_SIZE))
                 display(img)
 
         with calc_preselect_3d:
             clear_output(wait=True)
-            xyz_string, num_atoms, _method, error = smiles_to_xyz(smiles)
-            if error or not xyz_string:
+            viewer = _calc_preselect_smiles_to_3d_view(
+                smiles, width=CALC_PRESELECT_VIZ_SIZE, height=CALC_PRESELECT_VIZ_SIZE,
+            )
+            if viewer is None:
                 display(HTML('<i>3D conversion failed</i>'))
             else:
-                xyz_data = f"{num_atoms}\n{label}\n{xyz_string}"
-                view = py3Dmol.view(width=720, height=360)
-                view.addModel(xyz_data, 'xyz')
-                view.setStyle({}, {'stick': {'radius': 0.1}, 'sphere': {'scale': 0.25}})
-                view.zoomTo()
-                view.zoom(1.4)
-                view.show()
+                viewer.show()
 
     def _calc_preselect_show(show):
         if show:
@@ -2238,6 +2335,12 @@ def create_tab(ctx):
         ' .calc-mol-viewer .output_wrapper, .calc-mol-viewer .jp-OutputArea-child,'
         ' .calc-mol-viewer .jp-OutputArea-output'
         ' { padding:0 !important; margin:0 !important; }'
+        '.calc-preselect-viz { overflow:hidden !important; padding:0 !important; margin:0 !important; }'
+        '.calc-preselect-viz .output_area, .calc-preselect-viz .output_subarea,'
+        ' .calc-preselect-viz .output_wrapper, .calc-preselect-viz .jp-OutputArea-child,'
+        ' .calc-preselect-viz .jp-OutputArea-output'
+        ' { padding:0 !important; margin:0 !important; width:100% !important;'
+        ' height:100% !important; overflow:hidden !important; }'
         '</style>'
     )
 
