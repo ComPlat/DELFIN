@@ -127,6 +127,14 @@ case "$MODE" in
         BUILD_MULT="${BUILD_MULTIPLICITY:-1}"
         echo "Starting delfin-build (complex build-up)..."
         echo "  Multiplicity: $BUILD_MULT"
+
+        # Resolve the Python that belongs to the delfin installation
+        # (bare `python` may point to a different env like chemdarwin)
+        DELFIN_PYTHON="$(head -1 "$(command -v delfin)" | sed 's/^#!//')"
+        if [ ! -x "$DELFIN_PYTHON" ]; then
+            DELFIN_PYTHON="$(command -v python)"
+        fi
+
         "$DELFIN_PYTHON" -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
         EXIT_CODE=$?
         ;;
