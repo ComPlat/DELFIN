@@ -64,6 +64,7 @@ def create_tab(ctx):
         'file_preview_note': '',
         'file_chunk_start': 0,
         'file_chunk_end': 0,
+        'chunk_dom_initialized': False,
         'xyz_frames': [],
         'xyz_current_frame': [0],
         'report_running': {},
@@ -1331,6 +1332,51 @@ def create_tab(ctx):
         safe_end = safe_start + len(raw)
         return raw.decode('utf-8', errors='ignore'), safe_start, safe_end
 
+    def _calc_update_chunk_dom(content, size_bytes, chunk_start, chunk_end):
+        total_size = max(1, int(size_bytes))
+        c_start = max(0, int(chunk_start))
+        c_end = max(c_start, int(chunk_end))
+        virtual_h = max(12000, min(180000, int(total_size / 96)))
+        top_px = int((c_start / total_size) * virtual_h)
+        bottom_px = int((max(0, total_size - c_end) / total_size) * virtual_h)
+        fallback_ratio = c_start / max(1, total_size - 1)
+        js = r"""
+        setTimeout(function() {
+            const box = document.getElementById('calc-content-box');
+            const topSpacer = document.getElementById('calc-chunk-top-spacer');
+            const bottomSpacer = document.getElementById('calc-chunk-bottom-spacer');
+            const txt = document.getElementById('calc-content-text');
+            if (!box || !topSpacer || !bottomSpacer || !txt) return;
+            const req = window.__calcChunkRequestedRatio;
+            const fallback = __FALLBACK_RATIO__;
+            const targetRatio = (typeof req === 'number' && isFinite(req))
+                ? Math.max(0, Math.min(1, req))
+                : Math.max(0, Math.min(1, fallback));
+            txt.style.opacity = '0';
+            topSpacer.style.height = '__TOP_PX__px';
+            bottomSpacer.style.height = '__BOTTOM_PX__px';
+            txt.textContent = __TEXT_JSON__;
+            const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+            window.__calcChunkProgrammaticScroll = true;
+            box.scrollTop = Math.floor(targetRatio * maxScroll);
+            window.__calcChunkRequestedRatio = null;
+            setTimeout(function() {
+                window.__calcChunkProgrammaticScroll = false;
+                window.__calcChunkBusy = false;
+                txt.style.opacity = '1';
+                const fn = window.__calcChunkProcessPendingRatio;
+                if (typeof fn === 'function') fn(false);
+            }, 20);
+        }, 0);
+        """
+        js = (
+            js.replace('__TOP_PX__', str(top_px))
+              .replace('__BOTTOM_PX__', str(bottom_px))
+              .replace('__FALLBACK_RATIO__', f'{fallback_ratio:.12f}')
+              .replace('__TEXT_JSON__', json.dumps(content))
+        )
+        _run_js(js)
+
     def _calc_load_text_preview_chunk(path, size_bytes, start_byte, rerun_search=False, scroll_to=None):
         content, chunk_start, chunk_end = _calc_read_text_chunk(path, size_bytes, start_byte)
         state['file_content'] = content
@@ -1338,7 +1384,12 @@ def create_tab(ctx):
         state['file_chunk_start'] = chunk_start
         state['file_chunk_end'] = chunk_end
         state['file_preview_note'] = ''
-        calc_render_content(scroll_to=scroll_to)
+        if state.get('chunk_dom_initialized'):
+            _calc_update_chunk_dom(content, size_bytes, chunk_start, chunk_end)
+            if scroll_to:
+                calc_scroll_to(scroll_to)
+        else:
+            calc_render_content(scroll_to=scroll_to)
         _calc_update_chunk_controls()
         query = (calc_search_input.value or '').strip()
         if rerun_search and query:
@@ -1592,6 +1643,7 @@ def create_tab(ctx):
         )
         top_spacer_html = ''
         bottom_spacer_html = ''
+        text_opacity = '1'
         if chunk_mode:
             total_size = max(1, int(state.get('selected_file_size') or 1))
             chunk_start = max(0, int(state.get('file_chunk_start') or 0))
@@ -1601,6 +1653,7 @@ def create_tab(ctx):
             bottom_px = int((max(0, total_size - chunk_end) / total_size) * virtual_h)
             top_spacer_html = f"<div id='calc-chunk-top-spacer' style='height:{top_px}px;'></div>"
             bottom_spacer_html = f"<div id='calc-chunk-bottom-spacer' style='height:{bottom_px}px;'></div>"
+            text_opacity = '0'
         calc_content_area.value = (
             "<style>"
             ".calc-match { background: #fff59d; padding: 0 2px; }"
@@ -1611,7 +1664,7 @@ def create_tab(ctx):
             " background:#fafafa; width:100%; box-sizing:border-box;'>"
             f"{top_spacer_html}"
             "<div id='calc-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
-            " word-break:break-word; font-family:monospace; font-size:12px; line-height:1.3;'>"
+            f" word-break:break-word; font-family:monospace; font-size:12px; line-height:1.3; opacity:{text_opacity};'>"
             f"{_html.escape(text)}"
             "</div>"
             f"{bottom_spacer_html}"
@@ -1676,6 +1729,16 @@ def create_tab(ctx):
                     const pending = window.__calcChunkPendingRatio;
                     if (typeof pending !== 'number' || !isFinite(pending)) return;
                     const now = Date.now();
+                    const fastUntil = (window.__calcChunkFastDragUntil || 0);
+                    if (!forceRun && fastUntil > now) {
+                        const waitFast = Math.max(20, (fastUntil - now) + 5);
+                        if (window.__calcChunkResumeTimer) clearTimeout(window.__calcChunkResumeTimer);
+                        window.__calcChunkResumeTimer = setTimeout(function() {
+                            window.__calcChunkResumeTimer = null;
+                            processPendingRatio(false);
+                        }, waitFast);
+                        return;
+                    }
                     const ignoreUntil = (window.__calcChunkIgnoreScrollUntil || 0);
                     if (!forceRun && ignoreUntil > now) {
                         const waitMs = Math.max(20, (ignoreUntil - now) + 5);
@@ -1708,6 +1771,9 @@ def create_tab(ctx):
                 if (!box.dataset.chunkBound) {
                     box.dataset.chunkBound = '1';
                     let timer = null;
+                    box.addEventListener('wheel', function() {
+                        window.__calcChunkLastWheelTs = Date.now();
+                    }, {passive: true});
                     box.addEventListener('pointerdown', function(ev) {
                         if (window.__calcChunkProgrammaticScroll) return;
                         if (!ev) return;
@@ -1720,11 +1786,37 @@ def create_tab(ctx):
                         if (window.__calcChunkProgrammaticScroll) {
                             return;
                         }
+                        const nowTs = Date.now();
                         const maxScroll = Math.max(1, box.scrollHeight - box.clientHeight);
                         const ratio = box.scrollTop / maxScroll;
+                        const prevRatio = window.__calcChunkPrevScrollRatio;
+                        const delta = (typeof prevRatio === 'number' && isFinite(prevRatio))
+                            ? Math.abs(ratio - prevRatio)
+                            : 0;
+                        const wheelRecent = ((nowTs - (window.__calcChunkLastWheelTs || 0)) <= 90);
+                        if (!wheelRecent && delta >= 0.02) {
+                            window.__calcChunkScrollbarDragActive = true;
+                        }
+                        if (typeof prevRatio === 'number' && isFinite(prevRatio)) {
+                            if (delta >= 0.08) {
+                                window.__calcChunkFastDragUntil = nowTs + 180;
+                            }
+                        }
+                        window.__calcChunkPrevScrollRatio = ratio;
                         const buttonsDown = !!(ev && typeof ev.buttons === 'number' && ev.buttons > 0);
                         if (buttonsDown) {
                             window.__calcChunkScrollbarDragActive = true;
+                        }
+                        if (window.__calcChunkScrollbarDragActive) {
+                            if (window.__calcChunkDragIdleTimer) {
+                                clearTimeout(window.__calcChunkDragIdleTimer);
+                            }
+                            window.__calcChunkDragIdleTimer = setTimeout(function() {
+                                window.__calcChunkDragIdleTimer = null;
+                                if (!window.__calcChunkScrollbarDragActive) return;
+                                window.__calcChunkScrollbarDragActive = false;
+                                processPendingRatio(true);
+                            }, 130);
                         }
                         window.__calcChunkPendingRatio = ratio;
                         if (window.__calcChunkScrollbarDragActive && window.__calcChunkBusy) {
@@ -1750,12 +1842,16 @@ def create_tab(ctx):
                 setTimeout(function() {
                     window.__calcChunkProgrammaticScroll = false;
                     window.__calcChunkBusy = false;
+                    if (txt) txt.style.opacity = '1';
                     processPendingRatio(false);
                 }, 40);
             }, 0);
             """.replace('__FILE_SIZE__', str(file_size_js))
               .replace('__CHUNK_BYTES__', str(CALC_TEXT_CHUNK_BYTES))
               .replace('__CURRENT_START__', str(chunk_start_js)))
+            state['chunk_dom_initialized'] = True
+        else:
+            state['chunk_dom_initialized'] = False
         if scroll_to:
             calc_scroll_to(scroll_to)
 
@@ -2038,6 +2134,7 @@ def create_tab(ctx):
         state['file_preview_note'] = ''
         state['file_chunk_start'] = 0
         state['file_chunk_end'] = 0
+        state['chunk_dom_initialized'] = False
         calc_file_list.options = []
         calc_mol_viewer.clear_output()
         calc_mol_container.layout.display = 'none'
@@ -2446,6 +2543,10 @@ def create_tab(ctx):
         else:
             req = min(req, max(0, size - CALC_TEXT_CHUNK_BYTES))
         current_start = int(state.get('file_chunk_start') or 0)
+        if scroll_to == 'top':
+            _run_js("window.__calcChunkRequestedRatio = 0.0;")
+        elif scroll_to == 'bottom':
+            _run_js("window.__calcChunkRequestedRatio = 1.0;")
         if req == current_start:
             if scroll_to:
                 calc_scroll_to(scroll_to)
@@ -3034,6 +3135,7 @@ def create_tab(ctx):
         state['file_preview_note'] = ''
         state['file_chunk_start'] = 0
         state['file_chunk_end'] = 0
+        state['chunk_dom_initialized'] = False
         _calc_hide_chunk_controls()
         calc_reset_recalc_state()
         _calc_preselect_show(False)
@@ -3077,6 +3179,7 @@ def create_tab(ctx):
                 state['file_content'] = content
                 state['file_is_preview'] = False
                 state['file_preview_note'] = ''
+                state['chunk_dom_initialized'] = False
                 calc_render_content(scroll_to='top')
                 calc_copy_btn.disabled = False
                 calc_copy_path_btn.disabled = False
@@ -3109,6 +3212,7 @@ def create_tab(ctx):
                 state['file_content'] = content
                 state['file_is_preview'] = False
                 state['file_preview_note'] = ''
+                state['chunk_dom_initialized'] = False
                 calc_render_content(scroll_to='top')
                 calc_copy_btn.disabled = False
                 calc_copy_path_btn.disabled = False
@@ -3280,6 +3384,7 @@ def create_tab(ctx):
                 state['file_content'] = text_only
                 state['file_is_preview'] = False
                 state['file_preview_note'] = ''
+                state['chunk_dom_initialized'] = False
 
                 num_images = html_content.count('<img ')
                 img_info = f', {num_images} image{"s" if num_images != 1 else ""}' if num_images > 0 else ''
@@ -3335,6 +3440,7 @@ def create_tab(ctx):
             state['file_preview_note'] = ''
             state['file_chunk_start'] = 0
             state['file_chunk_end'] = 0
+            state['chunk_dom_initialized'] = False
             _calc_update_chunk_controls()
             calc_copy_btn.disabled = False
             calc_copy_path_btn.disabled = False
