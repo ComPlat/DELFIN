@@ -43,7 +43,7 @@ def create_tab(ctx):
     CALC_PRESELECT_VIZ_SIZE = 520
     # Large-file guardrails
     CALC_TEXT_FULL_READ_BYTES = 2 * 1024 * 1024
-    CALC_TEXT_CHUNK_BYTES = 2 * 1024 * 1024
+    CALC_TEXT_CHUNK_BYTES = 8 * 1024 * 1024
     CALC_SEARCH_MAX_MATCHES = 2000
     CALC_HIGHLIGHT_MAX_CHARS = 400_000
     # -- state (closure-captured) -------------------------------------------
@@ -1360,6 +1360,18 @@ def create_tab(ctx):
             and state.get('selected_file_path')
         )
 
+    def _calc_set_requested_ratio_for_offset(byte_offset):
+        size = int(state.get('selected_file_size') or 0)
+        if size <= 0:
+            return
+        try:
+            off = int(byte_offset)
+        except Exception:
+            off = 0
+        off = max(0, min(off, max(0, size - 1)))
+        ratio = off / max(1, size - 1)
+        _run_js(f"window.__calcChunkRequestedRatio = {ratio:.12f};")
+
     def _calc_find_global_matches(path, query, max_matches):
         q_bytes = query.encode('utf-8', errors='ignore')
         if not q_bytes:
@@ -1632,19 +1644,19 @@ def create_tab(ctx):
                 function requestChunkForRatio(ratio) {
                     if (!isFinite(ratio)) return;
                     const clamped = Math.max(0, Math.min(1, ratio));
-                    if ((window.__calcChunkIgnoreScrollUntil || 0) > Date.now()) {
-                        window.__calcChunkPendingRatio = clamped;
-                        return;
-                    }
-                    if (window.__calcChunkProgrammaticScroll) return;
                     if (window.__calcChunkBusy) {
                         window.__calcChunkPendingRatio = clamped;
                         return;
                     }
-                    let desired = Math.floor((clamped * fileSize) / chunkBytes) * chunkBytes;
-                    if (desired < 0) desired = 0;
-                    if (desired >= fileSize) desired = Math.max(0, fileSize - chunkBytes);
-                    desired = Math.floor(desired / chunkBytes) * chunkBytes;
+                    const tailStart = Math.max(0, fileSize - chunkBytes);
+                    let desired;
+                    if (clamped >= 0.9995) {
+                        desired = tailStart;
+                    } else {
+                        desired = Math.floor((clamped * fileSize) / chunkBytes) * chunkBytes;
+                        if (desired < 0) desired = 0;
+                        if (desired > tailStart) desired = tailStart;
+                    }
                     if (desired === currentStart) return;
                     window.__calcChunkBusy = true;
                     window.__calcChunkPendingRatio = null;
@@ -1652,22 +1664,76 @@ def create_tab(ctx):
                     emit(startInput, desired);
                     emit(ratioInput, clamped);
                     setTimeout(function() {
-                        if (window.__calcChunkBusy) window.__calcChunkBusy = false;
+                        if (!window.__calcChunkBusy) return;
+                        window.__calcChunkBusy = false;
+                        processPendingRatio();
                     }, 2000);
+                }
+
+                function processPendingRatio(forceRun) {
+                    if (window.__calcChunkBusy) return;
+                    if (!forceRun && window.__calcChunkScrollbarDragActive) return;
+                    const pending = window.__calcChunkPendingRatio;
+                    if (typeof pending !== 'number' || !isFinite(pending)) return;
+                    const now = Date.now();
+                    const ignoreUntil = (window.__calcChunkIgnoreScrollUntil || 0);
+                    if (!forceRun && ignoreUntil > now) {
+                        const waitMs = Math.max(20, (ignoreUntil - now) + 5);
+                        if (window.__calcChunkResumeTimer) clearTimeout(window.__calcChunkResumeTimer);
+                        window.__calcChunkResumeTimer = setTimeout(function() {
+                            window.__calcChunkResumeTimer = null;
+                            processPendingRatio(false);
+                        }, waitMs);
+                        return;
+                    }
+                    window.__calcChunkPendingRatio = null;
+                    requestChunkForRatio(pending);
+                }
+                window.__calcChunkProcessPendingRatio = processPendingRatio;
+
+                if (!window.__calcChunkReleaseBound) {
+                    window.__calcChunkReleaseBound = true;
+                    const onRelease = function() {
+                        if (!window.__calcChunkScrollbarDragActive) return;
+                        window.__calcChunkScrollbarDragActive = false;
+                        const fn = window.__calcChunkProcessPendingRatio;
+                        if (typeof fn === 'function') fn(true);
+                    };
+                    window.addEventListener('pointerup', onRelease, {passive: true});
+                    window.addEventListener('mouseup', onRelease, {passive: true});
+                    window.addEventListener('pointercancel', onRelease, {passive: true});
+                    window.addEventListener('blur', onRelease, {passive: true});
                 }
 
                 if (!box.dataset.chunkBound) {
                     box.dataset.chunkBound = '1';
                     let timer = null;
-                    box.addEventListener('scroll', function() {
+                    box.addEventListener('pointerdown', function(ev) {
                         if (window.__calcChunkProgrammaticScroll) return;
-                        if ((window.__calcChunkIgnoreScrollUntil || 0) > Date.now()) return;
+                        if (!ev) return;
+                        const rect = box.getBoundingClientRect();
+                        if (ev.clientX >= (rect.right - 28)) {
+                            window.__calcChunkScrollbarDragActive = true;
+                        }
+                    }, {passive: true});
+                    box.addEventListener('scroll', function(ev) {
+                        if (window.__calcChunkProgrammaticScroll) {
+                            return;
+                        }
+                        const maxScroll = Math.max(1, box.scrollHeight - box.clientHeight);
+                        const ratio = box.scrollTop / maxScroll;
+                        const buttonsDown = !!(ev && typeof ev.buttons === 'number' && ev.buttons > 0);
+                        if (buttonsDown) {
+                            window.__calcChunkScrollbarDragActive = true;
+                        }
+                        window.__calcChunkPendingRatio = ratio;
+                        if (window.__calcChunkScrollbarDragActive && window.__calcChunkBusy) {
+                            return;
+                        }
                         if (timer) clearTimeout(timer);
                         timer = setTimeout(function() {
-                            const maxScroll = Math.max(1, box.scrollHeight - box.clientHeight);
-                            const ratio = box.scrollTop / maxScroll;
-                            requestChunkForRatio(ratio);
-                        }, 80);
+                            processPendingRatio(false);
+                        }, 30);
                     }, {passive: true});
                 }
 
@@ -1683,15 +1749,9 @@ def create_tab(ctx):
                 window.__calcChunkRequestedRatio = null;
                 setTimeout(function() {
                     window.__calcChunkProgrammaticScroll = false;
-                }, 120);
-                setTimeout(function() {
                     window.__calcChunkBusy = false;
-                    const pending = window.__calcChunkPendingRatio;
-                    if (typeof pending === 'number' && isFinite(pending)) {
-                        window.__calcChunkPendingRatio = null;
-                        requestChunkForRatio(pending);
-                    }
-                }, 0);
+                    processPendingRatio(false);
+                }, 40);
             }, 0);
             """.replace('__FILE_SIZE__', str(file_size_js))
               .replace('__CHUNK_BYTES__', str(CALC_TEXT_CHUNK_BYTES))
@@ -2155,11 +2215,11 @@ def create_tab(ctx):
             chunk_start = int(state.get('file_chunk_start') or 0)
             chunk_end = int(state.get('file_chunk_end') or 0)
             if start < chunk_start or end > chunk_end or not state.get('file_content'):
+                _calc_set_requested_ratio_for_offset(start)
                 _run_js(
-                    "window.__calcChunkRequestedRatio = null;"
                     "window.__calcChunkPendingRatio = null;"
                     "window.__calcChunkBusy = false;"
-                    "window.__calcChunkIgnoreScrollUntil = Date.now() + 1200;"
+                    "window.__calcChunkIgnoreScrollUntil = Date.now() + 120;"
                     "window.__calcChunkProgrammaticScroll = false;"
                 )
                 desired = max(0, int(start) - (CALC_TEXT_CHUNK_BYTES // 4))
@@ -2167,6 +2227,7 @@ def create_tab(ctx):
                 chunk_start = int(state.get('file_chunk_start') or 0)
                 chunk_end = int(state.get('file_chunk_end') or 0)
                 if start < chunk_start or end > chunk_end:
+                    _calc_set_requested_ratio_for_offset(start)
                     _calc_request_chunk_start(start)
                     chunk_start = int(state.get('file_chunk_start') or 0)
             path_str = state.get('selected_file_path')
@@ -2295,7 +2356,7 @@ def create_tab(ctx):
                 "window.__calcChunkRequestedRatio = null;"
                 "window.__calcChunkPendingRatio = null;"
                 "window.__calcChunkBusy = false;"
-                "window.__calcChunkIgnoreScrollUntil = Date.now() + 1200;"
+                "window.__calcChunkIgnoreScrollUntil = Date.now() + 120;"
                 "window.__calcChunkProgrammaticScroll = false;"
             )
             path_str = state.get('selected_file_path')
@@ -2377,7 +2438,11 @@ def create_tab(ctx):
             req = 0
         req = max(0, min(req, max(0, size - 1)))
         if align_to_chunk:
-            req = (req // CALC_TEXT_CHUNK_BYTES) * CALC_TEXT_CHUNK_BYTES
+            tail_start = max(0, size - CALC_TEXT_CHUNK_BYTES)
+            if req >= tail_start:
+                req = tail_start
+            else:
+                req = (req // CALC_TEXT_CHUNK_BYTES) * CALC_TEXT_CHUNK_BYTES
         else:
             req = min(req, max(0, size - CALC_TEXT_CHUNK_BYTES))
         current_start = int(state.get('file_chunk_start') or 0)
