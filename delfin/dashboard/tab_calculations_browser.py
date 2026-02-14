@@ -1331,14 +1331,14 @@ def create_tab(ctx):
         safe_end = safe_start + len(raw)
         return raw.decode('utf-8', errors='ignore'), safe_start, safe_end
 
-    def _calc_load_text_preview_chunk(path, size_bytes, start_byte, rerun_search=False):
+    def _calc_load_text_preview_chunk(path, size_bytes, start_byte, rerun_search=False, scroll_to=None):
         content, chunk_start, chunk_end = _calc_read_text_chunk(path, size_bytes, start_byte)
         state['file_content'] = content
         state['file_is_preview'] = True
         state['file_chunk_start'] = chunk_start
         state['file_chunk_end'] = chunk_end
         state['file_preview_note'] = ''
-        calc_render_content(scroll_to=None)
+        calc_render_content(scroll_to=scroll_to)
         _calc_update_chunk_controls()
         query = (calc_search_input.value or '').strip()
         if rerun_search and query:
@@ -2195,12 +2195,35 @@ def create_tab(ctx):
         calc_list_directory()
 
     def calc_go_top(b):
-        if state['file_content']:
-            calc_render_content(scroll_to='top')
+        if not state['file_content']:
+            return
+        if _calc_is_chunk_mode():
+            _run_js(
+                "window.__calcChunkRequestedRatio = null;"
+                "window.__calcChunkPendingRatio = null;"
+                "window.__calcChunkBusy = false;"
+                "window.__calcChunkProgrammaticScroll = false;"
+            )
+            _calc_request_chunk_start(0, scroll_to='top')
+            return
+        calc_scroll_to('top')
 
     def calc_go_bottom(b):
-        if state['file_content']:
-            calc_render_content(scroll_to='bottom')
+        if not state['file_content']:
+            return
+        if _calc_is_chunk_mode():
+            size = int(state.get('selected_file_size') or 0)
+            # Load the true file tail (last chunk-sized window up to EOF).
+            target = max(0, size - CALC_TEXT_CHUNK_BYTES)
+            _run_js(
+                "window.__calcChunkRequestedRatio = null;"
+                "window.__calcChunkPendingRatio = null;"
+                "window.__calcChunkBusy = false;"
+                "window.__calcChunkProgrammaticScroll = false;"
+            )
+            _calc_request_chunk_start(target, scroll_to='bottom', align_to_chunk=False)
+            return
+        calc_scroll_to('bottom')
 
     def calc_do_search(b=None):
         query = calc_search_input.value.strip()
@@ -2295,7 +2318,7 @@ def create_tab(ctx):
             return
         calc_do_search()
 
-    def _calc_request_chunk_start(requested):
+    def _calc_request_chunk_start(requested, scroll_to=None, align_to_chunk=True):
         path_str = state.get('selected_file_path')
         size = int(state.get('selected_file_size') or 0)
         if not path_str or size <= CALC_TEXT_FULL_READ_BYTES:
@@ -2308,11 +2331,16 @@ def create_tab(ctx):
         except Exception:
             req = 0
         req = max(0, min(req, max(0, size - 1)))
-        req = (req // CALC_TEXT_CHUNK_BYTES) * CALC_TEXT_CHUNK_BYTES
+        if align_to_chunk:
+            req = (req // CALC_TEXT_CHUNK_BYTES) * CALC_TEXT_CHUNK_BYTES
+        else:
+            req = min(req, max(0, size - CALC_TEXT_CHUNK_BYTES))
         current_start = int(state.get('file_chunk_start') or 0)
         if req == current_start:
+            if scroll_to:
+                calc_scroll_to(scroll_to)
             return False
-        _calc_load_text_preview_chunk(path, size, req)
+        _calc_load_text_preview_chunk(path, size, req, scroll_to=scroll_to)
         return True
 
     def calc_prev_chunk(button):
