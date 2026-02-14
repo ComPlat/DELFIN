@@ -1364,6 +1364,47 @@ def create_tab(ctx):
         q_bytes = query.encode('utf-8', errors='ignore')
         if not q_bytes:
             return []
+        # Fast path: use ripgrep for large-file fixed-string matching.
+        # Falls back to Python scanning if rg is unavailable.
+        if '\n' not in query and '\r' not in query:
+            try:
+                cmd = [
+                    'rg',
+                    '-a',
+                    '-i',
+                    '-F',
+                    '--byte-offset',
+                    '--only-matching',
+                    '--no-filename',
+                    '--no-line-number',
+                    '--color',
+                    'never',
+                    '--max-count',
+                    str(int(max_matches)),
+                    query,
+                    str(path),
+                ]
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, check=False,
+                )
+                # 0: matches found, 1: no matches. Anything else means fallback.
+                if proc.returncode in (0, 1):
+                    spans = []
+                    q_len = len(q_bytes)
+                    for line in proc.stdout.splitlines():
+                        if not line:
+                            continue
+                        off_txt, _, _rest = line.partition(':')
+                        try:
+                            abs_start = int(off_txt)
+                        except Exception:
+                            continue
+                        spans.append((abs_start, abs_start + q_len))
+                        if len(spans) >= max_matches:
+                            break
+                    return spans
+            except Exception:
+                pass
         q_lower = q_bytes.lower()
         q_len = len(q_lower)
         overlap = max(q_len - 1, 256)
@@ -2283,13 +2324,17 @@ def create_tab(ctx):
             calc_show_match()
             return
 
-        pattern = re.compile(re.escape(query), re.IGNORECASE)
+        q_lower = query.lower()
+        q_len = len(query)
         spans = []
-        for m in pattern.finditer(state['file_content']):
-            spans.append(m.span())
+        hay = state['file_content'].lower()
+        pos = hay.find(q_lower)
+        while pos >= 0:
+            spans.append((pos, pos + q_len))
             if len(spans) >= CALC_SEARCH_MAX_MATCHES:
                 state['search_truncated'] = True
                 break
+            pos = hay.find(q_lower, pos + 1)
         state['search_spans'] = spans
 
         if not state['search_spans']:
