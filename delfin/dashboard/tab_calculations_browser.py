@@ -41,6 +41,11 @@ def create_tab(ctx):
     CALC_LEFT_MIN = 320
     CALC_LEFT_MAX = 520
     CALC_PRESELECT_VIZ_SIZE = 520
+    # Large-file guardrails
+    CALC_TEXT_FULL_READ_BYTES = 2 * 1024 * 1024
+    CALC_TEXT_CHUNK_BYTES = 2 * 1024 * 1024
+    CALC_SEARCH_MAX_MATCHES = 2000
+    CALC_HIGHLIGHT_MAX_CHARS = 400_000
     # -- state (closure-captured) -------------------------------------------
     state = {
         'current_path': '',
@@ -48,10 +53,17 @@ def create_tab(ctx):
         'all_items': [],
         'search_spans': [],
         'current_match': -1,
+        'search_truncated': False,
+        'selected_file_path': None,
+        'selected_file_size': 0,
         'selected_inp_path': None,
         'selected_inp_base': '',
         'recalc_active': False,
         'delete_current': False,
+        'file_is_preview': False,
+        'file_preview_note': '',
+        'file_chunk_start': 0,
+        'file_chunk_end': 0,
         'xyz_frames': [],
         'xyz_current_frame': [0],
         'report_running': {},
@@ -261,6 +273,37 @@ def create_tab(ctx):
         description='⬇ End',
         layout=widgets.Layout(width='95px', min_width='95px', height='26px'),
     )
+    calc_chunk_prev_btn = widgets.Button(
+        description='◀ Part',
+        layout=widgets.Layout(width='85px', min_width='85px', height='26px'),
+        disabled=True,
+    )
+    calc_chunk_prev_btn.add_class('calc-chunk-prev-trigger')
+    calc_chunk_next_btn = widgets.Button(
+        description='Part ▶',
+        layout=widgets.Layout(width='85px', min_width='85px', height='26px'),
+        disabled=True,
+    )
+    calc_chunk_next_btn.add_class('calc-chunk-next-trigger')
+    calc_chunk_label = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='190px', min_width='190px'),
+    )
+    calc_chunk_request_start = widgets.IntText(
+        value=0,
+        layout=widgets.Layout(width='1px', height='1px'),
+    )
+    calc_chunk_request_start.add_class('calc-chunk-start-input')
+    calc_chunk_request_ratio = widgets.FloatText(
+        value=0.0,
+        layout=widgets.Layout(width='1px', height='1px'),
+    )
+    calc_chunk_request_ratio.add_class('calc-chunk-ratio-input')
+    calc_chunk_request_btn = widgets.Button(
+        description='chunk-load',
+        layout=widgets.Layout(width='1px', height='1px'),
+    )
+    calc_chunk_request_btn.add_class('calc-chunk-load-trigger')
 
     # Content search
     calc_search_input = widgets.Text(
@@ -422,6 +465,19 @@ def create_tab(ctx):
         margin='5px 0', width='100%', overflow_x='hidden', gap='8px',
         align_items='center', display='none',
     ))
+    calc_chunk_hidden_row = widgets.HBox(
+        [
+            calc_chunk_prev_btn, calc_chunk_next_btn, calc_chunk_label,
+            calc_chunk_request_start, calc_chunk_request_ratio, calc_chunk_request_btn,
+        ],
+        layout=widgets.Layout(
+            display='flex',
+            height='0px',
+            min_height='0px',
+            overflow='hidden',
+            visibility='hidden',
+        ),
+    )
 
     # -- helper closures ----------------------------------------------------
     RDLogger.DisableLog('rdApp.*')
@@ -1236,6 +1292,197 @@ def create_tab(ctx):
         return ctx.calc_dir
 
     # -- view / display helpers ---------------------------------------------
+    def _calc_format_bytes(n_bytes):
+        if n_bytes >= 1024 * 1024:
+            return f'{n_bytes / (1024 * 1024):.2f} MB'
+        if n_bytes >= 1024:
+            return f'{n_bytes / 1024:.2f} KB'
+        return f'{n_bytes} B'
+
+    def _calc_hide_chunk_controls():
+        calc_chunk_prev_btn.disabled = True
+        calc_chunk_next_btn.disabled = True
+        calc_chunk_label.value = ''
+
+    def _calc_update_chunk_controls():
+        size = int(state.get('selected_file_size') or 0)
+        if (
+            not state.get('file_is_preview')
+            or not state.get('selected_file_path')
+            or size <= CALC_TEXT_FULL_READ_BYTES
+        ):
+            _calc_hide_chunk_controls()
+            return
+        start = int(state.get('file_chunk_start') or 0)
+        end = int(state.get('file_chunk_end') or 0)
+        total_parts = max(1, (size + CALC_TEXT_CHUNK_BYTES - 1) // CALC_TEXT_CHUNK_BYTES)
+        part_idx = min(total_parts, max(1, (start // CALC_TEXT_CHUNK_BYTES) + 1))
+        calc_chunk_prev_btn.disabled = (start <= 0)
+        calc_chunk_next_btn.disabled = (end >= size or end <= start)
+        calc_chunk_label.value = f"<span style='display:none;'>Part {part_idx}/{total_parts}</span>"
+
+    def _calc_read_text_chunk(path, size_bytes, start_byte):
+        if size_bytes <= 0:
+            return '', 0, 0
+        safe_start = max(0, min(int(start_byte), max(0, size_bytes - 1)))
+        with path.open('rb') as f:
+            f.seek(safe_start)
+            raw = f.read(CALC_TEXT_CHUNK_BYTES)
+        safe_end = safe_start + len(raw)
+        return raw.decode('utf-8', errors='ignore'), safe_start, safe_end
+
+    def _calc_load_text_preview_chunk(path, size_bytes, start_byte, rerun_search=False):
+        content, chunk_start, chunk_end = _calc_read_text_chunk(path, size_bytes, start_byte)
+        state['file_content'] = content
+        state['file_is_preview'] = True
+        state['file_chunk_start'] = chunk_start
+        state['file_chunk_end'] = chunk_end
+        state['file_preview_note'] = ''
+        calc_render_content(scroll_to=None)
+        _calc_update_chunk_controls()
+        query = (calc_search_input.value or '').strip()
+        if rerun_search and query:
+            calc_do_search()
+        elif not query:
+            state['search_spans'] = []
+            state['current_match'] = -1
+            state['search_truncated'] = False
+            calc_search_result.value = ''
+            calc_update_nav_buttons()
+
+    def _calc_should_highlight():
+        return len(state.get('file_content', '')) <= CALC_HIGHLIGHT_MAX_CHARS
+
+    def _calc_is_chunk_mode():
+        return bool(
+            state.get('file_is_preview')
+            and int(state.get('selected_file_size') or 0) > CALC_TEXT_FULL_READ_BYTES
+            and state.get('selected_file_path')
+        )
+
+    def _calc_find_global_matches(path, query, max_matches):
+        q_bytes = query.encode('utf-8', errors='ignore')
+        if not q_bytes:
+            return []
+        q_lower = q_bytes.lower()
+        q_len = len(q_lower)
+        overlap = max(q_len - 1, 256)
+        spans = []
+        carry = b''
+        file_offset = 0
+        with path.open('rb') as f:
+            while True:
+                block = f.read(CALC_TEXT_CHUNK_BYTES)
+                if not block:
+                    break
+                data = carry + block
+                lower = data.lower()
+                search_from = 0
+                while True:
+                    idx = lower.find(q_lower, search_from)
+                    if idx < 0:
+                        break
+                    abs_start = file_offset - len(carry) + idx
+                    abs_end = abs_start + q_len
+                    if abs_start >= 0:
+                        spans.append((abs_start, abs_end))
+                        if len(spans) >= max_matches:
+                            return spans
+                    search_from = idx + 1
+                if len(data) > overlap:
+                    carry = data[-overlap:]
+                else:
+                    carry = data
+                file_offset += len(block)
+        return spans
+
+    def _calc_line_col_from_file_offset(path, byte_pos):
+        target = max(0, int(byte_pos))
+        line = 1
+        last_nl = -1
+        seen = 0
+        with path.open('rb') as f:
+            while seen < target:
+                need = min(CALC_TEXT_CHUNK_BYTES, target - seen)
+                if need <= 0:
+                    break
+                chunk = f.read(need)
+                if not chunk:
+                    break
+                idx = 0
+                while True:
+                    nl = chunk.find(b'\n', idx)
+                    if nl < 0:
+                        break
+                    line += 1
+                    last_nl = seen + nl
+                    idx = nl + 1
+                seen += len(chunk)
+        col = target + 1 if last_nl < 0 else target - last_nl
+        return line, col
+
+    def _calc_local_text_span_from_file_bytes(path, chunk_start, abs_start, abs_end):
+        chunk_start_i = max(0, int(chunk_start))
+        start_i = max(0, int(abs_start))
+        end_i = max(start_i + 1, int(abs_end))
+        local_b_start = max(0, start_i - chunk_start_i)
+        local_b_end = max(local_b_start + 1, end_i - chunk_start_i)
+        try:
+            with path.open('rb') as f:
+                f.seek(chunk_start_i)
+                raw = f.read(local_b_end)
+            if not raw:
+                return 0, 1
+            local_b_start = min(local_b_start, len(raw))
+            local_b_end = min(max(local_b_start + 1, local_b_end), len(raw))
+            local_start = len(raw[:local_b_start].decode('utf-8', errors='ignore'))
+            local_end = len(raw[:local_b_end].decode('utf-8', errors='ignore'))
+            if local_end <= local_start:
+                local_end = local_start + 1
+            return local_start, local_end
+        except Exception:
+            fallback_start = max(0, start_i - chunk_start_i)
+            fallback_end = max(fallback_start + 1, end_i - chunk_start_i)
+            return fallback_start, fallback_end
+
+    def _calc_apply_highlight_span(local_start, local_end):
+        js = r"""
+        setTimeout(function() {
+            const box = document.getElementById('calc-content-box');
+            const el = document.getElementById('calc-content-text');
+            if (!el) return;
+            const text = el.textContent || '';
+            const s = __START__;
+            const e = __END__;
+            if (s < 0 || e <= s || s >= text.length) return;
+            function esc(v) {
+                return v.replace(/[&<>"]/g, function(c) {
+                    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+                });
+            }
+            const end = Math.min(e, text.length);
+            el.innerHTML =
+                esc(text.slice(0, s))
+                + '<mark class="calc-match current" id="calc-current-match">'
+                + esc(text.slice(s, end))
+                + '</mark>'
+                + esc(text.slice(end));
+            const mark = document.getElementById('calc-current-match');
+            if (!box || !mark) return;
+            const boxRect = box.getBoundingClientRect();
+            const markRect = mark.getBoundingClientRect();
+            const delta = (markRect.top - boxRect.top) - (box.clientHeight / 2);
+            window.__calcChunkIgnoreScrollUntil = Date.now() + 350;
+            window.__calcChunkProgrammaticScroll = true;
+            box.scrollTop += delta;
+            setTimeout(function() {
+                window.__calcChunkProgrammaticScroll = false;
+            }, 120);
+        }, 0);
+        """
+        js = js.replace('__START__', str(int(local_start))).replace('__END__', str(int(local_end)))
+        _run_js(js)
+
     def calc_update_view():
         show_mol = calc_view_toggle.value
         if show_mol:
@@ -1286,6 +1533,21 @@ def create_tab(ctx):
             calc_set_message('Select a file...')
             return
         text = state['file_content']
+        chunk_mode = bool(
+            state.get('file_is_preview')
+            and int(state.get('selected_file_size') or 0) > CALC_TEXT_FULL_READ_BYTES
+        )
+        top_spacer_html = ''
+        bottom_spacer_html = ''
+        if chunk_mode:
+            total_size = max(1, int(state.get('selected_file_size') or 1))
+            chunk_start = max(0, int(state.get('file_chunk_start') or 0))
+            chunk_end = max(chunk_start, int(state.get('file_chunk_end') or chunk_start))
+            virtual_h = max(12000, min(180000, int(total_size / 96)))
+            top_px = int((chunk_start / total_size) * virtual_h)
+            bottom_px = int((max(0, total_size - chunk_end) / total_size) * virtual_h)
+            top_spacer_html = f"<div id='calc-chunk-top-spacer' style='height:{top_px}px;'></div>"
+            bottom_spacer_html = f"<div id='calc-chunk-bottom-spacer' style='height:{bottom_px}px;'></div>"
         calc_content_area.value = (
             "<style>"
             ".calc-match { background: #fff59d; padding: 0 2px; }"
@@ -1294,11 +1556,105 @@ def create_tab(ctx):
             "<div id='calc-content-box' style='height:100%;"
             " overflow-y:auto; overflow-x:hidden; border:1px solid #ddd; padding:6px;"
             " background:#fafafa; width:100%; box-sizing:border-box;'>"
+            f"{top_spacer_html}"
             "<div id='calc-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
             " word-break:break-word; font-family:monospace; font-size:12px; line-height:1.3;'>"
             f"{_html.escape(text)}"
-            "</div></div>"
+            "</div>"
+            f"{bottom_spacer_html}"
+            "</div>"
         )
+        if chunk_mode:
+            file_size_js = int(state.get('selected_file_size') or 0)
+            chunk_start_js = int(state.get('file_chunk_start') or 0)
+            _run_js("""
+            setTimeout(function() {
+                const box = document.getElementById('calc-content-box');
+                const topSpacer = document.getElementById('calc-chunk-top-spacer');
+                const txt = document.getElementById('calc-content-text');
+                if (!box || !topSpacer || !txt) return;
+                const startInput = document.querySelector('.calc-chunk-start-input input');
+                const ratioInput = document.querySelector('.calc-chunk-ratio-input input');
+                if (!startInput || !ratioInput) return;
+
+                const fileSize = __FILE_SIZE__;
+                const chunkBytes = __CHUNK_BYTES__;
+                const currentStart = __CURRENT_START__;
+                if (fileSize <= 0 || chunkBytes <= 0) return;
+
+                function emit(el, value) {
+                    el.value = String(value);
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+
+                function requestChunkForRatio(ratio) {
+                    if (!isFinite(ratio)) return;
+                    const clamped = Math.max(0, Math.min(1, ratio));
+                    if ((window.__calcChunkIgnoreScrollUntil || 0) > Date.now()) {
+                        window.__calcChunkPendingRatio = clamped;
+                        return;
+                    }
+                    if (window.__calcChunkProgrammaticScroll) return;
+                    if (window.__calcChunkBusy) {
+                        window.__calcChunkPendingRatio = clamped;
+                        return;
+                    }
+                    let desired = Math.floor((clamped * fileSize) / chunkBytes) * chunkBytes;
+                    if (desired < 0) desired = 0;
+                    if (desired >= fileSize) desired = Math.max(0, fileSize - chunkBytes);
+                    desired = Math.floor(desired / chunkBytes) * chunkBytes;
+                    if (desired === currentStart) return;
+                    window.__calcChunkBusy = true;
+                    window.__calcChunkPendingRatio = null;
+                    window.__calcChunkRequestedRatio = clamped;
+                    emit(startInput, desired);
+                    emit(ratioInput, clamped);
+                    setTimeout(function() {
+                        if (window.__calcChunkBusy) window.__calcChunkBusy = false;
+                    }, 2000);
+                }
+
+                if (!box.dataset.chunkBound) {
+                    box.dataset.chunkBound = '1';
+                    let timer = null;
+                    box.addEventListener('scroll', function() {
+                        if (window.__calcChunkProgrammaticScroll) return;
+                        if ((window.__calcChunkIgnoreScrollUntil || 0) > Date.now()) return;
+                        if (timer) clearTimeout(timer);
+                        timer = setTimeout(function() {
+                            const maxScroll = Math.max(1, box.scrollHeight - box.clientHeight);
+                            const ratio = box.scrollTop / maxScroll;
+                            requestChunkForRatio(ratio);
+                        }, 80);
+                    }, {passive: true});
+                }
+
+                const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+                const requestedRatio = window.__calcChunkRequestedRatio;
+                window.__calcChunkProgrammaticScroll = true;
+                if (typeof requestedRatio === 'number' && isFinite(requestedRatio)) {
+                    const clamped = Math.max(0, Math.min(1, requestedRatio));
+                    box.scrollTop = Math.floor(clamped * maxScroll);
+                } else {
+                    box.scrollTop = Math.min(maxScroll, topSpacer.offsetHeight || 0);
+                }
+                window.__calcChunkRequestedRatio = null;
+                setTimeout(function() {
+                    window.__calcChunkProgrammaticScroll = false;
+                }, 120);
+                setTimeout(function() {
+                    window.__calcChunkBusy = false;
+                    const pending = window.__calcChunkPendingRatio;
+                    if (typeof pending === 'number' && isFinite(pending)) {
+                        window.__calcChunkPendingRatio = null;
+                        requestChunkForRatio(pending);
+                    }
+                }, 0);
+            }, 0);
+            """.replace('__FILE_SIZE__', str(file_size_js))
+              .replace('__CHUNK_BYTES__', str(CALC_TEXT_CHUNK_BYTES))
+              .replace('__CURRENT_START__', str(chunk_start_js)))
         if scroll_to:
             calc_scroll_to(scroll_to)
 
@@ -1574,6 +1930,13 @@ def create_tab(ctx):
         state['all_items'] = []
         state['search_spans'] = []
         state['current_match'] = -1
+        state['search_truncated'] = False
+        state['selected_file_path'] = None
+        state['selected_file_size'] = 0
+        state['file_is_preview'] = False
+        state['file_preview_note'] = ''
+        state['file_chunk_start'] = 0
+        state['file_chunk_end'] = 0
         calc_file_list.options = []
         calc_mol_viewer.clear_output()
         calc_mol_container.layout.display = 'none'
@@ -1586,6 +1949,7 @@ def create_tab(ctx):
         _set_view_toggle(False, True)
         calc_copy_btn.disabled = True
         calc_copy_path_btn.disabled = True
+        _calc_hide_chunk_controls()
         calc_update_view()
         calc_set_message('Select a file...')
 
@@ -1715,16 +2079,29 @@ def create_tab(ctx):
         if not state['search_spans']:
             calc_search_result.value = ''
             return
+        notes = []
+        if state.get('search_truncated'):
+            notes.append(f'limited to {CALC_SEARCH_MAX_MATCHES} matches')
+        note_html = ''
+        if notes:
+            note_html = f' <span style="color:#777;">({", ".join(notes)})</span>'
         if state['current_match'] < 0:
             calc_search_result.value = (
-                f'<span style="color:green;">{len(state["search_spans"])} matches</span>'
+                f'<span style="color:green;">{len(state["search_spans"])} matches</span>{note_html}'
             )
             return
         start, _ = state['search_spans'][state['current_match']]
-        line, col = calc_pos_to_line_col(start)
+        if _calc_is_chunk_mode():
+            path_str = state.get('selected_file_path')
+            if path_str and Path(path_str).exists():
+                line, col = _calc_line_col_from_file_offset(Path(path_str), start)
+            else:
+                line, col = 0, 0
+        else:
+            line, col = calc_pos_to_line_col(start)
         calc_search_result.value = (
             f'<b>{state["current_match"] + 1}/{len(state["search_spans"])}</b> '
-            f'<span style="color:#555;">(line {line}, col {col})</span>'
+            f'<span style="color:#555;">(line {line}, col {col})</span>{note_html}'
         )
 
     def calc_show_match():
@@ -1732,8 +2109,39 @@ def create_tab(ctx):
             return
         calc_update_nav_buttons()
         calc_update_search_result()
-        calc_apply_highlight(calc_search_input.value.strip(), state['current_match'])
-        calc_scroll_to('match')
+        if _calc_is_chunk_mode():
+            start, end = state['search_spans'][state['current_match']]
+            chunk_start = int(state.get('file_chunk_start') or 0)
+            chunk_end = int(state.get('file_chunk_end') or 0)
+            if start < chunk_start or end > chunk_end or not state.get('file_content'):
+                _run_js(
+                    "window.__calcChunkRequestedRatio = null;"
+                    "window.__calcChunkPendingRatio = null;"
+                    "window.__calcChunkBusy = false;"
+                    "window.__calcChunkIgnoreScrollUntil = Date.now() + 1200;"
+                    "window.__calcChunkProgrammaticScroll = false;"
+                )
+                desired = max(0, int(start) - (CALC_TEXT_CHUNK_BYTES // 4))
+                _calc_request_chunk_start(desired)
+                chunk_start = int(state.get('file_chunk_start') or 0)
+                chunk_end = int(state.get('file_chunk_end') or 0)
+                if start < chunk_start or end > chunk_end:
+                    _calc_request_chunk_start(start)
+                    chunk_start = int(state.get('file_chunk_start') or 0)
+            path_str = state.get('selected_file_path')
+            path = Path(path_str) if path_str else None
+            if path and path.exists():
+                local_start, local_end = _calc_local_text_span_from_file_bytes(
+                    path, chunk_start, start, end
+                )
+            else:
+                local_start = max(0, int(start) - chunk_start)
+                local_end = max(local_start + 1, int(end) - chunk_start)
+            _calc_apply_highlight_span(local_start, local_end)
+            return
+        if _calc_should_highlight():
+            calc_apply_highlight(calc_search_input.value.strip(), state['current_match'])
+            calc_scroll_to('match')
 
     # -- options dropdown ---------------------------------------------------
     def calc_update_options_dropdown():
@@ -1801,33 +2209,130 @@ def create_tab(ctx):
             calc_search_input.value = query
         state['search_spans'] = []
         state['current_match'] = -1
+        state['search_truncated'] = False
 
         if not query or not state['file_content']:
             calc_search_result.value = ''
             calc_update_nav_buttons()
-            calc_apply_highlight('', -1)
+            if _calc_is_chunk_mode():
+                _run_js("""
+                (function() {
+                    const el = document.getElementById('calc-content-text');
+                    if (!el) return;
+                    el.textContent = el.textContent || '';
+                })();
+                """)
+            elif _calc_should_highlight():
+                calc_apply_highlight('', -1)
+            return
+
+        if _calc_is_chunk_mode():
+            _run_js(
+                "window.__calcChunkRequestedRatio = null;"
+                "window.__calcChunkPendingRatio = null;"
+                "window.__calcChunkBusy = false;"
+                "window.__calcChunkIgnoreScrollUntil = Date.now() + 1200;"
+                "window.__calcChunkProgrammaticScroll = false;"
+            )
+            path_str = state.get('selected_file_path')
+            path = Path(path_str) if path_str else None
+            if not path or not path.exists():
+                calc_search_result.value = '<span style="color:red;">0 matches</span>'
+                calc_update_nav_buttons()
+                return
+            spans = _calc_find_global_matches(path, query, CALC_SEARCH_MAX_MATCHES + 1)
+            if len(spans) > CALC_SEARCH_MAX_MATCHES:
+                state['search_truncated'] = True
+                spans = spans[:CALC_SEARCH_MAX_MATCHES]
+            state['search_spans'] = spans
+            if not state['search_spans']:
+                calc_search_result.value = '<span style="color:red;">0 matches</span>'
+                calc_update_nav_buttons()
+                _run_js("""
+                (function() {
+                    const el = document.getElementById('calc-content-text');
+                    if (!el) return;
+                    el.textContent = el.textContent || '';
+                })();
+                """)
+                return
+            state['current_match'] = 0
+            calc_show_match()
             return
 
         pattern = re.compile(re.escape(query), re.IGNORECASE)
-        state['search_spans'] = [m.span() for m in pattern.finditer(state['file_content'])]
+        spans = []
+        for m in pattern.finditer(state['file_content']):
+            spans.append(m.span())
+            if len(spans) >= CALC_SEARCH_MAX_MATCHES:
+                state['search_truncated'] = True
+                break
+        state['search_spans'] = spans
 
         if not state['search_spans']:
             calc_search_result.value = '<span style="color:red;">0 matches</span>'
             calc_update_nav_buttons()
-            calc_apply_highlight('', -1)
+            if _calc_should_highlight():
+                calc_apply_highlight('', -1)
             return
 
         state['current_match'] = 0
         calc_update_nav_buttons()
         calc_update_search_result()
-        calc_apply_highlight(query, state['current_match'])
-        calc_scroll_to('match')
+        if _calc_should_highlight():
+            calc_apply_highlight(query, state['current_match'])
+            calc_scroll_to('match')
 
     def calc_on_suggest(change):
         value = change['new']
         if not value or value == '(Select)':
             return
         calc_search_input.value = value
+
+    def calc_on_search_input_change(change):
+        # For large text buffers, avoid running search on every input update.
+        if len(state.get('file_content', '')) > CALC_HIGHLIGHT_MAX_CHARS:
+            return
+        calc_do_search()
+
+    def _calc_request_chunk_start(requested):
+        path_str = state.get('selected_file_path')
+        size = int(state.get('selected_file_size') or 0)
+        if not path_str or size <= CALC_TEXT_FULL_READ_BYTES:
+            return False
+        path = Path(path_str)
+        if not path.exists():
+            return False
+        try:
+            req = int(requested)
+        except Exception:
+            req = 0
+        req = max(0, min(req, max(0, size - 1)))
+        req = (req // CALC_TEXT_CHUNK_BYTES) * CALC_TEXT_CHUNK_BYTES
+        current_start = int(state.get('file_chunk_start') or 0)
+        if req == current_start:
+            return False
+        _calc_load_text_preview_chunk(path, size, req)
+        return True
+
+    def calc_prev_chunk(button):
+        start = max(0, int(state.get('file_chunk_start') or 0) - CALC_TEXT_CHUNK_BYTES)
+        _calc_request_chunk_start(start)
+
+    def calc_next_chunk(button):
+        size = int(state.get('selected_file_size') or 0)
+        start = int(state.get('file_chunk_end') or 0)
+        if start >= size:
+            return
+        _calc_request_chunk_start(start)
+
+    def calc_on_chunk_request(button):
+        _calc_request_chunk_start(calc_chunk_request_start.value)
+
+    def calc_on_chunk_request_start_change(change):
+        if change.get('name') != 'value':
+            return
+        _calc_request_chunk_start(change.get('new', 0))
 
     def calc_prev_match(b):
         if state['search_spans'] and state['current_match'] > 0:
@@ -2361,6 +2866,7 @@ def create_tab(ctx):
         # Reset search state
         state['search_spans'] = []
         state['current_match'] = -1
+        state['search_truncated'] = False
         calc_search_result.value = ''
         calc_search_input.value = ''
         calc_update_nav_buttons()
@@ -2384,6 +2890,13 @@ def create_tab(ctx):
         calc_file_info.value = ''
         calc_path_display.value = ''
         state['file_content'] = ''
+        state['selected_file_path'] = None
+        state['selected_file_size'] = 0
+        state['file_is_preview'] = False
+        state['file_preview_note'] = ''
+        state['file_chunk_start'] = 0
+        state['file_chunk_end'] = 0
+        _calc_hide_chunk_controls()
         calc_reset_recalc_state()
         _calc_preselect_show(False)
 
@@ -2412,6 +2925,8 @@ def create_tab(ctx):
 
         suffix = full_path.suffix.lower()
         name_lower = full_path.name.lower()
+        state['selected_file_path'] = str(full_path)
+        state['selected_file_size'] = int(size)
 
         # --- Turbomole coord file ---
         if name_lower == 'coord':
@@ -2422,6 +2937,8 @@ def create_tab(ctx):
             try:
                 content = full_path.read_text()
                 state['file_content'] = content
+                state['file_is_preview'] = False
+                state['file_preview_note'] = ''
                 calc_render_content(scroll_to='top')
                 calc_copy_btn.disabled = False
                 calc_copy_path_btn.disabled = False
@@ -2452,6 +2969,8 @@ def create_tab(ctx):
             try:
                 content = full_path.read_text()
                 state['file_content'] = content
+                state['file_is_preview'] = False
+                state['file_preview_note'] = ''
                 calc_render_content(scroll_to='top')
                 calc_copy_btn.disabled = False
                 calc_copy_path_btn.disabled = False
@@ -2621,6 +3140,8 @@ def create_tab(ctx):
                 text_only = re.sub(r'<[^>]+>', '', html_content)
                 text_only = re.sub(r'\s+', ' ', text_only).strip()
                 state['file_content'] = text_only
+                state['file_is_preview'] = False
+                state['file_preview_note'] = ''
 
                 num_images = html_content.count('<img ')
                 img_info = f', {num_images} image{"s" if num_images != 1 else ""}' if num_images > 0 else ''
@@ -2654,14 +3175,35 @@ def create_tab(ctx):
 
         # --- Text files (default) ---
         try:
-            content = full_path.read_text()
+            if size > CALC_TEXT_FULL_READ_BYTES:
+                _calc_load_text_preview_chunk(full_path, size, 0)
+                calc_copy_btn.disabled = False
+                calc_copy_path_btn.disabled = False
+                chunk_lines = state['file_content'].count('\n') + (1 if state['file_content'] else 0)
+                calc_file_info.value = (
+                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                    f' ({size_str}, chunked view, {chunk_lines} lines loaded)'
+                )
+                if suffix == '.inp':
+                    state['selected_inp_path'] = full_path
+                    state['selected_inp_base'] = full_path.stem
+                    calc_recalc_btn.disabled = False
+                calc_update_view()
+                return
+
+            content = full_path.read_text(errors='ignore')
             state['file_content'] = content
+            state['file_is_preview'] = False
+            state['file_preview_note'] = ''
+            state['file_chunk_start'] = 0
+            state['file_chunk_end'] = 0
+            _calc_update_chunk_controls()
             calc_copy_btn.disabled = False
             calc_copy_path_btn.disabled = False
-            lines = content.split('\n')
+            line_count = content.count('\n') + (1 if content else 0)
             calc_file_info.value = (
                 f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
-                f' ({size_str}, {len(lines)} lines)'
+                f' ({size_str}, {line_count} lines)'
             )
             calc_render_content(scroll_to='top')
 
@@ -2754,8 +3296,12 @@ def create_tab(ctx):
     calc_top_btn.on_click(calc_go_top)
     calc_bottom_btn.on_click(calc_go_bottom)
     calc_search_btn.on_click(calc_do_search)
-    calc_search_input.observe(lambda change: calc_do_search(), names='value')
+    calc_search_input.observe(calc_on_search_input_change, names='value')
     calc_search_suggest.observe(calc_on_suggest, names='value')
+    calc_chunk_prev_btn.on_click(calc_prev_chunk)
+    calc_chunk_next_btn.on_click(calc_next_chunk)
+    calc_chunk_request_btn.on_click(calc_on_chunk_request)
+    calc_chunk_request_start.observe(calc_on_chunk_request_start_change, names='value')
     calc_view_toggle.observe(_on_view_toggle, names='value')
     calc_prev_btn.on_click(calc_prev_match)
     calc_next_btn.on_click(calc_next_match)
@@ -2928,6 +3474,7 @@ def create_tab(ctx):
         calc_delete_status,
         calc_recalc_toolbar,
         calc_content_toolbar,
+        calc_chunk_hidden_row,
         calc_override_status,
         calc_content_area,
         calc_edit_area,

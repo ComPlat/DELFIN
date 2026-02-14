@@ -202,7 +202,7 @@ E_ox_3_exp=
 *E_ox_exp=
 ------------------------------------
 Prints:
-print_MOs=yes
+print_MOs=no
 print_Loewdin_population_analysis=no
 ------------------------------------
 Resource Settings:
@@ -410,7 +410,7 @@ E_ox_3_exp=
 *E_ox_exp=
 ------------------------------------
 Prints:
-print_MOs=yes
+print_MOs=no
 print_Loewdin_population_analysis=no
 ------------------------------------
 Resource Settings:
