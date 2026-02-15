@@ -817,56 +817,58 @@ def smiles_to_xyz_isomers(
             return [], err
         return [(xyz, '')], None
 
-    # Group conformers by fingerprint, pick one representative per group
-    seen: Dict[tuple, int] = {}
+    # Classify each conformer by label, deduplicate.
+    # Known labels (fac/mer/cis/trans): keep one representative per label.
+    # Unknown geometry: keep one representative per raw fingerprint.
+    seen_labels: Dict[str, int] = {}       # label -> conf_id
+    seen_unknown_fps: Dict[tuple, int] = {}  # fingerprint -> conf_id
     for cid in conf_ids:
         try:
             fp = _compute_coordination_fingerprint(mol, cid)
         except Exception:
             continue
-        if fp not in seen:
-            seen[fp] = cid
-        if len(seen) >= max_isomers:
+        label = _classify_isomer_label(fp, mol)
+        if label:
+            if label not in seen_labels:
+                seen_labels[label] = cid
+        else:
+            if fp not in seen_unknown_fps:
+                seen_unknown_fps[fp] = cid
+        if len(seen_labels) + len(seen_unknown_fps) >= max_isomers:
             break
 
-    if not seen:
+    if not seen_labels and not seen_unknown_fps:
         xyz, err = smiles_to_xyz(smiles)
         if err:
             return [], err
         return [(xyz, '')], None
 
-    # Label and convert each representative
-    raw_results: List[Tuple[str, str]] = []
-    unknown_counter = 0
-    for fp, cid in seen.items():
-        label = _classify_isomer_label(fp, mol)
-        if not label:
-            unknown_counter += 1
-            label = f'Isomer {unknown_counter}'
+    # Build results: known labels first; only include unknowns when no
+    # known labels were found (unknowns alongside fac/mer/cis/trans are
+    # geometry artifacts from RDKit's rough embedding).
+    results: List[Tuple[str, str]] = []
+    for label, cid in seen_labels.items():
         try:
             xyz = _mol_to_xyz_conformer(mol, cid)
         except Exception:
             continue
-        raw_results.append((xyz, label))
+        results.append((xyz, label))
 
-    if not raw_results:
+    if not results:
+        unknown_counter = 0
+        for fp, cid in seen_unknown_fps.items():
+            unknown_counter += 1
+            try:
+                xyz = _mol_to_xyz_conformer(mol, cid)
+            except Exception:
+                continue
+            results.append((xyz, f'Isomer {unknown_counter}'))
+
+    if not results:
         xyz, err = smiles_to_xyz(smiles)
         if err:
             return [], err
         return [(xyz, '')], None
-
-    # Number duplicate labels (e.g. "mer" → "mer-1", "mer-2")
-    label_counts: Dict[str, int] = {}
-    for _, label in raw_results:
-        label_counts[label] = label_counts.get(label, 0) + 1
-
-    label_seen: Dict[str, int] = {}
-    results: List[Tuple[str, str]] = []
-    for xyz, label in raw_results:
-        if label_counts[label] > 1:
-            label_seen[label] = label_seen.get(label, 0) + 1
-            label = f'{label}-{label_seen[label]}'
-        results.append((xyz, label))
 
     return results, None
 
