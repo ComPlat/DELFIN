@@ -308,9 +308,12 @@ def create_tab(ctx):
 
     # Content search
     calc_search_input = widgets.Text(
-        placeholder='Search in file...', continuous_update=False,
+        placeholder='Search in file...', continuous_update=True,
         layout=widgets.Layout(width='140px', min_width='140px', height='26px'),
     )
+    calc_search_input.add_class('delfin-nospell')
+    calc_search_input.add_class('calc-search-input')
+    disable_spellcheck(ctx, class_name='calc-search-input')
     calc_search_suggest = widgets.Dropdown(
         options=['(Select)'] + CALC_SEARCH_OPTIONS,
         value='(Select)',
@@ -2521,6 +2524,9 @@ def create_tab(ctx):
             return
         calc_do_search()
 
+    def calc_on_search_submit(_widget):
+        calc_do_search()
+
     def _calc_request_chunk_start(requested, scroll_to=None, align_to_chunk=True):
         path_str = state.get('selected_file_path')
         size = int(state.get('selected_file_size') or 0)
@@ -3541,6 +3547,11 @@ def create_tab(ctx):
     calc_bottom_btn.on_click(calc_go_bottom)
     calc_search_btn.on_click(calc_do_search)
     calc_search_input.observe(calc_on_search_input_change, names='value')
+    if hasattr(calc_search_input, 'on_submit'):
+        try:
+            calc_search_input.on_submit(calc_on_search_submit)
+        except Exception:
+            pass
     calc_search_suggest.observe(calc_on_suggest, names='value')
     calc_chunk_prev_btn.on_click(calc_prev_chunk)
     calc_chunk_next_btn.on_click(calc_next_chunk)
@@ -3572,6 +3583,7 @@ def create_tab(ctx):
     calc_copy_btn.on_click(calc_on_content_copy)
     calc_copy_path_btn.on_click(calc_on_path_copy)
     calc_report_btn.on_click(calc_on_report)
+    disable_spellcheck(ctx, class_name='calc-search-input')
 
     # -- initialise ---------------------------------------------------------
     if ctx.calc_dir.exists():

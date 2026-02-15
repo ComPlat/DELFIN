@@ -99,33 +99,71 @@ def disable_spellcheck(ctx, class_name='delfin-nospell'):
     """Disable spellcheck for textareas with the given CSS class.
 
     Note: ipywidgets attaches custom classes to the widget container, not
-    the underlying <textarea>, so we target ".class textarea".
+    the underlying form controls, so we target ".class textarea" and
+    ".class input".
     """
     script = f"""
     (function() {{
-        if (window.__delfinSpellcheckObserver) return;
-        function disableTextarea(el) {{
-            if (!el || el.tagName !== 'TEXTAREA') return;
+        window.__delfinSpellcheckClasses = window.__delfinSpellcheckClasses || [];
+        if (window.__delfinSpellcheckClasses.indexOf('{class_name}') === -1) {{
+            window.__delfinSpellcheckClasses.push('{class_name}');
+        }}
+        function disableInputLike(el) {{
+            if (!el) return;
+            const tag = (el.tagName || '').toUpperCase();
+            if (tag !== 'TEXTAREA' && tag !== 'INPUT') return;
             el.setAttribute('spellcheck', 'false');
             el.spellcheck = false;
+            el.setAttribute('autocorrect', 'off');
+            el.setAttribute('autocapitalize', 'off');
+            el.setAttribute('autocomplete', 'off');
+            el.setAttribute('data-gramm', 'false');
+            el.setAttribute('data-gramm_editor', 'false');
+            el.setAttribute('data-enable-grammarly', 'false');
+            el.setAttribute('data-lt-active', 'false');
+            el.setAttribute('data-grammarly', 'false');
+            el.setAttribute('data-ms-editor', 'false');
+            if (!el.hasAttribute('lang')) el.setAttribute('lang', '');
         }}
         function scan(root) {{
             if (!root || !root.querySelectorAll) return;
-            root.querySelectorAll('.{class_name} textarea').forEach(disableTextarea);
+            window.__delfinSpellcheckClasses.forEach(function(cls) {{
+                root.querySelectorAll('.' + cls + ' textarea, .' + cls + ' input')
+                    .forEach(disableInputLike);
+            }});
         }}
         scan(document);
+        if (!window.__delfinSpellcheckFocusBound) {{
+            window.__delfinSpellcheckFocusBound = true;
+            document.addEventListener('focusin', function(ev) {{
+                const t = ev && ev.target;
+                disableInputLike(t);
+            }}, true);
+        }}
+        if (window.__delfinSpellcheckObserver && window.__delfinSpellcheckObserver.disconnect) {{
+            try {{ window.__delfinSpellcheckObserver.disconnect(); }} catch (_e) {{}}
+        }}
         const obs = new MutationObserver(function(muts) {{
             muts.forEach(function(m) {{
+                if (m.type === 'attributes') {{
+                    disableInputLike(m.target);
+                    return;
+                }}
                 m.addedNodes && m.addedNodes.forEach(function(node) {{
                     if (!node || node.nodeType !== 1) return;
-                    if (node.matches && node.matches('.{class_name} textarea')) {{
-                        disableTextarea(node);
+                    if (node.matches && (node.matches('textarea') || node.matches('input'))) {{
+                        disableInputLike(node);
                     }}
                     scan(node);
                 }});
             }});
         }});
-        obs.observe(document.documentElement, {{ childList: true, subtree: true }});
+        obs.observe(document.documentElement, {{
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['spellcheck', 'autocorrect', 'autocapitalize', 'autocomplete'],
+        }});
         window.__delfinSpellcheckObserver = obs;
     }})();
     """
