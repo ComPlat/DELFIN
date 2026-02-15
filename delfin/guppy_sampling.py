@@ -12,6 +12,7 @@ Workflow:
    - combined: GUPPY_try.xyz
    - isomer-only: GUPPY_try_isomer.xyz
    - random-only: GUPPY_try_random.xyz
+   - energetically best single structure: best_coordniation.xyz
 
 Comment line format in trajectory:
     run_XX <energy_in_Eh>
@@ -292,6 +293,22 @@ def _write_ranked_trajectory(
                 handle.write(f"{line}\n")
 
 
+def _write_best_structure(output_path: Path, best_result: RunResult) -> None:
+    """Write lowest-energy structure as a single-frame XYZ."""
+    energy, natoms, coords, run_idx, label, source = best_result
+    comment = f"run_{run_idx:02d} {energy:.12f}"
+    if label:
+        comment += f" {label}"
+    elif source:
+        comment += f" {source}"
+
+    with output_path.open("w", encoding="utf-8") as handle:
+        handle.write(f"{natoms}\n")
+        handle.write(f"{comment}\n")
+        for line in coords[:natoms]:
+            handle.write(f"{line}\n")
+
+
 def _derived_output_path(base_output: Path, suffix: str) -> Path:
     """Build sibling trajectory path by suffixing basename before extension."""
     if base_output.suffix:
@@ -515,6 +532,8 @@ def run_sampling(
         return 1
 
     results.sort(key=lambda item: (item[0], item[3]))
+    best_structure_path = output_file.with_name("best_coordniation.xyz")
+    _write_best_structure(best_structure_path, results[0])
     _write_ranked_trajectory(output_file, results)
     isomer_results = [item for item in results if item[5] == "isomer"]
     random_results = [item for item in results if item[5] == "random"]
@@ -527,6 +546,7 @@ def run_sampling(
         _write_ranked_trajectory(random_output, random_results)
         logger.info("Wrote random-only trajectory: %s", random_output)
 
+    logger.info("Wrote best structure: %s", best_structure_path)
     logger.info("Wrote ranked trajectory: %s", output_file)
     logger.info("Successful runs: %d / %d", len(results), total_jobs)
     if failed_runs:
