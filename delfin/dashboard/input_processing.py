@@ -4,6 +4,7 @@ import re
 
 from delfin.smiles_converter import (
     smiles_to_xyz as _delfin_smiles_to_xyz,
+    smiles_to_xyz_isomers as _delfin_smiles_to_xyz_isomers,
     is_smiles_string as _delfin_is_smiles_string,
     contains_metal,
 )
@@ -20,6 +21,21 @@ def smiles_to_xyz(smiles):
     num_atoms = sum(1 for line in xyz_string.splitlines() if line.strip())
     method = 'delfin.smiles_converter'
     return xyz_string, num_atoms, method, None
+
+
+def smiles_to_xyz_isomers(smiles):
+    """Generate distinct coordination isomers for a SMILES string.
+
+    Returns ``([(xyz_string, num_atoms, label), ...], error)``.
+    """
+    results, error = _delfin_smiles_to_xyz_isomers(smiles)
+    if error:
+        return [], error
+    out = []
+    for xyz_string, label in results:
+        num_atoms = sum(1 for line in xyz_string.splitlines() if line.strip())
+        out.append((xyz_string, num_atoms, label))
+    return out, None
 
 
 def is_smiles(text):

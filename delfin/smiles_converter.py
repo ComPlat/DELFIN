@@ -7,9 +7,10 @@ GOAT/xTB before running ORCA calculations.
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from delfin.common.logging import get_logger
 
@@ -563,6 +564,313 @@ def is_smiles_string(content: str) -> bool:
     return (has_smiles_chars or has_aromatic or has_ring_numbers or simple_token) and (has_organic or has_metal)
 
 
+def _prepare_mol_for_embedding(smiles: str):
+    """Parse SMILES and prepare an RDKit Mol for conformer embedding.
+
+    Tries the same strategies as ``smiles_to_xyz`` /
+    ``_try_multiple_strategies`` but stops before embedding so the caller
+    can generate multiple conformers.  The returned Mol has **no**
+    conformers.
+
+    Returns ``None`` if the SMILES cannot be parsed by any strategy.
+    """
+    if not RDKIT_AVAILABLE:
+        return None
+
+    has_metal = contains_metal(smiles)
+    is_metal_n = _is_metal_nitrogen_complex(smiles)
+
+    # Build SMILES variants (same as _try_multiple_strategies)
+    normalized_smiles = _normalize_metal_smiles(smiles)
+    denormalized_smiles = _denormalize_metal_smiles(smiles)
+    smiles_variants = [smiles]
+    if normalized_smiles and normalized_smiles not in smiles_variants:
+        smiles_variants.append(normalized_smiles)
+    if denormalized_smiles and denormalized_smiles not in smiles_variants:
+        smiles_variants.append(denormalized_smiles)
+
+    mol = None
+
+    # Strategy 1: stk (best for metal complexes)
+    if has_metal and STK_AVAILABLE:
+        for smi in smiles_variants:
+            try:
+                bb = stk.BuildingBlock(smi)
+                mol = bb.to_rdkit_mol()
+                if mol is not None:
+                    break
+            except Exception:
+                continue
+
+    # Strategy 2: RDKit partial-sanitize with variants
+    if mol is None:
+        for smi in smiles_variants:
+            mol, _ = mol_from_smiles_rdkit(smi, allow_metal=has_metal)
+            if mol is not None:
+                break
+
+    # Strategy 3: Unsanitized parsing (handles valence errors)
+    if mol is None:
+        for smi in smiles_variants:
+            try:
+                try:
+                    p = Chem.SmilesParserParams()
+                    p.sanitize = False
+                    p.removeHs = False
+                    p.strictParsing = False
+                    mol = Chem.MolFromSmiles(smi, p)
+                except Exception:
+                    mol = Chem.MolFromSmiles(smi, sanitize=False)
+                if mol is not None:
+                    for atom in mol.GetAtoms():
+                        atom.SetNoImplicit(True)
+                    try:
+                        mol.UpdatePropertyCache(strict=False)
+                    except Exception:
+                        pass
+                    break
+            except Exception:
+                continue
+
+    if mol is None:
+        return None
+
+    # Hydrogen handling depends on the complex type.
+    # Metal-nitrogen complexes: match _try_multiple_strategies (no dative
+    # conversion, simple AddHs).
+    # Other metal complexes: dative bond conversion first.
+    if has_metal and not is_metal_n:
+        try:
+            mol = Chem.RemoveHs(mol)
+            mol = _convert_metal_bonds_to_dative(mol)
+            mol.UpdatePropertyCache(strict=False)
+            if _is_simple_organometallic(smiles):
+                mol = Chem.AddHs(mol, addCoords=False)
+                mol = _strip_h_on_metal_halogen(mol)
+                mol = _fix_organometallic_carbon_h(mol)
+            else:
+                mol = Chem.AddHs(mol, addCoords=False)
+        except Exception:
+            try:
+                mol = Chem.AddHs(mol, addCoords=False)
+            except Exception:
+                pass
+    elif has_metal:
+        # Metal-nitrogen: try AddHs but tolerate failure
+        try:
+            mol = Chem.AddHs(mol, addCoords=False)
+        except Exception:
+            pass
+    else:
+        try:
+            mol = Chem.AddHs(mol, addCoords=False)
+        except Exception:
+            pass
+
+    # Remove any conformers that may have been inherited from stk
+    mol.RemoveAllConformers()
+    return mol
+
+
+def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
+    """Compute a hashable fingerprint describing the coordination geometry.
+
+    For each metal centre the function:
+    1. Finds coordinating atoms (neighbours of the metal).
+    2. Groups them by element symbol.
+    3. For each pair of same-element coordinating atoms computes the
+       angle through the metal centre.
+    4. Classifies each angle as *cis* (< 120 deg) or *trans* (>= 120 deg).
+    5. Returns a sorted tuple of (element, sorted angle classes).
+    """
+    conf = mol.GetConformer(conf_id)
+    fp_parts: List[tuple] = []
+
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+
+        metal_idx = atom.GetIdx()
+        metal_pos = conf.GetAtomPosition(metal_idx)
+
+        # Group coordinating atom indices by element symbol
+        groups: Dict[str, List[int]] = {}
+        for nbr in atom.GetNeighbors():
+            sym = nbr.GetSymbol()
+            groups.setdefault(sym, []).append(nbr.GetIdx())
+
+        metal_fp: List[tuple] = []
+        for sym in sorted(groups):
+            indices = groups[sym]
+            if len(indices) < 2:
+                metal_fp.append((sym, ()))
+                continue
+            angle_classes = []
+            for i in range(len(indices)):
+                for j in range(i + 1, len(indices)):
+                    p1 = conf.GetAtomPosition(indices[i])
+                    p2 = conf.GetAtomPosition(indices[j])
+                    v1 = (p1.x - metal_pos.x, p1.y - metal_pos.y, p1.z - metal_pos.z)
+                    v2 = (p2.x - metal_pos.x, p2.y - metal_pos.y, p2.z - metal_pos.z)
+                    dot = v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2]
+                    mag1 = math.sqrt(v1[0]**2 + v1[1]**2 + v1[2]**2)
+                    mag2 = math.sqrt(v2[0]**2 + v2[1]**2 + v2[2]**2)
+                    if mag1 < 1e-8 or mag2 < 1e-8:
+                        angle_classes.append('cis')
+                        continue
+                    cos_angle = max(-1.0, min(1.0, dot / (mag1 * mag2)))
+                    angle_deg = math.degrees(math.acos(cos_angle))
+                    angle_classes.append('cis' if angle_deg < 120 else 'trans')
+            metal_fp.append((sym, tuple(sorted(angle_classes))))
+        fp_parts.append(tuple(sorted(metal_fp)))
+
+    return tuple(sorted(fp_parts))
+
+
+def _classify_isomer_label(fingerprint: tuple, mol) -> str:
+    """Translate a coordination fingerprint to a human-readable label.
+
+    Rules:
+    - 3 identical donors, all cis -> **fac**
+    - 3 identical donors, 2 cis + 1 trans -> **mer**
+    - 2 identical donors, all consistent cis -> **cis**
+    - 2 identical donors, all consistent trans -> **trans**
+    - Otherwise -> empty string (caller assigns "Isomer N")
+    """
+    labels_found: List[str] = []
+    for metal_fp in fingerprint:
+        for sym, angle_classes in metal_fp:
+            if not angle_classes:
+                continue
+            classes = list(angle_classes)
+            n_cis = classes.count('cis')
+            n_trans = classes.count('trans')
+            total = n_cis + n_trans
+            # 3 identical donors -> 3 pairs
+            if total == 3:
+                if n_cis == 3:
+                    return 'fac'
+                if n_cis == 2 and n_trans == 1:
+                    return 'mer'
+            # 2 identical donors -> 1 pair
+            if total == 1:
+                if n_cis == 1:
+                    labels_found.append('cis')
+                elif n_trans == 1:
+                    labels_found.append('trans')
+    # Only return cis/trans if all donor groups agree
+    if labels_found and len(set(labels_found)) == 1:
+        return labels_found[0]
+    return ''
+
+
+def smiles_to_xyz_isomers(
+    smiles: str,
+    num_confs: int = 50,
+    max_isomers: int = 10,
+) -> Tuple[List[Tuple[str, str]], Optional[str]]:
+    """Generate distinct coordination isomers for a SMILES string.
+
+    For non-metal molecules a single geometry is returned (delegates to
+    ``smiles_to_xyz``).  For metal complexes multiple conformers are
+    embedded, their coordination fingerprints are computed, and one
+    representative per unique fingerprint is returned.
+
+    Returns ``([(xyz_string, label), ...], error)``.
+    """
+    if not RDKIT_AVAILABLE:
+        return [], "RDKit is not installed"
+
+    # Non-metal molecules: single geometry
+    if not contains_metal(smiles):
+        xyz, err = smiles_to_xyz(smiles)
+        if err:
+            return [], err
+        return [(xyz, '')], None
+
+    # Prepare molecule for embedding
+    mol = _prepare_mol_for_embedding(smiles)
+    if mol is None:
+        # Fall back to single-conformer conversion
+        xyz, err = smiles_to_xyz(smiles)
+        if err:
+            return [], err
+        return [(xyz, '')], None
+
+    # Embed multiple conformers with random seeds
+    try:
+        params = AllChem.ETKDGv3()
+        params.useRandomCoords = True
+        params.randomSeed = -1  # true random for diversity
+        params.enforceChirality = False
+        conf_ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
+    except Exception as e:
+        logger.warning("Multi-conformer embedding failed: %s", e)
+        xyz, err = smiles_to_xyz(smiles)
+        if err:
+            return [], err
+        return [(xyz, '')], None
+
+    if not conf_ids:
+        xyz, err = smiles_to_xyz(smiles)
+        if err:
+            return [], err
+        return [(xyz, '')], None
+
+    # Group conformers by fingerprint, pick one representative per group
+    seen: Dict[tuple, int] = {}
+    for cid in conf_ids:
+        try:
+            fp = _compute_coordination_fingerprint(mol, cid)
+        except Exception:
+            continue
+        if fp not in seen:
+            seen[fp] = cid
+        if len(seen) >= max_isomers:
+            break
+
+    if not seen:
+        xyz, err = smiles_to_xyz(smiles)
+        if err:
+            return [], err
+        return [(xyz, '')], None
+
+    # Label and convert each representative
+    raw_results: List[Tuple[str, str]] = []
+    unknown_counter = 0
+    for fp, cid in seen.items():
+        label = _classify_isomer_label(fp, mol)
+        if not label:
+            unknown_counter += 1
+            label = f'Isomer {unknown_counter}'
+        try:
+            xyz = _mol_to_xyz_conformer(mol, cid)
+        except Exception:
+            continue
+        raw_results.append((xyz, label))
+
+    if not raw_results:
+        xyz, err = smiles_to_xyz(smiles)
+        if err:
+            return [], err
+        return [(xyz, '')], None
+
+    # Number duplicate labels (e.g. "mer" → "mer-1", "mer-2")
+    label_counts: Dict[str, int] = {}
+    for _, label in raw_results:
+        label_counts[label] = label_counts.get(label, 0) + 1
+
+    label_seen: Dict[str, int] = {}
+    results: List[Tuple[str, str]] = []
+    for xyz, label in raw_results:
+        if label_counts[label] > 1:
+            label_seen[label] = label_seen.get(label, 0) + 1
+            label = f'{label}-{label_seen[label]}'
+        results.append((xyz, label))
+
+    return results, None
+
+
 def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """Convert SMILES string to XYZ coordinates using RDKit.
 
@@ -944,6 +1252,22 @@ def _mol_to_xyz(mol) -> str:
         symbol = atom.GetSymbol()
         lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
 
+    return '\n'.join(lines) + '\n'
+
+
+def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
+    """Convert a specific conformer of an RDKit molecule to DELFIN coordinate format.
+
+    Like ``_mol_to_xyz`` but uses *conf_id* instead of the first conformer.
+    """
+    conf = mol.GetConformer(conf_id)
+    num_atoms = mol.GetNumAtoms()
+    lines = []
+    for i in range(num_atoms):
+        atom = mol.GetAtomWithIdx(i)
+        pos = conf.GetAtomPosition(i)
+        symbol = atom.GetSymbol()
+        lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
     return '\n'.join(lines) + '\n'
 
 

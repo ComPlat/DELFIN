@@ -12,7 +12,8 @@ from delfin.smiles_converter import contains_metal
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck
 from .input_processing import (
-    smiles_to_xyz, is_smiles, clean_input_data, parse_resource_settings,
+    smiles_to_xyz, smiles_to_xyz_isomers, is_smiles, clean_input_data,
+    parse_resource_settings,
 )
 
 
@@ -114,6 +115,22 @@ def create_tab(ctx):
     )
     xyz_copy_status = widgets.HTML(value='', layout=widgets.Layout(margin='0 0 0 6px'))
 
+    isomer_prev_btn = widgets.Button(
+        description='\u25c0', button_style='info',
+        layout=widgets.Layout(width='35px'),
+    )
+    isomer_next_btn = widgets.Button(
+        description='\u25b6', button_style='info',
+        layout=widgets.Layout(width='35px'),
+    )
+    isomer_label = widgets.HTML(
+        value='', layout=widgets.Layout(width='180px'),
+    )
+    isomer_nav_row = widgets.HBox(
+        [isomer_prev_btn, isomer_label, isomer_next_btn],
+        layout=widgets.Layout(gap='4px', align_items='center', display='none'),
+    )
+
     only_goat_label = widgets.Label('Only GOAT:')
     only_goat_charge = widgets.IntText(
         value=0, description='Charge:', style=COMMON_STYLE,
@@ -144,10 +161,17 @@ def create_tab(ctx):
         'converted_xyz_cache': {'smiles': None, 'xyz': None},
         'current_xyz_for_copy': {'content': None},
         'smiles_preview_index': 0,
+        'isomers': [],
+        'isomer_index': 0,
     }
 
     # -- handlers -------------------------------------------------------
     def update_molecule_view(change=None):
+        # User manually edited coords -> clear isomer navigation
+        state['isomers'] = []
+        state['isomer_index'] = 0
+        isomer_nav_row.layout.display = 'none'
+
         with mol_output:
             clear_output()
             raw_input = coords_widget.value.strip()
@@ -198,6 +222,56 @@ def create_tab(ctx):
         ctx.run_js(js_code)
         xyz_copy_status.value = '<span style="color:#388e3c;">Copied to clipboard</span>'
 
+    def _show_isomer_at_index(index):
+        isomers = state['isomers']
+        if not isomers:
+            return
+        index = index % len(isomers)
+        state['isomer_index'] = index
+        xyz_string, num_atoms, label = isomers[index]
+
+        # Update navigation label and visibility
+        if len(isomers) > 1:
+            display_label = label or f'Isomer {index + 1}'
+            isomer_label.value = (
+                f'<span style="font-size:13px;">'
+                f'{display_label} ({index + 1}/{len(isomers)})</span>'
+            )
+            isomer_nav_row.layout.display = ''
+        else:
+            isomer_nav_row.layout.display = 'none'
+
+        # Update 3D preview
+        xyz_data = f'{num_atoms}\nIsomer: {label}\n{xyz_string}'
+        with mol_output:
+            clear_output()
+            view = py3Dmol.view(width=560, height=420)
+            view.addModel(xyz_data, 'xyz')
+            view.setStyle({}, {'stick': {'radius': 0.15}, 'sphere': {'scale': 0.22}})
+            view.zoomTo()
+            view.show()
+
+        # Update copy state
+        state['current_xyz_for_copy'] = {'content': xyz_data}
+        xyz_copy_btn.disabled = False
+        xyz_copy_status.value = '<span style="color:#388e3c;">XYZ ready to copy</span>'
+
+        # Keep converted_xyz_cache in sync for submit
+        state['converted_xyz_cache']['xyz'] = xyz_string
+
+        # Update coords widget without triggering update_molecule_view
+        coords_widget.unobserve(update_molecule_view, names='value')
+        coords_widget.value = f'{num_atoms}\nConverted from SMILES (isomer: {label})\n{xyz_string}'
+        coords_widget.observe(update_molecule_view, names='value')
+
+    def handle_isomer_prev(button):
+        if state['isomers']:
+            _show_isomer_at_index(state['isomer_index'] - 1)
+
+    def handle_isomer_next(button):
+        if state['isomers']:
+            _show_isomer_at_index(state['isomer_index'] + 1)
+
     def handle_convert_smiles(button):
         raw_input = coords_widget.value.strip()
         if not raw_input:
@@ -217,17 +291,20 @@ def create_tab(ctx):
                 print('Input is not a SMILES string.')
             return
 
-        xyz_string, num_atoms, method, error = smiles_to_xyz(cleaned_data)
-        if error:
+        isomers, error = smiles_to_xyz_isomers(cleaned_data)
+        if error or not isomers:
             with mol_output:
                 clear_output()
                 print(f'SMILES: {cleaned_data}')
-                print(f'Fehler: {error}')
+                print(f'Fehler: {error or "No isomers generated"}')
             state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
+            state['isomers'] = []
+            isomer_nav_row.layout.display = 'none'
             return
 
-        state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
-        coords_widget.value = f'{num_atoms}\nConverted from SMILES ({method})\n{xyz_string}'
+        state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
+        state['isomers'] = isomers
+        _show_isomer_at_index(0)
 
     def handle_build_complex(button):
         with output_area:
@@ -489,6 +566,9 @@ def create_tab(ctx):
         only_goat_solvent.value = ''
         co2_species_delta.value = -2
         state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
+        state['isomers'] = []
+        state['isomer_index'] = 0
+        isomer_nav_row.layout.display = 'none'
         with mol_output:
             clear_output()
             print('Please enter XYZ coordinates or SMILES.')
@@ -747,6 +827,8 @@ def create_tab(ctx):
     submit_smiles_list_button.on_click(handle_submit_smiles_list)
     smiles_prev_button.on_click(handle_smiles_prev)
     smiles_next_button.on_click(handle_smiles_next)
+    isomer_prev_btn.on_click(handle_isomer_prev)
+    isomer_next_btn.on_click(handle_isomer_next)
     only_goat_submit_button.on_click(handle_only_goat_submit)
     co2_submit_button.on_click(handle_co2_chain_submit)
     validate_button.on_click(handle_validate_control)
@@ -778,6 +860,7 @@ def create_tab(ctx):
 
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'), mol_output,
+        isomer_nav_row,
         widgets.HBox([xyz_copy_btn, xyz_copy_status],
                      layout=widgets.Layout(gap='6px', align_items='center')),
         spacer_large,
