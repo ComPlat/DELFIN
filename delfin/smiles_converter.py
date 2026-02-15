@@ -734,8 +734,116 @@ def _has_atom_clash(mol, conf_id: int, min_dist: float = 0.7) -> bool:
     return False
 
 
+def _has_bad_geometry(mol, conf_id: int) -> bool:
+    """Return True if the conformer has unrealistic metal-ligand geometry.
+
+    Checks:
+    1. Metal-ligand bond lengths must be within 1.6-3.2 Å
+    2. L-M-L angles must be >=60 deg (avoids collapsed geometries)
+    """
+    conf = mol.GetConformer(conf_id)
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+        metal_pos = conf.GetAtomPosition(atom.GetIdx())
+        neighbors = list(atom.GetNeighbors())
+        if not neighbors:
+            continue
+
+        coord_positions = []
+        for nbr in neighbors:
+            nbr_pos = conf.GetAtomPosition(nbr.GetIdx())
+            dx = nbr_pos.x - metal_pos.x
+            dy = nbr_pos.y - metal_pos.y
+            dz = nbr_pos.z - metal_pos.z
+            dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+            if dist < 1.6 or dist > 3.2:
+                return True
+            coord_positions.append(nbr_pos)
+
+        for i in range(len(coord_positions)):
+            for j in range(i + 1, len(coord_positions)):
+                pa, pb = coord_positions[i], coord_positions[j]
+                v1 = (pa.x - metal_pos.x, pa.y - metal_pos.y, pa.z - metal_pos.z)
+                v2 = (pb.x - metal_pos.x, pb.y - metal_pos.y, pb.z - metal_pos.z)
+                dot = v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2]
+                mag1 = math.sqrt(v1[0]**2 + v1[1]**2 + v1[2]**2)
+                mag2 = math.sqrt(v2[0]**2 + v2[1]**2 + v2[2]**2)
+                if mag1 < 1e-8 or mag2 < 1e-8:
+                    return True
+                cos_a = max(-1.0, min(1.0, dot / (mag1 * mag2)))
+                angle = math.degrees(math.acos(cos_a))
+                if angle < 60:
+                    return True
+    return False
+
+
+def _geometry_quality_score(mol, conf_id: int) -> float:
+    """Score how regular the metal coordination geometry is (lower = better).
+
+    Measures:
+    - Spread of M-L bond lengths (std-dev, ideally 0 for identical ligands)
+    - Deviation of cis angles from ideal 90 deg
+    A perfect octahedron scores near 0.
+    """
+    conf = mol.GetConformer(conf_id)
+    total_penalty = 0.0
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+        metal_pos = conf.GetAtomPosition(atom.GetIdx())
+        neighbors = list(atom.GetNeighbors())
+        if not neighbors:
+            continue
+
+        # Bond length uniformity
+        dists = []
+        coord_positions = []
+        for nbr in neighbors:
+            nbr_pos = conf.GetAtomPosition(nbr.GetIdx())
+            dx = nbr_pos.x - metal_pos.x
+            dy = nbr_pos.y - metal_pos.y
+            dz = nbr_pos.z - metal_pos.z
+            dists.append(math.sqrt(dx*dx + dy*dy + dz*dz))
+            coord_positions.append(nbr_pos)
+
+        if dists:
+            mean_d = sum(dists) / len(dists)
+            std_d = math.sqrt(sum((d - mean_d)**2 for d in dists) / len(dists))
+            total_penalty += std_d * 10  # weight bond-length spread
+
+        # Angle regularity: for octahedral, cis angles should be ~90 deg
+        # and trans angles ~180 deg.  Penalize deviation.
+        angles = []
+        for i in range(len(coord_positions)):
+            for j in range(i + 1, len(coord_positions)):
+                pa, pb = coord_positions[i], coord_positions[j]
+                v1 = (pa.x - metal_pos.x, pa.y - metal_pos.y, pa.z - metal_pos.z)
+                v2 = (pb.x - metal_pos.x, pb.y - metal_pos.y, pb.z - metal_pos.z)
+                dot = v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2]
+                mag1 = math.sqrt(v1[0]**2 + v1[1]**2 + v1[2]**2)
+                mag2 = math.sqrt(v2[0]**2 + v2[1]**2 + v2[2]**2)
+                if mag1 < 1e-8 or mag2 < 1e-8:
+                    continue
+                cos_a = max(-1.0, min(1.0, dot / (mag1 * mag2)))
+                angles.append(math.degrees(math.acos(cos_a)))
+
+        # For each angle, penalize distance from nearest ideal (90 or 180)
+        for a in angles:
+            dev_90 = abs(a - 90)
+            dev_180 = abs(a - 180)
+            total_penalty += min(dev_90, dev_180)
+
+    return total_penalty
+
+
 def _angle_class(pos_metal, pos_a, pos_b) -> str:
-    """Classify the angle A-Metal-B as 'cis' (<120 deg) or 'trans'."""
+    """Classify the angle A-Metal-B as 'cis' (<135 deg) or 'trans'.
+
+    Uses 135 deg as threshold (midpoint between ideal octahedral 90 and
+    180 deg) for robust classification despite geometric noise from
+    distance-geometry embedding.
+    """
     v1 = (pos_a.x - pos_metal.x, pos_a.y - pos_metal.y, pos_a.z - pos_metal.z)
     v2 = (pos_b.x - pos_metal.x, pos_b.y - pos_metal.y, pos_b.z - pos_metal.z)
     dot = v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2]
@@ -745,21 +853,22 @@ def _angle_class(pos_metal, pos_a, pos_b) -> str:
         return 'cis'
     cos_angle = max(-1.0, min(1.0, dot / (mag1 * mag2)))
     angle_deg = math.degrees(math.acos(cos_angle))
-    return 'cis' if angle_deg < 120 else 'trans'
+    return 'cis' if angle_deg < 135 else 'trans'
 
 
 def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
     """Compute a hashable fingerprint describing the coordination geometry.
 
-    Uses **all** pairwise angles between coordinating atoms (not just
-    same-element pairs).  This captures bidentate ligand flips where
-    donor atoms of different elements swap positions.
+    Uses the **trans pairs** (highest L-M-L angles) as the fingerprint.
+    For N-coordinate metals, there are floor(N/2) trans pairs in an ideal
+    geometry.  Identifying which element pairs are trans is the most
+    robust feature that survives distance-geometry noise.
 
     For each metal centre:
-    1. Find all coordinating atoms (neighbours of the metal).
-    2. For every pair, compute the angle through the metal.
-    3. Classify as cis/trans, label with the sorted element pair.
-    4. Return sorted tuple of ((elemA, elemB), angle_class) entries.
+    1. Find all coordinating atoms (neighbours).
+    2. Compute all pairwise L-M-L angles.
+    3. Select the top floor(N/2) pairs as the trans pairs.
+    4. Return sorted tuple of (elemA, elemB) for each trans pair.
     """
     conf = mol.GetConformer(conf_id)
     fp_parts: List[tuple] = []
@@ -770,26 +879,41 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
 
         metal_pos = conf.GetAtomPosition(atom.GetIdx())
 
-        # Collect coordinating atoms as (element, idx) sorted by element
         coord_atoms = sorted(
             ((nbr.GetSymbol(), nbr.GetIdx()) for nbr in atom.GetNeighbors()),
             key=lambda x: (x[0], x[1]),
         )
+        n_coord = len(coord_atoms)
+        if n_coord < 2:
+            continue
 
-        pair_classes: List[tuple] = []
-        for i in range(len(coord_atoms)):
-            for j in range(i + 1, len(coord_atoms)):
+        # Compute all pairwise angles
+        angle_pairs: List[Tuple[float, tuple]] = []
+        for i in range(n_coord):
+            for j in range(i + 1, n_coord):
                 sym_a, idx_a = coord_atoms[i]
                 sym_b, idx_b = coord_atoms[j]
-                cls = _angle_class(
-                    metal_pos,
-                    conf.GetAtomPosition(idx_a),
-                    conf.GetAtomPosition(idx_b),
-                )
+                v1 = (conf.GetAtomPosition(idx_a).x - metal_pos.x,
+                      conf.GetAtomPosition(idx_a).y - metal_pos.y,
+                      conf.GetAtomPosition(idx_a).z - metal_pos.z)
+                v2 = (conf.GetAtomPosition(idx_b).x - metal_pos.x,
+                      conf.GetAtomPosition(idx_b).y - metal_pos.y,
+                      conf.GetAtomPosition(idx_b).z - metal_pos.z)
+                dot = v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2]
+                mag1 = math.sqrt(v1[0]**2 + v1[1]**2 + v1[2]**2)
+                mag2 = math.sqrt(v2[0]**2 + v2[1]**2 + v2[2]**2)
+                if mag1 < 1e-8 or mag2 < 1e-8:
+                    continue
+                cos_a = max(-1.0, min(1.0, dot / (mag1 * mag2)))
+                angle = math.degrees(math.acos(cos_a))
                 pair_key = tuple(sorted((sym_a, sym_b)))
-                pair_classes.append((pair_key, cls))
+                angle_pairs.append((angle, pair_key))
 
-        fp_parts.append(tuple(sorted(pair_classes)))
+        # Select top floor(N/2) as trans pairs
+        n_trans = n_coord // 2
+        angle_pairs.sort(key=lambda x: -x[0])  # descending by angle
+        trans_pairs = tuple(sorted(p[1] for p in angle_pairs[:n_trans]))
+        fp_parts.append(trans_pairs)
 
     return tuple(sorted(fp_parts))
 
@@ -797,40 +921,48 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
 def _classify_isomer_label(fingerprint: tuple, mol) -> str:
     """Translate a coordination fingerprint to a human-readable label.
 
-    Extracts same-element pair data from the full pairwise fingerprint,
-    then applies the rules:
-    - 3 identical donors, all cis -> **fac**
-    - 3 identical donors, 2 cis + 1 trans -> **mer**
-    - 2 identical donors, all consistent cis -> **cis**
-    - 2 identical donors, all consistent trans -> **trans**
-    - Otherwise -> empty string (caller assigns "Isomer N")
-    """
-    labels_found: List[str] = []
-    for metal_fp in fingerprint:
-        # Collect same-element pair angles grouped by element
-        same_elem: Dict[str, List[str]] = {}
-        for pair_key, cls in metal_fp:
-            if pair_key[0] == pair_key[1]:
-                same_elem.setdefault(pair_key[0], []).append(cls)
+    The fingerprint is a tuple of trans-pair tuples for each metal center.
+    E.g. ``((('C', 'N'), ('N', 'N'), ('Cl', 'N')),)`` for an octahedral
+    complex with 3 trans pairs.
 
-        for sym in sorted(same_elem):
-            classes = same_elem[sym]
-            n_cis = classes.count('cis')
-            n_trans = classes.count('trans')
-            total = n_cis + n_trans
-            # 3 identical donors -> 3 pairs
-            if total == 3:
-                if n_cis == 3:
+    Rules (based on same-element trans pairs):
+    - 3 identical donors, 0 same-element trans -> **fac**
+    - 3 identical donors, 1 same-element trans -> **mer**
+    - 2 identical donors, 1 same-element trans -> **trans**
+    - 2 identical donors, 0 same-element trans -> **cis**
+    """
+    # Count coordinating atoms per element from the mol
+    elem_counts: Dict[str, int] = {}
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+        for nbr in atom.GetNeighbors():
+            sym = nbr.GetSymbol()
+            elem_counts[sym] = elem_counts.get(sym, 0) + 1
+
+    labels_found: List[str] = []
+    for metal_trans in fingerprint:
+        # Count same-element trans pairs
+        same_trans: Dict[str, int] = {}
+        for pair in metal_trans:
+            if pair[0] == pair[1]:
+                same_trans[pair[0]] = same_trans.get(pair[0], 0) + 1
+
+        for sym, count in elem_counts.items():
+            n_same = same_trans.get(sym, 0)
+            # 3 identical donors (3 pairs among them)
+            if count == 3:
+                if n_same == 0:
                     return 'fac'
-                if n_cis == 2 and n_trans == 1:
+                if n_same == 1:
                     return 'mer'
-            # 2 identical donors -> 1 pair
-            if total == 1:
-                if n_cis == 1:
-                    labels_found.append('cis')
-                elif n_trans == 1:
+            # 2 identical donors (1 pair)
+            if count == 2:
+                if n_same == 1:
                     labels_found.append('trans')
-    # Only return cis/trans if all donor groups agree
+                elif n_same == 0:
+                    labels_found.append('cis')
+
     if labels_found and len(set(labels_found)) == 1:
         return labels_found[0]
     return ''
@@ -838,7 +970,7 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
 
 def smiles_to_xyz_isomers(
     smiles: str,
-    num_confs: int = 50,
+    num_confs: int = 100,
     max_isomers: int = 10,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
@@ -896,32 +1028,40 @@ def smiles_to_xyz_isomers(
     #   because different cross-element arrangements are real isomers.
     #
     # First pass: scan for fac/mer to decide strategy.
-    # Skip conformers with atom clashes (unrealistic geometries).
-    fp_label_pairs: List[Tuple[tuple, str, int]] = []
+    # Skip conformers with atom clashes or bad metal geometry.
+    # Score remaining conformers by geometry quality.
+    fp_label_pairs: List[Tuple[tuple, str, int, float]] = []
     for cid in conf_ids:
         try:
             if _has_atom_clash(mol, cid):
                 continue
+            if _has_bad_geometry(mol, cid):
+                continue
             fp = _compute_coordination_fingerprint(mol, cid)
+            score = _geometry_quality_score(mol, cid)
         except Exception:
             continue
         label = _classify_isomer_label(fp, mol)
-        fp_label_pairs.append((fp, label, cid))
+        fp_label_pairs.append((fp, label, cid, score))
 
-    has_definitive = any(l in ('fac', 'mer') for l in (lbl for _, lbl, _ in fp_label_pairs))
+    has_definitive = any(l in ('fac', 'mer') for l in (lbl for _, lbl, _, _ in fp_label_pairs))
 
-    # Second pass: deduplicate
-    seen_fps: Dict[tuple, Tuple[str, int]] = {}  # fp -> (label, conf_id)
-    seen_labels: Dict[str, int] = {}              # label -> conf_id
-    for fp, label, cid in fp_label_pairs:
+    # Second pass: deduplicate, keeping the best-scoring conformer per group.
+    # fp -> (label, conf_id, score)
+    seen_fps: Dict[tuple, Tuple[str, int, float]] = {}
+    # label -> (conf_id, score)
+    seen_labels: Dict[str, Tuple[int, float]] = {}
+    for fp, label, cid, score in fp_label_pairs:
         if has_definitive:
             # Dedup by label; discard unknowns
-            if label and label not in seen_labels:
-                seen_labels[label] = cid
+            if not label:
+                continue
+            if label not in seen_labels or score < seen_labels[label][1]:
+                seen_labels[label] = (cid, score)
         else:
             # Dedup by full fingerprint
-            if fp not in seen_fps:
-                seen_fps[fp] = (label, cid)
+            if fp not in seen_fps or score < seen_fps[fp][2]:
+                seen_fps[fp] = (label, cid, score)
         total = len(seen_labels) if has_definitive else len(seen_fps)
         if total >= max_isomers:
             break
@@ -934,7 +1074,7 @@ def smiles_to_xyz_isomers(
             if err:
                 return [], err
             return [(xyz, '')], None
-        for label, cid in seen_labels.items():
+        for label, (cid, _score) in seen_labels.items():
             try:
                 xyz = _mol_to_xyz_conformer(mol, cid)
             except Exception:
@@ -953,7 +1093,7 @@ def smiles_to_xyz_isomers(
             label_counts[lbl] = label_counts.get(lbl, 0) + 1
         label_seen: Dict[str, int] = {}
         unknown_counter = 0
-        for fp, (label, cid) in seen_fps.items():
+        for fp, (label, cid, _score) in seen_fps.items():
             if not label:
                 unknown_counter += 1
                 display = f'Isomer {unknown_counter}'
