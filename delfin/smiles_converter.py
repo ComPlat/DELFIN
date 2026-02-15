@@ -404,7 +404,7 @@ def _fix_organometallic_carbon_h(mol):
     return rwmol.GetMol()
 
 
-def _convert_metal_bonds_to_dative(mol):
+def _convert_metal_bonds_to_dative(mol, only_elements=None):
     """Convert single bonds from NEUTRAL atoms to metals to dative bonds.
 
     RDKit counts metal coordination bonds towards the valence of ligand atoms,
@@ -420,6 +420,8 @@ def _convert_metal_bonds_to_dative(mol):
 
     Args:
         mol: RDKit Mol object (will be modified)
+        only_elements: If set, only convert bonds from these elements
+            (e.g. ``{'S', 'O', 'P'}``).  None means convert all.
 
     Returns:
         RDKit Mol object with dative bonds to metals
@@ -450,6 +452,9 @@ def _convert_metal_bonds_to_dative(mol):
             # Only convert if the ligand atom is NEUTRAL (no formal charge)
             # Charged atoms like [N+] have covalent bonds that should stay covalent
             if ligand_atom.GetFormalCharge() == 0:
+                # If only_elements is set, skip elements not in the set
+                if only_elements and ligand_atom.GetSymbol() not in only_elements:
+                    continue
                 bonds_to_convert.append((
                     bond.GetBeginAtomIdx(),
                     bond.GetEndAtomIdx(),
@@ -672,9 +677,10 @@ def _prepare_mol_for_embedding(smiles: str):
         return None
 
     # Hydrogen handling depends on the complex type.
-    # Metal-nitrogen complexes: match _try_multiple_strategies (no dative
-    # conversion, simple AddHs).
-    # Other metal complexes: dative bond conversion first.
+    # Metal-nitrogen complexes: keep N/C-metal bonds as SINGLE (required
+    # for successful embedding) but convert S/O/P-metal bonds to dative
+    # for correct distance bounds.
+    # Other metal complexes: full dative bond conversion.
     if has_metal and not is_metal_n:
         try:
             mol = Chem.RemoveHs(mol)
@@ -692,7 +698,23 @@ def _prepare_mol_for_embedding(smiles: str):
             except Exception:
                 pass
     elif has_metal:
-        # Metal-nitrogen: try AddHs but tolerate failure
+        # Metal-nitrogen: selective dative conversion for S/O/P only,
+        # then AddHs.  N/C bonds stay SINGLE so embedding works.
+        # Mark converted atoms NoImplicit to prevent spurious H
+        # (dative bond doesn't count toward ligand valence).
+        try:
+            mol = _convert_metal_bonds_to_dative(mol, only_elements={'S', 'O', 'P'})
+            for atom in mol.GetAtoms():
+                if atom.GetSymbol() in ('S', 'O', 'P'):
+                    has_metal_bond = any(
+                        n.GetSymbol() in _METAL_SET for n in atom.GetNeighbors()
+                    )
+                    if has_metal_bond:
+                        atom.SetNoImplicit(True)
+                        atom.SetNumExplicitHs(0)
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
         try:
             mol = Chem.AddHs(mol, addCoords=False)
         except Exception:
@@ -859,16 +881,13 @@ def _angle_class(pos_metal, pos_a, pos_b) -> str:
 def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
     """Compute a hashable fingerprint describing the coordination geometry.
 
-    Uses the **trans pairs** (highest L-M-L angles) as the fingerprint.
-    For N-coordinate metals, there are floor(N/2) trans pairs in an ideal
-    geometry.  Identifying which element pairs are trans is the most
-    robust feature that survives distance-geometry noise.
-
-    For each metal centre:
-    1. Find all coordinating atoms (neighbours).
-    2. Compute all pairwise L-M-L angles.
-    3. Select the top floor(N/2) pairs as the trans pairs.
-    4. Return sorted tuple of (elemA, elemB) for each trans pair.
+    Hybrid approach for robustness:
+    1. **Trans pairs** (top floor(N/2) angles): which element pairs sit
+       across the metal.  Robust against noise for mixed-element donors.
+    2. **Same-element cis/trans pattern**: for each pair of identical-
+       element donors, classify as cis (<135 deg) or trans.  This adds
+       sensitivity for all-same-element complexes (e.g. Fe with 6 N)
+       where trans-pair elements alone cannot distinguish isomers.
     """
     conf = mol.GetConformer(conf_id)
     fp_parts: List[tuple] = []
@@ -888,7 +907,7 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
             continue
 
         # Compute all pairwise angles
-        angle_pairs: List[Tuple[float, tuple]] = []
+        angle_pairs: List[Tuple[float, str, str]] = []  # (angle, symA, symB)
         for i in range(n_coord):
             for j in range(i + 1, n_coord):
                 sym_a, idx_a = coord_atoms[i]
@@ -906,14 +925,28 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
                     continue
                 cos_a = max(-1.0, min(1.0, dot / (mag1 * mag2)))
                 angle = math.degrees(math.acos(cos_a))
-                pair_key = tuple(sorted((sym_a, sym_b)))
-                angle_pairs.append((angle, pair_key))
+                angle_pairs.append((angle, sym_a, sym_b))
 
-        # Select top floor(N/2) as trans pairs
+        # Part 1: trans pair elements (top N/2 angles)
         n_trans = n_coord // 2
-        angle_pairs.sort(key=lambda x: -x[0])  # descending by angle
-        trans_pairs = tuple(sorted(p[1] for p in angle_pairs[:n_trans]))
-        fp_parts.append(trans_pairs)
+        angle_pairs.sort(key=lambda x: -x[0])  # descending
+        trans_pairs = tuple(sorted(
+            tuple(sorted((sa, sb))) for _, sa, sb in angle_pairs[:n_trans]
+        ))
+
+        # Part 2: same-element cis/trans pattern, only useful when all
+        # donors share the same element (e.g. Fe with 6 N).  For mixed-
+        # element complexes the trans pairs already differentiate.
+        unique_elems = set(s for s, _ in coord_atoms)
+        if len(unique_elems) == 1:
+            same_elem_pattern: List[tuple] = []
+            for angle, sa, sb in angle_pairs:
+                cls = 'cis' if angle < 135 else 'trans'
+                same_elem_pattern.append((sa, cls))
+            same_elem_pattern.sort()
+            fp_parts.append((trans_pairs, tuple(same_elem_pattern)))
+        else:
+            fp_parts.append((trans_pairs, ()))
 
     return tuple(sorted(fp_parts))
 
@@ -921,11 +954,8 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
 def _classify_isomer_label(fingerprint: tuple, mol) -> str:
     """Translate a coordination fingerprint to a human-readable label.
 
-    The fingerprint is a tuple of trans-pair tuples for each metal center.
-    E.g. ``((('C', 'N'), ('N', 'N'), ('Cl', 'N')),)`` for an octahedral
-    complex with 3 trans pairs.
-
-    Rules (based on same-element trans pairs):
+    The fingerprint is ``((trans_pairs, same_elem_pattern), ...)`` per
+    metal center.  Counts same-element trans pairs from both sources:
     - 3 identical donors, 0 same-element trans -> **fac**
     - 3 identical donors, 1 same-element trans -> **mer**
     - 2 identical donors, 1 same-element trans -> **trans**
@@ -941,24 +971,31 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
             elem_counts[sym] = elem_counts.get(sym, 0) + 1
 
     labels_found: List[str] = []
-    for metal_trans in fingerprint:
-        # Count same-element trans pairs
+    for metal_fp in fingerprint:
+        trans_pairs, same_elem_pattern = metal_fp
+
+        # Count same-element trans from trans_pairs (for mixed-element)
         same_trans: Dict[str, int] = {}
-        for pair in metal_trans:
+        for pair in trans_pairs:
             if pair[0] == pair[1]:
                 same_trans[pair[0]] = same_trans.get(pair[0], 0) + 1
 
+        # Also count from same_elem_pattern (for all-same-element)
+        for sym, cls in same_elem_pattern:
+            if cls == 'trans':
+                if sym not in same_trans:
+                    same_trans[sym] = 0
+                same_trans[sym] += 1
+
         for sym, count in elem_counts.items():
             n_same = same_trans.get(sym, 0)
-            # 3 identical donors (3 pairs among them)
             if count == 3:
                 if n_same == 0:
                     return 'fac'
-                if n_same == 1:
+                if n_same >= 1:
                     return 'mer'
-            # 2 identical donors (1 pair)
             if count == 2:
-                if n_same == 1:
+                if n_same >= 1:
                     labels_found.append('trans')
                 elif n_same == 0:
                     labels_found.append('cis')
@@ -1113,14 +1150,6 @@ def smiles_to_xyz_isomers(
         if err:
             return [], err
         return [(xyz, '')], None
-
-    # Single isomer: fall back to smiles_to_xyz() which uses a
-    # deterministic seed and produces more realistic geometry.
-    if len(results) == 1:
-        xyz, err = smiles_to_xyz(smiles)
-        if err:
-            return results, None  # keep the multi-conf result as fallback
-        return [(xyz, results[0][1])], None
 
     return results, None
 
