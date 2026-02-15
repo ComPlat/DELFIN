@@ -672,16 +672,32 @@ def _prepare_mol_for_embedding(smiles: str):
     return mol
 
 
+def _angle_class(pos_metal, pos_a, pos_b) -> str:
+    """Classify the angle A-Metal-B as 'cis' (<120 deg) or 'trans'."""
+    v1 = (pos_a.x - pos_metal.x, pos_a.y - pos_metal.y, pos_a.z - pos_metal.z)
+    v2 = (pos_b.x - pos_metal.x, pos_b.y - pos_metal.y, pos_b.z - pos_metal.z)
+    dot = v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2]
+    mag1 = math.sqrt(v1[0]**2 + v1[1]**2 + v1[2]**2)
+    mag2 = math.sqrt(v2[0]**2 + v2[1]**2 + v2[2]**2)
+    if mag1 < 1e-8 or mag2 < 1e-8:
+        return 'cis'
+    cos_angle = max(-1.0, min(1.0, dot / (mag1 * mag2)))
+    angle_deg = math.degrees(math.acos(cos_angle))
+    return 'cis' if angle_deg < 120 else 'trans'
+
+
 def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
     """Compute a hashable fingerprint describing the coordination geometry.
 
-    For each metal centre the function:
-    1. Finds coordinating atoms (neighbours of the metal).
-    2. Groups them by element symbol.
-    3. For each pair of same-element coordinating atoms computes the
-       angle through the metal centre.
-    4. Classifies each angle as *cis* (< 120 deg) or *trans* (>= 120 deg).
-    5. Returns a sorted tuple of (element, sorted angle classes).
+    Uses **all** pairwise angles between coordinating atoms (not just
+    same-element pairs).  This captures bidentate ligand flips where
+    donor atoms of different elements swap positions.
+
+    For each metal centre:
+    1. Find all coordinating atoms (neighbours of the metal).
+    2. For every pair, compute the angle through the metal.
+    3. Classify as cis/trans, label with the sorted element pair.
+    4. Return sorted tuple of ((elemA, elemB), angle_class) entries.
     """
     conf = mol.GetConformer(conf_id)
     fp_parts: List[tuple] = []
@@ -690,39 +706,28 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
         if atom.GetSymbol() not in _METAL_SET:
             continue
 
-        metal_idx = atom.GetIdx()
-        metal_pos = conf.GetAtomPosition(metal_idx)
+        metal_pos = conf.GetAtomPosition(atom.GetIdx())
 
-        # Group coordinating atom indices by element symbol
-        groups: Dict[str, List[int]] = {}
-        for nbr in atom.GetNeighbors():
-            sym = nbr.GetSymbol()
-            groups.setdefault(sym, []).append(nbr.GetIdx())
+        # Collect coordinating atoms as (element, idx) sorted by element
+        coord_atoms = sorted(
+            ((nbr.GetSymbol(), nbr.GetIdx()) for nbr in atom.GetNeighbors()),
+            key=lambda x: (x[0], x[1]),
+        )
 
-        metal_fp: List[tuple] = []
-        for sym in sorted(groups):
-            indices = groups[sym]
-            if len(indices) < 2:
-                metal_fp.append((sym, ()))
-                continue
-            angle_classes = []
-            for i in range(len(indices)):
-                for j in range(i + 1, len(indices)):
-                    p1 = conf.GetAtomPosition(indices[i])
-                    p2 = conf.GetAtomPosition(indices[j])
-                    v1 = (p1.x - metal_pos.x, p1.y - metal_pos.y, p1.z - metal_pos.z)
-                    v2 = (p2.x - metal_pos.x, p2.y - metal_pos.y, p2.z - metal_pos.z)
-                    dot = v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2]
-                    mag1 = math.sqrt(v1[0]**2 + v1[1]**2 + v1[2]**2)
-                    mag2 = math.sqrt(v2[0]**2 + v2[1]**2 + v2[2]**2)
-                    if mag1 < 1e-8 or mag2 < 1e-8:
-                        angle_classes.append('cis')
-                        continue
-                    cos_angle = max(-1.0, min(1.0, dot / (mag1 * mag2)))
-                    angle_deg = math.degrees(math.acos(cos_angle))
-                    angle_classes.append('cis' if angle_deg < 120 else 'trans')
-            metal_fp.append((sym, tuple(sorted(angle_classes))))
-        fp_parts.append(tuple(sorted(metal_fp)))
+        pair_classes: List[tuple] = []
+        for i in range(len(coord_atoms)):
+            for j in range(i + 1, len(coord_atoms)):
+                sym_a, idx_a = coord_atoms[i]
+                sym_b, idx_b = coord_atoms[j]
+                cls = _angle_class(
+                    metal_pos,
+                    conf.GetAtomPosition(idx_a),
+                    conf.GetAtomPosition(idx_b),
+                )
+                pair_key = tuple(sorted((sym_a, sym_b)))
+                pair_classes.append((pair_key, cls))
+
+        fp_parts.append(tuple(sorted(pair_classes)))
 
     return tuple(sorted(fp_parts))
 
@@ -730,7 +735,8 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
 def _classify_isomer_label(fingerprint: tuple, mol) -> str:
     """Translate a coordination fingerprint to a human-readable label.
 
-    Rules:
+    Extracts same-element pair data from the full pairwise fingerprint,
+    then applies the rules:
     - 3 identical donors, all cis -> **fac**
     - 3 identical donors, 2 cis + 1 trans -> **mer**
     - 2 identical donors, all consistent cis -> **cis**
@@ -739,10 +745,14 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
     """
     labels_found: List[str] = []
     for metal_fp in fingerprint:
-        for sym, angle_classes in metal_fp:
-            if not angle_classes:
-                continue
-            classes = list(angle_classes)
+        # Collect same-element pair angles grouped by element
+        same_elem: Dict[str, List[str]] = {}
+        for pair_key, cls in metal_fp:
+            if pair_key[0] == pair_key[1]:
+                same_elem.setdefault(pair_key[0], []).append(cls)
+
+        for sym in sorted(same_elem):
+            classes = same_elem[sym]
             n_cis = classes.count('cis')
             n_trans = classes.count('trans')
             total = n_cis + n_trans
