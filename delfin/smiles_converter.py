@@ -708,6 +708,32 @@ def _prepare_mol_for_embedding(smiles: str):
     return mol
 
 
+def _has_atom_clash(mol, conf_id: int, min_dist: float = 0.7) -> bool:
+    """Return True if any pair of non-bonded atoms is closer than *min_dist* Å.
+
+    Checks only heavy atoms (non-H) for efficiency.  Bonded atom pairs
+    are excluded since their distance is governed by bond length.
+    """
+    conf = mol.GetConformer(conf_id)
+    heavy = [a.GetIdx() for a in mol.GetAtoms() if a.GetAtomicNum() > 1]
+    bonded = set()
+    for bond in mol.GetBonds():
+        bonded.add((bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()))
+        bonded.add((bond.GetEndAtomIdx(), bond.GetBeginAtomIdx()))
+    for i in range(len(heavy)):
+        pi = conf.GetAtomPosition(heavy[i])
+        for j in range(i + 1, len(heavy)):
+            if (heavy[i], heavy[j]) in bonded:
+                continue
+            pj = conf.GetAtomPosition(heavy[j])
+            dx = pi.x - pj.x
+            dy = pi.y - pj.y
+            dz = pi.z - pj.z
+            if dx*dx + dy*dy + dz*dz < min_dist * min_dist:
+                return True
+    return False
+
+
 def _angle_class(pos_metal, pos_a, pos_b) -> str:
     """Classify the angle A-Metal-B as 'cis' (<120 deg) or 'trans'."""
     v1 = (pos_a.x - pos_metal.x, pos_a.y - pos_metal.y, pos_a.z - pos_metal.z)
@@ -870,9 +896,12 @@ def smiles_to_xyz_isomers(
     #   because different cross-element arrangements are real isomers.
     #
     # First pass: scan for fac/mer to decide strategy.
+    # Skip conformers with atom clashes (unrealistic geometries).
     fp_label_pairs: List[Tuple[tuple, str, int]] = []
     for cid in conf_ids:
         try:
+            if _has_atom_clash(mol, cid):
+                continue
             fp = _compute_coordination_fingerprint(mol, cid)
         except Exception:
             continue
