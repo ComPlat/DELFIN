@@ -863,55 +863,81 @@ def smiles_to_xyz_isomers(
             return [], err
         return [(xyz, '')], None
 
-    # Classify each conformer by label, deduplicate.
-    # Known labels (fac/mer/cis/trans): keep one representative per label.
-    # Unknown geometry: keep one representative per raw fingerprint.
-    seen_labels: Dict[str, int] = {}       # label -> conf_id
-    seen_unknown_fps: Dict[tuple, int] = {}  # fingerprint -> conf_id
+    # Classify each conformer.  Two dedup strategies:
+    # - fac/mer (definitive for tris-identical-donor): dedup by label,
+    #   discard unknowns (geometry artifacts).
+    # - cis/trans (partial for bis-donor): dedup by FULL fingerprint
+    #   because different cross-element arrangements are real isomers.
+    #
+    # First pass: scan for fac/mer to decide strategy.
+    fp_label_pairs: List[Tuple[tuple, str, int]] = []
     for cid in conf_ids:
         try:
             fp = _compute_coordination_fingerprint(mol, cid)
         except Exception:
             continue
         label = _classify_isomer_label(fp, mol)
-        if label:
-            if label not in seen_labels:
+        fp_label_pairs.append((fp, label, cid))
+
+    has_definitive = any(l in ('fac', 'mer') for l in (lbl for _, lbl, _ in fp_label_pairs))
+
+    # Second pass: deduplicate
+    seen_fps: Dict[tuple, Tuple[str, int]] = {}  # fp -> (label, conf_id)
+    seen_labels: Dict[str, int] = {}              # label -> conf_id
+    for fp, label, cid in fp_label_pairs:
+        if has_definitive:
+            # Dedup by label; discard unknowns
+            if label and label not in seen_labels:
                 seen_labels[label] = cid
         else:
-            if fp not in seen_unknown_fps:
-                seen_unknown_fps[fp] = cid
-        if len(seen_labels) + len(seen_unknown_fps) >= max_isomers:
+            # Dedup by full fingerprint
+            if fp not in seen_fps:
+                seen_fps[fp] = (label, cid)
+        total = len(seen_labels) if has_definitive else len(seen_fps)
+        if total >= max_isomers:
             break
 
-    if not seen_labels and not seen_unknown_fps:
-        xyz, err = smiles_to_xyz(smiles)
-        if err:
-            return [], err
-        return [(xyz, '')], None
-
-    # Build results: known labels first, then unknowns.
-    # Discard unknowns only when fac/mer labels are present (tris-bidentate
-    # complexes where unknowns are geometry artifacts).  For cis/trans
-    # labels the unknowns represent genuine cross-element diversity.
-    has_definitive = any(l in ('fac', 'mer') for l in seen_labels)
-
+    # Build results
     results: List[Tuple[str, str]] = []
-    for label, cid in seen_labels.items():
-        try:
-            xyz = _mol_to_xyz_conformer(mol, cid)
-        except Exception:
-            continue
-        results.append((xyz, label))
-
-    if not has_definitive:
-        unknown_counter = 0
-        for fp, cid in seen_unknown_fps.items():
-            unknown_counter += 1
+    if has_definitive:
+        if not seen_labels:
+            xyz, err = smiles_to_xyz(smiles)
+            if err:
+                return [], err
+            return [(xyz, '')], None
+        for label, cid in seen_labels.items():
             try:
                 xyz = _mol_to_xyz_conformer(mol, cid)
             except Exception:
                 continue
-            results.append((xyz, f'Isomer {unknown_counter}'))
+            results.append((xyz, label))
+    else:
+        if not seen_fps:
+            xyz, err = smiles_to_xyz(smiles)
+            if err:
+                return [], err
+            return [(xyz, '')], None
+        # Number duplicate labels (e.g. multiple "cis" with different fps)
+        label_counts: Dict[str, int] = {}
+        for fp in seen_fps:
+            lbl = seen_fps[fp][0] or ''
+            label_counts[lbl] = label_counts.get(lbl, 0) + 1
+        label_seen: Dict[str, int] = {}
+        unknown_counter = 0
+        for fp, (label, cid) in seen_fps.items():
+            if not label:
+                unknown_counter += 1
+                display = f'Isomer {unknown_counter}'
+            elif label_counts[label] > 1:
+                label_seen[label] = label_seen.get(label, 0) + 1
+                display = f'{label}-{label_seen[label]}'
+            else:
+                display = label
+            try:
+                xyz = _mol_to_xyz_conformer(mol, cid)
+            except Exception:
+                continue
+            results.append((xyz, display))
 
     if not results:
         xyz, err = smiles_to_xyz(smiles)
