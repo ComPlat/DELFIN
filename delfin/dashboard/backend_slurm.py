@@ -97,6 +97,8 @@ class SlurmJobBackend(JobBackend):
             env_vars += f',DELFIN_CO2_SPECIES_DELTA={co2_species_delta}'
 
         pal_used, mem_used = self._resolve_resources(job_dir, pal=pal, maxcore=maxcore)
+        maxcore_used = max(1, int(mem_used) // max(1, int(pal_used)))
+        env_vars += f',DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
             job_name, self.submit_templates_dir / 'submit_delfin.sh',

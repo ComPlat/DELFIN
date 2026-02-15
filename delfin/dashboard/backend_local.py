@@ -117,6 +117,10 @@ class LocalJobBackend(JobBackend):
             env['BUILD_MULTIPLICITY'] = str(job['build_mult'])
         if job.get('co2_species_delta') is not None:
             env['DELFIN_CO2_SPECIES_DELTA'] = str(job['co2_species_delta'])
+        if job.get('pal') is not None:
+            env['DELFIN_PAL'] = str(job['pal'])
+        if job.get('maxcore') is not None:
+            env['DELFIN_MAXCORE'] = str(job['maxcore'])
 
         try:
             log_file = Path(job['job_dir']) / f'delfin_{job["job_id"]}.out'

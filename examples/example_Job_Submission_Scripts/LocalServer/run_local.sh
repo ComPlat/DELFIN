@@ -15,7 +15,9 @@
 #   BUILD_MULTIPLICITY   : Spin multiplicity for build mode (default: 1)
 #   GUPPY_RUNS           : Number of GUPPY sampling runs (default: 20)
 #   GUPPY_CHARGE         : Optional charge override for GUPPY (default: auto from SMILES)
-#   GUPPY_PAL            : PAL for GUPPY XTB OPT runs (default: local nproc)
+#   GUPPY_PAL            : Total PAL budget for GUPPY (default: DELFIN_PAL or local nproc)
+#   GUPPY_MAXCORE        : Maxcore per core in MB for GUPPY scheduler (default: DELFIN_MAXCORE or 6000)
+#   GUPPY_PARALLEL_JOBS  : Number of parallel GUPPY runs sharing resources (default: 4)
 #   DELFIN_CO2_SPECIES_DELTA : Redox species delta for delfin-co2-chain mode (default: 0)
 #
 # ========================================================================
@@ -194,7 +196,9 @@ case "$MODE" in
     guppy)
         GUPPY_RUNS="${GUPPY_RUNS:-20}"
         GUPPY_CHARGE="${GUPPY_CHARGE:-}"
-        GUPPY_PAL="${GUPPY_PAL:-$(nproc)}"
+        GUPPY_PAL="${GUPPY_PAL:-${DELFIN_PAL:-$(nproc)}}"
+        GUPPY_MAXCORE="${GUPPY_MAXCORE:-${DELFIN_MAXCORE:-6000}}"
+        GUPPY_PARALLEL_JOBS="${GUPPY_PARALLEL_JOBS:-4}"
         echo "Starting GUPPY SMILES sampling..."
         echo "  Runs:         $GUPPY_RUNS"
         if [ -n "$GUPPY_CHARGE" ]; then
@@ -203,12 +207,16 @@ case "$MODE" in
             echo "  Charge:       auto (derived from SMILES)"
         fi
         echo "  Multiplicity: 1 (fixed closed-shell)"
-        echo "  PAL:          $GUPPY_PAL"
+        echo "  PAL total:    $GUPPY_PAL"
+        echo "  Maxcore:      $GUPPY_MAXCORE"
+        echo "  Parallel:     $GUPPY_PARALLEL_JOBS runs"
 
         GUPPY_CMD=(
             "$DELFIN_PYTHON" -m delfin.guppy_sampling input.txt
             --runs "$GUPPY_RUNS" \
             --pal "$GUPPY_PAL" \
+            --maxcore "$GUPPY_MAXCORE" \
+            --parallel-jobs "$GUPPY_PARALLEL_JOBS" \
             --output GUPPY_try.xyz
         )
         if [ -n "$GUPPY_CHARGE" ]; then
