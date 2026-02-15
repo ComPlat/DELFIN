@@ -889,9 +889,12 @@ def smiles_to_xyz_isomers(
             return [], err
         return [(xyz, '')], None
 
-    # Build results: known labels first; only include unknowns when no
-    # known labels were found (unknowns alongside fac/mer/cis/trans are
-    # geometry artifacts from RDKit's rough embedding).
+    # Build results: known labels first, then unknowns.
+    # Discard unknowns only when fac/mer labels are present (tris-bidentate
+    # complexes where unknowns are geometry artifacts).  For cis/trans
+    # labels the unknowns represent genuine cross-element diversity.
+    has_definitive = any(l in ('fac', 'mer') for l in seen_labels)
+
     results: List[Tuple[str, str]] = []
     for label, cid in seen_labels.items():
         try:
@@ -900,7 +903,7 @@ def smiles_to_xyz_isomers(
             continue
         results.append((xyz, label))
 
-    if not results:
+    if not has_definitive:
         unknown_counter = 0
         for fp, cid in seen_unknown_fps.items():
             unknown_counter += 1
