@@ -805,8 +805,10 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
 
     Measures:
     - Spread of M-L bond lengths (std-dev, ideally 0 for identical ligands)
-    - Deviation of cis angles from ideal 90 deg
-    A perfect octahedron scores near 0.
+    - Angular regularity:
+      - 4-coordinate centers: best of tetrahedral (109.5 deg) OR
+        square-planar (90/180 deg) targets
+      - Other coordinations: deviation from nearest ideal (90/180 deg)
     """
     conf = mol.GetConformer(conf_id)
     total_penalty = 0.0
@@ -834,8 +836,8 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
             std_d = math.sqrt(sum((d - mean_d)**2 for d in dists) / len(dists))
             total_penalty += std_d * 10  # weight bond-length spread
 
-        # Angle regularity: for octahedral, cis angles should be ~90 deg
-        # and trans angles ~180 deg.  Penalize deviation.
+        # Angle regularity. For 4-coordinate centers, allow both tetrahedral
+        # and square-planar patterns and keep the better one.
         angles = []
         for i in range(len(coord_positions)):
             for j in range(i + 1, len(coord_positions)):
@@ -850,11 +852,22 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                 cos_a = max(-1.0, min(1.0, dot / (mag1 * mag2)))
                 angles.append(math.degrees(math.acos(cos_a)))
 
-        # For each angle, penalize distance from nearest ideal (90 or 180)
-        for a in angles:
-            dev_90 = abs(a - 90)
-            dev_180 = abs(a - 180)
-            total_penalty += min(dev_90, dev_180)
+        if not angles:
+            continue
+
+        if len(neighbors) == 4 and len(angles) == 6:
+            tetra_pen = sum(abs(a - 109.5) for a in angles)
+            square_targets = [90.0, 90.0, 90.0, 90.0, 180.0, 180.0]
+            square_pen = sum(
+                abs(a - t) for a, t in zip(sorted(angles), square_targets)
+            )
+            total_penalty += min(tetra_pen, square_pen)
+        else:
+            # For each angle, penalize distance from nearest ideal (90 or 180)
+            for a in angles:
+                dev_90 = abs(a - 90)
+                dev_180 = abs(a - 180)
+                total_penalty += min(dev_90, dev_180)
 
     return total_penalty
 
@@ -907,7 +920,8 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
             continue
 
         # Compute all pairwise angles
-        angle_pairs: List[Tuple[float, str, str]] = []  # (angle, symA, symB)
+        # entries: (angle, symA, symB, idxA, idxB)
+        angle_pairs: List[Tuple[float, str, str, int, int]] = []
         for i in range(n_coord):
             for j in range(i + 1, n_coord):
                 sym_a, idx_a = coord_atoms[i]
@@ -925,13 +939,55 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
                     continue
                 cos_a = max(-1.0, min(1.0, dot / (mag1 * mag2)))
                 angle = math.degrees(math.acos(cos_a))
-                angle_pairs.append((angle, sym_a, sym_b))
+                angle_pairs.append((angle, sym_a, sym_b, idx_a, idx_b))
 
-        # Part 1: trans pair elements (top N/2 angles)
+        # Part 1: trans pair elements via disjoint pairing that maximizes
+        # total trans-angle sum (more robust than taking top N/2 raw angles).
         n_trans = n_coord // 2
-        angle_pairs.sort(key=lambda x: -x[0])  # descending
+        trans_pairs_raw: List[Tuple[str, str]] = []
+        if n_coord % 2 == 0 and n_coord <= 8 and angle_pairs:
+            idx_by_symbol = {idx: sym for sym, idx in coord_atoms}
+            angle_map: Dict[Tuple[int, int], float] = {}
+            for angle, _sa, _sb, ia, ib in angle_pairs:
+                key = (ia, ib) if ia < ib else (ib, ia)
+                angle_map[key] = angle
+
+            donor_indices = tuple(sorted(idx_by_symbol.keys()))
+            memo: Dict[Tuple[int, ...], Tuple[float, List[Tuple[int, int]]]] = {}
+
+            def _best_pairing(rem: Tuple[int, ...]) -> Tuple[float, List[Tuple[int, int]]]:
+                if len(rem) < 2:
+                    return 0.0, []
+                if rem in memo:
+                    return memo[rem]
+
+                first = rem[0]
+                best_score = -1.0
+                best_pairs: List[Tuple[int, int]] = []
+                for k in range(1, len(rem)):
+                    second = rem[k]
+                    key = (first, second) if first < second else (second, first)
+                    angle_val = angle_map.get(key, 0.0)
+                    rest = rem[1:k] + rem[k + 1:]
+                    sub_score, sub_pairs = _best_pairing(rest)
+                    score = angle_val + sub_score
+                    if score > best_score:
+                        best_score = score
+                        best_pairs = [(first, second)] + sub_pairs
+
+                memo[rem] = (best_score, best_pairs)
+                return memo[rem]
+
+            _score, pair_idx = _best_pairing(donor_indices)
+            for ia, ib in pair_idx[:n_trans]:
+                trans_pairs_raw.append((idx_by_symbol[ia], idx_by_symbol[ib]))
+        else:
+            angle_pairs.sort(key=lambda x: -x[0])  # descending
+            for _angle, sa, sb, _ia, _ib in angle_pairs[:n_trans]:
+                trans_pairs_raw.append((sa, sb))
+
         trans_pairs = tuple(sorted(
-            tuple(sorted((sa, sb))) for _, sa, sb in angle_pairs[:n_trans]
+            tuple(sorted((sa, sb))) for sa, sb in trans_pairs_raw
         ))
 
         # Part 2: same-element cis/trans pattern, only useful when all
@@ -940,7 +996,7 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
         unique_elems = set(s for s, _ in coord_atoms)
         if len(unique_elems) == 1:
             same_elem_pattern: List[tuple] = []
-            for angle, sa, sb in angle_pairs:
+            for angle, sa, sb, _ia, _ib in angle_pairs:
                 cls = 'cis' if angle < 135 else 'trans'
                 same_elem_pattern.append((sa, cls))
             same_elem_pattern.sort()
@@ -970,6 +1026,14 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
             sym = nbr.GetSymbol()
             elem_counts[sym] = elem_counts.get(sym, 0) + 1
 
+    # Only use fac/mer or cis/trans labels for classical compositions where
+    # those labels are unambiguous:
+    # - fac/mer: M(A)3(B)3
+    # - cis/trans: M(A)2(B)2
+    count_signature = sorted(elem_counts.values())
+    allow_fac_mer = count_signature == [3, 3]
+    allow_cis_trans = count_signature == [2, 2]
+
     labels_found: List[str] = []
     for metal_fp in fingerprint:
         trans_pairs, same_elem_pattern = metal_fp
@@ -989,12 +1053,12 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
 
         for sym, count in elem_counts.items():
             n_same = same_trans.get(sym, 0)
-            if count == 3:
+            if allow_fac_mer and count == 3:
                 if n_same == 0:
                     return 'fac'
                 if n_same >= 1:
                     return 'mer'
-            if count == 2:
+            if allow_cis_trans and count == 2:
                 if n_same >= 1:
                     labels_found.append('trans')
                 elif n_same == 0:
@@ -1038,13 +1102,27 @@ def smiles_to_xyz_isomers(
             return [], err
         return [(xyz, '')], None
 
-    # Embed multiple conformers with random seeds
+    # Embed multiple conformers with deterministic seed schedule.
+    # This improves reproducibility while still sampling diverse geometries.
     try:
-        params = AllChem.ETKDGv3()
-        params.useRandomCoords = True
-        params.randomSeed = -1  # true random for diversity
-        params.enforceChirality = False
-        conf_ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
+        # Fixed seed keeps results reproducible across runs.
+        # Seed 31 gives robust diversity for many transition-metal cases.
+        seeds = [31]
+        n_rounds = len(seeds)
+        per_round = max(1, int(math.ceil(num_confs / n_rounds)))
+        conf_ids = []
+        for seed in seeds:
+            params = AllChem.ETKDGv3()
+            params.useRandomCoords = True
+            params.randomSeed = seed
+            params.enforceChirality = False
+            try:
+                params.clearConfs = False
+            except Exception:
+                pass
+            conf_ids.extend(
+                list(AllChem.EmbedMultipleConfs(mol, numConfs=per_round, params=params))
+            )
     except Exception as e:
         logger.warning("Multi-conformer embedding failed: %s", e)
         xyz, err = smiles_to_xyz(smiles)
@@ -1058,15 +1136,9 @@ def smiles_to_xyz_isomers(
             return [], err
         return [(xyz, '')], None
 
-    # Classify each conformer.  Two dedup strategies:
-    # - fac/mer (definitive for tris-identical-donor): dedup by label,
-    #   discard unknowns (geometry artifacts).
-    # - cis/trans (partial for bis-donor): dedup by FULL fingerprint
-    #   because different cross-element arrangements are real isomers.
-    #
-    # First pass: scan for fac/mer to decide strategy.
-    # Skip conformers with atom clashes or bad metal geometry.
-    # Score remaining conformers by geometry quality.
+    # Classify each conformer, skip obvious artifacts, then deduplicate by
+    # full coordination fingerprint. This keeps distinct coordination
+    # arrangements even when they share a coarse textual label.
     fp_label_pairs: List[Tuple[tuple, str, int, float]] = []
     for cid in conf_ids:
         try:
@@ -1081,69 +1153,44 @@ def smiles_to_xyz_isomers(
         label = _classify_isomer_label(fp, mol)
         fp_label_pairs.append((fp, label, cid, score))
 
-    has_definitive = any(l in ('fac', 'mer') for l in (lbl for _, lbl, _, _ in fp_label_pairs))
-
     # Second pass: deduplicate, keeping the best-scoring conformer per group.
     # fp -> (label, conf_id, score)
     seen_fps: Dict[tuple, Tuple[str, int, float]] = {}
-    # label -> (conf_id, score)
-    seen_labels: Dict[str, Tuple[int, float]] = {}
     for fp, label, cid, score in fp_label_pairs:
-        if has_definitive:
-            # Dedup by label; discard unknowns
-            if not label:
-                continue
-            if label not in seen_labels or score < seen_labels[label][1]:
-                seen_labels[label] = (cid, score)
-        else:
-            # Dedup by full fingerprint
-            if fp not in seen_fps or score < seen_fps[fp][2]:
-                seen_fps[fp] = (label, cid, score)
-        total = len(seen_labels) if has_definitive else len(seen_fps)
-        if total >= max_isomers:
+        if fp not in seen_fps or score < seen_fps[fp][2]:
+            seen_fps[fp] = (label, cid, score)
+        if len(seen_fps) >= max_isomers:
             break
 
     # Build results
     results: List[Tuple[str, str]] = []
-    if has_definitive:
-        if not seen_labels:
-            xyz, err = smiles_to_xyz(smiles)
-            if err:
-                return [], err
-            return [(xyz, '')], None
-        for label, (cid, _score) in seen_labels.items():
-            try:
-                xyz = _mol_to_xyz_conformer(mol, cid)
-            except Exception:
-                continue
-            results.append((xyz, label))
-    else:
-        if not seen_fps:
-            xyz, err = smiles_to_xyz(smiles)
-            if err:
-                return [], err
-            return [(xyz, '')], None
-        # Number duplicate labels (e.g. multiple "cis" with different fps)
-        label_counts: Dict[str, int] = {}
-        for fp in seen_fps:
-            lbl = seen_fps[fp][0] or ''
-            label_counts[lbl] = label_counts.get(lbl, 0) + 1
-        label_seen: Dict[str, int] = {}
-        unknown_counter = 0
-        for fp, (label, cid, _score) in seen_fps.items():
-            if not label:
-                unknown_counter += 1
-                display = f'Isomer {unknown_counter}'
-            elif label_counts[label] > 1:
-                label_seen[label] = label_seen.get(label, 0) + 1
-                display = f'{label}-{label_seen[label]}'
-            else:
-                display = label
-            try:
-                xyz = _mol_to_xyz_conformer(mol, cid)
-            except Exception:
-                continue
-            results.append((xyz, display))
+    if not seen_fps:
+        xyz, err = smiles_to_xyz(smiles)
+        if err:
+            return [], err
+        return [(xyz, '')], None
+
+    # Number duplicate labels (e.g. multiple "mer" with different fingerprints)
+    label_counts: Dict[str, int] = {}
+    for fp in seen_fps:
+        lbl = seen_fps[fp][0] or ''
+        label_counts[lbl] = label_counts.get(lbl, 0) + 1
+    label_seen: Dict[str, int] = {}
+    unknown_counter = 0
+    for fp, (label, cid, _score) in seen_fps.items():
+        if not label:
+            unknown_counter += 1
+            display = f'Isomer {unknown_counter}'
+        elif label_counts[label] > 1:
+            label_seen[label] = label_seen.get(label, 0) + 1
+            display = f'{label}-{label_seen[label]}'
+        else:
+            display = label
+        try:
+            xyz = _mol_to_xyz_conformer(mol, cid)
+        except Exception:
+            continue
+        results.append((xyz, display))
 
     if not results:
         xyz, err = smiles_to_xyz(smiles)
@@ -1283,17 +1330,53 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                         return legacy_xyz, None
                 pass
 
-        # Generate 3D coordinates using ETKDG method
-        # ETKDGv3 is the latest version with improved accuracy
-        params = AllChem.ETKDGv3()
-        params.randomSeed = 42  # For reproducibility
+        # Generate 3D coordinates using ETKDG method.
+        # For metal complexes, sample multiple conformers and pick the best
+        # geometry candidate (helps for 4-coordinate tetra/square-planar cases).
+        result = -1
+        if has_metal:
+            try:
+                params_multi = AllChem.ETKDGv3()
+                params_multi.randomSeed = 42
+                params_multi.useRandomCoords = True
+                params_multi.enforceChirality = False
+                conf_ids = list(AllChem.EmbedMultipleConfs(mol, numConfs=40, params=params_multi))
+            except Exception:
+                conf_ids = []
 
-        result = AllChem.EmbedMolecule(mol, params)
+            if conf_ids:
+                best_conf = None
+                best_score = float("inf")
+                for cid in conf_ids:
+                    if _has_atom_clash(mol, cid):
+                        continue
+                    if _has_bad_geometry(mol, cid):
+                        continue
+                    score = _geometry_quality_score(mol, cid)
+                    if score < best_score:
+                        best_score = score
+                        best_conf = cid
+
+                if best_conf is None:
+                    best_conf = conf_ids[0]
+
+                # Keep only the selected conformer so downstream conversion
+                # can continue using the default conformer accessor.
+                selected = Chem.Conformer(mol.GetConformer(int(best_conf)))
+                mol.RemoveAllConformers()
+                mol.AddConformer(selected, assignId=True)
+                result = 0
 
         if result != 0:
-            # Try with random coordinates if ETKDG fails
-            logger.warning("ETKDG embedding failed, trying random coordinates")
-            result = AllChem.EmbedMolecule(mol, AllChem.ETKDG())
+            params = AllChem.ETKDGv3()
+            params.randomSeed = 42  # For reproducibility
+
+            result = AllChem.EmbedMolecule(mol, params)
+
+            if result != 0:
+                # Try with random coordinates if ETKDG fails
+                logger.warning("ETKDG embedding failed, trying random coordinates")
+                result = AllChem.EmbedMolecule(mol, AllChem.ETKDG())
 
         if result != 0:
             # Fallback to legacy embedding logic (used in older dashboards)
