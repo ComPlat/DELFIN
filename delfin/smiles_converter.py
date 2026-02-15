@@ -870,6 +870,14 @@ def smiles_to_xyz_isomers(
             return [], err
         return [(xyz, '')], None
 
+    # Single isomer: fall back to smiles_to_xyz() which uses a
+    # deterministic seed and produces more realistic geometry.
+    if len(results) == 1:
+        xyz, err = smiles_to_xyz(smiles)
+        if err:
+            return results, None  # keep the multi-conf result as fallback
+        return [(xyz, results[0][1])], None
+
     return results, None
 
 
