@@ -321,6 +321,42 @@ def _denormalize_metal_smiles(smiles: str) -> Optional[str]:
     return denorm if denorm != smiles else None
 
 
+def _strip_h_on_coordinated_p(mol):
+    """Remove hydrogens on P/As atoms that are coordinated to a metal.
+
+    When a P-Metal bond is not converted to dative, RDKit may assign
+    implicit H to P (P default valence = 3 or 5).  Tertiary phosphine
+    ligands (PR₃) coordinated to metals should never carry P-H bonds.
+    This strips H from any P or As that is bonded to a metal AND already
+    has ≥ 3 non-H, non-metal neighbours (i.e. a full set of R groups).
+    """
+    if not RDKIT_AVAILABLE:
+        return mol
+    rwmol = Chem.RWMol(mol)
+    to_remove = []
+    for atom in rwmol.GetAtoms():
+        if atom.GetSymbol() not in ('P', 'As'):
+            continue
+        # Check if bonded to a metal
+        has_metal = any(n.GetSymbol() in _METAL_SET for n in atom.GetNeighbors())
+        if not has_metal:
+            continue
+        # Count non-H, non-metal neighbours (the "R" groups)
+        r_count = sum(
+            1 for n in atom.GetNeighbors()
+            if n.GetSymbol() != 'H' and n.GetSymbol() not in _METAL_SET
+        )
+        if r_count < 3:
+            continue
+        # Remove all H bonded to this P/As
+        for nbr in atom.GetNeighbors():
+            if nbr.GetSymbol() == 'H':
+                to_remove.append(nbr.GetIdx())
+    for idx in sorted(set(to_remove), reverse=True):
+        rwmol.RemoveAtom(idx)
+    return rwmol.GetMol()
+
+
 def _strip_h_on_metal_halogen(mol):
     """Remove hydrogens attached to metals/halogens (keep H on carbon)."""
     if not RDKIT_AVAILABLE:
@@ -1261,6 +1297,10 @@ def _mol_to_xyz(mol) -> str:
     Returns:
         Coordinate string in DELFIN format (no header)
     """
+    # Strip spurious H on coordinated P/As (affects legacy/unsanitized paths)
+    if any(a.GetSymbol() in _METAL_SET for a in mol.GetAtoms()):
+        mol = _strip_h_on_coordinated_p(mol)
+
     conf = mol.GetConformer()
     num_atoms = mol.GetNumAtoms()
 
