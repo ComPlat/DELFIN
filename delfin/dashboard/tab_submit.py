@@ -55,6 +55,11 @@ def create_tab(ctx):
         layout=widgets.Layout(width='150px'),
     )
 
+    guppy_submit_button = widgets.Button(
+        description='SUBMIT GUPPY 20x', button_style='warning',
+        layout=widgets.Layout(width='170px'),
+    )
+
     smiles_batch_help = widgets.Label("Batch SMILES list: one per line 'Name;SMILES;key=value;key=value'")
     smiles_batch_widget = widgets.Textarea(
         value='',
@@ -361,6 +366,73 @@ def create_tab(ctx):
                     print(result.stderr)
             except Exception as e:
                 print(f'Error submitting job: {e}')
+
+    def handle_guppy_submit(button):
+        """Submit SMILES->20x XTB sampling job (GUPPY trajectory mode)."""
+        with output_area:
+            clear_output()
+            job_name = job_name_widget.value.strip()
+            if not job_name:
+                print('Error: Job name is required!')
+                return
+
+            raw_input = coords_widget.value.strip()
+            if not raw_input:
+                print('Error: Please enter a SMILES string in the input box.')
+                return
+
+            cleaned_data, input_type = clean_input_data(raw_input)
+            if input_type != 'smiles':
+                print('Error: Input must be a SMILES string for GUPPY submission.')
+                return
+
+            safe_job_name = ''.join(c for c in job_name if c.isalnum() or c in ('_', '-'))
+            if not safe_job_name:
+                print('Error: Job name contains only invalid characters!')
+                return
+
+            job_dir = ctx.calc_dir / safe_job_name
+            time_limit = resolve_time_limit(job_type_widget, custom_time_widget, '48:00:00')
+
+            try:
+                # Match ONLY GOAT behavior: allow existing dir and reuse same naming flow.
+                job_dir.mkdir(parents=True, exist_ok=True)
+
+                # Required input for guppy mode: raw SMILES in input.txt
+                (job_dir / 'input.txt').write_text(cleaned_data + '\n')
+
+                # Resource policy must match ONLY GOAT.
+                goat_template = ctx.only_goat_template
+                if ctx.only_goat_template_path and ctx.only_goat_template_path.exists():
+                    goat_template = ctx.only_goat_template_path.read_text()
+                pal, maxcore = parse_resource_settings(goat_template)
+
+                result = ctx.backend.submit_delfin(
+                    job_dir=job_dir,
+                    job_name=safe_job_name,
+                    mode='guppy',
+                    time_limit=time_limit,
+                    pal=pal or 40,
+                    maxcore=maxcore or 6000,
+                )
+
+                if result.returncode == 0:
+                    job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                    print('GUPPY sampling job submitted!')
+                    print(f'Job ID: {job_id}')
+                    print(f'Time Limit: {time_limit}')
+                    print('Workflow: 20x (SMILES -> XTB2 OPT) with energy ranking')
+                    print(f'Input Type: {input_type.upper()}')
+                    print(f'Directory: {job_dir}')
+                    print('')
+                    print('Expected output: GUPPY_try.xyz')
+                    print('Check status in Job Status tab')
+                    reset_form()
+                else:
+                    print('Error submitting job:')
+                    print(result.stderr)
+            except Exception as e:
+                print(f'Error submitting GUPPY job: {e}')
 
     def get_smiles_list_entries():
         entries = []
@@ -824,6 +896,7 @@ def create_tab(ctx):
     coords_widget.observe(update_molecule_view, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
     build_complex_button.on_click(handle_build_complex)
+    guppy_submit_button.on_click(handle_guppy_submit)
     submit_smiles_list_button.on_click(handle_submit_smiles_list)
     smiles_prev_button.on_click(handle_smiles_prev)
     smiles_next_button.on_click(handle_smiles_next)
@@ -842,7 +915,7 @@ def create_tab(ctx):
         job_name_widget, spacer,
         job_type_widget, custom_time_widget, spacer_large,
         widgets.HTML('<b>Input (XYZ or SMILES):</b>'), coords_widget, spacer,
-        widgets.HBox([convert_smiles_button, build_complex_button],
+        widgets.HBox([convert_smiles_button, build_complex_button, guppy_submit_button],
                      layout=widgets.Layout(gap='10px')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES:</b>'), smiles_batch_widget, spacer,

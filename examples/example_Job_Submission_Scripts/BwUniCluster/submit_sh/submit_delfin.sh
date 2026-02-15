@@ -18,8 +18,11 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | orca | build | delfin-co2-chain | auto (default: auto)
+#   delfin | delfin-recalc | orca | build | guppy | delfin-co2-chain | auto (default: auto)
 #   BUILD_MULTIPLICITY: Spin multiplicity for build mode (default: 1)
+#   GUPPY_RUNS: Number of GUPPY sampling runs (default: 20)
+#   GUPPY_CHARGE: Optional charge override for GUPPY (default: auto from SMILES)
+#   GUPPY_PAL: PAL for GUPPY XTB OPT runs (default: SLURM_CPUS_PER_TASK)
 #   DELFIN_CO2_SPECIES_DELTA: Redox species delta for delfin-co2-chain mode (default: 0)
 #   DELFIN_INP_FILE: Specific .inp file for ORCA mode
 #   DELFIN_JOB_NAME: Job name for display (optional)
@@ -515,6 +518,31 @@ case "$MODE" in
         "$DELFIN_PYTHON" -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
         EXIT_CODE=$?
         ;;
+    guppy)
+        GUPPY_RUNS="${GUPPY_RUNS:-20}"
+        GUPPY_CHARGE="${GUPPY_CHARGE:-}"
+        GUPPY_PAL="${GUPPY_PAL:-${SLURM_CPUS_PER_TASK:-40}}"
+        echo "Starting GUPPY SMILES sampling..."
+        echo "  Runs:         $GUPPY_RUNS"
+        if [ -n "$GUPPY_CHARGE" ]; then
+            echo "  Charge:       $GUPPY_CHARGE (override)"
+        else
+            echo "  Charge:       auto (derived from SMILES)"
+        fi
+        echo "  Multiplicity: 1 (fixed closed-shell)"
+        echo "  PAL:          $GUPPY_PAL"
+        GUPPY_CMD=(
+            "$DELFIN_PYTHON" -m delfin.guppy_sampling input.txt
+            --runs "$GUPPY_RUNS" \
+            --pal "$GUPPY_PAL" \
+            --output GUPPY_try.xyz
+        )
+        if [ -n "$GUPPY_CHARGE" ]; then
+            GUPPY_CMD+=( --charge "$GUPPY_CHARGE" )
+        fi
+        "${GUPPY_CMD[@]}"
+        EXIT_CODE=$?
+        ;;
     delfin-co2-chain)
         CO2_SPECIES_DELTA="${DELFIN_CO2_SPECIES_DELTA:-0}"
         echo "Starting DELFIN + CO2 Coordinator chain..."
@@ -545,7 +573,7 @@ case "$MODE" in
         ;;
     *)
         echo "ERROR: Unknown mode: $MODE"
-        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, build, delfin-co2-chain, auto"
+        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, build, guppy, delfin-co2-chain, auto"
         EXIT_CODE=1
         ;;
 esac

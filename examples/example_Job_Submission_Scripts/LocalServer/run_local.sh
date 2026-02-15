@@ -4,7 +4,7 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | delfin-recalc-override | orca | build | delfin-co2-chain | auto
+#   delfin | delfin-recalc | delfin-recalc-override | orca | build | guppy | delfin-co2-chain | auto
 #
 # ENVIRONMENT VARIABLES:
 #   DELFIN_MODE          : Run mode (default: auto)
@@ -13,6 +13,9 @@
 #   DELFIN_OVERRIDE      : Override value for delfin-recalc-override
 #   DELFIN_JOB_ID        : Job ID for status tracking
 #   BUILD_MULTIPLICITY   : Spin multiplicity for build mode (default: 1)
+#   GUPPY_RUNS           : Number of GUPPY sampling runs (default: 20)
+#   GUPPY_CHARGE         : Optional charge override for GUPPY (default: auto from SMILES)
+#   GUPPY_PAL            : PAL for GUPPY XTB OPT runs (default: local nproc)
 #   DELFIN_CO2_SPECIES_DELTA : Redox species delta for delfin-co2-chain mode (default: 0)
 #
 # ========================================================================
@@ -186,6 +189,32 @@ case "$MODE" in
         echo "  Multiplicity: $BUILD_MULT"
 
         "$DELFIN_PYTHON" -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
+        EXIT_CODE=$?
+        ;;
+    guppy)
+        GUPPY_RUNS="${GUPPY_RUNS:-20}"
+        GUPPY_CHARGE="${GUPPY_CHARGE:-}"
+        GUPPY_PAL="${GUPPY_PAL:-$(nproc)}"
+        echo "Starting GUPPY SMILES sampling..."
+        echo "  Runs:         $GUPPY_RUNS"
+        if [ -n "$GUPPY_CHARGE" ]; then
+            echo "  Charge:       $GUPPY_CHARGE (override)"
+        else
+            echo "  Charge:       auto (derived from SMILES)"
+        fi
+        echo "  Multiplicity: 1 (fixed closed-shell)"
+        echo "  PAL:          $GUPPY_PAL"
+
+        GUPPY_CMD=(
+            "$DELFIN_PYTHON" -m delfin.guppy_sampling input.txt
+            --runs "$GUPPY_RUNS" \
+            --pal "$GUPPY_PAL" \
+            --output GUPPY_try.xyz
+        )
+        if [ -n "$GUPPY_CHARGE" ]; then
+            GUPPY_CMD+=( --charge "$GUPPY_CHARGE" )
+        fi
+        "${GUPPY_CMD[@]}"
         EXIT_CODE=$?
         ;;
     delfin-co2-chain)

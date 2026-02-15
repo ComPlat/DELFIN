@@ -146,6 +146,7 @@ def create_tab(ctx):
             'orca_numfreq',
             'orca_esd',
             'delfin.build_up_complex',
+            'delfin.guppy_sampling',
             'delfin-build',
         )
         detected = []
