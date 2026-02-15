@@ -1187,7 +1187,10 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
             logger.info("Detected metal-nitrogen complex, using multi-strategy approach")
             return _try_multiple_strategies(smiles, output_path)
 
-        # Parse SMILES - try stk first for metal complexes, then RDKit
+        # Parse SMILES - try stk first for metal complexes, then RDKit.
+        # IMPORTANT: Prefer the original SMILES before charge-normalized
+        # variants to avoid introducing artificial oxidation states
+        # (e.g., neutral Cu complexes rewritten as Cu+2).
         mol = None
         normalized_smiles = _normalize_metal_smiles(smiles)
         if has_metal and STK_AVAILABLE:
@@ -1200,13 +1203,11 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                 mol = None
                 method = None
 
-        if mol is None and normalized_smiles:
-            mol, rdkit_note = mol_from_smiles_rdkit(normalized_smiles, allow_metal=True)
-            if mol is not None:
-                method = "RDKit (normalized metal SMILES)"
-
         if mol is None:
             mol, rdkit_note = mol_from_smiles_rdkit(smiles, allow_metal=has_metal)
+            method = "RDKit" if (mol is not None and rdkit_note is None) else (
+                f"RDKit ({rdkit_note})" if mol is not None else None
+            )
             if mol is None:
                 # Try normalized charged form for neutral metal SMILES
                 if normalized_smiles:
@@ -1228,7 +1229,6 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                 error = f"Failed to parse SMILES string: {rdkit_note}"
                 logger.error(error)
                 return None, error
-            method = "RDKit" if rdkit_note is None else f"RDKit ({rdkit_note})"
 
         # For metal complexes: convert bonds to dative and recalculate hydrogens
         # This fixes the issue where metal coordination bonds are counted towards ligand valence
