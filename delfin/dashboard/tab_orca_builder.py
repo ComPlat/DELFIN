@@ -133,6 +133,7 @@ def create_tab(ctx):
     state = {
         'extra_files': {},
         'last_auto_keywords': '',
+        'is_resetting': False,
     }
 
     # -- helpers --------------------------------------------------------
@@ -200,29 +201,42 @@ def create_tab(ctx):
         return saved
 
     def reset_orca_builder():
-        orca_job_name.value = ''
-        orca_coords.value = ''
-        orca_charge.value = 0
-        orca_multiplicity.value = 1
-        orca_method.value = 'PBE0'
-        orca_job_type.value = 'OPT'
-        orca_basis.value = 'def2-SVP'
-        orca_dispersion.value = 'D4'
-        orca_ri.value = 'RIJCOSX'
-        orca_aux_basis.value = 'def2/J'
-        orca_solvation_type.value = 'None'
-        orca_solvent.value = 'water'
-        orca_print_mos.value = False
-        orca_print_basis.value = False
-        orca_additional.value = ''
-        orca_pal.value = 40
-        orca_maxcore.value = 6000
-        orca_slurm_time.value = '12:00:00'
-        orca_file_upload.value = ()
-        orca_uploaded_files_label.value = ''
-        orca_path_files.value = ''
-        state['extra_files'].clear()
+        state['is_resetting'] = True
+        try:
+            orca_job_name.value = ''
+            orca_coords.value = ''
+            orca_charge.value = 0
+            orca_multiplicity.value = 1
+            orca_method.value = 'PBE0'
+            orca_job_type.value = 'OPT'
+            orca_basis.value = 'def2-SVP'
+            orca_dispersion.value = 'D4'
+            orca_ri.value = 'RIJCOSX'
+            orca_aux_basis.value = 'def2/J'
+            orca_solvation_type.value = 'None'
+            orca_solvent.value = 'water'
+            orca_print_mos.value = False
+            orca_print_basis.value = False
+            orca_additional.value = ''
+            orca_pal.value = 40
+            orca_maxcore.value = 6000
+            orca_slurm_time.value = '12:00:00'
+            orca_path_files.value = ''
+            orca_preview.value = ''
+            state['extra_files'].clear()
+            state['last_auto_keywords'] = ''
+            try:
+                orca_file_upload.value = ()
+            except Exception:
+                pass
+        finally:
+            state['is_resetting'] = False
+
+        # Restore visual defaults after all fields have been reset.
+        orca_uploaded_files_label.value = '<i>Drag & drop files here (e.g. .gbw, .xyz, .hess)</i>'
+        update_orca_molecule_view()
         update_orca_preview()
+        state['last_auto_keywords'] = _build_keyword_line()
 
     # -- handlers -------------------------------------------------------
     def update_orca_molecule_view(change=None):
@@ -249,6 +263,8 @@ def create_tab(ctx):
                 print(f'Could not visualize: {e}')
 
     def update_orca_preview(change=None):
+        if state.get('is_resetting'):
+            return
         current = orca_preview.value.strip()
         if not current:
             orca_preview.value = sanitize_orca_input(generate_orca_input())

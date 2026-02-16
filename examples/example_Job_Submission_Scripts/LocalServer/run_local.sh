@@ -30,6 +30,7 @@ INP_FILE="${DELFIN_INP_FILE:-}"
 OVERRIDE="${DELFIN_OVERRIDE:-}"
 DISPLAY_JOB_NAME="${DELFIN_JOB_NAME:-local_job}"
 JOB_ID="${DELFIN_JOB_ID:-0}"
+ORCA_BASE="${DELFIN_ORCA_BASE:-}"
 
 # === MPI Configuration for ORCA stability ===
 export OMPI_MCA_pml=ob1
@@ -49,6 +50,30 @@ export MKL_NUM_THREADS=1
 export DELFIN_ORCA_PROGRESS=0
 export MPLBACKEND=Agg
 
+resolve_orca_bin() {
+    local candidate=""
+
+    # Prefer explicit ORCA base path when provided by backend.
+    if [ -n "$ORCA_BASE" ]; then
+        candidate="${ORCA_BASE%/}/orca"
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    fi
+
+    # Fallback to PATH lookup.
+    candidate="$(type -P orca 2>/dev/null || true)"
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    return 1
+}
+
+ORCA_BIN="$(resolve_orca_bin || true)"
+
 # Job info
 echo "========================================"
 echo "DELFIN Local Job - $DISPLAY_JOB_NAME"
@@ -66,7 +91,7 @@ echo "========================================"
 echo ""
 
 # Check tools
-echo "ORCA: $(command -v orca || echo 'not found')"
+echo "ORCA: ${ORCA_BIN:-not found}"
 echo "mpirun: $(command -v mpirun || echo 'not found')"
 echo "delfin: $(command -v delfin || echo 'not found')"
 echo ""
@@ -172,7 +197,11 @@ case "$MODE" in
         if [ -z "$INP_FILE" ]; then
             INP_FILE=$(ls *.inp 2>/dev/null | head -1)
         fi
-        if [ -z "$INP_FILE" ]; then
+        if [ -z "${ORCA_BIN:-}" ]; then
+            echo "ERROR: ORCA executable not found."
+            echo "       Set DELFIN_ORCA_BASE to a valid ORCA installation path or add ORCA to PATH."
+            EXIT_CODE=1
+        elif [ -z "$INP_FILE" ]; then
             echo "ERROR: No .inp file found for ORCA mode"
             EXIT_CODE=1
         elif [ ! -f "$INP_FILE" ]; then
@@ -181,7 +210,8 @@ case "$MODE" in
         else
             OUT_FILE="${INP_FILE%.inp}.out"
             echo "Starting ORCA: $INP_FILE -> $OUT_FILE"
-            orca "$INP_FILE" > "$OUT_FILE" 2>&1
+            echo "Using ORCA binary: $ORCA_BIN"
+            "$ORCA_BIN" "$INP_FILE" > "$OUT_FILE" 2>&1
             EXIT_CODE=$?
         fi
         ;;
