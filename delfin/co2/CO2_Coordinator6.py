@@ -919,7 +919,7 @@ def write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index, start_di
         sections.append(add)
     sections.extend(_build_qmmm_block_lines(qmmm_range))
     sections.append("%geom\n")
-    sections.append("  MaxIter 200\n")
+    sections.append("  MaxIter 400\n")
     sections.append("  Scan\n")
     sections.append(f"    B  {i_orca}  {j_orca} = {start_distance:.2f}, {end_distance}, {steps}\n")
     sections.append("  end\n")
