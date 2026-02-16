@@ -833,6 +833,19 @@ def build_orca_keywords(config, job_spec):
     return " ".join(tokens).strip()
 
 
+def _append_orca_keyword(keywords, keyword):
+    """Append a keyword once (case-insensitive), preserving keyword order."""
+    base = _clean_str(keywords)
+    add = _clean_str(keyword)
+    if not add:
+        return base
+    tokens = base.split() if base else []
+    if any(tok.lower() == add.lower() for tok in tokens):
+        return " ".join(tokens).strip()
+    tokens.append(add)
+    return " ".join(tokens).strip()
+
+
 def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB SP ALPB(DMF)", broken_sym="",
                                 charge=-2, multiplicity=1, PAL=8, maxcore=2000, tag="calc",
                                 metal_symbol=None, metal_basis=None, control_args=None,
@@ -893,6 +906,7 @@ def write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index, start_di
     j_orca = co2_c_index
 
     keywords_line = _ensure_qmmm_keyword(orca_keywords, qmmm_range)
+    keywords_line = _append_orca_keyword(keywords_line, "NoTRAH")
     basis_block = _format_basis_block(metal_symbol, metal_basis, keywords_line)
     sections = [f"! {keywords_line}\n"]
     if basis_block:
