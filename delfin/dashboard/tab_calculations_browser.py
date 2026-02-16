@@ -21,7 +21,7 @@ from .input_processing import (
     is_smiles,
 )
 from .helpers import disable_spellcheck
-from .molecule_viewer import coord_to_xyz, parse_xyz_frames
+from .molecule_viewer import coord_to_xyz, parse_xyz_frames, DEFAULT_3DMOL_STYLE_JS
 from rdkit import Chem, RDLogger
 from rdkit.Chem import rdDepictor, AllChem
 from rdkit.Chem.Draw import MolToImage
@@ -846,16 +846,7 @@ def create_tab(ctx):
                         var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
                         var molData = {mol_json};
                         viewer.addModel(molData, "mol");
-                        viewer.setStyle({{}}, {{
-                            stick: {{
-                                colorscheme: "Jmol",
-                                radius: 0.11,
-                                singleBonds: false,
-                                doubleBondScaling: 0.65,
-                                tripleBondScaling: 0.65
-                            }},
-                            sphere: {{colorscheme: "Jmol", scale: 0.28}}
-                        }});
+                        viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
                         viewer.zoomTo();
                         viewer.center();
                         viewer.zoom(0.90);
@@ -1120,8 +1111,7 @@ def create_tab(ctx):
 
     _mol3d_counter = [0]
 
-    def _render_3dmol(data, fmt='xyz', stick_radius=0.1, sphere_scale=0.25,
-                      extra_fn=None):
+    def _render_3dmol(data, fmt='xyz', extra_fn=None):
         """Render a 3D molecule via JS with correct initial sizing."""
         import json
         _mol3d_counter[0] += 1
@@ -1193,20 +1183,19 @@ def create_tab(ctx):
                 var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
                 var molData = {data_json};
                 viewer.addModel(molData, "{fmt}");
-                viewer.setStyle({{}}, {{
-                    stick: {{radius: {stick_radius}}},
-                    sphere: {{scale: {sphere_scale}}}
-                }});
+                viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
                 {volumetric_js}
                 if (savedView && typeof viewer.setView === 'function') {{
                     try {{
                         viewer.setView(savedView);
                     }} catch (_e) {{
                         viewer.zoomTo();
+                        viewer.center();
                         viewer.zoom({CALC_MOL_ZOOM});
                     }}
                 }} else {{
                     viewer.zoomTo();
+                    viewer.center();
                     viewer.zoom({CALC_MOL_ZOOM});
                 }}
                 viewer.render();
@@ -2067,16 +2056,18 @@ def create_tab(ctx):
                             var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
                             var xyz = `{full_xyz}`;
                             viewer.addModelsAsFrames(xyz, "xyz");
-                            viewer.setStyle({{}}, {{stick: {{radius: 0.1}}, sphere: {{scale: 0.25}}}});
+                            viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
                             if (savedView && typeof viewer.setView === 'function') {{
                                 try {{
                                     viewer.setView(savedView);
                                 }} catch (_e) {{
                                     viewer.zoomTo();
+                                    viewer.center();
                                     viewer.zoom({CALC_MOL_ZOOM});
                                 }}
                             }} else {{
                                 viewer.zoomTo();
+                                viewer.center();
                                 viewer.zoom({CALC_MOL_ZOOM});
                             }}
                             viewer.setFrame({idx});
@@ -3200,7 +3191,7 @@ def create_tab(ctx):
                     state['xyz_current_frame'][0] = 0
                     calc_xyz_controls.layout.display = 'none'
                     calc_coord_controls.layout.display = 'flex'
-                    _render_3dmol(xyz_data, stick_radius=0.15)
+                    _render_3dmol(xyz_data)
                 else:
                     calc_file_info.value = f'<b>{_html.escape(name)}</b> (could not parse)'
             except Exception as e:

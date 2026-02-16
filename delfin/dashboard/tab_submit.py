@@ -11,6 +11,7 @@ from delfin.smiles_converter import contains_metal
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck
+from .molecule_viewer import apply_molecule_view_style
 from .input_processing import (
     smiles_to_xyz, smiles_to_xyz_isomers, is_smiles, clean_input_data,
     parse_resource_settings,
@@ -209,8 +210,7 @@ def create_tab(ctx):
             xyz_copy_status.value = '<span style="color:#388e3c;">XYZ ready to copy</span>'
             view = py3Dmol.view(width=560, height=420)
             view.addModel(xyz_data, 'xyz')
-            view.setStyle({}, {'stick': {'radius': 0.15}, 'sphere': {'scale': 0.22}})
-            view.zoomTo()
+            apply_molecule_view_style(view)
             view.show()
 
     def on_xyz_copy(button):
@@ -252,8 +252,7 @@ def create_tab(ctx):
             clear_output()
             view = py3Dmol.view(width=560, height=420)
             view.addModel(xyz_data, 'xyz')
-            view.setStyle({}, {'stick': {'radius': 0.15}, 'sphere': {'scale': 0.22}})
-            view.zoomTo()
+            apply_molecule_view_style(view)
             view.show()
 
         # Update copy state
@@ -502,8 +501,7 @@ def create_tab(ctx):
             xyz_data = f'{num_atoms}\nPreview: {name}\n{xyz_string}'
             view = py3Dmol.view(width=560, height=350)
             view.addModel(xyz_data, 'xyz')
-            view.setStyle({}, {'stick': {'radius': 0.15}, 'sphere': {'scale': 0.22}})
-            view.zoomTo()
+            apply_molecule_view_style(view)
             view.show()
 
     def handle_smiles_prev(button):

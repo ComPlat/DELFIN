@@ -3,6 +3,37 @@
 import py3Dmol
 from IPython.display import clear_output
 
+DEFAULT_3DMOL_STYLE = {
+    'stick': {
+        'colorscheme': 'Jmol',
+        'radius': 0.11,
+        'singleBonds': False,
+        'doubleBondScaling': 0.65,
+        'tripleBondScaling': 0.65,
+    },
+    'sphere': {'colorscheme': 'Jmol', 'scale': 0.28},
+}
+DEFAULT_3DMOL_STYLE_JS = (
+    '{'
+    'stick:{colorscheme:"Jmol",radius:0.11,singleBonds:false,doubleBondScaling:0.65,tripleBondScaling:0.65},'
+    'sphere:{colorscheme:"Jmol",scale:0.28}'
+    '}'
+)
+DEFAULT_3DMOL_BACKGROUND = 'white'
+DEFAULT_3DMOL_ZOOM = 0.90
+
+
+def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM):
+    """Apply a shared ChemDarwin/MSILES-like style to a py3Dmol viewer."""
+    view.setStyle({}, DEFAULT_3DMOL_STYLE)
+    view.setBackgroundColor(DEFAULT_3DMOL_BACKGROUND)
+    view.zoomTo()
+    view.center()
+    if zoom is not None:
+        view.zoom(zoom)
+    view.render()
+    return view
+
 
 def render_xyz_in_output(output_widget, xyz_text, width=560, height=420):
     """Render an XYZ string inside an ipywidgets Output widget."""
@@ -13,8 +44,7 @@ def render_xyz_in_output(output_widget, xyz_text, width=560, height=420):
             return
         view = py3Dmol.view(width=width, height=height)
         view.addModel(xyz_text, 'xyz')
-        view.setStyle({}, {'stick': {'radius': 0.15}, 'sphere': {'scale': 0.22}})
-        view.zoomTo()
+        apply_molecule_view_style(view)
         view.show()
 
 

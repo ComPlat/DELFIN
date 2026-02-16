@@ -12,7 +12,7 @@ from delfin.common.control_validator import (
     ORCA_FUNCTIONALS, ORCA_BASIS_SETS, DISP_CORR_VALUES, _RI_JKX_KEYWORDS,
 )
 
-from .molecule_viewer import strip_xyz_header
+from .molecule_viewer import strip_xyz_header, apply_molecule_view_style
 from .input_processing import parse_inp_resources, sanitize_orca_input
 
 
@@ -126,7 +126,7 @@ def create_tab(ctx):
     orca_output = widgets.Output()
 
     orca_mol_output = widgets.Output(layout=widgets.Layout(
-        border='2px solid #4CAF50', width='100%', min_height='300px', overflow='hidden',
+        border='2px solid #1976d2', width='100%', min_height='300px', overflow='hidden',
     ))
 
     # -- state ----------------------------------------------------------
@@ -256,8 +256,7 @@ def create_tab(ctx):
                 xyz_data = f'{n}\nORCA Builder Preview\n{coords}'
                 view = py3Dmol.view(width='100%', height=400)
                 view.addModel(xyz_data, 'xyz')
-                view.setStyle({}, {'stick': {'radius': 0.15}, 'sphere': {'scale': 0.22}})
-                view.zoomTo()
+                apply_molecule_view_style(view)
                 view.show()
             except Exception as e:
                 print(f'Could not visualize: {e}')

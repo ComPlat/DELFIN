@@ -9,7 +9,7 @@ import ipywidgets as widgets
 from IPython.display import clear_output
 
 from .input_processing import smiles_to_xyz, is_smiles
-from .molecule_viewer import coord_to_xyz
+from .molecule_viewer import coord_to_xyz, apply_molecule_view_style
 
 
 TM_MODULE_OPTIONS = [
@@ -188,7 +188,7 @@ def create_tab(ctx):
         layout=widgets.Layout(width='100px'),
     )
     tm_mol_output = widgets.Output(layout=widgets.Layout(
-        width='100%', min_height='300px', border='2px solid #4CAF50', overflow='hidden',
+        width='100%', min_height='300px', border='2px solid #1976d2', overflow='hidden',
     ))
 
     tm_input_row = widgets.HBox([tm_define_input])
@@ -343,8 +343,7 @@ def create_tab(ctx):
             try:
                 v = py3Dmol.view(width='100%', height=400)
                 v.addModel(xyz, 'xyz')
-                v.setStyle({'stick': {}, 'sphere': {'radius': 0.3}})
-                v.zoomTo()
+                apply_molecule_view_style(v)
                 v.show()
             except Exception as e:
                 print(f'Error: {e}')
