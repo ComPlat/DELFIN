@@ -43,7 +43,7 @@ def create_tab(ctx):
             'C  0.0  0.0  0.0\n...'
         ),
         description='Coordinates:',
-        layout=widgets.Layout(width='100%', height='400px'), style=ws,
+        layout=widgets.Layout(width='100%', height='400px', box_sizing='border-box'), style=ws,
     )
     orca_charge = widgets.IntText(value=0, description='Charge:',
                                   layout=widgets.Layout(width='200px'), style=ws)
@@ -98,7 +98,7 @@ def create_tab(ctx):
 
     orca_file_upload = widgets.FileUpload(
         accept='', multiple=True, description='Extra Files:',
-        layout=widgets.Layout(width='50%', height='30px'), style=ws,
+        layout=widgets.Layout(width='100%', height='30px'), style=ws,
     )
     orca_uploaded_files_label = widgets.HTML(
         value='<i>Drag & drop files here (e.g. .gbw, .xyz, .hess)</i>',
@@ -108,12 +108,12 @@ def create_tab(ctx):
         value='',
         placeholder='Paste file paths (one per line):\n/path/to/file.gbw\n/path/to/file.xyz',
         description='File Paths:',
-        layout=widgets.Layout(width='100%', height='80px'), style=ws,
+        layout=widgets.Layout(width='100%', height='80px', box_sizing='border-box'), style=ws,
     )
 
     orca_preview = widgets.Textarea(
         value='', description='INP Preview:',
-        layout=widgets.Layout(width='600px', height='550px'), style=ws,
+        layout=widgets.Layout(width='100%', height='550px', box_sizing='border-box'), style=ws,
         disabled=False,
     )
 
@@ -126,7 +126,8 @@ def create_tab(ctx):
     orca_output = widgets.Output()
 
     orca_mol_output = widgets.Output(layout=widgets.Layout(
-        border='2px solid #1976d2', width='100%', min_height='300px', overflow='hidden',
+        border='2px solid #1976d2', width='100%', min_height='300px',
+        overflow='hidden', box_sizing='border-box',
     ))
 
     # -- state ----------------------------------------------------------
@@ -414,34 +415,90 @@ def create_tab(ctx):
     state['last_auto_keywords'] = _build_keyword_line()
 
     # -- layout ---------------------------------------------------------
+    def _row(children, wrap=True):
+        return widgets.HBox(
+            children,
+            layout=widgets.Layout(
+                width='100%',
+                min_width='0',
+                gap='8px',
+                align_items='center',
+                flex_wrap='wrap' if wrap else 'nowrap',
+            ),
+        )
+
     orca_left = widgets.VBox([
-        widgets.HBox([orca_job_name]),
-        widgets.HBox([orca_coords]),
-        widgets.HBox([orca_charge, orca_multiplicity]),
-        widgets.HBox([orca_method, orca_job_type]),
-        widgets.HBox([orca_basis, orca_dispersion]),
-        widgets.HBox([orca_ri, orca_aux_basis]),
-        widgets.HBox([orca_autoaux]),
-        widgets.HBox([orca_solvation_type, orca_solvent]),
-        widgets.HBox([orca_print_mos, orca_print_basis]),
-        widgets.HBox([orca_additional]),
-        widgets.HBox([orca_pal, orca_maxcore]),
-        widgets.HBox([orca_slurm_time]),
+        _row([orca_job_name], wrap=False),
+        _row([orca_coords], wrap=False),
+        _row([orca_charge, orca_multiplicity]),
+        _row([orca_method, orca_job_type]),
+        _row([orca_basis, orca_dispersion]),
+        _row([orca_ri, orca_aux_basis]),
+        _row([orca_autoaux]),
+        _row([orca_solvation_type, orca_solvent]),
+        _row([orca_print_mos, orca_print_basis]),
+        _row([orca_additional], wrap=False),
+        _row([orca_pal, orca_maxcore]),
+        _row([orca_slurm_time]),
         widgets.VBox([orca_file_upload, orca_uploaded_files_label],
-                     layout=widgets.Layout(margin='0 0 -5px 120px', overflow='hidden')),
-        widgets.HBox([orca_path_files]),
-        widgets.HBox([orca_generate_btn, orca_save_btn, orca_submit_btn],
-                     layout=widgets.Layout(margin='0 0 0 120px')),
+                     layout=widgets.Layout(width='100%', min_width='0', overflow='hidden')),
+        _row([orca_path_files], wrap=False),
+        _row([orca_generate_btn, orca_save_btn, orca_submit_btn]),
         orca_output,
-    ], layout=widgets.Layout(width='50%', padding='10px'))
+    ], layout=widgets.Layout(
+        flex='1 1 0', min_width='0', padding='10px',
+        box_sizing='border-box', overflow_x='hidden',
+    ))
 
     orca_right = widgets.VBox([
         widgets.HTML('<b>ORCA Input Preview (editable):</b>'),
         orca_preview,
         widgets.HTML('<b>Molecule Preview:</b>', layout=widgets.Layout(margin='10px 0 0 0')),
-        widgets.HBox([orca_mol_output],
-                     layout=widgets.Layout(justify_content='center', width='100%')),
-    ], layout=widgets.Layout(width='50%', padding='10px'))
+        orca_mol_output,
+    ], layout=widgets.Layout(
+        flex='1 1 0', min_width='0', padding='10px',
+        box_sizing='border-box', overflow_x='hidden',
+    ))
+
+    split = widgets.HBox(
+        [orca_left, orca_right],
+        layout=widgets.Layout(width='100%', align_items='stretch', overflow_x='hidden'),
+    )
+    orca_css = widgets.HTML(
+        """
+        <style>
+        .orca-split-root, .orca-split-root * {
+            box-sizing: border-box;
+        }
+        .orca-split-root {
+            width: 100% !important;
+            overflow-x: hidden !important;
+        }
+        .orca-split-pane {
+            min-width: 0 !important;
+            overflow-x: hidden !important;
+        }
+        .orca-split-pane .widget-box,
+        .orca-split-pane .widget-hbox,
+        .orca-split-pane .widget-vbox {
+            max-width: 100% !important;
+        }
+        .orca-split-pane .widget-output,
+        .orca-split-pane .output_area,
+        .orca-split-pane .output_subarea,
+        .orca-split-pane .output_wrapper,
+        .orca-split-pane .jp-OutputArea,
+        .orca-split-pane .jp-OutputArea-child,
+        .orca-split-pane .jp-OutputArea-output {
+            max-width: 100% !important;
+            overflow-x: hidden !important;
+        }
+        </style>
+        """
+    )
+    split.add_class('orca-split-root')
+    orca_left.add_class('orca-split-pane')
+    orca_right.add_class('orca-split-pane')
 
     tab_widget = widgets.VBox([
         widgets.HTML('<h3>ORCA Input Builder</h3>'),
@@ -449,7 +506,8 @@ def create_tab(ctx):
             '<a href="https://orca-manual.mpi-muelheim.mpg.de/" '
             'target="_blank">ORCA User Manual</a>'
         ),
-        widgets.HBox([orca_left, orca_right]),
-    ], layout=widgets.Layout(padding='10px'))
+        orca_css,
+        split,
+    ], layout=widgets.Layout(width='100%', padding='10px', box_sizing='border-box'))
 
     return tab_widget, {'orca_pal': orca_pal, 'orca_maxcore': orca_maxcore}
