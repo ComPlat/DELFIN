@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 
@@ -46,6 +47,7 @@ def create_tab(ctx):
     CALC_TEXT_CHUNK_BYTES = 8 * 1024 * 1024
     CALC_SEARCH_MAX_MATCHES = 2000
     CALC_HIGHLIGHT_MAX_CHARS = 400_000
+    CALC_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
     # -- state (closure-captured) -------------------------------------------
     state = {
         'current_path': '',
@@ -215,9 +217,16 @@ def create_tab(ctx):
         description='Copy', button_style='info',
         layout=widgets.Layout(width='80px', min_width='80px', height='26px'), disabled=True,
     )
+    calc_download_btn = widgets.Button(
+        description='Download', button_style='',
+        layout=widgets.Layout(width='130px', min_width='130px', height='26px'), disabled=True,
+    )
     calc_report_btn = widgets.Button(
         description='Report', button_style='success',
         layout=widgets.Layout(width='80px', min_width='80px', height='26px'), disabled=True,
+    )
+    calc_download_status = widgets.HTML(
+        value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
     calc_report_status = widgets.HTML(
         value='', layout=widgets.Layout(width='100%'),
@@ -1284,6 +1293,30 @@ def create_tab(ctx):
     def _calc_dir():
         return ctx.calc_dir
 
+    def _calc_selected_item_path():
+        selected = calc_file_list.value
+        if not selected or selected.startswith('('):
+            return None
+        name = selected[2:].strip()
+        if not name:
+            return None
+        full_path = (
+            (_calc_dir() / state['current_path'] / name)
+            if state['current_path']
+            else (_calc_dir() / name)
+        )
+        return full_path if full_path.exists() else None
+
+    def _calc_download_target_path():
+        selected_path = _calc_selected_item_path()
+        if selected_path is not None:
+            return selected_path
+        if state['current_path']:
+            current_dir = _calc_dir() / state['current_path']
+            if current_dir.exists():
+                return current_dir
+        return None
+
     # -- view / display helpers ---------------------------------------------
     def _calc_format_bytes(n_bytes):
         if n_bytes >= 1024 * 1024:
@@ -1623,6 +1656,15 @@ def create_tab(ctx):
     def calc_update_report_btn():
         current_dir = _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
         calc_report_btn.disabled = not (current_dir / 'CONTROL.txt').exists()
+
+    def calc_update_download_btn():
+        target = _calc_download_target_path()
+        if target is None:
+            calc_download_btn.disabled = True
+            calc_download_btn.description = 'Download'
+            return
+        calc_download_btn.disabled = False
+        calc_download_btn.description = 'Download ZIP' if target.is_dir() else 'Download'
 
     def calc_render_content(scroll_to=None):
         if not state['file_content']:
@@ -2134,6 +2176,7 @@ def create_tab(ctx):
         calc_mol_container.layout.display = 'none'
         calc_file_info.value = ''
         calc_path_display.value = ''
+        calc_download_status.value = ''
         calc_search_result.value = ''
         calc_folder_search.value = ''
         calc_prev_btn.disabled = True
@@ -2141,6 +2184,7 @@ def create_tab(ctx):
         _set_view_toggle(False, True)
         calc_copy_btn.disabled = True
         calc_copy_path_btn.disabled = True
+        calc_download_btn.disabled = True
         _calc_hide_chunk_controls()
         calc_update_view()
         calc_set_message('Select a file...')
@@ -2199,6 +2243,7 @@ def create_tab(ctx):
         calc_file_list.options = state['all_items']
         calc_update_path_display()
         calc_update_report_btn()
+        calc_update_download_btn()
 
     def calc_filter_file_list(change=None):
         query = calc_folder_search.value.strip().lower()
@@ -2628,14 +2673,12 @@ def create_tab(ctx):
         )
 
     def calc_on_path_copy(button):
-        selected = calc_file_list.value
-        if not selected:
+        full_path_obj = _calc_selected_item_path()
+        if full_path_obj is None and state['current_path']:
+            full_path_obj = _calc_dir() / state['current_path']
+        if full_path_obj is None:
             return
-        name = selected[2:].strip()
-        if state['current_path']:
-            full_path = str(_calc_dir() / state['current_path'] / name)
-        else:
-            full_path = str(_calc_dir() / name)
+        full_path = str(full_path_obj)
         calc_path_display.value = (
             f'<input type="text" value="{_html.escape(full_path)}" onclick="this.select()"'
             f' style="width:100%;font-family:monospace;font-size:12px;border:1px solid #aaa;'
@@ -2647,6 +2690,81 @@ def create_tab(ctx):
             f".then(() => console.log('Copied path'))"
             f".catch(err => console.error('Copy failed:', err));"
         )
+
+    def _calc_trigger_download(filename, payload, mime='application/octet-stream'):
+        b64 = base64.b64encode(payload).decode('ascii')
+        js = (
+            "(function(){"
+            f"const fileName={json.dumps(filename)};"
+            f"const mimeType={json.dumps(mime)};"
+            f"const b64={json.dumps(b64)};"
+            "try{"
+            "const bin=atob(b64);"
+            "const len=bin.length;"
+            "const bytes=new Uint8Array(len);"
+            "for(let i=0;i<len;i++){bytes[i]=bin.charCodeAt(i);}"
+            "const blob=new Blob([bytes],{type:mimeType});"
+            "const url=URL.createObjectURL(blob);"
+            "const a=document.createElement('a');"
+            "a.href=url;a.download=fileName;document.body.appendChild(a);a.click();"
+            "setTimeout(function(){URL.revokeObjectURL(url);if(a.parentNode){a.parentNode.removeChild(a);}},1500);"
+            "}catch(err){console.error('Download failed:', err);}"
+            "})();"
+        )
+        _run_js(js)
+
+    def calc_on_download(button):
+        target = _calc_download_target_path()
+        if target is None:
+            calc_download_status.value = '<span style="color:#d32f2f;">No file/folder selected.</span>'
+            return
+
+        try:
+            payload = b''
+            filename = ''
+            mime = 'application/octet-stream'
+
+            if target.is_dir():
+                calc_download_status.value = (
+                    f'<span style="color:#1976d2;">Preparing ZIP for '
+                    f'{_html.escape(target.name or str(target))}...</span>'
+                )
+                with tempfile.TemporaryDirectory(prefix='delfin_download_') as tmpdir:
+                    archive_name = target.name or 'folder'
+                    archive_base = Path(tmpdir) / archive_name
+                    archive_path = Path(shutil.make_archive(
+                        str(archive_base),
+                        'zip',
+                        root_dir=str(target.parent),
+                        base_dir=target.name,
+                    ))
+                    payload = archive_path.read_bytes()
+                    filename = archive_path.name
+                    mime = 'application/zip'
+            else:
+                payload = target.read_bytes()
+                filename = target.name
+
+            size_bytes = len(payload)
+            if size_bytes > CALC_DOWNLOAD_MAX_BYTES:
+                calc_download_status.value = (
+                    '<span style="color:#d32f2f;">'
+                    f'Download too large ({_calc_format_bytes(size_bytes)}). '
+                    f'Limit: {_calc_format_bytes(CALC_DOWNLOAD_MAX_BYTES)}.'
+                    '</span>'
+                )
+                return
+
+            _calc_trigger_download(filename, payload, mime=mime)
+            calc_download_status.value = (
+                f'<span style="color:#2e7d32;">Download started: '
+                f'{_html.escape(filename)} ({_calc_format_bytes(size_bytes)})</span>'
+            )
+        except Exception as exc:
+            calc_download_status.value = (
+                f'<span style="color:#d32f2f;">Download failed: '
+                f'{_html.escape(str(exc))}</span>'
+            )
 
     def calc_on_report(button):
         current_dir = _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
@@ -3125,6 +3243,7 @@ def create_tab(ctx):
             _set_view_toggle(False, True)
         calc_file_info.value = ''
         calc_path_display.value = ''
+        calc_download_status.value = ''
         state['file_content'] = ''
         state['selected_file_path'] = None
         state['selected_file_size'] = 0
@@ -3148,6 +3267,7 @@ def create_tab(ctx):
         calc_xyz_frame_total.value = '<b>/ 1</b>'
 
         if not full_path.exists():
+            calc_update_download_btn()
             calc_set_message('File not found')
             return
 
@@ -3164,6 +3284,7 @@ def create_tab(ctx):
         name_lower = full_path.name.lower()
         state['selected_file_path'] = str(full_path)
         state['selected_file_size'] = int(size)
+        calc_update_download_btn()
 
         # --- Turbomole coord file ---
         if name_lower == 'coord':
@@ -3573,6 +3694,7 @@ def create_tab(ctx):
     calc_coord_copy_btn.on_click(calc_on_coord_copy)
     calc_copy_btn.on_click(calc_on_content_copy)
     calc_copy_path_btn.on_click(calc_on_path_copy)
+    calc_download_btn.on_click(calc_on_download)
     calc_report_btn.on_click(calc_on_report)
     disable_spellcheck(ctx, class_name='calc-search-input')
 
@@ -3702,7 +3824,7 @@ def create_tab(ctx):
         widgets.HBox([
             calc_file_info,
             widgets.HBox(
-                [calc_copy_path_btn, calc_copy_btn, calc_report_btn, calc_view_toggle],
+                [calc_copy_path_btn, calc_copy_btn, calc_download_btn, calc_report_btn, calc_view_toggle],
                 layout=widgets.Layout(
                     gap='10px',
                     flex_flow='row wrap',
@@ -3714,6 +3836,8 @@ def create_tab(ctx):
             ),
         ], layout=widgets.Layout(align_items='center', justify_content='space-between', width='100%')),
         calc_path_display,
+        calc_download_status,
+        calc_report_status,
         calc_mol_container,
         calc_content_label,
         calc_preselect_container,
