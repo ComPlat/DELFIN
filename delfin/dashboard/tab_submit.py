@@ -23,6 +23,8 @@ def create_tab(ctx):
 
     Returns ``(tab_widget, refs_dict)``.
     """
+    SUBMIT_MOL_HEIGHT = 500
+
     # -- widgets --------------------------------------------------------
     job_name_widget = widgets.Text(
         value='', placeholder='e.g. Fe_Complex_Ox',
@@ -39,7 +41,7 @@ def create_tab(ctx):
             'XYZ example:\n42\nComment\nFe  0.0  0.0  0.0\nC   1.5  0.0  0.0\n\n'
             'SMILES example:\nCCO or c1ccccc1'
         ),
-        layout=widgets.Layout(width='500px', height='200px'),
+        layout=widgets.Layout(width='100%', height='200px', box_sizing='border-box'),
         style=COMMON_STYLE,
     )
 
@@ -64,7 +66,7 @@ def create_tab(ctx):
     smiles_batch_widget = widgets.Textarea(
         value='',
         placeholder='name;SMILES;key=value;...\nNi_1;[Ni];charge=2;solvent=water\nCo_1;[Co];charge=3',
-        layout=widgets.Layout(width='500px', height='160px'),
+        layout=widgets.Layout(width='100%', height='160px', box_sizing='border-box'),
         style=COMMON_STYLE,
     )
 
@@ -90,7 +92,7 @@ def create_tab(ctx):
     control_help = widgets.Label('CONTROL.txt - edit parameters as needed')
     control_widget = widgets.Textarea(
         value=ctx.default_control,
-        layout=widgets.Layout(width='500px', height='500px'),
+        layout=widgets.Layout(width='100%', height='500px', box_sizing='border-box'),
         style=COMMON_STYLE,
     )
     control_widget.add_class('delfin-nospell')
@@ -109,7 +111,8 @@ def create_tab(ctx):
     validate_output = widgets.Output()
 
     mol_output = widgets.Output(layout=widgets.Layout(
-        border='2px solid #1976d2', width='560px', height='420px', overflow='hidden',
+        border='2px solid #1976d2', width='100%', height=f'{SUBMIT_MOL_HEIGHT}px',
+        overflow='hidden', box_sizing='border-box',
     ))
 
     xyz_copy_btn = widgets.Button(
@@ -205,7 +208,7 @@ def create_tab(ctx):
             state['current_xyz_for_copy'] = {'content': xyz_data}
             xyz_copy_btn.disabled = False
             xyz_copy_status.value = '<span style="color:#388e3c;">XYZ ready to copy</span>'
-            view = py3Dmol.view(width=560, height=420)
+            view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
             view.addModel(xyz_data, 'xyz')
             apply_molecule_view_style(view)
             view.show()
@@ -247,7 +250,7 @@ def create_tab(ctx):
         xyz_data = f'{num_atoms}\nIsomer: {label}\n{xyz_string}'
         with mol_output:
             clear_output()
-            view = py3Dmol.view(width=560, height=420)
+            view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
             view.addModel(xyz_data, 'xyz')
             apply_molecule_view_style(view)
             view.show()
@@ -496,7 +499,7 @@ def create_tab(ctx):
             if extras:
                 print(f'Options: {extras}')
             xyz_data = f'{num_atoms}\nPreview: {name}\n{xyz_string}'
-            view = py3Dmol.view(width=560, height=350)
+            view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
             view.addModel(xyz_data, 'xyz')
             apply_molecule_view_style(view)
             view.show()
@@ -911,36 +914,88 @@ def create_tab(ctx):
         job_type_widget, custom_time_widget, spacer_large,
         widgets.HTML('<b>Input (XYZ or SMILES):</b>'), coords_widget, spacer,
         widgets.HBox([convert_smiles_button, build_complex_button, guppy_submit_button],
-                     layout=widgets.Layout(gap='10px')),
+                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES:</b>'), smiles_batch_widget, spacer,
         widgets.HBox(
             [smiles_prev_button, smiles_preview_label,
              smiles_next_button, submit_smiles_list_button],
-            layout=widgets.Layout(gap='2px', align_items='center'),
+            layout=widgets.Layout(gap='2px', align_items='center', flex_wrap='wrap'),
         ),
         smiles_batch_output,
         spacer_large,
         widgets.HTML('<b>CONTROL.txt:</b>'), control_widget, spacer,
         widgets.HBox([validate_button, submit_button]),
         output_area, validate_output,
-    ], layout=widgets.Layout(width='50%', padding='10px'))
+    ], layout=widgets.Layout(
+        flex='1 1 0', min_width='0', padding='10px',
+        box_sizing='border-box', overflow_x='hidden',
+    ))
 
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'), mol_output,
         isomer_nav_row,
         widgets.HBox([xyz_copy_btn, xyz_copy_status],
-                     layout=widgets.Layout(gap='6px', align_items='center')),
+                     layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Only GOAT:</b>'),
-        widgets.HBox([only_goat_charge, only_goat_solvent, only_goat_submit_button]),
+        widgets.HBox(
+            [only_goat_charge, only_goat_solvent, only_goat_submit_button],
+            layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
+        ),
         only_goat_output,
         spacer_large,
         widgets.HTML('<b>CO2 Coordinator:</b>'),
-        widgets.HBox([co2_species_delta, co2_submit_button]),
+        widgets.HBox(
+            [co2_species_delta, co2_submit_button],
+            layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
+        ),
         co2_output,
-    ], layout=widgets.Layout(width='50%', padding='10px'))
+    ], layout=widgets.Layout(
+        flex='1 1 0', min_width='0', padding='10px',
+        box_sizing='border-box', overflow_x='hidden',
+    ))
 
-    tab_widget = widgets.HBox([submit_left, submit_right])
+    tab_widget = widgets.HBox(
+        [submit_left, submit_right],
+        layout=widgets.Layout(width='100%', align_items='stretch', overflow_x='hidden'),
+    )
+    submit_css = widgets.HTML(
+        """
+        <style>
+        .submit-split-root, .submit-split-root * {
+            box-sizing: border-box;
+        }
+        .submit-split-root {
+            width: 100% !important;
+            overflow-x: hidden !important;
+        }
+        .submit-split-pane {
+            min-width: 0 !important;
+            overflow-x: hidden !important;
+        }
+        .submit-split-pane .widget-box,
+        .submit-split-pane .widget-hbox,
+        .submit-split-pane .widget-vbox {
+            max-width: 100% !important;
+        }
+        .submit-split-pane .widget-output,
+        .submit-split-pane .output_area,
+        .submit-split-pane .output_subarea,
+        .submit-split-pane .output_wrapper,
+        .submit-split-pane .jp-OutputArea,
+        .submit-split-pane .jp-OutputArea-child,
+        .submit-split-pane .jp-OutputArea-output {
+            max-width: 100% !important;
+            overflow-x: hidden !important;
+        }
+        </style>
+        """
+    )
+    tab_widget.add_class('submit-split-root')
+    submit_left.add_class('submit-split-pane')
+    submit_right.add_class('submit-split-pane')
+    mol_output.add_class('submit-split-pane')
+    tab_widget = widgets.VBox([submit_css, tab_widget], layout=widgets.Layout(width='100%'))
 
     return tab_widget, {'reset_form': reset_form, 'mol_output': mol_output}
