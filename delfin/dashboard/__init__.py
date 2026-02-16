@@ -144,8 +144,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
 
     # -- assemble tabs -----------------------------------------------------
-    children = [tab1, tab2, tab3, tab4]
-    titles = ['Submit Job', 'Recalc', 'Job Status', 'ORCA Builder']
+    children = [tab1, tab2, tab4]
+    titles = ['Submit Job', 'Recalc', 'ORCA Builder']
 
     if tab_tm is not None:
         children.append(tab_tm)
@@ -163,6 +163,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         children.append(tab_cd)
         titles.append('ChemDarwin')
 
+    children.append(tab3)
+    titles.append('Job Status')
     children.append(tab5)
     titles.append('Calculations')
 
@@ -174,7 +176,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         tabs.set_title(i, title)
 
     # Auto-refresh job list when switching to Job Status tab
-    job_status_idx = 2
+    job_status_idx = titles.index('Job Status')
     refresh_job_list = refs3.get('refresh_job_list')
 
     def _on_tab_change(change):
