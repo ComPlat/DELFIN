@@ -56,7 +56,7 @@ def create_tab(ctx):
     )
 
     guppy_submit_button = widgets.Button(
-        description='SUBMIT GUPPY 20x', button_style='warning',
+        description='SUBMIT GRUPPY', button_style='warning',
         layout=widgets.Layout(width='170px'),
     )
 
@@ -392,7 +392,7 @@ def create_tab(ctx):
                 return
 
             job_dir = ctx.calc_dir / safe_job_name
-            time_limit = resolve_time_limit(job_type_widget, custom_time_widget, '48:00:00')
+            time_limit = '00:20:00'
 
             try:
                 # Match ONLY GOAT behavior: allow existing dir and reuse same naming flow.
