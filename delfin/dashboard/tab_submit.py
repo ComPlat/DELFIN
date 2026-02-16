@@ -39,7 +39,6 @@ def create_tab(ctx):
             'XYZ example:\n42\nComment\nFe  0.0  0.0  0.0\nC   1.5  0.0  0.0\n\n'
             'SMILES example:\nCCO or c1ccccc1'
         ),
-        description='Input:',
         layout=widgets.Layout(width='500px', height='200px'),
         style=COMMON_STYLE,
     )
@@ -65,7 +64,6 @@ def create_tab(ctx):
     smiles_batch_widget = widgets.Textarea(
         value='',
         placeholder='name;SMILES;key=value;...\nNi_1;[Ni];charge=2;solvent=water\nCo_1;[Co];charge=3',
-        description='SMILES List:',
         layout=widgets.Layout(width='500px', height='160px'),
         style=COMMON_STYLE,
     )
@@ -92,7 +90,6 @@ def create_tab(ctx):
     control_help = widgets.Label('CONTROL.txt - edit parameters as needed')
     control_widget = widgets.Textarea(
         value=ctx.default_control,
-        description='CONTROL.txt:',
         layout=widgets.Layout(width='500px', height='500px'),
         style=COMMON_STYLE,
     )
