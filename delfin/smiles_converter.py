@@ -1636,7 +1636,7 @@ def smiles_to_xyz_isomers(
                     continue
                 _lj, cid_j, sj = seen_fps[fps_list[j]]
                 rmsd = _conformer_rmsd(mol, cid_i, cid_j)
-                if rmsd < 0.5:
+                if rmsd < 1.5:
                     # Keep the conformer with the better geometry score
                     if si <= sj:
                         removed.add(j)
