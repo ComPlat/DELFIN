@@ -197,6 +197,18 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
         if err:
             errors.append(f"no-valence({smi[:30]}...): {err}")
 
+    # Strategy 5: Open Babel / Avogadro-like 3D generation.
+    if OPENBABEL_AVAILABLE:
+        xyz_blocks, ob_err = _openbabel_generate_conformer_xyz(smiles, num_confs=1)
+        if xyz_blocks:
+            xyz_content = xyz_blocks[0]
+            if output_path:
+                Path(output_path).write_text(xyz_content, encoding='utf-8')
+                logger.info("Converted SMILES to XYZ using Open Babel: %s", output_path)
+            return xyz_content, None
+        if ob_err:
+            errors.append(f"openbabel({smiles[:30]}...): {ob_err}")
+
     return None, f"All strategies failed: {'; '.join(errors)}"
 
 
@@ -278,6 +290,9 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
     positions (octahedral for 6-coord, tetrahedral for 4-coord, etc.).
     Remaining ligand atoms are placed along bond directions using a simple
     BFS traversal.  The geometry is rough but usable as a GOAT/xTB input.
+
+    For 4-coordinate metals, both tetrahedral and square-planar geometries are
+    tried, OB UFF is applied to each, and the better-scoring geometry is kept.
     """
     if not RDKIT_AVAILABLE:
         return None, "RDKit is not installed"
@@ -307,7 +322,7 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
             return None, "No metal found"
 
         # Idealized coordination vectors for common coordination numbers
-        _COORD_VECTORS = {
+        _COORD_VECTORS_BASE = {
             2: [(1, 0, 0), (-1, 0, 0)],
             3: [(1, 0, 0), (-0.5, 0.866, 0), (-0.5, -0.866, 0)],
             4: [(1, 1, 1), (-1, -1, 1), (-1, 1, -1), (1, -1, -1)],  # tetrahedral
@@ -316,78 +331,360 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
         }
 
         n_atoms = mol.GetNumAtoms()
-        coords = [(0.0, 0.0, 0.0)] * n_atoms
-        placed = set()
 
-        for mi in metal_indices:
-            coords[mi] = (0.0, 0.0, 0.0)
-            placed.add(mi)
+        def _build_xyz_for_4coord_vecs(override_4coord):
+            """Build a raw XYZ string using given vectors for 4-coord metals."""
+            local_coords = [(0.0, 0.0, 0.0)] * n_atoms
+            local_placed: set = set()
 
-            neighbors = [nbr.GetIdx() for nbr in mol.GetAtomWithIdx(mi).GetNeighbors()]
-            n_coord = len(neighbors)
-            vectors = _COORD_VECTORS.get(n_coord, _COORD_VECTORS.get(6, []))
+            for mi in metal_indices:
+                local_coords[mi] = (0.0, 0.0, 0.0)
+                local_placed.add(mi)
 
-            # Place coordinating atoms at idealized positions (2.0 A from metal)
-            bond_len = 2.0
-            for i, nbr_idx in enumerate(neighbors):
-                if i < len(vectors):
-                    vx, vy, vz = vectors[i]
-                    mag = math.sqrt(vx**2 + vy**2 + vz**2)
-                    if mag > 1e-8:
-                        vx, vy, vz = vx/mag * bond_len, vy/mag * bond_len, vz/mag * bond_len
+                neighbors = [nbr.GetIdx() for nbr in mol.GetAtomWithIdx(mi).GetNeighbors()]
+                n_coord = len(neighbors)
+                if n_coord == 4:
+                    vectors = override_4coord
                 else:
-                    # Extra ligands: random-ish positions
-                    angle = 2 * math.pi * i / n_coord
-                    vx = bond_len * math.cos(angle)
-                    vy = bond_len * math.sin(angle)
-                    vz = 0.0
-                coords[nbr_idx] = (vx, vy, vz)
-                placed.add(nbr_idx)
+                    vectors = _COORD_VECTORS_BASE.get(n_coord, _COORD_VECTORS_BASE.get(6, []))
 
-        # BFS to place remaining atoms along bond directions
-        bond_len_default = 1.4
-        queue = list(placed)
-        while queue:
-            current = queue.pop(0)
-            cx, cy, cz = coords[current]
-            atom = mol.GetAtomWithIdx(current)
-            unplaced_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetIdx() not in placed]
-            for k, nbr_idx in enumerate(unplaced_nbrs):
-                # Direction away from the atom's other neighbors
-                dx, dy, dz = 0.0, 0.0, 0.0
-                for other in atom.GetNeighbors():
-                    oi = other.GetIdx()
-                    if oi in placed and oi != nbr_idx:
-                        ox, oy, oz = coords[oi]
-                        dx += cx - ox
-                        dy += cy - oy
-                        dz += cz - oz
-                mag = math.sqrt(dx**2 + dy**2 + dz**2)
-                if mag < 1e-8:
-                    # No directional info - use a default direction with offset
-                    dx, dy, dz = 1.0 + 0.1 * k, 0.3 * k, 0.0
+                bond_len = 2.0
+                for i, nbr_idx in enumerate(neighbors):
+                    if i < len(vectors):
+                        vx, vy, vz = vectors[i]
+                        mag = math.sqrt(vx**2 + vy**2 + vz**2)
+                        if mag > 1e-8:
+                            vx = vx/mag * bond_len
+                            vy = vy/mag * bond_len
+                            vz = vz/mag * bond_len
+                    else:
+                        angle = 2 * math.pi * i / n_coord
+                        vx = bond_len * math.cos(angle)
+                        vy = bond_len * math.sin(angle)
+                        vz = 0.0
+                    local_coords[nbr_idx] = (vx, vy, vz)
+                    local_placed.add(nbr_idx)
+
+            # BFS to place remaining atoms
+            bond_len_default = 1.4
+            queue = list(local_placed)
+            while queue:
+                current = queue.pop(0)
+                cx, cy, cz = local_coords[current]
+                atom = mol.GetAtomWithIdx(current)
+                unplaced_nbrs = [
+                    n.GetIdx() for n in atom.GetNeighbors()
+                    if n.GetIdx() not in local_placed
+                ]
+                for k, nbr_idx in enumerate(unplaced_nbrs):
+                    dx, dy, dz = 0.0, 0.0, 0.0
+                    for other in atom.GetNeighbors():
+                        oi = other.GetIdx()
+                        if oi in local_placed and oi != nbr_idx:
+                            ox, oy, oz = local_coords[oi]
+                            dx += cx - ox
+                            dy += cy - oy
+                            dz += cz - oz
                     mag = math.sqrt(dx**2 + dy**2 + dz**2)
-                dx, dy, dz = dx/mag * bond_len_default, dy/mag * bond_len_default, dz/mag * bond_len_default
-                coords[nbr_idx] = (cx + dx, cy + dy, cz + dz)
-                placed.add(nbr_idx)
-                queue.append(nbr_idx)
+                    if mag < 1e-8:
+                        dx, dy, dz = 1.0 + 0.1 * k, 0.3 * k, 0.0
+                        mag = math.sqrt(dx**2 + dy**2 + dz**2)
+                    dx = dx/mag * bond_len_default
+                    dy = dy/mag * bond_len_default
+                    dz = dz/mag * bond_len_default
+                    local_coords[nbr_idx] = (cx + dx, cy + dy, cz + dz)
+                    local_placed.add(nbr_idx)
+                    queue.append(nbr_idx)
 
-        # Build XYZ string
-        lines = []
-        for i in range(n_atoms):
-            atom = mol.GetAtomWithIdx(i)
-            x, y, z = coords[i]
-            lines.append(f"{atom.GetSymbol():4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+            lines = []
+            for i in range(n_atoms):
+                atom = mol.GetAtomWithIdx(i)
+                x, y, z = local_coords[i]
+                lines.append(f"{atom.GetSymbol():4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+            return '\n'.join(lines) + '\n'
 
-        xyz_str = '\n'.join(lines) + '\n'
+        # Check whether any metal is 4-coordinate (warrants dual geometry trial)
+        has_4coord = any(
+            len([nbr.GetIdx() for nbr in mol.GetAtomWithIdx(mi).GetNeighbors()]) == 4
+            for mi in metal_indices
+        )
 
-        # Refine rough geometry with Open Babel UFF
-        xyz_str = _optimize_xyz_openbabel(xyz_str)
+        if has_4coord:
+            # Try both tetrahedral and square-planar vectors
+            tetra_vecs = [(1, 1, 1), (-1, -1, 1), (-1, 1, -1), (1, -1, -1)]
+            sq_vecs = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)]
+
+            xyz_tetra = _build_xyz_for_4coord_vecs(tetra_vecs)
+            xyz_sq = _build_xyz_for_4coord_vecs(sq_vecs)
+
+            # OB UFF refinement for both
+            xyz_tetra = _optimize_xyz_openbabel(xyz_tetra)
+            xyz_sq = _optimize_xyz_openbabel(xyz_sq)
+
+            # Score via temporary RDKit conformers
+            try:
+                mol_tmp = Chem.RWMol(mol)
+                mol_tmp.RemoveAllConformers()
+                conf_t = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_tetra)
+                conf_s = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_sq)
+                if conf_t is not None and conf_s is not None:
+                    cid_t = mol_tmp.AddConformer(conf_t, assignId=True)
+                    cid_s = mol_tmp.AddConformer(conf_s, assignId=True)
+                    score_t = _geometry_quality_score(mol_tmp.GetMol(), cid_t)
+                    score_s = _geometry_quality_score(mol_tmp.GetMol(), cid_s)
+                    xyz_str = xyz_tetra if score_t <= score_s else xyz_sq
+                else:
+                    xyz_str = xyz_tetra  # fallback: keep tetrahedral
+            except Exception:
+                xyz_str = xyz_tetra
+        else:
+            # Standard path for non-4-coord metals (use default vectors)
+            xyz_str = _build_xyz_for_4coord_vecs(
+                _COORD_VECTORS_BASE.get(4, [(1, 1, 1), (-1, -1, 1), (-1, 1, -1), (1, -1, -1)])
+            )
+            xyz_str = _optimize_xyz_openbabel(xyz_str)
 
         return xyz_str, None
 
     except Exception as e:
         return None, f"Manual metal embed error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Open Babel helper functions (Avogadro-equivalent 3D generation pipeline)
+# ---------------------------------------------------------------------------
+
+def _normalize_conversion_backend(backend: Optional[str]) -> str:
+    """Normalize conversion backend token to ``'rdkit'`` or ``'avogadro'``."""
+    if backend is None:
+        return "rdkit"
+    token = str(backend).strip().lower()
+    aliases = {
+        "rdkit": "rdkit",
+        "default": "rdkit",
+        "avogadro": "avogadro",
+        "openbabel": "avogadro",
+        "obabel": "avogadro",
+        "ob": "avogadro",
+    }
+    return aliases.get(token, "rdkit")
+
+
+def _openbabel_smiles_variants(smiles: str) -> List[str]:
+    """Return unique SMILES variants used for robust Open Babel parsing."""
+    variants = [smiles]
+    normalized = _normalize_metal_smiles(smiles)
+    denormalized = _denormalize_metal_smiles(smiles)
+    if normalized and normalized not in variants:
+        variants.append(normalized)
+    if denormalized and denormalized not in variants:
+        variants.append(denormalized)
+    return variants
+
+
+def _pick_openbabel_forcefield(smiles: str) -> str:
+    """Pick an Open Babel force field close to Avogadro defaults.
+
+    UFF has full parameters for transition metals; MMFF94 is preferred for
+    purely organic systems.
+    """
+    if not OPENBABEL_AVAILABLE:
+        return "uff"
+    if contains_metal(smiles):
+        return "uff"
+    if "mmff94" in pybel._forcefields:
+        return "mmff94"
+    return "uff"
+
+
+def _obmol_to_delfin_xyz(ob_mol) -> str:
+    """Convert an Open Babel OBMol to DELFIN XYZ lines (no header)."""
+    lines = []
+    for ob_atom in pybel.ob.OBMolAtomIter(ob_mol):
+        symbol = pybel.ob.GetSymbol(ob_atom.GetAtomicNum())
+        x, y, z = ob_atom.GetX(), ob_atom.GetY(), ob_atom.GetZ()
+        lines.append(f"{symbol:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+    return "\n".join(lines) + "\n"
+
+
+def _openbabel_generate_conformer_xyz(
+    smiles: str,
+    *,
+    num_confs: int = 200,
+    forcefield: Optional[str] = None,
+    rotor_steps: int = 120,
+    localopt_steps: int = 250,
+    optimize: bool = True,
+) -> Tuple[List[str], Optional[str]]:
+    """Generate 3D conformers using Open Babel in an Avogadro-like workflow.
+
+    Pipeline (mirrors Avogadro's ``gen3d`` quality):
+    1. Fragment-based 3D initialization via ``make3D`` (uses CSD crystal data)
+    2. ``WeightedRotorSearch`` — generates a pool of ``num_confs`` conformers
+    3. Per-conformer ``ConjugateGradients`` local optimization
+
+    Tries multiple SMILES variants (original / normalized / denormalized) for
+    robustness with metal complexes.  Duplicates are removed via text-hash.
+
+    Returns:
+        (xyz_blocks, error) — ``xyz_blocks`` is a list of DELFIN-format XYZ
+        strings (one per unique conformer); ``error`` is set only when *all*
+        variants failed.
+    """
+    if not OPENBABEL_AVAILABLE:
+        return [], "Open Babel is not installed"
+
+    target = max(1, int(num_confs))
+    errors: List[str] = []
+    chosen_ff = (forcefield or "").strip().lower() or _pick_openbabel_forcefield(smiles)
+
+    for smi in _openbabel_smiles_variants(smiles):
+        try:
+            ob_mol = pybel.readstring("smi", smi)
+        except Exception as exc:
+            errors.append(f"parse({smi[:30]}...): {exc}")
+            continue
+
+        if ob_mol.OBMol.NumAtoms() <= 0:
+            errors.append(f"parse({smi[:30]}...): empty molecule")
+            continue
+
+        ff_name = chosen_ff if chosen_ff in pybel._forcefields else "uff"
+        if ff_name not in pybel._forcefields:
+            errors.append("no usable Open Babel forcefield")
+            continue
+
+        make3d_steps = max(50, min(200, localopt_steps // 2)) if optimize else 0
+        try:
+            ob_mol.make3D(forcefield=ff_name, steps=make3d_steps)
+        except Exception as exc:
+            errors.append(f"make3D({ff_name}): {exc}")
+            # Fallback once to UFF if initial forcefield failed.
+            if ff_name != "uff" and "uff" in pybel._forcefields:
+                try:
+                    ff_name = "uff"
+                    fallback_steps = max(50, min(200, localopt_steps // 2)) if optimize else 1
+                    ob_mol.make3D(forcefield=ff_name, steps=fallback_steps)
+                except Exception as exc2:
+                    errors.append(f"make3D(uff): {exc2}")
+                    continue
+            else:
+                continue
+
+        if not optimize:
+            xyz_text = _obmol_to_delfin_xyz(ob_mol.OBMol)
+            if xyz_text.strip():
+                return [xyz_text], None
+            errors.append(f"conformers({smi[:30]}...): empty geometry")
+            continue
+
+        ff = pybel._forcefields.get(ff_name)
+        if ff is None:
+            errors.append(f"forcefield({ff_name}): unavailable")
+            continue
+
+        try:
+            if not ff.Setup(ob_mol.OBMol):
+                errors.append(f"forcefield({ff_name}): setup failed")
+                continue
+        except Exception as exc:
+            errors.append(f"forcefield({ff_name}): {exc}")
+            continue
+
+        try:
+            ff.WeightedRotorSearch(target, max(25, int(rotor_steps)))
+            ff.GetConformers(ob_mol.OBMol)
+        except Exception as exc:
+            logger.debug("Open Babel conformer search failed, using initial 3D geometry: %s", exc)
+
+        num_ob_confs = int(ob_mol.OBMol.NumConformers() or 0)
+        if num_ob_confs <= 0:
+            num_ob_confs = 1
+
+        xyz_blocks: List[str] = []
+        seen: set = set()
+        for conf_idx in range(min(target, num_ob_confs)):
+            try:
+                ob_mol.OBMol.SetConformer(conf_idx)
+            except Exception:
+                pass
+
+            try:
+                if ff.Setup(ob_mol.OBMol):
+                    ff.ConjugateGradients(max(50, int(localopt_steps)))
+                    ff.GetCoordinates(ob_mol.OBMol)
+            except Exception:
+                # Keep current coordinates if local optimization fails.
+                pass
+
+            xyz_text = _obmol_to_delfin_xyz(ob_mol.OBMol)
+            key = "\n".join(line.strip() for line in xyz_text.splitlines() if line.strip())
+            if key in seen:
+                continue
+            seen.add(key)
+            xyz_blocks.append(xyz_text)
+
+        if xyz_blocks:
+            return xyz_blocks, None
+
+        errors.append(f"conformers({smi[:30]}...): none generated")
+
+    if errors:
+        return [], f"Open Babel conversion failed: {'; '.join(errors)}"
+    return [], "Open Babel conversion failed"
+
+
+def _xyz_to_rdkit_conformer(mol, xyz_delfin: str):
+    """Build an RDKit Conformer from DELFIN XYZ lines if atom order matches.
+
+    Validates that the number of atom lines equals ``mol.GetNumAtoms()`` and
+    that element symbols appear in the same order.  Returns ``None`` if
+    validation fails or any coordinate cannot be parsed.
+    """
+    if not RDKIT_AVAILABLE:
+        return None
+
+    lines = [ln.strip() for ln in xyz_delfin.splitlines() if ln.strip()]
+    if len(lines) != mol.GetNumAtoms():
+        return None
+
+    conf = Chem.Conformer(mol.GetNumAtoms())
+    for idx, line in enumerate(lines):
+        parts = line.split()
+        if len(parts) < 4:
+            return None
+        atom = mol.GetAtomWithIdx(idx)
+        if parts[0] != atom.GetSymbol():
+            return None
+        try:
+            x = float(parts[1])
+            y = float(parts[2])
+            z = float(parts[3])
+        except ValueError:
+            return None
+        conf.SetAtomPosition(idx, (x, y, z))
+    return conf
+
+
+def _inject_openbabel_conformers_into_mol(mol, xyz_blocks: List[str]) -> List[int]:
+    """Populate *mol* with conformers parsed from Open Babel XYZ blocks.
+
+    Clears all existing RDKit conformers and injects the OB-generated
+    conformers.  Skips any xyz block whose atom count or symbol order does
+    not match *mol* (atom-ordering mismatch between OB and RDKit).
+
+    Returns the list of assigned conformer IDs.
+    """
+    if not xyz_blocks:
+        return []
+    mol.RemoveAllConformers()
+    conf_ids: List[int] = []
+    for xyz_text in xyz_blocks:
+        conf = _xyz_to_rdkit_conformer(mol, xyz_text)
+        if conf is None:
+            continue
+        conf_ids.append(int(mol.AddConformer(conf, assignId=True)))
+    return conf_ids
 
 
 def _normalize_metal_smiles(smiles: str) -> Optional[str]:
@@ -1015,6 +1312,65 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                 dev_180 = abs(a - 180)
                 total_penalty += min(dev_90, dev_180)
 
+    # Chelate-ring planarity bonus: aromatic rings that coordinate to a metal
+    # should be flat.  Penalize RMSD of ring atoms from the best-fit plane.
+    try:
+        Chem.FastFindRings(mol)
+        ring_info = mol.GetRingInfo()
+        metal_atom_indices = {a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET}
+        if metal_atom_indices and ring_info and ring_info.NumRings() > 0:
+            for ring in ring_info.AtomRings():
+                # Check whether ≥2 ring atoms are direct neighbours of a metal
+                ring_set = set(ring)
+                n_coord_in_ring = sum(
+                    1 for ridx in ring_set
+                    if any(nbr.GetIdx() in metal_atom_indices
+                           for nbr in mol.GetAtomWithIdx(ridx).GetNeighbors())
+                )
+                if n_coord_in_ring < 2:
+                    continue  # Not a chelate ring
+
+                # Collect ring-atom 3D positions
+                positions = []
+                for ridx in ring:
+                    pos = conf.GetAtomPosition(ridx)
+                    positions.append((pos.x, pos.y, pos.z))
+
+                if len(positions) < 3:
+                    continue
+
+                # Fit a plane via centroid + SVD-like normal estimation using
+                # cross products of consecutive edge vectors (rotation-invariant).
+                cx = sum(p[0] for p in positions) / len(positions)
+                cy = sum(p[1] for p in positions) / len(positions)
+                cz = sum(p[2] for p in positions) / len(positions)
+                vecs = [(p[0]-cx, p[1]-cy, p[2]-cz) for p in positions]
+
+                # Accumulate a rough normal via cross products of consecutive vectors
+                nx, ny, nz = 0.0, 0.0, 0.0
+                n_v = len(vecs)
+                for vi in range(n_v):
+                    a_v = vecs[vi]
+                    b_v = vecs[(vi + 1) % n_v]
+                    nx += a_v[1]*b_v[2] - a_v[2]*b_v[1]
+                    ny += a_v[2]*b_v[0] - a_v[0]*b_v[2]
+                    nz += a_v[0]*b_v[1] - a_v[1]*b_v[0]
+                n_mag = math.sqrt(nx*nx + ny*ny + nz*nz)
+                if n_mag < 1e-8:
+                    continue
+                nx /= n_mag
+                ny /= n_mag
+                nz /= n_mag
+
+                # RMSD of atoms from the plane
+                deviations = [abs(v[0]*nx + v[1]*ny + v[2]*nz) for v in vecs]
+                planarity_rmsd = math.sqrt(
+                    sum(d*d for d in deviations) / len(deviations)
+                )
+                total_penalty += planarity_rmsd * 5.0
+    except Exception:
+        pass  # Ring-planarity scoring is optional; never block normal scoring
+
     return total_penalty
 
 
@@ -1570,6 +1926,28 @@ def smiles_to_xyz_isomers(
             return [], err
         return [(xyz, '')], None
 
+    # For metal complexes: prepend OB conformers to the pool so that
+    # Avogadro-quality geometries are always considered during isomer search.
+    has_metal = contains_metal(smiles)
+    conf_ids: List[int] = []
+    if has_metal and OPENBABEL_AVAILABLE:
+        try:
+            ob_xyz_blocks, ob_error = _openbabel_generate_conformer_xyz(
+                smiles, num_confs=max(20, int(num_confs))
+            )
+            if ob_xyz_blocks:
+                ob_ids = _inject_openbabel_conformers_into_mol(mol, ob_xyz_blocks)
+                conf_ids.extend(ob_ids)
+                logger.debug(
+                    "OB conformers injected for isomer search: %d", len(ob_ids)
+                )
+            elif ob_error:
+                logger.debug("OB conformer generation: %s", ob_error)
+        except Exception as ob_exc:
+            logger.debug("OB conformer generation exception: %s", ob_exc)
+            mol.RemoveAllConformers()
+            conf_ids = []
+
     # Embed multiple conformers with deterministic seed schedule.
     # This improves reproducibility while still sampling diverse geometries.
     try:
@@ -1578,7 +1956,6 @@ def smiles_to_xyz_isomers(
         seeds = [31, 42, 7, 97, 13, 61, 83]
         n_rounds = len(seeds)
         per_round = max(1, int(math.ceil(num_confs / n_rounds)))
-        conf_ids = []
         for seed in seeds:
             params = AllChem.ETKDGv3()
             params.useRandomCoords = True
@@ -1857,35 +2234,77 @@ def smiles_to_xyz(
                         return legacy_xyz, None
                 pass
 
-        # Generate 3D coordinates using ETKDG method.
-        # For metal complexes, sample multiple conformers and pick the best
-        # geometry candidate (helps for 4-coordinate tetra/square-planar cases).
+        # Generate 3D coordinates using a hybrid OB+RDKit conformer pool.
+        # For metal complexes: OB WeightedRotorSearch (Avogadro-quality) +
+        # RDKit ETKDG with 7 diverse seeds → up to ~400 conformers total.
+        # Best geometry is selected by _geometry_quality_score.
         result = -1
         if has_metal:
-            try:
-                params_multi = AllChem.ETKDGv3()
-                params_multi.randomSeed = 42
-                params_multi.useRandomCoords = True
-                params_multi.enforceChirality = False
-                conf_ids = list(AllChem.EmbedMultipleConfs(mol, numConfs=40, params=params_multi))
-            except Exception:
-                conf_ids = []
+            all_conf_ids: List[int] = []
 
-            if conf_ids:
+            # --- OB conformers (Avogadro-equivalent pipeline) ---
+            ob_injection_ok = False
+            if OPENBABEL_AVAILABLE:
+                try:
+                    ob_xyz_blocks, ob_err = _openbabel_generate_conformer_xyz(
+                        smiles, num_confs=200
+                    )
+                    if ob_xyz_blocks:
+                        ob_ids = _inject_openbabel_conformers_into_mol(mol, ob_xyz_blocks)
+                        if ob_ids:
+                            all_conf_ids.extend(ob_ids)
+                            ob_injection_ok = True
+                            logger.debug(
+                                "OB conformer injection: %d conformers for %s",
+                                len(ob_ids), smiles[:40],
+                            )
+                        else:
+                            logger.debug("OB atom-order mismatch; using RDKit-only pool")
+                            mol.RemoveAllConformers()
+                    elif ob_err:
+                        logger.debug("OB conformer generation: %s", ob_err)
+                except Exception as ob_exc:
+                    logger.debug("OB conformer generation exception: %s", ob_exc)
+                    mol.RemoveAllConformers()
+
+            # --- RDKit ETKDG with 7 diverse seeds (~29 confs/seed = ~200 total) ---
+            seeds = [31, 42, 7, 97, 13, 61, 83]
+            per_seed = max(1, 200 // len(seeds))
+            try:
+                for seed in seeds:
+                    params_multi = AllChem.ETKDGv3()
+                    params_multi.randomSeed = seed
+                    params_multi.useRandomCoords = True
+                    params_multi.enforceChirality = False
+                    try:
+                        params_multi.clearConfs = False  # append to OB conformers
+                    except Exception:
+                        pass
+                    new_ids = list(AllChem.EmbedMultipleConfs(
+                        mol, numConfs=per_seed, params=params_multi
+                    ))
+                    all_conf_ids.extend(new_ids)
+            except Exception:
+                pass
+
+            if all_conf_ids:
                 best_conf = None
                 best_score = float("inf")
-                for cid in conf_ids:
-                    if _has_atom_clash(mol, cid):
+                for cid in all_conf_ids:
+                    try:
+                        if _has_atom_clash(mol, cid):
+                            continue
+                        if _has_bad_geometry(mol, cid):
+                            continue
+                        score = _geometry_quality_score(mol, cid)
+                        if score < best_score:
+                            best_score = score
+                            best_conf = cid
+                    except Exception:
                         continue
-                    if _has_bad_geometry(mol, cid):
-                        continue
-                    score = _geometry_quality_score(mol, cid)
-                    if score < best_score:
-                        best_score = score
-                        best_conf = cid
 
                 if best_conf is None:
-                    best_conf = conf_ids[0]
+                    best_conf = all_conf_ids[0]
 
                 # Keep only the selected conformer so downstream conversion
                 # can continue using the default conformer accessor.
