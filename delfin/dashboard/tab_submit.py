@@ -58,7 +58,7 @@ def create_tab(ctx):
     )
 
     guppy_submit_button = widgets.Button(
-        description='SUBMIT GRUPPY', button_style='warning',
+        description='SUBMIT GUPPY', button_style='warning',
         layout=widgets.Layout(width='170px'),
     )
 

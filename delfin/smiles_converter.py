@@ -464,24 +464,35 @@ def _convert_metal_bonds_to_dative(mol, only_elements=None):
     if not bonds_to_convert:
         return mol
 
+    # Track which atoms are dative donors (coordinating atoms whose H
+    # count should be preserved from the SMILES, not recalculated).
+    dative_donor_indices = set()
+
     # Convert bonds to dative (ligand -> metal direction)
     for idx1, idx2, atom1_is_metal in bonds_to_convert:
         rwmol.RemoveBond(idx1, idx2)
         if atom1_is_metal:
             # atom2 is ligand, atom1 is metal: ligand -> metal
             rwmol.AddBond(idx2, idx1, Chem.BondType.DATIVE)
+            dative_donor_indices.add(idx2)
         else:
             # atom1 is ligand, atom2 is metal: ligand -> metal
             rwmol.AddBond(idx1, idx2, Chem.BondType.DATIVE)
+            dative_donor_indices.add(idx1)
 
     result_mol = rwmol.GetMol()
 
-    # Reset atom properties to allow recalculation of implicit hydrogens
-    # Only for NEUTRAL atoms - charged atoms should keep their state
+    # Reset atom properties to allow recalculation of implicit hydrogens.
+    # Dative donors: set NoImplicit=True so AddHs() won't add spurious H
+    # (trust the H count from the original SMILES).
+    # Non-coordinating neutral atoms: recalculate H normally.
     for atom in result_mol.GetAtoms():
         if atom.GetFormalCharge() == 0 and atom.GetSymbol() not in _METAL_SET:
-            atom.SetNoImplicit(False)
-            atom.SetNumExplicitHs(0)
+            if atom.GetIdx() in dative_donor_indices:
+                atom.SetNoImplicit(True)
+            else:
+                atom.SetNoImplicit(False)
+                atom.SetNumExplicitHs(0)
 
     logger.info(f"Converted {len(bonds_to_convert)} neutral ligand-metal bonds to dative bonds")
 
@@ -704,14 +715,16 @@ def _prepare_mol_for_embedding(smiles: str):
         # (dative bond doesn't count toward ligand valence).
         try:
             mol = _convert_metal_bonds_to_dative(mol, only_elements={'S', 'O', 'P'})
+            # Mark ALL neutral atoms bonded to a metal as NoImplicit so
+            # AddHs() won't add spurious H on coordinating atoms.
             for atom in mol.GetAtoms():
-                if atom.GetSymbol() in ('S', 'O', 'P'):
-                    has_metal_bond = any(
-                        n.GetSymbol() in _METAL_SET for n in atom.GetNeighbors()
-                    )
-                    if has_metal_bond:
-                        atom.SetNoImplicit(True)
-                        atom.SetNumExplicitHs(0)
+                if atom.GetSymbol() in _METAL_SET:
+                    continue
+                has_metal_bond = any(
+                    n.GetSymbol() in _METAL_SET for n in atom.GetNeighbors()
+                )
+                if has_metal_bond and atom.GetFormalCharge() == 0:
+                    atom.SetNoImplicit(True)
             mol.UpdatePropertyCache(strict=False)
         except Exception:
             pass
@@ -1011,13 +1024,22 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
     """Translate a coordination fingerprint to a human-readable label.
 
     The fingerprint is ``((trans_pairs, same_elem_pattern), ...)`` per
-    metal center.  Counts same-element trans pairs from both sources:
-    - 3 identical donors, 0 same-element trans -> **fac**
-    - 3 identical donors, 1 same-element trans -> **mer**
-    - 2 identical donors, 1 same-element trans -> **trans**
-    - 2 identical donors, 0 same-element trans -> **cis**
+    metal center.  Uses trans-pair analysis to classify all common
+    octahedral and 4-coordinate patterns:
+
+    6-coordinate (octahedral):
+    - **MA6** / **MA5B**: single isomer → ``''``
+    - **MA4B2**: cis / trans (minority pair B trans or not)
+    - **MA3B3**: fac / mer
+    - **MA2B2C2**: all-cis / all-trans / X-trans (X = element
+      whose pair is trans while the other two are cis)
+    - **MA3B2C**: fac/mer for A + cis/trans for B
+
+    4-coordinate:
+    - **MA2B2**: cis / trans
     """
     # Count coordinating atoms per element from the mol
+    n_coord = 0
     elem_counts: Dict[str, int] = {}
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
@@ -1025,20 +1047,14 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
         for nbr in atom.GetNeighbors():
             sym = nbr.GetSymbol()
             elem_counts[sym] = elem_counts.get(sym, 0) + 1
+            n_coord += 1
 
-    # Only use fac/mer or cis/trans labels for classical compositions where
-    # those labels are unambiguous:
-    # - fac/mer: M(A)3(B)3
-    # - cis/trans: M(A)2(B)2
     count_signature = sorted(elem_counts.values())
-    allow_fac_mer = count_signature == [3, 3]
-    allow_cis_trans = count_signature == [2, 2]
 
-    labels_found: List[str] = []
     for metal_fp in fingerprint:
         trans_pairs, same_elem_pattern = metal_fp
 
-        # Count same-element trans from trans_pairs (for mixed-element)
+        # Count same-element trans pairs from trans_pairs
         same_trans: Dict[str, int] = {}
         for pair in trans_pairs:
             if pair[0] == pair[1]:
@@ -1051,27 +1067,66 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
                     same_trans[sym] = 0
                 same_trans[sym] += 1
 
-        for sym, count in elem_counts.items():
-            n_same = same_trans.get(sym, 0)
-            if allow_fac_mer and count == 3:
-                if n_same == 0:
-                    return 'fac'
-                if n_same >= 1:
-                    return 'mer'
-            if allow_cis_trans and count == 2:
-                if n_same >= 1:
-                    labels_found.append('trans')
-                elif n_same == 0:
-                    labels_found.append('cis')
+        # --- 6-coordinate patterns ---
+        if n_coord == 6:
+            # MA6 / MA5B: single isomer, no label
+            if len(elem_counts) == 1 or count_signature == [1, 5]:
+                return ''
 
-    if labels_found and len(set(labels_found)) == 1:
-        return labels_found[0]
+            # MA4B2: cis/trans based on minority element (count==2)
+            if count_signature == [2, 4]:
+                minority = [s for s, c in elem_counts.items() if c == 2][0]
+                if same_trans.get(minority, 0) >= 1:
+                    return 'trans'
+                return 'cis'
+
+            # MA3B3: fac/mer
+            if count_signature == [3, 3]:
+                for sym, count in elem_counts.items():
+                    if count == 3:
+                        if same_trans.get(sym, 0) == 0:
+                            return 'fac'
+                        return 'mer'
+
+            # MA2B2C2: all-cis / all-trans / X-trans
+            if count_signature == [2, 2, 2]:
+                elems_with_2 = [s for s, c in elem_counts.items() if c == 2]
+                trans_elems = [s for s in elems_with_2 if same_trans.get(s, 0) >= 1]
+                n_trans = len(trans_elems)
+                if n_trans == 0:
+                    return 'all-cis'
+                if n_trans == 3:
+                    return 'all-trans'
+                if n_trans == 1:
+                    return f'{trans_elems[0]}-trans'
+                # 2 trans pairs: label by the one that is cis
+                cis_elems = [s for s in elems_with_2 if s not in trans_elems]
+                if len(cis_elems) == 1:
+                    return f'{cis_elems[0]}-cis'
+                return ''
+
+            # MA3B2C: fac/mer for A (count==3) + cis/trans for B (count==2)
+            if count_signature == [1, 2, 3]:
+                a_sym = [s for s, c in elem_counts.items() if c == 3][0]
+                b_sym = [s for s, c in elem_counts.items() if c == 2][0]
+                a_label = 'mer' if same_trans.get(a_sym, 0) >= 1 else 'fac'
+                b_label = 'trans' if same_trans.get(b_sym, 0) >= 1 else 'cis'
+                return f'{a_label}-{b_label}'
+
+        # --- 4-coordinate patterns ---
+        if n_coord == 4:
+            if count_signature == [2, 2]:
+                minority = sorted(elem_counts.keys())[0]
+                if same_trans.get(minority, 0) >= 1:
+                    return 'trans'
+                return 'cis'
+
     return ''
 
 
 def smiles_to_xyz_isomers(
     smiles: str,
-    num_confs: int = 100,
+    num_confs: int = 200,
     max_isomers: int = 10,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
@@ -1105,9 +1160,9 @@ def smiles_to_xyz_isomers(
     # Embed multiple conformers with deterministic seed schedule.
     # This improves reproducibility while still sampling diverse geometries.
     try:
-        # Fixed seed keeps results reproducible across runs.
-        # Seed 31 gives robust diversity for many transition-metal cases.
-        seeds = [31]
+        # Fixed seeds keep results reproducible across runs.
+        # Multiple diverse seeds improve sampling of coordination isomers.
+        seeds = [31, 42, 7, 97, 13, 61, 83]
         n_rounds = len(seeds)
         per_round = max(1, int(math.ceil(num_confs / n_rounds)))
         conf_ids = []
@@ -1266,6 +1321,16 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                     else:
                         rdkit_note = rdkit_note2 or rdkit_note
 
+                # Try denormalized (neutral) SMILES as fallback
+                if mol is None:
+                    denormalized_smiles = _denormalize_metal_smiles(smiles)
+                    if denormalized_smiles:
+                        mol3, rdkit_note3 = mol_from_smiles_rdkit(denormalized_smiles, allow_metal=True)
+                        if mol3 is not None:
+                            mol = mol3
+                            method = "RDKit (denormalized)"
+                            rdkit_note = None
+
                 if rdkit_note and ("Explicit valence" in rdkit_note or "kekulize" in rdkit_note):
                     legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
                     if legacy_err is None and legacy_xyz:
@@ -1273,6 +1338,10 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                             Path(output_path).write_text(legacy_xyz, encoding='utf-8')
                             logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
                         return legacy_xyz, None
+                # Last resort: try multi-strategy approach for metal complexes
+                if has_metal:
+                    logger.info("Trying multi-strategy fallback for unparseable metal SMILES")
+                    return _try_multiple_strategies(smiles, output_path)
                 error = f"Failed to parse SMILES string: {rdkit_note}"
                 logger.error(error)
                 return None, error
@@ -1387,6 +1456,12 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                     Path(output_path).write_text(legacy_xyz, encoding='utf-8')
                     logger.info(f"Converted SMILES to XYZ using legacy fallback: {output_path}")
                 return legacy_xyz, None
+            # Try multi-strategy approach before giving up
+            if has_metal:
+                logger.info("Trying multi-strategy fallback after embedding failure")
+                multi_xyz, multi_err = _try_multiple_strategies(smiles, output_path)
+                if multi_xyz:
+                    return multi_xyz, None
             error = f"Failed to generate 3D coordinates for SMILES: {smiles}"
             if legacy_err:
                 error = f"{error} (legacy fallback failed: {legacy_err})"
@@ -1434,6 +1509,12 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                     Path(output_path).write_text(legacy_xyz, encoding='utf-8')
                     logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
                 return legacy_xyz, None
+        # Last resort: multi-strategy fallback for metal complexes
+        if has_metal:
+            logger.info("Trying multi-strategy fallback after exception: %s", e)
+            multi_xyz, multi_err = _try_multiple_strategies(smiles, output_path)
+            if multi_xyz:
+                return multi_xyz, None
         error = f"Error converting SMILES to XYZ: {e}"
         logger.error(error, exc_info=True)
         return None, error
