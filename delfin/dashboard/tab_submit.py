@@ -51,6 +51,10 @@ def create_tab(ctx):
         description='CONVERT SMILES', button_style='info',
         layout=widgets.Layout(width='150px'),
     )
+    convert_smiles_uff_button = widgets.Button(
+        description='CONVERT SMILES + UFF', button_style='info',
+        layout=widgets.Layout(width='185px'),
+    )
 
     build_complex_button = widgets.Button(
         description='BUILD COMPLEX', button_style='warning',
@@ -197,7 +201,7 @@ def create_tab(ctx):
                 state['current_xyz_for_copy'] = {'content': None}
                 xyz_copy_btn.disabled = True
                 xyz_copy_status.value = ''
-                print("SMILES erkannt. Bitte 'CONVERT SMILES' klicken.")
+                print("SMILES erkannt. Bitte 'CONVERT SMILES' oder 'CONVERT SMILES + UFF' klicken.")
                 return
 
             state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
@@ -276,7 +280,7 @@ def create_tab(ctx):
         if state['isomers']:
             _show_isomer_at_index(state['isomer_index'] + 1)
 
-    def handle_convert_smiles(button):
+    def _convert_smiles(*, apply_uff: bool):
         raw_input = coords_widget.value.strip()
         if not raw_input:
             with mol_output:
@@ -286,7 +290,10 @@ def create_tab(ctx):
 
         with mol_output:
             clear_output()
-            print('Converting SMILES...')
+            if apply_uff:
+                print('Converting SMILES with UFF...')
+            else:
+                print('Converting SMILES (no UFF)...')
 
         cleaned_data, input_type = clean_input_data(raw_input)
         if input_type != 'smiles':
@@ -295,7 +302,7 @@ def create_tab(ctx):
                 print('Input is not a SMILES string.')
             return
 
-        isomers, error = smiles_to_xyz_isomers(cleaned_data)
+        isomers, error = smiles_to_xyz_isomers(cleaned_data, apply_uff=apply_uff)
         if error or not isomers:
             with mol_output:
                 clear_output()
@@ -309,6 +316,12 @@ def create_tab(ctx):
         state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
         state['isomers'] = isomers
         _show_isomer_at_index(0)
+
+    def handle_convert_smiles(button):
+        _convert_smiles(apply_uff=False)
+
+    def handle_convert_smiles_uff(button):
+        _convert_smiles(apply_uff=True)
 
     def handle_build_complex(button):
         with output_area:
@@ -893,6 +906,7 @@ def create_tab(ctx):
     xyz_copy_btn.on_click(on_xyz_copy)
     coords_widget.observe(update_molecule_view, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
+    convert_smiles_uff_button.on_click(handle_convert_smiles_uff)
     build_complex_button.on_click(handle_build_complex)
     guppy_submit_button.on_click(handle_guppy_submit)
     submit_smiles_list_button.on_click(handle_submit_smiles_list)
@@ -913,7 +927,8 @@ def create_tab(ctx):
         job_name_widget, spacer,
         job_type_widget, custom_time_widget, spacer_large,
         widgets.HTML('<b>Input (XYZ or SMILES):</b>'), coords_widget, spacer,
-        widgets.HBox([convert_smiles_button, build_complex_button, guppy_submit_button],
+        widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
+                      build_complex_button, guppy_submit_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES:</b>'), smiles_batch_widget, spacer,

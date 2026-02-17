@@ -10,12 +10,12 @@ from delfin.smiles_converter import (
 )
 
 
-def smiles_to_xyz(smiles):
+def smiles_to_xyz(smiles, apply_uff=True):
     """Convert a SMILES string to XYZ coordinates.
 
     Returns ``(xyz_string, num_atoms, method, error)``.
     """
-    xyz_string, error = _delfin_smiles_to_xyz(smiles)
+    xyz_string, error = _delfin_smiles_to_xyz(smiles, apply_uff=apply_uff)
     if error:
         return None, 0, None, error
     num_atoms = sum(1 for line in xyz_string.splitlines() if line.strip())
@@ -23,12 +23,12 @@ def smiles_to_xyz(smiles):
     return xyz_string, num_atoms, method, None
 
 
-def smiles_to_xyz_isomers(smiles):
+def smiles_to_xyz_isomers(smiles, apply_uff=True):
     """Generate distinct coordination isomers for a SMILES string.
 
     Returns ``([(xyz_string, num_atoms, label), ...], error)``.
     """
-    results, error = _delfin_smiles_to_xyz_isomers(smiles)
+    results, error = _delfin_smiles_to_xyz_isomers(smiles, apply_uff=apply_uff)
     if error:
         return [], error
     out = []

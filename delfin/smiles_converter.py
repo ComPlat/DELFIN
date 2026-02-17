@@ -1540,6 +1540,7 @@ def smiles_to_xyz_isomers(
     smiles: str,
     num_confs: int = 200,
     max_isomers: int = 10,
+    apply_uff: bool = True,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -1555,7 +1556,7 @@ def smiles_to_xyz_isomers(
 
     # Non-metal molecules: single geometry
     if not contains_metal(smiles):
-        xyz, err = smiles_to_xyz(smiles)
+        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
         if err:
             return [], err
         return [(xyz, '')], None
@@ -1564,7 +1565,7 @@ def smiles_to_xyz_isomers(
     mol = _prepare_mol_for_embedding(smiles)
     if mol is None:
         # Fall back to single-conformer conversion
-        xyz, err = smiles_to_xyz(smiles)
+        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
         if err:
             return [], err
         return [(xyz, '')], None
@@ -1592,13 +1593,13 @@ def smiles_to_xyz_isomers(
             )
     except Exception as e:
         logger.warning("Multi-conformer embedding failed: %s", e)
-        xyz, err = smiles_to_xyz(smiles)
+        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
         if err:
             return [], err
         return [(xyz, '')], None
 
     if not conf_ids:
-        xyz, err = smiles_to_xyz(smiles)
+        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
         if err:
             return [], err
         return [(xyz, '')], None
@@ -1663,7 +1664,7 @@ def smiles_to_xyz_isomers(
     # Build results
     results: List[Tuple[str, str]] = []
     if not seen_fps:
-        xyz, err = smiles_to_xyz(smiles)
+        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
         if err:
             return [], err
         return [(xyz, '')], None
@@ -1686,13 +1687,14 @@ def smiles_to_xyz_isomers(
             display = label
         try:
             xyz = _mol_to_xyz_conformer(mol, cid)
-            xyz = _optimize_xyz_openbabel(xyz)
+            if apply_uff:
+                xyz = _optimize_xyz_openbabel(xyz)
         except Exception:
             continue
         results.append((xyz, display))
 
     if not results:
-        xyz, err = smiles_to_xyz(smiles)
+        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
         if err:
             return [], err
         return [(xyz, '')], None
@@ -1700,7 +1702,11 @@ def smiles_to_xyz_isomers(
     return results, None
 
 
-def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+def smiles_to_xyz(
+    smiles: str,
+    output_path: Optional[str] = None,
+    apply_uff: bool = True,
+) -> Tuple[Optional[str], Optional[str]]:
     """Convert SMILES string to XYZ coordinates using RDKit.
 
     Uses RDKit's ETKDG (Experimental Torsion Knowledge Distance Geometry) method
@@ -1712,6 +1718,7 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
     Args:
         smiles: SMILES string to convert
         output_path: Optional path to write XYZ file
+        apply_uff: If True, apply UFF refinement (RDKit/Open Babel) where available.
 
     Returns:
         Tuple of (xyz_content, error_message)
@@ -1931,8 +1938,8 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
             logger.error(error)
             return None, error
 
-        # Optimize geometry with UFF force field for better starting structure
-        if not has_metal:
+        # Optional UFF refinement for better starting structures
+        if apply_uff and not has_metal:
             try:
                 AllChem.UFFOptimizeMolecule(mol, maxIters=200)
                 logger.debug("RDKit UFF optimization successful")
@@ -1942,8 +1949,8 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
         # Convert to XYZ format
         xyz_content = _mol_to_xyz(mol)
 
-        # For metal complexes, use Open Babel UFF (has full metal parameters)
-        if has_metal:
+        # For metal complexes, Open Babel UFF has full metal parameters.
+        if apply_uff and has_metal:
             xyz_content = _optimize_xyz_openbabel(xyz_content)
 
         # Check if molecule contains metals and warn about geometry quality
