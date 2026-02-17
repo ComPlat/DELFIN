@@ -264,6 +264,120 @@ def _smiles_to_xyz_no_valence_check(smiles: str) -> Tuple[Optional[str], Optiona
         return None, f"No-valence-check error: {e}"
 
 
+def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Last-resort fallback: manually construct coordinates for metal complexes.
+
+    Places the metal at the origin and coordinating atoms at idealized
+    positions (octahedral for 6-coord, tetrahedral for 4-coord, etc.).
+    Remaining ligand atoms are placed along bond directions using a simple
+    BFS traversal.  The geometry is rough but usable as a GOAT/xTB input.
+    """
+    if not RDKIT_AVAILABLE:
+        return None, "RDKit is not installed"
+
+    try:
+        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        if mol is None:
+            return None, "Failed to parse SMILES"
+
+        # Suppress valence checks
+        for atom in mol.GetAtoms():
+            atom.SetNoImplicit(True)
+
+        # Try to add H for non-metal atoms
+        try:
+            for atom in mol.GetAtoms():
+                if atom.GetSymbol() not in _METAL_SET:
+                    atom.SetNoImplicit(False)
+            mol.UpdatePropertyCache(strict=False)
+            mol = Chem.AddHs(mol)
+        except Exception:
+            pass
+
+        # Find metal centers
+        metal_indices = [a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET]
+        if not metal_indices:
+            return None, "No metal found"
+
+        # Idealized coordination vectors for common coordination numbers
+        _COORD_VECTORS = {
+            2: [(1, 0, 0), (-1, 0, 0)],
+            3: [(1, 0, 0), (-0.5, 0.866, 0), (-0.5, -0.866, 0)],
+            4: [(1, 1, 1), (-1, -1, 1), (-1, 1, -1), (1, -1, -1)],  # tetrahedral
+            5: [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -0.5, 0.866), (0, -0.5, -0.866)],
+            6: [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)],
+        }
+
+        n_atoms = mol.GetNumAtoms()
+        coords = [(0.0, 0.0, 0.0)] * n_atoms
+        placed = set()
+
+        for mi in metal_indices:
+            coords[mi] = (0.0, 0.0, 0.0)
+            placed.add(mi)
+
+            neighbors = [nbr.GetIdx() for nbr in mol.GetAtomWithIdx(mi).GetNeighbors()]
+            n_coord = len(neighbors)
+            vectors = _COORD_VECTORS.get(n_coord, _COORD_VECTORS.get(6, []))
+
+            # Place coordinating atoms at idealized positions (2.0 A from metal)
+            bond_len = 2.0
+            for i, nbr_idx in enumerate(neighbors):
+                if i < len(vectors):
+                    vx, vy, vz = vectors[i]
+                    mag = math.sqrt(vx**2 + vy**2 + vz**2)
+                    if mag > 1e-8:
+                        vx, vy, vz = vx/mag * bond_len, vy/mag * bond_len, vz/mag * bond_len
+                else:
+                    # Extra ligands: random-ish positions
+                    angle = 2 * math.pi * i / n_coord
+                    vx = bond_len * math.cos(angle)
+                    vy = bond_len * math.sin(angle)
+                    vz = 0.0
+                coords[nbr_idx] = (vx, vy, vz)
+                placed.add(nbr_idx)
+
+        # BFS to place remaining atoms along bond directions
+        bond_len_default = 1.4
+        queue = list(placed)
+        while queue:
+            current = queue.pop(0)
+            cx, cy, cz = coords[current]
+            atom = mol.GetAtomWithIdx(current)
+            unplaced_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetIdx() not in placed]
+            for k, nbr_idx in enumerate(unplaced_nbrs):
+                # Direction away from the atom's other neighbors
+                dx, dy, dz = 0.0, 0.0, 0.0
+                for other in atom.GetNeighbors():
+                    oi = other.GetIdx()
+                    if oi in placed and oi != nbr_idx:
+                        ox, oy, oz = coords[oi]
+                        dx += cx - ox
+                        dy += cy - oy
+                        dz += cz - oz
+                mag = math.sqrt(dx**2 + dy**2 + dz**2)
+                if mag < 1e-8:
+                    # No directional info - use a default direction with offset
+                    dx, dy, dz = 1.0 + 0.1 * k, 0.3 * k, 0.0
+                    mag = math.sqrt(dx**2 + dy**2 + dz**2)
+                dx, dy, dz = dx/mag * bond_len_default, dy/mag * bond_len_default, dz/mag * bond_len_default
+                coords[nbr_idx] = (cx + dx, cy + dy, cz + dz)
+                placed.add(nbr_idx)
+                queue.append(nbr_idx)
+
+        # Build XYZ string
+        lines = []
+        for i in range(n_atoms):
+            atom = mol.GetAtomWithIdx(i)
+            x, y, z = coords[i]
+            lines.append(f"{atom.GetSymbol():4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+
+        return '\n'.join(lines) + '\n', None
+
+    except Exception as e:
+        return None, f"Manual metal embed error: {e}"
+
+
 def _normalize_metal_smiles(smiles: str) -> Optional[str]:
     """Normalize neutral metal SMILES to charged form as a fallback.
 
@@ -911,7 +1025,58 @@ def _angle_class(pos_metal, pos_a, pos_b) -> str:
     return 'cis' if angle_deg < 135 else 'trans'
 
 
-def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
+def _donor_type_map(mol) -> Dict[int, tuple]:
+    """Compute a donor type for each atom based on its chemical environment.
+
+    Uses Morgan fingerprint bits at radius 2 to distinguish chemically
+    inequivalent atoms of the same element (e.g. N atoms in a tridentate
+    terpyridine vs. a bidentate phenylpyridine).
+
+    Returns:
+        Dict mapping atom index to ``(element_symbol, env_hash)`` where
+        ``env_hash`` is a frozenset of Morgan bits unique to that
+        chemical environment.
+    """
+    result: Dict[int, tuple] = {}
+    if not RDKIT_AVAILABLE:
+        return result
+
+    # Compute Morgan fingerprint with bit info
+    atom_bits: Dict[int, set] = {}
+    try:
+        from rdkit.Chem import rdFingerprintGenerator
+        gen = rdFingerprintGenerator.GetMorganGenerator(radius=2)
+        ao = rdFingerprintGenerator.AdditionalOutput()
+        ao.AllocateBitInfoMap()
+        gen.GetFingerprint(mol, additionalOutput=ao)
+        for bit_id, entries in ao.GetBitInfoMap().items():
+            for atom_idx, _radius in entries:
+                if atom_idx not in atom_bits:
+                    atom_bits[atom_idx] = set()
+                atom_bits[atom_idx].add(bit_id)
+    except Exception:
+        # Fallback to legacy API
+        try:
+            from rdkit.Chem import rdMolDescriptors
+            fp_info: Dict[int, list] = {}
+            rdMolDescriptors.GetMorganFingerprint(mol, 2, bitInfo=fp_info)
+            for bit_id, entries in fp_info.items():
+                for atom_idx, _radius in entries:
+                    if atom_idx not in atom_bits:
+                        atom_bits[atom_idx] = set()
+                    atom_bits[atom_idx].add(bit_id)
+        except Exception:
+            pass
+
+    for atom in mol.GetAtoms():
+        idx = atom.GetIdx()
+        env_hash = frozenset(atom_bits.get(idx, set()))
+        result[idx] = (atom.GetSymbol(), env_hash)
+
+    return result
+
+
+def _compute_coordination_fingerprint(mol, conf_id: int, dtype_map: Optional[Dict[int, tuple]] = None) -> tuple:
     """Compute a hashable fingerprint describing the coordination geometry.
 
     Hybrid approach for robustness:
@@ -921,9 +1086,22 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
        element donors, classify as cis (<135 deg) or trans.  This adds
        sensitivity for all-same-element complexes (e.g. Fe with 6 N)
        where trans-pair elements alone cannot distinguish isomers.
+    3. **Detailed trans pairs**: uses Morgan-invariant-enriched donor types
+       to distinguish same-element donors in different chemical environments
+       (e.g. N in terpyridine vs. N in phenylpyridine of an MABC complex).
+
+    Args:
+        mol: RDKit molecule with conformers
+        conf_id: Conformer ID to analyze
+        dtype_map: Pre-computed donor type map from ``_donor_type_map(mol)``.
+            If None, computed on the fly.
     """
     conf = mol.GetConformer(conf_id)
     fp_parts: List[tuple] = []
+
+    # Use pre-computed donor types or compute on the fly
+    if dtype_map is None:
+        dtype_map = _donor_type_map(mol)
 
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
@@ -965,6 +1143,8 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
         # total trans-angle sum (more robust than taking top N/2 raw angles).
         n_trans = n_coord // 2
         trans_pairs_raw: List[Tuple[str, str]] = []
+        # Also track detailed trans pairs using donor types
+        detailed_trans_raw: List[Tuple[tuple, tuple]] = []
         if n_coord % 2 == 0 and n_coord <= 8 and angle_pairs:
             idx_by_symbol = {idx: sym for sym, idx in coord_atoms}
             angle_map: Dict[Tuple[int, int], float] = {}
@@ -1001,13 +1181,20 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
             _score, pair_idx = _best_pairing(donor_indices)
             for ia, ib in pair_idx[:n_trans]:
                 trans_pairs_raw.append((idx_by_symbol[ia], idx_by_symbol[ib]))
+                detailed_trans_raw.append((dtype_map.get(ia, (idx_by_symbol[ia],)),
+                                           dtype_map.get(ib, (idx_by_symbol[ib],))))
         else:
             angle_pairs.sort(key=lambda x: -x[0])  # descending
-            for _angle, sa, sb, _ia, _ib in angle_pairs[:n_trans]:
+            for _angle, sa, sb, ia, ib in angle_pairs[:n_trans]:
                 trans_pairs_raw.append((sa, sb))
+                detailed_trans_raw.append((dtype_map.get(ia, (sa,)),
+                                           dtype_map.get(ib, (sb,))))
 
         trans_pairs = tuple(sorted(
             tuple(sorted((sa, sb))) for sa, sb in trans_pairs_raw
+        ))
+        detailed_trans = tuple(sorted(
+            tuple(sorted((da, db))) for da, db in detailed_trans_raw
         ))
 
         # Part 2: same-element cis/trans pattern, only useful when all
@@ -1020,9 +1207,9 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
                 cls = 'cis' if angle < 135 else 'trans'
                 same_elem_pattern.append((sa, cls))
             same_elem_pattern.sort()
-            fp_parts.append((trans_pairs, tuple(same_elem_pattern)))
+            fp_parts.append((trans_pairs, tuple(same_elem_pattern), detailed_trans))
         else:
-            fp_parts.append((trans_pairs, ()))
+            fp_parts.append((trans_pairs, (), detailed_trans))
 
     return tuple(sorted(fp_parts))
 
@@ -1030,8 +1217,8 @@ def _compute_coordination_fingerprint(mol, conf_id: int) -> tuple:
 def _classify_isomer_label(fingerprint: tuple, mol) -> str:
     """Translate a coordination fingerprint to a human-readable label.
 
-    The fingerprint is ``((trans_pairs, same_elem_pattern), ...)`` per
-    metal center.  Uses trans-pair analysis to classify all common
+    The fingerprint is ``((trans_pairs, same_elem_pattern, detailed_trans), ...)``
+    per metal center.  Uses trans-pair analysis to classify all common
     octahedral and 4-coordinate patterns:
 
     6-coordinate (octahedral):
@@ -1059,7 +1246,7 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
     count_signature = sorted(elem_counts.values())
 
     for metal_fp in fingerprint:
-        trans_pairs, same_elem_pattern = metal_fp
+        trans_pairs, same_elem_pattern = metal_fp[0], metal_fp[1]
 
         # Count same-element trans pairs from trans_pairs
         same_trans: Dict[str, int] = {}
@@ -1119,6 +1306,22 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
                 a_label = 'mer' if same_trans.get(a_sym, 0) >= 1 else 'fac'
                 b_label = 'trans' if same_trans.get(b_sym, 0) >= 1 else 'cis'
                 return f'{a_label}-{b_label}'
+
+            # MA4BC: the majority element has 4, the other two have 1 each.
+            # Classify by which pairs are trans.
+            if count_signature == [1, 1, 4]:
+                majority = [s for s, c in elem_counts.items() if c == 4][0]
+                minorities = sorted(s for s, c in elem_counts.items() if c == 1)
+                # Check if the two minorities are trans to each other
+                minority_trans = any(
+                    (sorted(p) == sorted(minorities)) for p in trans_pairs
+                )
+                n_maj_trans = same_trans.get(majority, 0)
+                if minority_trans:
+                    return f'{"/".join(minorities)}-trans'
+                if n_maj_trans >= 2:
+                    return f'{majority}-all-trans'
+                return f'{"/".join(minorities)}-cis'
 
         # --- 4-coordinate patterns ---
         if n_coord == 4:
@@ -1201,6 +1404,8 @@ def smiles_to_xyz_isomers(
     # Classify each conformer, skip obvious artifacts, then deduplicate by
     # full coordination fingerprint. This keeps distinct coordination
     # arrangements even when they share a coarse textual label.
+    # Pre-compute donor types once (Morgan-based) to avoid repeated calls.
+    dtype_map = _donor_type_map(mol)
     fp_label_pairs: List[Tuple[tuple, str, int, float]] = []
     for cid in conf_ids:
         try:
@@ -1208,7 +1413,7 @@ def smiles_to_xyz_isomers(
                 continue
             if _has_bad_geometry(mol, cid):
                 continue
-            fp = _compute_coordination_fingerprint(mol, cid)
+            fp = _compute_coordination_fingerprint(mol, cid, dtype_map=dtype_map)
             score = _geometry_quality_score(mol, cid)
         except Exception:
             continue
@@ -1476,6 +1681,18 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
                 multi_xyz, multi_err = _try_multiple_strategies(smiles, output_path)
                 if multi_xyz:
                     return multi_xyz, None
+                # Last resort: manual coordinate construction for metal complexes
+                logger.info("Trying manual metal coordinate construction")
+                manual_xyz, manual_err = _manual_metal_embed(smiles)
+                if manual_xyz:
+                    if output_path:
+                        Path(output_path).write_text(manual_xyz, encoding='utf-8')
+                        logger.info(f"Converted SMILES to XYZ using manual metal embed: {output_path}")
+                    logger.warning(
+                        "Used manual coordinate construction - geometry is very rough! "
+                        "GOAT/xTB optimization is essential before any calculations."
+                    )
+                    return manual_xyz, None
             error = f"Failed to generate 3D coordinates for SMILES: {smiles}"
             if legacy_err:
                 error = f"{error} (legacy fallback failed: {legacy_err})"
