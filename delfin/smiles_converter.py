@@ -25,6 +25,13 @@ except ImportError:
     RDKIT_AVAILABLE = False
     logger.warning("RDKit not available - SMILES conversion will not work. Install with: pip install rdkit")
 
+# Try to import Open Babel (has full UFF parameters for transition metals)
+try:
+    from openbabel import pybel
+    OPENBABEL_AVAILABLE = True
+except ImportError:
+    OPENBABEL_AVAILABLE = False
+
 # Try to import stk
 try:
     import stk
@@ -372,7 +379,12 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
             x, y, z = coords[i]
             lines.append(f"{atom.GetSymbol():4s} {x:12.6f} {y:12.6f} {z:12.6f}")
 
-        return '\n'.join(lines) + '\n', None
+        xyz_str = '\n'.join(lines) + '\n'
+
+        # Refine rough geometry with Open Babel UFF
+        xyz_str = _optimize_xyz_openbabel(xyz_str)
+
+        return xyz_str, None
 
     except Exception as e:
         return None, f"Manual metal embed error: {e}"
@@ -1674,6 +1686,7 @@ def smiles_to_xyz_isomers(
             display = label
         try:
             xyz = _mol_to_xyz_conformer(mol, cid)
+            xyz = _optimize_xyz_openbabel(xyz)
         except Exception:
             continue
         results.append((xyz, display))
@@ -1919,17 +1932,19 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
             return None, error
 
         # Optimize geometry with UFF force field for better starting structure
-        # Note: UFF often fails for metal complexes, which is OK - the raw ETKDG
-        # geometry is good enough for further optimization with xTB/GOAT/ORCA
         if not has_metal:
             try:
                 AllChem.UFFOptimizeMolecule(mol, maxIters=200)
-                logger.debug("UFF optimization successful")
+                logger.debug("RDKit UFF optimization successful")
             except Exception as e:
-                logger.info(f"UFF optimization skipped (common for metal complexes): {e}")
+                logger.info(f"RDKit UFF optimization skipped: {e}")
 
         # Convert to XYZ format
         xyz_content = _mol_to_xyz(mol)
+
+        # For metal complexes, use Open Babel UFF (has full metal parameters)
+        if has_metal:
+            xyz_content = _optimize_xyz_openbabel(xyz_content)
 
         # Check if molecule contains metals and warn about geometry quality
         has_metals = any(atom.GetAtomicNum() in range(21, 31) or  # 3d metals: Sc-Zn
@@ -2170,6 +2185,66 @@ def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
         symbol = atom.GetSymbol()
         lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
     return '\n'.join(lines) + '\n'
+
+
+def _optimize_xyz_openbabel(xyz_delfin: str, steps: int = 500) -> str:
+    """Optimize a DELFIN-format XYZ string using Open Babel's UFF force field.
+
+    Open Babel's UFF implementation includes full parameters for transition
+    metals (Fe, Co, Ni, Ti, etc.) that RDKit lacks.  This makes it ideal as
+    a post-ETKDG refinement step for metal complexes.
+
+    Args:
+        xyz_delfin: Coordinate block in DELFIN format (``symbol x y z`` per line,
+            no atom-count header).
+        steps: Maximum number of conjugate-gradient steps.
+
+    Returns:
+        Optimized DELFIN-format XYZ string, or the original string if
+        optimization fails for any reason.
+    """
+    if not OPENBABEL_AVAILABLE:
+        return xyz_delfin
+
+    try:
+        # Parse DELFIN lines (skip blank lines)
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        n_atoms = len(lines)
+        if n_atoms == 0:
+            return xyz_delfin
+
+        # Build standard XYZ string (atom count + comment + coordinates)
+        std_xyz = f"{n_atoms}\n\n"
+        for line in lines:
+            parts = line.split()
+            # DELFIN format: "symbol x y z"
+            std_xyz += f"{parts[0]}  {parts[1]}  {parts[2]}  {parts[3]}\n"
+
+        # Read into Open Babel
+        ob_mol = pybel.readstring("xyz", std_xyz)
+
+        # Run UFF conjugate-gradient optimization
+        ff = pybel._forcefields["uff"]
+        if not ff.Setup(ob_mol.OBMol):
+            logger.debug("Open Babel UFF setup failed, returning unoptimized geometry")
+            return xyz_delfin
+
+        ff.ConjugateGradients(steps)
+        ff.GetCoordinates(ob_mol.OBMol)
+
+        # Convert back to DELFIN format
+        opt_lines = []
+        for ob_atom in pybel.ob.OBMolAtomIter(ob_mol.OBMol):
+            symbol = pybel.ob.GetSymbol(ob_atom.GetAtomicNum())
+            x, y, z = ob_atom.GetX(), ob_atom.GetY(), ob_atom.GetZ()
+            opt_lines.append(f"{symbol:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+
+        logger.debug("Open Babel UFF optimization completed (%d steps max)", steps)
+        return '\n'.join(opt_lines) + '\n'
+
+    except Exception as e:
+        logger.debug("Open Babel UFF optimization failed: %s", e)
+        return xyz_delfin
 
 
 def convert_input_if_smiles(input_path: Path) -> Tuple[bool, Optional[str]]:
