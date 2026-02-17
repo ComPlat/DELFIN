@@ -1041,8 +1041,14 @@ def _donor_type_map(mol) -> Dict[int, tuple]:
     if not RDKIT_AVAILABLE:
         return result
 
-    # Compute Morgan fingerprint with bit info
+    # Compute Morgan fingerprint with bit info.
+    # Ensure ring info is initialized (required by Morgan FP; may be missing
+    # on partially-sanitized metal-complex mols).
     atom_bits: Dict[int, set] = {}
+    try:
+        Chem.FastFindRings(mol)
+    except Exception:
+        pass
     try:
         from rdkit.Chem import rdFingerprintGenerator
         gen = rdFingerprintGenerator.GetMorganGenerator(radius=2)
