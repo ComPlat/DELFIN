@@ -492,7 +492,14 @@ def _convert_metal_bonds_to_dative(mol, only_elements=None):
                 atom.SetNoImplicit(True)
             else:
                 atom.SetNoImplicit(False)
-                atom.SetNumExplicitHs(0)
+                # Preserve explicit H on atoms where RDKit's implicit H
+                # calculation can't recover them (e.g., tetracoordinate B in
+                # pyrazolylborate/scorpionate ligands: B standard valence = 3
+                # but actual valence = 4 with the B-H bond).
+                if atom.GetSymbol() == 'B' and atom.GetNumExplicitHs() > 0:
+                    atom.SetNoImplicit(True)
+                else:
+                    atom.SetNumExplicitHs(0)
 
     logger.info(f"Converted {len(bonds_to_convert)} neutral ligand-metal bonds to dative bonds")
 
@@ -1348,43 +1355,50 @@ def smiles_to_xyz(smiles: str, output_path: Optional[str] = None) -> Tuple[Optio
 
         # For metal complexes: convert bonds to dative and recalculate hydrogens
         # This fixes the issue where metal coordination bonds are counted towards ligand valence
+        # Each step is independent so failure of one (e.g., RemoveHs on tetracoordinate B)
+        # doesn't block dative conversion or AddHs.
         if has_metal:
+            # Step 1: Remove existing explicit H atoms (stk may have added incorrect ones)
             try:
-                # Remove existing explicit H atoms first (stk may have added incorrect ones)
                 mol = Chem.RemoveHs(mol)
+            except Exception as e:
+                logger.debug(f"RemoveHs skipped (non-standard valence, e.g. tetracoordinate B): {e}")
 
-                # Convert single bonds to metals to dative bonds
+            # Step 2: Convert single bonds to metals to dative bonds
+            try:
                 mol = _convert_metal_bonds_to_dative(mol)
                 mol.UpdatePropertyCache(strict=False)
+            except Exception as e:
+                logger.debug(f"Dative conversion skipped: {e}")
 
-                # For simple organometallics (e.g., Grignard), add Hs but strip
-                # any hydrogens attached to metals/halogens.
+            # Step 3: Add hydrogens with correct valence calculation
+            try:
                 if _is_simple_organometallic(smiles):
                     mol = Chem.AddHs(mol, addCoords=True)
                     mol = _strip_h_on_metal_halogen(mol)
                     mol = _fix_organometallic_carbon_h(mol)
                 else:
-                    # Now add hydrogens with correct valence calculation
                     mol = Chem.AddHs(mol, addCoords=True)
             except Exception as e:
-                logger.warning(f"Could not fix metal coordination hydrogens: {e}")
-                # Fallback: just try to add Hs
-                try:
-                    if _is_simple_organometallic(smiles):
-                        mol = Chem.AddHs(mol, addCoords=True)
-                        mol = _strip_h_on_metal_halogen(mol)
-                        mol = _fix_organometallic_carbon_h(mol)
-                    else:
-                        mol = Chem.AddHs(mol, addCoords=True)
-                except Exception as e2:
-                    if "Explicit valence" in str(e2):
-                        legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
-                        if legacy_err is None and legacy_xyz:
-                            if output_path:
-                                Path(output_path).write_text(legacy_xyz, encoding='utf-8')
-                                logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
-                            return legacy_xyz, None
-                    pass
+                logger.warning(f"Could not add hydrogens to metal complex: {e}")
+                # Fallback for valence errors: try unsanitized path
+                if "Explicit valence" in str(e):
+                    legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
+                    if legacy_err is None and legacy_xyz:
+                        if output_path:
+                            Path(output_path).write_text(legacy_xyz, encoding='utf-8')
+                            logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
+                        return legacy_xyz, None
+
+            # Step 4: Fix atoms with non-standard valence (e.g., tetracoordinate B
+            # in pyrazolylborate/scorpionate ligands) to prevent embedding failures.
+            # B with 4 bonds is chemically B- (borate) - set charge so RDKit
+            # accepts valence 4 during embedding.
+            for atom in mol.GetAtoms():
+                if atom.GetSymbol() == 'B' and atom.GetDegree() >= 4:
+                    atom.SetNoImplicit(True)
+                    if atom.GetFormalCharge() == 0:
+                        atom.SetFormalCharge(-1)
         else:
             # Non-metal molecules: just add hydrogens normally
             try:
