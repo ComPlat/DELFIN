@@ -55,6 +55,14 @@ def create_tab(ctx):
         description='CONVERT SMILES + UFF', button_style='info',
         layout=widgets.Layout(width='185px'),
     )
+    convert_smiles_avogadro_button = widgets.Button(
+        description='CONVERT SMILES + AVOGADRO', button_style='info',
+        layout=widgets.Layout(width='230px'),
+    )
+    convert_smiles_avogadro_noopt_button = widgets.Button(
+        description='CONVERT AVOGADRO (NO OPT)', button_style='info',
+        layout=widgets.Layout(width='220px'),
+    )
 
     build_complex_button = widgets.Button(
         description='BUILD COMPLEX', button_style='warning',
@@ -201,7 +209,7 @@ def create_tab(ctx):
                 state['current_xyz_for_copy'] = {'content': None}
                 xyz_copy_btn.disabled = True
                 xyz_copy_status.value = ''
-                print("SMILES erkannt. Bitte 'CONVERT SMILES' oder 'CONVERT SMILES + UFF' klicken.")
+                print("SMILES erkannt. Bitte einen der CONVERT-SMILES Buttons klicken.")
                 return
 
             state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
@@ -280,7 +288,8 @@ def create_tab(ctx):
         if state['isomers']:
             _show_isomer_at_index(state['isomer_index'] + 1)
 
-    def _convert_smiles(*, apply_uff: bool):
+    def _convert_smiles(*, apply_uff: bool, backend: str = 'rdkit',
+                        backend_optimize: bool = True):
         raw_input = coords_widget.value.strip()
         if not raw_input:
             with mol_output:
@@ -290,7 +299,11 @@ def create_tab(ctx):
 
         with mol_output:
             clear_output()
-            if apply_uff:
+            if backend == 'avogadro' and not backend_optimize:
+                print('Converting SMILES with Avogadro/Open Babel (no opt)...')
+            elif backend == 'avogadro':
+                print('Converting SMILES with Avogadro/Open Babel...')
+            elif apply_uff:
                 print('Converting SMILES with UFF...')
             else:
                 print('Converting SMILES (no UFF)...')
@@ -302,7 +315,12 @@ def create_tab(ctx):
                 print('Input is not a SMILES string.')
             return
 
-        isomers, error = smiles_to_xyz_isomers(cleaned_data, apply_uff=apply_uff)
+        isomers, error = smiles_to_xyz_isomers(
+            cleaned_data,
+            apply_uff=apply_uff,
+            backend=backend,
+            backend_optimize=backend_optimize,
+        )
         if error or not isomers:
             with mol_output:
                 clear_output()
@@ -318,10 +336,16 @@ def create_tab(ctx):
         _show_isomer_at_index(0)
 
     def handle_convert_smiles(button):
-        _convert_smiles(apply_uff=False)
+        _convert_smiles(apply_uff=False, backend='rdkit', backend_optimize=True)
 
     def handle_convert_smiles_uff(button):
-        _convert_smiles(apply_uff=True)
+        _convert_smiles(apply_uff=True, backend='rdkit', backend_optimize=True)
+
+    def handle_convert_smiles_avogadro(button):
+        _convert_smiles(apply_uff=False, backend='avogadro', backend_optimize=True)
+
+    def handle_convert_smiles_avogadro_noopt(button):
+        _convert_smiles(apply_uff=False, backend='avogadro', backend_optimize=False)
 
     def handle_build_complex(button):
         with output_area:
@@ -907,6 +931,8 @@ def create_tab(ctx):
     coords_widget.observe(update_molecule_view, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
     convert_smiles_uff_button.on_click(handle_convert_smiles_uff)
+    convert_smiles_avogadro_button.on_click(handle_convert_smiles_avogadro)
+    convert_smiles_avogadro_noopt_button.on_click(handle_convert_smiles_avogadro_noopt)
     build_complex_button.on_click(handle_build_complex)
     guppy_submit_button.on_click(handle_guppy_submit)
     submit_smiles_list_button.on_click(handle_submit_smiles_list)
@@ -928,6 +954,8 @@ def create_tab(ctx):
         job_type_widget, custom_time_widget, spacer_large,
         widgets.HTML('<b>Input (XYZ or SMILES):</b>'), coords_widget, spacer,
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
+                      convert_smiles_avogadro_button,
+                      convert_smiles_avogadro_noopt_button,
                       build_complex_button, guppy_submit_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,

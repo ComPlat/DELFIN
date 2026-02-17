@@ -99,6 +99,209 @@ def _is_metal_nitrogen_complex(smiles: str) -> bool:
     return has_metal and has_coord_n
 
 
+def _normalize_conversion_backend(backend: Optional[str]) -> str:
+    """Normalize conversion backend token to ``'rdkit'`` or ``'avogadro'``."""
+    if backend is None:
+        return "rdkit"
+    token = str(backend).strip().lower()
+    aliases = {
+        "rdkit": "rdkit",
+        "default": "rdkit",
+        "avogadro": "avogadro",
+        "openbabel": "avogadro",
+        "obabel": "avogadro",
+        "ob": "avogadro",
+    }
+    return aliases.get(token, "rdkit")
+
+
+def _openbabel_smiles_variants(smiles: str) -> List[str]:
+    """Return unique SMILES variants used for robust Open Babel parsing."""
+    variants = [smiles]
+    normalized = _normalize_metal_smiles(smiles)
+    denormalized = _denormalize_metal_smiles(smiles)
+    if normalized and normalized not in variants:
+        variants.append(normalized)
+    if denormalized and denormalized not in variants:
+        variants.append(denormalized)
+    return variants
+
+
+def _pick_openbabel_forcefield(smiles: str) -> str:
+    """Pick an Open Babel force field close to Avogadro defaults."""
+    if not OPENBABEL_AVAILABLE:
+        return "uff"
+    if contains_metal(smiles):
+        return "uff"
+    if "mmff94" in pybel._forcefields:
+        return "mmff94"
+    return "uff"
+
+
+def _obmol_to_delfin_xyz(ob_mol) -> str:
+    """Convert an Open Babel molecule to DELFIN XYZ lines (no header)."""
+    lines = []
+    for ob_atom in pybel.ob.OBMolAtomIter(ob_mol):
+        symbol = pybel.ob.GetSymbol(ob_atom.GetAtomicNum())
+        x, y, z = ob_atom.GetX(), ob_atom.GetY(), ob_atom.GetZ()
+        lines.append(f"{symbol:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+    return "\n".join(lines) + "\n"
+
+
+def _openbabel_generate_conformer_xyz(
+    smiles: str,
+    *,
+    num_confs: int = 200,
+    forcefield: Optional[str] = None,
+    rotor_steps: int = 120,
+    localopt_steps: int = 250,
+    optimize: bool = True,
+) -> Tuple[List[str], Optional[str]]:
+    """Generate 3D conformers using Open Babel in an Avogadro-like workflow."""
+    if not OPENBABEL_AVAILABLE:
+        return [], "Open Babel is not installed"
+
+    target = max(1, int(num_confs))
+    errors: List[str] = []
+    chosen_ff = (forcefield or "").strip().lower() or _pick_openbabel_forcefield(smiles)
+
+    for smi in _openbabel_smiles_variants(smiles):
+        try:
+            ob_mol = pybel.readstring("smi", smi)
+        except Exception as exc:
+            errors.append(f"parse({smi[:30]}...): {exc}")
+            continue
+
+        if ob_mol.OBMol.NumAtoms() <= 0:
+            errors.append(f"parse({smi[:30]}...): empty molecule")
+            continue
+
+        ff_name = chosen_ff if chosen_ff in pybel._forcefields else "uff"
+        if ff_name not in pybel._forcefields:
+            errors.append("no usable Open Babel forcefield")
+            continue
+
+        make3d_steps = max(50, min(200, localopt_steps // 2)) if optimize else 0
+        try:
+            ob_mol.make3D(forcefield=ff_name, steps=make3d_steps)
+        except Exception as exc:
+            errors.append(f"make3D({ff_name}): {exc}")
+            # Fallback once to UFF if initial forcefield failed.
+            if ff_name != "uff" and "uff" in pybel._forcefields:
+                try:
+                    ff_name = "uff"
+                    fallback_steps = max(50, min(200, localopt_steps // 2)) if optimize else 1
+                    ob_mol.make3D(forcefield=ff_name, steps=fallback_steps)
+                except Exception as exc2:
+                    errors.append(f"make3D(uff): {exc2}")
+                    continue
+            else:
+                continue
+
+        if not optimize:
+            xyz_text = _obmol_to_delfin_xyz(ob_mol.OBMol)
+            if xyz_text.strip():
+                return [xyz_text], None
+            errors.append(f"conformers({smi[:30]}...): empty geometry")
+            continue
+
+        ff = pybel._forcefields.get(ff_name)
+        if ff is None:
+            errors.append(f"forcefield({ff_name}): unavailable")
+            continue
+
+        try:
+            if not ff.Setup(ob_mol.OBMol):
+                errors.append(f"forcefield({ff_name}): setup failed")
+                continue
+        except Exception as exc:
+            errors.append(f"forcefield({ff_name}): {exc}")
+            continue
+
+        try:
+            ff.WeightedRotorSearch(target, max(25, int(rotor_steps)))
+            ff.GetConformers(ob_mol.OBMol)
+        except Exception as exc:
+            logger.debug("Open Babel conformer search failed, using initial 3D geometry: %s", exc)
+
+        num_ob_confs = int(ob_mol.OBMol.NumConformers() or 0)
+        if num_ob_confs <= 0:
+            num_ob_confs = 1
+
+        xyz_blocks: List[str] = []
+        seen: set = set()
+        for conf_idx in range(min(target, num_ob_confs)):
+            try:
+                ob_mol.OBMol.SetConformer(conf_idx)
+            except Exception:
+                pass
+
+            try:
+                if ff.Setup(ob_mol.OBMol):
+                    ff.ConjugateGradients(max(50, int(localopt_steps)))
+                    ff.GetCoordinates(ob_mol.OBMol)
+            except Exception:
+                # Keep current coordinates if local optimization fails.
+                pass
+
+            xyz_text = _obmol_to_delfin_xyz(ob_mol.OBMol)
+            key = "\n".join(line.strip() for line in xyz_text.splitlines() if line.strip())
+            if key in seen:
+                continue
+            seen.add(key)
+            xyz_blocks.append(xyz_text)
+
+        if xyz_blocks:
+            return xyz_blocks, None
+
+        errors.append(f"conformers({smi[:30]}...): none generated")
+
+    if errors:
+        return [], f"Open Babel conversion failed: {'; '.join(errors)}"
+    return [], "Open Babel conversion failed"
+
+
+def _xyz_to_rdkit_conformer(mol, xyz_delfin: str):
+    """Build an RDKit conformer from DELFIN XYZ lines if atom order matches."""
+    if not RDKIT_AVAILABLE:
+        return None
+
+    lines = [ln.strip() for ln in xyz_delfin.splitlines() if ln.strip()]
+    if len(lines) != mol.GetNumAtoms():
+        return None
+
+    conf = Chem.Conformer(mol.GetNumAtoms())
+    for idx, line in enumerate(lines):
+        parts = line.split()
+        if len(parts) < 4:
+            return None
+        atom = mol.GetAtomWithIdx(idx)
+        if parts[0] != atom.GetSymbol():
+            return None
+        try:
+            x = float(parts[1])
+            y = float(parts[2])
+            z = float(parts[3])
+        except ValueError:
+            return None
+        conf.SetAtomPosition(idx, Chem.rdGeometry.Point3D(x, y, z))
+    return conf
+
+
+def _inject_openbabel_conformers_into_mol(mol, xyz_blocks: List[str]) -> List[int]:
+    """Populate *mol* with conformers parsed from Open Babel XYZ blocks."""
+    if not xyz_blocks:
+        return []
+    mol.RemoveAllConformers()
+    conf_ids: List[int] = []
+    for xyz_text in xyz_blocks:
+        conf = _xyz_to_rdkit_conformer(mol, xyz_text)
+        if conf is None:
+            continue
+        conf_ids.append(int(mol.AddConformer(conf, assignId=True)))
+    return conf_ids
+
+
 def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """Try multiple parsing strategies for metal complexes.
 
@@ -196,6 +399,18 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
             return xyz_content, None
         if err:
             errors.append(f"no-valence({smi[:30]}...): {err}")
+
+    # Strategy 5: Open Babel / Avogadro-like 3D generation.
+    if OPENBABEL_AVAILABLE:
+        xyz_blocks, ob_err = _openbabel_generate_conformer_xyz(smiles, num_confs=1)
+        if xyz_blocks:
+            xyz_content = xyz_blocks[0]
+            if output_path:
+                Path(output_path).write_text(xyz_content, encoding='utf-8')
+                logger.info(f"Converted SMILES to XYZ using Open Babel: {output_path}")
+            return xyz_content, None
+        if ob_err:
+            errors.append(f"openbabel({smiles[:30]}...): {ob_err}")
 
     return None, f"All strategies failed: {'; '.join(errors)}"
 
@@ -1541,6 +1756,8 @@ def smiles_to_xyz_isomers(
     num_confs: int = 200,
     max_isomers: int = 10,
     apply_uff: bool = True,
+    backend: str = "rdkit",
+    backend_optimize: bool = True,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -1549,14 +1766,28 @@ def smiles_to_xyz_isomers(
     embedded, their coordination fingerprints are computed, and one
     representative per unique fingerprint is returned.
 
+    ``backend`` controls conformer generation:
+    - ``'rdkit'``: DELFIN default (RDKit ETKDG sampling)
+    - ``'avogadro'``: same DELFIN isomer workflow, with Open Babel
+      fallback when RDKit embedding fails.
+    ``backend_optimize`` controls whether backend-specific optimization is
+    applied (used by Open Babel backend).
+
     Returns ``([(xyz_string, label), ...], error)``.
     """
+    backend = _normalize_conversion_backend(backend)
+
     if not RDKIT_AVAILABLE:
         return [], "RDKit is not installed"
 
     # Non-metal molecules: single geometry
     if not contains_metal(smiles):
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+        xyz, err = smiles_to_xyz(
+            smiles,
+            apply_uff=apply_uff,
+            backend=backend,
+            backend_optimize=backend_optimize,
+        )
         if err:
             return [], err
         return [(xyz, '')], None
@@ -1565,41 +1796,77 @@ def smiles_to_xyz_isomers(
     mol = _prepare_mol_for_embedding(smiles)
     if mol is None:
         # Fall back to single-conformer conversion
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+        xyz, err = smiles_to_xyz(
+            smiles,
+            apply_uff=apply_uff,
+            backend=backend,
+            backend_optimize=backend_optimize,
+        )
         if err:
             return [], err
         return [(xyz, '')], None
 
-    # Embed multiple conformers with deterministic seed schedule.
-    # This improves reproducibility while still sampling diverse geometries.
-    try:
-        # Fixed seeds keep results reproducible across runs.
-        # Multiple diverse seeds improve sampling of coordination isomers.
-        seeds = [31, 42, 7, 97, 13, 61, 83]
-        n_rounds = len(seeds)
-        per_round = max(1, int(math.ceil(num_confs / n_rounds)))
-        conf_ids = []
-        for seed in seeds:
-            params = AllChem.ETKDGv3()
-            params.useRandomCoords = True
-            params.randomSeed = seed
-            params.enforceChirality = False
-            try:
-                params.clearConfs = False
-            except Exception:
-                pass
-            conf_ids.extend(
-                list(AllChem.EmbedMultipleConfs(mol, numConfs=per_round, params=params))
-            )
-    except Exception as e:
-        logger.warning("Multi-conformer embedding failed: %s", e)
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
-        if err:
-            return [], err
-        return [(xyz, '')], None
+    conf_ids: List[int] = []
+
+    # Avogadro backend: Open Babel conformers first.
+    if backend == "avogadro":
+        ob_xyz_blocks, ob_error = _openbabel_generate_conformer_xyz(
+            smiles,
+            num_confs=max(20, int(num_confs)),
+            optimize=backend_optimize,
+        )
+        if ob_xyz_blocks:
+            conf_ids = _inject_openbabel_conformers_into_mol(mol, ob_xyz_blocks)
+            if conf_ids:
+                logger.info(
+                    "Using Open Babel conformer generation for %d conformer(s).",
+                    len(conf_ids),
+                )
+            else:
+                logger.warning(
+                    "Open Babel conformers could not be mapped to RDKit atom order; "
+                    "falling back to RDKit embedding."
+                )
+        elif ob_error:
+            logger.warning("Open Babel conformer generation failed: %s", ob_error)
+
+    # RDKit embedding path:
+    # - default backend: primary source of conformers
+    # - avogadro + optimize: augment pool to preserve DELFIN isomer coverage
+    # - avogadro + no-opt: only fallback when Open Babel delivered nothing
+    use_rdkit_embedding = (
+        backend != "avogadro"
+        or (backend == "avogadro" and backend_optimize)
+        or (backend == "avogadro" and not backend_optimize and not conf_ids)
+    )
+    if use_rdkit_embedding:
+        try:
+            # Fixed seeds keep results reproducible across runs.
+            # Multiple diverse seeds improve sampling of coordination isomers.
+            seeds = [31, 42, 7, 97, 13, 61, 83]
+            n_rounds = len(seeds)
+            per_round = max(1, int(math.ceil(num_confs / n_rounds)))
+            for seed in seeds:
+                params = AllChem.ETKDGv3()
+                params.useRandomCoords = True
+                params.randomSeed = seed
+                params.enforceChirality = False
+                try:
+                    params.clearConfs = False
+                except Exception:
+                    pass
+                new_ids = list(AllChem.EmbedMultipleConfs(mol, numConfs=per_round, params=params))
+                conf_ids.extend(new_ids)
+        except Exception as e:
+            logger.warning("Multi-conformer embedding failed: %s", e)
 
     if not conf_ids:
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+        xyz, err = smiles_to_xyz(
+            smiles,
+            apply_uff=apply_uff,
+            backend=backend,
+            backend_optimize=backend_optimize,
+        )
         if err:
             return [], err
         return [(xyz, '')], None
@@ -1664,7 +1931,12 @@ def smiles_to_xyz_isomers(
     # Build results
     results: List[Tuple[str, str]] = []
     if not seen_fps:
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+        xyz, err = smiles_to_xyz(
+            smiles,
+            apply_uff=apply_uff,
+            backend=backend,
+            backend_optimize=backend_optimize,
+        )
         if err:
             return [], err
         return [(xyz, '')], None
@@ -1694,7 +1966,12 @@ def smiles_to_xyz_isomers(
         results.append((xyz, display))
 
     if not results:
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+        xyz, err = smiles_to_xyz(
+            smiles,
+            apply_uff=apply_uff,
+            backend=backend,
+            backend_optimize=backend_optimize,
+        )
         if err:
             return [], err
         return [(xyz, '')], None
@@ -1706,6 +1983,8 @@ def smiles_to_xyz(
     smiles: str,
     output_path: Optional[str] = None,
     apply_uff: bool = True,
+    backend: str = "rdkit",
+    backend_optimize: bool = True,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Convert SMILES string to XYZ coordinates using RDKit.
 
@@ -1719,13 +1998,33 @@ def smiles_to_xyz(
         smiles: SMILES string to convert
         output_path: Optional path to write XYZ file
         apply_uff: If True, apply UFF refinement (RDKit/Open Babel) where available.
+        backend: ``'rdkit'`` (default) or ``'avogadro'`` (Open Babel).
+        backend_optimize: Apply backend-specific optimization (Open Babel path).
 
     Returns:
         Tuple of (xyz_content, error_message)
         - xyz_content: XYZ format string if successful, None on error
         - error_message: Error description if failed, None on success
     """
+    backend = _normalize_conversion_backend(backend)
+
+    if backend == "avogadro":
+        ob_xyz_blocks, ob_error = _openbabel_generate_conformer_xyz(
+            smiles,
+            num_confs=1,
+            optimize=backend_optimize,
+        )
+        if ob_xyz_blocks:
+            xyz_content = ob_xyz_blocks[0]
+            if output_path:
+                Path(output_path).write_text(xyz_content, encoding='utf-8')
+                logger.info(f"Converted SMILES to XYZ using Open Babel: {output_path}")
+            return xyz_content, None
+        logger.warning("Open Babel backend failed, falling back to RDKit: %s", ob_error)
+
     if not RDKIT_AVAILABLE:
+        if backend == "avogadro":
+            return None, ob_error or "Open Babel conversion failed"
         error = "RDKit is not installed. Install with: pip install rdkit"
         logger.error(error)
         return None, error
