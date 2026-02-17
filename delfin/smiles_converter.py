@@ -1006,6 +1006,190 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
     return total_penalty
 
 
+def _segment_distance_sq(p1, p2, p3, p4) -> float:
+    """Squared minimum distance between 3D line segments P1-P2 and P3-P4.
+
+    Each point is a tuple ``(x, y, z)``.  Uses the parametric approach:
+    closest points on segment ``P1 + s*(P2-P1)`` and ``P3 + t*(P4-P3)``
+    with ``s, t`` clamped to ``[0, 1]``.
+    """
+    d1 = (p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2])
+    d2 = (p4[0] - p3[0], p4[1] - p3[1], p4[2] - p3[2])
+    r = (p1[0] - p3[0], p1[1] - p3[1], p1[2] - p3[2])
+
+    a = d1[0] * d1[0] + d1[1] * d1[1] + d1[2] * d1[2]
+    e = d2[0] * d2[0] + d2[1] * d2[1] + d2[2] * d2[2]
+    f = d2[0] * r[0] + d2[1] * r[1] + d2[2] * r[2]
+
+    EPS = 1e-12
+    if a <= EPS and e <= EPS:
+        return r[0] ** 2 + r[1] ** 2 + r[2] ** 2
+
+    if a <= EPS:
+        t = max(0.0, min(1.0, f / e))
+        v = (r[0] - t * d2[0], r[1] - t * d2[1], r[2] - t * d2[2])
+        return v[0] ** 2 + v[1] ** 2 + v[2] ** 2
+
+    c = d1[0] * r[0] + d1[1] * r[1] + d1[2] * r[2]
+    if e <= EPS:
+        s = max(0.0, min(1.0, -c / a))
+        v = (r[0] + s * d1[0], r[1] + s * d1[1], r[2] + s * d1[2])
+        return v[0] ** 2 + v[1] ** 2 + v[2] ** 2
+
+    b = d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2]
+    denom = a * e - b * b
+
+    if abs(denom) > EPS:
+        s = max(0.0, min(1.0, (b * f - c * e) / denom))
+    else:
+        s = 0.0
+
+    t = (b * s + f) / e
+    if t < 0.0:
+        t = 0.0
+        s = max(0.0, min(1.0, -c / a))
+    elif t > 1.0:
+        t = 1.0
+        s = max(0.0, min(1.0, (b - c) / a))
+
+    v = (r[0] + s * d1[0] - t * d2[0],
+         r[1] + s * d1[1] - t * d2[1],
+         r[2] + s * d1[2] - t * d2[2])
+    return v[0] ** 2 + v[1] ** 2 + v[2] ** 2
+
+
+def _has_ligand_intertwining(mol, conf_id: int, threshold: float = 0.5) -> bool:
+    """Return True if ligands are physically intertwined in the conformer.
+
+    Decomposes the molecule into ligand fragments by removing metal centers,
+    then checks if any heavy-atom bond from one fragment comes closer than
+    *threshold* Å to any heavy-atom bond from another fragment (segment-to-
+    segment distance).  This catches unphysical conformers where ligand arms
+    pass through each other.
+    """
+    conf = mol.GetConformer(conf_id)
+    metal_idxs = {a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET}
+    if not metal_idxs:
+        return False
+
+    # Build adjacency graph for non-metal atoms (bonds to metals removed)
+    non_metal = {a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() not in _METAL_SET}
+    adj: Dict[int, set] = {i: set() for i in non_metal}
+    for bond in mol.GetBonds():
+        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        if i in metal_idxs or j in metal_idxs:
+            continue
+        adj[i].add(j)
+        adj[j].add(i)
+
+    # Connected components = ligand fragments
+    visited: set = set()
+    fragments: List[set] = []
+    for start in sorted(non_metal):
+        if start in visited:
+            continue
+        frag: set = set()
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            frag.add(node)
+            for nbr in adj.get(node, ()):
+                if nbr not in visited:
+                    stack.append(nbr)
+        fragments.append(frag)
+
+    if len(fragments) < 2:
+        return False
+
+    # Map atom index -> fragment index
+    atom_frag: Dict[int, int] = {}
+    for fi, frag in enumerate(fragments):
+        for aidx in frag:
+            atom_frag[aidx] = fi
+
+    # Collect heavy-atom bonds per fragment (skip bonds involving H)
+    frag_bonds: Dict[int, List[Tuple[int, int]]] = {}
+    for bond in mol.GetBonds():
+        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        if i in metal_idxs or j in metal_idxs:
+            continue
+        if mol.GetAtomWithIdx(i).GetAtomicNum() <= 1:
+            continue
+        if mol.GetAtomWithIdx(j).GetAtomicNum() <= 1:
+            continue
+        fi = atom_frag.get(i)
+        if fi is None:
+            continue
+        frag_bonds.setdefault(fi, []).append((i, j))
+
+    # Check inter-fragment bond-segment distances
+    thresh_sq = threshold * threshold
+    fkeys = sorted(frag_bonds)
+    for a_idx in range(len(fkeys)):
+        for b_idx in range(a_idx + 1, len(fkeys)):
+            for i1, j1 in frag_bonds[fkeys[a_idx]]:
+                p1 = conf.GetAtomPosition(i1)
+                p2 = conf.GetAtomPosition(j1)
+                pa, pb = (p1.x, p1.y, p1.z), (p2.x, p2.y, p2.z)
+                for i2, j2 in frag_bonds[fkeys[b_idx]]:
+                    p3 = conf.GetAtomPosition(i2)
+                    p4 = conf.GetAtomPosition(j2)
+                    pc, pd = (p3.x, p3.y, p3.z), (p4.x, p4.y, p4.z)
+                    if _segment_distance_sq(pa, pb, pc, pd) < thresh_sq:
+                        return True
+    return False
+
+
+def _conformer_rmsd(mol, cid_a: int, cid_b: int) -> float:
+    """Heavy-atom RMSD between two conformers after Kabsch alignment.
+
+    Uses RDKit's ``AlignMol`` on a temporary copy so the original molecule
+    coordinates are not modified.  Falls back to a sorted distance-matrix
+    comparison (rotation-invariant) if alignment fails.
+    """
+    try:
+        from rdkit.Chem import rdMolAlign
+        heavy_map = [(i, i) for i, a in enumerate(mol.GetAtoms())
+                     if a.GetAtomicNum() > 1]
+        if not heavy_map:
+            return float('inf')
+        # AlignMol modifies probe coordinates → work on a copy
+        probe = Chem.RWMol(mol)
+        return rdMolAlign.AlignMol(probe, mol, prbCid=cid_a, refCid=cid_b,
+                                   atomMap=heavy_map)
+    except Exception:
+        pass
+
+    # Fallback: sorted distance-matrix comparison (rotation-invariant)
+    try:
+        conf_a = mol.GetConformer(cid_a)
+        conf_b = mol.GetConformer(cid_b)
+        heavy = [i for i, a in enumerate(mol.GetAtoms()) if a.GetAtomicNum() > 1]
+        if len(heavy) < 2:
+            return float('inf')
+        dists_a: List[float] = []
+        dists_b: List[float] = []
+        for i in range(len(heavy)):
+            pa = conf_a.GetAtomPosition(heavy[i])
+            pb = conf_b.GetAtomPosition(heavy[i])
+            for j in range(i + 1, len(heavy)):
+                qa = conf_a.GetAtomPosition(heavy[j])
+                qb = conf_b.GetAtomPosition(heavy[j])
+                dists_a.append(math.sqrt(
+                    (pa.x - qa.x) ** 2 + (pa.y - qa.y) ** 2 + (pa.z - qa.z) ** 2))
+                dists_b.append(math.sqrt(
+                    (pb.x - qb.x) ** 2 + (pb.y - qb.y) ** 2 + (pb.z - qb.z) ** 2))
+        dists_a.sort()
+        dists_b.sort()
+        return math.sqrt(
+            sum((a - b) ** 2 for a, b in zip(dists_a, dists_b)) / len(dists_a))
+    except Exception:
+        return float('inf')
+
+
 def _angle_class(pos_metal, pos_a, pos_b) -> str:
     """Classify the angle A-Metal-B as 'cis' (<135 deg) or 'trans'.
 
@@ -1419,6 +1603,8 @@ def smiles_to_xyz_isomers(
                 continue
             if _has_bad_geometry(mol, cid):
                 continue
+            if _has_ligand_intertwining(mol, cid):
+                continue
             fp = _compute_coordination_fingerprint(mol, cid, dtype_map=dtype_map)
             score = _geometry_quality_score(mol, cid)
         except Exception:
@@ -1434,6 +1620,33 @@ def smiles_to_xyz_isomers(
             seen_fps[fp] = (label, cid, score)
         if len(seen_fps) >= max_isomers:
             break
+
+    # RMSD-based dedup: remove geometrically identical conformers that
+    # slipped through fingerprint-based dedup (e.g. borderline angle
+    # classifications producing different fingerprints for the same isomer).
+    if len(seen_fps) > 1:
+        fps_list = list(seen_fps.keys())
+        removed: set = set()
+        for i in range(len(fps_list)):
+            if i in removed:
+                continue
+            _li, cid_i, si = seen_fps[fps_list[i]]
+            for j in range(i + 1, len(fps_list)):
+                if j in removed:
+                    continue
+                _lj, cid_j, sj = seen_fps[fps_list[j]]
+                rmsd = _conformer_rmsd(mol, cid_i, cid_j)
+                if rmsd < 0.5:
+                    # Keep the conformer with the better geometry score
+                    if si <= sj:
+                        removed.add(j)
+                    else:
+                        removed.add(i)
+                        break
+        if removed:
+            logger.debug("RMSD dedup removed %d duplicate(s)", len(removed))
+            seen_fps = {fps_list[i]: seen_fps[fps_list[i]]
+                        for i in range(len(fps_list)) if i not in removed}
 
     # Build results
     results: List[Tuple[str, str]] = []
