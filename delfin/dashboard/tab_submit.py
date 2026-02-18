@@ -404,7 +404,7 @@ def create_tab(ctx):
                 return
 
             job_dir = ctx.calc_dir / safe_job_name
-            time_limit = '00:20:00'
+            time_limit = '00:45:00'
 
             try:
                 # Match ONLY GOAT behavior: allow existing dir and reuse same naming flow.
