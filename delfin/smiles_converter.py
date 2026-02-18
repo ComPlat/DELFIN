@@ -1204,17 +1204,22 @@ def _has_bad_geometry(mol, conf_id: int) -> bool:
 
     Checks:
     1. Metal-ligand bond lengths must be within 1.6-3.2 Å
-    2. L-M-L angles must be >=60 deg (avoids collapsed geometries)
+    2. L-M-L angles: chelate bite angles (donors in the same chelate ring)
+       may be as small as 40°; all other L-M-L pairs must be >=60°.
+       This correctly allows 5- and 6-membered chelate ring bite angles
+       (~55-70°) while still rejecting collapsed non-chelate geometries.
     """
     conf = mol.GetConformer(conf_id)
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
             continue
-        metal_pos = conf.GetAtomPosition(atom.GetIdx())
+        metal_idx = atom.GetIdx()
+        metal_pos = conf.GetAtomPosition(metal_idx)
         neighbors = list(atom.GetNeighbors())
         if not neighbors:
             continue
 
+        nbr_indices = [nb.GetIdx() for nb in neighbors]
         coord_positions = []
         for nbr in neighbors:
             nbr_pos = conf.GetAtomPosition(nbr.GetIdx())
@@ -1225,6 +1230,10 @@ def _has_bad_geometry(mol, conf_id: int) -> bool:
             if dist < 1.6 or dist > 3.2:
                 return True
             coord_positions.append(nbr_pos)
+
+        # Pre-compute chelate pairs (donors connected through non-metal path)
+        chelate = _chelate_pairs(mol, metal_idx, nbr_indices)
+        chelate_set = {frozenset(p) for p in chelate}
 
         for i in range(len(coord_positions)):
             for j in range(i + 1, len(coord_positions)):
@@ -1238,7 +1247,9 @@ def _has_bad_geometry(mol, conf_id: int) -> bool:
                     return True
                 cos_a = max(-1.0, min(1.0, dot / (mag1 * mag2)))
                 angle = math.degrees(math.acos(cos_a))
-                if angle < 60:
+                is_chelate_pair = frozenset([nbr_indices[i], nbr_indices[j]]) in chelate_set
+                min_angle = 40.0 if is_chelate_pair else 60.0
+                if angle < min_angle:
                     return True
     return False
 
@@ -1836,8 +1847,26 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
 
         # --- 6-coordinate patterns ---
         if n_coord == 6:
-            # MA6 / MA5B: single isomer, no label
+            # MA6 or MA5B with homogeneous element set: usually a single isomer.
+            # Exception: when all donors share one element symbol but have two
+            # distinct Morgan-hash types (3+3), we can still classify fac/mer
+            # using the detailed_trans information.  This handles tris-bidentate
+            # complexes like Fe(citrate)3 where e.g. all donors are O but split
+            # into alkoxo-O and carboxylato-O.
             if len(elem_counts) == 1 or count_signature == [1, 5]:
+                if count_signature != [1, 5] and len(metal_fp) > 2:
+                    detailed = metal_fp[2]  # tuple of (type_i, type_j) trans pairs
+                    # Collect all donor types present
+                    all_types = set()
+                    for pair in detailed:
+                        all_types.add(pair[0])
+                        all_types.add(pair[1])
+                    if len(all_types) == 2:
+                        # Two distinct Morgan types, 3+3 split: fac or mer
+                        n_same_type_trans = sum(1 for p in detailed if p[0] == p[1])
+                        if n_same_type_trans == 0:
+                            return 'fac'
+                        return 'mer'
                 return ''
 
             # MA4B2: cis/trans based on minority element (count==2)
