@@ -2322,14 +2322,21 @@ def _generate_topological_isomers(
                 if xyz is None:
                     continue
 
-                # Inject as temp conformer to run fingerprint + label machinery
+                # Inject as temp conformer to run quality checks + fingerprint
                 mol_tmp = Chem.RWMol(mol)
                 mol_tmp.RemoveAllConformers()
                 conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz)
                 if conf is None:
-                    results.append((xyz, ''))
+                    # Atom count/order mismatch: XYZ is unreliable, skip it.
                     continue
                 cid = mol_tmp.AddConformer(conf, assignId=True)
+                try:
+                    if _has_atom_clash(mol_tmp.GetMol(), cid):
+                        continue
+                    if _has_bad_geometry(mol_tmp.GetMol(), cid):
+                        continue
+                except Exception:
+                    pass
                 fp = _compute_coordination_fingerprint(
                     mol_tmp.GetMol(), cid, dtype_map=dtype_map
                 )
