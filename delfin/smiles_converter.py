@@ -2185,7 +2185,10 @@ def _build_topology_xyz(
             coords[donor_atom_idx] = (vx, vy, vz)
             placed.add(donor_atom_idx)
 
-        # BFS: place ligand backbone and H atoms
+        # BFS: place ligand backbone and H atoms.
+        # When a parent atom has multiple unplaced neighbours, they are rotated
+        # around the parent→direction axis so they don't all stack at the same
+        # coordinates (common failure mode for branched / multi-arm ligands).
         bond_len_default = 1.4
         queue = list(placed)
         while queue:
@@ -2196,6 +2199,7 @@ def _build_topology_xyz(
                 n.GetIdx() for n in atom.GetNeighbors()
                 if n.GetIdx() not in placed
             ]
+            n_unplaced = len(unplaced_nbrs)
             for k, nbr_idx in enumerate(unplaced_nbrs):
                 dx, dy, dz = 0.0, 0.0, 0.0
                 for other in atom.GetNeighbors():
@@ -2205,13 +2209,38 @@ def _build_topology_xyz(
                         dx += cx - ox
                         dy += cy - oy
                         dz += cz - oz
-                mag = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
-                if mag < 1e-8:
+                mag_base = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+                if mag_base < 1e-8:
                     dx, dy, dz = 1.0 + 0.1 * k, 0.3 * k, 0.0
-                    mag = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
-                dx = dx / mag * bond_len_default
-                dy = dy / mag * bond_len_default
-                dz = dz / mag * bond_len_default
+                    mag_base = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+                # Rotate around the base direction for each additional neighbour
+                # so they fan out instead of all pointing the same way.
+                if n_unplaced > 1 and k > 0:
+                    angle = 2 * math.pi * k / n_unplaced
+                    # Build a perpendicular vector to (dx,dy,dz)
+                    ax, ay, az = dx / mag_base, dy / mag_base, dz / mag_base
+                    if abs(ax) < 0.9:
+                        px, py, pz = 1.0, 0.0, 0.0
+                    else:
+                        px, py, pz = 0.0, 1.0, 0.0
+                    # Gram-Schmidt: subtract projection onto ax
+                    dot_pa = px * ax + py * ay + pz * az
+                    px -= dot_pa * ax; py -= dot_pa * ay; pz -= dot_pa * az
+                    pm = math.sqrt(px ** 2 + py ** 2 + pz ** 2)
+                    if pm > 1e-8:
+                        px /= pm; py /= pm; pz /= pm
+                    # Rodrigues rotation of (dx,dy,dz) by angle around (ax,ay,az)
+                    cos_a = math.cos(angle); sin_a = math.sin(angle)
+                    dx2 = dx*cos_a + (ay*dz - az*dy)*sin_a + ax*(ax*dx+ay*dy+az*dz)*(1-cos_a)
+                    dy2 = dy*cos_a + (az*dx - ax*dz)*sin_a + ay*(ax*dx+ay*dy+az*dz)*(1-cos_a)
+                    dz2 = dz*cos_a + (ax*dy - ay*dx)*sin_a + az*(ax*dx+ay*dy+az*dz)*(1-cos_a)
+                    dx, dy, dz = dx2, dy2, dz2
+                    mag_base = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+                    if mag_base < 1e-8:
+                        mag_base = 1.0
+                dx = dx / mag_base * bond_len_default
+                dy = dy / mag_base * bond_len_default
+                dz = dz / mag_base * bond_len_default
                 coords[nbr_idx] = (cx + dx, cy + dy, cz + dz)
                 placed.add(nbr_idx)
                 queue.append(nbr_idx)
@@ -2611,22 +2640,31 @@ def smiles_to_xyz_isomers(
 
     # --- Topological enumerator: guarantee completeness ---
     # Runs after sampling-based dedup; adds any isomers not found by sampling.
+    # Skip if sampling already found results for every label produced by the
+    # enumerator (compare against base label, stripping numeric suffix like
+    # 'mer-2' → 'mer' so we don't add a topo 'mer' when sampling found 'mer-1').
     if has_metal:
         try:
-            existing_labels = {display for _, display in results}
+            existing_displays = {display for _, display in results}
+            # Derive base labels: strip trailing '-<digits>' suffix
+            import re as _re
+            existing_base = {_re.sub(r'-\d+$', '', d) for d in existing_displays}
+
             topo_results = _generate_topological_isomers(
                 mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
             )
             for topo_xyz, topo_label in topo_results:
                 norm = topo_label or ''
-                if norm and norm in existing_labels:
-                    continue  # already represented
+                # Skip if base label already covered by sampling
+                if norm and norm in existing_base:
+                    continue
                 if not norm:
                     unknown_counter += 1
                     display = f'Isomer {unknown_counter}'
                 else:
                     display = norm
-                existing_labels.add(display)
+                existing_displays.add(display)
+                existing_base.add(norm)
                 results.append((topo_xyz, display))
         except Exception as _topo_exc:
             logger.debug("Topological isomer generation failed: %s", _topo_exc)
