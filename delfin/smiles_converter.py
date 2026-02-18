@@ -1305,8 +1305,23 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                 abs(a - t) for a, t in zip(sorted(angles), square_targets)
             )
             total_penalty += min(tetra_pen, square_pen)
+        elif len(neighbors) == 5:
+            # CN=5: score against best of TBP or SP ideal angles.
+            # TBP (D3h): 1×180° (ax-ax), 6×90° (ax-eq), 3×120° (eq-eq)
+            tbp_targets = sorted([90, 90, 90, 90, 90, 90, 120, 120, 120, 180])
+            # SP (C4v): 4×90° (cis-basal), 2×180° (trans-basal), 4×~100° (apical-basal)
+            sp_targets = sorted([90, 90, 90, 90, 100, 100, 100, 100, 180, 180])
+            sorted_a = sorted(angles)
+            tbp_pen = sum(abs(a - t) for a, t in zip(sorted_a, tbp_targets))
+            sp_pen = sum(abs(a - t) for a, t in zip(sorted_a, sp_targets))
+            total_penalty += min(tbp_pen, sp_pen)
+        elif len(neighbors) == 7:
+            # CN=7 (PBP, D5h): penalize each angle against nearest of 72°/90°/144°/180°
+            ideal_7 = [72.0, 90.0, 144.0, 180.0]
+            for a in angles:
+                total_penalty += min(abs(a - t) for t in ideal_7)
         else:
-            # For each angle, penalize distance from nearest ideal (90 or 180)
+            # General: penalize distance from nearest ideal (90 or 180)
             for a in angles:
                 dev_90 = abs(a - 90)
                 dev_180 = abs(a - 180)
@@ -1889,7 +1904,494 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
                     return 'trans'
                 return 'cis'
 
+        # --- 5-coordinate patterns ---
+        if n_coord == 5:
+            if len(elem_counts) == 1:
+                return ''  # MA5: single isomer
+            if count_signature == [1, 4]:
+                minority = [s for s, c in elem_counts.items() if c == 1][0]
+                # Axial donors appear in a trans-pair; equatorial don't
+                is_axial = any(minority in p for p in trans_pairs)
+                return 'axial' if is_axial else 'equatorial'
+            if count_signature == [2, 3]:
+                minority = [s for s, c in elem_counts.items() if c == 2][0]
+                n_trans = same_trans.get(minority, 0)
+                return 'diaxial' if n_trans >= 1 else 'ax-eq'
+
+        # --- 7-coordinate patterns ---
+        if n_coord == 7:
+            if len(elem_counts) == 1:
+                return ''
+            minority = min(elem_counts, key=elem_counts.get)
+            c = elem_counts[minority]
+            if c == 1:
+                return 'axial' if any(minority in p for p in trans_pairs) else 'equatorial'
+            if c == 2:
+                n_trans = same_trans.get(minority, 0)
+                return 'ax-ax' if n_trans >= 1 else 'ax-eq'
+
     return ''
+
+
+# ---------------------------------------------------------------------------
+# Topological isomer enumerator (Feature 1)
+# ---------------------------------------------------------------------------
+
+def _chelate_pairs(mol, metal_idx: int, donor_indices: List[int]) -> List[FrozenSet]:
+    """Find donor pairs connected through a non-metal path (chelate constraints).
+
+    BFS from each donor atom to every other donor, blocking the metal.
+    A successful path means the two donors are part of the same chelate ring
+    and must stay *cis* (cannot occupy trans positions).
+
+    Returns a list of frozensets {donor_i_idx, donor_j_idx}.
+    """
+    pairs: List[FrozenSet] = []
+    n = len(donor_indices)
+    for i in range(n):
+        for j in range(i + 1, n):
+            start = donor_indices[i]
+            target = donor_indices[j]
+            visited = {metal_idx, start}
+            queue = [start]
+            found = False
+            while queue and not found:
+                current = queue.pop(0)
+                for nbr in mol.GetAtomWithIdx(current).GetNeighbors():
+                    ni = nbr.GetIdx()
+                    if ni == target:
+                        found = True
+                        break
+                    if ni not in visited:
+                        visited.add(ni)
+                        queue.append(ni)
+            if found:
+                pairs.append(frozenset([donor_indices[i], donor_indices[j]]))
+    return pairs
+
+
+def _canonical_oh(types: tuple) -> tuple:
+    """Canonical form for octahedral (3 trans pairs: 0-1, 2-3, 4-5)."""
+    pairs = tuple(sorted([
+        tuple(sorted([types[0], types[1]])),
+        tuple(sorted([types[2], types[3]])),
+        tuple(sorted([types[4], types[5]])),
+    ]))
+    return ('OH', pairs)
+
+
+def _canonical_sq(types: tuple) -> tuple:
+    """Canonical form for square-planar (2 trans pairs: 0-1, 2-3)."""
+    pairs = tuple(sorted([
+        tuple(sorted([types[0], types[1]])),
+        tuple(sorted([types[2], types[3]])),
+    ]))
+    return ('SQ', pairs)
+
+
+def _canonical_tbp(types: tuple) -> tuple:
+    """Canonical form for trigonal-bipyramidal (axial: 0,1; equatorial: 2,3,4)."""
+    axial = tuple(sorted([types[0], types[1]]))
+    equatorial = tuple(sorted([types[2], types[3], types[4]]))
+    return ('TBP', axial, equatorial)
+
+
+def _canonical_sp(types: tuple) -> tuple:
+    """Canonical form for square-pyramidal (apical: 0; basal: 1,2,3,4; trans pairs 1-3, 2-4)."""
+    basal_pairs = tuple(sorted([
+        tuple(sorted([types[1], types[3]])),
+        tuple(sorted([types[2], types[4]])),
+    ]))
+    return ('SP', types[0], basal_pairs)
+
+
+def _canonical_pbp(types: tuple) -> tuple:
+    """Canonical form for pentagonal-bipyramidal (axial: 0,1; equatorial: 2-6)."""
+    axial = tuple(sorted([types[0], types[1]]))
+    equatorial = tuple(sorted([types[2], types[3], types[4], types[5], types[6]]))
+    return ('PBP', axial, equatorial)
+
+
+# Trans position pairs (indices into the geometry vector list) for each geometry
+_TOPO_TRANS_POSITIONS: Dict[str, List[Tuple[int, int]]] = {
+    'OH':  [(0, 1), (2, 3), (4, 5)],
+    'SQ':  [(0, 1), (2, 3)],
+    'TBP': [(0, 1)],          # only axial-axial is strictly 180°
+    'SP':  [(1, 3), (2, 4)],  # trans basal pairs
+    'PBP': [(0, 1)],          # axial-axial
+}
+
+_TOPO_CANONICAL_FNS = {
+    'OH':  _canonical_oh,
+    'SQ':  _canonical_sq,
+    'TBP': _canonical_tbp,
+    'SP':  _canonical_sp,
+    'PBP': _canonical_pbp,
+}
+
+# Idealized coordination vectors per geometry (bond length ~2 Å)
+_TOPO_GEOMETRY_VECTORS: Dict[str, List[Tuple[float, float, float]]] = {
+    'OH':  [(2, 0, 0), (-2, 0, 0), (0, 2, 0), (0, -2, 0), (0, 0, 2), (0, 0, -2)],
+    'SQ':  [(2, 0, 0), (-2, 0, 0), (0, 2, 0), (0, -2, 0)],
+    'TBP': [(0, 0, 2), (0, 0, -2), (2, 0, 0), (-1, 1.732, 0), (-1, -1.732, 0)],
+    'SP':  [(0, 0, 2.2), (2, 0, 0.4), (0, 2, 0.4), (-2, 0, 0.4), (0, -2, 0.4)],
+    'PBP': [(0, 0, 2), (0, 0, -2), (2, 0, 0), (0.618, 1.902, 0),
+            (-1.618, 1.176, 0), (-1.618, -1.176, 0), (0.618, -1.902, 0)],
+}
+
+
+def _enumerate_topological_isomers(
+    donor_labels: List[str],
+    n_coord: int,
+    chelate_pairs: List[FrozenSet],
+) -> List[Tuple[tuple, List[int]]]:
+    """Return all unique (canonical_form, permutation) pairs.
+
+    ``perm[position] = donor_list_index`` — permutations where chelate-
+    constrained donor pairs are never placed in trans positions.
+
+    Args:
+        donor_labels: Element symbol per donor atom (index = position in
+            donor_indices list passed by the caller).
+        n_coord: Coordination number (4–7).
+        chelate_pairs: frozensets of donor-list indices that must stay cis.
+
+    Returns:
+        List of (canonical_form_tuple, perm_list) for every unique isomer.
+    """
+    import itertools
+
+    if n_coord == 6:
+        geometries = ['OH']
+    elif n_coord == 4:
+        geometries = ['SQ']
+    elif n_coord == 5:
+        geometries = ['TBP', 'SP']
+    elif n_coord == 7:
+        geometries = ['PBP']
+    else:
+        return []
+
+    results: List[Tuple[tuple, List[int]]] = []
+    seen_canonical: set = set()
+
+    for geom_name in geometries:
+        canonical_fn = _TOPO_CANONICAL_FNS[geom_name]
+        trans_pos = _TOPO_TRANS_POSITIONS[geom_name]
+
+        for perm in itertools.permutations(range(n_coord)):
+            # Validate chelate constraints: paired donors must not sit trans
+            valid = True
+            for chelate in chelate_pairs:
+                chelate_list = sorted(chelate)
+                # Find the geometry positions of these two donors
+                try:
+                    pos_i = perm.index(chelate_list[0])
+                    pos_j = perm.index(chelate_list[1])
+                except ValueError:
+                    continue
+                for ta, tb in trans_pos:
+                    if (pos_i == ta and pos_j == tb) or (pos_i == tb and pos_j == ta):
+                        valid = False
+                        break
+                if not valid:
+                    break
+            if not valid:
+                continue
+
+            # Build canonical form from donor element symbols at each position
+            types = tuple(donor_labels[perm[pos]] for pos in range(n_coord))
+            cf = canonical_fn(types)
+            if cf not in seen_canonical:
+                seen_canonical.add(cf)
+                results.append((cf, list(perm)))
+
+    return results
+
+
+def _build_topology_xyz(
+    mol,
+    metal_idx: int,
+    donor_atom_indices: List[int],
+    perm: List[int],
+    geometry: str,
+    apply_uff: bool,
+) -> Optional[str]:
+    """Build a DELFIN XYZ for one topological arrangement.
+
+    Places the metal at the origin, donor atoms at idealized geometry
+    vectors, then BFS-places all remaining ligand atoms (same algorithm
+    as ``_manual_metal_embed``).  Optionally applies OB UFF refinement.
+
+    Args:
+        mol: RDKit mol (with H atoms, as from ``_prepare_mol_for_embedding``).
+        metal_idx: Index of the metal atom in *mol*.
+        donor_atom_indices: List of donor atom indices (length == n_coord).
+        perm: ``perm[position] = index into donor_atom_indices``.
+        geometry: Key in ``_TOPO_GEOMETRY_VECTORS`` ('OH', 'SQ', …).
+        apply_uff: Whether to run OB UFF optimization after placement.
+
+    Returns:
+        DELFIN-format XYZ string, or None on failure.
+    """
+    try:
+        vectors = _TOPO_GEOMETRY_VECTORS[geometry]
+        n_atoms = mol.GetNumAtoms()
+        coords: List[Tuple[float, float, float]] = [(0.0, 0.0, 0.0)] * n_atoms
+        placed: set = set()
+
+        # Metal at origin
+        coords[metal_idx] = (0.0, 0.0, 0.0)
+        placed.add(metal_idx)
+
+        # Donors at geometry positions
+        for pos_idx, donor_list_idx in enumerate(perm):
+            donor_atom_idx = donor_atom_indices[donor_list_idx]
+            vx, vy, vz = vectors[pos_idx]
+            mag = math.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
+            if mag > 1e-8:
+                vx = vx / mag * 2.0
+                vy = vy / mag * 2.0
+                vz = vz / mag * 2.0
+            coords[donor_atom_idx] = (vx, vy, vz)
+            placed.add(donor_atom_idx)
+
+        # BFS: place ligand backbone and H atoms
+        bond_len_default = 1.4
+        queue = list(placed)
+        while queue:
+            current = queue.pop(0)
+            cx, cy, cz = coords[current]
+            atom = mol.GetAtomWithIdx(current)
+            unplaced_nbrs = [
+                n.GetIdx() for n in atom.GetNeighbors()
+                if n.GetIdx() not in placed
+            ]
+            for k, nbr_idx in enumerate(unplaced_nbrs):
+                dx, dy, dz = 0.0, 0.0, 0.0
+                for other in atom.GetNeighbors():
+                    oi = other.GetIdx()
+                    if oi in placed and oi != nbr_idx:
+                        ox, oy, oz = coords[oi]
+                        dx += cx - ox
+                        dy += cy - oy
+                        dz += cz - oz
+                mag = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+                if mag < 1e-8:
+                    dx, dy, dz = 1.0 + 0.1 * k, 0.3 * k, 0.0
+                    mag = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+                dx = dx / mag * bond_len_default
+                dy = dy / mag * bond_len_default
+                dz = dz / mag * bond_len_default
+                coords[nbr_idx] = (cx + dx, cy + dy, cz + dz)
+                placed.add(nbr_idx)
+                queue.append(nbr_idx)
+
+        # Build XYZ string
+        lines = []
+        for i in range(n_atoms):
+            atom = mol.GetAtomWithIdx(i)
+            x, y, z = coords[i]
+            lines.append(f"{atom.GetSymbol():4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+        xyz = '\n'.join(lines) + '\n'
+
+        if apply_uff:
+            xyz = _optimize_xyz_openbabel(xyz)
+
+        return xyz
+    except Exception as e:
+        logger.debug("_build_topology_xyz failed: %s", e)
+        return None
+
+
+def _generate_topological_isomers(
+    mol,
+    smiles: str,
+    apply_uff: bool = True,
+    max_isomers: int = 10,
+) -> List[Tuple[str, str]]:
+    """Guarantee-complete isomer enumeration via topological permutation.
+
+    For each metal center: enumerates all unique canonical arrangements of
+    donor atoms (respecting chelate cis-constraints), builds an idealized
+    3D structure for each, runs OB UFF, and labels the result.
+
+    Returns [(xyz_string, label), …].
+    """
+    results: List[Tuple[str, str]] = []
+    dtype_map = _donor_type_map(mol)
+
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+        metal_idx = atom.GetIdx()
+        donor_indices = [nbr.GetIdx() for nbr in atom.GetNeighbors()]
+        n_coord = len(donor_indices)
+
+        if n_coord not in (4, 5, 6, 7):
+            continue
+
+        # Use element symbols as donor labels for canonical form comparison
+        donor_labels = [
+            dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset()))[0]
+            for d in donor_indices
+        ]
+
+        chelate_ps = _chelate_pairs(mol, metal_idx, donor_indices)
+        isomers = _enumerate_topological_isomers(donor_labels, n_coord, chelate_ps)
+
+        for canonical_form, perm in isomers:
+            if len(results) >= max_isomers:
+                return results
+            geom_name = canonical_form[0]  # 'OH', 'SQ', 'TBP', 'SP', 'PBP'
+            try:
+                xyz = _build_topology_xyz(
+                    mol, metal_idx, donor_indices, perm, geom_name, apply_uff
+                )
+                if xyz is None:
+                    continue
+
+                # Inject as temp conformer to run fingerprint + label machinery
+                mol_tmp = Chem.RWMol(mol)
+                mol_tmp.RemoveAllConformers()
+                conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz)
+                if conf is None:
+                    results.append((xyz, ''))
+                    continue
+                cid = mol_tmp.AddConformer(conf, assignId=True)
+                fp = _compute_coordination_fingerprint(
+                    mol_tmp.GetMol(), cid, dtype_map=dtype_map
+                )
+                label = _classify_isomer_label(fp, mol_tmp.GetMol())
+                results.append((xyz, label))
+            except Exception as e:
+                logger.debug("Topology isomer build failed (%s): %s", geom_name, e)
+                continue
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Linkage isomers (Feature 2)
+# ---------------------------------------------------------------------------
+
+def _find_linkage_alternatives(mol) -> List[Tuple[int, int, int, str]]:
+    """Detect ambidentate ligands and return alternative coordination modes.
+
+    Supported patterns:
+      - NO2⁻ (N-donor → O-donor, label 'nitrito')
+      - SCN⁻ (S-donor → N-donor, label 'isothiocyanato-N')
+      - CN⁻  (C-donor → N-donor, label 'isocyano')
+
+    Returns list of (metal_idx, current_donor_idx, alt_donor_idx, label).
+    """
+    alternatives: List[Tuple[int, int, int, str]] = []
+    metal_neighbor_sets: Dict[int, set] = {}
+
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+        metal_idx = atom.GetIdx()
+        bonded = {nbr.GetIdx() for nbr in atom.GetNeighbors()}
+        metal_neighbor_sets[metal_idx] = bonded
+
+        for donor in atom.GetNeighbors():
+            donor_idx = donor.GetIdx()
+            donor_sym = donor.GetSymbol()
+
+            # --- NO2 → nitrito (N-donor to O-donor) ---
+            if donor_sym == 'N':
+                o_nbrs = [
+                    n for n in donor.GetNeighbors()
+                    if n.GetSymbol() == 'O' and n.GetIdx() not in bonded
+                ]
+                if len(o_nbrs) >= 2:
+                    alt_o = o_nbrs[0]
+                    alternatives.append((metal_idx, donor_idx, alt_o.GetIdx(), 'nitrito'))
+
+            # --- SCN → isothiocyanato-N (S-donor to N-donor) ---
+            if donor_sym == 'S':
+                for c_nbr in donor.GetNeighbors():
+                    if c_nbr.GetSymbol() == 'C' and c_nbr.GetIdx() not in bonded:
+                        for n_nbr in c_nbr.GetNeighbors():
+                            if (n_nbr.GetSymbol() == 'N'
+                                    and n_nbr.GetIdx() != donor_idx
+                                    and n_nbr.GetIdx() not in bonded):
+                                alternatives.append(
+                                    (metal_idx, donor_idx, n_nbr.GetIdx(), 'isothiocyanato-N')
+                                )
+
+            # --- CN → isocyano (C-donor to N-donor via triple bond) ---
+            if donor_sym == 'C':
+                for n_nbr in donor.GetNeighbors():
+                    if (n_nbr.GetSymbol() == 'N'
+                            and n_nbr.GetIdx() not in bonded):
+                        bond = mol.GetBondBetweenAtoms(donor_idx, n_nbr.GetIdx())
+                        if bond is not None and bond.GetBondTypeAsDouble() >= 2.5:
+                            alternatives.append(
+                                (metal_idx, donor_idx, n_nbr.GetIdx(), 'isocyano')
+                            )
+
+    return alternatives
+
+
+def _rewire_linkage(mol, metal_idx: int, old_donor: int, new_donor: int) -> Optional[object]:
+    """Return a new mol with the M–old_donor bond replaced by M–new_donor.
+
+    Returns None if the rewiring would duplicate an existing bond or fails.
+    """
+    try:
+        rw = Chem.RWMol(mol)
+        # Abort if new_donor is already bonded to metal
+        if rw.GetBondBetweenAtoms(metal_idx, new_donor) is not None:
+            return None
+        rw.RemoveBond(metal_idx, old_donor)
+        rw.AddBond(metal_idx, new_donor, Chem.BondType.SINGLE)
+        rw.UpdatePropertyCache(strict=False)
+        return rw.GetMol()
+    except Exception as e:
+        logger.debug("_rewire_linkage failed: %s", e)
+        return None
+
+
+def _generate_linkage_isomers(
+    mol,
+    smiles: str,
+    apply_uff: bool = True,
+) -> List[Tuple[str, str]]:
+    """Build linkage isomers by rewiring ambidentate ligands and generating XYZ.
+
+    For each alternative coordination mode, rewires the metal bond and builds
+    an idealized topology structure (OB UFF optimized).
+
+    Returns [(xyz_string, label), …] where label is e.g. 'nitrito'.
+    """
+    results: List[Tuple[str, str]] = []
+    alternatives = _find_linkage_alternatives(mol)
+
+    for metal_idx, old_donor, new_donor, type_label in alternatives:
+        alt_mol = _rewire_linkage(mol, metal_idx, old_donor, new_donor)
+        if alt_mol is None:
+            continue
+        try:
+            # Find metal in alt_mol (same index)
+            metal_atom = alt_mol.GetAtomWithIdx(metal_idx)
+            donor_indices = [nbr.GetIdx() for nbr in metal_atom.GetNeighbors()]
+            n_coord = len(donor_indices)
+            geom_map = {4: 'SQ', 5: 'TBP', 6: 'OH', 7: 'PBP'}
+            if n_coord not in geom_map:
+                continue
+            geom = geom_map[n_coord]
+            perm = list(range(n_coord))  # identity: donor i → position i
+            xyz = _build_topology_xyz(
+                alt_mol, metal_idx, donor_indices, perm, geom, apply_uff
+            )
+            if xyz is not None:
+                results.append((xyz, type_label))
+        except Exception as e:
+            logger.debug("Linkage isomer (%s) failed: %s", type_label, e)
+
+    return results
 
 
 def smiles_to_xyz_isomers(
@@ -2040,41 +2542,73 @@ def smiles_to_xyz_isomers(
 
     # Build results
     results: List[Tuple[str, str]] = []
-    if not seen_fps:
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
-        if err:
-            return [], err
-        return [(xyz, '')], None
-
-    # Number duplicate labels (e.g. multiple "mer" with different fingerprints)
-    label_counts: Dict[str, int] = {}
-    for fp in seen_fps:
-        lbl = seen_fps[fp][0] or ''
-        label_counts[lbl] = label_counts.get(lbl, 0) + 1
-    label_seen: Dict[str, int] = {}
     unknown_counter = 0
-    for fp, (label, cid, _score) in seen_fps.items():
-        if not label:
-            unknown_counter += 1
-            display = f'Isomer {unknown_counter}'
-        elif label_counts[label] > 1:
-            label_seen[label] = label_seen.get(label, 0) + 1
-            display = f'{label}-{label_seen[label]}'
-        else:
-            display = label
-        try:
-            xyz = _mol_to_xyz_conformer(mol, cid)
-            if apply_uff:
-                xyz = _optimize_xyz_openbabel(xyz)
-        except Exception:
-            continue
-        results.append((xyz, display))
+    if not seen_fps:
+        # Sampling failed — get a single fallback geometry and still allow
+        # the topological enumerator / linkage detector to augment it below.
+        _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+        if _fb_err:
+            return [], _fb_err
+        results = [(_fb_xyz, '')]
+    else:
+        # Number duplicate labels (e.g. multiple "mer" with different fingerprints)
+        label_counts: Dict[str, int] = {}
+        for fp in seen_fps:
+            lbl = seen_fps[fp][0] or ''
+            label_counts[lbl] = label_counts.get(lbl, 0) + 1
+        label_seen: Dict[str, int] = {}
+        for fp, (label, cid, _score) in seen_fps.items():
+            if not label:
+                unknown_counter += 1
+                display = f'Isomer {unknown_counter}'
+            elif label_counts[label] > 1:
+                label_seen[label] = label_seen.get(label, 0) + 1
+                display = f'{label}-{label_seen[label]}'
+            else:
+                display = label
+            try:
+                xyz = _mol_to_xyz_conformer(mol, cid)
+                if apply_uff:
+                    xyz = _optimize_xyz_openbabel(xyz)
+            except Exception:
+                continue
+            results.append((xyz, display))
 
-    if not results:
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
-        if err:
-            return [], err
-        return [(xyz, '')], None
+        if not results:
+            _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+            if _fb_err:
+                return [], _fb_err
+            results = [(_fb_xyz, '')]
+
+    # --- Topological enumerator: guarantee completeness ---
+    # Runs after sampling-based dedup; adds any isomers not found by sampling.
+    if has_metal:
+        try:
+            existing_labels = {display for _, display in results}
+            topo_results = _generate_topological_isomers(
+                mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
+            )
+            for topo_xyz, topo_label in topo_results:
+                norm = topo_label or ''
+                if norm and norm in existing_labels:
+                    continue  # already represented
+                if not norm:
+                    unknown_counter += 1
+                    display = f'Isomer {unknown_counter}'
+                else:
+                    display = norm
+                existing_labels.add(display)
+                results.append((topo_xyz, display))
+        except Exception as _topo_exc:
+            logger.debug("Topological isomer generation failed: %s", _topo_exc)
+
+    # --- Linkage isomers ---
+    if has_metal:
+        try:
+            link_results = _generate_linkage_isomers(mol, smiles, apply_uff=apply_uff)
+            results.extend(link_results)
+        except Exception as _link_exc:
+            logger.debug("Linkage isomer generation failed: %s", _link_exc)
 
     return results, None
 
