@@ -2296,6 +2296,19 @@ def _generate_topological_isomers(
         ]
 
         chelate_ps = _chelate_pairs(mol, metal_idx, donor_indices)
+
+        # Skip macrocyclic complexes: when ALL donor pairs are chelate-connected
+        # (complete chelate graph), every donor is part of one big ring.
+        # The BFS in _build_topology_xyz cannot respect ring-closure constraints
+        # and always produces broken structures for macrocycles.
+        max_pairs = n_coord * (n_coord - 1) // 2
+        if len(chelate_ps) >= max_pairs:
+            logger.debug(
+                "Skipping topo enumerator for macrocyclic complex (CN=%d, "
+                "chelate_pairs=%d/%d)", n_coord, len(chelate_ps), max_pairs
+            )
+            continue
+
         isomers = _enumerate_topological_isomers(donor_labels, n_coord, chelate_ps)
 
         for canonical_form, perm in isomers:
@@ -2653,10 +2666,20 @@ def smiles_to_xyz_isomers(
             topo_results = _generate_topological_isomers(
                 mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
             )
+            # True if sampling already found at least one unlabelled isomer
+            sampling_has_unlabelled = any(
+                _re.match(r'^Isomer \d+$', d) for d in existing_displays
+            )
+
             for topo_xyz, topo_label in topo_results:
                 norm = topo_label or ''
                 # Skip if base label already covered by sampling
                 if norm and norm in existing_base:
+                    continue
+                # Skip unlabelled topo results when sampling already produced
+                # Isomer-N entries (macrocycle / all-same-element complexes
+                # where there is really only one geometric isomer).
+                if not norm and sampling_has_unlabelled:
                     continue
                 if not norm:
                     unknown_counter += 1
