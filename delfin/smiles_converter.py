@@ -2505,14 +2505,34 @@ def smiles_to_xyz_isomers(
     conf_ids: List[int] = []
     if has_metal and OPENBABEL_AVAILABLE:
         try:
-            ob_xyz_blocks, ob_error = _openbabel_generate_conformer_xyz(
-                smiles, num_confs=max(20, int(num_confs))
-            )
+            # Run OB conformer search in 3 independent restarts.
+            # WeightedRotorSearch is non-deterministic (global PRNG); separate
+            # calls from fresh OBMol instances give complementary pools.
+            _n_ob_restarts = 3
+            _per_ob = max(10, int(num_confs) // _n_ob_restarts)
+            ob_xyz_blocks: List[str] = []
+            _ob_seen: set = set()
+            ob_error: Optional[str] = None
+            for _restart in range(_n_ob_restarts):
+                _blocks, _err = _openbabel_generate_conformer_xyz(
+                    smiles, num_confs=_per_ob
+                )
+                if _blocks:
+                    for _b in _blocks:
+                        _key = "\n".join(
+                            l.strip() for l in _b.splitlines() if l.strip()
+                        )
+                        if _key not in _ob_seen:
+                            _ob_seen.add(_key)
+                            ob_xyz_blocks.append(_b)
+                elif _err and not ob_xyz_blocks:
+                    ob_error = _err
             if ob_xyz_blocks:
                 ob_ids = _inject_openbabel_conformers_into_mol(mol, ob_xyz_blocks)
                 conf_ids.extend(ob_ids)
                 logger.debug(
-                    "OB conformers injected for isomer search: %d", len(ob_ids)
+                    "OB conformers injected for isomer search: %d (3 restarts)",
+                    len(ob_ids),
                 )
             elif ob_error:
                 logger.debug("OB conformer generation: %s", ob_error)
@@ -2526,7 +2546,7 @@ def smiles_to_xyz_isomers(
     try:
         # Fixed seeds keep results reproducible across runs.
         # Multiple diverse seeds improve sampling of coordination isomers.
-        seeds = [31, 42, 7, 97, 13, 61, 83]
+        seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
         n_rounds = len(seeds)
         per_round = max(1, int(math.ceil(num_confs / n_rounds)))
         for seed in seeds:
@@ -2859,8 +2879,9 @@ def smiles_to_xyz(
                 pass
 
         # Generate 3D coordinates using a hybrid OB+RDKit conformer pool.
-        # For metal complexes: OB WeightedRotorSearch (Avogadro-quality) +
-        # RDKit ETKDG with 7 diverse seeds → up to ~400 conformers total.
+        # For metal complexes: OB WeightedRotorSearch in 3 independent restarts
+        # (Avogadro-quality, non-deterministic diversity) + RDKit ETKDG with
+        # 12 diverse fixed seeds → up to ~500 conformers total.
         # Best geometry is selected by _geometry_quality_score.
         result = -1
         if has_metal:
@@ -2870,16 +2891,32 @@ def smiles_to_xyz(
             ob_injection_ok = False
             if OPENBABEL_AVAILABLE:
                 try:
-                    ob_xyz_blocks, ob_err = _openbabel_generate_conformer_xyz(
-                        smiles, num_confs=200
-                    )
+                    _n_ob_r = 3
+                    _per_ob_r = max(10, 200 // _n_ob_r)
+                    ob_xyz_blocks = []
+                    _ob_seen_s: set = set()
+                    ob_err: Optional[str] = None
+                    for _ri in range(_n_ob_r):
+                        _bl, _er = _openbabel_generate_conformer_xyz(
+                            smiles, num_confs=_per_ob_r
+                        )
+                        if _bl:
+                            for _b in _bl:
+                                _k = "\n".join(
+                                    l.strip() for l in _b.splitlines() if l.strip()
+                                )
+                                if _k not in _ob_seen_s:
+                                    _ob_seen_s.add(_k)
+                                    ob_xyz_blocks.append(_b)
+                        elif _er and not ob_xyz_blocks:
+                            ob_err = _er
                     if ob_xyz_blocks:
                         ob_ids = _inject_openbabel_conformers_into_mol(mol, ob_xyz_blocks)
                         if ob_ids:
                             all_conf_ids.extend(ob_ids)
                             ob_injection_ok = True
                             logger.debug(
-                                "OB conformer injection: %d conformers for %s",
+                                "OB conformer injection: %d conformers (3 restarts) for %s",
                                 len(ob_ids), smiles[:40],
                             )
                         else:
@@ -2891,8 +2928,8 @@ def smiles_to_xyz(
                     logger.debug("OB conformer generation exception: %s", ob_exc)
                     mol.RemoveAllConformers()
 
-            # --- RDKit ETKDG with 7 diverse seeds (~29 confs/seed = ~200 total) ---
-            seeds = [31, 42, 7, 97, 13, 61, 83]
+            # --- RDKit ETKDG with 12 diverse fixed seeds (~17 confs/seed) ---
+            seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
             per_seed = max(1, 200 // len(seeds))
             try:
                 for seed in seeds:
