@@ -6,7 +6,7 @@ import py3Dmol
 import ipywidgets as widgets
 from IPython.display import clear_output
 
-from delfin.config import validate_control_text
+from delfin.config import parse_control_text, validate_control_text
 from delfin.smiles_converter import contains_metal
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
@@ -576,6 +576,25 @@ def create_tab(ctx):
             new_index = 0
         preview_smiles_at_index(new_index)
 
+    def resolve_co2_submit_mode(control_content: str):
+        """Return (mode, species_delta) derived from optional CONTROL CO2 keys."""
+        try:
+            parsed = parse_control_text(control_content, keep_steps_literal=True)
+        except Exception:
+            return 'delfin', None
+
+        raw_flag = parsed.get('co2_coordination', 'off')
+        flag = str(raw_flag).strip().lower()
+        if flag not in {'on', 'yes', 'true', '1'}:
+            return 'delfin', None
+
+        raw_delta = parsed.get('co2_species_delta', 0)
+        try:
+            delta = int(raw_delta)
+        except Exception:
+            delta = 0
+        return 'delfin-co2-chain', delta
+
     def handle_submit_smiles_list(button):
         with smiles_batch_output:
             clear_output()
@@ -662,14 +681,19 @@ def create_tab(ctx):
                 (job_dir / 'input.txt').write_text(xyz_string)
 
                 pal, maxcore = parse_resource_settings(control_content)
+                mode, co2_delta = resolve_co2_submit_mode(control_content)
                 result = ctx.backend.submit_delfin(
-                    job_dir=job_dir, job_name=safe_job_name, mode='delfin',
+                    job_dir=job_dir, job_name=safe_job_name, mode=mode,
                     time_limit=time_limit, pal=pal or 40, maxcore=maxcore or 6000,
+                    co2_species_delta=co2_delta,
                 )
 
                 if result.returncode == 0:
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
-                    print(f'Submitted {safe_job_name} (ID: {job_id})')
+                    if mode == 'delfin-co2-chain':
+                        print(f'Submitted {safe_job_name} (ID: {job_id}, CO2 delta: {co2_delta})')
+                    else:
+                        print(f'Submitted {safe_job_name} (ID: {job_id})')
                 else:
                     print(f'Failed {safe_job_name}: {result.stderr or result.stdout}')
 
@@ -742,14 +766,20 @@ def create_tab(ctx):
                 (job_dir / 'input.txt').write_text(input_content)
 
                 pal, maxcore = parse_resource_settings(control_content)
+                mode, co2_delta = resolve_co2_submit_mode(control_content)
                 result = ctx.backend.submit_delfin(
-                    job_dir=job_dir, job_name=safe_job_name, mode='delfin',
+                    job_dir=job_dir, job_name=safe_job_name, mode=mode,
                     time_limit=time_limit, pal=pal or 40, maxcore=maxcore or 6000,
+                    co2_species_delta=co2_delta,
                 )
 
                 if result.returncode == 0:
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
-                    print('Job successfully submitted!')
+                    if mode == 'delfin-co2-chain':
+                        print('DELFIN + CO2 chain job successfully submitted!')
+                        print(f'CO2 Species Delta: {co2_delta}')
+                    else:
+                        print('Job successfully submitted!')
                     print(f'Job ID: {job_id}')
                     print(f'Time Limit: {time_limit}')
                     print(f'Input Type: {input_type.upper()}')

@@ -898,6 +898,15 @@ def _as_yes_no(value: Any) -> str:
     return "yes" if text in {"yes", "true", "1", "on"} else "no"
 
 
+def _as_on_off(value: Any) -> str:
+    text = str(value or "off").strip().lower()
+    if text in {"on", "yes", "true", "1", "enable", "enabled"}:
+        return "on"
+    if text in {"off", "no", "false", "0", "disable", "disabled"}:
+        return "off"
+    raise ValueError("must be on or off")
+
+
 def _as_charge(value: Any) -> int:
     if value is None or value == "":
         raise ValueError("must be an integer like -2, 0, or +3")
@@ -1447,6 +1456,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("OWN_progressive_from", _as_yes_no, default="no"),
     FieldSpec("OWN_TREE_PURE_WINDOW", _as_int, default=None, allow_none=True),
     FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),
+    FieldSpec("co2_coordination", _as_on_off, default="off"),
+    FieldSpec("co2_species_delta", _as_int, default=0),
     FieldSpec("ESD_modus", _as_esd_modus, default="tddft"),
     FieldSpec("ESD_nroots", _as_int, default=15),
     FieldSpec("ESD_maxdim", _as_int, default=None, allow_none=True),

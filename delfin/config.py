@@ -51,6 +51,14 @@ _KNOWN_ORCA_OVERRIDE_BASENAMES: Set[str] = {
     "t1_tddft",
     "genolate",
 }
+_CONTROL_KEY_ALIASES: Dict[str, str] = {
+    "speciesdelta": "co2_species_delta",
+    "co2speciesdelta": "co2_species_delta",
+    "co2delta": "co2_species_delta",
+    "co2coordination": "co2_coordination",
+    "co2coordinationonoff": "co2_coordination",
+}
+_COLON_ASSIGNMENT_KEYS: Set[str] = {"co2_coordination", "co2_species_delta"}
 
 
 def _is_placeholder_value(value: Any) -> bool:
@@ -73,6 +81,18 @@ def _normalize_override_basename(value: str) -> str:
     if name.lower().endswith(".inp"):
         name = name[:-4]
     return name.lower()
+
+
+def _normalize_control_key_for_alias_lookup(raw_key: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(raw_key or "").strip().lower())
+
+
+def _canonicalize_control_key(raw_key: str) -> str:
+    key = str(raw_key or "").strip()
+    if not key:
+        return key
+    alias = _normalize_control_key_for_alias_lookup(key)
+    return _CONTROL_KEY_ALIASES.get(alias, key)
 
 
 def _validate_orca_override_entries(config: Dict[str, Any]) -> List[str]:
@@ -306,18 +326,28 @@ def _parse_control_file(file_path: str, *, keep_steps_literal: bool, content: Op
             idx = next_idx
             continue
 
-        # Ignore headings like "odd electron number:"
-        if ':' in stripped and not '=' in stripped:
+        key = ""
+        value = ""
+
+        if '=' in line:
+            key_raw, value_raw = line.split('=', 1)
+            key = _canonicalize_control_key(key_raw)
+            value = value_raw.strip()
+        elif ':' in stripped:
+            key_raw, value_raw = line.split(':', 1)
+            key_candidate = _canonicalize_control_key(key_raw)
+            value_candidate = value_raw.strip()
+
+            # Most ":" lines are section headings. Only parse explicit aliases
+            # we support as data keys (e.g. "Species delta: -2").
+            if key_candidate not in _COLON_ASSIGNMENT_KEYS or not value_candidate:
+                idx += 1
+                continue
+            key = key_candidate
+            value = value_candidate
+        else:
             idx += 1
             continue
-
-        if '=' not in line:
-            idx += 1
-            continue
-
-        key_raw, value_raw = line.split('=', 1)
-        key = key_raw.strip()
-        value = value_raw.strip()
 
         if keep_steps_literal and key in ('oxidation_steps', 'reduction_steps'):
             config[key] = value
@@ -349,6 +379,11 @@ def _parse_control_file(file_path: str, *, keep_steps_literal: bool, content: Op
     if sequence_blocks:
         config["_occupier_sequence_blocks"] = sequence_blocks
     return config
+
+
+def parse_control_text(control_text: str, *, keep_steps_literal: bool = True) -> Dict[str, Any]:
+    """Parse CONTROL.txt content from a string without full validation."""
+    return _parse_control_file("<in-memory>", keep_steps_literal=keep_steps_literal, content=control_text)
 
 
 def read_control_file(file_path: str) -> Dict[str, Any]:
