@@ -53,8 +53,8 @@ def create_tab(ctx):
         tooltip='Full isomer search',
     )
     convert_smiles_quick_button = widgets.Button(
-        description='QUICK CONVERT', button_style='info',
-        layout=widgets.Layout(width='130px'),
+        description='QUICK CONVERT SMILES', button_style='info',
+        layout=widgets.Layout(width='185px'),
         tooltip='Fast single structure (no isomer search, no UFF)',
     )
     convert_smiles_uff_button = widgets.Button(
