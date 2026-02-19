@@ -49,8 +49,13 @@ def create_tab(ctx):
 
     convert_smiles_button = widgets.Button(
         description='CONVERT SMILES', button_style='info',
-        layout=widgets.Layout(width='150px'),
-        tooltip='Click: full isomer search | Double-click: quick single structure',
+        layout=widgets.Layout(width='155px'),
+        tooltip='Full isomer search',
+    )
+    convert_smiles_quick_button = widgets.Button(
+        description='QUICK CONVERT', button_style='info',
+        layout=widgets.Layout(width='130px'),
+        tooltip='Fast single structure (no isomer search, no UFF)',
     )
     convert_smiles_uff_button = widgets.Button(
         description='CONVERT SMILES + UFF', button_style='info',
@@ -174,7 +179,6 @@ def create_tab(ctx):
         'smiles_preview_index': 0,
         'isomers': [],
         'isomer_index': 0,
-        'convert_quick': False,
     }
 
     # -- handlers -------------------------------------------------------
@@ -183,9 +187,6 @@ def create_tab(ctx):
         state['isomers'] = []
         state['isomer_index'] = 0
         isomer_nav_row.layout.display = 'none'
-        state['convert_quick'] = False
-        convert_smiles_button.description = 'CONVERT SMILES'
-        convert_smiles_button.tooltip = 'Click: full isomer search | Click again after convert: quick single structure'
 
         with mol_output:
             clear_output()
@@ -323,47 +324,36 @@ def create_tab(ctx):
         _show_isomer_at_index(0)
 
     def handle_convert_smiles(button):
-        if state['convert_quick']:
-            # Quick mode: single conformer, fast, no isomer search.
-            # Prefer cached SMILES (set after full convert) so the button
-            # still works even when coords_widget already shows XYZ.
-            cached_smiles = state['converted_xyz_cache'].get('smiles')
-            raw_input = cached_smiles or coords_widget.value.strip()
-            if not raw_input:
-                with mol_output:
-                    clear_output()
-                    print('Please enter SMILES in the input box.')
-                return
-            cleaned_data, input_type = clean_input_data(raw_input)
-            if input_type != 'smiles':
-                with mol_output:
-                    clear_output()
-                    print('Please enter SMILES in the input box.')
-                return
+        _convert_smiles(apply_uff=False)
+
+    def handle_convert_smiles_quick(button):
+        # Quick single-conformer conversion - no isomer search, no UFF.
+        # Uses cached SMILES if available (coords_widget may already show XYZ).
+        cached_smiles = state['converted_xyz_cache'].get('smiles')
+        raw_input = cached_smiles or coords_widget.value.strip()
+        if not raw_input:
             with mol_output:
                 clear_output()
-                print('Quick convert (single structure)...')
-            xyz_string, num_atoms, _method, error = smiles_to_xyz(cleaned_data, apply_uff=False)
-            if error or not xyz_string:
-                with mol_output:
-                    clear_output()
-                    print(f'Error: {error or "Conversion failed"}')
-                return
-            state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
-            state['isomers'] = [(xyz_string, num_atoms, 'quick')]
-            _show_isomer_at_index(0)
-        else:
-            # Full mode: isomer search (existing behaviour)
-            _convert_smiles(apply_uff=False)
-
-        # Toggle mode for next click and update button label
-        state['convert_quick'] = not state['convert_quick']
-        if state['convert_quick']:
-            convert_smiles_button.description = 'CONVERT SMILES ⚡'
-            convert_smiles_button.tooltip = 'Next click: quick single structure (click again to switch back)'
-        else:
-            convert_smiles_button.description = 'CONVERT SMILES'
-            convert_smiles_button.tooltip = 'Next click: full isomer search (click again for quick)'
+                print('Please enter SMILES in the input box.')
+            return
+        cleaned_data, input_type = clean_input_data(raw_input)
+        if input_type != 'smiles':
+            with mol_output:
+                clear_output()
+                print('Please enter SMILES in the input box.')
+            return
+        with mol_output:
+            clear_output()
+            print('Quick convert (single structure)...')
+        xyz_string, num_atoms, _method, error = smiles_to_xyz(cleaned_data, apply_uff=False)
+        if error or not xyz_string:
+            with mol_output:
+                clear_output()
+                print(f'Error: {error or "Conversion failed"}')
+            return
+        state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
+        state['isomers'] = [(xyz_string, num_atoms, 'quick')]
+        _show_isomer_at_index(0)
 
     def handle_convert_smiles_uff(button):
         _convert_smiles(apply_uff=True)
@@ -951,6 +941,7 @@ def create_tab(ctx):
     xyz_copy_btn.on_click(on_xyz_copy)
     coords_widget.observe(update_molecule_view, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
+    convert_smiles_quick_button.on_click(handle_convert_smiles_quick)
     convert_smiles_uff_button.on_click(handle_convert_smiles_uff)
     build_complex_button.on_click(handle_build_complex)
     guppy_submit_button.on_click(handle_guppy_submit)
@@ -972,7 +963,8 @@ def create_tab(ctx):
         job_name_widget, spacer,
         job_type_widget, custom_time_widget, spacer_large,
         widgets.HTML('<b>Input (XYZ or SMILES):</b>'), coords_widget, spacer,
-        widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
+        widgets.HBox([convert_smiles_button, convert_smiles_quick_button,
+                      convert_smiles_uff_button,
                       build_complex_button, guppy_submit_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
