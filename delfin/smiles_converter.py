@@ -2193,6 +2193,7 @@ def _enumerate_topological_isomers(
     donor_labels: List[str],
     n_coord: int,
     chelate_pairs: List[FrozenSet],
+    deduplicate_canonical: bool = True,
 ) -> List[Tuple[tuple, List[int]]]:
     """Return all unique (canonical_form, permutation) pairs.
 
@@ -2200,10 +2201,13 @@ def _enumerate_topological_isomers(
     constrained donor pairs are never placed in trans positions.
 
     Args:
-        donor_labels: Element symbol per donor atom (index = position in
+        donor_labels: Donor token per donor atom (index = position in
             donor_indices list passed by the caller).
         n_coord: Coordination number (4–7).
         chelate_pairs: frozensets of donor-list indices that must stay cis.
+        deduplicate_canonical: If True, collapse symmetry-equivalent
+            permutations to canonical classes. If False, keep every valid
+            permutation (useful for exhaustive ligand-position scanning).
 
     Returns:
         List of (canonical_form_tuple, perm_list) for every unique isomer.
@@ -2251,9 +2255,11 @@ def _enumerate_topological_isomers(
             # Build canonical form from donor element symbols at each position
             types = tuple(donor_labels[perm[pos]] for pos in range(n_coord))
             cf = canonical_fn(types)
-            if cf not in seen_canonical:
+            if deduplicate_canonical:
+                if cf in seen_canonical:
+                    continue
                 seen_canonical.add(cf)
-                results.append((cf, list(perm)))
+            results.append((cf, list(perm)))
 
     return results
 
@@ -2414,13 +2420,56 @@ def _generate_topological_isomers(
         if n_coord not in (4, 5, 6, 7):
             continue
 
-        # Use element symbols as donor labels for canonical form comparison
-        donor_labels = [
-            dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset()))[0]
-            for d in donor_indices
-        ]
+        # Map donor atom index -> donor-list position (0..n_coord-1)
+        donor_pos = {d: i for i, d in enumerate(donor_indices)}
 
-        chelate_ps = _chelate_pairs(mol, metal_idx, donor_indices)
+        # Assign a ligand component id to each donor (connected component in
+        # the graph with the metal removed). This keeps equivalent donor
+        # elements from different ligands distinguishable for exhaustive
+        # placement scans.
+        donor_component: Dict[int, int] = {}
+        seen_component_atoms = {metal_idx}
+        comp_id = 0
+        for start in donor_indices:
+            if start in seen_component_atoms:
+                continue
+            comp_id += 1
+            queue = [start]
+            seen_component_atoms.add(start)
+            while queue:
+                current = queue.pop(0)
+                if current in donor_pos:
+                    donor_component[current] = comp_id
+                for nbr in mol.GetAtomWithIdx(current).GetNeighbors():
+                    ni = nbr.GetIdx()
+                    if ni == metal_idx or ni in seen_component_atoms:
+                        continue
+                    seen_component_atoms.add(ni)
+                    queue.append(ni)
+
+        # Donor labels for topological canonicalization:
+        # include ligand component + element + Morgan-env signature so
+        # chemically distinct donors are not collapsed too aggressively.
+        donor_labels: List[str] = []
+        for d in donor_indices:
+            sym, env = dtype_map.get(
+                d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset())
+            )
+            env_sig = ",".join(str(v) for v in sorted(env)) if env else "-"
+            donor_labels.append(f"L{donor_component.get(d, 0)}:{sym}:{env_sig}")
+
+        # Chelate constraints must be in donor-list index space for
+        # _enumerate_topological_isomers().
+        chelate_ps_atom = _chelate_pairs(mol, metal_idx, donor_indices)
+        chelate_ps: List[FrozenSet] = []
+        for ch in chelate_ps_atom:
+            if len(ch) != 2:
+                continue
+            a_idx, b_idx = tuple(ch)
+            if a_idx in donor_pos and b_idx in donor_pos:
+                chelate_ps.append(
+                    frozenset([donor_pos[a_idx], donor_pos[b_idx]])
+                )
 
         # Skip macrocyclic complexes: when ALL donor pairs are chelate-connected
         # (complete chelate graph), every donor is part of one big ring.
@@ -2434,11 +2483,21 @@ def _generate_topological_isomers(
             )
             continue
 
-        isomers = _enumerate_topological_isomers(donor_labels, n_coord, chelate_ps)
+        # For chelating systems keep all valid permutations so each ligand
+        # can be placed/oriented on all coordination positions.
+        deduplicate_canonical = len(chelate_ps) == 0
+        isomers = _enumerate_topological_isomers(
+            donor_labels,
+            n_coord,
+            chelate_ps,
+            deduplicate_canonical=deduplicate_canonical,
+        )
+        strict_hits: List[Tuple[str, str]] = []
+        soft_hits: List[Tuple[float, str, str]] = []
 
         for canonical_form, perm in isomers:
-            if len(results) >= max_isomers:
-                return results
+            if len(results) + len(strict_hits) >= max_isomers:
+                break
             geom_name = canonical_form[0]  # 'OH', 'SQ', 'TBP', 'SP', 'PBP'
             try:
                 xyz = _build_topology_xyz(
@@ -2455,21 +2514,52 @@ def _generate_topological_isomers(
                     # Atom count/order mismatch: XYZ is unreliable, skip it.
                     continue
                 cid = mol_tmp.AddConformer(conf, assignId=True)
-                try:
-                    if _has_atom_clash(mol_tmp.GetMol(), cid):
-                        continue
-                    if _has_bad_geometry(mol_tmp.GetMol(), cid):
-                        continue
-                except Exception:
-                    pass
                 fp = _compute_coordination_fingerprint(
                     mol_tmp.GetMol(), cid, dtype_map=dtype_map
                 )
                 label = _classify_isomer_label(fp, mol_tmp.GetMol())
-                results.append((xyz, label))
+
+                # Quality checks are a soft preference for topology-built
+                # structures: for large/flexible complexes they can reject all
+                # candidates although the coordination assignment is valid.
+                keep_as_soft = False
+                try:
+                    keep_as_soft = (
+                        _has_atom_clash(mol_tmp.GetMol(), cid)
+                        or _has_bad_geometry(mol_tmp.GetMol(), cid)
+                    )
+                except Exception:
+                    keep_as_soft = False
+
+                if keep_as_soft:
+                    try:
+                        score = _geometry_quality_score(mol_tmp.GetMol(), cid)
+                    except Exception:
+                        score = float("inf")
+                    soft_hits.append((score, xyz, label))
+                else:
+                    strict_hits.append((xyz, label))
             except Exception as e:
                 logger.debug("Topology isomer build failed (%s): %s", geom_name, e)
                 continue
+
+        for xyz, label in strict_hits:
+            if len(results) >= max_isomers:
+                return results
+            results.append((xyz, label))
+
+        if soft_hits:
+            soft_hits.sort(key=lambda x: x[0])
+            if not strict_hits:
+                logger.debug(
+                    "No strict topological candidates survived filters for metal %d; "
+                    "accepting soft candidates to keep isomer completeness.",
+                    metal_idx,
+                )
+            for _score, xyz, label in soft_hits:
+                if len(results) >= max_isomers:
+                    return results
+                results.append((xyz, label))
 
     return results
 
@@ -2832,37 +2922,32 @@ def smiles_to_xyz_isomers(
     # 'mer-2' → 'mer' so we don't add a topo 'mer' when sampling found 'mer-1').
     if has_metal:
         try:
-            existing_displays = {display for _, display in results}
-            # Derive base labels: strip trailing '-<digits>' suffix
             import re as _re
-            existing_base = {_re.sub(r'-\d+$', '', d) for d in existing_displays}
+            existing_xyz = {
+                "\n".join(l.strip() for l in xyz.splitlines() if l.strip())
+                for xyz, _display in results
+            }
 
             topo_results = _generate_topological_isomers(
                 mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
             )
-            # True if sampling already found at least one unlabelled isomer
-            sampling_has_unlabelled = any(
-                _re.match(r'^Isomer \d+$', d) for d in existing_displays
-            )
 
             for topo_xyz, topo_label in topo_results:
+                if len(results) >= max_isomers:
+                    break
+                topo_key = "\n".join(
+                    l.strip() for l in topo_xyz.splitlines() if l.strip()
+                )
+                if topo_key in existing_xyz:
+                    continue
                 norm = topo_label or ''
-                # Skip if base label already covered by sampling
-                if norm and norm in existing_base:
-                    continue
-                # Skip unlabelled topo results when sampling already produced
-                # Isomer-N entries (macrocycle / all-same-element complexes
-                # where there is really only one geometric isomer).
-                if not norm and sampling_has_unlabelled:
-                    continue
                 if not norm:
                     unknown_counter += 1
                     display = f'Isomer {unknown_counter}'
                 else:
                     display = norm
-                existing_displays.add(display)
-                existing_base.add(norm)
                 results.append((topo_xyz, display))
+                existing_xyz.add(topo_key)
         except Exception as _topo_exc:
             logger.debug("Topological isomer generation failed: %s", _topo_exc)
 
@@ -2873,6 +2958,31 @@ def smiles_to_xyz_isomers(
             results.extend(link_results)
         except Exception as _link_exc:
             logger.debug("Linkage isomer generation failed: %s", _link_exc)
+
+    # Harmonize duplicate non-generic labels from mixed sources
+    # (sampling/topology/linkage) so UI navigation can distinguish them.
+    if results:
+        duplicate_counts: Dict[str, int] = {}
+        for _xyz, lbl in results:
+            label_txt = str(lbl or "")
+            if not label_txt or re.match(r'^Isomer \d+$', label_txt):
+                continue
+            duplicate_counts[label_txt] = duplicate_counts.get(label_txt, 0) + 1
+        if any(count > 1 for count in duplicate_counts.values()):
+            seen_dup: Dict[str, int] = {}
+            renumbered: List[Tuple[str, str]] = []
+            for xyz, lbl in results:
+                label_txt = str(lbl or "")
+                if (
+                    label_txt
+                    and not re.match(r'^Isomer \d+$', label_txt)
+                    and duplicate_counts.get(label_txt, 0) > 1
+                ):
+                    seen_dup[label_txt] = seen_dup.get(label_txt, 0) + 1
+                    renumbered.append((xyz, f"{label_txt}-{seen_dup[label_txt]}"))
+                else:
+                    renumbered.append((xyz, lbl))
+            results = renumbered
 
     return results, None
 
