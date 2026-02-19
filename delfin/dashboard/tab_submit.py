@@ -115,7 +115,7 @@ def create_tab(ctx):
     submit_cluster_convert_button = widgets.Button(
         description='SUBMIT CLUSTER CONVERT + UFF', button_style='success',
         layout=widgets.Layout(width='280px'),
-        tooltip='Run heavy SMILES isomer conversion on SLURM (PAL=40, 5h) and store results in tray/',
+        tooltip='Submit heavy SMILES isomer conversion as a job (SLURM/local) and store results in tray/',
     )
     validate_button = widgets.Button(
         description='VALIDATE CONTROL', button_style='warning',
@@ -807,10 +807,7 @@ def create_tab(ctx):
     def handle_submit_cluster_convert(button):
         with output_area:
             clear_output()
-            backend_name = str(getattr(ctx.backend, 'backend_name', ''))
-            if 'SLURM' not in backend_name.upper():
-                print('Error: Cluster convert is only available with SLURM backend.')
-                return
+            backend_name = str(getattr(ctx.backend, 'backend_name', 'Unknown backend'))
 
             job_name = job_name_widget.value.strip()
             if not job_name:
@@ -861,7 +858,8 @@ def create_tab(ctx):
 
                 if result.returncode == 0:
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
-                    print('Cluster SMILES + UFF conversion submitted!')
+                    print('SMILES + UFF conversion job submitted!')
+                    print(f'Backend: {backend_name}')
                     print(f'Job ID: {job_id}')
                     print('Time Limit: 05:00:00')
                     print('Resources: PAL=40, maxcore=1500 (~60 GB)')

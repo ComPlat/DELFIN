@@ -4,7 +4,7 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | delfin-recalc-override | orca | build | guppy | delfin-co2-chain | auto
+#   delfin | delfin-recalc | delfin-recalc-override | orca | build | guppy | smiles-convert | delfin-co2-chain | auto
 #
 # ENVIRONMENT VARIABLES:
 #   DELFIN_MODE          : Run mode (default: auto)
@@ -18,6 +18,9 @@
 #   GUPPY_PAL            : Total PAL budget for GUPPY (default: DELFIN_PAL or local nproc)
 #   GUPPY_MAXCORE        : Maxcore per core in MB for GUPPY scheduler (default: DELFIN_MAXCORE or 6000)
 #   GUPPY_PARALLEL_JOBS  : Number of parallel GUPPY runs sharing resources (default: 4)
+#   SMILES_CONVERT_MAX_ISOMERS: Max number of converted isomers (default: 400)
+#   SMILES_CONVERT_PARALLEL_JOBS: Parallel UFF workers for smiles-convert (default: DELFIN_PAL or local nproc)
+#   SMILES_CONVERT_OUTDIR: Output directory for smiles-convert results (default: tray)
 #   DELFIN_CO2_SPECIES_DELTA : Redox species delta for delfin-co2-chain mode (default: 0)
 #
 # ========================================================================
@@ -253,6 +256,21 @@ case "$MODE" in
             GUPPY_CMD+=( --charge "$GUPPY_CHARGE" )
         fi
         "${GUPPY_CMD[@]}"
+        EXIT_CODE=$?
+        ;;
+    smiles-convert)
+        SMILES_CONVERT_MAX_ISOMERS="${SMILES_CONVERT_MAX_ISOMERS:-400}"
+        SMILES_CONVERT_PARALLEL_JOBS="${SMILES_CONVERT_PARALLEL_JOBS:-${DELFIN_PAL:-$(nproc)}}"
+        SMILES_CONVERT_OUTDIR="${SMILES_CONVERT_OUTDIR:-tray}"
+        echo "Starting local SMILES conversion..."
+        echo "  Input:         input.txt"
+        echo "  Max isomers:   $SMILES_CONVERT_MAX_ISOMERS"
+        echo "  Parallel UFF:  $SMILES_CONVERT_PARALLEL_JOBS"
+        echo "  Output dir:    $SMILES_CONVERT_OUTDIR"
+        "$DELFIN_PYTHON" -m delfin.smiles_cluster_convert input.txt \
+            --out-dir "$SMILES_CONVERT_OUTDIR" \
+            --max-isomers "$SMILES_CONVERT_MAX_ISOMERS" \
+            --parallel-jobs "$SMILES_CONVERT_PARALLEL_JOBS"
         EXIT_CODE=$?
         ;;
     delfin-co2-chain)
