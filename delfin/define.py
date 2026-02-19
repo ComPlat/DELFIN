@@ -18,6 +18,7 @@ number_explicit_solv_molecules=2
 ------------------------------------
 Global geometry optimisation:
 xTB_method=XTB2
+GUPPY=no
 XTB_OPT=no
 XTB_GOAT=no
 CREST=no

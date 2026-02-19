@@ -849,6 +849,73 @@ def interpret_method_alias(raw_method: str) -> Tuple[str, Optional[str]]:
     return canonical_method, None
 
 
+def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any]) -> None:
+    """Run GUPPY sampling for a SMILES string and write best geometry to start_path.
+
+    Replaces the quick smiles_to_xyz conversion when GUPPY=yes is set in
+    CONTROL.txt.  After completion, start_path contains the lowest-energy
+    XTB2-optimised geometry in DELFIN coordinate format (no XYZ header),
+    ready for XTB_OPT / XTB_GOAT / GOAT / subsequent ORCA steps.
+    """
+    import os
+    from delfin.guppy_sampling import run_sampling
+
+    workdir = start_path.parent / "GUPPY"
+    guppy_input = start_path.parent / "guppy_input.txt"
+    guppy_output = workdir / "GUPPY_try.xyz"
+    best_coord = workdir / "best_coordniation.xyz"
+
+    guppy_input.write_text(smiles + "\n", encoding="utf-8")
+
+    pal_raw = config.get('PAL') or os.environ.get('SLURM_CPUS_PER_TASK') or '40'
+    maxcore_raw = config.get('maxcore') or os.environ.get('DELFIN_MAXCORE') or '6000'
+    try:
+        pal = int(str(pal_raw).strip())
+    except (ValueError, TypeError):
+        pal = 40
+    try:
+        maxcore = int(str(maxcore_raw).strip())
+    except (ValueError, TypeError):
+        maxcore = 6000
+
+    method = str(config.get('xTB_method') or 'XTB2').strip() or 'XTB2'
+
+    charge_raw = config.get('charge', None)
+    charge: Optional[int] = None
+    if charge_raw is not None and str(charge_raw).strip():
+        try:
+            charge = int(str(charge_raw).strip())
+        except (ValueError, TypeError):
+            pass
+
+    logger.info("GUPPY=yes: starting GUPPY sampling for SMILES → %s", start_path.name)
+    ret = run_sampling(
+        input_file=guppy_input,
+        runs=int(os.environ.get('GUPPY_RUNS', '20')),
+        charge=charge,
+        pal=pal,
+        maxcore=maxcore,
+        parallel_jobs=int(os.environ.get('GUPPY_PARALLEL_JOBS', '4')),
+        method=method,
+        output_file=guppy_output,
+        workdir=workdir,
+        seed=int(os.environ.get('GUPPY_SEED', '31')),
+        allow_partial=True,
+    )
+
+    if not best_coord.exists():
+        raise RuntimeError(
+            "GUPPY sampling did not produce best_coordniation.xyz - "
+            "check GUPPY/ subdirectory for details."
+        )
+
+    # Strip 2-line XYZ header (natoms + comment) → DELFIN coordinate format
+    lines = best_coord.read_text(encoding="utf-8").splitlines()
+    coord_lines = [ln for ln in lines[2:] if ln.strip()]
+    start_path.write_text("\n".join(coord_lines) + "\n", encoding="utf-8")
+    logger.info("GUPPY: best geometry written to %s (%d atoms)", start_path.name, len(coord_lines))
+
+
 def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
     input_entry = (config.get('input_file') or 'input.txt').strip() or 'input.txt'
     entry_path = Path(input_entry)
@@ -889,19 +956,30 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
 
         if smiles_line:
             logger.info("Detected SMILES in %s: %s", input_path.name, smiles_line)
-            xyz_content, error = smiles_to_xyz(smiles_line)
+            use_guppy = str(config.get('GUPPY', 'no')).strip().lower() == 'yes'
 
-            if error:
-                logger.error("SMILES conversion failed: %s", error)
-                raise ValueError(f"SMILES conversion failed: {error}")
+            if use_guppy:
+                # GUPPY=yes: run full XTB2 sampling, use best_coordniation.xyz as start.txt.
+                # The quick smiles_to_xyz is intentionally skipped here.
+                try:
+                    _run_guppy_for_smiles(smiles_line, start_path, config)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("GUPPY sampling failed: %s", exc)
+                    raise ValueError(f"GUPPY sampling failed: {exc}") from exc
+            else:
+                # Default: quick single-conformer SMILES → XYZ conversion.
+                xyz_content, error = smiles_to_xyz(smiles_line)
 
-            # Write converted XYZ to start.txt
-            try:
-                start_path.write_text(xyz_content, encoding='utf-8')
-                logger.info("Converted SMILES to XYZ coordinates in %s (input.txt unchanged)", start_path.name)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Could not write converted coordinates to '%s': %s", start_path, exc)
-                raise ValueError(f"Could not write converted coordinates: {exc}") from exc
+                if error:
+                    logger.error("SMILES conversion failed: %s", error)
+                    raise ValueError(f"SMILES conversion failed: {error}")
+
+                try:
+                    start_path.write_text(xyz_content, encoding='utf-8')
+                    logger.info("Converted SMILES to XYZ coordinates in %s (input.txt unchanged)", start_path.name)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Could not write converted coordinates to '%s': %s", start_path, exc)
+                    raise ValueError(f"Could not write converted coordinates: {exc}") from exc
         else:
             logger.warning("SMILES format detected but no valid SMILES string found")
             # Fallback to normal copy
