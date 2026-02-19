@@ -54,6 +54,32 @@ _METAL_SET = set(_METALS)
 _ORGANOMETALLIC_METALS = {'Li', 'Na', 'K', 'Mg', 'Zn', 'Al'}
 _HALOGENS = {'F', 'Cl', 'Br', 'I'}
 
+# Atomic numbers of metal elements — used to filter metal-containing SSSR rings
+# in the roundtrip check so that OB-perceived M-L rings (from short distances)
+# do not skew the comparison against the SMILES organic-ring count.
+try:
+    if RDKIT_AVAILABLE:
+        _pt = Chem.GetPeriodicTable()
+        _METAL_ATOMICNUMS: frozenset = frozenset(
+            _pt.GetAtomicNumber(sym) for sym in _METALS
+            if _pt.GetAtomicNumber(sym) > 0
+        )
+    else:
+        raise RuntimeError("rdkit unavailable")
+except Exception:
+    # Hardcoded fallback covering all metals in _METALS list
+    _METAL_ATOMICNUMS = frozenset([
+        3, 11, 19, 37, 55,          # Li Na K Rb Cs
+        4, 12, 20, 38, 56,          # Be Mg Ca Sr Ba
+        13, 31, 49, 81,             # Al Ga In Tl
+        50, 82, 83, 84,             # Sn Pb Bi Po
+        21, 22, 23, 24, 25, 26, 27, 28, 29, 30,   # Sc-Zn
+        39, 40, 41, 42, 43, 44, 45, 46, 47, 48,   # Y-Cd
+        72, 73, 74, 75, 76, 77, 78, 79, 80,       # Hf-Hg
+        57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,  # La-Lu
+        89, 90, 91, 92, 93, 94,     # Ac Th Pa U Np Pu
+    ])
+
 
 def _is_simple_organometallic(smiles: str) -> bool:
     """Heuristic: simple organometallics like C[Mg]Br where adding Hs is wrong."""
@@ -1210,7 +1236,18 @@ def _roundtrip_ring_count_ok(xyz_delfin: str, original_smiles: str, tolerance: i
             return True
         std_xyz = f"{len(lines)}\n\n" + "\n".join(lines) + "\n"
         rt_mol = pybel.readstring('xyz', std_xyz)
-        rt_rings = len(rt_mol.sssr)
+        # Count ORGANIC-ONLY rings from OB: exclude any ring that contains a
+        # metal atom (OB may perceive M-L bonds from short atom-atom distances,
+        # adding chelate rings to the SSSR that are absent in the SMILES graph).
+        try:
+            _metal_ob_idxs = {a.idx for a in rt_mol.atoms
+                              if a.atomicnum in _METAL_ATOMICNUMS}
+            rt_rings = sum(
+                1 for ring in rt_mol.sssr
+                if not any(i in _metal_ob_idxs for i in ring._path)
+            )
+        except Exception:
+            rt_rings = len(rt_mol.sssr)
         # Organic-only ring count from original SMILES via RDKit (exclude metal rings)
         orig_rings = None
         if RDKIT_AVAILABLE:
@@ -2595,11 +2632,25 @@ def smiles_to_xyz_isomers(
     conf_ids: List[int] = []
     if has_metal and OPENBABEL_AVAILABLE:
         try:
-            # Run OB conformer search in 3 independent restarts.
-            # WeightedRotorSearch is non-deterministic (global PRNG); separate
-            # calls from fresh OBMol instances give complementary pools.
-            _n_ob_restarts = 3
-            _per_ob = max(10, int(num_confs) // _n_ob_restarts)
+            # Scale OB conformer search by molecule size.
+            # WeightedRotorSearch is O(n_rotors × n_confs) and can be very slow
+            # for large rigid ring systems (e.g. Ir(ppy)3, porphyrins).
+            # Small molecules benefit from 3 independent restarts for diverse
+            # sampling; large rigid complexes need only 1 fast make3D geometry
+            # as seed — ETKDG seeds handle structural diversity.
+            n_heavy = mol.GetNumHeavyAtoms() if mol is not None else 0
+            if n_heavy > 40:
+                # Large/rigid molecule: 1 restart, few conformers
+                _n_ob_restarts = 1
+                _per_ob = 5
+            elif n_heavy > 25:
+                # Medium molecule: 2 restarts
+                _n_ob_restarts = 2
+                _per_ob = max(10, int(num_confs) // 6)
+            else:
+                # Small molecule: 3 restarts for maximum diversity
+                _n_ob_restarts = 3
+                _per_ob = max(10, int(num_confs) // _n_ob_restarts)
             ob_xyz_blocks: List[str] = []
             _ob_seen: set = set()
             ob_error: Optional[str] = None
@@ -2621,8 +2672,8 @@ def smiles_to_xyz_isomers(
                 ob_ids = _inject_openbabel_conformers_into_mol(mol, ob_xyz_blocks)
                 conf_ids.extend(ob_ids)
                 logger.debug(
-                    "OB conformers injected for isomer search: %d (3 restarts)",
-                    len(ob_ids),
+                    "OB conformers injected for isomer search: %d (%d restart(s))",
+                    len(ob_ids), _n_ob_restarts,
                 )
             elif ob_error:
                 logger.debug("OB conformer generation: %s", ob_error)
