@@ -321,8 +321,11 @@ def create_tab(ctx):
 
     def handle_convert_smiles(button):
         if state['convert_quick']:
-            # Quick mode: single conformer, fast, no isomer search
-            raw_input = coords_widget.value.strip()
+            # Quick mode: single conformer, fast, no isomer search.
+            # Prefer cached SMILES (set after full convert) so the button
+            # still works even when coords_widget already shows XYZ.
+            cached_smiles = state['converted_xyz_cache'].get('smiles')
+            raw_input = cached_smiles or coords_widget.value.strip()
             if not raw_input:
                 with mol_output:
                     clear_output()
@@ -332,7 +335,7 @@ def create_tab(ctx):
             if input_type != 'smiles':
                 with mol_output:
                     clear_output()
-                    print('Input is not a SMILES string.')
+                    print('Please enter SMILES in the input box.')
                 return
             with mol_output:
                 clear_output()
