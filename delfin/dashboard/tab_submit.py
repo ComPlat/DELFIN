@@ -532,7 +532,7 @@ def create_tab(ctx):
                 print(f'Options: {extras}')
             print('Converting...')
 
-        xyz_string, num_atoms, method, error = smiles_to_xyz(smi)
+        xyz_string, num_atoms, method, error = smiles_to_xyz_quick(smi)
         with mol_output:
             clear_output()
             if error:
@@ -639,7 +639,7 @@ def create_tab(ctx):
                     print(f'Line {idx}: Invalid job name -> {full_job_name}')
                     continue
 
-                xyz_string, num_atoms, method, error = smiles_to_xyz(smi)
+                xyz_string, num_atoms, method, error = smiles_to_xyz_quick(smi)
                 if error:
                     print(f'Line {idx}: {safe_name} - SMILES error: {error}')
                     continue
