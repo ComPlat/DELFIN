@@ -2733,31 +2733,36 @@ def smiles_to_xyz_isomers(
 def smiles_to_xyz_quick(smiles: str) -> Tuple[Optional[str], Optional[str]]:
     """Fast single-conformer SMILES → XYZ (DELFIN format, no header).
 
-    Skips OB restarts, multi-seed ETKDG loops, quality checks and UFF.
-    A single ETKDGv3 embedding with seed=42 is attempted; falls back to
-    random-coordinate embedding if that fails.  Returns ``(xyz, error)``.
+    Uses the same strategy as the pre-Avogadro smiles_to_xyz: single
+    ETKDGv3 embedding per strategy (no OB restarts, no multi-seed loop).
+    For metal complexes delegates to _try_multiple_strategies which tries
+    stk → RDKit → unsanitized → no-valence-check → OB in order and
+    returns as soon as one succeeds.  Returns ``(xyz, error)``.
     """
     if not RDKIT_AVAILABLE:
         return None, "RDKit not available"
 
-    mol = _prepare_mol_for_embedding(smiles)
-    if mol is None:
-        return None, "Could not prepare molecule for embedding"
+    has_metal = contains_metal(smiles)
 
-    mol.RemoveAllConformers()
+    if has_metal:
+        return _try_multiple_strategies(smiles)
+
+    # Non-metal: single ETKDG embedding
+    mol, note = mol_from_smiles_rdkit(smiles, allow_metal=False)
+    if mol is None:
+        return None, f"Could not parse SMILES: {note}"
+    try:
+        mol = Chem.AddHs(mol)
+    except Exception:
+        pass
     params = AllChem.ETKDGv3()
     params.randomSeed = 42
     params.useRandomCoords = True
-    params.enforceChirality = False
     result = AllChem.EmbedMolecule(mol, params)
-
     if result != 0:
-        # Fallback: pure random coordinates
         result = AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
-
     if result != 0:
         return None, f"Quick embedding failed for SMILES: {smiles[:60]}"
-
     return _mol_to_xyz(mol), None
 
 
