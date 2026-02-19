@@ -18,6 +18,7 @@ from .input_processing import (
     parse_inp_resources,
     parse_resource_settings,
     smiles_to_xyz,
+    smiles_to_xyz_quick,
     contains_metal,
     is_smiles,
 )
@@ -2005,7 +2006,7 @@ def create_tab(ctx):
         # Convert to XYZ so it can be visualized like regular coordinates.
         if is_smiles(text):
             smiles_line = lines[0].strip()
-            xyz_string, num_atoms, _method, error = smiles_to_xyz(smiles_line)
+            xyz_string, num_atoms, _method, error = smiles_to_xyz_quick(smiles_line)
             if not error and xyz_string:
                 return f"{num_atoms}\n{title}\n{xyz_string}"
         atom_count = len(lines)
