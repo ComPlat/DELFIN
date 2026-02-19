@@ -2265,12 +2265,24 @@ def _build_topology_xyz(
     perm: List[int],
     geometry: str,
     apply_uff: bool,
+    ref_xyz: Optional[str] = None,
 ) -> Optional[str]:
     """Build a DELFIN XYZ for one topological arrangement.
 
-    Places the metal at the origin, donor atoms at idealized geometry
-    vectors, then BFS-places all remaining ligand atoms (same algorithm
-    as ``_manual_metal_embed``).  Optionally applies OB UFF refinement.
+    Strategy (in order of preference):
+
+    1. **Reference-conformer approach** (when *ref_xyz* is provided):
+       Start from a good existing geometry (e.g. a sampling conformer),
+       move metal to origin, teleport each donor to its idealized target
+       position, then run constrained UFF (metal + donors fixed, backbone
+       free) to resolve any steric conflicts.
+
+    2. **BFS approach** (fallback when no reference is available):
+       Place metal at origin, donors at idealized geometry vectors, then
+       BFS-place all remaining atoms.  This works well for small/simple
+       complexes but can produce 0 Å overlaps for large ring systems.
+
+    In both cases an unconstrained UFF polish is run at the end.
 
     Args:
         mol: RDKit mol (with H atoms, as from ``_prepare_mol_for_embedding``).
@@ -2279,6 +2291,8 @@ def _build_topology_xyz(
         perm: ``perm[position] = index into donor_atom_indices``.
         geometry: Key in ``_TOPO_GEOMETRY_VECTORS`` ('OH', 'SQ', …).
         apply_uff: Whether to run OB UFF optimization after placement.
+        ref_xyz: Optional DELFIN-format XYZ of a reference conformer.  When
+            supplied the function uses strategy 1 instead of BFS.
 
     Returns:
         DELFIN-format XYZ string, or None on failure.
@@ -2286,6 +2300,58 @@ def _build_topology_xyz(
     try:
         vectors = _TOPO_GEOMETRY_VECTORS[geometry]
         n_atoms = mol.GetNumAtoms()
+
+        # --- Strategy 1: reference-conformer approach ---
+        # When a valid reference XYZ is available: move the metal to the
+        # origin, teleport every donor atom to its idealized target position,
+        # then constrained-UFF to let the backbone adapt.  This avoids the
+        # BFS 0 Å clashes that occur in large ring systems.
+        if ref_xyz is not None:
+            ref_lines = [l for l in ref_xyz.strip().splitlines() if l.strip()]
+            if len(ref_lines) == n_atoms:
+                try:
+                    ref_coords: List[Tuple[float, float, float]] = [
+                        (float(p[1]), float(p[2]), float(p[3]))
+                        for p in (l.split() for l in ref_lines)
+                    ]
+                    # Centre the reference on the metal
+                    mx, my, mz = ref_coords[metal_idx]
+                    ref_coords = [
+                        (x - mx, y - my, z - mz) for x, y, z in ref_coords
+                    ]
+                    # Teleport donors to their idealized target positions
+                    for pos_idx, donor_list_idx in enumerate(perm):
+                        donor_atom_idx = donor_atom_indices[donor_list_idx]
+                        vx, vy, vz = vectors[pos_idx]
+                        mag = math.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
+                        if mag > 1e-8:
+                            vx, vy, vz = vx / mag * 2.0, vy / mag * 2.0, vz / mag * 2.0
+                        ref_coords[donor_atom_idx] = (vx, vy, vz)
+                    ref_coords[metal_idx] = (0.0, 0.0, 0.0)
+
+                    # Write modified XYZ
+                    mod_lines = []
+                    for i in range(n_atoms):
+                        sym = mol.GetAtomWithIdx(i).GetSymbol()
+                        x, y, z = ref_coords[i]
+                        mod_lines.append(f"{sym:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+                    xyz = '\n'.join(mod_lines) + '\n'
+
+                    if apply_uff:
+                        # Phase 1: fix metal + donors, relax backbone
+                        fixed = [metal_idx] + list(donor_atom_indices)
+                        xyz = _optimize_xyz_openbabel_constrained(xyz, fixed, steps=800)
+                        # Phase 2: unconstrained polish
+                        xyz = _optimize_xyz_openbabel(xyz, steps=500)
+
+                    return xyz
+                except Exception as ref_exc:
+                    logger.debug(
+                        "_build_topology_xyz ref-conformer path failed (%s), "
+                        "falling back to BFS", ref_exc
+                    )
+
+        # --- Strategy 2: BFS approach (fallback) ---
         coords: List[Tuple[float, float, float]] = [(0.0, 0.0, 0.0)] * n_atoms
         placed: set = set()
 
@@ -2374,12 +2440,27 @@ def _build_topology_xyz(
         xyz = '\n'.join(lines) + '\n'
 
         if apply_uff:
+            # Phase 1: constrained optimization — metal and donors are pinned
+            # to their target positions while the ligand backbone is free to
+            # relax.  This resolves the atom clashes that the BFS placement
+            # introduces for large / rigid molecules without disturbing the
+            # intended coordination geometry.
+            fixed = [metal_idx] + list(donor_atom_indices)
             try:
-                xyz = _optimize_xyz_openbabel(xyz)
+                xyz = _optimize_xyz_openbabel_constrained(xyz, fixed, steps=800)
             except Exception as uff_exc:
-                # Keep the generated topology geometry when UFF fails.
-                # Dropping the isomer here can hide valid alternatives.
-                logger.debug("Topology UFF optimization failed, keeping unoptimized XYZ: %s", uff_exc)
+                logger.debug(
+                    "Topology constrained UFF failed, skipping phase 1: %s", uff_exc
+                )
+            # Phase 2: unconstrained polish — let the whole complex relax
+            # (donors may shift slightly from idealised positions).
+            try:
+                xyz = _optimize_xyz_openbabel(xyz, steps=500)
+            except Exception as uff_exc:
+                logger.debug(
+                    "Topology unconstrained UFF failed, keeping phase-1 XYZ: %s",
+                    uff_exc,
+                )
 
         return xyz
     except Exception as e:
@@ -2392,8 +2473,11 @@ def _generate_topological_isomers(
     smiles: str,
     apply_uff: bool = True,
     max_isomers: int = 10,
-) -> List[Tuple[str, str]]:
+) -> List[Tuple[str, str, tuple]]:
     """Guarantee-complete isomer enumeration via topological permutation.
+
+    Returns ``[(xyz_string, label, fingerprint), …]`` — the fingerprint
+    lets the caller detect genuine duplicates against sampling results.
 
     For each metal center: enumerates all unique canonical arrangements of
     donor atoms (respecting chelate cis-constraints), builds an idealized
@@ -2401,8 +2485,26 @@ def _generate_topological_isomers(
 
     Returns [(xyz_string, label), …].
     """
-    results: List[Tuple[str, str]] = []
+    results: List[Tuple[str, str, tuple]] = []
     dtype_map = _donor_type_map(mol)
+
+    # Build a reference XYZ from the best existing conformer (if any).
+    # The reference is used by _build_topology_xyz (strategy 1) to avoid
+    # the 0 Å overlaps that BFS produces for large ring systems.
+    ref_xyz: Optional[str] = None
+    if mol.GetNumConformers() > 0:
+        best_cid, best_score = 0, float('inf')
+        for cid in range(mol.GetNumConformers()):
+            try:
+                score = _geometry_quality_score(mol, cid)
+                if score < best_score:
+                    best_score, best_cid = score, cid
+            except Exception:
+                pass
+        try:
+            ref_xyz = _mol_to_xyz_conformer(mol, best_cid)
+        except Exception:
+            ref_xyz = None
 
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
@@ -2414,11 +2516,25 @@ def _generate_topological_isomers(
         if n_coord not in (4, 5, 6, 7):
             continue
 
-        # Use element symbols as donor labels for canonical form comparison
-        donor_labels = [
-            dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset()))[0]
-            for d in donor_indices
-        ]
+        # Use Morgan-enriched donor labels for canonical form comparison.
+        # Including the chemical environment hash lets the enumerator
+        # distinguish chemically inequivalent donors of the same element
+        # (e.g. pyridine-N vs. chelate-N), so that additional geometric
+        # isomers like "py-N-trans" or "all-cis" are not missed.
+        donor_labels = []
+        for d in donor_indices:
+            sym, env_hash = dtype_map.get(
+                d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset())
+            )
+            # Append a deterministic suffix when the env_hash is non-trivial
+            # so that same-element donors in different environments produce
+            # different canonical-form slots.  frozenset hashing is stable
+            # across runs (only string hashing is salted in CPython ≥ 3.3).
+            if env_hash:
+                lbl = f"{sym}:{abs(hash(env_hash)) % 1_000_000}"
+            else:
+                lbl = sym
+            donor_labels.append(lbl)
 
         chelate_ps = _chelate_pairs(mol, metal_idx, donor_indices)
 
@@ -2442,7 +2558,8 @@ def _generate_topological_isomers(
             geom_name = canonical_form[0]  # 'OH', 'SQ', 'TBP', 'SP', 'PBP'
             try:
                 xyz = _build_topology_xyz(
-                    mol, metal_idx, donor_indices, perm, geom_name, apply_uff
+                    mol, metal_idx, donor_indices, perm, geom_name, apply_uff,
+                    ref_xyz=ref_xyz,
                 )
                 if xyz is None:
                     continue
@@ -2466,7 +2583,7 @@ def _generate_topological_isomers(
                     mol_tmp.GetMol(), cid, dtype_map=dtype_map
                 )
                 label = _classify_isomer_label(fp, mol_tmp.GetMol())
-                results.append((xyz, label))
+                results.append((xyz, label, fp))
             except Exception as e:
                 logger.debug("Topology isomer build failed (%s): %s", geom_name, e)
                 continue
@@ -2827,15 +2944,17 @@ def smiles_to_xyz_isomers(
 
     # --- Topological enumerator: guarantee completeness ---
     # Runs after sampling-based dedup; adds any isomers not found by sampling.
-    # Skip if sampling already found results for every label produced by the
-    # enumerator (compare against base label, stripping numeric suffix like
-    # 'mer-2' → 'mer' so we don't add a topo 'mer' when sampling found 'mer-1').
+    # Uses fingerprint comparison (not just base label) so that geometrically
+    # distinct sub-types within the same label class (e.g. two different "cis"
+    # arrangements that differ only in which N-subtype is trans) are not missed
+    # when sampling already found at least one "cis" conformer.
     if has_metal:
         try:
             existing_displays = {display for _, display in results}
-            # Derive base labels: strip trailing '-<digits>' suffix
             import re as _re
-            existing_base = {_re.sub(r'-\d+$', '', d) for d in existing_displays}
+            # Collect all fingerprints already covered by sampling so that
+            # the topo enumerator can skip true duplicates efficiently.
+            sampling_fps: set = set(seen_fps.keys()) if seen_fps else set()
 
             topo_results = _generate_topological_isomers(
                 mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
@@ -2845,10 +2964,11 @@ def smiles_to_xyz_isomers(
                 _re.match(r'^Isomer \d+$', d) for d in existing_displays
             )
 
-            for topo_xyz, topo_label in topo_results:
+            for topo_xyz, topo_label, topo_fp in topo_results:
                 norm = topo_label or ''
-                # Skip if base label already covered by sampling
-                if norm and norm in existing_base:
+                # Skip if this exact coordination fingerprint is already
+                # represented by a sampling result (genuine duplicate).
+                if topo_fp in sampling_fps:
                     continue
                 # Skip unlabelled topo results when sampling already produced
                 # Isomer-N entries (macrocycle / all-same-element complexes
@@ -2860,8 +2980,15 @@ def smiles_to_xyz_isomers(
                     display = f'Isomer {unknown_counter}'
                 else:
                     display = norm
+                # Number duplicate labels (multiple topo isomers with same label)
+                if display in existing_displays:
+                    base = _re.sub(r'-\d+$', '', display)
+                    suffix = 1
+                    while f'{base}-{suffix}' in existing_displays:
+                        suffix += 1
+                    display = f'{base}-{suffix}'
                 existing_displays.add(display)
-                existing_base.add(norm)
+                sampling_fps.add(topo_fp)  # prevent duplicate topo results
                 results.append((topo_xyz, display))
         except Exception as _topo_exc:
             logger.debug("Topological isomer generation failed: %s", _topo_exc)
@@ -3462,6 +3589,73 @@ def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
         symbol = atom.GetSymbol()
         lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
     return '\n'.join(lines) + '\n'
+
+
+def _optimize_xyz_openbabel_constrained(
+    xyz_delfin: str,
+    fixed_atom_indices: List[int],
+    steps: int = 800,
+) -> str:
+    """Run OB UFF with specified atoms held fixed (0-indexed).
+
+    Useful as a first-pass optimization after topological placement:
+    the metal and all donor atoms are pinned to their target positions
+    while the ligand backbone is free to relax, resolving clashes that
+    arise from the BFS-based initial atom placement.
+
+    Args:
+        xyz_delfin: DELFIN-format coordinate block (no atom-count header).
+        fixed_atom_indices: 0-indexed atom indices to hold fixed.
+        steps: Maximum conjugate-gradient steps.
+
+    Returns:
+        Optimized DELFIN-format XYZ string, or the original on failure.
+    """
+    if not OPENBABEL_AVAILABLE:
+        return xyz_delfin
+
+    try:
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        n_atoms = len(lines)
+        if n_atoms == 0:
+            return xyz_delfin
+
+        std_xyz = f"{n_atoms}\n\n"
+        for line in lines:
+            parts = line.split()
+            std_xyz += f"{parts[0]}  {parts[1]}  {parts[2]}  {parts[3]}\n"
+
+        ob_mol = pybel.readstring("xyz", std_xyz)
+
+        ff = pybel._forcefields["uff"]
+        if not ff.Setup(ob_mol.OBMol):
+            return xyz_delfin
+
+        # Pin each fixed atom in place (OB uses 1-based indexing)
+        try:
+            constraints = pybel.ob.OBFFConstraints()
+            for idx in fixed_atom_indices:
+                constraints.AddAtomConstraint(idx + 1)
+            ff.SetConstraints(constraints)
+        except Exception:
+            # Older OB versions may not expose OBFFConstraints via pybel.ob;
+            # fall back to unconstrained optimization.
+            pass
+
+        ff.ConjugateGradients(steps)
+        ff.GetCoordinates(ob_mol.OBMol)
+
+        opt_lines = []
+        for ob_atom in pybel.ob.OBMolAtomIter(ob_mol.OBMol):
+            symbol = pybel.ob.GetSymbol(ob_atom.GetAtomicNum())
+            x, y, z = ob_atom.GetX(), ob_atom.GetY(), ob_atom.GetZ()
+            opt_lines.append(f"{symbol:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+
+        return '\n'.join(opt_lines) + '\n'
+
+    except Exception as e:
+        logger.debug("Constrained OB UFF optimization failed: %s", e)
+        return xyz_delfin
 
 
 def _optimize_xyz_openbabel(xyz_delfin: str, steps: int = 500) -> str:
