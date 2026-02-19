@@ -1239,8 +1239,12 @@ def _roundtrip_ring_count_ok(xyz_delfin: str, original_smiles: str, tolerance: i
                 if not any(i in _metal_ob_idxs for i in ring._path)
             )
         except Exception:
-            rt_rings = len(rt_mol.sssr)
-        # Organic-only ring count from original SMILES via RDKit (exclude metal rings)
+            # OB failed to kekulize or ring._path unavailable — be permissive.
+            # Using total SSSR here would include chelate rings and cause false
+            # rejections for aromatic metal complexes (e.g. Ir(ppy)3).
+            return True
+        # Organic-only ring count from original SMILES via RDKit (charge-insensitive:
+        # formal charges on [N+]/[Fe-2] vs [N]/[Fe] do not affect ring membership).
         orig_rings = None
         if RDKIT_AVAILABLE:
             try:
@@ -1262,8 +1266,17 @@ def _roundtrip_ring_count_ok(xyz_delfin: str, original_smiles: str, tolerance: i
             except Exception:
                 pass
         if orig_rings is None:
-            orig_mol_ob = pybel.readstring('smi', original_smiles)
-            orig_rings = len(orig_mol_ob.sssr)
+            # OB SMILES fallback: filter metal-containing rings to stay charge-insensitive.
+            try:
+                orig_mol_ob = pybel.readstring('smi', original_smiles)
+                _metal_smi_idxs = {a.idx for a in orig_mol_ob.atoms
+                                   if a.atomicnum in _METAL_ATOMICNUMS}
+                orig_rings = sum(
+                    1 for ring in orig_mol_ob.sssr
+                    if not any(i in _metal_smi_idxs for i in ring._path)
+                )
+            except Exception:
+                return True
         return abs(rt_rings - orig_rings) <= tolerance
     except Exception:
         return True
@@ -2781,6 +2794,11 @@ def smiles_to_xyz_isomers(
                 if apply_uff:
                     xyz = _optimize_xyz_openbabel(xyz)
             except Exception:
+                continue
+            # Topology check: organic ring count from OB XYZ must match original
+            # SMILES (charge-insensitive: [N+]/[Fe-2] == [N]/[Fe] topologically).
+            if not _roundtrip_ring_count_ok(xyz, smiles):
+                logger.debug("Skipping conformer %d: topology mismatch", cid)
                 continue
             results.append((xyz, display))
 
