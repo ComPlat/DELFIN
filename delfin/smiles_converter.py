@@ -2707,16 +2707,16 @@ def smiles_to_xyz_isomers(
             )
     except Exception as e:
         logger.warning("Multi-conformer embedding failed: %s", e)
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
-        if err:
-            return [], err
-        return [(xyz, '')], None
+        # Do NOT return early — fall through so the topological enumerator
+        # (fac/mer, cis/trans, …) still runs below via the seen_fps==empty path.
+        mol.RemoveAllConformers()
+        conf_ids = []
 
     if not conf_ids:
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
-        if err:
-            return [], err
-        return [(xyz, '')], None
+        # No conformers from OB or ETKDG.  Do NOT return early here.
+        # The seen_fps-empty branch below will supply a fallback geometry and
+        # the topological enumerator will still enumerate fac/mer/cis/trans.
+        logger.debug("No conformers generated; falling through to topo enumerator")
 
     # Classify each conformer, skip obvious artifacts, then deduplicate by
     # full coordination fingerprint. This keeps distinct coordination
