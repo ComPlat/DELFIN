@@ -1,6 +1,7 @@
 """Submit Job tab: main DELFIN job submission form."""
 
 import re
+import time
 
 import py3Dmol
 import ipywidgets as widgets
@@ -50,6 +51,7 @@ def create_tab(ctx):
     convert_smiles_button = widgets.Button(
         description='CONVERT SMILES', button_style='info',
         layout=widgets.Layout(width='150px'),
+        tooltip='Click: full isomer search | Double-click: quick single structure',
     )
     convert_smiles_uff_button = widgets.Button(
         description='CONVERT SMILES + UFF', button_style='info',
@@ -173,6 +175,7 @@ def create_tab(ctx):
         'smiles_preview_index': 0,
         'isomers': [],
         'isomer_index': 0,
+        'last_convert_click': 0.0,
     }
 
     # -- handlers -------------------------------------------------------
@@ -318,7 +321,38 @@ def create_tab(ctx):
         _show_isomer_at_index(0)
 
     def handle_convert_smiles(button):
-        _convert_smiles(apply_uff=False)
+        now = time.monotonic()
+        is_double_click = (now - state['last_convert_click']) < 0.6
+        state['last_convert_click'] = now
+
+        if is_double_click:
+            # Double-click: quick single-conformer conversion (fast, no isomer search)
+            raw_input = coords_widget.value.strip()
+            if not raw_input:
+                with mol_output:
+                    clear_output()
+                    print('Please enter SMILES in the input box.')
+                return
+            cleaned_data, input_type = clean_input_data(raw_input)
+            if input_type != 'smiles':
+                with mol_output:
+                    clear_output()
+                    print('Input is not a SMILES string.')
+                return
+            with mol_output:
+                clear_output()
+                print('Quick convert (single structure)...')
+            xyz_string, num_atoms, _method, error = smiles_to_xyz(cleaned_data, apply_uff=False)
+            if error or not xyz_string:
+                with mol_output:
+                    clear_output()
+                    print(f'Error: {error or "Conversion failed"}')
+                return
+            state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
+            state['isomers'] = [(xyz_string, num_atoms, 'quick')]
+            _show_isomer_at_index(0)
+        else:
+            _convert_smiles(apply_uff=False)
 
     def handle_convert_smiles_uff(button):
         _convert_smiles(apply_uff=True)
