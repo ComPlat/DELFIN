@@ -84,19 +84,40 @@ def _prefer_no_sanitize(smiles: str) -> bool:
 
 
 def _is_metal_nitrogen_complex(smiles: str) -> bool:
-    """Check if SMILES represents a metal-nitrogen coordination complex.
+    """Check if SMILES represents a metal coordination complex with heteroatom ligands.
 
-    Matches both neutral ([Metal]) and charged ([Metal+2], [Metal-]) notations,
-    as well as stereochemical variants ([Metal@@+2], etc.) for all metals.
+    Routes to _try_multiple_strategies for any metal complex that has typical
+    donor atoms: N (amines, pyridyl, porphyrins), S (thiolates), O (oxalates),
+    P (phosphines).  Matches both neutral ([Metal]) and charged ([Metal+2],
+    [Metal-]) notations, as well as stereochemical variants.
     """
-    # Build pattern for all metals (neutral or charged, with optional stereochemistry)
     metal_pattern = '|'.join(re.escape(m) for m in _METALS)
     has_metal = bool(re.search(rf'\[(?:{metal_pattern})(?:@+|@@)?(?:[+-]\d*)?\]', smiles))
+    if not has_metal:
+        return False
 
-    # Check for coordinating nitrogen (neutral [N] or negative [N-] or ring-closing N)
-    has_coord_n = '[N]' in smiles or '[N-]' in smiles or bool(re.search(r'N\d+=', smiles))
+    # Nitrogen: neutral [N], negative [N-], positive [N+], ring-closing N1/N%10
+    has_n = (
+        '[N]' in smiles or '[N-]' in smiles or '[N+]' in smiles
+        or bool(re.search(r'N\d+', smiles)) or bool(re.search(r'N%\d+', smiles))
+    )
+    # Sulfur: thiolates [S-], thioethers [S], ring-closing S1/S%10
+    has_s = (
+        '[S-]' in smiles or '[S]' in smiles or '[S+]' in smiles
+        or bool(re.search(r'S\d+', smiles)) or bool(re.search(r'S%\d+', smiles))
+    )
+    # Oxygen: alkoxides/oxalates [O-], [O], ring-closing O1/O%10
+    has_o = (
+        '[O-]' in smiles or '[O]' in smiles
+        or bool(re.search(r'O\d+', smiles)) or bool(re.search(r'O%\d+', smiles))
+    )
+    # Phosphorus: phosphines [P], [PH], [P+], ring-closing P1/P%10
+    has_p = (
+        '[P]' in smiles or '[PH]' in smiles or '[P+]' in smiles
+        or bool(re.search(r'P\d+', smiles)) or bool(re.search(r'P%\d+', smiles))
+    )
 
-    return has_metal and has_coord_n
+    return has_n or has_s or has_o or has_p
 
 
 def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
@@ -1173,6 +1194,52 @@ def _prepare_mol_for_embedding(smiles: str):
     return mol
 
 
+def _roundtrip_ring_count_ok(xyz_delfin: str, original_smiles: str, tolerance: int = 2) -> bool:
+    """Validate a 3D structure by round-tripping coordinates → SMILES via OpenBabel.
+
+    Only organic rings (not containing metal atoms) are compared. Metal chelate
+    and coordination rings are excluded because OB bond perception from XYZ is
+    unreliable for metal-ligand bonds (e.g. Ir-N ~2.1 Å), which would cause
+    false rejections for complexes like fac/mer-Ir(ppy)3.
+    """
+    if not OPENBABEL_AVAILABLE:
+        return True
+    try:
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        if not lines:
+            return True
+        std_xyz = f"{len(lines)}\n\n" + "\n".join(lines) + "\n"
+        rt_mol = pybel.readstring('xyz', std_xyz)
+        rt_rings = len(rt_mol.sssr)
+        # Organic-only ring count from original SMILES via RDKit (exclude metal rings)
+        orig_rings = None
+        if RDKIT_AVAILABLE:
+            try:
+                orig_mol_rd = Chem.MolFromSmiles(original_smiles, sanitize=False)
+                if orig_mol_rd is not None:
+                    try:
+                        orig_mol_rd.UpdatePropertyCache(strict=False)
+                    except Exception:
+                        pass
+                    metal_indices = {
+                        a.GetIdx() for a in orig_mol_rd.GetAtoms()
+                        if a.GetSymbol() in _METAL_SET
+                    }
+                    ring_info = orig_mol_rd.GetRingInfo()
+                    orig_rings = sum(
+                        1 for ring in ring_info.AtomRings()
+                        if not any(idx in metal_indices for idx in ring)
+                    )
+            except Exception:
+                pass
+        if orig_rings is None:
+            orig_mol_ob = pybel.readstring('smi', original_smiles)
+            orig_rings = len(orig_mol_ob.sssr)
+        return abs(rt_rings - orig_rings) <= tolerance
+    except Exception:
+        return True
+
+
 def _has_atom_clash(mol, conf_id: int, min_dist: float = 0.7) -> bool:
     """Return True if any pair of non-bonded atoms is closer than *min_dist* Å.
 
@@ -1234,9 +1301,12 @@ def _has_bad_geometry(mol, conf_id: int) -> bool:
         # Pre-compute chelate pairs (donors connected through non-metal path)
         chelate = _chelate_pairs(mol, metal_idx, nbr_indices)
         chelate_set = {frozenset(p) for p in chelate}
+        n = len(coord_positions)
+        n_pairs = n * (n - 1) // 2
 
-        for i in range(len(coord_positions)):
-            for j in range(i + 1, len(coord_positions)):
+        all_angles = []
+        for i in range(n):
+            for j in range(i + 1, n):
                 pa, pb = coord_positions[i], coord_positions[j]
                 v1 = (pa.x - metal_pos.x, pa.y - metal_pos.y, pa.z - metal_pos.z)
                 v2 = (pb.x - metal_pos.x, pb.y - metal_pos.y, pb.z - metal_pos.z)
@@ -1247,10 +1317,23 @@ def _has_bad_geometry(mol, conf_id: int) -> bool:
                     return True
                 cos_a = max(-1.0, min(1.0, dot / (mag1 * mag2)))
                 angle = math.degrees(math.acos(cos_a))
+                all_angles.append((angle, frozenset([nbr_indices[i], nbr_indices[j]])))
                 is_chelate_pair = frozenset([nbr_indices[i], nbr_indices[j]]) in chelate_set
                 min_angle = 40.0 if is_chelate_pair else 60.0
                 if angle < min_angle:
                     return True
+
+        # Tetradentate macrocyclic check (porphyrins, phthalocyanines, salen…):
+        # if 4-coordinate AND all 6 pairs are chelate (= fully macrocyclic),
+        # reject tetrahedral ETKDG artifacts where no angle exceeds ~115°.
+        # Real porphyrin distortions (saddling, doming, ruffling) keep at least
+        # one angle well above 115°; only artifacts where all 4 donors cluster
+        # on one side produce a max angle near the tetrahedral value (109.5°).
+        # 6-coordinate metals (Ir, Ru, …) have n=6, n_pairs=15, so this check
+        # never triggers for tris-bidentate complexes like fac/mer-Ir(ppy)3.
+        if n == 4 and len(chelate_set) == n_pairs and all_angles:
+            if max(a for a, _ in all_angles) < 115.0:
+                return True
     return False
 
 
@@ -2669,6 +2752,9 @@ def smiles_to_xyz_isomers(
                 if apply_uff:
                     xyz = _optimize_xyz_openbabel(xyz)
             except Exception:
+                continue
+            if not _roundtrip_ring_count_ok(xyz, smiles):
+                logger.debug("Skipping conformer %d: round-trip ring count mismatch", cid)
                 continue
             results.append((xyz, display))
 
