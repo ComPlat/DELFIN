@@ -18,13 +18,16 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | orca | build | guppy | delfin-co2-chain | auto (default: auto)
+#   delfin | delfin-recalc | orca | build | guppy | smiles-convert | delfin-co2-chain | auto (default: auto)
 #   BUILD_MULTIPLICITY: Spin multiplicity for build mode (default: 1)
 #   GUPPY_RUNS: Number of GUPPY sampling runs (default: 20)
 #   GUPPY_CHARGE: Optional charge override for GUPPY (default: auto from SMILES)
 #   GUPPY_PAL: Total PAL budget for GUPPY (default: DELFIN_PAL or SLURM_CPUS_PER_TASK)
 #   GUPPY_MAXCORE: Maxcore per core in MB for GUPPY scheduler (default: DELFIN_MAXCORE or 6000)
 #   GUPPY_PARALLEL_JOBS: Number of parallel GUPPY runs sharing resources (default: 4)
+#   SMILES_CONVERT_MAX_ISOMERS: Max number of converted isomers (default: 400)
+#   SMILES_CONVERT_PARALLEL_JOBS: Parallel UFF workers for smiles-convert (default: DELFIN_PAL/SLURM_CPUS_PER_TASK)
+#   SMILES_CONVERT_OUTDIR: Output directory for smiles-convert results (default: tray)
 #   DELFIN_CO2_SPECIES_DELTA: Redox species delta for delfin-co2-chain mode (default: 0)
 #   DELFIN_INP_FILE: Specific .inp file for ORCA mode
 #   DELFIN_JOB_NAME: Job name for display (optional)
@@ -551,6 +554,21 @@ case "$MODE" in
         "${GUPPY_CMD[@]}"
         EXIT_CODE=$?
         ;;
+    smiles-convert)
+        SMILES_CONVERT_MAX_ISOMERS="${SMILES_CONVERT_MAX_ISOMERS:-400}"
+        SMILES_CONVERT_PARALLEL_JOBS="${SMILES_CONVERT_PARALLEL_JOBS:-${DELFIN_PAL:-${SLURM_CPUS_PER_TASK:-40}}}"
+        SMILES_CONVERT_OUTDIR="${SMILES_CONVERT_OUTDIR:-tray}"
+        echo "Starting cluster SMILES conversion..."
+        echo "  Input:         input.txt"
+        echo "  Max isomers:   $SMILES_CONVERT_MAX_ISOMERS"
+        echo "  Parallel UFF:  $SMILES_CONVERT_PARALLEL_JOBS"
+        echo "  Output dir:    $SMILES_CONVERT_OUTDIR"
+        "$DELFIN_PYTHON" -m delfin.smiles_cluster_convert input.txt \
+            --out-dir "$SMILES_CONVERT_OUTDIR" \
+            --max-isomers "$SMILES_CONVERT_MAX_ISOMERS" \
+            --parallel-jobs "$SMILES_CONVERT_PARALLEL_JOBS"
+        EXIT_CODE=$?
+        ;;
     delfin-co2-chain)
         CO2_SPECIES_DELTA="${DELFIN_CO2_SPECIES_DELTA:-0}"
         echo "Starting DELFIN + CO2 Coordinator chain..."
@@ -581,7 +599,7 @@ case "$MODE" in
         ;;
     *)
         echo "ERROR: Unknown mode: $MODE"
-        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, build, guppy, delfin-co2-chain, auto"
+        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, build, guppy, smiles-convert, delfin-co2-chain, auto"
         EXIT_CODE=1
         ;;
 esac

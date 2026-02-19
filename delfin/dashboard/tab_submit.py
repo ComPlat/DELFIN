@@ -112,6 +112,11 @@ def create_tab(ctx):
         description='SUBMIT JOB', button_style='primary',
         layout=widgets.Layout(width='150px'),
     )
+    submit_cluster_convert_button = widgets.Button(
+        description='SUBMIT CLUSTER CONVERT + UFF', button_style='success',
+        layout=widgets.Layout(width='280px'),
+        tooltip='Run heavy SMILES isomer conversion on SLURM (PAL=40, 5h) and store results in tray/',
+    )
     validate_button = widgets.Button(
         description='VALIDATE CONTROL', button_style='warning',
         layout=widgets.Layout(width='150px'),
@@ -308,12 +313,7 @@ def create_tab(ctx):
                 print('Input is not a SMILES string.')
             return
 
-        max_isomers = 40 if apply_uff else 20
-        isomers, error = smiles_to_xyz_isomers(
-            cleaned_data,
-            max_isomers=max_isomers,
-            apply_uff=apply_uff,
-        )
+        isomers, error = smiles_to_xyz_isomers(cleaned_data, apply_uff=apply_uff)
         if error or not isomers:
             with mol_output:
                 clear_output()
@@ -804,6 +804,81 @@ def create_tab(ctx):
             except Exception as e:
                 print(f'Error creating job: {e}')
 
+    def handle_submit_cluster_convert(button):
+        with output_area:
+            clear_output()
+            backend_name = str(getattr(ctx.backend, 'backend_name', ''))
+            if 'SLURM' not in backend_name.upper():
+                print('Error: Cluster convert is only available with SLURM backend.')
+                return
+
+            job_name = job_name_widget.value.strip()
+            if not job_name:
+                print('Error: Job name cannot be empty!')
+                return
+
+            raw_input = coords_widget.value.strip()
+            if not raw_input:
+                print('Error: Please enter a SMILES string in the input box.')
+                return
+
+            cleaned_data, input_type = clean_input_data(raw_input)
+            if input_type != 'smiles':
+                cached_smiles = state['converted_xyz_cache'].get('smiles')
+                if cached_smiles and is_smiles(cached_smiles):
+                    cleaned_data = cached_smiles
+                    input_type = 'smiles'
+                else:
+                    print('Error: Input must be a SMILES string for cluster convert.')
+                    return
+
+            safe_job_name = ''.join(c for c in job_name if c.isalnum() or c in ('_', '-'))
+            if not safe_job_name:
+                print('Error: Job name contains only invalid characters!')
+                return
+
+            base_name = f'{safe_job_name}_smiles_convert'
+            job_dir = ctx.calc_dir / base_name
+            if job_dir.exists():
+                suffix = 2
+                while (ctx.calc_dir / f'{base_name}_{suffix}').exists():
+                    suffix += 1
+                job_dir = ctx.calc_dir / f'{base_name}_{suffix}'
+            job_submit_name = job_dir.name
+
+            try:
+                job_dir.mkdir(parents=True, exist_ok=False)
+                (job_dir / 'input.txt').write_text(cleaned_data + '\n')
+
+                result = ctx.backend.submit_delfin(
+                    job_dir=job_dir,
+                    job_name=job_submit_name,
+                    mode='smiles-convert',
+                    time_limit='05:00:00',
+                    pal=40,
+                    maxcore=1500,
+                )
+
+                if result.returncode == 0:
+                    job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                    print('Cluster SMILES + UFF conversion submitted!')
+                    print(f'Job ID: {job_id}')
+                    print('Time Limit: 05:00:00')
+                    print('Resources: PAL=40, maxcore=1500 (~60 GB)')
+                    print(f'Directory: {job_dir}')
+                    print(f'Expected output tray: {job_dir / "tray"}')
+                    print('')
+                    print('Files in tray after completion:')
+                    print('- SMILES_convert_best.xyz')
+                    print('- SMILES_convert_all.xyz')
+                    print('- SMILES_convert_labels.txt')
+                    print('Check status in Job Status tab')
+                else:
+                    print('Error submitting cluster convert job:')
+                    print(result.stderr or result.stdout)
+            except Exception as e:
+                print(f'Error creating cluster convert job: {e}')
+
     def handle_validate_control(button):
         with validate_output:
             clear_output()
@@ -1001,6 +1076,7 @@ def create_tab(ctx):
     co2_submit_button.on_click(handle_co2_chain_submit)
     validate_button.on_click(handle_validate_control)
     submit_button.on_click(handle_submit)
+    submit_cluster_convert_button.on_click(handle_submit_cluster_convert)
 
     # -- layout ---------------------------------------------------------
     spacer = widgets.Label(value='', layout=widgets.Layout(height='10px'))
@@ -1013,7 +1089,7 @@ def create_tab(ctx):
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
-        widgets.HBox([build_complex_button, guppy_submit_button],
+        widgets.HBox([build_complex_button, guppy_submit_button, submit_cluster_convert_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES:</b>'), smiles_batch_widget, spacer,
