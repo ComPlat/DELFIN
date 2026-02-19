@@ -1186,12 +1186,15 @@ def _prepare_mol_for_embedding(smiles: str):
             except Exception:
                 pass
     elif has_metal:
-        # Metal-nitrogen: selective dative conversion for S/O/P only,
-        # then AddHs.  N/C bonds stay SINGLE so embedding works.
+        # Metal-nitrogen: selective dative conversion for C/S/O/P only.
+        # N bonds stay SINGLE so that neutral N-donor H counts are correct.
+        # C bonds become dative — C donors (ppy, cyclometallated ligands) need
+        # dative treatment for ETKDG to generate correct Ir-C/Ru-C distances;
+        # there is no H-count issue for C since it is already at full valence.
         # Mark converted atoms NoImplicit to prevent spurious H
         # (dative bond doesn't count toward ligand valence).
         try:
-            mol = _convert_metal_bonds_to_dative(mol, only_elements={'S', 'O', 'P'})
+            mol = _convert_metal_bonds_to_dative(mol, only_elements={'C', 'S', 'O', 'P'})
             # Mark ALL neutral atoms bonded to a metal as NoImplicit so
             # AddHs() won't add spurious H on coordinating atoms.
             for atom in mol.GetAtoms():
