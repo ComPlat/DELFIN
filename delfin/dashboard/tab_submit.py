@@ -948,6 +948,12 @@ def create_tab(ctx):
     submit_smiles_list_button.on_click(handle_submit_smiles_list)
     smiles_prev_button.on_click(handle_smiles_prev)
     smiles_next_button.on_click(handle_smiles_next)
+
+    def on_batch_change(change):
+        state['smiles_preview_index'] = 0
+        preview_smiles_at_index(0)
+
+    smiles_batch_widget.observe(on_batch_change, names='value')
     isomer_prev_btn.on_click(handle_isomer_prev)
     isomer_next_btn.on_click(handle_isomer_next)
     only_goat_submit_button.on_click(handle_only_goat_submit)
