@@ -179,10 +179,13 @@ def create_tab(ctx):
 
     # -- handlers -------------------------------------------------------
     def update_molecule_view(change=None):
-        # User manually edited coords -> clear isomer navigation
+        # User manually edited coords -> clear isomer navigation and reset convert toggle
         state['isomers'] = []
         state['isomer_index'] = 0
         isomer_nav_row.layout.display = 'none'
+        state['convert_quick'] = False
+        convert_smiles_button.description = 'CONVERT SMILES'
+        convert_smiles_button.tooltip = 'Click: full isomer search | Click again after convert: quick single structure'
 
         with mol_output:
             clear_output()
