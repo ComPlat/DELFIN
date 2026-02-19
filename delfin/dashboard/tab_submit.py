@@ -404,7 +404,27 @@ def create_tab(ctx):
                 return
 
             job_dir = ctx.calc_dir / safe_job_name
-            time_limit = '00:45:00'
+            # Auto-scale time limit based on molecule size.
+            # Small molecules (<80 heavy atoms): 45 min (unchanged).
+            # Medium (80-120): 2h.  Large (>120): 5h.
+            _n_upper = sum(1 for c in cleaned_data if c.isupper())
+            try:
+                from rdkit import Chem as _Chem
+                _pp = _Chem.SmilesParserParams()
+                _pp.sanitize = False
+                _pp.removeHs = False
+                _pp.strictParsing = False
+                _tmol = _Chem.MolFromSmiles(cleaned_data, _pp)
+                if _tmol is not None:
+                    _n_upper = _tmol.GetNumHeavyAtoms()
+            except Exception:
+                pass
+            if _n_upper > 120:
+                time_limit = '05:00:00'
+            elif _n_upper > 80:
+                time_limit = '02:00:00'
+            else:
+                time_limit = '00:45:00'
 
             try:
                 # Match ONLY GOAT behavior: allow existing dir and reuse same naming flow.
@@ -432,7 +452,7 @@ def create_tab(ctx):
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
                     print('GUPPY sampling job submitted!')
                     print(f'Job ID: {job_id}')
-                    print(f'Time Limit: {time_limit}')
+                    print(f'Time Limit: {time_limit} (auto-scaled for ~{_n_upper} heavy atoms)')
                     print('Workflow: 20x (SMILES -> XTB2 OPT) with energy ranking')
                     print(f'Input Type: {input_type.upper()}')
                     print(f'Directory: {job_dir}')

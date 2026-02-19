@@ -41,6 +41,28 @@ if RDKIT_AVAILABLE:
 
 logger = get_logger(__name__)
 
+
+def _estimate_heavy_atoms(smiles: str) -> int:
+    """Estimate heavy atom count from SMILES (quick, no 3D generation).
+
+    Uses RDKit non-sanitized parse when available, otherwise falls back
+    to counting uppercase letters in the SMILES string.
+    """
+    if RDKIT_AVAILABLE:
+        try:
+            parser_params = Chem.SmilesParserParams()
+            parser_params.sanitize = False
+            parser_params.removeHs = False
+            parser_params.strictParsing = False
+            mol = Chem.MolFromSmiles(smiles, parser_params)
+            if mol is not None:
+                return mol.GetNumHeavyAtoms()
+        except Exception:
+            pass
+    # Fallback: count uppercase letters (rough approximation).
+    return sum(1 for c in smiles if c.isupper())
+
+
 _TOTAL_ENERGY_RE = re.compile(
     r"total\s+energy\s+([+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)\s+Eh\b",
     re.IGNORECASE,
@@ -158,9 +180,32 @@ def _collect_start_geometries(
     runs: int,
     seed: int,
 ) -> List[StartGeometry]:
-    """Collect start geometries from conversion (isomers + random fill)."""
-    target_confs = max(100, runs * 10)
-    max_isomers = max(1000, runs)
+    """Collect start geometries from conversion (isomers + random fill).
+
+    For large molecules (>80 heavy atoms) the conformer pool is reduced
+    because rigid macrocycles produce mostly duplicate starting geometries.
+    Small molecules (<80 heavy atoms) are completely unaffected.
+    """
+    heavy = _estimate_heavy_atoms(smiles)
+    if heavy > 120:
+        target_confs = max(20, runs)
+        max_isomers = max(20, runs)
+        logger.info(
+            "Large molecule detected (%d heavy atoms): reduced conformer pool "
+            "(target_confs=%d, max_isomers=%d) for faster start geometry generation.",
+            heavy, target_confs, max_isomers,
+        )
+    elif heavy > 80:
+        target_confs = max(50, runs * 3)
+        max_isomers = max(100, runs)
+        logger.info(
+            "Medium-large molecule detected (%d heavy atoms): reduced conformer pool "
+            "(target_confs=%d, max_isomers=%d).",
+            heavy, target_confs, max_isomers,
+        )
+    else:
+        target_confs = max(100, runs * 10)
+        max_isomers = max(1000, runs)
     starts: List[StartGeometry] = []
     next_idx = 1
 

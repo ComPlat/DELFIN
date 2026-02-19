@@ -2510,12 +2510,24 @@ def smiles_to_xyz_isomers(
     # Avogadro-quality geometries are always considered during isomer search.
     has_metal = contains_metal(smiles)
     conf_ids: List[int] = []
+    # Adaptive scaling: large molecules get fewer OB restarts & ETKDG seeds
+    # because rigid macrocycles produce mostly duplicate conformers.
+    # Small molecules (<80 heavy atoms) are completely unaffected.
+    _n_heavy = mol.GetNumHeavyAtoms()
+    if _n_heavy > 120:
+        _n_ob_restarts = 1
+        _etkdg_seeds = [31, 42, 7, 97]
+    elif _n_heavy > 80:
+        _n_ob_restarts = 2
+        _etkdg_seeds = [31, 42, 7, 97, 13, 61]
+    else:
+        _n_ob_restarts = 3
+        _etkdg_seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
     if has_metal and OPENBABEL_AVAILABLE:
         try:
-            # Run OB conformer search in 3 independent restarts.
+            # Run OB conformer search.
             # WeightedRotorSearch is non-deterministic (global PRNG); separate
             # calls from fresh OBMol instances give complementary pools.
-            _n_ob_restarts = 3
             _per_ob = max(10, int(num_confs) // _n_ob_restarts)
             ob_xyz_blocks: List[str] = []
             _ob_seen: set = set()
@@ -2538,8 +2550,8 @@ def smiles_to_xyz_isomers(
                 ob_ids = _inject_openbabel_conformers_into_mol(mol, ob_xyz_blocks)
                 conf_ids.extend(ob_ids)
                 logger.debug(
-                    "OB conformers injected for isomer search: %d (3 restarts)",
-                    len(ob_ids),
+                    "OB conformers injected for isomer search: %d (%d restarts)",
+                    len(ob_ids), _n_ob_restarts,
                 )
             elif ob_error:
                 logger.debug("OB conformer generation: %s", ob_error)
@@ -2553,7 +2565,8 @@ def smiles_to_xyz_isomers(
     try:
         # Fixed seeds keep results reproducible across runs.
         # Multiple diverse seeds improve sampling of coordination isomers.
-        seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
+        # Number of seeds is adapted to molecule size (set above).
+        seeds = _etkdg_seeds
         n_rounds = len(seeds)
         per_round = max(1, int(math.ceil(num_confs / n_rounds)))
         for seed in seeds:
@@ -2886,20 +2899,34 @@ def smiles_to_xyz(
                 pass
 
         # Generate 3D coordinates using a hybrid OB+RDKit conformer pool.
-        # For metal complexes: OB WeightedRotorSearch in 3 independent restarts
-        # (Avogadro-quality, non-deterministic diversity) + RDKit ETKDG with
-        # 12 diverse fixed seeds → up to ~500 conformers total.
+        # For metal complexes: OB restarts + RDKit ETKDG seeds are adapted
+        # to molecule size.  Small molecules (<80 heavy atoms) use the full
+        # pool (3 restarts, 12 seeds, ~500 conformers).  Large molecules
+        # (>120 heavy atoms) use a reduced pool (1 restart, 4 seeds) because
+        # rigid macrocycles produce mostly duplicate conformers.
         # Best geometry is selected by _geometry_quality_score.
         result = -1
         if has_metal:
             all_conf_ids: List[int] = []
+            _n_heavy_s = mol.GetNumHeavyAtoms()
+            if _n_heavy_s > 120:
+                _n_ob_r = 1
+                _etkdg_seeds_s = [31, 42, 7, 97]
+                _conf_budget = max(20, 50)
+            elif _n_heavy_s > 80:
+                _n_ob_r = 2
+                _etkdg_seeds_s = [31, 42, 7, 97, 13, 61]
+                _conf_budget = max(50, 100)
+            else:
+                _n_ob_r = 3
+                _etkdg_seeds_s = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
+                _conf_budget = 200
 
             # --- OB conformers (Avogadro-equivalent pipeline) ---
             ob_injection_ok = False
             if OPENBABEL_AVAILABLE:
                 try:
-                    _n_ob_r = 3
-                    _per_ob_r = max(10, 200 // _n_ob_r)
+                    _per_ob_r = max(10, _conf_budget // _n_ob_r)
                     ob_xyz_blocks = []
                     _ob_seen_s: set = set()
                     ob_err: Optional[str] = None
@@ -2923,8 +2950,8 @@ def smiles_to_xyz(
                             all_conf_ids.extend(ob_ids)
                             ob_injection_ok = True
                             logger.debug(
-                                "OB conformer injection: %d conformers (3 restarts) for %s",
-                                len(ob_ids), smiles[:40],
+                                "OB conformer injection: %d conformers (%d restarts) for %s",
+                                len(ob_ids), _n_ob_r, smiles[:40],
                             )
                         else:
                             logger.debug("OB atom-order mismatch; using RDKit-only pool")
@@ -2935,9 +2962,9 @@ def smiles_to_xyz(
                     logger.debug("OB conformer generation exception: %s", ob_exc)
                     mol.RemoveAllConformers()
 
-            # --- RDKit ETKDG with 12 diverse fixed seeds (~17 confs/seed) ---
-            seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
-            per_seed = max(1, 200 // len(seeds))
+            # --- RDKit ETKDG with adaptive seed count (scaled to molecule size) ---
+            seeds = _etkdg_seeds_s
+            per_seed = max(1, _conf_budget // len(seeds))
             try:
                 for seed in seeds:
                     params_multi = AllChem.ETKDGv3()
