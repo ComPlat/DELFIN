@@ -110,40 +110,29 @@ def _prefer_no_sanitize(smiles: str) -> bool:
 
 
 def _is_metal_nitrogen_complex(smiles: str) -> bool:
-    """Check if SMILES represents a metal coordination complex with heteroatom ligands.
+    """Check if SMILES represents a metal-nitrogen coordination complex.
 
-    Routes to _try_multiple_strategies for any metal complex that has typical
-    donor atoms: N (amines, pyridyl, porphyrins), S (thiolates), O (oxalates),
-    P (phosphines).  Matches both neutral ([Metal]) and charged ([Metal+2],
-    [Metal-]) notations, as well as stereochemical variants.
+    Returns True only for complexes with NEUTRAL or ANIONIC nitrogen donors:
+    - [N]  : neutral bracketed N (porphyrins, salen)
+    - [N-] : anionic N (amido, pyrrolato)
+    - N1=  : ring-closing aromatic N (pyridyl, bipyridyl, phenanthroline)
+
+    IMPORTANT: [N+] (positively charged N, as in cyclometallated ppy ligands
+    like Ir(ppy)3) is intentionally NOT matched here.  Complexes with [N+]
+    donors should use the FULL DATIVE path so that ETKDG generates correct
+    fac/mer conformers.  RDKit will not add spurious H to [N+] atoms because
+    their formal charge already accounts for the valence.
+
+    Matches both neutral ([Metal]) and charged ([Metal+2], [Metal-]) metal
+    notations, as well as stereochemical variants ([Metal@@+2], etc.).
     """
     metal_pattern = '|'.join(re.escape(m) for m in _METALS)
     has_metal = bool(re.search(rf'\[(?:{metal_pattern})(?:@+|@@)?(?:[+-]\d*)?\]', smiles))
-    if not has_metal:
-        return False
 
-    # Nitrogen: neutral [N], negative [N-], positive [N+], ring-closing N1/N%10
-    has_n = (
-        '[N]' in smiles or '[N-]' in smiles or '[N+]' in smiles
-        or bool(re.search(r'N\d+', smiles)) or bool(re.search(r'N%\d+', smiles))
-    )
-    # Sulfur: thiolates [S-], thioethers [S], ring-closing S1/S%10
-    has_s = (
-        '[S-]' in smiles or '[S]' in smiles or '[S+]' in smiles
-        or bool(re.search(r'S\d+', smiles)) or bool(re.search(r'S%\d+', smiles))
-    )
-    # Oxygen: alkoxides/oxalates [O-], [O], ring-closing O1/O%10
-    has_o = (
-        '[O-]' in smiles or '[O]' in smiles
-        or bool(re.search(r'O\d+', smiles)) or bool(re.search(r'O%\d+', smiles))
-    )
-    # Phosphorus: phosphines [P], [PH], [P+], ring-closing P1/P%10
-    has_p = (
-        '[P]' in smiles or '[PH]' in smiles or '[P+]' in smiles
-        or bool(re.search(r'P\d+', smiles)) or bool(re.search(r'P%\d+', smiles))
-    )
+    # Check for coordinating nitrogen (neutral [N] or negative [N-] or ring-closing N)
+    has_coord_n = '[N]' in smiles or '[N-]' in smiles or bool(re.search(r'N\d+=', smiles))
 
-    return has_n or has_s or has_o or has_p
+    return has_metal and has_coord_n
 
 
 def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
@@ -2635,25 +2624,11 @@ def smiles_to_xyz_isomers(
     conf_ids: List[int] = []
     if has_metal and OPENBABEL_AVAILABLE:
         try:
-            # Scale OB conformer search by molecule size.
-            # WeightedRotorSearch is O(n_rotors × n_confs) and can be very slow
-            # for large rigid ring systems (e.g. Ir(ppy)3, porphyrins).
-            # Small molecules benefit from 3 independent restarts for diverse
-            # sampling; large rigid complexes need only 1 fast make3D geometry
-            # as seed — ETKDG seeds handle structural diversity.
-            n_heavy = mol.GetNumHeavyAtoms() if mol is not None else 0
-            if n_heavy > 40:
-                # Large/rigid molecule: 1 restart, few conformers
-                _n_ob_restarts = 1
-                _per_ob = 5
-            elif n_heavy > 25:
-                # Medium molecule: 2 restarts
-                _n_ob_restarts = 2
-                _per_ob = max(10, int(num_confs) // 6)
-            else:
-                # Small molecule: 3 restarts for maximum diversity
-                _n_ob_restarts = 3
-                _per_ob = max(10, int(num_confs) // _n_ob_restarts)
+            # Run OB conformer search in 3 independent restarts.
+            # WeightedRotorSearch is non-deterministic (global PRNG); separate
+            # calls from fresh OBMol instances give complementary pools.
+            _n_ob_restarts = 3
+            _per_ob = max(10, int(num_confs) // _n_ob_restarts)
             ob_xyz_blocks: List[str] = []
             _ob_seen: set = set()
             ob_error: Optional[str] = None
@@ -2675,8 +2650,8 @@ def smiles_to_xyz_isomers(
                 ob_ids = _inject_openbabel_conformers_into_mol(mol, ob_xyz_blocks)
                 conf_ids.extend(ob_ids)
                 logger.debug(
-                    "OB conformers injected for isomer search: %d (%d restart(s))",
-                    len(ob_ids), _n_ob_restarts,
+                    "OB conformers injected for isomer search: %d (3 restarts)",
+                    len(ob_ids),
                 )
             elif ob_error:
                 logger.debug("OB conformer generation: %s", ob_error)
@@ -2707,16 +2682,16 @@ def smiles_to_xyz_isomers(
             )
     except Exception as e:
         logger.warning("Multi-conformer embedding failed: %s", e)
-        # Do NOT return early — fall through so the topological enumerator
-        # (fac/mer, cis/trans, …) still runs below via the seen_fps==empty path.
-        mol.RemoveAllConformers()
-        conf_ids = []
+        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+        if err:
+            return [], err
+        return [(xyz, '')], None
 
     if not conf_ids:
-        # No conformers from OB or ETKDG.  Do NOT return early here.
-        # The seen_fps-empty branch below will supply a fallback geometry and
-        # the topological enumerator will still enumerate fac/mer/cis/trans.
-        logger.debug("No conformers generated; falling through to topo enumerator")
+        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+        if err:
+            return [], err
+        return [(xyz, '')], None
 
     # Classify each conformer, skip obvious artifacts, then deduplicate by
     # full coordination fingerprint. This keeps distinct coordination
@@ -2806,9 +2781,6 @@ def smiles_to_xyz_isomers(
                 if apply_uff:
                     xyz = _optimize_xyz_openbabel(xyz)
             except Exception:
-                continue
-            if not _roundtrip_ring_count_ok(xyz, smiles):
-                logger.debug("Skipping conformer %d: round-trip ring count mismatch", cid)
                 continue
             results.append((xyz, display))
 
