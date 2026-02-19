@@ -319,6 +319,12 @@ def create_tab(ctx):
             isomer_nav_row.layout.display = 'none'
             return
 
+        # For +UFF: also append a quick single-structure result
+        if apply_uff:
+            _q_xyz, _q_num, _q_method, _q_err = smiles_to_xyz_quick(cleaned_data)
+            if not _q_err and _q_xyz:
+                isomers = isomers + [(_q_xyz, _q_num, 'quick')]
+
         state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
         state['isomers'] = isomers
         _show_isomer_at_index(0)
