@@ -2730,6 +2730,37 @@ def smiles_to_xyz_isomers(
     return results, None
 
 
+def smiles_to_xyz_quick(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Fast single-conformer SMILES → XYZ (DELFIN format, no header).
+
+    Skips OB restarts, multi-seed ETKDG loops, quality checks and UFF.
+    A single ETKDGv3 embedding with seed=42 is attempted; falls back to
+    random-coordinate embedding if that fails.  Returns ``(xyz, error)``.
+    """
+    if not RDKIT_AVAILABLE:
+        return None, "RDKit not available"
+
+    mol = _prepare_mol_for_embedding(smiles)
+    if mol is None:
+        return None, "Could not prepare molecule for embedding"
+
+    mol.RemoveAllConformers()
+    params = AllChem.ETKDGv3()
+    params.randomSeed = 42
+    params.useRandomCoords = True
+    params.enforceChirality = False
+    result = AllChem.EmbedMolecule(mol, params)
+
+    if result != 0:
+        # Fallback: pure random coordinates
+        result = AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+
+    if result != 0:
+        return None, f"Quick embedding failed for SMILES: {smiles[:60]}"
+
+    return _mol_to_xyz(mol), None
+
+
 def smiles_to_xyz(
     smiles: str,
     output_path: Optional[str] = None,

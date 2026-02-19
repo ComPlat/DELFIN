@@ -5,6 +5,7 @@ import re
 from delfin.smiles_converter import (
     smiles_to_xyz as _delfin_smiles_to_xyz,
     smiles_to_xyz_isomers as _delfin_smiles_to_xyz_isomers,
+    smiles_to_xyz_quick as _delfin_smiles_to_xyz_quick,
     is_smiles_string as _delfin_is_smiles_string,
     contains_metal,
 )
@@ -21,6 +22,18 @@ def smiles_to_xyz(smiles, apply_uff=True):
     num_atoms = sum(1 for line in xyz_string.splitlines() if line.strip())
     method = 'delfin.smiles_converter'
     return xyz_string, num_atoms, method, None
+
+
+def smiles_to_xyz_quick(smiles):
+    """Fast single-conformer conversion, no OB, no multi-seed, no UFF.
+
+    Returns ``(xyz_string, num_atoms, method, error)``.
+    """
+    xyz_string, error = _delfin_smiles_to_xyz_quick(smiles)
+    if error:
+        return None, 0, None, error
+    num_atoms = sum(1 for line in xyz_string.splitlines() if line.strip())
+    return xyz_string, num_atoms, 'quick', None
 
 
 def smiles_to_xyz_isomers(smiles, apply_uff=True):

@@ -13,8 +13,8 @@ from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck
 from .molecule_viewer import apply_molecule_view_style
 from .input_processing import (
-    smiles_to_xyz, smiles_to_xyz_isomers, is_smiles, clean_input_data,
-    parse_resource_settings,
+    smiles_to_xyz, smiles_to_xyz_quick, smiles_to_xyz_isomers, is_smiles,
+    clean_input_data, parse_resource_settings,
 )
 
 
@@ -345,7 +345,7 @@ def create_tab(ctx):
         with mol_output:
             clear_output()
             print('Quick convert (single structure)...')
-        xyz_string, num_atoms, _method, error = smiles_to_xyz(cleaned_data, apply_uff=False)
+        xyz_string, num_atoms, _method, error = smiles_to_xyz_quick(cleaned_data)
         if error or not xyz_string:
             with mol_output:
                 clear_output()
@@ -964,8 +964,9 @@ def create_tab(ctx):
         job_type_widget, custom_time_widget, spacer_large,
         widgets.HTML('<b>Input (XYZ or SMILES):</b>'), coords_widget, spacer,
         widgets.HBox([convert_smiles_button, convert_smiles_quick_button,
-                      convert_smiles_uff_button,
-                      build_complex_button, guppy_submit_button],
+                      convert_smiles_uff_button],
+                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+        widgets.HBox([build_complex_button, guppy_submit_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES:</b>'), smiles_batch_widget, spacer,
