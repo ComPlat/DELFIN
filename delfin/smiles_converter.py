@@ -29,6 +29,13 @@ except ImportError:
 try:
     from openbabel import pybel
     OPENBABEL_AVAILABLE = True
+    try:
+        # Reduce Open Babel console noise in notebook/voila runs.
+        # Keep only error-level output (suppress repeated warning spam like
+        # "Failed to kekulize aromatic bonds in OBMol::PerceiveBondOrders").
+        pybel.ob.obErrorLog.SetOutputLevel(pybel.ob.obError)
+    except Exception:
+        pass
 except ImportError:
     OPENBABEL_AVAILABLE = False
 
