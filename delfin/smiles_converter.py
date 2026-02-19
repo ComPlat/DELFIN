@@ -2410,6 +2410,19 @@ def _generate_topological_isomers(
     results: List[Tuple[str, str]] = []
     dtype_map = _donor_type_map(mol)
 
+    def _finalize_topo_xyz(xyz_in: str) -> str:
+        """Apply optional UFF only for accepted topological candidates."""
+        if not apply_uff:
+            return xyz_in
+        try:
+            return _optimize_xyz_openbabel(xyz_in)
+        except Exception as uff_exc:
+            logger.debug(
+                "Final topology UFF optimization failed, keeping unoptimized XYZ: %s",
+                uff_exc,
+            )
+            return xyz_in
+
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
             continue
@@ -2501,7 +2514,7 @@ def _generate_topological_isomers(
             geom_name = canonical_form[0]  # 'OH', 'SQ', 'TBP', 'SP', 'PBP'
             try:
                 xyz = _build_topology_xyz(
-                    mol, metal_idx, donor_indices, perm, geom_name, apply_uff
+                    mol, metal_idx, donor_indices, perm, geom_name, False
                 )
                 if xyz is None:
                     continue
@@ -2546,7 +2559,7 @@ def _generate_topological_isomers(
         for xyz, label in strict_hits:
             if len(results) >= max_isomers:
                 return results
-            results.append((xyz, label))
+            results.append((_finalize_topo_xyz(xyz), label))
 
         if soft_hits:
             soft_hits.sort(key=lambda x: x[0])
@@ -2559,7 +2572,7 @@ def _generate_topological_isomers(
             for _score, xyz, label in soft_hits:
                 if len(results) >= max_isomers:
                     return results
-                results.append((xyz, label))
+                results.append((_finalize_topo_xyz(xyz), label))
 
     return results
 
