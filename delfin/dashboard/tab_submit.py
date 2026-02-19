@@ -1,7 +1,6 @@
 """Submit Job tab: main DELFIN job submission form."""
 
 import re
-import time
 
 import py3Dmol
 import ipywidgets as widgets
@@ -175,7 +174,7 @@ def create_tab(ctx):
         'smiles_preview_index': 0,
         'isomers': [],
         'isomer_index': 0,
-        'last_convert_click': 0.0,
+        'convert_quick': False,
     }
 
     # -- handlers -------------------------------------------------------
@@ -321,12 +320,8 @@ def create_tab(ctx):
         _show_isomer_at_index(0)
 
     def handle_convert_smiles(button):
-        now = time.monotonic()
-        is_double_click = (now - state['last_convert_click']) < 0.6
-        state['last_convert_click'] = now
-
-        if is_double_click:
-            # Double-click: quick single-conformer conversion (fast, no isomer search)
+        if state['convert_quick']:
+            # Quick mode: single conformer, fast, no isomer search
             raw_input = coords_widget.value.strip()
             if not raw_input:
                 with mol_output:
@@ -352,7 +347,17 @@ def create_tab(ctx):
             state['isomers'] = [(xyz_string, num_atoms, 'quick')]
             _show_isomer_at_index(0)
         else:
+            # Full mode: isomer search (existing behaviour)
             _convert_smiles(apply_uff=False)
+
+        # Toggle mode for next click and update button label
+        state['convert_quick'] = not state['convert_quick']
+        if state['convert_quick']:
+            convert_smiles_button.description = 'CONVERT SMILES ⚡'
+            convert_smiles_button.tooltip = 'Next click: quick single structure (click again to switch back)'
+        else:
+            convert_smiles_button.description = 'CONVERT SMILES'
+            convert_smiles_button.tooltip = 'Next click: full isomer search (click again for quick)'
 
     def handle_convert_smiles_uff(button):
         _convert_smiles(apply_uff=True)
