@@ -25,8 +25,9 @@ import argparse
 import os
 import re
 import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import JobPriority, PoolJob
@@ -157,6 +158,7 @@ def _collect_start_geometries(
     *,
     runs: int,
     seed: int,
+    prephase_parallel_jobs: int = 1,
 ) -> List[StartGeometry]:
     """Collect start geometries from conversion (isomers + random fill)."""
     target_confs = max(100, runs * 10)
@@ -181,21 +183,79 @@ def _collect_start_geometries(
         logger.warning("Isomer-based conversion failed, continuing with seeded random fill: %s", exc)
 
     # Fill with seeded random structures up to requested minimum count.
-    attempts = 0
     max_attempts = max(runs * 10, 200)
+    random_needed = max(0, runs - len(starts))
     random_idx = 1
-    while len(starts) < runs and attempts < max_attempts:
-        run_seed = seed + attempts * 1009
-        attempts += 1
-        xyz_text, _error = _convert_smiles_with_seed(smiles, run_seed)
-        if not xyz_text:
-            continue
-        coords_lines = [ln.rstrip() for ln in xyz_text.splitlines() if ln.strip()]
-        if not coords_lines:
-            continue
-        starts.append((next_idx, coords_lines, f"random-{random_idx:02d}", "random"))
-        next_idx += 1
-        random_idx += 1
+    if random_needed > 0:
+        random_coords: List[List[str]] = []
+        worker_count = max(1, int(prephase_parallel_jobs))
+
+        def _coords_for_attempt(attempt_idx: int) -> Optional[List[str]]:
+            run_seed = seed + attempt_idx * 1009
+            xyz_text, _error = _convert_smiles_with_seed(smiles, run_seed)
+            if not xyz_text:
+                return None
+            coords_lines = [ln.rstrip() for ln in xyz_text.splitlines() if ln.strip()]
+            return coords_lines if coords_lines else None
+
+        if worker_count <= 1:
+            for attempt_idx in range(max_attempts):
+                coords = _coords_for_attempt(attempt_idx)
+                if coords:
+                    random_coords.append(coords)
+                if len(random_coords) >= random_needed:
+                    break
+        else:
+            logger.info(
+                "Prephase random fill: using %d worker(s) for up to %d seeded attempts.",
+                worker_count,
+                max_attempts,
+            )
+            pending: Dict[object, int] = {}
+            resolved: Dict[int, Optional[List[str]]] = {}
+            next_attempt = 0
+            next_emit = 0
+
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="guppy-pre") as executor:
+                while next_attempt < max_attempts and len(pending) < worker_count:
+                    future = executor.submit(_coords_for_attempt, next_attempt)
+                    pending[future] = next_attempt
+                    next_attempt += 1
+
+                while pending and len(random_coords) < random_needed:
+                    done, _ = wait(set(pending.keys()), return_when=FIRST_COMPLETED)
+                    for future in done:
+                        attempt_idx = pending.pop(future)
+                        try:
+                            resolved[attempt_idx] = future.result()
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug(
+                                "Prephase seeded conversion failed (attempt %d): %s",
+                                attempt_idx,
+                                exc,
+                            )
+                            resolved[attempt_idx] = None
+
+                    while next_attempt < max_attempts and len(pending) < worker_count:
+                        future = executor.submit(_coords_for_attempt, next_attempt)
+                        pending[future] = next_attempt
+                        next_attempt += 1
+
+                    while next_emit in resolved and len(random_coords) < random_needed:
+                        coords = resolved.pop(next_emit)
+                        if coords:
+                            random_coords.append(coords)
+                        next_emit += 1
+
+                for future in pending:
+                    future.cancel()
+
+        for coords_lines in random_coords:
+            if len(starts) >= runs:
+                break
+            starts.append((next_idx, coords_lines, f"random-{random_idx:02d}", "random"))
+            next_idx += 1
+            random_idx += 1
 
     return starts
 
@@ -397,7 +457,13 @@ def run_sampling(
     """Execute repeated SMILES->XTB2 workflow and write ranked trajectory."""
     smiles = _read_first_smiles_line(input_file)
     resolved_charge = charge if charge is not None else _derive_charge_from_smiles(smiles)
-    start_geometries = _collect_start_geometries(smiles, runs=runs, seed=seed)
+    prephase_parallel_jobs = max(1, min(parallel_jobs, pal))
+    start_geometries = _collect_start_geometries(
+        smiles,
+        runs=runs,
+        seed=seed,
+        prephase_parallel_jobs=prephase_parallel_jobs,
+    )
     if not start_geometries:
         logger.error("SMILES conversion produced no usable start geometries.")
         return 1
@@ -412,6 +478,7 @@ def run_sampling(
     logger.info("Using charge: %d (net charge from whole SMILES: metal + ligands)", resolved_charge)
     logger.info("Total PAL budget: %d", pal)
     logger.info("Maxcore per core: %d MB", maxcore)
+    logger.info("Prephase parallel jobs: %d", prephase_parallel_jobs)
     logger.info("Parallel jobs: %d", resolved_parallel_jobs)
     logger.info("Target PAL per run: %d", per_job_pal)
     if charge is None:
