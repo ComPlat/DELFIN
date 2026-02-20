@@ -5145,12 +5145,25 @@ def create_tab(ctx):
     calc_content_area.add_class('calc-content-area')
 
     # Enable draggable splitter + dynamic mol-viewer resize + $3Dmol patch
-    # NOTE: must be a SINGLE _run_js call because run_js uses clear_output.
-    _run_js(f"""
-    setTimeout(function() {{
-        var scopeKey = {json.dumps(calc_scope_id)};
-        var root = document.querySelector('.{calc_scope_id}');
-        if (!root) return;
+    # Stored as a plain string; the CALLER (create_dashboard in __init__.py)
+    # runs ALL tab init scripts in one ctx.run_js() call so that no tab's
+    # clear_output() wipes another tab's init JS.
+    _init_js = f"""
+    (function() {{
+        function initCalcScopeBind(attempt) {{
+            var scopeKey = {json.dumps(calc_scope_id)};
+            var root = document.querySelector('.{calc_scope_id}');
+            if (!root) {{
+                if ((attempt || 0) < 40) {{
+                    setTimeout(function() {{
+                        initCalcScopeBind((attempt || 0) + 1);
+                    }}, 100);
+                    return;
+                }}
+                // Fallback to old global behavior if scoped root is unavailable.
+                root = document.querySelector('.calc-tab');
+                if (!root) return;
+            }}
 
         /* --- Splitter drag logic --- */
         var left = root.querySelector('.calc-left');
@@ -5282,8 +5295,10 @@ def create_tab(ctx):
                 }}, 220);
             }}).observe(root, {{attributes: true, subtree: true, attributeFilter: ['style']}});
         }}
-    }}, 0);
-    """)
+        }}
+        initCalcScopeBind(0);
+    }})();
+    """
 
     def calc_set_root(root_dir):
         """Switch browser root directory and reset to top level."""
@@ -5299,4 +5314,5 @@ def create_tab(ctx):
     return tab_widget, {
         'calc_list_directory': calc_list_directory,
         'calc_set_root': calc_set_root,
+        'init_js': _init_js,
     }

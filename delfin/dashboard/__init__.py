@@ -148,6 +148,13 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
     tab6, refs6 = tab_archiv_statistics.create_tab(ctx)
 
+    # Run both calc-browser init scripts in ONE ctx.run_js() call.
+    # If called separately, the second call's clear_output() would wipe the
+    # first tab's splitter-init JS before the browser ever executes it.
+    _calc_init = refs5.get('init_js', '') + '\n' + refs6.get('init_js', '')
+    if _calc_init.strip():
+        ctx.run_js(_calc_init)
+
     # -- assemble tabs -----------------------------------------------------
     children = [tab1, tab2, tab4]
     titles = ['Submit Job', 'Recalc', 'ORCA Builder']
