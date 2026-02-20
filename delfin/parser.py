@@ -394,15 +394,16 @@ def calculate_beta_properties(
     axes = ("x", "y", "z")
     sum_iii_sq = sum(_get_beta_component(beta_tensor, i, i, i) ** 2 for i in axes)
 
-    sum_iii_iij = 0.0
+    sum_iii_ijj = 0.0
     sum_iij_sq = 0.0
     for i in axes:
         beta_iii = _get_beta_component(beta_tensor, i, i, i)
         for j in axes:
             if i == j:
                 continue
+            beta_ijj = _get_beta_component(beta_tensor, i, j, j)
             beta_iij = _get_beta_component(beta_tensor, i, i, j)
-            sum_iii_iij += beta_iii * beta_iij
+            sum_iii_ijj += beta_iii * beta_ijj
             sum_iij_sq += beta_iij ** 2
 
     cyclic_triplets = (("x", "y", "z"), ("y", "z", "x"), ("z", "x", "y"))
@@ -414,7 +415,7 @@ def calculate_beta_properties(
     beta_ijk = _get_beta_component(beta_tensor, "x", "y", "z")
     beta_hrs_sq = (
         (6.0 / 35.0) * sum_iii_sq
-        + (16.0 / 105.0) * sum_iii_iij
+        + (16.0 / 105.0) * sum_iii_ijj
         + (38.0 / 105.0) * sum_iij_sq
         + (16.0 / 105.0) * sum_cyclic_iij_jkk
         + (20.0 / 35.0) * (beta_ijk ** 2)
