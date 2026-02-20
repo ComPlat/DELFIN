@@ -2523,6 +2523,67 @@ def create_tab(ctx):
                 break
         return mappings
 
+    def _calc_invert_mapping(mapping, n_atoms):
+        map_idx = np.asarray(mapping, dtype=int)
+        if map_idx.ndim != 1 or map_idx.size != int(n_atoms):
+            return None
+        inv = np.full(int(n_atoms), -1, dtype=int)
+        for src_idx, dst_idx in enumerate(map_idx.tolist()):
+            dst = int(dst_idx)
+            if dst < 0 or dst >= int(n_atoms):
+                return None
+            if inv[dst] != -1:
+                return None
+            inv[dst] = int(src_idx)
+        if np.any(inv < 0):
+            return None
+        return inv
+
+    def _calc_local_swap_optimize_mapping(
+        ref_symbols_lc,
+        ref_coords,
+        target_coords,
+        mapping,
+        max_passes=2,
+        max_group_size=12,
+        max_total_swaps=2200,
+    ):
+        ref = np.asarray(ref_coords, dtype=float)
+        target = np.asarray(target_coords, dtype=float)
+        best_mapping = np.asarray(mapping, dtype=int).copy()
+        best_aligned, best_rmsd = _calc_kabsch_align(ref, target, mapping=best_mapping)
+
+        groups = {}
+        for idx, symbol in enumerate(ref_symbols_lc):
+            groups.setdefault(symbol, []).append(idx)
+
+        swap_checks = 0
+        for _ in range(max(0, int(max_passes))):
+            improved = False
+            for idx_list in groups.values():
+                if len(idx_list) < 2 or len(idx_list) > int(max_group_size):
+                    continue
+                for i_pos in range(len(idx_list) - 1):
+                    i = int(idx_list[i_pos])
+                    for j_pos in range(i_pos + 1, len(idx_list)):
+                        j = int(idx_list[j_pos])
+                        trial_mapping = best_mapping.copy()
+                        trial_mapping[i], trial_mapping[j] = trial_mapping[j], trial_mapping[i]
+                        trial_aligned, trial_rmsd = _calc_kabsch_align(
+                            ref, target, mapping=trial_mapping
+                        )
+                        swap_checks += 1
+                        if trial_rmsd < best_rmsd - 1e-12:
+                            best_mapping = trial_mapping
+                            best_aligned = trial_aligned
+                            best_rmsd = float(trial_rmsd)
+                            improved = True
+                        if swap_checks >= int(max_total_swaps):
+                            return best_aligned, best_rmsd, best_mapping
+            if not improved:
+                break
+        return best_aligned, best_rmsd, best_mapping
+
     def _calc_refine_alignment_with_mapping(
         ref_symbols_lc,
         target_symbols_lc,
@@ -2561,8 +2622,30 @@ def create_tab(ctx):
 
         if best is None:
             aligned, rmsd = _calc_kabsch_align(ref, target, mapping=mapping)
-            return aligned, rmsd, mapping
-        return best[1], best[0], best[2]
+            best_aligned, best_rmsd, best_mapping = aligned, float(rmsd), mapping.copy()
+        else:
+            best_aligned, best_rmsd, best_mapping = best[1], float(best[0]), best[2].copy()
+
+        # Local remapping refinement: swap assignments of same-element atoms
+        # and keep any swap that lowers the Kabsch RMSD.
+        if ref.shape[0] <= 220:
+            try:
+                swap_aligned, swap_rmsd, swap_mapping = _calc_local_swap_optimize_mapping(
+                    ref_symbols_lc,
+                    ref,
+                    target,
+                    best_mapping,
+                )
+                if swap_rmsd < best_rmsd - 1e-12:
+                    best_aligned, best_rmsd, best_mapping = (
+                        swap_aligned,
+                        float(swap_rmsd),
+                        swap_mapping,
+                    )
+            except Exception:
+                pass
+
+        return best_aligned, best_rmsd, best_mapping
 
     def _calc_align_reference_to_target(
         ref_symbols,
@@ -2590,90 +2673,149 @@ def create_tab(ctx):
         target = np.asarray(target_coords, dtype=float)
         n_atoms = ref.shape[0]
         target_centered = target - target.mean(axis=0)
-        ref_centered = ref - ref.mean(axis=0)
 
-        candidates = []
-        candidate_index_by_key = {}
+        def _solve_for_reference(ref_work, orientation_label):
+            ref_work = np.asarray(ref_work, dtype=float)
+            ref_centered = ref_work - ref_work.mean(axis=0)
+            candidates = []
+            candidate_index_by_key = {}
 
-        def _register_candidate(rmsd, aligned, mapping, source):
-            map_idx = np.asarray(mapping, dtype=int)
-            if map_idx.size != n_atoms:
-                return
-            key = tuple(int(v) for v in map_idx.tolist())
-            row = (float(rmsd), np.asarray(aligned, dtype=float), map_idx.copy(), source)
-            idx = candidate_index_by_key.get(key)
-            if idx is None:
-                candidate_index_by_key[key] = len(candidates)
-                candidates.append(row)
-            elif row[0] < candidates[idx][0] - 1e-12:
-                candidates[idx] = row
+            def _register_candidate(rmsd, aligned, mapping, source):
+                map_idx = np.asarray(mapping, dtype=int)
+                if map_idx.size != n_atoms:
+                    return
+                key = tuple(int(v) for v in map_idx.tolist())
+                row = (float(rmsd), np.asarray(aligned, dtype=float), map_idx.copy(), source)
+                idx = candidate_index_by_key.get(key)
+                if idx is None:
+                    candidate_index_by_key[key] = len(candidates)
+                    candidates.append(row)
+                elif row[0] < candidates[idx][0] - 1e-12:
+                    candidates[idx] = row
 
-        def _add_candidate(mapping, source):
-            map_idx = np.asarray(mapping, dtype=int)
-            if map_idx.size != n_atoms:
-                return
-            aligned, rmsd, refined = _calc_refine_alignment_with_mapping(
-                ref_seq, target_seq, ref, target, map_idx
-            )
-            _register_candidate(rmsd, aligned, refined, source)
-
-        # Keep direct order candidate for identical atom order.
-        if ref_seq == target_seq:
-            _add_candidate(np.arange(n_atoms, dtype=int), 'direct')
-
-        # Best topological alignment via RDKit (symmetry-aware).
-        rdkit_best = _calc_rdkit_best_alignment_from_xyz(
-            ref_symbols, ref, target_symbols, target
-        )
-        if rdkit_best is not None:
-            rd_aligned, rd_rmsd, rd_mapping = rdkit_best
-            _register_candidate(rd_rmsd, rd_aligned, rd_mapping, 'rdkit-topology')
-
-        # Topology-guided candidates from inferred connectivity.
-        topo_maps = _calc_topology_mappings_from_xyz(
-            ref_symbols, ref, target_symbols, target
-        )
-        if len(topo_maps) > 256:
-            scored = []
-            for mapping in topo_maps:
-                try:
-                    _aligned_quick, quick_rmsd = _calc_kabsch_align(ref, target, mapping=mapping)
-                    scored.append((float(quick_rmsd), mapping))
-                except Exception:
-                    continue
-            scored.sort(key=lambda item: item[0])
-            topo_maps = [mapping for _rmsd, mapping in scored[:256]]
-        for mapping in topo_maps:
-            _add_candidate(mapping, 'topology')
-
-        # Global orientation + Hungarian assignment candidates.
-        n_random = 120 if n_atoms <= 40 else (72 if n_atoms <= 120 else 36)
-        rotation_guesses = _calc_generate_proper_axis_rotations()
-        rotation_guesses.extend(_calc_random_rotation_matrices(n_samples=n_random))
-        for rot_guess in rotation_guesses:
-            try:
-                initial_map = _calc_element_assignment_for_rotation(
-                    ref_seq,
-                    target_seq,
-                    ref_centered @ rot_guess,
-                    target_centered,
+            def _add_candidate(mapping, source):
+                map_idx = np.asarray(mapping, dtype=int)
+                if map_idx.size != n_atoms:
+                    return
+                aligned, rmsd, refined = _calc_refine_alignment_with_mapping(
+                    ref_seq, target_seq, ref_work, target, map_idx
                 )
-            except RuntimeError:
-                initial_map = None
-            if initial_map is not None:
-                _add_candidate(initial_map, 'global-permutation')
+                _register_candidate(rmsd, aligned, refined, source)
 
-        if not candidates:
-            aligned, rmsd = _calc_kabsch_align(ref, target)
-            return aligned, rmsd, {'method': 'direct-fallback', 'mapping': list(range(n_atoms))}
+            # Keep direct order candidate for identical atom order.
+            if ref_seq == target_seq:
+                _add_candidate(np.arange(n_atoms, dtype=int), 'direct')
 
-        best_rmsd, best_aligned, best_mapping, best_source = min(
-            candidates, key=lambda item: item[0]
+            # Best topological alignment via RDKit (symmetry-aware).
+            rdkit_best = _calc_rdkit_best_alignment_from_xyz(
+                ref_symbols, ref_work, target_symbols, target
+            )
+            if rdkit_best is not None:
+                rd_aligned, rd_rmsd, rd_mapping = rdkit_best
+                _register_candidate(rd_rmsd, rd_aligned, rd_mapping, 'rdkit-topology')
+            rdkit_best_reverse = _calc_rdkit_best_alignment_from_xyz(
+                target_symbols, target, ref_symbols, ref_work
+            )
+            if rdkit_best_reverse is not None:
+                _rd_aligned_rev, rd_rmsd_rev, rd_mapping_rev = rdkit_best_reverse
+                inv_map = _calc_invert_mapping(rd_mapping_rev, n_atoms)
+                if inv_map is not None:
+                    _add_candidate(inv_map, 'rdkit-topology-reverse')
+
+            # Topology-guided candidates from inferred connectivity.
+            topo_maps = _calc_topology_mappings_from_xyz(
+                ref_symbols, ref_work, target_symbols, target
+            )
+            if len(topo_maps) > 256:
+                scored = []
+                for mapping in topo_maps:
+                    try:
+                        _aligned_quick, quick_rmsd = _calc_kabsch_align(
+                            ref_work, target, mapping=mapping
+                        )
+                        scored.append((float(quick_rmsd), mapping))
+                    except Exception:
+                        continue
+                scored.sort(key=lambda item: item[0])
+                topo_maps = [mapping for _rmsd, mapping in scored[:256]]
+            for mapping in topo_maps:
+                _add_candidate(mapping, 'topology')
+
+            topo_maps_reverse_raw = _calc_topology_mappings_from_xyz(
+                target_symbols, target, ref_symbols, ref_work
+            )
+            topo_maps_reverse = []
+            for mapping_rev in topo_maps_reverse_raw:
+                inv_map = _calc_invert_mapping(mapping_rev, n_atoms)
+                if inv_map is not None:
+                    topo_maps_reverse.append(inv_map)
+            if len(topo_maps_reverse) > 256:
+                scored_rev = []
+                for mapping in topo_maps_reverse:
+                    try:
+                        _aligned_quick, quick_rmsd = _calc_kabsch_align(
+                            ref_work, target, mapping=mapping
+                        )
+                        scored_rev.append((float(quick_rmsd), mapping))
+                    except Exception:
+                        continue
+                scored_rev.sort(key=lambda item: item[0])
+                topo_maps_reverse = [mapping for _rmsd, mapping in scored_rev[:256]]
+            for mapping in topo_maps_reverse:
+                _add_candidate(mapping, 'topology-reverse')
+
+            # Global orientation + Hungarian assignment candidates.
+            n_random = 120 if n_atoms <= 40 else (72 if n_atoms <= 120 else 36)
+            rotation_guesses = _calc_generate_proper_axis_rotations()
+            rotation_guesses.extend(_calc_random_rotation_matrices(n_samples=n_random))
+            for rot_guess in rotation_guesses:
+                try:
+                    initial_map = _calc_element_assignment_for_rotation(
+                        ref_seq,
+                        target_seq,
+                        ref_centered @ rot_guess,
+                        target_centered,
+                    )
+                except RuntimeError:
+                    initial_map = None
+                if initial_map is not None:
+                    _add_candidate(initial_map, 'global-permutation')
+
+            if not candidates:
+                aligned, rmsd = _calc_kabsch_align(ref_work, target)
+                return aligned, rmsd, {
+                    'method': 'direct-fallback',
+                    'mapping': list(range(n_atoms)),
+                    'orientation': orientation_label,
+                }
+
+            best_rmsd, best_aligned, best_mapping, best_source = min(
+                candidates, key=lambda item: item[0]
+            )
+            return best_aligned, best_rmsd, {
+                'method': best_source,
+                'mapping': [int(v) for v in np.asarray(best_mapping, dtype=int).tolist()],
+                'orientation': orientation_label,
+            }
+
+        normal_aligned, normal_rmsd, normal_meta = _solve_for_reference(ref, 'normal')
+        ref_centroid = ref.mean(axis=0)
+        inverted_ref = (2.0 * ref_centroid) - ref
+        inverted_aligned, inverted_rmsd, inverted_meta = _solve_for_reference(
+            inverted_ref, 'inverted'
         )
-        return best_aligned, best_rmsd, {
-            'method': best_source,
-            'mapping': [int(v) for v in np.asarray(best_mapping, dtype=int).tolist()],
-        }
+
+        if inverted_rmsd < normal_rmsd - 1e-12:
+            meta = dict(inverted_meta)
+            meta['rmsd_normal'] = float(normal_rmsd)
+            meta['rmsd_inverted'] = float(inverted_rmsd)
+            meta['orientation_choice'] = 'inverted'
+            return inverted_aligned, inverted_rmsd, meta
+        meta = dict(normal_meta)
+        meta['rmsd_normal'] = float(normal_rmsd)
+        meta['rmsd_inverted'] = float(inverted_rmsd)
+        meta['orientation_choice'] = 'normal'
+        return normal_aligned, normal_rmsd, meta
 
     def _render_3dmol_dual_xyz(reference_xyz, target_xyz):
         import json
@@ -3596,6 +3738,9 @@ def create_tab(ctx):
                 ref_symbols, ref_coords, target_symbols, target_coords
             )
             align_method = align_meta.get('method', 'direct')
+            align_orientation = align_meta.get('orientation', 'normal')
+            rmsd_normal = align_meta.get('rmsd_normal', None)
+            rmsd_inverted = align_meta.get('rmsd_inverted', None)
 
             def _one_line_comment(text, limit):
                 cleaned = ' '.join((text or '').split()).strip()
@@ -3612,6 +3757,12 @@ def create_tab(ctx):
                 f'Aligned reference to {selected_path.name} '
                 f'(RMSD={rmsd_value:.6f} Angstrom)'
             )
+            aligned_comment = f'{aligned_comment} | Orientation: {align_orientation}'
+            if rmsd_normal is not None and rmsd_inverted is not None:
+                aligned_comment = (
+                    f'{aligned_comment} | Compare(normal={float(rmsd_normal):.6f}, '
+                    f'inverted={float(rmsd_inverted):.6f})'
+                )
             if target_comment_text:
                 aligned_comment = f'{aligned_comment} | TargetComment: {target_comment_text}'
             if ref_comment_text:
@@ -3636,11 +3787,19 @@ def create_tab(ctx):
                     idx += 1
             output_path.write_text(aligned_ref_xyz, encoding='utf-8')
             _render_rmsd_preview_dual_xyz(aligned_ref_xyz, target_xyz)
+            compare_text = ''
+            if rmsd_normal is not None and rmsd_inverted is not None:
+                compare_text = (
+                    f'Compare(normal={float(rmsd_normal):.6f}, '
+                    f'inverted={float(rmsd_inverted):.6f}). '
+                )
             calc_rmsd_status.value = (
                 '<span style="color:#2e7d32;">'
                 f'RMSD = {rmsd_value:.6f} Angstrom. '
                 f'Saved: {_html.escape(output_path.name)} '
+                f'Orientation: {_html.escape(align_orientation)}. '
                 f'Alignment: {_html.escape(align_method)}. '
+                f'{compare_text}'
                 f'(ref comment: {_html.escape(ref_comment[:80])}, '
                 f'target: {_html.escape(target_comment[:80])}).'
                 '</span>'
