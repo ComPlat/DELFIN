@@ -390,7 +390,14 @@ def calculate_beta_properties(
     # Calculate β'_zzz in dipole-aligned coordinate system
     beta_zzz_aligned = calculate_beta_zzz_aligned(beta_tensor, dipole_x, dipole_y, dipole_z)
 
-    # Hyper-Rayleigh scattering hyperpolarizability β_HRS
+    # Hyper-Rayleigh scattering hyperpolarizability β_HRS:
+    # β_HRS = sqrt(
+    #   (6/35)   * Σ_i β_iii^2
+    # + (16/105) * Σ_{i!=j} β_iii β_iij
+    # + (38/105) * Σ_{i!=j} β_iij^2
+    # + (16/105) * Σ_{cyclic i,j,k} β_iij β_jkk
+    # + (20/35)  * β_ijk^2
+    # )
     axes = ("x", "y", "z")
     sum_iii_sq = sum(_get_beta_component(beta_tensor, i, i, i) ** 2 for i in axes)
 
