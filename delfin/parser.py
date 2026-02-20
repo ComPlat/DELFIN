@@ -243,6 +243,22 @@ def parse_hyperpolarizability(
             fh.close()
 
 
+def _get_beta_component(
+    beta_tensor: Dict[str, float],
+    i: str,
+    j: str,
+    k: str,
+) -> float:
+    """Return β_ijk with permutation fallback when needed."""
+    key = i + j + k
+    if key in beta_tensor:
+        return beta_tensor[key]
+    for perm in (f"{i}{k}{j}", f"{j}{i}{k}", f"{j}{k}{i}", f"{k}{i}{j}", f"{k}{j}{i}"):
+        if perm in beta_tensor:
+            return beta_tensor[perm]
+    return 0.0
+
+
 def calculate_beta_zzz_aligned(
     beta_tensor: Dict[str, float],
     dipole_x: float,
@@ -282,34 +298,21 @@ def calculate_beta_zzz_aligned(
     R_32 = dipole_y / dipole_mag
     R_33 = dipole_z / dipole_mag
 
-    # Helper function to get tensor components with permutation symmetry
-    def get_beta(i: str, j: str, k: str) -> float:
-        """Get β_ijk, trying all permutations due to tensor symmetry."""
-        # Try direct lookup first
-        key = i + j + k
-        if key in beta_tensor:
-            return beta_tensor[key]
-        # Try all 6 permutations (tensor is symmetric under index exchange)
-        for perm in [f"{i}{k}{j}", f"{j}{i}{k}", f"{j}{k}{i}", f"{k}{i}{j}", f"{k}{j}{i}"]:
-            if perm in beta_tensor:
-                return beta_tensor[perm]
-        return 0.0
-
     # Calculate β'_zzz using tensor transformation
     # β'_zzz = Σ_ijk R_3i R_3j R_3k β_ijk
     # With symmetry: use reduced form with appropriate multiplicities
 
     beta_zzz_new = (
-        R_31**3 * get_beta('x', 'x', 'x') +
-        3 * R_31**2 * R_32 * get_beta('x', 'x', 'y') +
-        3 * R_31**2 * R_33 * get_beta('x', 'x', 'z') +
-        3 * R_31 * R_32**2 * get_beta('x', 'y', 'y') +
-        6 * R_31 * R_32 * R_33 * get_beta('x', 'y', 'z') +
-        3 * R_31 * R_33**2 * get_beta('x', 'z', 'z') +
-        R_32**3 * get_beta('y', 'y', 'y') +
-        3 * R_32**2 * R_33 * get_beta('y', 'y', 'z') +
-        3 * R_32 * R_33**2 * get_beta('y', 'z', 'z') +
-        R_33**3 * get_beta('z', 'z', 'z')
+        R_31**3 * _get_beta_component(beta_tensor, 'x', 'x', 'x') +
+        3 * R_31**2 * R_32 * _get_beta_component(beta_tensor, 'x', 'x', 'y') +
+        3 * R_31**2 * R_33 * _get_beta_component(beta_tensor, 'x', 'x', 'z') +
+        3 * R_31 * R_32**2 * _get_beta_component(beta_tensor, 'x', 'y', 'y') +
+        6 * R_31 * R_32 * R_33 * _get_beta_component(beta_tensor, 'x', 'y', 'z') +
+        3 * R_31 * R_33**2 * _get_beta_component(beta_tensor, 'x', 'z', 'z') +
+        R_32**3 * _get_beta_component(beta_tensor, 'y', 'y', 'y') +
+        3 * R_32**2 * R_33 * _get_beta_component(beta_tensor, 'y', 'y', 'z') +
+        3 * R_32 * R_33**2 * _get_beta_component(beta_tensor, 'y', 'z', 'z') +
+        R_33**3 * _get_beta_component(beta_tensor, 'z', 'z', 'z')
     )
 
     return beta_zzz_new
@@ -345,22 +348,30 @@ def calculate_beta_properties(
         - 'beta_mu_esu': Projection in esu
         - 'beta_zzz_esu': β_zzz tensor component in esu
         - 'beta_zzz_aligned_esu': β'_zzz in dipole-aligned frame (esu)
+        - 'beta_HRS_au': Hyper-Rayleigh scattering β_HRS (a.u.)
+        - 'beta_HRS_esu': Hyper-Rayleigh scattering β_HRS (esu)
     """
     # Conversion factor: 1 a.u. = 8.6393 × 10⁻³³ esu
     AU_TO_ESU = 8.6393e-33
 
     # Calculate contracted vector components
-    beta_x = (beta_tensor.get('xxx', 0) +
-              beta_tensor.get('xyy', 0) +
-              beta_tensor.get('xzz', 0))
+    beta_x = (
+        _get_beta_component(beta_tensor, 'x', 'x', 'x')
+        + _get_beta_component(beta_tensor, 'x', 'y', 'y')
+        + _get_beta_component(beta_tensor, 'x', 'z', 'z')
+    )
 
-    beta_y = (beta_tensor.get('yxx', 0) +
-              beta_tensor.get('yyy', 0) +
-              beta_tensor.get('yzz', 0))
+    beta_y = (
+        _get_beta_component(beta_tensor, 'y', 'x', 'x')
+        + _get_beta_component(beta_tensor, 'y', 'y', 'y')
+        + _get_beta_component(beta_tensor, 'y', 'z', 'z')
+    )
 
-    beta_z = (beta_tensor.get('zxx', 0) +
-              beta_tensor.get('zyy', 0) +
-              beta_tensor.get('zzz', 0))
+    beta_z = (
+        _get_beta_component(beta_tensor, 'z', 'x', 'x')
+        + _get_beta_component(beta_tensor, 'z', 'y', 'y')
+        + _get_beta_component(beta_tensor, 'z', 'z', 'z')
+    )
 
     # Total hyperpolarizability
     import math
@@ -374,22 +385,55 @@ def calculate_beta_properties(
         beta_mu = 0.0
 
     # Extract β_zzz tensor component
-    beta_zzz = beta_tensor.get('zzz', 0.0)
+    beta_zzz = _get_beta_component(beta_tensor, 'z', 'z', 'z')
 
     # Calculate β'_zzz in dipole-aligned coordinate system
     beta_zzz_aligned = calculate_beta_zzz_aligned(beta_tensor, dipole_x, dipole_y, dipole_z)
+
+    # Hyper-Rayleigh scattering hyperpolarizability β_HRS
+    axes = ("x", "y", "z")
+    sum_iii_sq = sum(_get_beta_component(beta_tensor, i, i, i) ** 2 for i in axes)
+
+    sum_iii_iij = 0.0
+    sum_iij_sq = 0.0
+    for i in axes:
+        beta_iii = _get_beta_component(beta_tensor, i, i, i)
+        for j in axes:
+            if i == j:
+                continue
+            beta_iij = _get_beta_component(beta_tensor, i, i, j)
+            sum_iii_iij += beta_iii * beta_iij
+            sum_iij_sq += beta_iij ** 2
+
+    cyclic_triplets = (("x", "y", "z"), ("y", "z", "x"), ("z", "x", "y"))
+    sum_cyclic_iij_jkk = sum(
+        _get_beta_component(beta_tensor, i, i, j) * _get_beta_component(beta_tensor, j, k, k)
+        for i, j, k in cyclic_triplets
+    )
+
+    beta_ijk = _get_beta_component(beta_tensor, "x", "y", "z")
+    beta_hrs_sq = (
+        (6.0 / 35.0) * sum_iii_sq
+        + (16.0 / 105.0) * sum_iii_iij
+        + (38.0 / 105.0) * sum_iij_sq
+        + (16.0 / 105.0) * sum_cyclic_iij_jkk
+        + (20.0 / 35.0) * (beta_ijk ** 2)
+    )
+    beta_hrs = math.sqrt(max(beta_hrs_sq, 0.0))
 
     # Values in esu
     beta_tot_esu = beta_tot * AU_TO_ESU
     beta_mu_esu = beta_mu * AU_TO_ESU
     beta_zzz_esu = beta_zzz * AU_TO_ESU
     beta_zzz_aligned_esu = beta_zzz_aligned * AU_TO_ESU
+    beta_hrs_esu = beta_hrs * AU_TO_ESU
 
     # Values in 10^-30 esu (multiply by 1e30 to get coefficient)
     beta_tot_esu_30 = beta_tot_esu * 1e30
     beta_mu_esu_30 = beta_mu_esu * 1e30
     beta_zzz_aligned_esu_30 = beta_zzz_aligned_esu * 1e30
     beta_zzz_aligned_esu_30_kleinman = beta_zzz_aligned_esu_30 / 2
+    beta_hrs_esu_30 = beta_hrs_esu * 1e30
 
     return {
         'beta_x_au': beta_x,
@@ -406,11 +450,15 @@ def calculate_beta_properties(
         'beta_mu_esu': beta_mu_esu,
         'beta_zzz_esu': beta_zzz_esu,
         'beta_zzz_aligned_esu': beta_zzz_aligned_esu,
+        'beta_HRS': beta_hrs,
+        'beta_HRS_au': beta_hrs,
+        'beta_HRS_esu': beta_hrs_esu,
         # Values in 10^-30 esu
         'beta_tot_esu_30': beta_tot_esu_30,
         'beta_mu_esu_30': beta_mu_esu_30,
         'beta_zzz_aligned_esu_30': beta_zzz_aligned_esu_30,
         'beta_zzz_aligned_esu_30_kleinman': beta_zzz_aligned_esu_30_kleinman,
+        'beta_HRS_esu_30': beta_hrs_esu_30,
     }
 
 
