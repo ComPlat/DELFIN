@@ -1897,8 +1897,26 @@ def _compute_coordination_fingerprint(mol, conf_id: int, dtype_map: Optional[Dic
         trans_pairs = tuple(sorted(
             tuple(sorted((sa, sb))) for sa, sb in trans_pairs_raw
         ))
+        # Canonical sort for detailed trans pairs.
+        # dtype tuples are (symbol, frozenset).  Plain sorted() uses frozenset's
+        # subset-comparison (__lt__) which is not a total order — two frozensets
+        # that are not subsets of each other compare as "not less than" in BOTH
+        # directions, so sorted() keeps them in their original (atom-index-
+        # dependent) order.  This made fingerprints non-canonical.
+        # Fix: use (symbol, sorted-integers-of-frozenset) as sort key for BOTH
+        # the within-pair sort and the outer sort across pairs.
+        def _dtype_sort_key(dt: tuple) -> tuple:
+            sym = dt[0] if dt else ''
+            env = tuple(sorted(dt[1])) if len(dt) > 1 and dt[1] else ()
+            return (sym, env)
+
+        def _pair_sort_key(pair: tuple) -> tuple:
+            # pair = (da, db) where each is a (symbol, frozenset) tuple.
+            return (_dtype_sort_key(pair[0]), _dtype_sort_key(pair[1]))
+
         detailed_trans = tuple(sorted(
-            tuple(sorted((da, db))) for da, db in detailed_trans_raw
+            (tuple(sorted((da, db), key=_dtype_sort_key)) for da, db in detailed_trans_raw),
+            key=_pair_sort_key,
         ))
 
         # Part 2: same-element cis/trans pattern, only useful when all
@@ -1989,9 +2007,53 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
                         return 'mer'
                 return ''
 
-            # MA4B2: cis/trans based on minority element (count==2)
+            # MA4B2: cis/trans based on minority element (count==2).
+            # Special case: if the majority element (count==4) actually has TWO
+            # chemically distinct sub-types (e.g. 2 py-N + 2 chelate-N, both
+            # counted as "N"), use the detailed trans pairs to classify as
+            # MA2B2C2 (three donor types, 2 each) which has 5 distinct isomers.
             if count_signature == [2, 4]:
                 minority = [s for s, c in elem_counts.items() if c == 2][0]
+                majority = [s for s, c in elem_counts.items() if c == 4][0]
+                # Check detailed_trans for two distinct Morgan sub-types in the
+                # majority element.
+                if len(metal_fp) > 2:
+                    detailed = metal_fp[2]
+                    maj_types = set()
+                    for pair in detailed:
+                        for dt in pair:
+                            if dt[0] == majority:
+                                maj_types.add(dt[1] if len(dt) > 1 else frozenset())
+                    if len(maj_types) == 2:
+                        # Treat as MA2B2C2 where A/B are the two sub-types of
+                        # the majority element and C is the minority element.
+                        # Count how many donor types are self-trans (same type
+                        # on both ends of a trans pair).
+                        n_self_trans = sum(1 for p in detailed if p[0] == p[1])
+                        if n_self_trans == 3:
+                            return 'all-trans'
+                        if n_self_trans == 2:
+                            # One same-type pair is cis; find which type
+                            self_trans_types = set()
+                            for p in detailed:
+                                if p[0] == p[1]:
+                                    self_trans_types.add(p[0])
+                            all_types = set()
+                            for p in detailed:
+                                all_types.add(p[0])
+                                all_types.add(p[1])
+                            cis_type = (all_types - self_trans_types)
+                            if len(cis_type) == 1:
+                                ct = next(iter(cis_type))
+                                return f'{ct[0]}-cis'
+                            return 'trans'
+                        if n_self_trans == 1:
+                            # One type is self-trans; find it and label *-trans
+                            for p in detailed:
+                                if p[0] == p[1]:
+                                    return f'{p[0][0]}-trans'
+                        # n_self_trans == 0: no type is self-trans → all-cis
+                        return 'all-cis'
                 if same_trans.get(minority, 0) >= 1:
                     return 'trans'
                 return 'cis'
