@@ -47,7 +47,7 @@ def create_tab(ctx):
     CALC_LEFT_MAX = 520
     CALC_PRESELECT_VIZ_SIZE = 520
     CALC_RMSD_PANEL_HEIGHT = f'{CALC_MOL_SIZE}px'
-    CALC_RMSD_COL_GAP = '10px'
+    CALC_RMSD_COL_GAP = '18px'
     # Large-file guardrails
     CALC_TEXT_FULL_READ_BYTES = 2 * 1024 * 1024
     CALC_TEXT_CHUNK_BYTES = 8 * 1024 * 1024
@@ -3596,6 +3596,15 @@ def create_tab(ctx):
                 ref_symbols, ref_coords, target_symbols, target_coords
             )
             align_method = align_meta.get('method', 'direct')
+
+            def _one_line_comment(text, limit):
+                cleaned = ' '.join((text or '').split()).strip()
+                if len(cleaned) > limit:
+                    cleaned = cleaned[:limit].rstrip()
+                return cleaned
+
+            target_comment_text = _one_line_comment(target_comment, 180)
+            ref_comment_text = _one_line_comment(ref_comment, 160)
             info_text = ' '.join((calc_rmsd_info_input.value or '').split()).strip()
             if len(info_text) > 240:
                 info_text = info_text[:240].rstrip()
@@ -3603,6 +3612,10 @@ def create_tab(ctx):
                 f'Aligned reference to {selected_path.name} '
                 f'(RMSD={rmsd_value:.6f} Angstrom)'
             )
+            if target_comment_text:
+                aligned_comment = f'{aligned_comment} | TargetComment: {target_comment_text}'
+            if ref_comment_text:
+                aligned_comment = f'{aligned_comment} | RefComment: {ref_comment_text}'
             if align_method not in ('direct', 'direct-fallback'):
                 aligned_comment = f'{aligned_comment} | Mapping: {align_method}'
             if info_text:
@@ -3610,7 +3623,17 @@ def create_tab(ctx):
             aligned_ref_xyz = _calc_build_xyz_from_symbols_coords(
                 ref_symbols, aligned_ref_coords, comment=aligned_comment
             )
-            output_path = selected_path.with_name(f'{selected_path.stem}_aligned_ref.xyz')
+            base_stem = re.sub(r'(?i)_aligned_ref(?:_\d+)?$', '', selected_path.stem)
+            aligned_base = f'{base_stem}_aligned_ref'
+            output_path = selected_path.with_name(f'{aligned_base}.xyz')
+            if output_path.exists():
+                idx = 2
+                while True:
+                    candidate = selected_path.with_name(f'{aligned_base}_{idx}.xyz')
+                    if not candidate.exists():
+                        output_path = candidate
+                        break
+                    idx += 1
             output_path.write_text(aligned_ref_xyz, encoding='utf-8')
             _render_rmsd_preview_dual_xyz(aligned_ref_xyz, target_xyz)
             calc_rmsd_status.value = (
@@ -4349,7 +4372,9 @@ def create_tab(ctx):
                 state['xyz_frames'].clear()
                 state['xyz_frames'].extend(parse_xyz_frames(content))
                 n_frames = len(state['xyz_frames'])
-                is_aligned_overlay_file = name_lower.endswith('_aligned_ref.xyz')
+                is_aligned_overlay_file = bool(
+                    re.search(r'(?i)_aligned_ref(?:_\d+)?\.xyz$', name)
+                )
 
                 if is_aligned_overlay_file and state['xyz_frames']:
                     def _frame_to_xyz(frame):
@@ -4358,7 +4383,11 @@ def create_tab(ctx):
 
                     aligned_xyz = _frame_to_xyz(state['xyz_frames'][-1])
                     original_xyz = None
-                    original_name = re.sub(r'(?i)_aligned_ref\.xyz$', '.xyz', name)
+                    original_name = re.sub(
+                        r'(?i)_aligned_ref(?:_\d+)?\.xyz$',
+                        '.xyz',
+                        name,
+                    )
                     original_path = full_path.with_name(original_name)
                     if original_path.exists():
                         try:
