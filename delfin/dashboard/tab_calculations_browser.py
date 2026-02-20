@@ -8,9 +8,12 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from collections import Counter
+from itertools import permutations, product
 from pathlib import Path
 
 import ipywidgets as widgets
+import numpy as np
 from IPython.display import HTML, clear_output, display
 
 from .constants import CALC_SEARCH_OPTIONS
@@ -43,6 +46,8 @@ def create_tab(ctx):
     CALC_LEFT_MIN = 320
     CALC_LEFT_MAX = 520
     CALC_PRESELECT_VIZ_SIZE = 520
+    CALC_RMSD_PANEL_HEIGHT = f'{CALC_MOL_SIZE}px'
+    CALC_RMSD_COL_GAP = '10px'
     # Large-file guardrails
     CALC_TEXT_FULL_READ_BYTES = 2 * 1024 * 1024
     CALC_TEXT_CHUNK_BYTES = 8 * 1024 * 1024
@@ -72,6 +77,9 @@ def create_tab(ctx):
         'xyz_current_frame': [0],
         'report_running': {},
         'traj_viewer_ready': False,
+        'rmsd_available': False,
+        'rmsd_mode_active': False,
+        'rmsd_saved_display': {},
         'preselect': {
             'active': False,
             'entries': [],
@@ -84,6 +92,9 @@ def create_tab(ctx):
             'regen_seed_counter': 0,
         },
     }
+    calc_scope_id = f'calc-scope-{abs(id(state))}'
+    calc_resize_mol_fn = f'calcResizeMolViewer_{abs(id(state))}'
+    calc_resize_pre_fn = f'calcResizePreselect3D_{abs(id(state))}'
 
     # -- widgets ------------------------------------------------------------
     calc_path_label = widgets.HTML(
@@ -195,7 +206,12 @@ def create_tab(ctx):
         layout=widgets.Layout(width='160px', height='32px'),
     )
     calc_xyz_controls = widgets.HBox(
-        [widgets.HTML('<b>Frame:</b>'), calc_xyz_frame_input, calc_xyz_frame_total, calc_xyz_copy_btn],
+        [
+            widgets.HTML('<b>Frame:</b>'),
+            calc_xyz_frame_input,
+            calc_xyz_frame_total,
+            calc_xyz_copy_btn,
+        ],
         layout=widgets.Layout(display='none', gap='6px', margin='6px 0', align_items='center'),
     )
 
@@ -208,6 +224,85 @@ def create_tab(ctx):
         [calc_coord_copy_btn],
         layout=widgets.Layout(display='none', gap='6px', margin='6px 0', align_items='center'),
     )
+
+    # RMSD controls (for single-frame XYZ files)
+    calc_rmsd_ref_input = widgets.Textarea(
+        value='',
+        placeholder=(
+            'Paste reference coordinates here (XYZ block or "Element x y z" lines).'
+        ),
+        layout=widgets.Layout(width='100%', height=CALC_RMSD_PANEL_HEIGHT),
+    )
+    calc_rmsd_ref_input.add_class('delfin-nospell')
+    calc_rmsd_ref_input.add_class('calc-rmsd-ref-input')
+    disable_spellcheck(ctx, class_name='calc-rmsd-ref-input')
+    calc_rmsd_info_input = widgets.Text(
+        value='',
+        description='Info:',
+        placeholder='Optional info for aligned comment line',
+        layout=widgets.Layout(width='100%'),
+        style={'description_width': '55px'},
+    )
+    calc_rmsd_info_input.add_class('delfin-nospell')
+    calc_rmsd_info_input.add_class('calc-rmsd-info-input')
+    disable_spellcheck(ctx, class_name='calc-rmsd-info-input')
+    calc_rmsd_run_btn = widgets.Button(
+        description='RMSD', button_style='success',
+        layout=widgets.Layout(width='95px', height='32px'),
+    )
+    calc_rmsd_hide_btn = widgets.Button(
+        description='Hide RMSD', button_style='warning',
+        layout=widgets.Layout(width='120px', height='32px', display='none'),
+    )
+    calc_rmsd_hide_btn.add_class('calc-rmsd-trigger-btn')
+    calc_rmsd_status = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_rmsd_preview = widgets.Output(
+        layout=widgets.Layout(
+            width='100%',
+            flex='1 1 0',
+            min_width='0',
+            height=CALC_RMSD_PANEL_HEIGHT,
+            border='2px solid #1976d2',
+            overflow='hidden',
+            padding='0',
+        ),
+    )
+    calc_rmsd_preview.add_class('calc-rmsd-preview')
+    calc_rmsd_input_col = widgets.VBox(
+        [
+            calc_rmsd_info_input,
+            widgets.HTML('<b>Reference Coordinates</b>'),
+            calc_rmsd_ref_input,
+            widgets.HBox(
+                [calc_rmsd_run_btn, calc_rmsd_hide_btn],
+                layout=widgets.Layout(gap='8px', align_items='center', margin='4px 0 0 0'),
+            ),
+            calc_rmsd_status,
+        ],
+        layout=widgets.Layout(
+            width='100%',
+            flex='1 1 0',
+            min_width='0',
+            margin='0',
+        ),
+    )
+    calc_rmsd_controls = widgets.HBox(
+        [calc_rmsd_input_col, calc_rmsd_preview],
+        layout=widgets.Layout(
+            display='none',
+            width='100%',
+            gap=CALC_RMSD_COL_GAP,
+            overflow_x='hidden',
+            flex_flow='row',
+            align_items='stretch',
+            margin='0 0 10px 0',
+        ),
+    )
+    calc_rmsd_controls.add_class('calc-rmsd-controls')
+    calc_rmsd_input_col.add_class('calc-rmsd-input-col')
 
     # Copy / path / report buttons
     calc_copy_path_btn = widgets.Button(
@@ -455,8 +550,9 @@ def create_tab(ctx):
         calc_xyz_frame_label,
         calc_xyz_controls,
         calc_coord_controls,
+        calc_rmsd_controls,
         calc_mol_viewer,
-    ], layout=widgets.Layout(display='none', margin='0 0 10px 0', width='100%', align_items='flex-end'))
+    ], layout=widgets.Layout(display='none', margin='0 0 10px 0', width='100%', align_items='stretch'))
 
     calc_content_toolbar = widgets.HBox([
         calc_top_btn, calc_bottom_btn,
@@ -861,10 +957,13 @@ def create_tab(ctx):
                         viewer.center();
                         viewer.zoom(0.90);
                         viewer.render();
-                        window._calcPreselect3dViewer = viewer;
-                        window._calcPreselect3dElId = "{viewer_id}";
-                        if (window.calcResizePreselect3D) {{
-                            setTimeout(window.calcResizePreselect3D, 120);
+                        window._calcPreselect3dViewerByScope = window._calcPreselect3dViewerByScope || {{}};
+                        window._calcPreselect3dElIdByScope = window._calcPreselect3dElIdByScope || {{}};
+                        var scopeKey = {json.dumps(calc_scope_id)};
+                        window._calcPreselect3dViewerByScope[scopeKey] = viewer;
+                        window._calcPreselect3dElIdByScope[scopeKey] = "{viewer_id}";
+                        if (window["{calc_resize_pre_fn}"]) {{
+                            setTimeout(window["{calc_resize_pre_fn}"], 120);
                         }}
                     }}
                     setTimeout(initViewer, 0);
@@ -1119,6 +1218,37 @@ def create_tab(ctx):
     def _run_js(script):
         ctx.run_js(script)
 
+    def _calc_clear_main_viewer_state(reset_view_state=False):
+        calc_mol_viewer.clear_output()
+        scope_key_json = json.dumps(calc_scope_id)
+        clear_views_flag = 'true' if reset_view_state else 'false'
+        _run_js(
+            f"""
+            (function() {{
+                var scopeKey = {scope_key_json};
+                var scopeRoot = document.querySelector('.{calc_scope_id}');
+                var wrappers = scopeRoot
+                    ? scopeRoot.querySelectorAll('.calc-mol-stage-wrapper')
+                    : document.querySelectorAll('.calc-mol-stage-wrapper');
+                wrappers.forEach(function(w) {{ w.remove(); }});
+                if (window._calcMolViewerByScope) {{
+                    delete window._calcMolViewerByScope[scopeKey];
+                }}
+                if (window._calcTrajViewerByScope) {{
+                    delete window._calcTrajViewerByScope[scopeKey];
+                }}
+                if ({clear_views_flag} && window._calcMolViewStateByScope) {{
+                    var prefix = scopeKey + ':';
+                    Object.keys(window._calcMolViewStateByScope).forEach(function(k) {{
+                        if (k.indexOf(prefix) === 0) {{
+                            delete window._calcMolViewStateByScope[k];
+                        }}
+                    }});
+                }}
+            }})();
+            """
+        )
+
     _mol3d_counter = [0]
 
     def _render_3dmol(data, fmt='xyz', extra_fn=None):
@@ -1128,7 +1258,8 @@ def create_tab(ctx):
         viewer_id = f"mol3d_{_mol3d_counter[0]}"
         wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
         data_json = json.dumps(data)
-        view_scope_json = json.dumps(state.get('current_path') or '/')
+        view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
+        scope_id_json = json.dumps(calc_scope_id)
 
         volumetric_js = ""
         if fmt == 'cube':
@@ -1154,6 +1285,8 @@ def create_tab(ctx):
             function initViewer() {{
                 var el = document.getElementById("{viewer_id}");
                 var mv = el ? el.closest('.calc-mol-viewer') : null;
+                var scopeRoot = el ? el.closest('.{calc_scope_id}') : null;
+                if (!scopeRoot) scopeRoot = document.querySelector('.{calc_scope_id}');
                 if (!el || typeof $3Dmol === "undefined"
                     || !mv || mv.offsetParent === null) {{
                     tries += 1;
@@ -1161,7 +1294,7 @@ def create_tab(ctx):
                     return;
                 }}
                 /* Compute correct size from layout before creating viewer */
-                var lft = document.querySelector('.calc-left');
+                var lft = scopeRoot ? scopeRoot.querySelector('.calc-left') : null;
                 if (lft) {{
                     var leftRect = lft.getBoundingClientRect();
                     var mvRect = mv.getBoundingClientRect();
@@ -1181,9 +1314,17 @@ def create_tab(ctx):
                     }}
                 }}
                 window._calcMolViewStateByScope = window._calcMolViewStateByScope || {{}};
+                window._calcMolViewerByScope = window._calcMolViewerByScope || {{}};
+                window._calcMolViewScopeKeyByScope = window._calcMolViewScopeKeyByScope || {{}};
+                window._calcTrajViewerByScope = window._calcTrajViewerByScope || {{}};
+                var scopeKey = {scope_id_json};
                 var viewScope = {view_scope_json};
-                var previousViewer = window._calcMolViewer || window.calc_trj_viewer;
-                var previousScope = window._calcMolViewScopeKey || viewScope;
+                var previousViewer =
+                    window._calcMolViewerByScope[scopeKey]
+                    || window._calcTrajViewerByScope[scopeKey]
+                    || null;
+                var previousScope =
+                    window._calcMolViewScopeKeyByScope[scopeKey] || viewScope;
                 if (previousViewer && typeof previousViewer.getView === 'function') {{
                     try {{
                         window._calcMolViewStateByScope[previousScope] = previousViewer.getView();
@@ -1209,14 +1350,16 @@ def create_tab(ctx):
                     viewer.zoom({CALC_MOL_ZOOM});
                 }}
                 viewer.render();
-                window._calcMolViewer = viewer;
-                window._calcMolViewScopeKey = viewScope;
-                var wrappers = document.querySelectorAll('.calc-mol-stage-wrapper');
+                window._calcMolViewerByScope[scopeKey] = viewer;
+                window._calcMolViewScopeKeyByScope[scopeKey] = viewScope;
+                var wrappers = scopeRoot
+                    ? scopeRoot.querySelectorAll('.calc-mol-stage-wrapper')
+                    : document.querySelectorAll('.calc-mol-stage-wrapper');
                 wrappers.forEach(function(w) {{
                     if (w.id !== "{wrapper_id}") w.remove();
                 }});
-                if (window.calcResizeMolViewer) {{
-                    setTimeout(window.calcResizeMolViewer, 200);
+                if (window["{calc_resize_mol_fn}"]) {{
+                    setTimeout(window["{calc_resize_mol_fn}"], 200);
                 }}
             }}
             setTimeout(initViewer, 0);
@@ -2012,6 +2155,727 @@ def create_tab(ctx):
         atom_count = len(lines)
         return f"{atom_count}\n{title}\n" + '\n'.join(lines)
 
+    def _calc_reset_rmsd_ui(clear_input=False):
+        calc_rmsd_controls.layout.display = 'none'
+        _calc_set_rmsd_mode(False)
+        calc_rmsd_status.value = ''
+        calc_rmsd_hide_btn.layout.display = 'none'
+        calc_rmsd_preview.clear_output()
+        if clear_input:
+            calc_rmsd_ref_input.value = ''
+            calc_rmsd_info_input.value = ''
+
+    def _calc_set_rmsd_mode(active):
+        if active:
+            if state.get('rmsd_mode_active'):
+                return
+            saved = {}
+            widgets_to_hide = [
+                ('calc_mol_label', calc_mol_label),
+                ('calc_xyz_frame_label', calc_xyz_frame_label),
+                ('calc_xyz_controls', calc_xyz_controls),
+                ('calc_coord_controls', calc_coord_controls),
+                ('calc_mol_viewer', calc_mol_viewer),
+            ]
+            for key, widget in widgets_to_hide:
+                saved[key] = widget.layout.display if widget.layout.display is not None else ''
+                widget.layout.display = 'none'
+            state['rmsd_saved_display'] = saved
+            state['rmsd_mode_active'] = True
+            return
+
+        if not state.get('rmsd_mode_active'):
+            return
+        saved = state.get('rmsd_saved_display') or {}
+        widgets_to_restore = [
+            ('calc_mol_label', calc_mol_label),
+            ('calc_xyz_frame_label', calc_xyz_frame_label),
+            ('calc_xyz_controls', calc_xyz_controls),
+            ('calc_coord_controls', calc_coord_controls),
+            ('calc_mol_viewer', calc_mol_viewer),
+        ]
+        for key, widget in widgets_to_restore:
+            widget.layout.display = saved.get(key, '')
+        state['rmsd_saved_display'] = {}
+        state['rmsd_mode_active'] = False
+
+    def _calc_set_rmsd_available(enabled):
+        state['rmsd_available'] = bool(enabled)
+        if not enabled:
+            _calc_reset_rmsd_ui(clear_input=False)
+        calc_update_options_dropdown()
+
+    def _calc_parse_xyz_line(line):
+        parts = line.split()
+        if len(parts) < 4:
+            return None
+        index_patterns = [(0, 1, 2, 3)]
+        if len(parts) >= 5:
+            index_patterns.append((1, 2, 3, 4))
+        for sym_idx, x_idx, y_idx, z_idx in index_patterns:
+            if z_idx >= len(parts):
+                continue
+            symbol_raw = re.sub(r'[^A-Za-z]', '', parts[sym_idx] or '')
+            if not symbol_raw:
+                continue
+            symbol = symbol_raw[0].upper() + symbol_raw[1:].lower()
+            try:
+                x = float(parts[x_idx].replace('D', 'E').replace('d', 'e'))
+                y = float(parts[y_idx].replace('D', 'E').replace('d', 'e'))
+                z = float(parts[z_idx].replace('D', 'E').replace('d', 'e'))
+            except (TypeError, ValueError):
+                continue
+            return symbol, np.array([x, y, z], dtype=float)
+        return None
+
+    def _calc_parse_xyz_lines(lines, expected_atoms=None, allow_skip=False):
+        symbols = []
+        coords = []
+        for raw_line in lines:
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            parsed = _calc_parse_xyz_line(stripped)
+            if parsed is None:
+                if allow_skip:
+                    continue
+                raise ValueError(f'Could not parse XYZ line: {stripped[:120]}')
+            symbol, xyz = parsed
+            symbols.append(symbol)
+            coords.append(xyz)
+        if not symbols:
+            raise ValueError('No coordinate lines found.')
+        if expected_atoms is not None and len(symbols) != int(expected_atoms):
+            raise ValueError(
+                f'Atom count mismatch: expected {expected_atoms}, parsed {len(symbols)}.'
+            )
+        return symbols, np.asarray(coords, dtype=float)
+
+    def _calc_build_xyz_from_symbols_coords(symbols, coords, comment='Aligned reference'):
+        body = []
+        for symbol, (x, y, z) in zip(symbols, coords):
+            body.append(f'{symbol:<2}  {x: .8f}  {y: .8f}  {z: .8f}')
+        return f'{len(symbols)}\n{comment}\n' + '\n'.join(body) + '\n'
+
+    def _calc_parse_reference_xyz_input(raw_text):
+        text = (raw_text or '').strip()
+        if not text:
+            raise ValueError('No reference coordinates pasted.')
+        frames = parse_xyz_frames(text)
+        if frames:
+            comment, xyz_block, n_atoms = frames[0]
+            symbols, coords = _calc_parse_xyz_lines(
+                xyz_block.splitlines(), expected_atoms=n_atoms, allow_skip=False
+            )
+            return symbols, coords, (comment or 'Reference')
+        symbols, coords = _calc_parse_xyz_lines(text.splitlines(), allow_skip=True)
+        return symbols, coords, 'Reference'
+
+    def _calc_get_current_xyz_model():
+        frames = state['xyz_frames']
+        if not frames:
+            raise ValueError('No XYZ frame is currently loaded.')
+        idx = state['xyz_current_frame'][0]
+        if idx < 0 or idx >= len(frames):
+            raise ValueError('Invalid XYZ frame index.')
+        comment, xyz_block, n_atoms = frames[idx]
+        symbols, coords = _calc_parse_xyz_lines(
+            xyz_block.splitlines(), expected_atoms=n_atoms, allow_skip=False
+        )
+        xyz_content = f'{n_atoms}\n{comment}\n{xyz_block}\n'
+        return symbols, coords, comment, xyz_content
+
+    def _calc_kabsch_align(reference_coords, target_coords, mapping=None, return_rotation=False):
+        ref = np.asarray(reference_coords, dtype=float)
+        target = np.asarray(target_coords, dtype=float)
+        if ref.shape != target.shape:
+            raise ValueError(
+                f'Coordinate shape mismatch: {ref.shape} vs {target.shape}.'
+            )
+
+        if mapping is not None:
+            map_idx = np.asarray(mapping, dtype=int)
+            if map_idx.ndim != 1 or map_idx.size != ref.shape[0]:
+                raise ValueError('Invalid mapping length for Kabsch alignment.')
+            if np.any(map_idx < 0) or np.any(map_idx >= target.shape[0]):
+                raise ValueError('Mapping indices out of bounds.')
+            if np.unique(map_idx).size != map_idx.size:
+                raise ValueError('Mapping must be one-to-one.')
+            target = target[map_idx]
+
+        ref_centroid = ref.mean(axis=0)
+        target_centroid = target.mean(axis=0)
+        ref_centered = ref - ref_centroid
+        target_centered = target - target_centroid
+        covariance = ref_centered.T @ target_centered
+        u, _s, vt = np.linalg.svd(covariance)
+        rotation = vt.T @ u.T
+        if np.linalg.det(rotation) < 0:
+            vt[-1, :] *= -1.0
+            rotation = vt.T @ u.T
+        aligned = ref_centered @ rotation + target_centroid
+        diff = aligned - target
+        rmsd = float(np.sqrt(np.mean(np.sum(diff * diff, axis=1))))
+        if return_rotation:
+            return aligned, rmsd, rotation
+        return aligned, rmsd
+
+    def _calc_sq_distance_matrix(a, b):
+        a = np.asarray(a, dtype=float)
+        b = np.asarray(b, dtype=float)
+        diff = a[:, None, :] - b[None, :, :]
+        return np.einsum('ijk,ijk->ij', diff, diff)
+
+    def _calc_element_assignment_for_rotation(
+        ref_symbols_lc,
+        target_symbols_lc,
+        ref_rot_centered,
+        target_centered,
+    ):
+        try:
+            from scipy.optimize import linear_sum_assignment
+        except Exception as exc:
+            raise RuntimeError(
+                'SciPy is required for permutation-based RMSD alignment.'
+            ) from exc
+
+        n_atoms = len(ref_symbols_lc)
+        mapping = np.full(n_atoms, -1, dtype=int)
+
+        ref_groups = {}
+        target_groups = {}
+        for idx, symbol in enumerate(ref_symbols_lc):
+            ref_groups.setdefault(symbol, []).append(idx)
+        for idx, symbol in enumerate(target_symbols_lc):
+            target_groups.setdefault(symbol, []).append(idx)
+
+        if set(ref_groups.keys()) != set(target_groups.keys()):
+            return None
+
+        for symbol, ref_idx in ref_groups.items():
+            target_idx = target_groups.get(symbol, [])
+            if len(ref_idx) != len(target_idx):
+                return None
+            if len(ref_idx) == 1:
+                mapping[ref_idx[0]] = target_idx[0]
+                continue
+
+            ref_block = ref_rot_centered[np.asarray(ref_idx, dtype=int)]
+            target_block = target_centered[np.asarray(target_idx, dtype=int)]
+            costs = _calc_sq_distance_matrix(ref_block, target_block)
+            row_ind, col_ind = linear_sum_assignment(costs)
+            for row_pos, col_pos in zip(row_ind, col_ind):
+                mapping[int(ref_idx[row_pos])] = int(target_idx[col_pos])
+
+        if np.any(mapping < 0):
+            return None
+        return mapping
+
+    def _calc_generate_proper_axis_rotations():
+        mats = []
+        for perm in permutations((0, 1, 2)):
+            for signs in product((-1.0, 1.0), repeat=3):
+                mat = np.zeros((3, 3), dtype=float)
+                for new_axis, old_axis in enumerate(perm):
+                    mat[old_axis, new_axis] = signs[new_axis]
+                if np.linalg.det(mat) > 0.0:
+                    mats.append(mat)
+        return mats
+
+    def _calc_random_rotation_matrices(n_samples=64, seed=20260220):
+        rng = np.random.default_rng(seed)
+        mats = []
+        for _ in range(max(0, int(n_samples))):
+            q = rng.normal(size=4)
+            norm = float(np.linalg.norm(q))
+            if norm < 1e-12:
+                continue
+            q = q / norm
+            w, x, y, z = q
+            mat = np.array([
+                [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+                [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+                [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+            ], dtype=float)
+            if np.linalg.det(mat) > 0.0:
+                mats.append(mat)
+        return mats
+
+    def _calc_rdkit_best_alignment_from_xyz(
+        ref_symbols,
+        ref_coords,
+        target_symbols,
+        target_coords,
+        max_matches=20000,
+    ):
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import rdDetermineBonds, rdMolAlign
+        except Exception:
+            return None
+
+        ref_xyz = _calc_build_xyz_from_symbols_coords(ref_symbols, ref_coords, comment='Reference')
+        target_xyz = _calc_build_xyz_from_symbols_coords(target_symbols, target_coords, comment='Target')
+        ref_mol = Chem.MolFromXYZBlock(ref_xyz)
+        target_mol = Chem.MolFromXYZBlock(target_xyz)
+        if ref_mol is None or target_mol is None:
+            return None
+
+        try:
+            rdDetermineBonds.DetermineConnectivity(ref_mol)
+            rdDetermineBonds.DetermineConnectivity(target_mol)
+        except Exception:
+            return None
+
+        try:
+            rmsd, transform, atom_map = rdMolAlign.GetBestAlignmentTransform(
+                ref_mol,
+                target_mol,
+                maxMatches=int(max_matches),
+                reflect=False,
+            )
+        except Exception:
+            return None
+
+        if not atom_map:
+            return None
+        n_atoms = len(ref_symbols)
+        mapping = np.full(n_atoms, -1, dtype=int)
+        for probe_idx, ref_idx in atom_map:
+            pi = int(probe_idx)
+            ri = int(ref_idx)
+            if pi < 0 or pi >= n_atoms or ri < 0 or ri >= n_atoms:
+                return None
+            mapping[pi] = ri
+        if np.any(mapping < 0) or np.unique(mapping).size != n_atoms:
+            return None
+
+        ref_seq = [s.lower() for s in ref_symbols]
+        target_seq = [s.lower() for s in target_symbols]
+        if not all(ref_seq[i] == target_seq[mapping[i]] for i in range(n_atoms)):
+            return None
+
+        transform = np.asarray(transform, dtype=float)
+        if transform.shape != (4, 4):
+            return None
+        ref_arr = np.asarray(ref_coords, dtype=float)
+        aligned = ref_arr @ transform[:3, :3].T + transform[:3, 3]
+        return aligned, float(rmsd), mapping
+
+    def _calc_topology_mappings_from_xyz(
+        ref_symbols,
+        ref_coords,
+        target_symbols,
+        target_coords,
+        max_matches=4096,
+    ):
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import rdDetermineBonds
+        except Exception:
+            return []
+
+        ref_xyz = _calc_build_xyz_from_symbols_coords(ref_symbols, ref_coords, comment='Reference')
+        target_xyz = _calc_build_xyz_from_symbols_coords(target_symbols, target_coords, comment='Target')
+        ref_mol = Chem.MolFromXYZBlock(ref_xyz)
+        target_mol = Chem.MolFromXYZBlock(target_xyz)
+        if ref_mol is None or target_mol is None:
+            return []
+
+        try:
+            rdDetermineBonds.DetermineConnectivity(ref_mol)
+            rdDetermineBonds.DetermineConnectivity(target_mol)
+        except Exception:
+            return []
+
+        if ref_mol.GetNumAtoms() != target_mol.GetNumAtoms():
+            return []
+
+        try:
+            matches = target_mol.GetSubstructMatches(
+                ref_mol,
+                uniquify=True,
+                useChirality=False,
+                maxMatches=max_matches,
+            )
+        except TypeError:
+            matches = target_mol.GetSubstructMatches(
+                ref_mol,
+                uniquify=True,
+                useChirality=False,
+            )
+
+        ref_seq = [s.lower() for s in ref_symbols]
+        target_seq = [s.lower() for s in target_symbols]
+        uniq = set()
+        mappings = []
+        for match in matches:
+            if len(match) != len(ref_seq):
+                continue
+            key = tuple(int(v) for v in match)
+            if key in uniq:
+                continue
+            if not all(ref_seq[i] == target_seq[j] for i, j in enumerate(key)):
+                continue
+            uniq.add(key)
+            mappings.append(np.asarray(key, dtype=int))
+            if len(mappings) >= max_matches:
+                break
+        return mappings
+
+    def _calc_refine_alignment_with_mapping(
+        ref_symbols_lc,
+        target_symbols_lc,
+        ref_coords,
+        target_coords,
+        initial_mapping,
+        max_iter=14,
+    ):
+        ref = np.asarray(ref_coords, dtype=float)
+        target = np.asarray(target_coords, dtype=float)
+        ref_centered = ref - ref.mean(axis=0)
+        target_centered = target - target.mean(axis=0)
+        mapping = np.asarray(initial_mapping, dtype=int)
+
+        visited = set()
+        best = None
+        for _ in range(max_iter):
+            key = tuple(int(v) for v in mapping.tolist())
+            if key in visited:
+                break
+            visited.add(key)
+
+            aligned, rmsd, rotation = _calc_kabsch_align(
+                ref, target, mapping=mapping, return_rotation=True
+            )
+            if best is None or rmsd < best[0] - 1e-12:
+                best = (rmsd, aligned.copy(), mapping.copy())
+
+            ref_rot_centered = ref_centered @ rotation
+            new_mapping = _calc_element_assignment_for_rotation(
+                ref_symbols_lc, target_symbols_lc, ref_rot_centered, target_centered
+            )
+            if new_mapping is None or np.array_equal(new_mapping, mapping):
+                break
+            mapping = new_mapping
+
+        if best is None:
+            aligned, rmsd = _calc_kabsch_align(ref, target, mapping=mapping)
+            return aligned, rmsd, mapping
+        return best[1], best[0], best[2]
+
+    def _calc_align_reference_to_target(
+        ref_symbols,
+        ref_coords,
+        target_symbols,
+        target_coords,
+    ):
+        if len(ref_symbols) != len(target_symbols):
+            raise ValueError(
+                f'Atom count mismatch: ref {len(ref_symbols)} vs target {len(target_symbols)}.'
+            )
+
+        ref_seq = [s.lower() for s in ref_symbols]
+        target_seq = [s.lower() for s in target_symbols]
+        ref_counts = Counter(ref_seq)
+        target_counts = Counter(target_seq)
+        if ref_counts != target_counts:
+            missing = sorted((ref_counts - target_counts).items())
+            extra = sorted((target_counts - ref_counts).items())
+            raise ValueError(
+                f'Element composition mismatch. Missing in target: {missing}; extra in target: {extra}.'
+            )
+
+        ref = np.asarray(ref_coords, dtype=float)
+        target = np.asarray(target_coords, dtype=float)
+        n_atoms = ref.shape[0]
+        target_centered = target - target.mean(axis=0)
+        ref_centered = ref - ref.mean(axis=0)
+
+        candidates = []
+        candidate_index_by_key = {}
+
+        def _register_candidate(rmsd, aligned, mapping, source):
+            map_idx = np.asarray(mapping, dtype=int)
+            if map_idx.size != n_atoms:
+                return
+            key = tuple(int(v) for v in map_idx.tolist())
+            row = (float(rmsd), np.asarray(aligned, dtype=float), map_idx.copy(), source)
+            idx = candidate_index_by_key.get(key)
+            if idx is None:
+                candidate_index_by_key[key] = len(candidates)
+                candidates.append(row)
+            elif row[0] < candidates[idx][0] - 1e-12:
+                candidates[idx] = row
+
+        def _add_candidate(mapping, source):
+            map_idx = np.asarray(mapping, dtype=int)
+            if map_idx.size != n_atoms:
+                return
+            aligned, rmsd, refined = _calc_refine_alignment_with_mapping(
+                ref_seq, target_seq, ref, target, map_idx
+            )
+            _register_candidate(rmsd, aligned, refined, source)
+
+        # Keep direct order candidate for identical atom order.
+        if ref_seq == target_seq:
+            _add_candidate(np.arange(n_atoms, dtype=int), 'direct')
+
+        # Best topological alignment via RDKit (symmetry-aware).
+        rdkit_best = _calc_rdkit_best_alignment_from_xyz(
+            ref_symbols, ref, target_symbols, target
+        )
+        if rdkit_best is not None:
+            rd_aligned, rd_rmsd, rd_mapping = rdkit_best
+            _register_candidate(rd_rmsd, rd_aligned, rd_mapping, 'rdkit-topology')
+
+        # Topology-guided candidates from inferred connectivity.
+        topo_maps = _calc_topology_mappings_from_xyz(
+            ref_symbols, ref, target_symbols, target
+        )
+        if len(topo_maps) > 256:
+            scored = []
+            for mapping in topo_maps:
+                try:
+                    _aligned_quick, quick_rmsd = _calc_kabsch_align(ref, target, mapping=mapping)
+                    scored.append((float(quick_rmsd), mapping))
+                except Exception:
+                    continue
+            scored.sort(key=lambda item: item[0])
+            topo_maps = [mapping for _rmsd, mapping in scored[:256]]
+        for mapping in topo_maps:
+            _add_candidate(mapping, 'topology')
+
+        # Global orientation + Hungarian assignment candidates.
+        n_random = 120 if n_atoms <= 40 else (72 if n_atoms <= 120 else 36)
+        rotation_guesses = _calc_generate_proper_axis_rotations()
+        rotation_guesses.extend(_calc_random_rotation_matrices(n_samples=n_random))
+        for rot_guess in rotation_guesses:
+            try:
+                initial_map = _calc_element_assignment_for_rotation(
+                    ref_seq,
+                    target_seq,
+                    ref_centered @ rot_guess,
+                    target_centered,
+                )
+            except RuntimeError:
+                initial_map = None
+            if initial_map is not None:
+                _add_candidate(initial_map, 'global-permutation')
+
+        if not candidates:
+            aligned, rmsd = _calc_kabsch_align(ref, target)
+            return aligned, rmsd, {'method': 'direct-fallback', 'mapping': list(range(n_atoms))}
+
+        best_rmsd, best_aligned, best_mapping, best_source = min(
+            candidates, key=lambda item: item[0]
+        )
+        return best_aligned, best_rmsd, {
+            'method': best_source,
+            'mapping': [int(v) for v in np.asarray(best_mapping, dtype=int).tolist()],
+        }
+
+    def _render_3dmol_dual_xyz(reference_xyz, target_xyz):
+        import json
+        _mol3d_counter[0] += 1
+        viewer_id = f'mol3d_rmsd_{_mol3d_counter[0]}'
+        wrapper_id = f'calc_mol_wrap_{_mol3d_counter[0]}'
+        ref_json = json.dumps(reference_xyz)
+        target_json = json.dumps(target_xyz)
+        view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
+        scope_id_json = json.dumps(calc_scope_id)
+
+        html = f"""
+        <div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">
+            <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
+        </div>
+        <script>
+        if (typeof $3Dmol === "undefined") {{
+            var _s = document.createElement("script");
+            _s.src = "https://3Dmol.org/build/3Dmol-min.js";
+            document.head.appendChild(_s);
+        }}
+        (function() {{
+            var tries = 0;
+            function initViewer() {{
+                var el = document.getElementById("{viewer_id}");
+                var mv = el ? el.closest('.calc-mol-viewer') : null;
+                var scopeRoot = el ? el.closest('.{calc_scope_id}') : null;
+                if (!scopeRoot) scopeRoot = document.querySelector('.{calc_scope_id}');
+                if (!el || typeof $3Dmol === "undefined" || !mv || mv.offsetParent === null) {{
+                    tries += 1;
+                    if (tries < 80) setTimeout(initViewer, 50);
+                    return;
+                }}
+                var lft = scopeRoot ? scopeRoot.querySelector('.calc-left') : null;
+                if (lft) {{
+                    var leftRect = lft.getBoundingClientRect();
+                    var mvRect = mv.getBoundingClientRect();
+                    if (mvRect.top > 0 || mvRect.height > 0) {{
+                        var availH = leftRect.bottom - mvRect.top - 6;
+                        var availW = mv.parentElement
+                            ? mv.parentElement.getBoundingClientRect().width - 4
+                            : mvRect.width;
+                        var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
+                        var w = Math.floor(Math.min(h * 1.2, availW));
+                        if (h >= 200 && w >= 240) {{
+                            mv.style.width = w + 'px';
+                            mv.style.height = h + 'px';
+                            el.style.width = w + 'px';
+                            el.style.height = h + 'px';
+                        }}
+                    }}
+                }}
+                window._calcMolViewStateByScope = window._calcMolViewStateByScope || {{}};
+                window._calcMolViewerByScope = window._calcMolViewerByScope || {{}};
+                window._calcMolViewScopeKeyByScope = window._calcMolViewScopeKeyByScope || {{}};
+                window._calcTrajViewerByScope = window._calcTrajViewerByScope || {{}};
+                var scopeKey = {scope_id_json};
+                var viewScope = {view_scope_json};
+                var previousViewer =
+                    window._calcMolViewerByScope[scopeKey]
+                    || window._calcTrajViewerByScope[scopeKey]
+                    || null;
+                var previousScope =
+                    window._calcMolViewScopeKeyByScope[scopeKey] || viewScope;
+                if (previousViewer && typeof previousViewer.getView === 'function') {{
+                    try {{
+                        window._calcMolViewStateByScope[previousScope] = previousViewer.getView();
+                    }} catch (_e) {{}}
+                }}
+                var savedView = window._calcMolViewStateByScope[viewScope] || null;
+                var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                var targetData = {target_json};
+                var refData = {ref_json};
+                viewer.addModel(targetData, "xyz");
+                viewer.setStyle({{model:0}}, {{
+                    stick: {{radius: 0.20, color: "#1f5fff"}},
+                    sphere: {{scale: 0.24, color: "#1f5fff"}}
+                }});
+                viewer.addModel(refData, "xyz");
+                viewer.setStyle({{model:1}}, {{
+                    stick: {{radius: 0.20, color: "#d32f2f"}},
+                    sphere: {{scale: 0.24, color: "#d32f2f"}}
+                }});
+                if (savedView && typeof viewer.setView === 'function') {{
+                    try {{
+                        viewer.setView(savedView);
+                    }} catch (_e) {{
+                        viewer.zoomTo();
+                        viewer.center();
+                        viewer.zoom({CALC_MOL_ZOOM});
+                    }}
+                }} else {{
+                    viewer.zoomTo();
+                    viewer.center();
+                    viewer.zoom({CALC_MOL_ZOOM});
+                }}
+                viewer.render();
+                window._calcMolViewerByScope[scopeKey] = viewer;
+                window._calcMolViewScopeKeyByScope[scopeKey] = viewScope;
+                var wrappers = scopeRoot
+                    ? scopeRoot.querySelectorAll('.calc-mol-stage-wrapper')
+                    : document.querySelectorAll('.calc-mol-stage-wrapper');
+                wrappers.forEach(function(w) {{
+                    if (w.id !== "{wrapper_id}") w.remove();
+                }});
+                if (window["{calc_resize_mol_fn}"]) {{
+                    setTimeout(window["{calc_resize_mol_fn}"], 200);
+                }}
+            }}
+            setTimeout(initViewer, 0);
+        }})();
+        </script>
+        """
+        with calc_mol_viewer:
+            display(HTML(html))
+
+    def _render_rmsd_preview_dual_xyz(
+        reference_xyz,
+        target_xyz,
+        output_widget=None,
+        viewer_height=None,
+    ):
+        if output_widget is None:
+            output_widget = calc_rmsd_preview
+        if not viewer_height:
+            viewer_height = CALC_RMSD_PANEL_HEIGHT
+        in_main_mol_viewer = output_widget is calc_mol_viewer
+        _mol3d_counter[0] += 1
+        if in_main_mol_viewer:
+            viewer_id = f'3dmolviewer_rmsd_{_mol3d_counter[0]}'
+            wrapper_id = f'calc_mol_wrap_rmsd_{_mol3d_counter[0]}'
+            viewer_container = (
+                f'<div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">'
+                f'<div id="{viewer_id}" style="width:100%;height:{viewer_height};position:relative;"></div>'
+                '</div>'
+            )
+        else:
+            viewer_id = f'rmsd_preview_{_mol3d_counter[0]}'
+            wrapper_id = ''
+            viewer_container = (
+                f'<div id="{viewer_id}" style="width:100%;height:{viewer_height};position:relative;"></div>'
+            )
+        target_json = json.dumps(target_xyz)
+        ref_json = json.dumps(reference_xyz)
+        calc_scope_selector = _html.escape(calc_scope_id, quote=True)
+        if in_main_mol_viewer:
+            post_render_js = (
+                f'var scopeRoot = document.querySelector(".{calc_scope_selector}");'
+                'var wrappers = scopeRoot ? scopeRoot.querySelectorAll(".calc-mol-stage-wrapper")'
+                ' : document.querySelectorAll(".calc-mol-stage-wrapper");'
+                f'wrappers.forEach(function(w) {{ if (w.id !== "{wrapper_id}") w.remove(); }});'
+                f'if (window["{calc_resize_mol_fn}"]) {{'
+                f' setTimeout(window["{calc_resize_mol_fn}"], 120);'
+                f' setTimeout(window["{calc_resize_mol_fn}"], 360);'
+                f'}}'
+            )
+        else:
+            post_render_js = ''
+        html = f"""
+        {viewer_container}
+        <script>
+        if (typeof $3Dmol === "undefined") {{
+            var _s = document.createElement("script");
+            _s.src = "https://3Dmol.org/build/3Dmol-min.js";
+            document.head.appendChild(_s);
+        }}
+        (function() {{
+            var tries = 0;
+            function initViewer() {{
+                var el = document.getElementById("{viewer_id}");
+                if (!el || typeof $3Dmol === "undefined") {{
+                    tries += 1;
+                    if (tries < 80) setTimeout(initViewer, 50);
+                    return;
+                }}
+                var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                var targetData = {target_json};
+                var refData = {ref_json};
+                viewer.addModel(targetData, "xyz");
+                viewer.setStyle({{model:0}}, {{
+                    stick: {{radius: 0.20, color: "#1f5fff"}},
+                    sphere: {{scale: 0.24, color: "#1f5fff"}}
+                }});
+                viewer.addModel(refData, "xyz");
+                viewer.setStyle({{model:1}}, {{
+                    stick: {{radius: 0.20, color: "#d32f2f"}},
+                    sphere: {{scale: 0.24, color: "#d32f2f"}}
+                }});
+                viewer.zoomTo();
+                viewer.center();
+                viewer.zoom({CALC_MOL_ZOOM});
+                viewer.render();
+                {post_render_js}
+            }}
+            setTimeout(initViewer, 0);
+        }})();
+        </script>
+        """
+        with output_widget:
+            clear_output()
+            display(HTML(html))
+
     def calc_update_xyz_viewer(initial_load=False):
         frames = state['xyz_frames']
         if not frames:
@@ -2033,6 +2897,13 @@ def create_tab(ctx):
         calc_xyz_frame_label.value = (
             f"{_html.escape(comment[:100])}{'...' if len(comment) > 100 else ''}"
         )
+        selected_path = _calc_selected_item_path()
+        rmsd_enabled = bool(
+            selected_path
+            and selected_path.suffix.lower() == '.xyz'
+            and len(frames) == 1
+        )
+        _calc_set_rmsd_available(rmsd_enabled)
 
         # Trajectory: use JS viewer and keep orientation when switching frames
         if len(frames) > 1:
@@ -2043,7 +2914,10 @@ def create_tab(ctx):
                 _mol3d_counter[0] += 1
                 viewer_id = f"calc_trj_viewer_{_mol3d_counter[0]}"
                 wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
-                view_scope_json = json.dumps(state.get('current_path') or '/')
+                view_scope_json = json.dumps(
+                    f"{calc_scope_id}:{state.get('current_path') or '/'}"
+                )
+                scope_id_json = json.dumps(calc_scope_id)
                 with calc_mol_viewer:
                     html_content = f"""
                     <div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">
@@ -2060,6 +2934,8 @@ def create_tab(ctx):
                         function initViewer() {{
                             var el = document.getElementById("{viewer_id}");
                             var mv = el ? el.closest('.calc-mol-viewer') : null;
+                            var scopeRoot = el ? el.closest('.{calc_scope_id}') : null;
+                            if (!scopeRoot) scopeRoot = document.querySelector('.{calc_scope_id}');
                             if (!el || typeof $3Dmol === "undefined"
                                 || !mv || mv.offsetParent === null) {{
                                 tries += 1;
@@ -2067,7 +2943,7 @@ def create_tab(ctx):
                                 return;
                             }}
                             /* Pre-size to correct dimensions */
-                            var lft = document.querySelector('.calc-left');
+                            var lft = scopeRoot ? scopeRoot.querySelector('.calc-left') : null;
                             if (lft) {{
                                 var leftRect = lft.getBoundingClientRect();
                                 var mvRect = mv.getBoundingClientRect();
@@ -2087,9 +2963,17 @@ def create_tab(ctx):
                                 }}
                             }}
                             window._calcMolViewStateByScope = window._calcMolViewStateByScope || {{}};
+                            window._calcMolViewerByScope = window._calcMolViewerByScope || {{}};
+                            window._calcMolViewScopeKeyByScope = window._calcMolViewScopeKeyByScope || {{}};
+                            window._calcTrajViewerByScope = window._calcTrajViewerByScope || {{}};
+                            var scopeKey = {scope_id_json};
                             var viewScope = {view_scope_json};
-                            var previousViewer = window._calcMolViewer || window.calc_trj_viewer;
-                            var previousScope = window._calcMolViewScopeKey || viewScope;
+                            var previousViewer =
+                                window._calcMolViewerByScope[scopeKey]
+                                || window._calcTrajViewerByScope[scopeKey]
+                                || null;
+                            var previousScope =
+                                window._calcMolViewScopeKeyByScope[scopeKey] || viewScope;
                             if (previousViewer && typeof previousViewer.getView === 'function') {{
                                 try {{
                                     window._calcMolViewStateByScope[previousScope] = previousViewer.getView();
@@ -2115,14 +2999,18 @@ def create_tab(ctx):
                             }}
                             viewer.setFrame({idx});
                             viewer.render();
-                            window.calc_trj_viewer = viewer;
-                            window._calcMolViewer = viewer;
-                            window._calcMolViewScopeKey = viewScope;
-                            var wrappers = document.querySelectorAll('.calc-mol-stage-wrapper');
+                            window._calcTrajViewerByScope[scopeKey] = viewer;
+                            window._calcMolViewerByScope[scopeKey] = viewer;
+                            window._calcMolViewScopeKeyByScope[scopeKey] = viewScope;
+                            var wrappers = scopeRoot
+                                ? scopeRoot.querySelectorAll('.calc-mol-stage-wrapper')
+                                : document.querySelectorAll('.calc-mol-stage-wrapper');
                             wrappers.forEach(function(w) {{
                                 if (w.id !== "{wrapper_id}") w.remove();
                             }});
-                            if (window.calcResizeMolViewer) setTimeout(window.calcResizeMolViewer, 200);
+                            if (window["{calc_resize_mol_fn}"]) {{
+                                setTimeout(window["{calc_resize_mol_fn}"], 200);
+                            }}
                         }}
                         setTimeout(initViewer, 0);
                     }})();
@@ -2133,9 +3021,13 @@ def create_tab(ctx):
             else:
                 _run_js(f"""
                 setTimeout(function(){{
-                    if (window.calc_trj_viewer) {{
-                        window.calc_trj_viewer.setFrame({idx});
-                        window.calc_trj_viewer.render();
+                    var scopeKey = {json.dumps(calc_scope_id)};
+                    var v = window._calcTrajViewerByScope
+                        ? window._calcTrajViewerByScope[scopeKey]
+                        : null;
+                    if (v) {{
+                        v.setFrame({idx});
+                        v.render();
                     }}
                 }}, 0);
                 """)
@@ -2173,8 +3065,11 @@ def create_tab(ctx):
         state['file_chunk_end'] = 0
         state['chunk_dom_initialized'] = False
         calc_file_list.options = []
-        calc_mol_viewer.clear_output()
+        state['traj_viewer_ready'] = False
+        _calc_clear_main_viewer_state(reset_view_state=False)
         calc_mol_container.layout.display = 'none'
+        _calc_set_rmsd_available(False)
+        _calc_reset_rmsd_ui(clear_input=True)
         calc_file_info.value = ''
         calc_path_display.value = ''
         calc_download_status.value = ''
@@ -2386,6 +3281,7 @@ def create_tab(ctx):
     def calc_update_options_dropdown():
         selected = calc_file_list.value
         sel_lower = selected.lower() if selected else ''
+        rmsd_available = bool(state.get('rmsd_available'))
         if selected:
             name = selected[2:].strip()
             if _calc_is_complete_mutation_csv(name):
@@ -2404,6 +3300,10 @@ def create_tab(ctx):
             calc_options_dropdown.layout.display = 'block'
         elif selected and ('CONTROL.txt' in selected or sel_lower.endswith('.inp')):
             calc_options_dropdown.options = ['(Options)', 'Recalc']
+            calc_options_dropdown.value = '(Options)'
+            calc_options_dropdown.layout.display = 'block'
+        elif selected and rmsd_available:
+            calc_options_dropdown.options = ['(Options)', 'RMSD']
             calc_options_dropdown.value = '(Options)'
             calc_options_dropdown.layout.display = 'block'
         else:
@@ -2648,6 +3548,85 @@ def create_tab(ctx):
             f".catch(err => console.error('Copy failed:', err));"
         )
 
+    def calc_on_rmsd_toggle(button=None):
+        if not state.get('rmsd_available'):
+            return
+        if calc_rmsd_controls.layout.display == 'none':
+            _calc_set_rmsd_mode(True)
+            calc_rmsd_controls.layout.display = 'flex'
+            calc_rmsd_hide_btn.layout.display = 'inline-flex'
+            calc_rmsd_status.value = (
+                '<span style="color:#555;">Paste reference coordinates and click RMSD.</span>'
+            )
+            with calc_rmsd_preview:
+                clear_output()
+                display(HTML(
+                    f"<div style='height:{CALC_RMSD_PANEL_HEIGHT};display:flex;align-items:center;justify-content:center;"
+                    "color:#666;border:1px dashed #bbb;background:#fafafa;'>"
+                    "Visualization appears here after RMSD calculation."
+                    "</div>"
+                ))
+        else:
+            _calc_reset_rmsd_ui(clear_input=False)
+
+    def calc_on_rmsd_hide(button):
+        _calc_reset_rmsd_ui(clear_input=False)
+
+    def calc_on_rmsd_run(button):
+        selected_path = _calc_selected_item_path()
+        if not selected_path or selected_path.suffix.lower() != '.xyz':
+            calc_rmsd_status.value = (
+                '<span style="color:#d32f2f;">Select a single-frame .xyz file first.</span>'
+            )
+            return
+
+        try:
+            target_symbols, target_coords, target_comment, target_xyz = _calc_get_current_xyz_model()
+            ref_symbols, ref_coords, ref_comment = _calc_parse_reference_xyz_input(
+                calc_rmsd_ref_input.value
+            )
+        except Exception as exc:
+            calc_rmsd_status.value = (
+                f'<span style="color:#d32f2f;">Input error: {_html.escape(str(exc))}</span>'
+            )
+            return
+
+        try:
+            aligned_ref_coords, rmsd_value, align_meta = _calc_align_reference_to_target(
+                ref_symbols, ref_coords, target_symbols, target_coords
+            )
+            align_method = align_meta.get('method', 'direct')
+            info_text = ' '.join((calc_rmsd_info_input.value or '').split()).strip()
+            if len(info_text) > 240:
+                info_text = info_text[:240].rstrip()
+            aligned_comment = (
+                f'Aligned reference to {selected_path.name} '
+                f'(RMSD={rmsd_value:.6f} Angstrom)'
+            )
+            if align_method not in ('direct', 'direct-fallback'):
+                aligned_comment = f'{aligned_comment} | Mapping: {align_method}'
+            if info_text:
+                aligned_comment = f'{aligned_comment} | Info: {info_text}'
+            aligned_ref_xyz = _calc_build_xyz_from_symbols_coords(
+                ref_symbols, aligned_ref_coords, comment=aligned_comment
+            )
+            output_path = selected_path.with_name(f'{selected_path.stem}_aligned_ref.xyz')
+            output_path.write_text(aligned_ref_xyz, encoding='utf-8')
+            _render_rmsd_preview_dual_xyz(aligned_ref_xyz, target_xyz)
+            calc_rmsd_status.value = (
+                '<span style="color:#2e7d32;">'
+                f'RMSD = {rmsd_value:.6f} Angstrom. '
+                f'Saved: {_html.escape(output_path.name)} '
+                f'Alignment: {_html.escape(align_method)}. '
+                f'(ref comment: {_html.escape(ref_comment[:80])}, '
+                f'target: {_html.escape(target_comment[:80])}).'
+                '</span>'
+            )
+        except Exception as exc:
+            calc_rmsd_status.value = (
+                f'<span style="color:#d32f2f;">RMSD failed: {_html.escape(str(exc))}</span>'
+            )
+
     def calc_on_coord_copy(button):
         if not state['file_content']:
             return
@@ -2873,7 +3852,34 @@ def create_tab(ctx):
             _calc_preselect_load(csv_path, mode=mode)
             _calc_preselect_show(True)
             _calc_preselect_render_current()
+        elif change['new'] == 'RMSD':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            if not state.get('rmsd_available'):
+                try:
+                    calc_options_dropdown.unobserve(calc_on_options_change, names='value')
+                except Exception:
+                    pass
+                calc_options_dropdown.value = '(Options)'
+                calc_options_dropdown.observe(calc_on_options_change, names='value')
+                return
+            _set_view_toggle(True, False)
+            calc_update_view()
+            calc_on_rmsd_toggle()
+            try:
+                calc_options_dropdown.unobserve(calc_on_options_change, names='value')
+            except Exception:
+                pass
+            calc_options_dropdown.value = '(Options)'
+            calc_options_dropdown.observe(calc_on_options_change, names='value')
         else:
+            if state.get('rmsd_mode_active'):
+                return
             calc_override_input.layout.display = 'none'
             calc_override_time.layout.display = 'none'
             calc_override_btn.layout.display = 'none'
@@ -3231,12 +4237,12 @@ def create_tab(ctx):
         next_suffix = full_path.suffix.lower()
         next_name_lower = full_path.name.lower()
         keep_previous_viewer_during_load = (
-            next_name_lower == 'coord' or next_suffix in ['.xyz', '.cube', '.cub']
+            next_name_lower == 'coord' or next_suffix in ['.cube', '.cub']
         )
 
         # Reset display (avoid flashing text area before viewer is ready)
         if not keep_previous_viewer_during_load:
-            calc_mol_viewer.clear_output()
+            _calc_clear_main_viewer_state(reset_view_state=False)
             calc_mol_container.layout.display = 'none'
         calc_content_area.layout.display = 'none'
         calc_content_label.layout.display = 'none'
@@ -3260,8 +4266,11 @@ def create_tab(ctx):
         # Reset xyz trajectory controls
         state['xyz_frames'].clear()
         state['xyz_current_frame'][0] = 0
+        state['traj_viewer_ready'] = False
         calc_xyz_controls.layout.display = 'none'
         calc_coord_controls.layout.display = 'none'
+        _calc_set_rmsd_available(False)
+        _calc_reset_rmsd_ui(clear_input=True)
         calc_xyz_frame_label.value = ''
         calc_xyz_frame_input.value = 1
         calc_xyz_frame_input.max = 1
@@ -3340,6 +4349,48 @@ def create_tab(ctx):
                 state['xyz_frames'].clear()
                 state['xyz_frames'].extend(parse_xyz_frames(content))
                 n_frames = len(state['xyz_frames'])
+                is_aligned_overlay_file = name_lower.endswith('_aligned_ref.xyz')
+
+                if is_aligned_overlay_file and state['xyz_frames']:
+                    def _frame_to_xyz(frame):
+                        comment, xyz_block, n_atoms = frame
+                        return f"{n_atoms}\n{comment}\n{xyz_block}\n"
+
+                    aligned_xyz = _frame_to_xyz(state['xyz_frames'][-1])
+                    original_xyz = None
+                    original_name = re.sub(r'(?i)_aligned_ref\.xyz$', '.xyz', name)
+                    original_path = full_path.with_name(original_name)
+                    if original_path.exists():
+                        try:
+                            original_content = original_path.read_text()
+                            original_frames = parse_xyz_frames(original_content)
+                            if original_frames:
+                                original_xyz = _frame_to_xyz(original_frames[0])
+                        except Exception:
+                            original_xyz = None
+                    # Fallback for legacy aligned files that already contain both frames.
+                    if original_xyz is None and len(state['xyz_frames']) > 1:
+                        original_xyz = _frame_to_xyz(state['xyz_frames'][0])
+
+                    if original_xyz is not None:
+                        calc_file_info.value = (
+                            f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                            f' ({size_str}, aligned overlay with '
+                            f'<code>{_html.escape(original_name)}</code>)'
+                        )
+                        state['xyz_current_frame'][0] = 0
+                        calc_xyz_controls.layout.display = 'none'
+                        calc_coord_controls.layout.display = 'none'
+                        _calc_set_rmsd_available(False)
+                        calc_xyz_frame_label.value = ''
+                        _render_rmsd_preview_dual_xyz(
+                            aligned_xyz,
+                            original_xyz,
+                            output_widget=calc_mol_viewer,
+                            viewer_height=f'{CALC_MOL_SIZE}px',
+                        )
+                        calc_render_content(scroll_to='top')
+                        return
 
                 if n_frames > 1:
                     calc_file_info.value = (
@@ -3352,6 +4403,7 @@ def create_tab(ctx):
                     calc_xyz_frame_total.value = f"<b>/ {n_frames}</b>"
                     calc_xyz_controls.layout.display = 'flex'
                     calc_coord_controls.layout.display = 'none'
+                    _calc_set_rmsd_available(False)
                     calc_update_xyz_viewer(initial_load=True)
                 else:
                     calc_file_info.value = (
@@ -3365,8 +4417,10 @@ def create_tab(ctx):
                         calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
                         calc_xyz_controls.layout.display = 'flex'
                         calc_coord_controls.layout.display = 'none'
+                        _calc_set_rmsd_available(True)
                     else:
                         calc_xyz_controls.layout.display = 'none'
+                        _calc_set_rmsd_available(False)
                     calc_xyz_frame_label.value = ''
                     _render_3dmol(content)
                 calc_render_content(scroll_to='top')
@@ -3444,7 +4498,11 @@ def create_tab(ctx):
                         view.addVolumetricData(raw, 'cube', {'isoval': -0.02, 'color': '#b00010', 'opacity': 0.85})
                     _render_3dmol(content, fmt='cube', extra_fn=_cube_extra)
                 # Trigger dynamic resize after volumetric data is loaded
-                _run_js("setTimeout(function(){ if(window.calcResizeMolViewer) window.calcResizeMolViewer(); }, 600);")
+                _run_js(
+                    f"setTimeout(function(){{"
+                    f" if(window['{calc_resize_mol_fn}']) window['{calc_resize_mol_fn}']();"
+                    f"}}, 600);"
+                )
             except Exception as e:
                 calc_set_message(f'Error: {e}')
             return
@@ -3692,6 +4750,8 @@ def create_tab(ctx):
     calc_sort_dropdown.observe(calc_on_sort_change, names='value')
     calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
     calc_xyz_copy_btn.on_click(calc_on_xyz_copy)
+    calc_rmsd_run_btn.on_click(calc_on_rmsd_run)
+    calc_rmsd_hide_btn.on_click(calc_on_rmsd_hide)
     calc_coord_copy_btn.on_click(calc_on_coord_copy)
     calc_copy_btn.on_click(calc_on_content_copy)
     calc_copy_path_btn.on_click(calc_on_path_copy)
@@ -3785,6 +4845,16 @@ def create_tab(ctx):
         '.calc-left .widget-text input { width:100% !important; }'
         '.calc-filter-row > .widget-text { width:calc(100% - 94px) !important; }'
         '.calc-tab .widget-button { flex:0 0 auto !important; }'
+        '.calc-rmsd-trigger-btn button { display:flex !important; align-items:center !important;'
+        ' justify-content:center !important; text-align:center !important; height:32px !important; }'
+        '.calc-rmsd-trigger-btn button > span { display:inline-flex !important; align-items:center !important;'
+        ' justify-content:center !important; text-align:center !important; width:100% !important; line-height:1.2 !important; }'
+        '.calc-rmsd-controls { width:100% !important;'
+        ' flex-wrap:nowrap !important; align-items:stretch !important; }'
+        '.calc-rmsd-controls > .widget-vbox, .calc-rmsd-controls > .widget-output'
+        ' { flex:1 1 0 !important; min-width:0 !important; }'
+        '.calc-rmsd-input-col .widget-textarea { flex:1 1 0 !important; min-height:0 !important; }'
+        '.calc-rmsd-input-col .widget-textarea textarea { height:100% !important; min-height:220px !important; }'
         '.calc-tab .widget-dropdown, .calc-tab .widget-text { flex:0 0 auto !important; }'
         '.calc-tab input { overflow:hidden !important; height:26px !important;'
         ' line-height:26px !important; padding:0 6px !important; box-sizing:border-box !important; }'
@@ -3805,6 +4875,11 @@ def create_tab(ctx):
         ' .calc-mol-viewer .output_wrapper, .calc-mol-viewer .jp-OutputArea-child,'
         ' .calc-mol-viewer .jp-OutputArea-output'
         ' { padding:0 !important; margin:0 !important; }'
+        '.calc-rmsd-preview { overflow:hidden !important; padding:0 !important; }'
+        '.calc-rmsd-preview .output_area, .calc-rmsd-preview .output_subarea,'
+        ' .calc-rmsd-preview .output_wrapper, .calc-rmsd-preview .jp-OutputArea-child,'
+        ' .calc-rmsd-preview .jp-OutputArea-output'
+        ' { padding:0 !important; margin:0 !important; width:100% !important; height:100% !important; }'
         '.calc-preselect-viz { overflow:hidden !important; padding:0 !important; margin:0 !important; }'
         '.calc-preselect-viz-wrap { flex:1 1 220px !important; min-width:180px !important;'
         f' max-width:min({CALC_PRESELECT_VIZ_SIZE}px, 42vh) !important; width:100% !important; }}'
@@ -3876,6 +4951,7 @@ def create_tab(ctx):
         width='100%', max_width='100%',
     ))
     tab_widget.add_class('calc-tab')
+    tab_widget.add_class(calc_scope_id)
     calc_left.add_class('calc-left')
     calc_right.add_class('calc-right')
     calc_content_area.add_class('calc-content-area')
@@ -3884,12 +4960,16 @@ def create_tab(ctx):
     # NOTE: must be a SINGLE _run_js call because run_js uses clear_output.
     _run_js(f"""
     setTimeout(function() {{
+        var scopeKey = {json.dumps(calc_scope_id)};
+        var root = document.querySelector('.{calc_scope_id}');
+        if (!root) return;
+
         /* --- Splitter drag logic --- */
-        var left = document.querySelector('.calc-left');
-        var right = document.querySelector('.calc-right');
-        var splitter = document.querySelector('.calc-splitter');
-        if (left && right && splitter && splitter.dataset.bound !== '1') {{
-            splitter.dataset.bound = '1';
+        var left = root.querySelector('.calc-left');
+        var right = root.querySelector('.calc-right');
+        var splitter = root.querySelector('.calc-splitter');
+        if (left && right && splitter && splitter.dataset.bound !== scopeKey) {{
+            splitter.dataset.bound = scopeKey;
             var minW = {CALC_LEFT_MIN};
             var maxW = {CALC_LEFT_MAX};
             function onMove(e) {{
@@ -3904,7 +4984,9 @@ def create_tab(ctx):
             function onUp() {{
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup', onUp);
-                if (window.calcResizeMolViewer) setTimeout(window.calcResizeMolViewer, 50);
+                if (window["{calc_resize_mol_fn}"]) {{
+                    setTimeout(window["{calc_resize_mol_fn}"], 50);
+                }}
             }}
             splitter.addEventListener('mousedown', function(e) {{
                 e.preventDefault();
@@ -3913,31 +4995,40 @@ def create_tab(ctx):
             }});
         }}
 
-        /* --- Monkey-patch $3Dmol.createViewer to store viewer instances --- */
+        /* --- Monkey-patch $3Dmol.createViewer to trigger all scoped resizers --- */
         function patchCreateViewer() {{
-            if (typeof $3Dmol !== 'undefined' && !$3Dmol._patched) {{
+            if (typeof $3Dmol !== 'undefined' && !$3Dmol._calcResizePatched) {{
                 var orig = $3Dmol.createViewer;
                 $3Dmol.createViewer = function() {{
                     var v = orig.apply(this, arguments);
-                    window._calcMolViewer = v;
                     setTimeout(function() {{
-                        if (window.calcResizeMolViewer) window.calcResizeMolViewer();
+                        try {{
+                            var fns = window._calcResizeMolViewerFns || {{}};
+                            Object.keys(fns).forEach(function(k) {{
+                                var fn = fns[k];
+                                if (typeof fn === 'function') fn();
+                            }});
+                        }} catch (_e) {{}}
                     }}, 300);
                     return v;
                 }};
-                $3Dmol._patched = true;
+                $3Dmol._calcResizePatched = true;
             }}
         }}
         patchCreateViewer();
         var patchInterval = setInterval(function() {{
             patchCreateViewer();
-            if (typeof $3Dmol !== 'undefined' && $3Dmol._patched) clearInterval(patchInterval);
+            if (typeof $3Dmol !== 'undefined' && $3Dmol._calcResizePatched) {{
+                clearInterval(patchInterval);
+            }}
         }}, 500);
 
         /* --- Dynamic mol-viewer resize --- */
-        window.calcResizeMolViewer = function() {{
-            var lft = document.querySelector('.calc-left');
-            var mv = document.querySelector('.calc-mol-viewer');
+        window["{calc_resize_mol_fn}"] = function() {{
+            var scopeRoot = document.querySelector('.{calc_scope_id}');
+            if (!scopeRoot || scopeRoot.offsetParent === null) return;
+            var lft = scopeRoot.querySelector('.calc-left');
+            var mv = scopeRoot.querySelector('.calc-mol-viewer');
             if (!lft || !mv || mv.offsetParent === null) return;
             var container = mv.closest('.widget-vbox');
             if (!container || container.style.display === 'none') return;
@@ -3954,15 +5045,25 @@ def create_tab(ctx):
             mv.style.height = h + 'px';
             var inner = mv.querySelector('[id^="3dmolviewer"], [id^="calc_trj"]');
             if (inner) {{ inner.style.width = w + 'px'; inner.style.height = h + 'px'; }}
-            var v = window._calcMolViewer || window.calc_trj_viewer;
+            var v = (window._calcMolViewerByScope && window._calcMolViewerByScope[scopeKey])
+                || (window._calcTrajViewerByScope && window._calcTrajViewerByScope[scopeKey])
+                || null;
             if (v && typeof v.resize === 'function') {{ v.resize(); v.render(); }}
         }};
+        window._calcResizeMolViewerFns = window._calcResizeMolViewerFns || {{}};
+        window._calcResizeMolViewerFns[scopeKey] = window["{calc_resize_mol_fn}"];
         window.addEventListener('resize', function() {{
-            setTimeout(window.calcResizeMolViewer, 100);
+            if (window["{calc_resize_mol_fn}"]) {{
+                setTimeout(window["{calc_resize_mol_fn}"], 100);
+            }}
         }});
-        window.calcResizePreselect3D = function() {{
-            var v = window._calcPreselect3dViewer;
-            var elId = window._calcPreselect3dElId;
+        window["{calc_resize_pre_fn}"] = function() {{
+            var v = window._calcPreselect3dViewerByScope
+                ? window._calcPreselect3dViewerByScope[scopeKey]
+                : null;
+            var elId = window._calcPreselect3dElIdByScope
+                ? window._calcPreselect3dElIdByScope[scopeKey]
+                : null;
             if (!v || !elId) return;
             var el = document.getElementById(elId);
             var box = el ? el.closest('.calc-preselect-viz') : null;
@@ -3980,21 +5081,34 @@ def create_tab(ctx):
         }};
         window.addEventListener('resize', function() {{
             setTimeout(function() {{
-                if (window.calcResizePreselect3D) window.calcResizePreselect3D();
+                if (window["{calc_resize_pre_fn}"]) window["{calc_resize_pre_fn}"]();
             }}, 120);
         }});
-        var tab = document.querySelector('.calc-tab');
-        if (tab) {{
+        if (root) {{
             new MutationObserver(function() {{
-                setTimeout(window.calcResizeMolViewer, 200);
+                if (window["{calc_resize_mol_fn}"]) {{
+                    setTimeout(window["{calc_resize_mol_fn}"], 200);
+                }}
                 setTimeout(function() {{
-                    if (window.calcResizePreselect3D) window.calcResizePreselect3D();
+                    if (window["{calc_resize_pre_fn}"]) window["{calc_resize_pre_fn}"]();
                 }}, 220);
-            }}).observe(tab, {{attributes: true, subtree: true, attributeFilter: ['style']}});
+            }}).observe(root, {{attributes: true, subtree: true, attributeFilter: ['style']}});
         }}
     }}, 0);
     """)
 
+    def calc_set_root(root_dir):
+        """Switch browser root directory and reset to top level."""
+        try:
+            new_root = Path(root_dir).expanduser()
+        except Exception:
+            new_root = Path(root_dir)
+        new_root.mkdir(parents=True, exist_ok=True)
+        ctx.calc_dir = new_root
+        state['current_path'] = ''
+        calc_list_directory()
+
     return tab_widget, {
         'calc_list_directory': calc_list_directory,
+        'calc_set_root': calc_set_root,
     }

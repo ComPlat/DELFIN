@@ -20,6 +20,7 @@ from .context import DashboardContext
 from .helpers import create_busy_css, disable_spellcheck_global
 
 from . import (
+    tab_archiv_statistics,
     tab_calculations_browser,
     tab_job_status,
     tab_orca_builder,
@@ -62,6 +63,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             calc_dir = home / 'calc'
     calc_dir = Path(calc_dir)
     calc_dir.mkdir(parents=True, exist_ok=True)
+    archiv_dir = calc_dir.parent / 'archiv'
+    archiv_dir.mkdir(parents=True, exist_ok=True)
 
     repo_dir = _find_delfin_root()
 
@@ -110,6 +113,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # -- build context -----------------------------------------------------
     ctx = DashboardContext(
         calc_dir=calc_dir,
+        archiv_dir=archiv_dir,
         notebook_dir=notebook_dir,
         repo_dir=repo_dir,
         backend=backend_obj,
@@ -142,6 +146,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         tab_tm, _ = tab_turbomole_builder.create_tab(ctx)
 
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
+    tab6, refs6 = tab_archiv_statistics.create_tab(ctx)
 
     # -- assemble tabs -----------------------------------------------------
     children = [tab1, tab2, tab4]
@@ -167,6 +172,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     titles.append('Job Status')
     children.append(tab5)
     titles.append('Calculations')
+    children.append(tab6)
+    titles.append('Archiv')
 
     # Disable spellcheck in all textareas (browser-level red underlines).
     disable_spellcheck_global(ctx)
