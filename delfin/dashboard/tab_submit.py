@@ -66,6 +66,10 @@ def create_tab(ctx):
         description='BUILD COMPLEX', button_style='warning',
         layout=widgets.Layout(width='150px'),
     )
+    build_complex2_button = widgets.Button(
+        description='BUILD COMPLEX2', button_style='warning',
+        layout=widgets.Layout(width='165px'),
+    )
 
     guppy_submit_button = widgets.Button(
         description='SUBMIT GUPPY', button_style='warning',
@@ -410,6 +414,62 @@ def create_tab(ctx):
                 )
                 if result.returncode == 0:
                     print('Job submitted successfully!')
+                    print(result.stdout)
+                    print('')
+                    print('Check status in Job Status tab')
+                    reset_form()
+                else:
+                    print('Submission failed:')
+                    print(result.stderr)
+            except Exception as e:
+                print(f'Error submitting job: {e}')
+
+    def handle_build_complex2(button):
+        with output_area:
+            clear_output()
+            job_name = job_name_widget.value.strip()
+            if not job_name:
+                print('Error: Job name is required!')
+                return
+
+            raw_input = coords_widget.value.strip()
+            if not raw_input:
+                print('Error: Please enter a SMILES string in the input box.')
+                return
+
+            cleaned_data, input_type = clean_input_data(raw_input)
+            if input_type != 'smiles':
+                print('Error: Input must be a SMILES string for BUILD COMPLEX2.')
+                return
+
+            if not contains_metal(cleaned_data):
+                print('Error: SMILES does not contain a metal atom.')
+                return
+
+            safe_name = ''.join(c for c in job_name if c.isalnum() or c in ('_', '-'))
+            job_dir = ctx.calc_dir / safe_name
+            if job_dir.exists():
+                print(f'Error: Directory already exists: {job_dir}')
+                return
+
+            try:
+                job_dir.mkdir(parents=True)
+            except Exception as e:
+                print(f'Error creating directory: {e}')
+                return
+
+            input_file = job_dir / 'input.txt'
+            input_file.write_text(cleaned_data + '\n')
+
+            time_limit = resolve_time_limit(job_type_widget, custom_time_widget, '48:00:00')
+
+            try:
+                result = ctx.backend.submit_delfin(
+                    job_dir=job_dir, job_name=safe_name, mode='build2',
+                    time_limit=time_limit, pal=32, maxcore=4000,
+                )
+                if result.returncode == 0:
+                    print('BUILD COMPLEX2 job submitted successfully!')
                     print(result.stdout)
                     print('')
                     print('Check status in Job Status tab')
@@ -980,6 +1040,7 @@ def create_tab(ctx):
     convert_smiles_quick_button.on_click(handle_convert_smiles_quick)
     convert_smiles_uff_button.on_click(handle_convert_smiles_uff)
     build_complex_button.on_click(handle_build_complex)
+    build_complex2_button.on_click(handle_build_complex2)
     guppy_submit_button.on_click(handle_guppy_submit)
     submit_smiles_list_button.on_click(handle_submit_smiles_list)
     smiles_prev_button.on_click(handle_smiles_prev)
@@ -1008,7 +1069,7 @@ def create_tab(ctx):
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
-        widgets.HBox([build_complex_button, guppy_submit_button],
+        widgets.HBox([build_complex_button, build_complex2_button, guppy_submit_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES:</b>'), smiles_batch_widget, spacer,

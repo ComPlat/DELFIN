@@ -4,7 +4,7 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | delfin-recalc-override | orca | build | guppy | delfin-co2-chain | auto
+#   delfin | delfin-recalc | delfin-recalc-override | orca | build | build2 | guppy | delfin-co2-chain | auto
 #
 # ENVIRONMENT VARIABLES:
 #   DELFIN_MODE          : Run mode (default: auto)
@@ -221,6 +221,11 @@ case "$MODE" in
         echo "  Multiplicity: $BUILD_MULT"
 
         "$DELFIN_PYTHON" -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
+        EXIT_CODE=$?
+        ;;
+    build2)
+        echo "Starting delfin-build2 (ASE complex builder)..."
+        "$DELFIN_PYTHON" -m delfin.build_up_complex2 input.txt --directory builder2 --verbose
         EXIT_CODE=$?
         ;;
     guppy)

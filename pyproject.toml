@@ -40,6 +40,7 @@ delfin_ESD = "delfin.cli_esd_report:main"
 delfin_IR = "delfin.cli_ir_report:main"
 delfin-json = "delfin.cli_delfin_collect:main"
 delfin-build = "delfin.build_up_complex:main"
+delfin-build2 = "delfin.build_up_complex2:main"
 delfin-guppy = "delfin.guppy_sampling:main"
 
 [tool.setuptools.packages.find]

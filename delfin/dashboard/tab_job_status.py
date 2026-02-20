@@ -146,8 +146,10 @@ def create_tab(ctx):
             'orca_numfreq',
             'orca_esd',
             'delfin.build_up_complex',
+            'delfin.build_up_complex2',
             'delfin.guppy_sampling',
             'delfin-build',
+            'delfin-build2',
         )
         detected = []
         calc_root = str(ctx.calc_dir) if getattr(ctx, 'calc_dir', None) else ''

@@ -18,7 +18,7 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | orca | build | guppy | delfin-co2-chain | auto (default: auto)
+#   delfin | delfin-recalc | orca | build | build2 | guppy | delfin-co2-chain | auto (default: auto)
 #   BUILD_MULTIPLICITY: Spin multiplicity for build mode (default: 1)
 #   GUPPY_RUNS: Number of GUPPY sampling runs (default: 20)
 #   GUPPY_CHARGE: Optional charge override for GUPPY (default: auto from SMILES)
@@ -520,6 +520,11 @@ case "$MODE" in
         "$DELFIN_PYTHON" -m delfin.build_up_complex input.txt --goat --directory builder --multiplicity "$BUILD_MULT" --verbose
         EXIT_CODE=$?
         ;;
+    build2)
+        echo "Starting delfin-build2 (ASE complex builder)..."
+        "$DELFIN_PYTHON" -m delfin.build_up_complex2 input.txt --directory builder2 --verbose
+        EXIT_CODE=$?
+        ;;
     guppy)
         GUPPY_RUNS="${GUPPY_RUNS:-20}"
         GUPPY_CHARGE="${GUPPY_CHARGE:-}"
@@ -581,7 +586,7 @@ case "$MODE" in
         ;;
     *)
         echo "ERROR: Unknown mode: $MODE"
-        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, build, guppy, delfin-co2-chain, auto"
+        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, build, build2, guppy, delfin-co2-chain, auto"
         EXIT_CODE=1
         ;;
 esac
