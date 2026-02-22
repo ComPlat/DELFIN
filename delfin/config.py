@@ -59,6 +59,7 @@ _CONTROL_KEY_ALIASES: Dict[str, str] = {
     "co2coordinationonoff": "co2_coordination",
 }
 _COLON_ASSIGNMENT_KEYS: Set[str] = {"co2_coordination", "co2_species_delta"}
+_STRING_ONLY_KEYS: Set[str] = {"smiles"}
 
 
 def _is_placeholder_value(value: Any) -> bool:
@@ -93,6 +94,12 @@ def _canonicalize_control_key(raw_key: str) -> str:
         return key
     alias = _normalize_control_key_for_alias_lookup(key)
     return _CONTROL_KEY_ALIASES.get(alias, key)
+
+
+def _strip_wrapping_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def _validate_orca_override_entries(config: Dict[str, Any]) -> List[str]:
@@ -351,6 +358,13 @@ def _parse_control_file(file_path: str, *, keep_steps_literal: bool, content: Op
 
         if keep_steps_literal and key in ('oxidation_steps', 'reduction_steps'):
             config[key] = value
+            idx += 1
+            continue
+
+        if _normalize_control_key_for_alias_lookup(key) in _STRING_ONLY_KEYS:
+            # Keep string-like keys as raw text so values like SMILES=[Ni](N)(N)
+            # are not mistaken for multi-line list literals.
+            config[key] = _strip_wrapping_quotes(value)
             idx += 1
             continue
 
