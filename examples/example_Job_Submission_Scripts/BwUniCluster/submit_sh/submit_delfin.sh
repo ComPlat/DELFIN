@@ -521,8 +521,25 @@ case "$MODE" in
         EXIT_CODE=$?
         ;;
     build2)
+        BUILD2_PARTICLES="${BUILD2_PARTICLES:-30}"
+        BUILD2_ITERATIONS="${BUILD2_ITERATIONS:-200}"
+        BUILD2_REFINE="${BUILD2_REFINE:-120}"
+        BUILD2_STRIDE="${BUILD2_TRAJECTORY_STRIDE:-10}"
         echo "Starting delfin-build2 (ASE complex builder)..."
-        "$DELFIN_PYTHON" -m delfin.build_up_complex2 input.txt --directory builder2 --verbose
+        echo "  Swarm particles:   $BUILD2_PARTICLES"
+        echo "  Swarm iterations:  $BUILD2_ITERATIONS"
+        echo "  Refine steps:      $BUILD2_REFINE"
+        echo "  Trajectory stride: $BUILD2_STRIDE"
+        "$DELFIN_PYTHON" -m delfin.build_up_complex2 input.txt \
+            --directory builder2 \
+            --swarm \
+            --swarm-particles "$BUILD2_PARTICLES" \
+            --swarm-iterations "$BUILD2_ITERATIONS" \
+            --swarm-refine-steps "$BUILD2_REFINE" \
+            --write-swarm-trajectory \
+            --trajectory-stride "$BUILD2_STRIDE" \
+            --write-candidate-files \
+            --verbose
         EXIT_CODE=$?
         ;;
     guppy)

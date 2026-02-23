@@ -17,7 +17,12 @@ import argparse
 import itertools
 import logging
 import math
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -266,8 +271,52 @@ def _coordination_templates(n_sites: int) -> List[Tuple[str, np.ndarray]]:
     return [(f"spherical_{n_sites}", np.array(points, dtype=float))]
 
 
+_EMPIRICAL_ML_DISTANCES: Dict[Tuple[str, str], float] = {
+    # Cadmium
+    ("Cd", "N"): 2.25, ("Cd", "O"): 2.25, ("Cd", "S"): 2.55,
+    ("Cd", "Se"): 2.65, ("Cd", "P"): 2.60, ("Cd", "Cl"): 2.55,
+    ("Cd", "Br"): 2.65,
+    # Zinc
+    ("Zn", "N"): 2.05, ("Zn", "O"): 1.98, ("Zn", "S"): 2.30,
+    ("Zn", "Se"): 2.40, ("Zn", "P"): 2.40, ("Zn", "Cl"): 2.30,
+    # Copper(II)
+    ("Cu", "N"): 2.00, ("Cu", "O"): 2.00, ("Cu", "S"): 2.30,
+    ("Cu", "Cl"): 2.25, ("Cu", "Br"): 2.35,
+    # Nickel
+    ("Ni", "N"): 1.90, ("Ni", "O"): 1.85, ("Ni", "S"): 2.20,
+    ("Ni", "P"): 2.20, ("Ni", "Cl"): 2.20,
+    # Cobalt
+    ("Co", "N"): 1.95, ("Co", "O"): 1.95, ("Co", "S"): 2.25,
+    ("Co", "P"): 2.25, ("Co", "Cl"): 2.25,
+    # Iron
+    ("Fe", "N"): 1.95, ("Fe", "O"): 1.95, ("Fe", "S"): 2.25,
+    ("Fe", "Cl"): 2.25,
+    # Manganese
+    ("Mn", "N"): 2.20, ("Mn", "O"): 2.15, ("Mn", "S"): 2.45,
+    ("Mn", "Cl"): 2.35,
+    # Platinum
+    ("Pt", "N"): 2.05, ("Pt", "O"): 2.05, ("Pt", "S"): 2.30,
+    ("Pt", "P"): 2.25, ("Pt", "Cl"): 2.30,
+    # Palladium
+    ("Pd", "N"): 2.05, ("Pd", "O"): 2.05, ("Pd", "S"): 2.30,
+    ("Pd", "P"): 2.25, ("Pd", "Cl"): 2.30,
+    # Ruthenium
+    ("Ru", "N"): 2.10, ("Ru", "O"): 2.05, ("Ru", "S"): 2.35,
+    ("Ru", "P"): 2.30, ("Ru", "Cl"): 2.35,
+    # Rhodium / Iridium
+    ("Rh", "N"): 2.10, ("Rh", "P"): 2.25, ("Rh", "Cl"): 2.35,
+    ("Ir", "N"): 2.10, ("Ir", "P"): 2.25, ("Ir", "Cl"): 2.35,
+}
+
+
 def _ideal_metal_ligand_distance(metal_symbol: str, donor_symbol: str) -> float:
-    """Simple idealized metal-donor distance from covalent radii."""
+    """Return the idealized metal–donor bond distance in Å.
+
+    Uses an empirical lookup table first; falls back to covalent-radii sum.
+    """
+    key = (metal_symbol, donor_symbol)
+    if key in _EMPIRICAL_ML_DISTANCES:
+        return _EMPIRICAL_ML_DISTANCES[key]
     z_metal = atomic_numbers.get(metal_symbol, 0)
     z_donor = atomic_numbers.get(donor_symbol, 0)
     r_metal = covalent_radii[z_metal] if z_metal > 0 else 1.40
@@ -280,6 +329,24 @@ def _get_covalent_radius(symbol: str) -> float:
     if z <= 0:
         return 0.80
     return float(covalent_radii[z])
+
+
+# Bondi Van der Waals radii (Å) – used for inter-fragment clash detection.
+_VDW_RADII: Dict[str, float] = {
+    "H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80,
+    "P": 1.80, "F": 1.47, "Cl": 1.75, "Br": 1.85, "I": 1.98,
+    "Se": 1.90, "Te": 2.06,
+    # Transition metals (Alvarez 2013 / Bondi extended)
+    "Cd": 1.58, "Zn": 1.39, "Cu": 1.40, "Ni": 1.63, "Co": 1.70,
+    "Fe": 1.56, "Mn": 1.97, "Cr": 1.66, "V": 1.79,
+    "Pt": 1.75, "Pd": 1.63, "Ru": 1.46, "Rh": 1.45, "Ir": 1.41,
+    "Ag": 1.72, "Au": 1.66, "Hg": 1.55,
+}
+
+
+def _get_vdw_radius(symbol: str) -> float:
+    """Return Van der Waals radius in Å (Bondi values; default C-like 1.70)."""
+    return _VDW_RADII.get(symbol, 1.70)
 
 
 def _extract_complex_components(
@@ -660,18 +727,23 @@ def _prepare_force_field_terms(
     ligand_starts: Sequence[int],
     fragment_ids: Sequence[int],
     anchored_pairs: Sequence[Tuple[int, int]],
+    metal_global_indices: Sequence[int] = (),
 ) -> Tuple[List[Tuple[int, int, float, float]], List[Tuple[int, np.ndarray, float]], List[Tuple[int, int, float, float]]]:
     """Build force-field terms for the elastic nudge optimization."""
     positions = atoms.get_positions()
     symbols = atoms.get_chemical_symbols()
 
+    # CRITICAL: use bond lengths from the ORIGINAL RDKit geometry, NOT from the
+    # current (PSO-distorted) positions.  If PSO compressed a C-H to 0.88 Å,
+    # using that as d0 would lock in the distortion through BFGS.
     bond_terms: List[Tuple[int, int, float, float]] = []
     for lig_idx, ligand in enumerate(ligands):
         start = ligand_starts[lig_idx]
+        orig_pos = ligand.atoms.get_positions()
         for i_local, j_local in ligand.bond_pairs:
             i_global = start + i_local
             j_global = start + j_local
-            d0 = float(np.linalg.norm(positions[j_global] - positions[i_global]))
+            d0 = float(np.linalg.norm(orig_pos[j_local] - orig_pos[i_local]))
             bond_terms.append((i_global, j_global, d0, 90.0))
 
     anchor_terms: List[Tuple[int, np.ndarray, float]] = []
@@ -680,7 +752,10 @@ def _prepare_force_field_terms(
         target = np.array(target_map[anchor_idx], dtype=float)
         anchor_terms.append((donor_global, target, 16.0))
 
+    # Collect donor global indices so they are excluded from metal repulsion below.
+    anchored_donor_set: set = {d for d, _m in anchored_pairs}
     anchored_pair_set = {tuple(sorted(pair)) for pair in anchored_pairs}
+    metal_set = set(metal_global_indices)
     repulsion_terms: List[Tuple[int, int, float, float]] = []
     n_atoms = len(atoms)
     for i in range(n_atoms):
@@ -689,16 +764,112 @@ def _prepare_force_field_terms(
                 continue
             if (i, j) in anchored_pair_set:
                 continue
-            r_i = _get_covalent_radius(symbols[i])
-            r_j = _get_covalent_radius(symbols[j])
-            cutoff = max(1.35, 0.95 * (r_i + r_j))
-            repulsion_terms.append((i, j, cutoff, 28.0))
+            vdw_i = _get_vdw_radius(symbols[i])
+            vdw_j = _get_vdw_radius(symbols[j])
+
+            i_is_metal = i in metal_set
+            j_is_metal = j in metal_set
+            if i_is_metal or j_is_metal:
+                # Metal ↔ non-donor repulsion: prevents ring C/H from pointing
+                # toward the metal (e.g. pyridyl ring oriented backwards).
+                # Donor atoms CAN approach legitimately → skip them here.
+                non_metal_idx = j if i_is_metal else i
+                if non_metal_idx in anchored_donor_set:
+                    continue  # donor atom — no repulsion from metal
+                # 85 % of VdW sum: Cd-C → ~2.79 Å, Cd-H → ~2.36 Å.
+                cutoff = max(2.0, 0.85 * (vdw_i + vdw_j))
+                repulsion_terms.append((i, j, cutoff, 60.0))
+            else:
+                # Standard inter-ligand repulsion.
+                # 65 % of VdW sum: C-C → 2.21 Å, H-C → 1.89 Å, H-H → 1.56 Å.
+                cutoff = max(1.5, 0.65 * (vdw_i + vdw_j))
+                repulsion_terms.append((i, j, cutoff, 35.0))
 
     return bond_terms, anchor_terms, repulsion_terms
 
 
+def _check_topology_integrity(
+    atoms: Atoms,
+    fragment_ids: Sequence[int],
+    ligands: Sequence[LigandInfo],
+    ligand_starts: Sequence[int],
+    metal_global_indices: Sequence[int],
+    anchored_pairs: Sequence[Tuple[int, int]],
+) -> Tuple[bool, str]:
+    """Verify that no inter-fragment "bonds" have formed and intra-ligand geometry is intact.
+
+    Returns ``(ok, reason)`` where *ok* is True when the structure is valid.
+    A candidate is rejected when:
+
+    * Any two atoms from **different non-metal fragments** are within the
+      covalent bonding distance (0.85 × sum of covalent radii) – this would
+      indicate that ligands have "reacted" with each other.
+    * Any intra-ligand bond has stretched to more than 1.6 × its original
+      length – indicating topology corruption during BFGS.
+
+    Metal ↔ donor bonds are explicitly allowed (they are in *anchored_pairs*).
+    """
+    positions = atoms.get_positions()
+    symbols = atoms.get_chemical_symbols()
+    metal_set = set(metal_global_indices)
+    anchored_set = {tuple(sorted(p)) for p in anchored_pairs}
+
+    # 1. Inter-ligand covalent contact check.
+    n = len(atoms)
+    for i in range(n):
+        if i in metal_set:
+            continue
+        for j in range(i + 1, n):
+            if j in metal_set:
+                continue
+            if fragment_ids[i] == fragment_ids[j]:
+                continue
+            if tuple(sorted((i, j))) in anchored_set:
+                continue
+            dist = float(np.linalg.norm(positions[j] - positions[i]))
+            bond_cutoff = 0.85 * (_get_covalent_radius(symbols[i]) + _get_covalent_radius(symbols[j]))
+            if dist < bond_cutoff:
+                return (
+                    False,
+                    f"inter-ligand bond formed: {symbols[i]}[{i}]-{symbols[j]}[{j}] "
+                    f"at {dist:.3f} Å (cutoff {bond_cutoff:.3f} Å)",
+                )
+
+    # 2. Intra-ligand bond distortion check (stretch AND compress).
+    for lig_idx, ligand in enumerate(ligands):
+        start = ligand_starts[lig_idx]
+        orig_pos = ligand.atoms.get_positions()
+        curr_pos = positions[start : start + len(ligand.atoms)]
+        for i_local, j_local in ligand.bond_pairs:
+            orig_d = float(np.linalg.norm(orig_pos[j_local] - orig_pos[i_local]))
+            curr_d = float(np.linalg.norm(curr_pos[j_local] - curr_pos[i_local]))
+            if orig_d < 0.1:
+                continue
+            i_g = start + i_local
+            j_g = start + j_local
+            if curr_d > 1.6 * orig_d:
+                return (
+                    False,
+                    f"intra-ligand bond stretched: {symbols[i_g]}[{i_g}]-{symbols[j_g]}[{j_g}] "
+                    f"{orig_d:.3f}→{curr_d:.3f} Å (>1.6×)",
+                )
+            if curr_d < 0.65 * orig_d:
+                return (
+                    False,
+                    f"intra-ligand bond compressed: {symbols[i_g]}[{i_g}]-{symbols[j_g]}[{j_g}] "
+                    f"{orig_d:.3f}→{curr_d:.3f} Å (<0.65×)",
+                )
+
+    return True, "OK"
+
+
 def _compute_clash_score(atoms: Atoms, fragment_ids: Sequence[int]) -> float:
-    """Lower is better; sums only significant inter-fragment overlaps."""
+    """Lower is better; sums inter-fragment VdW overlaps (75 % of VdW sum cutoff).
+
+    Using Van-der-Waals radii ensures realistic detection: an H···C contact
+    at 1.4 Å (impossible non-bonded) is correctly flagged, whereas the old
+    covalent-radius cutoff (~1.0 Å) would have missed it entirely.
+    """
     positions = atoms.get_positions()
     symbols = atoms.get_chemical_symbols()
     score = 0.0
@@ -708,10 +879,545 @@ def _compute_clash_score(atoms: Atoms, fragment_ids: Sequence[int]) -> float:
             if fragment_ids[i] == fragment_ids[j]:
                 continue
             dist = float(np.linalg.norm(positions[j] - positions[i]))
-            cutoff = 0.90 * (_get_covalent_radius(symbols[i]) + _get_covalent_radius(symbols[j]))
+            cutoff = 0.75 * (_get_vdw_radius(symbols[i]) + _get_vdw_radius(symbols[j]))
             if dist < cutoff:
                 score += cutoff - max(dist, 1.0e-8)
     return float(score)
+
+
+# ── xTB single-point ranking ─────────────────────────────────────────────────
+
+
+def _xtb_singlepoint(
+    atoms: Atoms,
+    charge: int,
+    multiplicity: int,
+    xtb_binary: str,
+    nthreads: int = 1,
+    gfn_level: int = 2,
+) -> Optional[float]:
+    """Run one xTB single-point and return the total energy in Hartree.
+
+    Returns *None* if xTB fails or the binary is not found.
+    """
+    uhf = multiplicity - 1  # number of unpaired electrons
+    with tempfile.TemporaryDirectory(prefix="delfin_xtb_") as tmpdir:
+        xyz_path = os.path.join(tmpdir, "mol.xyz")
+        ase_write(xyz_path, atoms, format="xyz")
+        cmd = [
+            xtb_binary, "mol.xyz",
+            "--sp", "--gfn", str(gfn_level),
+            "--chrg", str(charge),
+            "--uhf", str(uhf),
+            "--norestart",
+        ]
+        env = os.environ.copy()
+        env["OMP_NUM_THREADS"] = str(nthreads)
+        env["MKL_NUM_THREADS"] = str(nthreads)
+        env["XTBPATH"] = os.path.dirname(xtb_binary)
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                cwd=tmpdir,
+                env=env,
+            )
+            for line in result.stdout.splitlines():
+                if "TOTAL ENERGY" in line:
+                    parts = line.split()
+                    for idx, tok in enumerate(parts):
+                        if tok == "ENERGY" and idx + 1 < len(parts):
+                            try:
+                                return float(parts[idx + 1])
+                            except ValueError:
+                                pass
+        except Exception:
+            pass
+    return None
+
+
+def _xtb_optimize(
+    atoms: "Atoms",
+    charge: int,
+    multiplicity: int,
+    xtb_binary: str,
+    fixed_indices: Optional[List[int]] = None,
+    opt_level: str = "loose",
+    gfn_level: int = 2,
+    nthreads: int = 1,
+) -> Optional[Tuple["Atoms", float]]:
+    """Run xTB geometry optimization; return (optimized_atoms, energy_Ha) or None.
+
+    The metal atoms listed in *fixed_indices* are constrained to their input
+    positions via xTB's ``$fix`` block, preserving the coordination geometry
+    while allowing the ligands to flex/deform freely.  This is the key
+    advantage over BFGS: xTB knows about chemical bonding, so intra-ligand
+    topology is automatically preserved and no inter-ligand bonds can form.
+    """
+    from ase.io import read as ase_read
+
+    uhf = multiplicity - 1
+    with tempfile.TemporaryDirectory(prefix="delfin_xtbopt_") as tmpdir:
+        xyz_path = os.path.join(tmpdir, "mol.xyz")
+        ase_write(xyz_path, atoms, format="xyz")
+
+        cmd = [
+            xtb_binary, "mol.xyz",
+            "--opt", opt_level,
+            "--gfn", str(gfn_level),
+            "--chrg", str(charge),
+            "--uhf", str(uhf),
+            "--norestart",
+        ]
+
+        # Fix metal positions via xTB input file (atoms are 1-indexed in xTB).
+        if fixed_indices:
+            input_path = os.path.join(tmpdir, "xtb.inp")
+            atom_list = ",".join(str(i + 1) for i in sorted(fixed_indices))
+            with open(input_path, "w", encoding="utf-8") as fh:
+                fh.write(f"$fix\n  atoms: {atom_list}\n$end\n")
+            cmd += ["--input", "xtb.inp"]
+
+        env = os.environ.copy()
+        env["OMP_NUM_THREADS"] = str(nthreads)
+        env["MKL_NUM_THREADS"] = str(nthreads)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                cwd=tmpdir,
+                env=env,
+            )
+            opt_xyz = os.path.join(tmpdir, "xtbopt.xyz")
+            if not os.path.exists(opt_xyz):
+                logger.debug(
+                    "xTB opt: xtbopt.xyz not found; stderr tail: %s",
+                    result.stderr[-400:] if result.stderr else "",
+                )
+                return None
+            opt_atoms = ase_read(opt_xyz)
+            # Parse total energy from xTB stdout.
+            energy: Optional[float] = None
+            for line in result.stdout.splitlines():
+                if "TOTAL ENERGY" in line:
+                    parts = line.split()
+                    for tok_idx, tok in enumerate(parts):
+                        if tok == "ENERGY" and tok_idx + 1 < len(parts):
+                            try:
+                                energy = float(parts[tok_idx + 1])
+                            except ValueError:
+                                pass
+            if energy is None:
+                logger.debug("xTB opt: could not parse energy from stdout.")
+                return None
+            return opt_atoms, energy
+        except Exception as exc:
+            logger.debug("xTB opt exception: %s", exc)
+            return None
+
+
+def _rank_candidates_by_xtb(
+    candidates: List["CandidateResult"],
+    total_charge: int,
+    multiplicity: int,
+    xtb_binary: str,
+    n_parallel: int,
+    gfn_level: int = 2,
+) -> List["CandidateResult"]:
+    """Re-rank *candidates* using parallel xTB single-points.
+
+    Candidates for which xTB fails keep their original (elastic) energy.
+    """
+    logger.info(
+        "Running xTB GFN%d single-points on %d candidates (%d parallel)...",
+        gfn_level, len(candidates), n_parallel,
+    )
+
+    def _score(item: Tuple[int, "CandidateResult"]) -> Tuple[int, Optional[float]]:
+        idx, cand = item
+        e = _xtb_singlepoint(
+            cand.atoms, charge=total_charge, multiplicity=multiplicity,
+            xtb_binary=xtb_binary, gfn_level=gfn_level,
+        )
+        return idx, e
+
+    xtb_energies: Dict[int, Optional[float]] = {}
+    with ThreadPoolExecutor(max_workers=max(1, n_parallel)) as pool:
+        futures = {pool.submit(_score, (i, c)): i for i, c in enumerate(candidates)}
+        for fut in as_completed(futures):
+            idx, e = fut.result()
+            xtb_energies[idx] = e
+            if e is not None:
+                logger.debug("xTB candidate %d: %.8f Ha", idx, e)
+            else:
+                logger.debug("xTB candidate %d: failed, keeping elastic energy", idx)
+
+    # Build re-ranked candidate list.
+    result = []
+    for i, cand in enumerate(candidates):
+        e = xtb_energies.get(i)
+        if e is not None:
+            result.append(CandidateResult(
+                tag=cand.tag, atoms=cand.atoms,
+                energy=e, clash_score=cand.clash_score,
+            ))
+        else:
+            result.append(cand)
+
+    n_ok = sum(1 for e in xtb_energies.values() if e is not None)
+    logger.info("xTB: %d/%d successful", n_ok, len(candidates))
+    return result
+
+
+# ── Swarm / Particle-Swarm-Optimisation (PSO) ligand placer ─────────────────
+
+
+def _rvec_to_matrix(rvec: np.ndarray) -> np.ndarray:
+    """Rodrigues rotation vector → 3×3 rotation matrix."""
+    angle = float(np.linalg.norm(rvec))
+    if angle < 1.0e-12:
+        return np.eye(3, dtype=float)
+    return _axis_angle_rotation(rvec / angle, angle)
+
+
+def _matrix_to_rvec(R: np.ndarray) -> np.ndarray:
+    """3×3 rotation matrix → Rodrigues rotation vector (inverse Rodrigues)."""
+    cos_t = max(-1.0, min(1.0, (float(R[0, 0] + R[1, 1] + R[2, 2]) - 1.0) / 2.0))
+    angle = math.acos(cos_t)
+    if angle < 1.0e-12:
+        return np.zeros(3, dtype=float)
+    sin_t = math.sin(angle)
+    if abs(sin_t) < 1.0e-8:
+        # 180° rotation: extract axis from diagonal of R = 2*n*nᵀ - I.
+        xx = max(0.0, (R[0, 0] + 1.0) / 2.0)
+        yy = max(0.0, (R[1, 1] + 1.0) / 2.0)
+        zz = max(0.0, (R[2, 2] + 1.0) / 2.0)
+        x, y, z = math.sqrt(xx), math.sqrt(yy), math.sqrt(zz)
+        if R[0, 1] < 0.0:
+            y = -y
+        if R[0, 2] < 0.0:
+            z = -z
+        axis = np.array([x, y, z], dtype=float)
+        n = float(np.linalg.norm(axis))
+        axis = axis / n if n > 1.0e-12 else np.array([1.0, 0.0, 0.0])
+        return axis * angle
+    axis = np.array(
+        [R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]], dtype=float
+    )
+    axis /= 2.0 * sin_t
+    return axis * angle
+
+
+def _apply_rigid_pose(
+    base_positions: np.ndarray,
+    base_com: np.ndarray,
+    tvec: np.ndarray,
+    rvec: np.ndarray,
+) -> np.ndarray:
+    """Rotate *base_positions* around *base_com* by *rvec*, then translate by *tvec*."""
+    R = _rvec_to_matrix(rvec)
+    return (base_positions - base_com) @ R.T + base_com + tvec
+
+
+@dataclass
+class SwarmParticle:
+    """One PSO particle = rigid-body poses for all ligands simultaneously.
+
+    ``poses[k]`` = ``[tx, ty, tz, rx, ry, rz]`` for ligand *k*, where
+    columns 0-2 are the COM translation and columns 3-5 are the Rodrigues
+    rotation vector (axis × angle).
+    """
+
+    poses: np.ndarray      # shape (n_lig, 6)
+    velocity: np.ndarray   # shape (n_lig, 6)
+    pbest_poses: np.ndarray
+    pbest_score: float = float("inf")
+
+
+def _pso_fitness(
+    poses: np.ndarray,
+    base_pos_list: List[np.ndarray],
+    base_coms: List[np.ndarray],
+    vdw_radii_list: List[np.ndarray],
+    anchors: Sequence[AnchorSpec],
+    target_map: Dict[int, np.ndarray],
+    w_anchor: float = 4.0,
+    w_clash: float = 6.0,
+) -> float:
+    """Rigid-body PSO fitness = anchor distance² + inter-ligand VdW clash penalty.
+
+    Clash cutoffs use 75 % of the sum of Van-der-Waals radii so that real
+    steric overlaps (e.g. H···C < 2.2 Å) are strongly penalised.
+    """
+    n_lig = len(base_pos_list)
+    world_pos = [
+        _apply_rigid_pose(base_pos_list[k], base_coms[k], poses[k, :3], poses[k, 3:])
+        for k in range(n_lig)
+    ]
+
+    score = 0.0
+    for anchor_idx, anchor in enumerate(anchors):
+        d = world_pos[anchor.ligand_idx][anchor.donor_local_idx] - target_map[anchor_idx]
+        score += w_anchor * float(np.dot(d, d))
+
+    for i in range(n_lig):
+        for j in range(i + 1, n_lig):
+            diff_ij = world_pos[i][:, None, :] - world_pos[j][None, :, :]  # (Ni,Nj,3)
+            dists = np.linalg.norm(diff_ij, axis=2)                         # (Ni,Nj)
+            # 75 % of VdW contact: C-C → 2.55 Å, H-C → 2.18 Å, H-H → 1.80 Å
+            cutoffs = 0.75 * (vdw_radii_list[i][:, None] + vdw_radii_list[j][None, :])
+            score += w_clash * float(np.maximum(0.0, cutoffs - dists).sum())
+
+    return score
+
+
+def _run_pso(
+    ligands: Sequence[LigandInfo],
+    anchors: Sequence[AnchorSpec],
+    target_map: Dict[int, np.ndarray],
+    metal_positions: np.ndarray,
+    n_particles: int = 20,
+    n_iter: int = 150,
+    c1: float = 1.50,
+    c2: float = 1.50,
+    record_trajectory: bool = False,
+    trajectory_stride: int = 10,
+) -> Tuple[np.ndarray, float, List[np.ndarray]]:
+    """Particle Swarm Optimisation over rigid-body ligand poses.
+
+    Each particle represents one complete assignment of 6-DOF rigid-body
+    poses to all ligands simultaneously.  The fitness combines the squared
+    distance of each donor atom to its coordination target plus a soft
+    inter-ligand VdW clash penalty.  Ligand internal geometry is preserved
+    exactly (rigid-body moves only), so intra-ligand topology cannot be
+    corrupted and ligands cannot react with each other.
+
+    Returns ``(best_poses, best_score, trajectory)`` where *best_poses* has
+    shape ``(n_lig, 6)`` and *trajectory* is a list of gbest_poses snapshots
+    (empty when *record_trajectory* is False).
+    """
+    n_lig = len(ligands)
+    base_pos_list = [lig.atoms.get_positions().copy() for lig in ligands]
+    base_coms = [np.mean(bp, axis=0) for bp in base_pos_list]
+    # Use VdW radii (not covalent) so that non-bonded clashes are detected at
+    # realistic distances (H-C clash kicks in at ~2.2 Å, not 1.0 Å).
+    vdw_radii_list = [
+        np.array([_get_vdw_radius(s) for s in lig.atoms.get_chemical_symbols()])
+        for lig in ligands
+    ]
+
+    # Group anchor indices by ligand for initial-pose computation.
+    anchors_by_lig: Dict[int, List[Tuple[int, AnchorSpec]]] = {}
+    for a_idx, anchor in enumerate(anchors):
+        anchors_by_lig.setdefault(anchor.ligand_idx, []).append((a_idx, anchor))
+
+    # Ideal initial pose per ligand.
+    # ≥2 donors → orthogonal Procrustes (aligns ALL donors to their targets).
+    # 1 donor  → orient donor-to-COM along site direction.
+    ideal_tvecs: List[np.ndarray] = []
+    ideal_rvecs: List[np.ndarray] = []
+    for k in range(n_lig):
+        lig_a = anchors_by_lig.get(k, [])
+        if not lig_a:
+            ideal_tvecs.append(np.zeros(3))
+            ideal_rvecs.append(np.zeros(3))
+            continue
+
+        com = base_coms[k]
+
+        if len(lig_a) >= 2:
+            # Orthogonal Procrustes: minimise sum |R(D_i-COM)+COM+t - T_i|²
+            donors_body = np.array(
+                [base_pos_list[k][a.donor_local_idx] for _, a in lig_a], dtype=float
+            )  # (n, 3) positions in body frame
+            targets_world = np.array(
+                [target_map[a_idx] for a_idx, _ in lig_a], dtype=float
+            )  # (n, 3) coordination targets
+            # Centre both sets around their means.
+            D_c = donors_body.mean(axis=0)
+            T_c = targets_world.mean(axis=0)
+            B = donors_body - D_c          # centred body donors
+            T = targets_world - T_c        # centred targets
+            # Optimal rotation via SVD of cross-covariance (body → world).
+            # We need R s.t. B @ R.T ≈ T  →  cross-cov H = B.T @ T
+            H = B.T @ T
+            U, _S, Vt = np.linalg.svd(H)
+            R = Vt.T @ U.T
+            # Correct reflection (det should be +1).
+            if float(np.linalg.det(R)) < 0.0:
+                Vt[-1, :] *= -1.0
+                R = Vt.T @ U.T
+            rvec = _matrix_to_rvec(R)
+            # tvec: places centroid of rotated donors at centroid of targets.
+            # world(D_i) = (D_i - COM) @ R.T + COM + tvec
+            # mean_world = (D_c - COM) @ R.T + COM + tvec = T_c
+            rotated_D_c = R @ (D_c - com) + com
+            tvec = T_c - rotated_D_c
+        else:
+            # Single donor: orient so donor→COM points along site direction.
+            a_idx, anchor = lig_a[0]
+            target = target_map[a_idx]
+            metal_pos = metal_positions[anchor.metal_idx]
+            donor_base = base_pos_list[k][anchor.donor_local_idx]
+            site_dir = _normalize(target - metal_pos)
+            donor_to_com = _normalize(com - donor_base)
+            R = _rotation_matrix_from_vectors(donor_to_com, site_dir)
+            rvec = _matrix_to_rvec(R)
+            rotated_donor = R @ (donor_base - com) + com
+            tvec = target - rotated_donor
+
+        ideal_tvecs.append(tvec)
+        ideal_rvecs.append(rvec)
+
+    # Unit-vector pointing FROM metal TOWARD each ligand's coordination centroid.
+    # Used to place particles "beyond" the target so they approach from afar.
+    approach_dirs: List[np.ndarray] = []
+    for k in range(n_lig):
+        lig_a = anchors_by_lig.get(k, [])
+        if not lig_a:
+            approach_dirs.append(np.array([1.0, 0.0, 0.0]))
+            continue
+        targets_world = np.array([target_map[a_idx] for a_idx, _ in lig_a], dtype=float)
+        T_c = targets_world.mean(axis=0)
+        metal_pos_k = metal_positions[lig_a[0][1].metal_idx]
+        approach_dirs.append(_normalize(T_c - metal_pos_k))
+
+    # v_max is scaled to allow particles to traverse the full approach distance
+    # (starting distance + ideal-placement distance) in a reasonable number of steps.
+    START_FAR_DIST = 8.0  # Å beyond the coordination target (away from metal)
+    max_disp = max(
+        (float(np.linalg.norm(ideal_tvecs[k])) for k in range(n_lig)),
+        default=2.0,
+    )
+    v_max = max(1.5, 0.40 * (max_disp + START_FAR_DIST))
+
+    rng = np.random.default_rng()
+
+    def _make_particle(far_dist: float, noise_lateral: float, noise_r: float) -> SwarmParticle:
+        """Create one particle with ligands placed *far_dist* Å beyond their targets.
+
+        All particles start far from the metal so the trajectory shows a genuine
+        collective approach from afar toward the coordination sites.
+        """
+        poses = np.zeros((n_lig, 6))
+        for k in range(n_lig):
+            # Place ligand beyond coordination site along approach direction;
+            # add lateral scatter so particles don't all start at identical spots.
+            lateral = rng.standard_normal(3) * noise_lateral
+            poses[k, :3] = ideal_tvecs[k] + approach_dirs[k] * far_dist + lateral
+            # Keep Procrustes/single-donor orientation but add small rotation noise.
+            poses[k, 3:] = ideal_rvecs[k] + rng.standard_normal(3) * noise_r
+        vel = rng.standard_normal(poses.shape) * (v_max * 0.1)
+        sc = _pso_fitness(poses, base_pos_list, base_coms, vdw_radii_list, anchors, target_map)
+        return SwarmParticle(poses=poses, velocity=vel, pbest_poses=poses.copy(), pbest_score=sc)
+
+    # All particles start FAR from the metal; minimum 5 Å beyond the coordination
+    # target so that gbest at t=0 is genuinely far and the trajectory shows the
+    # collective approach from afar.  Never placed at the ideal (target) position.
+    far_schedule   = [10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 9.0, 8.0, 7.0, 6.0,
+                       5.0, 10.0, 7.0, 6.0, 8.0, 9.0, 5.0, 7.0, 6.0, 8.0]
+    lat_schedule   = [0.5,  0.8,  1.0, 1.2, 1.0, 0.8, 1.2, 1.0, 0.8, 0.6,
+                       0.5,  1.0,  1.2, 0.8, 1.0, 1.2, 0.6, 0.8, 1.0, 0.5]
+    rot_schedule   = [0.30, 0.40, 0.35, 0.50, 0.40, 0.30, 0.45, 0.35, 0.25, 0.40,
+                       0.30, 0.50, 0.35, 0.25, 0.40, 0.45, 0.20, 0.35, 0.30, 0.40]
+    particles: List[SwarmParticle] = []
+    for i in range(n_particles):
+        idx = i % len(far_schedule)
+        particles.append(_make_particle(far_schedule[idx], lat_schedule[idx], rot_schedule[idx]))
+
+    gbest_score = min(p.pbest_score for p in particles)
+    gbest_poses = min(particles, key=lambda p: p.pbest_score).pbest_poses.copy()
+
+    trajectory: List[np.ndarray] = []
+    if record_trajectory:
+        trajectory.append(gbest_poses.copy())
+
+    w = 0.80
+    w_decay = (0.35 / 0.80) ** (1.0 / max(1, n_iter))
+
+    for _it in range(n_iter):
+        # Evaluate and update personal bests.
+        for p in particles:
+            sc = _pso_fitness(p.poses, base_pos_list, base_coms, vdw_radii_list, anchors, target_map)
+            if sc < p.pbest_score:
+                p.pbest_score = sc
+                p.pbest_poses = p.poses.copy()
+            if sc < gbest_score:
+                gbest_score = sc
+                gbest_poses = p.poses.copy()
+
+        if gbest_score < 1.0e-3:
+            break  # well converged
+
+        # Record swarm best every trajectory_stride iterations.
+        if record_trajectory and (_it + 1) % trajectory_stride == 0:
+            trajectory.append(gbest_poses.copy())
+
+        # Velocity and position update.
+        for p in particles:
+            r1 = rng.random((n_lig, 6))
+            r2 = rng.random((n_lig, 6))
+            p.velocity = (
+                w * p.velocity
+                + c1 * r1 * (p.pbest_poses - p.poses)
+                + c2 * r2 * (gbest_poses - p.poses)
+            )
+            p.velocity = np.clip(p.velocity, -v_max, v_max)
+            p.poses += p.velocity
+
+        w *= w_decay
+
+    # Always record final frame.
+    if record_trajectory:
+        trajectory.append(gbest_poses.copy())
+
+    return gbest_poses, gbest_score, trajectory
+
+
+def _poses_to_candidate_geometry(
+    ligands: Sequence[LigandInfo],
+    metals: Sequence[MetalInfo],
+    metal_positions: np.ndarray,
+    poses: np.ndarray,
+) -> Tuple[Atoms, List[int], List[int], List[int], List[Tuple[int, int]]]:
+    """Assemble an :class:`~ase.Atoms` from PSO-optimised rigid-body poses."""
+    base_pos_list = [lig.atoms.get_positions().copy() for lig in ligands]
+    base_coms = [np.mean(bp, axis=0) for bp in base_pos_list]
+
+    symbols: List[str] = []
+    positions_out: List[np.ndarray] = []
+    fragment_ids: List[int] = []
+    metal_global_indices: List[int] = []
+    ligand_starts: List[int] = []
+    anchored_pairs: List[Tuple[int, int]] = []
+
+    for i, metal in enumerate(metals):
+        metal_global_indices.append(len(symbols))
+        symbols.append(metal.symbol)
+        positions_out.append(np.array(metal_positions[i], dtype=float))
+        fragment_ids.append(i)
+
+    for lig_idx, ligand in enumerate(ligands):
+        world_pos = _apply_rigid_pose(
+            base_pos_list[lig_idx], base_coms[lig_idx],
+            poses[lig_idx, :3], poses[lig_idx, 3:],
+        )
+        lig_start = len(symbols)
+        ligand_starts.append(lig_start)
+        for sym, pos in zip(ligand.atoms.get_chemical_symbols(), world_pos):
+            symbols.append(sym)
+            positions_out.append(pos)
+            fragment_ids.append(len(metals) + lig_idx)
+        for donor_local_idx, metal_idx in ligand.donor_links:
+            anchored_pairs.append((lig_start + donor_local_idx, metal_global_indices[metal_idx]))
+
+    atoms = Atoms(symbols=symbols, positions=np.array(positions_out, dtype=float))
+    return atoms, fragment_ids, metal_global_indices, ligand_starts, anchored_pairs
 
 
 def _write_xyz_and_start(atoms: Atoms, parent_dir: Path, xyz_name: str) -> None:
@@ -733,6 +1439,21 @@ def run_build_up2(
     max_steps: int = 320,
     fmax: float = 0.08,
     write_candidates: bool = False,
+    use_swarm: bool = True,
+    swarm_particles: int = 20,
+    swarm_iterations: int = 150,
+    swarm_refine_steps: int = 80,
+    use_xtb: bool = False,
+    xtb_binary: str = "xtb",
+    xtb_charge: int = 0,
+    xtb_multiplicity: int = 1,
+    xtb_parallel: int = 4,
+    xtb_gfn: int = 2,
+    use_xtb_opt: bool = False,
+    xtb_opt_level: str = "loose",
+    xtb_handoff_dist: float = 3.5,
+    write_swarm_trajectory: bool = False,
+    trajectory_stride: int = 10,
 ) -> bool:
     """Run BUILD COMPLEX2 workflow."""
     if not RDKIT_AVAILABLE:
@@ -749,6 +1470,25 @@ def run_build_up2(
         return False
     assert metals is not None
     assert raw_ligands is not None
+
+    # Auto-detect total formal charge from SMILES for xTB calculations.
+    # The user-supplied xtb_charge=0 (default) is overridden when SMILES
+    # contains explicit charges (e.g. [Cd+2], deprotonated ligand atoms).
+    _smiles_mol = Chem.MolFromSmiles(smiles, sanitize=False)
+    if _smiles_mol is not None:
+        _auto_charge = sum(a.GetFormalCharge() for a in _smiles_mol.GetAtoms())
+        if xtb_charge == 0 and _auto_charge != 0:
+            logger.info(
+                "Auto-detected total formal charge %+d from SMILES; "
+                "using for xTB (override with --xtb-charge).",
+                _auto_charge,
+            )
+            xtb_charge = _auto_charge
+        elif xtb_charge != 0 and xtb_charge != _auto_charge:
+            logger.warning(
+                "Manual xtb_charge=%+d differs from SMILES formal charge %+d.",
+                xtb_charge, _auto_charge,
+            )
 
     # Keep only coordinating ligands (donor links explicitly present in SMILES).
     coordinating_raw_ligands = [entry for entry in raw_ligands if entry[1]]
@@ -830,23 +1570,80 @@ def run_build_up2(
 
     summary_lines = ["#candidate\ttag\tenergy\tclash"]
     best: Optional[CandidateResult] = None
+    best_by_tag: Dict[str, CandidateResult] = {}  # best per coordination topology
+    all_candidates: List[CandidateResult] = []    # for optional xTB re-ranking
 
     for cand_idx, (tag, target_map) in enumerate(target_sets, start=1):
-        (
-            atoms,
-            fragment_ids,
-            metal_global_indices,
-            ligand_starts,
-            anchored_pairs,
-            _,
-        ) = _build_candidate_geometry(
-            metals=metals,
-            ligands=ligands,
-            anchors=anchors,
-            target_map=target_map,
-            metal_positions=metal_positions,
-        )
+        swarm_used = False
 
+        # ── PSO rigid-body placement ──────────────────────────────────────────
+        if use_swarm:
+            try:
+                best_poses, pso_score, traj = _run_pso(
+                    ligands=ligands,
+                    anchors=anchors,
+                    target_map=target_map,
+                    metal_positions=metal_positions,
+                    n_particles=swarm_particles,
+                    n_iter=swarm_iterations,
+                    record_trajectory=write_swarm_trajectory,
+                    trajectory_stride=trajectory_stride,
+                )
+                logger.debug(
+                    "Candidate %d PSO converged with score %.6f", cand_idx, pso_score
+                )
+                (
+                    atoms,
+                    fragment_ids,
+                    metal_global_indices,
+                    ligand_starts,
+                    anchored_pairs,
+                ) = _poses_to_candidate_geometry(
+                    ligands=ligands,
+                    metals=metals,
+                    metal_positions=metal_positions,
+                    poses=best_poses,
+                )
+                # Write PSO trajectory as multi-frame XYZ (one frame per stride).
+                if write_swarm_trajectory and traj:
+                    traj_path = builder_dir / f"swarm_traj_{cand_idx:03d}.xyz"
+                    with open(traj_path, "w", encoding="utf-8") as traj_fh:
+                        for frame_poses in traj:
+                            frame_atoms, _, _, _, _ = _poses_to_candidate_geometry(
+                                ligands=ligands,
+                                metals=metals,
+                                metal_positions=metal_positions,
+                                poses=frame_poses,
+                            )
+                            ase_write(traj_fh, frame_atoms, format="xyz")
+                swarm_used = True
+            except Exception as exc:
+                logger.warning(
+                    "Candidate %d PSO failed (%s); falling back to BFGS.", cand_idx, exc
+                )
+
+        # ── Fallback: original geometry assembly ──────────────────────────────
+        if not swarm_used:
+            (
+                atoms,
+                fragment_ids,
+                metal_global_indices,
+                ligand_starts,
+                anchored_pairs,
+                _,
+            ) = _build_candidate_geometry(
+                metals=metals,
+                ligands=ligands,
+                anchors=anchors,
+                target_map=target_map,
+                metal_positions=metal_positions,
+            )
+
+        # ── BFGS refinement (always first — topology-preserving elastic FF) ─────
+        # Bond spring terms keep intra-ligand topology intact; anchor terms pull
+        # donors to coordination targets; repulsion prevents inter-ligand clashes.
+        # This MUST run before xTB so that xTB starts from a clean geometry.
+        refine_steps = swarm_refine_steps if swarm_used else max_steps
         bond_terms, anchor_terms, repulsion_terms = _prepare_force_field_terms(
             atoms=atoms,
             ligands=ligands,
@@ -855,6 +1652,7 @@ def run_build_up2(
             ligand_starts=ligand_starts,
             fragment_ids=fragment_ids,
             anchored_pairs=anchored_pairs,
+            metal_global_indices=metal_global_indices,
         )
 
         atoms.calc = ElasticNudgeCalculator(
@@ -866,11 +1664,79 @@ def run_build_up2(
 
         try:
             dyn = BFGS(atoms, logfile=None)
-            dyn.run(fmax=fmax, steps=max_steps)
+            dyn.run(fmax=fmax, steps=refine_steps)
             energy = float(atoms.get_potential_energy())
         except Exception as exc:
-            logger.warning("Candidate %d failed during ASE optimization: %s", cand_idx, exc)
+            logger.warning("Candidate %d BFGS refinement failed: %s", cand_idx, exc)
             continue
+
+        # ── Topology integrity check after BFGS ──────────────────────────────
+        topo_ok, topo_reason = _check_topology_integrity(
+            atoms=atoms,
+            fragment_ids=fragment_ids,
+            ligands=ligands,
+            ligand_starts=ligand_starts,
+            metal_global_indices=metal_global_indices,
+            anchored_pairs=anchored_pairs,
+        )
+        if not topo_ok:
+            logger.warning(
+                "Candidate %d rejected (topology violation): %s", cand_idx, topo_reason
+            )
+            summary_lines.append(f"{cand_idx}\t{tag}\tREJECTED\t{topo_reason}")
+            continue
+
+        # ── Optional xTB geometry polish (runs AFTER BFGS gives clean topology) ─
+        # BFGS guarantees a valid starting geometry; xTB can then flex multidentate
+        # ligands and let them deform to reach all coordination sites properly.
+        if use_xtb_opt:
+            _bfgs_pos = atoms.get_positions()
+            _max_dd = 0.0
+            for _ai, _anch in enumerate(anchors):
+                _dg = ligand_starts[_anch.ligand_idx] + _anch.donor_local_idx
+                _tgt = np.array(target_map[_ai], dtype=float)
+                _max_dd = max(_max_dd, float(np.linalg.norm(_bfgs_pos[_dg] - _tgt)))
+            if _max_dd < xtb_handoff_dist:
+                _xtb_res = _xtb_optimize(
+                    atoms=atoms,
+                    charge=xtb_charge,
+                    multiplicity=xtb_multiplicity,
+                    xtb_binary=xtb_binary,
+                    fixed_indices=list(metal_global_indices),
+                    opt_level=xtb_opt_level,
+                    gfn_level=xtb_gfn,
+                )
+                if _xtb_res is not None:
+                    _xtb_atoms, _xtb_e = _xtb_res
+                    # Verify xTB didn't break the topology.
+                    _atoms_test = atoms.copy()
+                    _atoms_test.set_positions(_xtb_atoms.get_positions())
+                    _topo2_ok, _topo2_reason = _check_topology_integrity(
+                        atoms=_atoms_test,
+                        fragment_ids=fragment_ids,
+                        ligands=ligands,
+                        ligand_starts=ligand_starts,
+                        metal_global_indices=metal_global_indices,
+                        anchored_pairs=anchored_pairs,
+                    )
+                    if _topo2_ok:
+                        atoms.set_positions(_xtb_atoms.get_positions())
+                        energy = _xtb_e
+                        logger.info(
+                            "Candidate %d xTB polish OK, E = %.8f Ha", cand_idx, energy
+                        )
+                    else:
+                        logger.warning(
+                            "Candidate %d xTB polish broke topology (%s); keeping BFGS geometry.",
+                            cand_idx, _topo2_reason,
+                        )
+                else:
+                    logger.debug("Candidate %d xTB polish failed; keeping BFGS geometry.", cand_idx)
+            else:
+                logger.debug(
+                    "Candidate %d: BFGS donors still %.2f Å from targets → skip xTB polish.",
+                    cand_idx, _max_dd,
+                )
 
         clash = _compute_clash_score(atoms, fragment_ids)
         summary_lines.append(f"{cand_idx}\t{tag}\t{energy:.8f}\t{clash:.8f}")
@@ -880,11 +1746,13 @@ def run_build_up2(
             ase_write(cand_file, atoms, format="xyz")
 
         cand = CandidateResult(tag=tag, atoms=atoms.copy(), energy=energy, clash_score=clash)
-        if best is None:
+        all_candidates.append(cand)
+        # Preliminary ranking by elastic energy (overridden by xTB below if enabled).
+        if best is None or (cand.clash_score, cand.energy) < (best.clash_score, best.energy):
             best = cand
-        else:
-            if (cand.clash_score, cand.energy) < (best.clash_score, best.energy):
-                best = cand
+        prev = best_by_tag.get(tag)
+        if prev is None or (cand.clash_score, cand.energy) < (prev.clash_score, prev.energy):
+            best_by_tag[tag] = cand
 
     (builder_dir / "candidate_summary.tsv").write_text(
         "\n".join(summary_lines) + "\n",
@@ -895,16 +1763,90 @@ def run_build_up2(
         logger.error("No valid candidate could be optimized")
         return False
 
-    best_file = builder_dir / "best_complex2.xyz"
-    ase_write(best_file, best.atoms, format="xyz")
+    # ── Optional xTB re-ranking ───────────────────────────────────────────────
+    if use_xtb and all_candidates:
+        resolved_xtb = shutil.which(xtb_binary) or xtb_binary
+        if not os.path.isfile(resolved_xtb):
+            logger.warning("xTB binary not found (%s); skipping re-ranking.", xtb_binary)
+        else:
+            ranked = _rank_candidates_by_xtb(
+                candidates=all_candidates,
+                total_charge=xtb_charge,
+                multiplicity=xtb_multiplicity,
+                xtb_binary=resolved_xtb,
+                n_parallel=xtb_parallel,
+                gfn_level=xtb_gfn,
+            )
+            # Re-build best / best_by_tag from xTB energies.
+            best = None
+            best_by_tag = {}
+            xtb_lines = ["#candidate\ttag\txtb_energy_Ha\tclash"]
+            for cand_idx_xtb, cand in enumerate(ranked, start=1):
+                xtb_lines.append(
+                    f"{cand_idx_xtb}\t{cand.tag}\t{cand.energy:.10f}\t{cand.clash_score:.8f}"
+                )
+                if best is None or (cand.clash_score, cand.energy) < (best.clash_score, best.energy):
+                    best = cand
+                prev = best_by_tag.get(cand.tag)
+                if prev is None or (cand.clash_score, cand.energy) < (prev.clash_score, prev.energy):
+                    best_by_tag[cand.tag] = cand
+            (builder_dir / "xtb_ranking.tsv").write_text(
+                "\n".join(xtb_lines) + "\n", encoding="utf-8"
+            )
+            logger.info("xTB re-ranking written to xtb_ranking.tsv")
+
+    # ── Write outputs ─────────────────────────────────────────────────────────
+    def _safe_tag(t: str) -> str:
+        """Convert tag label to a safe filename stem."""
+        return t.replace(":", "_").replace(" ", "").replace("|", "__")
 
     parent_dir = builder_dir.parent
+
+    # One XYZ + start.txt per coordination topology in BOTH builder_dir AND parent_dir.
+    # This ensures every distinct coordination geometry is available for further processing
+    # (e.g. ORCA optimisation) without having to dig into builder2/.
+    logger.info(
+        "Saving best structure for each of the %d distinct coordination topology/topologies:",
+        len(best_by_tag),
+    )
+    for tag_label, tag_cand in sorted(best_by_tag.items()):
+        stem = _safe_tag(tag_label)
+        # Inside builder2/ (archive)
+        tag_file = builder_dir / f"best_{stem}.xyz"
+        ase_write(tag_file, tag_cand.atoms, format="xyz")
+        # In parent working dir (directly usable)
+        xyz_name = f"build_complex2_{stem}.xyz"
+        _write_xyz_and_start(
+            tag_cand.atoms,
+            parent_dir=parent_dir,
+            xyz_name=xyz_name,
+        )
+        # Rename the generic start.txt to a topology-specific name.
+        generic_start = parent_dir / "start.txt"
+        topo_start = parent_dir / f"start_{stem}.txt"
+        if generic_start.exists():
+            generic_start.rename(topo_start)
+        logger.info(
+            "  [%s]  energy=%.6f  clash=%.6f  →  %s  /  %s",
+            tag_label,
+            tag_cand.energy,
+            tag_cand.clash_score,
+            xyz_name,
+            topo_start.name,
+        )
+
+    # Overall best → canonical build_complex2.xyz + start.txt (backward compat).
+    best_file = builder_dir / "best_complex2.xyz"
+    ase_write(best_file, best.atoms, format="xyz")
     _write_xyz_and_start(best.atoms, parent_dir=parent_dir, xyz_name="build_complex2.xyz")
-    logger.info("Best candidate: %s", best.tag)
-    logger.info("Best energy: %.8f, clash: %.8f", best.energy, best.clash_score)
+
+    logger.info(
+        "Overall best: [%s]  energy=%.8f  clash=%.8f",
+        best.tag, best.energy, best.clash_score,
+    )
     logger.info("Wrote %s", best_file)
-    logger.info("Wrote %s", parent_dir / "build_complex2.xyz")
-    logger.info("Wrote %s", parent_dir / "start.txt")
+    logger.info("Wrote %s  (overall best)", parent_dir / "build_complex2.xyz")
+    logger.info("Wrote %s  (overall best)", parent_dir / "start.txt")
     return True
 
 
@@ -970,6 +1912,112 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Write per-candidate XYZ files (default: off)",
     )
     parser.add_argument(
+        "--swarm",
+        dest="use_swarm",
+        action="store_true",
+        default=True,
+        help="Use PSO swarm optimizer for collision-free ligand placement (default: on)",
+    )
+    parser.add_argument(
+        "--no-swarm",
+        dest="use_swarm",
+        action="store_false",
+        help="Disable swarm optimizer; use BFGS only",
+    )
+    parser.add_argument(
+        "--swarm-particles",
+        type=int,
+        default=20,
+        help="Number of PSO particles (default: 20)",
+    )
+    parser.add_argument(
+        "--swarm-iterations",
+        type=int,
+        default=150,
+        help="Number of PSO iterations per candidate (default: 150)",
+    )
+    parser.add_argument(
+        "--swarm-refine-steps",
+        type=int,
+        default=80,
+        help="BFGS refinement steps after PSO (default: 80; 0 to skip)",
+    )
+    parser.add_argument(
+        "--write-swarm-trajectory",
+        action="store_true",
+        default=False,
+        help="Write multi-frame XYZ trajectory of the PSO swarm per candidate",
+    )
+    parser.add_argument(
+        "--trajectory-stride",
+        type=int,
+        default=10,
+        help="Record swarm trajectory every N iterations (default: 10)",
+    )
+    parser.add_argument(
+        "--xtb-opt",
+        dest="use_xtb_opt",
+        action="store_true",
+        default=False,
+        help=(
+            "Use xTB geometry optimization as the refinement step after PSO "
+            "(instead of BFGS). Allows ligands to flex/deform internally; "
+            "preserves topology via GFN2 bonding model (default: off)"
+        ),
+    )
+    parser.add_argument(
+        "--xtb-opt-level",
+        default="loose",
+        choices=["crude", "loose", "normal", "tight"],
+        help="xTB optimization convergence level (default: loose)",
+    )
+    parser.add_argument(
+        "--xtb-handoff-dist",
+        type=float,
+        default=3.5,
+        help=(
+            "Hand off to xTB opt only when all donors are within this distance "
+            "[Å] of their coordination targets after PSO (default: 3.5)"
+        ),
+    )
+    parser.add_argument(
+        "--xtb",
+        dest="use_xtb",
+        action="store_true",
+        default=False,
+        help="Re-rank candidates with xTB single-points after PSO/BFGS (default: off)",
+    )
+    parser.add_argument(
+        "--xtb-binary",
+        default="xtb",
+        help="Path or name of the xTB executable (default: xtb)",
+    )
+    parser.add_argument(
+        "--xtb-charge",
+        type=int,
+        default=0,
+        help="Total charge for xTB calculation (default: 0)",
+    )
+    parser.add_argument(
+        "--xtb-multiplicity",
+        type=int,
+        default=1,
+        help="Spin multiplicity for xTB (default: 1 = singlet)",
+    )
+    parser.add_argument(
+        "--xtb-parallel",
+        type=int,
+        default=4,
+        help="Number of parallel xTB jobs (default: 4)",
+    )
+    parser.add_argument(
+        "--xtb-gfn",
+        type=int,
+        default=2,
+        choices=[0, 1, 2],
+        help="GFN level for xTB (default: 2)",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -993,6 +2041,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         max_steps=max(20, int(args.max_steps)),
         fmax=max(0.01, float(args.fmax)),
         write_candidates=bool(args.write_candidate_files),
+        use_swarm=bool(args.use_swarm),
+        swarm_particles=max(2, int(args.swarm_particles)),
+        swarm_iterations=max(10, int(args.swarm_iterations)),
+        swarm_refine_steps=max(0, int(args.swarm_refine_steps)),
+        use_xtb=bool(args.use_xtb),
+        xtb_binary=str(args.xtb_binary),
+        xtb_charge=int(args.xtb_charge),
+        xtb_multiplicity=max(1, int(args.xtb_multiplicity)),
+        xtb_parallel=max(1, int(args.xtb_parallel)),
+        xtb_gfn=int(args.xtb_gfn),
+        use_xtb_opt=bool(args.use_xtb_opt),
+        xtb_opt_level=str(args.xtb_opt_level),
+        xtb_handoff_dist=max(1.0, float(args.xtb_handoff_dist)),
+        write_swarm_trajectory=bool(args.write_swarm_trajectory),
+        trajectory_stride=max(1, int(args.trajectory_stride)),
     )
     return 0 if success else 1
 
