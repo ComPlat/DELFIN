@@ -3352,18 +3352,25 @@ def create_tab(ctx):
                     current_dir.iterdir(),
                     key=lambda x: (not x.is_dir(), x.name.lower()),
                 )
+            try:
+                is_top_level_calc_view = current_dir.resolve() == _calc_dir().resolve()
+            except Exception:
+                is_top_level_calc_view = (state.get('current_path') or '') == ''
             local_status_dirs = calc_collect_local_job_status_dirs()
             for entry in entries:
                 if entry.is_dir():
-                    try:
-                        entry_resolved = entry.resolve()
-                    except Exception:
-                        entry_resolved = entry
-                    if entry_resolved in local_status_dirs:
-                        status = local_status_dirs.get(entry_resolved, '')
-                        folder_icon = '✅' if status == 'COMPLETED' else '📂'
-                    elif calc_folder_has_completed_results(entry):
-                        folder_icon = '✅'
+                    if is_top_level_calc_view:
+                        try:
+                            entry_resolved = entry.resolve()
+                        except Exception:
+                            entry_resolved = entry
+                        if entry_resolved in local_status_dirs:
+                            status = local_status_dirs.get(entry_resolved, '')
+                            folder_icon = '✅' if status == 'COMPLETED' else '📂'
+                        elif calc_folder_has_completed_results(entry):
+                            folder_icon = '✅'
+                        else:
+                            folder_icon = '📂'
                     else:
                         folder_icon = '📂'
                     items.append(f'{folder_icon} {entry.name}')
