@@ -86,7 +86,7 @@ def create_tab(ctx):
             "XYZ\n"
             "*"
         ),
-        layout=widgets.Layout(width='100%', height='160px', box_sizing='border-box'),
+        layout=widgets.Layout(width='100%', height='220px', box_sizing='border-box'),
         style=COMMON_STYLE,
     )
 
