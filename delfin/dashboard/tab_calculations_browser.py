@@ -74,6 +74,7 @@ def create_tab(ctx):
         ],
         'table_col_widgets': [],
         'table_csv_data': '',
+        'table_panel_active': False,
         'file_is_preview': False,
         'file_preview_note': '',
         'file_chunk_start': 0,
@@ -158,24 +159,35 @@ def create_tab(ctx):
 
     # ---- Table extraction panel (Archive tab only) -------------------------
     _TABLE_PRESETS = [
-        ('— Preset —',               '',         '',                                                        'last'),
-        ('ORCA Total Energy (Eh)',    'Energy',   r'FINAL SINGLE POINT ENERGY\s+(-?[\d.]+)',                'last'),
-        ('ORCA SCF Energy (Eh)',      'SCF E',    r'E\(SCF\)\s*=\s*(-?[\d.]+)',                            'last'),
-        ('ORCA HOMO (eV)',            'HOMO',     r'(?i)homo.*?(-?[\d.]+)\s*eV',                           'last'),
-        ('ORCA LUMO (eV)',            'LUMO',     r'(?i)lumo.*?(-?[\d.]+)\s*eV',                           'last'),
-        ('ORCA Dipole total (D)',     'Dipole',   r'(?i)total dipole moment.*?([\d.]+)',                    'last'),
-        ('ORCA S\u00b2 (before)',     'S2',       r'<S\*\*2> Expectation value\s+([\d.]+)',                'last'),
-        ('ORCA Net Charge',          'Charge',   r'Total Charge\s*\.*\s*(-?\d+)',                          'first'),
-        ('ORCA Nr. Atoms',           'Atoms',    r'Number of atoms\s*\.\.\.\s*(\d+)',                      'first'),
-        ('ORCA Nr. Basis Fns',       'Basis',    r'Number of basis functions\s*\.\.\.\s*(\d+)',            'first'),
-        ('TM SCF Energy (Eh)',        'E(TM)',    r'SCF energy\s+:\s+(-?[\d.]+)',                          'last'),
-        ('TM HOMO (eV)',              'HOMO(TM)', r'HOMO.*?(-?[\d.]+)\s*eV',                               'last'),
-        ('JSON key',                 '',         '',                                                        'last'),
+        ('— Preset —',                '',         'regex', '',                                                         'last'),
+        ('ORCA Total Energy (Eh)',    'Energy',   'regex', r'FINAL SINGLE POINT ENERGY\s+(-?[\d.]+)',                 'last'),
+        ('ORCA SCF Energy (Eh)',      'SCF E',    'regex', r'E\(SCF\)\s*=\s*(-?[\d.]+)',                             'last'),
+        ('ORCA HOMO (eV)',            'HOMO',     'regex', r'(?i)homo.*?(-?[\d.]+)\s*eV',                            'last'),
+        ('ORCA LUMO (eV)',            'LUMO',     'regex', r'(?i)lumo.*?(-?[\d.]+)\s*eV',                            'last'),
+        ('ORCA Dipole total (D)',     'Dipole',   'regex', r'(?i)total dipole moment.*?([\d.]+)',                     'last'),
+        ('ORCA S\u00b2 (before)',     'S2',       'regex', r'<S\*\*2> Expectation value\s+([\d.]+)',                 'last'),
+        ('ORCA Net Charge',           'Charge',   'regex', r'Total Charge\s*\.*\s*(-?\d+)',                           'first'),
+        ('ORCA Nr. Atoms',            'Atoms',    'regex', r'Number of atoms\s*\.\.\.\s*(\d+)',                       'first'),
+        ('ORCA Nr. Basis Fns',        'Basis',    'regex', r'Number of basis functions\s*\.\.\.\s*(\d+)',             'first'),
+        ('TM SCF Energy (Eh)',        'E(TM)',    'regex', r'SCF energy\s+:\s+(-?[\d.]+)',                           'last'),
+        ('TM HOMO (eV)',              'HOMO(TM)', 'regex', r'HOMO.*?(-?[\d.]+)\s*eV',                                'last'),
+        ('JSON key path',             'JSON',     'json',  'results.energy.final',                                     'last'),
     ]
     _tp_labels = [p[0] for p in _TABLE_PRESETS]
     _tp_names  = [p[1] for p in _TABLE_PRESETS]
-    _tp_pats   = [p[2] for p in _TABLE_PRESETS]
-    _tp_occs   = [p[3] for p in _TABLE_PRESETS]
+    _tp_types  = [p[2] for p in _TABLE_PRESETS]
+    _tp_pats   = [p[3] for p in _TABLE_PRESETS]
+    _tp_occs   = [p[4] for p in _TABLE_PRESETS]
+    _table_number_re = re.compile(
+        r'[-+]?(?:(?:\d+[.,]\d*)|(?:[.,]\d+)|\d+)(?:[eEdD][-+]?\d+)?'
+    )
+
+    def _normalize_table_number(token):
+        value = str(token).strip().replace('D', 'E').replace('d', 'e')
+        # Accept decimal comma from some text exports.
+        if ',' in value and '.' not in value:
+            value = value.replace(',', '.')
+        return value
 
     calc_table_btn = widgets.Button(
         description='📊 Table',
@@ -193,9 +205,9 @@ def create_tab(ctx):
         value='all',
         layout=widgets.Layout(width='130px', height='26px'),
     )
-    calc_table_recursive_cb = widgets.Checkbox(
-        value=False, description='Recurse', indent=False,
-        layout=widgets.Layout(width='86px'),
+    calc_table_recursive_cb = widgets.ToggleButton(
+        value=False, description='Recurse',
+        layout=widgets.Layout(width='86px', height='26px'),
     )
     calc_table_add_col_btn = widgets.Button(
         description='+ Column',
@@ -1992,6 +2004,14 @@ def create_tab(ctx):
         _run_js(js)
 
     def calc_update_view():
+        if _is_archive_tab and state.get('table_panel_active', False):
+            calc_mol_container.layout.display = 'none'
+            calc_content_area.layout.display = 'none'
+            calc_edit_area.layout.display = 'none'
+            calc_content_label.layout.display = 'none'
+            calc_content_toolbar.layout.display = 'none'
+            calc_recalc_toolbar.layout.display = 'none'
+            return
         show_mol = calc_view_toggle.value
         if show_mol:
             calc_mol_container.layout.display = 'block'
@@ -4940,7 +4960,7 @@ def create_tab(ctx):
                 _collect_table_col_values()
                 state['table_col_defs'][idx].update({
                     'name': _tp_names[pi],
-                    'type': 'regex',
+                    'type': _tp_types[pi],
                     'pattern': _tp_pats[pi],
                     'occ': _tp_occs[pi],
                 })
@@ -4974,13 +4994,35 @@ def create_tab(ctx):
             return '—'
         try:
             if typ == 'regex':
-                matches = re.findall(pat, text)
-                if not matches:
+                rx = re.compile(pat)
+                if rx.groups > 0:
+                    matches = rx.findall(text)
+                    if not matches:
+                        return '—'
+                    val = matches[-1] if occ == 'last' else matches[0]
+                    if isinstance(val, tuple):
+                        val = val[0]
+                    return str(val).strip()
+                iters = list(rx.finditer(text))
+                if not iters:
                     return '—'
-                val = matches[-1] if occ == 'last' else matches[0]
-                if isinstance(val, tuple):
-                    val = val[0]
-                return str(val).strip()
+                m = iters[-1] if occ == 'last' else iters[0]
+                line_end = text.find('\n', m.end())
+                if line_end == -1:
+                    line_end = len(text)
+                tail = text[m.end():line_end]
+                nums = [nm.group(0) for nm in _table_number_re.finditer(tail)]
+                if nums:
+                    chosen = nums[-1] if occ == 'last' else nums[0]
+                    return _normalize_table_number(chosen)
+                # wrapped lines: also inspect a short window after the match
+                near = text[m.end():min(len(text), m.end() + 240)]
+                near_nums = [nm.group(0) for nm in _table_number_re.finditer(near)]
+                if near_nums:
+                    chosen = near_nums[-1] if occ == 'last' else near_nums[0]
+                    return _normalize_table_number(chosen)
+                # fallback: keep old behavior if no number follows in the line
+                return m.group(0).strip()
             elif typ == 'json':
                 if json_data is None:
                     return '—'
@@ -5027,12 +5069,17 @@ def create_tab(ctx):
     def calc_on_table_toggle(button):
         if calc_table_panel.layout.display == 'none':
             calc_table_panel.layout.display = ''
+            state['table_panel_active'] = True
             _rebuild_table_col_rows()
         else:
             calc_table_panel.layout.display = 'none'
+            state['table_panel_active'] = False
+        calc_update_view()
 
     def calc_on_table_close(button):
         calc_table_panel.layout.display = 'none'
+        state['table_panel_active'] = False
+        calc_update_view()
 
     def calc_on_table_add_col(button):
         _collect_table_col_values()
@@ -5053,8 +5100,19 @@ def create_tab(ctx):
             if state['current_path'] else _calc_dir()
         )
         scope = calc_table_scope_dd.value
-        if scope == 'selected' and state['select_mode']:
+        if scope == 'selected':
+            if not state['select_mode']:
+                calc_table_status.value = (
+                    '<span style="color:#d32f2f;">'
+                    'Selection only requires Select mode.</span>'
+                )
+                return
             real = [s for s in calc_multi_select.value if not s.startswith('(')]
+            if not real:
+                calc_table_status.value = (
+                    '<span style="color:#d32f2f;">No folders selected.</span>'
+                )
+                return
             folders = []
             for label in real:
                 p = base_dir / _calc_label_to_name(label)
@@ -5077,11 +5135,13 @@ def create_tab(ctx):
         missing = 0
         for folder in folders:
             direct = folder / target_file
-            if direct.exists():
+            if direct.is_file():
                 file_path = direct
             elif calc_table_recursive_cb.value:
-                found = list(folder.rglob(target_file))
-                file_path = found[0] if found else None
+                try:
+                    file_path = next(folder.rglob(target_file), None)
+                except Exception:
+                    file_path = None
             else:
                 file_path = None
             if file_path is None:
@@ -5679,6 +5739,12 @@ def create_tab(ctx):
     calc_move_archive_btn.on_click(calc_on_move_archive_click)
     calc_move_archive_yes_btn.on_click(calc_on_move_archive_yes)
     calc_move_archive_no_btn.on_click(calc_on_move_archive_no)
+    if _is_archive_tab:
+        calc_table_btn.on_click(calc_on_table_toggle)
+        calc_table_close_btn.on_click(calc_on_table_close)
+        calc_table_add_col_btn.on_click(calc_on_table_add_col)
+        calc_table_run_btn.on_click(calc_on_table_run)
+        calc_table_csv_btn.on_click(calc_on_table_csv_download)
     calc_file_list.observe(calc_on_select, names='value')
     calc_folder_search.observe(calc_filter_file_list, names='value')
     calc_options_dropdown.observe(calc_on_options_change, names='value')
@@ -5743,7 +5809,7 @@ def create_tab(ctx):
         display(_Javascript(_multi_select_js))
 
     # -- layout -------------------------------------------------------------
-    _archive_row_children = [] if _is_archive_tab else [calc_move_archive_btn]
+    _archive_row_children = [calc_table_btn] if _is_archive_tab else [calc_move_archive_btn]
     calc_nav_bar = widgets.VBox([
         calc_path_label,
         widgets.HBox(
@@ -5758,7 +5824,7 @@ def create_tab(ctx):
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden',
                 justify_content='flex-start', gap='6px',
-                display='none' if _is_archive_tab else 'flex',
+                display='flex',
             ),
         ),
     ], layout=widgets.Layout(width='100%', overflow_x='hidden'))
@@ -5885,7 +5951,7 @@ def create_tab(ctx):
         '</style>'
     )
 
-    calc_right = widgets.VBox([
+    calc_right_children = [
         widgets.HBox([
             calc_file_info,
             widgets.HBox(
@@ -5910,13 +5976,18 @@ def create_tab(ctx):
         calc_delete_status,
         calc_move_archive_confirm,
         calc_move_archive_status,
+    ]
+    if _is_archive_tab:
+        calc_right_children.append(calc_table_panel)
+    calc_right_children.extend([
         calc_recalc_toolbar,
         calc_content_toolbar,
         calc_chunk_hidden_row,
         calc_override_status,
         calc_content_area,
         calc_edit_area,
-    ], layout=widgets.Layout(
+    ])
+    calc_right = widgets.VBox(calc_right_children, layout=widgets.Layout(
         flex='1 1 0', min_width='0', padding='5px',
         overflow_x='hidden', overflow_y='hidden',
     ))
