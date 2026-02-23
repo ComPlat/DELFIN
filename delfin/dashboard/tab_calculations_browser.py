@@ -69,6 +69,11 @@ def create_tab(ctx):
         'recalc_active': False,
         'delete_current': False,
         'select_mode': False,
+        'table_col_defs': [
+            {'name': 'Value 1', 'type': 'regex', 'pattern': '', 'occ': 'last'},
+        ],
+        'table_col_widgets': [],
+        'table_csv_data': '',
         'file_is_preview': False,
         'file_preview_note': '',
         'file_chunk_start': 0,
@@ -150,6 +155,99 @@ def create_tab(ctx):
     calc_move_archive_status = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+
+    # ---- Table extraction panel (Archive tab only) -------------------------
+    _TABLE_PRESETS = [
+        ('— Preset —',               '',         '',                                                        'last'),
+        ('ORCA Total Energy (Eh)',    'Energy',   r'FINAL SINGLE POINT ENERGY\s+(-?[\d.]+)',                'last'),
+        ('ORCA SCF Energy (Eh)',      'SCF E',    r'E\(SCF\)\s*=\s*(-?[\d.]+)',                            'last'),
+        ('ORCA HOMO (eV)',            'HOMO',     r'(?i)homo.*?(-?[\d.]+)\s*eV',                           'last'),
+        ('ORCA LUMO (eV)',            'LUMO',     r'(?i)lumo.*?(-?[\d.]+)\s*eV',                           'last'),
+        ('ORCA Dipole total (D)',     'Dipole',   r'(?i)total dipole moment.*?([\d.]+)',                    'last'),
+        ('ORCA S\u00b2 (before)',     'S2',       r'<S\*\*2> Expectation value\s+([\d.]+)',                'last'),
+        ('ORCA Net Charge',          'Charge',   r'Total Charge\s*\.*\s*(-?\d+)',                          'first'),
+        ('ORCA Nr. Atoms',           'Atoms',    r'Number of atoms\s*\.\.\.\s*(\d+)',                      'first'),
+        ('ORCA Nr. Basis Fns',       'Basis',    r'Number of basis functions\s*\.\.\.\s*(\d+)',            'first'),
+        ('TM SCF Energy (Eh)',        'E(TM)',    r'SCF energy\s+:\s+(-?[\d.]+)',                          'last'),
+        ('TM HOMO (eV)',              'HOMO(TM)', r'HOMO.*?(-?[\d.]+)\s*eV',                               'last'),
+        ('JSON key',                 '',         '',                                                        'last'),
+    ]
+    _tp_labels = [p[0] for p in _TABLE_PRESETS]
+    _tp_names  = [p[1] for p in _TABLE_PRESETS]
+    _tp_pats   = [p[2] for p in _TABLE_PRESETS]
+    _tp_occs   = [p[3] for p in _TABLE_PRESETS]
+
+    calc_table_btn = widgets.Button(
+        description='📊 Table',
+        layout=widgets.Layout(
+            width='84px', height='26px',
+            display='inline-flex' if _is_archive_tab else 'none',
+        ),
+    )
+    calc_table_file_input = widgets.Text(
+        placeholder='e.g. orca.out or result.json',
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
+    )
+    calc_table_scope_dd = widgets.Dropdown(
+        options=[('All folders', 'all'), ('Selection only', 'selected')],
+        value='all',
+        layout=widgets.Layout(width='130px', height='26px'),
+    )
+    calc_table_recursive_cb = widgets.Checkbox(
+        value=False, description='Recurse', indent=False,
+        layout=widgets.Layout(width='86px'),
+    )
+    calc_table_add_col_btn = widgets.Button(
+        description='+ Column',
+        layout=widgets.Layout(width='80px', height='26px'),
+    )
+    calc_table_run_btn = widgets.Button(
+        description='▶ Run', button_style='primary',
+        layout=widgets.Layout(width='68px', height='26px'),
+    )
+    calc_table_close_btn = widgets.Button(
+        description='✕',
+        layout=widgets.Layout(width='32px', height='26px'),
+    )
+    calc_table_csv_btn = widgets.Button(
+        description='⬇ CSV',
+        layout=widgets.Layout(width='68px', height='26px', display='none'),
+    )
+    calc_table_status = widgets.HTML(value='')
+    calc_table_output = widgets.HTML(
+        value='',
+        layout=widgets.Layout(
+            width='100%', overflow_x='auto', overflow_y='auto',
+            max_height='420px',
+        ),
+    )
+    calc_table_cols_box = widgets.VBox(
+        [], layout=widgets.Layout(width='100%', gap='4px'),
+    )
+    calc_table_panel = widgets.VBox([
+        widgets.HBox([
+            widgets.HTML('<b>📊 Extract Table</b>'),
+            calc_table_close_btn,
+        ], layout=widgets.Layout(
+            justify_content='space-between', align_items='center', width='100%',
+        )),
+        widgets.HBox([
+            widgets.HTML('<span style="white-space:nowrap"><b>File:</b></span>'),
+            calc_table_file_input,
+            calc_table_scope_dd,
+            calc_table_recursive_cb,
+        ], layout=widgets.Layout(gap='6px', align_items='center', width='100%')),
+        calc_table_cols_box,
+        widgets.HBox(
+            [calc_table_add_col_btn, calc_table_run_btn, calc_table_csv_btn],
+            layout=widgets.Layout(gap='6px', align_items='center'),
+        ),
+        calc_table_status,
+        calc_table_output,
+    ], layout=widgets.Layout(
+        display='none', width='100%', padding='8px', gap='6px',
+        border='1px solid #e0e0e0', border_radius='4px', overflow_x='hidden',
+    ))
 
     # Delete confirmation
     calc_delete_yes_btn = widgets.Button(
@@ -1807,6 +1905,90 @@ def create_tab(ctx):
         }, 0);
         """
         js = js.replace('__START__', str(int(local_start))).replace('__END__', str(int(local_end)))
+        _run_js(js)
+
+    def _calc_clear_plain_match_marker():
+        _run_js("""
+        setTimeout(function() {
+            const old = document.getElementById('calc-current-match');
+            if (!old) return;
+            const parent = old.parentNode;
+            if (!parent) return;
+            parent.replaceChild(document.createTextNode(old.textContent || ''), old);
+            parent.normalize();
+        }, 0);
+        """)
+
+    def _calc_focus_plain_match(start_pos, end_pos):
+        js = r"""
+        setTimeout(function() {
+            const box = document.getElementById('calc-content-box');
+            const el = document.getElementById('calc-content-text');
+            if (!box || !el) return;
+
+            function unwrapCurrent() {
+                const old = document.getElementById('calc-current-match');
+                if (!old) return;
+                const parent = old.parentNode;
+                if (!parent) return;
+                parent.replaceChild(document.createTextNode(old.textContent || ''), old);
+                parent.normalize();
+            }
+
+            function scrollByRatio(startIndex, textLength) {
+                if (textLength <= 0) return;
+                const ratio = Math.max(0, Math.min(1, startIndex / Math.max(1, textLength - 1)));
+                const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+                box.scrollTop = Math.floor(ratio * maxScroll);
+            }
+
+            unwrapCurrent();
+            const text = el.textContent || '';
+            const s = __START__;
+            const e = __END__;
+            if (s < 0 || e <= s || s >= text.length) return;
+
+            function locate(root, index) {
+                let remaining = index;
+                const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+                let node = walker.nextNode();
+                while (node) {
+                    const len = (node.nodeValue || '').length;
+                    if (remaining <= len) {
+                        return {node: node, offset: remaining};
+                    }
+                    remaining -= len;
+                    node = walker.nextNode();
+                }
+                return null;
+            }
+
+            const endBound = Math.min(e, text.length);
+            const startLoc = locate(el, s);
+            const endLoc = locate(el, endBound);
+            if (!startLoc || !endLoc) {
+                scrollByRatio(s, text.length);
+                return;
+            }
+
+            const range = document.createRange();
+            range.setStart(startLoc.node, startLoc.offset);
+            range.setEnd(endLoc.node, endLoc.offset);
+
+            const mark = document.createElement('mark');
+            mark.className = 'calc-match current';
+            mark.id = 'calc-current-match';
+            try {
+                range.surroundContents(mark);
+            } catch (_err) {
+                scrollByRatio(s, text.length);
+                return;
+            }
+
+            mark.scrollIntoView({block: 'center'});
+        }, 0);
+        """
+        js = js.replace('__START__', str(int(start_pos))).replace('__END__', str(int(end_pos)))
         _run_js(js)
 
     def calc_update_view():
@@ -3593,6 +3775,9 @@ def create_tab(ctx):
             return
         if _calc_should_highlight():
             calc_apply_highlight(calc_search_input.value.strip(), state['current_match'])
+        else:
+            start, end = state['search_spans'][state['current_match']]
+            _calc_focus_plain_match(start, end)
 
     # -- options dropdown ---------------------------------------------------
     def calc_update_options_dropdown():
@@ -3706,6 +3891,8 @@ def create_tab(ctx):
                 """)
             elif _calc_should_highlight():
                 calc_apply_highlight('', -1)
+            else:
+                _calc_clear_plain_match_marker()
             return
 
         if _calc_is_chunk_mode():
@@ -3760,6 +3947,8 @@ def create_tab(ctx):
             calc_update_nav_buttons()
             if _calc_should_highlight():
                 calc_apply_highlight('', -1)
+            else:
+                _calc_clear_plain_match_marker()
             return
 
         state['current_match'] = 0
@@ -3767,6 +3956,9 @@ def create_tab(ctx):
         calc_update_search_result()
         if _calc_should_highlight():
             calc_apply_highlight(query, state['current_match'])
+        else:
+            start, end = state['search_spans'][state['current_match']]
+            _calc_focus_plain_match(start, end)
 
     def calc_on_suggest(change):
         value = change['new']
@@ -4693,6 +4885,248 @@ def create_tab(ctx):
 
     def calc_on_move_archive_no(button):
         calc_move_archive_confirm.layout.display = 'none'
+
+    # -- table extraction ---------------------------------------------------
+    def _collect_table_col_values():
+        for i, rw in enumerate(state['table_col_widgets']):
+            if i < len(state['table_col_defs']):
+                state['table_col_defs'][i]['name'] = rw['name'].value
+                state['table_col_defs'][i]['type'] = rw['type_dd'].value
+                state['table_col_defs'][i]['occ'] = rw['occ_dd'].value
+                state['table_col_defs'][i]['pattern'] = rw['pattern'].value
+
+    def _rebuild_table_col_rows():
+        rows = []
+        state['table_col_widgets'] = []
+        for i, col in enumerate(state['table_col_defs']):
+            name_w = widgets.Text(
+                value=col.get('name', ''),
+                placeholder='Column name',
+                layout=widgets.Layout(width='100px', height='26px'),
+            )
+            type_dd = widgets.Dropdown(
+                options=[('Regex', 'regex'), ('JSON path', 'json')],
+                value=col.get('type', 'regex'),
+                layout=widgets.Layout(width='92px', height='26px'),
+            )
+            occ_dd = widgets.Dropdown(
+                options=[('last', 'last'), ('first', 'first')],
+                value=col.get('occ', 'last'),
+                layout=widgets.Layout(width='62px', height='26px'),
+            )
+            pat_w = widgets.Text(
+                value=col.get('pattern', ''),
+                placeholder='regex pattern' if col.get('type', 'regex') == 'regex' else 'key.path',
+                layout=widgets.Layout(flex='1 1 auto', min_width='80px', height='26px'),
+            )
+            preset_dd = widgets.Dropdown(
+                options=_tp_labels,
+                value=_tp_labels[0],
+                layout=widgets.Layout(width='180px', height='26px'),
+            )
+            rm_btn = widgets.Button(
+                description='✕',
+                layout=widgets.Layout(width='32px', height='26px'),
+            )
+
+            def _on_type_change(change, pw=pat_w):
+                pw.placeholder = 'regex pattern' if change['new'] == 'regex' else 'key.path'
+
+            def _on_preset(change, idx=i):
+                label = change['new']
+                if label == _tp_labels[0]:
+                    return
+                pi = _tp_labels.index(label)
+                _collect_table_col_values()
+                state['table_col_defs'][idx].update({
+                    'name': _tp_names[pi],
+                    'type': 'regex',
+                    'pattern': _tp_pats[pi],
+                    'occ': _tp_occs[pi],
+                })
+                _rebuild_table_col_rows()
+
+            def _on_remove(b, idx=i):
+                _collect_table_col_values()
+                if len(state['table_col_defs']) > 1:
+                    state['table_col_defs'].pop(idx)
+                _rebuild_table_col_rows()
+
+            type_dd.observe(_on_type_change, names='value')
+            preset_dd.observe(_on_preset, names='value')
+            rm_btn.on_click(_on_remove)
+
+            rows.append(widgets.HBox(
+                [name_w, type_dd, occ_dd, pat_w, preset_dd, rm_btn],
+                layout=widgets.Layout(gap='4px', align_items='center', width='100%'),
+            ))
+            state['table_col_widgets'].append({
+                'name': name_w, 'type_dd': type_dd, 'occ_dd': occ_dd,
+                'pattern': pat_w, 'preset_dd': preset_dd,
+            })
+        calc_table_cols_box.children = tuple(rows)
+
+    def _extract_value(col_def, text, json_data):
+        typ = col_def.get('type', 'regex')
+        pat = col_def.get('pattern', '').strip()
+        occ = col_def.get('occ', 'last')
+        if not pat:
+            return '—'
+        try:
+            if typ == 'regex':
+                matches = re.findall(pat, text)
+                if not matches:
+                    return '—'
+                val = matches[-1] if occ == 'last' else matches[0]
+                if isinstance(val, tuple):
+                    val = val[0]
+                return str(val).strip()
+            elif typ == 'json':
+                if json_data is None:
+                    return '—'
+                obj = json_data
+                for part in pat.split('.'):
+                    if isinstance(obj, dict):
+                        obj = obj.get(part, '—')
+                    elif isinstance(obj, list):
+                        try:
+                            obj = obj[int(part)]
+                        except (ValueError, IndexError):
+                            return '—'
+                    else:
+                        return '—'
+                return str(obj)
+        except Exception as exc:
+            return f'err:{exc}'
+        return '—'
+
+    def _render_extract_table_html(headers, rows):
+        th = ''.join(
+            f'<th style="padding:4px 10px;border:1px solid #ddd;'
+            f'background:#f0f4f8;white-space:nowrap;text-align:left">'
+            f'{_html.escape(str(h))}</th>'
+            for h in headers
+        )
+        trs = ''
+        for i, row in enumerate(rows):
+            bg = '#ffffff' if i % 2 == 0 else '#f7f9fc'
+            tds = ''.join(
+                f'<td style="padding:4px 10px;border:1px solid #ddd;'
+                f'white-space:nowrap">{_html.escape(str(v))}</td>'
+                for v in row
+            )
+            trs += f'<tr style="background:{bg}">{tds}</tr>'
+        return (
+            '<div style="overflow-x:auto">'
+            '<table style="border-collapse:collapse;font-size:12px;width:auto">'
+            f'<thead><tr>{th}</tr></thead>'
+            f'<tbody>{trs}</tbody>'
+            '</table></div>'
+        )
+
+    def calc_on_table_toggle(button):
+        if calc_table_panel.layout.display == 'none':
+            calc_table_panel.layout.display = ''
+            _rebuild_table_col_rows()
+        else:
+            calc_table_panel.layout.display = 'none'
+
+    def calc_on_table_close(button):
+        calc_table_panel.layout.display = 'none'
+
+    def calc_on_table_add_col(button):
+        _collect_table_col_values()
+        n = len(state['table_col_defs']) + 1
+        state['table_col_defs'].append(
+            {'name': f'Value {n}', 'type': 'regex', 'pattern': '', 'occ': 'last'}
+        )
+        _rebuild_table_col_rows()
+
+    def calc_on_table_run(button):
+        _collect_table_col_values()
+        target_file = calc_table_file_input.value.strip()
+        if not target_file:
+            calc_table_status.value = '<span style="color:#d32f2f;">Please enter a filename.</span>'
+            return
+        base_dir = (
+            _calc_dir() / state['current_path']
+            if state['current_path'] else _calc_dir()
+        )
+        scope = calc_table_scope_dd.value
+        if scope == 'selected' and state['select_mode']:
+            real = [s for s in calc_multi_select.value if not s.startswith('(')]
+            folders = []
+            for label in real:
+                p = base_dir / _calc_label_to_name(label)
+                if p.is_dir():
+                    folders.append(p)
+        else:
+            try:
+                folders = sorted(
+                    [e for e in base_dir.iterdir() if e.is_dir()],
+                    key=lambda x: x.name.lower(),
+                )
+            except Exception:
+                folders = []
+        if not folders:
+            calc_table_status.value = '<span style="color:#d32f2f;">No folders found.</span>'
+            return
+        cols = state['table_col_defs']
+        headers = ['Job'] + [c.get('name', f'Col {i+1}') for i, c in enumerate(cols)]
+        rows = []
+        missing = 0
+        for folder in folders:
+            direct = folder / target_file
+            if direct.exists():
+                file_path = direct
+            elif calc_table_recursive_cb.value:
+                found = list(folder.rglob(target_file))
+                file_path = found[0] if found else None
+            else:
+                file_path = None
+            if file_path is None:
+                rows.append([folder.name] + ['—'] * len(cols))
+                missing += 1
+                continue
+            try:
+                content = file_path.read_text(errors='replace')
+            except Exception:
+                rows.append([folder.name] + ['err'] * len(cols))
+                continue
+            json_data = None
+            if file_path.suffix.lower() == '.json':
+                try:
+                    json_data = json.loads(content)
+                except Exception:
+                    pass
+            rows.append([folder.name] + [_extract_value(c, content, json_data) for c in cols])
+        calc_table_output.value = _render_extract_table_html(headers, rows)
+        import io, csv as _csv
+        buf = io.StringIO()
+        _csv.writer(buf).writerows([headers] + rows)
+        state['table_csv_data'] = buf.getvalue()
+        calc_table_csv_btn.layout.display = 'inline-flex'
+        n = len(rows)
+        msg = f'<span style="color:#2e7d32;">{n} folder(s) processed'
+        if missing:
+            msg += f', {missing} without {_html.escape(target_file)}'
+        calc_table_status.value = msg + '.</span>'
+
+    def calc_on_table_csv_download(button):
+        data = state.get('table_csv_data', '')
+        if not data:
+            return
+        import base64 as _b64
+        b64 = _b64.b64encode(data.encode()).decode()
+        _js = (
+            'var a=document.createElement("a");'
+            f'a.href="data:text/csv;base64,{b64}";'
+            'a.download="extract_table.csv";'
+            'document.body.appendChild(a);a.click();document.body.removeChild(a);'
+        )
+        from IPython.display import Javascript as _JS
+        with ctx.js_output:
+            display(_JS(_js))
 
     def calc_on_sort_change(change):
         saved_filter = calc_folder_search.value
