@@ -72,16 +72,28 @@ def create_tab(ctx):
         layout=widgets.Layout(width='170px'),
     )
 
-    smiles_batch_help = widgets.Label("Batch SMILES list: one per line 'Name;SMILES;key=value;key=value'")
+    smiles_batch_help = widgets.Label(
+        "Batch list: SMILES 'Name;SMILES;key=value;...' or XYZ block "
+        "'Name;key=value;...' + 'XYZ' ... '*'"
+    )
     smiles_batch_widget = widgets.Textarea(
         value='',
-        placeholder='name;SMILES;key=value;...\nNi_1;[Ni];charge=2;solvent=water\nCo_1;[Co];charge=3',
+        placeholder=(
+            "name;SMILES;key=value;...\n"
+            "Ni_1;[Ni];charge=2;solvent=water\n"
+            "\n"
+            "name;key=value;...\n"
+            "XYZ\n"
+            "Fe  0.0000  0.0000  0.0000\n"
+            "N   1.9000  0.0000  0.0000\n"
+            "*"
+        ),
         layout=widgets.Layout(width='100%', height='160px', box_sizing='border-box'),
         style=COMMON_STYLE,
     )
 
     submit_smiles_list_button = widgets.Button(
-        description='SUBMIT SMILES LIST', button_style='success',
+        description='SUBMIT BATCH LIST', button_style='success',
         layout=widgets.Layout(width='150px'),
     )
     smiles_batch_output = widgets.Output()
@@ -487,22 +499,123 @@ def create_tab(ctx):
             except Exception as e:
                 print(f'Error submitting GUPPY job: {e}')
 
-    def get_smiles_list_entries():
+    def _clean_xyz_block(raw_xyz):
+        text = (raw_xyz or '').strip()
+        if not text:
+            return ''
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            try:
+                int(lines[0].strip())
+                return '\n'.join(lines[2:]).strip()
+            except ValueError:
+                pass
+        return '\n'.join(lines).strip()
+
+    def parse_batch_entries():
+        """Parse mixed SMILES/XYZ batch textarea.
+
+        Supported formats:
+        1) SMILES line:
+           Name;SMILES;key=value;...
+        2) XYZ block:
+           Name;key=value;...
+           XYZ
+           <coordinates ...>    # with or without XYZ header lines
+           *
+        """
         entries = []
-        for line in smiles_batch_widget.value.splitlines():
-            line = line.strip()
-            if not line or ';' not in line:
+        errors = []
+        lines = smiles_batch_widget.value.splitlines()
+        i = 0
+        while i < len(lines):
+            raw_line = lines[i]
+            line_no = i + 1
+            line = raw_line.strip()
+            i += 1
+            if not line:
                 continue
+            if ';' not in line:
+                errors.append(f"Line {line_no}: Missing ';' delimiter -> {line}")
+                continue
+
             parts = [p.strip() for p in line.split(';') if p.strip()]
-            if len(parts) >= 2:
-                name = parts[0]
-                smi = parts[1]
-                extras = {}
-                for part in parts[2:]:
-                    if '=' in part:
-                        k, v = part.split('=', 1)
-                        extras[k.strip()] = v.strip()
-                entries.append((name, smi, extras))
+            if len(parts) < 2:
+                errors.append(f'Line {line_no}: Missing name or payload -> {line}')
+                continue
+
+            name = parts[0]
+            if not name:
+                errors.append(f'Line {line_no}: Missing name -> {line}')
+                continue
+
+            extras = {}
+            smiles_payload = None
+            force_xyz = False
+            for token in parts[1:]:
+                if '=' in token:
+                    key, value = token.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if not key:
+                        errors.append(f"Line {line_no}: Invalid override '{token}' (empty key)")
+                        continue
+                    extras[key] = value
+                    continue
+                if token.upper() == 'XYZ':
+                    force_xyz = True
+                    continue
+                if smiles_payload is None and not force_xyz:
+                    smiles_payload = token
+                else:
+                    errors.append(f"Line {line_no}: Invalid token '{token}' in header")
+
+            if smiles_payload and not force_xyz:
+                entries.append({
+                    'line_no': line_no,
+                    'name': name,
+                    'input_kind': 'smiles',
+                    'input_raw': smiles_payload,
+                    'input_content': None,
+                    'extras': extras,
+                })
+                continue
+
+            # XYZ mode: optional explicit "XYZ" marker line, then block until "*"
+            while i < len(lines) and not lines[i].strip():
+                i += 1
+            if i < len(lines) and lines[i].strip().upper() == 'XYZ':
+                i += 1
+
+            xyz_lines = []
+            while i < len(lines):
+                if lines[i].strip() == '*':
+                    i += 1
+                    break
+                xyz_lines.append(lines[i].rstrip())
+                i += 1
+            else:
+                errors.append(f"Line {line_no}: XYZ block for '{name}' missing terminating '*'")
+                continue
+
+            xyz_raw = '\n'.join(xyz_lines).strip()
+            xyz_content = _clean_xyz_block(xyz_raw)
+            if not xyz_content:
+                errors.append(f"Line {line_no}: XYZ block for '{name}' is empty")
+                continue
+
+            entries.append({
+                'line_no': line_no,
+                'name': name,
+                'input_kind': 'xyz',
+                'input_raw': xyz_raw,
+                'input_content': xyz_content,
+                'extras': extras,
+            })
+        return entries, errors
+
+    def get_smiles_list_entries():
+        entries, _errors = parse_batch_entries()
         return entries
 
     def update_smiles_preview_label():
@@ -519,7 +632,7 @@ def create_tab(ctx):
         if not entries:
             with mol_output:
                 clear_output()
-                print('No valid SMILES entries in the batch list.')
+                print('No valid batch entries.')
             return
         if index < 0:
             index = 0
@@ -528,31 +641,53 @@ def create_tab(ctx):
 
         state['smiles_preview_index'] = index
         update_smiles_preview_label()
-        name, smi, extras = entries[index]
+        entry = entries[index]
+        name = entry['name']
+        extras = entry['extras']
+        input_kind = entry['input_kind']
 
         with mol_output:
             clear_output()
-            print(f'Preview: {name}')
-            print(f'SMILES: {smi}')
+            print(f'Preview: {name} [{input_kind.upper()}]')
+            if input_kind == 'smiles':
+                print(f"SMILES: {entry['input_raw']}")
+            else:
+                print('XYZ coordinates')
             if extras:
                 print(f'Options: {extras}')
             print('Converting...')
 
-        xyz_string, num_atoms, method, error = smiles_to_xyz_quick(smi)
         with mol_output:
             clear_output()
-            if error:
-                print(f'Preview: {name}')
+            if input_kind == 'smiles':
+                smi = entry['input_raw']
+                xyz_string, num_atoms, method, error = smiles_to_xyz_quick(smi)
+                if error:
+                    print(f'Preview: {name}')
+                    print(f'SMILES: {smi}')
+                    if extras:
+                        print(f'Options: {extras}')
+                    print(f'Error: {error}')
+                    return
+                print(f'Preview: {name} ({method})')
                 print(f'SMILES: {smi}')
                 if extras:
                     print(f'Options: {extras}')
-                print(f'Error: {error}')
-                return
-            print(f'Preview: {name} ({method})')
-            print(f'SMILES: {smi}')
-            if extras:
-                print(f'Options: {extras}')
-            xyz_data = f'{num_atoms}\nPreview: {name}\n{xyz_string}'
+                xyz_data = f'{num_atoms}\nPreview: {name}\n{xyz_string}'
+            else:
+                xyz_coords = entry['input_content']
+                coord_lines = [ln for ln in xyz_coords.splitlines() if ln.strip()]
+                if not coord_lines:
+                    print(f'Preview: {name}')
+                    if extras:
+                        print(f'Options: {extras}')
+                    print('Error: Empty XYZ coordinates')
+                    return
+                num_atoms = len(coord_lines)
+                print(f'Preview: {name} (XYZ)')
+                if extras:
+                    print(f'Options: {extras}')
+                xyz_data = f'{num_atoms}\nPreview: {name}\n{xyz_coords}'
             view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
             view.addModel(xyz_data, 'xyz')
             apply_molecule_view_style(view)
@@ -563,7 +698,7 @@ def create_tab(ctx):
         if not entries:
             with mol_output:
                 clear_output()
-                print('No valid SMILES entries in the batch list.')
+                print('No valid batch entries.')
             return
         new_index = state['smiles_preview_index'] - 1
         if new_index < 0:
@@ -575,7 +710,7 @@ def create_tab(ctx):
         if not entries:
             with mol_output:
                 clear_output()
-                print('No valid SMILES entries in the batch list.')
+                print('No valid batch entries.')
             return
         new_index = state['smiles_preview_index'] + 1
         if new_index >= len(entries):
@@ -619,68 +754,62 @@ def create_tab(ctx):
 
             time_limit = resolve_time_limit(job_type_widget, custom_time_widget, '48:00:00')
 
-            entries = [l.strip() for l in smiles_batch_widget.value.splitlines() if l.strip()]
+            entries, parse_errors = parse_batch_entries()
+            for err in parse_errors:
+                print(err)
             if not entries:
-                print('Error: SMILES list is empty.')
+                print('Error: No valid batch entries.')
                 return
 
-            for idx, entry in enumerate(entries, 1):
-                if ';' not in entry:
-                    print(f'Line {idx}: Missing \';\' delimiter -> {entry}')
-                    continue
-                parts = [p.strip() for p in entry.split(';') if p.strip()]
-                if len(parts) < 2:
-                    print(f'Line {idx}: Missing name or SMILES -> {entry}')
-                    continue
-
-                name_raw = parts[0]
-                smi = parts[1]
-                extra_parts = parts[2:]
-
-                if not name_raw or not smi:
-                    print(f'Line {idx}: Missing name or SMILES -> {entry}')
-                    continue
-
-                extras = {}
-                for part in extra_parts:
-                    if '=' not in part:
-                        print(f"Line {idx}: Invalid override '{part}' (expected key=value)")
-                        continue
-                    key, value = part.split('=', 1)
-                    key, value = key.strip(), value.strip()
-                    if not key:
-                        print(f"Line {idx}: Invalid override '{part}' (empty key)")
-                        continue
-                    extras[key] = value
-
+            for entry in entries:
+                line_no = entry.get('line_no', '?')
+                name_raw = entry.get('name', '').strip()
+                extras = dict(entry.get('extras', {}))
+                input_kind = entry.get('input_kind', 'smiles')
                 safe_name = ''.join(c for c in name_raw if c.isalnum() or c in ('_', '-'))
                 if not safe_name:
-                    print(f'Line {idx}: Invalid name -> {name_raw}')
+                    print(f'Line {line_no}: Invalid name -> {name_raw}')
                     continue
 
                 full_job_name = f'{job_prefix}_{safe_name}'
                 safe_job_name = ''.join(c for c in full_job_name if c.isalnum() or c in ('_', '-'))
                 if not safe_job_name:
-                    print(f'Line {idx}: Invalid job name -> {full_job_name}')
-                    continue
-
-                xyz_string, num_atoms, method, error = smiles_to_xyz_quick(smi)
-                if error:
-                    print(f'Line {idx}: {safe_name} - SMILES error: {error}')
+                    print(f'Line {line_no}: Invalid job name -> {full_job_name}')
                     continue
 
                 job_dir = ctx.calc_dir / safe_job_name
                 job_dir.mkdir(parents=True, exist_ok=True)
 
-                smiles_line = f'SMILES={smi}'
-                if re.search(r'(?m)^SMILES=.*$', control_content_base):
-                    control_content = re.sub(
-                        r'(?m)^SMILES=.*$',
-                        lambda _m, repl=smiles_line: repl,
-                        control_content_base,
-                    )
+                if input_kind == 'smiles':
+                    smi = entry.get('input_raw', '').strip()
+                    if not smi:
+                        print(f'Line {line_no}: Missing SMILES payload for {safe_name}')
+                        continue
+                    xyz_string, _num_atoms, _method, error = smiles_to_xyz_quick(smi)
+                    if error:
+                        print(f'Line {line_no}: {safe_name} - SMILES error: {error}')
+                        continue
+                    input_content = xyz_string
+                    smiles_line = f'SMILES={smi}'
+                    if re.search(r'(?m)^SMILES=.*$', control_content_base):
+                        control_content = re.sub(
+                            r'(?m)^SMILES=.*$',
+                            lambda _m, repl=smiles_line: repl,
+                            control_content_base,
+                        )
+                    else:
+                        control_content = control_content_base.rstrip() + f'\n{smiles_line}\n'
                 else:
-                    control_content = control_content_base.rstrip() + f'\n{smiles_line}\n'
+                    input_content = (entry.get('input_content') or '').strip()
+                    if not input_content:
+                        print(f'Line {line_no}: {safe_name} - empty XYZ payload')
+                        continue
+                    input_content = _clean_xyz_block(input_content)
+                    if not input_content:
+                        print(f'Line {line_no}: {safe_name} - empty XYZ payload')
+                        continue
+                    control_content = control_content_base
+
                 for key, value in extras.items():
                     pattern = rf'(?m)^{re.escape(key)}\s*=.*$'
                     replacement = f'{key}={value}'
@@ -694,7 +823,7 @@ def create_tab(ctx):
                         control_content = control_content.rstrip() + f'\n{replacement}\n'
 
                 (job_dir / 'CONTROL.txt').write_text(control_content)
-                (job_dir / 'input.txt').write_text(xyz_string)
+                (job_dir / 'input.txt').write_text(input_content)
 
                 pal, maxcore = parse_resource_settings(control_content)
                 mode, co2_delta = resolve_co2_submit_mode(control_content)
@@ -707,9 +836,12 @@ def create_tab(ctx):
                 if result.returncode == 0:
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
                     if mode == 'delfin-co2-chain':
-                        print(f'Submitted {safe_job_name} (ID: {job_id}, CO2 delta: {co2_delta})')
+                        print(
+                            f'Submitted {safe_job_name} '
+                            f'[{input_kind.upper()}] (ID: {job_id}, CO2 delta: {co2_delta})'
+                        )
                     else:
-                        print(f'Submitted {safe_job_name} (ID: {job_id})')
+                        print(f'Submitted {safe_job_name} [{input_kind.upper()}] (ID: {job_id})')
                 else:
                     print(f'Failed {safe_job_name}: {result.stderr or result.stdout}')
 
@@ -1021,7 +1153,9 @@ def create_tab(ctx):
         widgets.HBox([build_complex_button, guppy_submit_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
-        widgets.HTML('<b>Batch SMILES:</b>'), smiles_batch_widget, spacer,
+        widgets.HTML('<b>Batch Input (SMILES/XYZ):</b>'),
+        smiles_batch_help,
+        smiles_batch_widget, spacer,
         widgets.HBox(
             [smiles_prev_button, smiles_preview_label,
              smiles_next_button, submit_smiles_list_button],
