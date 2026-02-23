@@ -692,11 +692,21 @@ def create_tab(ctx):
             return 'rejected_visualize'
         return None
 
+    def _calc_label_to_name(label):
+        if not label or label.startswith('('):
+            return ''
+        head, sep, tail = label.partition(' ')
+        if sep:
+            return tail.strip()
+        return head.strip()
+
     def _calc_get_selected_path():
         selected = calc_file_list.value
         if not selected or selected.startswith('('):
             return None
-        name = selected[2:].strip()
+        name = _calc_label_to_name(selected)
+        if not name:
+            return None
         return (
             (_calc_dir() / state['current_path'] / name)
             if state['current_path']
@@ -1384,7 +1394,7 @@ def create_tab(ctx):
         selected = calc_file_list.value
         if not selected or selected.startswith('('):
             return False
-        name = selected[2:].strip()
+        name = _calc_label_to_name(selected)
         mode = _calc_mode_for_mutation_csv_name(name)
         if not mode:
             if name.lower() != 'input.txt':
@@ -1441,7 +1451,7 @@ def create_tab(ctx):
         selected = calc_file_list.value
         if not selected or selected.startswith('('):
             return None
-        name = selected[2:].strip()
+        name = _calc_label_to_name(selected)
         if not name:
             return None
         full_path = (
@@ -3192,6 +3202,98 @@ def create_tab(ctx):
         except Exception:
             return False
 
+    def calc_collect_local_job_status_dirs():
+        """Return latest local queue status per top-level calc folder."""
+        backend = getattr(ctx, 'backend', None)
+        load_jobs = getattr(backend, '_load_jobs', None)
+        if not callable(load_jobs):
+            return {}
+
+        try:
+            data = load_jobs()
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+
+        calc_root = _calc_dir()
+        try:
+            calc_root_resolved = calc_root.resolve()
+        except Exception:
+            calc_root_resolved = calc_root
+
+        latest_by_folder = {}
+        for job in data.get('jobs', []) or []:
+            if not isinstance(job, dict):
+                continue
+            raw_dir = job.get('job_dir')
+            raw_status = str(job.get('status', '')).upper().strip()
+            if not raw_dir or not raw_status:
+                continue
+            try:
+                job_dir = Path(raw_dir).resolve()
+            except Exception:
+                continue
+            try:
+                rel = job_dir.relative_to(calc_root_resolved)
+            except Exception:
+                continue
+            if not rel.parts:
+                continue
+
+            folder_path = calc_root_resolved / rel.parts[0]
+            try:
+                job_id = int(job.get('job_id', 0))
+            except Exception:
+                job_id = 0
+
+            prev = latest_by_folder.get(folder_path)
+            if prev is None or job_id >= prev[0]:
+                latest_by_folder[folder_path] = (job_id, raw_status)
+
+        return {folder: status for folder, (_job_id, status) in latest_by_folder.items()}
+
+    def calc_folder_has_completed_results(folder: Path):
+        """Best-effort check whether a folder contains finished calculation outputs."""
+        if not folder.is_dir():
+            return False
+
+        finished_markers = (
+            'DELFIN.txt',
+            'DELFIN.docx',
+            'DELFIN_Data.json',
+            'ESD.txt',
+            'report.docx',
+        )
+        if any((folder / marker).exists() for marker in finished_markers):
+            return True
+
+        co2_markers = (
+            folder / 'CO2_coordination' / 'orientation_scan' / 'orientation_scan.csv',
+            folder / 'CO2_coordination' / 'relaxed_surface_scan' / 'scan.relaxscanact.dat',
+            folder / 'CO2_coordination' / 'relaxed_surface_scan' / 'scan.out',
+        )
+        if any(marker.exists() for marker in co2_markers):
+            return True
+
+        for scan_dir in (
+            folder,
+            folder / 'builder',
+            folder / 'CO2_coordination' / 'relaxed_surface_scan',
+        ):
+            try:
+                if not scan_dir.exists():
+                    continue
+                for out_path in scan_dir.glob('*.out'):
+                    if out_path.name.lower().startswith('delfin_'):
+                        continue
+                    if calc_orca_terminated_normally(out_path):
+                        return True
+            except Exception:
+                continue
+
+        return False
+
     # -- directory listing --------------------------------------------------
     def calc_list_directory():
         state['file_content'] = ''
@@ -3250,9 +3352,21 @@ def create_tab(ctx):
                     current_dir.iterdir(),
                     key=lambda x: (not x.is_dir(), x.name.lower()),
                 )
+            local_status_dirs = calc_collect_local_job_status_dirs()
             for entry in entries:
                 if entry.is_dir():
-                    items.append(f'📁 {entry.name}')
+                    try:
+                        entry_resolved = entry.resolve()
+                    except Exception:
+                        entry_resolved = entry
+                    if entry_resolved in local_status_dirs:
+                        status = local_status_dirs.get(entry_resolved, '')
+                        folder_icon = '✅' if status == 'COMPLETED' else '📂'
+                    elif calc_folder_has_completed_results(entry):
+                        folder_icon = '✅'
+                    else:
+                        folder_icon = '📂'
+                    items.append(f'{folder_icon} {entry.name}')
                 else:
                     suffix = entry.suffix.lower()
                     if suffix == '.xyz':
@@ -3425,7 +3539,7 @@ def create_tab(ctx):
         sel_lower = selected.lower() if selected else ''
         rmsd_available = bool(state.get('rmsd_available'))
         if selected:
-            name = selected[2:].strip()
+            name = _calc_label_to_name(selected)
             if _calc_is_complete_mutation_csv(name):
                 calc_options_dropdown.options = ['(Options)', 'Preselection', 'Visualize']
                 calc_options_dropdown.value = '(Options)'
@@ -3974,7 +4088,7 @@ def create_tab(ctx):
             calc_content_area.layout.display = 'block'
             selected = calc_file_list.value
             if selected:
-                name = selected[2:].strip()
+                name = _calc_label_to_name(selected)
                 stage_name = name.replace('_OCCUPIER.txt', '').replace('OCCUPIER.txt', '')
                 calc_override_input.value = f'{stage_name}=' if stage_name else ''
         elif change['new'] == 'Recalc':
@@ -4074,7 +4188,7 @@ def create_tab(ctx):
     def calc_on_override_start(button):
         is_recalc = calc_options_dropdown.value == 'Recalc'
         selected = calc_file_list.value
-        selected_name = selected[2:].strip() if selected and len(selected) > 2 else ''
+        selected_name = _calc_label_to_name(selected) if selected else ''
         is_inp_recalc = bool(is_recalc and selected_name.lower().endswith('.inp'))
 
         if not is_recalc:
@@ -4347,7 +4461,7 @@ def create_tab(ctx):
                 calc_delete_confirm.layout.display = 'none'
                 state['delete_current'] = False
                 return
-            name = selected[2:].strip()
+            name = _calc_label_to_name(selected)
             full_path = (
                 (_calc_dir() / state['current_path'] / name)
                 if state['current_path']
@@ -4391,7 +4505,7 @@ def create_tab(ctx):
         if not selected or selected.startswith('('):
             return
 
-        name = selected[2:].strip()
+        name = _calc_label_to_name(selected)
         full_path = (
             (_calc_dir() / state['current_path'] / name)
             if state['current_path']
