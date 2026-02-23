@@ -180,7 +180,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     children.append(tab5)
     titles.append('Calculations')
     children.append(tab6)
-    titles.append('Archiv')
+    titles.append('Archive')
 
     # Disable spellcheck in all textareas (browser-level red underlines).
     disable_spellcheck_global(ctx)

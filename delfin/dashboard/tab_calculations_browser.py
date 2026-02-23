@@ -42,8 +42,8 @@ def create_tab(ctx):
     CALC_MOL_SIZE = 460
     CALC_MOL_DYNAMIC_SCALE = 0.9725
     CALC_MOL_ZOOM = 0.9
-    CALC_LEFT_DEFAULT = 320
-    CALC_LEFT_MIN = 320
+    CALC_LEFT_DEFAULT = 360
+    CALC_LEFT_MIN = 360
     CALC_LEFT_MAX = 520
     CALC_PRESELECT_VIZ_SIZE = 520
     CALC_RMSD_PANEL_HEIGHT = f'{CALC_MOL_SIZE}px'
@@ -68,6 +68,7 @@ def create_tab(ctx):
         'selected_inp_base': '',
         'recalc_active': False,
         'delete_current': False,
+        'select_mode': False,
         'file_is_preview': False,
         'file_preview_note': '',
         'file_chunk_start': 0,
@@ -116,6 +117,38 @@ def create_tab(ctx):
     calc_delete_btn = widgets.Button(
         description='🗑 Delete', button_style='danger',
         layout=widgets.Layout(width='80px', height='26px'),
+    )
+    calc_select_btn = widgets.Button(
+        description='☑ Select',
+        layout=widgets.Layout(width='76px', height='26px'),
+    )
+
+    # Detect whether we are inside the Archive tab (calc_dir == archiv_dir)
+    _is_archive_tab = ctx.calc_dir.resolve() == ctx.archiv_dir.resolve()
+
+    # Move-to-Archive button (hidden when we are already inside the Archive)
+    calc_move_archive_btn = widgets.Button(
+        description='→ Archive', button_style='info',
+        layout=widgets.Layout(
+            width='90px', height='26px',
+            display='none' if _is_archive_tab else 'inline-flex',
+        ),
+    )
+    calc_move_archive_yes_btn = widgets.Button(
+        description='Yes', button_style='warning',
+        layout=widgets.Layout(width='60px', height='26px'),
+    )
+    calc_move_archive_no_btn = widgets.Button(
+        description='No',
+        layout=widgets.Layout(width='60px', height='26px'),
+    )
+    calc_move_archive_label = widgets.HTML('<b>Move to Archive?</b>')
+    calc_move_archive_confirm = widgets.HBox(
+        [calc_move_archive_label, calc_move_archive_yes_btn, calc_move_archive_no_btn],
+        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+    )
+    calc_move_archive_status = widgets.HTML(
+        value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
 
     # Delete confirmation
@@ -166,6 +199,16 @@ def create_tab(ctx):
             width='100%', flex='1 1 0', min_height='0', margin='-4px 0 0 0'
         ),
     )
+
+    # Multi-select list (shown only in Select mode)
+    calc_multi_select = widgets.SelectMultiple(
+        options=[], rows=22,
+        layout=widgets.Layout(
+            width='100%', flex='1 1 0', min_height='0', margin='-4px 0 0 0',
+            display='none',
+        ),
+    )
+    calc_multi_select.add_class('delfin-multi-select')
 
     # Content area
     calc_content_area = widgets.HTML(
@@ -2108,6 +2151,15 @@ def create_tab(ctx):
             }
             html += esc(text.slice(last));
             el.innerHTML = html;
+            if (__INDEX__ >= 0) {
+                const mark = document.getElementById('calc-current-match');
+                if (mark) {
+                    const boxRect = box.getBoundingClientRect();
+                    const markRect = mark.getBoundingClientRect();
+                    const delta = (markRect.top - boxRect.top) - (box.clientHeight / 2);
+                    box.scrollTop += delta;
+                }
+            }
         })();
         """
         js = js.replace('__QUERY__', repr(query)).replace('__INDEX__', str(current_index))
@@ -3318,6 +3370,8 @@ def create_tab(ctx):
         calc_path_display.value = ''
         calc_download_status.value = ''
         calc_search_result.value = ''
+        calc_search_suggest.value = '(Select)'
+        calc_search_input.value = ''
         calc_folder_search.value = ''
         calc_prev_btn.disabled = True
         calc_next_btn.disabled = True
@@ -3400,6 +3454,7 @@ def create_tab(ctx):
 
         state['all_items'] = items if items else ['(Empty folder)']
         calc_file_list.options = state['all_items']
+        calc_multi_select.options = state['all_items']
         calc_update_path_display()
         calc_update_report_btn()
         calc_update_download_btn()
@@ -3408,9 +3463,12 @@ def create_tab(ctx):
         query = calc_folder_search.value.strip().lower()
         if not query:
             calc_file_list.options = state['all_items']
+            calc_multi_select.options = state['all_items']
         else:
             filtered = [item for item in state['all_items'] if query in item.lower()]
-            calc_file_list.options = filtered if filtered else ['(No matches)']
+            result = filtered if filtered else ['(No matches)']
+            calc_file_list.options = result
+            calc_multi_select.options = result
 
     # -- recalc helpers -----------------------------------------------------
     def calc_reset_recalc_state():
@@ -3538,7 +3596,6 @@ def create_tab(ctx):
             return
         if _calc_should_highlight():
             calc_apply_highlight(calc_search_input.value.strip(), state['current_match'])
-            calc_scroll_to('match')
 
     # -- options dropdown ---------------------------------------------------
     def calc_update_options_dropdown():
@@ -3588,13 +3645,16 @@ def create_tab(ctx):
             parts = state['current_path'].split('/')
             state['current_path'] = '/'.join(parts[:-1])
             calc_list_directory()
+            calc_file_list.value = None
 
     def calc_on_home(b):
         state['current_path'] = ''
         calc_list_directory()
+        calc_file_list.value = None
 
     def calc_on_refresh(b):
         calc_list_directory()
+        calc_file_list.value = None
 
     def calc_go_top(b):
         if not state['file_content']:
@@ -3710,7 +3770,6 @@ def create_tab(ctx):
         calc_update_search_result()
         if _calc_should_highlight():
             calc_apply_highlight(query, state['current_match'])
-            calc_scroll_to('match')
 
     def calc_on_suggest(change):
         value = change['new']
@@ -4435,7 +4494,34 @@ def create_tab(ctx):
             msg = result.stderr or result.stdout or 'Unknown error'
             calc_recalc_status.value = f'<span style="color:#d32f2f;">{_html.escape(msg)}</span>'
 
+    def calc_on_select_toggle(button):
+        state['select_mode'] = not state['select_mode']
+        if state['select_mode']:
+            calc_select_btn.button_style = 'success'
+            calc_file_list.layout.display = 'none'
+            calc_multi_select.layout.display = ''
+            calc_multi_select.value = ()
+        else:
+            calc_select_btn.button_style = ''
+            calc_multi_select.layout.display = 'none'
+            calc_file_list.layout.display = ''
+            calc_multi_select.value = ()
+            calc_file_list.value = None
+            calc_delete_confirm.layout.display = 'none'
+            calc_move_archive_confirm.layout.display = 'none'
+
     def calc_on_delete_click(button):
+        if state['select_mode']:
+            real = [s for s in calc_multi_select.value if not s.startswith('(')]
+            if not real:
+                calc_delete_status.value = '<span style="color:#d32f2f;">No items selected.</span>'
+                return
+            names = [_calc_label_to_name(s) for s in real]
+            label_str = ', '.join(f'<code>{_html.escape(n)}</code>' for n in names)
+            calc_delete_label.value = f'<b>Delete {len(names)} item(s)?</b> {label_str}'
+            state['delete_current'] = False
+            calc_delete_confirm.layout.display = 'flex'
+            return
         if not calc_file_list.value or calc_file_list.value.startswith('('):
             if state['current_path']:
                 calc_delete_label.value = (
@@ -4452,6 +4538,49 @@ def create_tab(ctx):
         calc_delete_confirm.layout.display = 'flex'
 
     def calc_on_delete_yes(button):
+        if state['select_mode']:
+            real = [s for s in calc_multi_select.value if not s.startswith('(')]
+            if not real:
+                calc_delete_status.value = '<span style="color:#d32f2f;">Nothing to delete.</span>'
+                calc_delete_confirm.layout.display = 'none'
+                return
+            errors, deleted = [], []
+            for label in real:
+                name = _calc_label_to_name(label)
+                full_path = (
+                    (_calc_dir() / state['current_path'] / name)
+                    if state['current_path']
+                    else (_calc_dir() / name)
+                )
+                try:
+                    if full_path.is_dir():
+                        shutil.rmtree(full_path)
+                    else:
+                        full_path.unlink()
+                    deleted.append(name)
+                except Exception as exc:
+                    errors.append(f'{_html.escape(name)}: {_html.escape(str(exc))}')
+            calc_delete_confirm.layout.display = 'none'
+            if deleted and not errors:
+                calc_delete_status.value = (
+                    f'<span style="color:#2e7d32;">Deleted {len(deleted)} item(s).</span>'
+                )
+            elif deleted and errors:
+                calc_delete_status.value = (
+                    f'<span style="color:#e65100;">Deleted {len(deleted)}, '
+                    f'failed: {"; ".join(errors)}</span>'
+                )
+            else:
+                calc_delete_status.value = (
+                    f'<span style="color:#d32f2f;">{"; ".join(errors)}</span>'
+                )
+            calc_multi_select.value = ()
+            saved_filter = calc_folder_search.value
+            calc_list_directory()
+            if saved_filter:
+                calc_folder_search.value = saved_filter
+                calc_filter_file_list()
+            return
         delete_current = state['delete_current']
         if delete_current:
             if not state['current_path']:
@@ -4499,6 +4628,75 @@ def create_tab(ctx):
     def calc_on_delete_no(button):
         calc_delete_hide_confirm()
 
+    def calc_on_move_archive_click(button):
+        if _is_archive_tab:
+            return
+        if state['select_mode']:
+            real = [s for s in calc_multi_select.value if not s.startswith('(')]
+        else:
+            sel = calc_file_list.value
+            real = [sel] if sel and not sel.startswith('(') else []
+        if not real:
+            calc_move_archive_status.value = '<span style="color:#d32f2f;">No items selected.</span>'
+            return
+        names = [_calc_label_to_name(s) for s in real]
+        label_str = ', '.join(f'<code>{_html.escape(n)}</code>' for n in names)
+        calc_move_archive_label.value = (
+            f'<b>Move {len(names)} item(s) to Archive?</b> {label_str}'
+        )
+        calc_move_archive_confirm.layout.display = 'flex'
+
+    def calc_on_move_archive_yes(button):
+        if state['select_mode']:
+            real = [s for s in calc_multi_select.value if not s.startswith('(')]
+        else:
+            sel = calc_file_list.value
+            real = [sel] if sel and not sel.startswith('(') else []
+        calc_move_archive_confirm.layout.display = 'none'
+        if not real:
+            return
+        dest_dir = ctx.archiv_dir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        errors, moved = [], []
+        for label in real:
+            name = _calc_label_to_name(label)
+            src = (
+                (_calc_dir() / state['current_path'] / name)
+                if state['current_path']
+                else (_calc_dir() / name)
+            )
+            dst = dest_dir / name
+            try:
+                shutil.move(str(src), str(dst))
+                moved.append(name)
+            except Exception as exc:
+                errors.append(f'{_html.escape(name)}: {_html.escape(str(exc))}')
+        if moved and not errors:
+            calc_move_archive_status.value = (
+                f'<span style="color:#2e7d32;">Moved {len(moved)} item(s) to Archive.</span>'
+            )
+        elif moved and errors:
+            calc_move_archive_status.value = (
+                f'<span style="color:#e65100;">Moved {len(moved)}, '
+                f'failed: {"; ".join(errors)}</span>'
+            )
+        else:
+            calc_move_archive_status.value = (
+                f'<span style="color:#d32f2f;">{"; ".join(errors)}</span>'
+            )
+        if state['select_mode']:
+            calc_multi_select.value = ()
+        else:
+            calc_file_list.value = None
+        saved_filter = calc_folder_search.value
+        calc_list_directory()
+        if saved_filter:
+            calc_folder_search.value = saved_filter
+            calc_filter_file_list()
+
+    def calc_on_move_archive_no(button):
+        calc_move_archive_confirm.layout.display = 'none'
+
     def calc_on_sort_change(change):
         saved_filter = calc_folder_search.value
         calc_list_directory()
@@ -4525,6 +4723,7 @@ def create_tab(ctx):
                 f'{state["current_path"]}/{name}' if state['current_path'] else name
             )
             calc_list_directory()
+            calc_file_list.value = None
             return
 
         # Reset search state
@@ -5045,6 +5244,10 @@ def create_tab(ctx):
     calc_delete_btn.on_click(calc_on_delete_click)
     calc_delete_yes_btn.on_click(calc_on_delete_yes)
     calc_delete_no_btn.on_click(calc_on_delete_no)
+    calc_select_btn.on_click(calc_on_select_toggle)
+    calc_move_archive_btn.on_click(calc_on_move_archive_click)
+    calc_move_archive_yes_btn.on_click(calc_on_move_archive_yes)
+    calc_move_archive_no_btn.on_click(calc_on_move_archive_no)
     calc_file_list.observe(calc_on_select, names='value')
     calc_folder_search.observe(calc_filter_file_list, names='value')
     calc_options_dropdown.observe(calc_on_options_change, names='value')
@@ -5074,14 +5277,57 @@ def create_tab(ctx):
     else:
         calc_file_list.options = ['(calc folder not found)']
 
+    # Inject JS once: single-click toggles selection, Shift+click selects range.
+    # A global flag prevents re-installation on every tab re-render.
+    _multi_select_js = (
+        '(function(){'
+        'if(window._delfinMultiSelectReady)return;'
+        'window._delfinMultiSelectReady=true;'
+        'var lastIdx=-1;'
+        'function install(sel){'
+        'if(sel._delfinToggle)return;sel._delfinToggle=true;'
+        'sel.addEventListener("mousedown",function(e){'
+        'if(e.target.tagName!=="OPTION")return;'
+        'e.preventDefault();'
+        'var opts=Array.from(sel.options);'
+        'var idx=opts.indexOf(e.target);'
+        'if(e.shiftKey&&lastIdx>=0){'
+        'var lo=Math.min(lastIdx,idx),hi=Math.max(lastIdx,idx);'
+        'for(var i=lo;i<=hi;i++)opts[i].selected=true;'
+        '}else{e.target.selected=!e.target.selected;lastIdx=idx;}'
+        'sel.dispatchEvent(new Event("change",{bubbles:true}));'
+        'sel.focus();'
+        '},true);}'
+        'function scanAndInstall(root){'
+        '(root.querySelectorAll?root.querySelectorAll(".delfin-multi-select select"):[]).forEach(install);}'
+        'scanAndInstall(document.body);'
+        'new MutationObserver(function(ms){'
+        'ms.forEach(function(m){'
+        'm.addedNodes.forEach(function(n){if(n.nodeType===1)scanAndInstall(n);});'
+        '});}).observe(document.body,{childList:true,subtree:true});'
+        '})();'
+    )
+    from IPython.display import Javascript as _Javascript
+    with ctx.js_output:
+        display(_Javascript(_multi_select_js))
+
     # -- layout -------------------------------------------------------------
+    _archive_row_children = [] if _is_archive_tab else [calc_move_archive_btn]
     calc_nav_bar = widgets.VBox([
         calc_path_label,
         widgets.HBox(
-            [calc_back_btn, calc_home_btn, calc_refresh_btn, calc_delete_btn],
+            [calc_back_btn, calc_home_btn, calc_refresh_btn, calc_delete_btn, calc_select_btn],
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden',
                 justify_content='flex-start', gap='6px',
+            ),
+        ),
+        widgets.HBox(
+            _archive_row_children,
+            layout=widgets.Layout(
+                width='100%', overflow_x='hidden',
+                justify_content='flex-start', gap='6px',
+                display='none' if _is_archive_tab else 'flex',
             ),
         ),
     ], layout=widgets.Layout(width='100%', overflow_x='hidden'))
@@ -5090,6 +5336,7 @@ def create_tab(ctx):
         calc_nav_bar,
         calc_filter_sort_row,
         calc_file_list,
+        calc_multi_select,
     ], layout=widgets.Layout(
         flex=f'0 0 {CALC_LEFT_DEFAULT}px',
         min_width=f'{CALC_LEFT_MIN}px',
@@ -5110,6 +5357,8 @@ def create_tab(ctx):
         '.calc-left { display:flex !important; flex-direction:column !important; }'
         '.calc-left .widget-select { flex:1 1 0 !important; min-height:0 !important; }'
         '.calc-left .widget-select select { height:100% !important; }'
+        '.calc-left .widget-select-multiple { flex:1 1 0 !important; min-height:0 !important; }'
+        '.calc-left .widget-select-multiple select { height:100% !important; }'
         '.calc-content-area { flex:1 1 0 !important; min-height:0 !important;'
         ' overflow-y:auto !important; overflow-x:hidden !important; }'
         '.calc-content-area .widget-html-content { height:100%; }'
@@ -5228,6 +5477,8 @@ def create_tab(ctx):
         calc_preselect_container,
         calc_delete_confirm,
         calc_delete_status,
+        calc_move_archive_confirm,
+        calc_move_archive_status,
         calc_recalc_toolbar,
         calc_content_toolbar,
         calc_chunk_hidden_row,
