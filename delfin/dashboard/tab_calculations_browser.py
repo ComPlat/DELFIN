@@ -181,6 +181,9 @@ def create_tab(ctx):
     _table_number_re = re.compile(
         r'[-+]?(?:(?:\d+[.,]\d*)|(?:[.,]\d+)|\d+)(?:[eEdD][-+]?\d+)?'
     )
+    _table_number_full_re = re.compile(
+        r'^[-+]?(?:(?:\d+[.,]\d*)|(?:[.,]\d+)|\d+)(?:[eEdD][-+]?\d+)?$'
+    )
 
     def _normalize_table_number(token):
         value = str(token).strip().replace('D', 'E').replace('d', 'e')
@@ -208,6 +211,11 @@ def create_tab(ctx):
     calc_table_recursive_cb = widgets.ToggleButton(
         value=False, description='Recurse',
         layout=widgets.Layout(width='86px', height='26px'),
+    )
+    calc_table_decimal_comma_btn = widgets.ToggleButton(
+        value=False, description='Dot to Comma',
+        tooltip='Convert decimal point to decimal comma in table/CSV values',
+        layout=widgets.Layout(width='126px', height='26px'),
     )
     calc_table_add_col_btn = widgets.Button(
         description='+ Column',
@@ -248,6 +256,7 @@ def create_tab(ctx):
             calc_table_file_input,
             calc_table_scope_dd,
             calc_table_recursive_cb,
+            calc_table_decimal_comma_btn,
         ], layout=widgets.Layout(gap='6px', align_items='center', width='100%')),
         calc_table_cols_box,
         widgets.HBox(
@@ -5059,6 +5068,14 @@ def create_tab(ctx):
             return [f'err:{exc}']
         return ['—']
 
+    def _format_table_output_value(raw_value):
+        value = str(raw_value)
+        if not calc_table_decimal_comma_btn.value:
+            return value
+        if not _table_number_full_re.fullmatch(value.strip()):
+            return value
+        return value.replace('.', ',')
+
     def _render_extract_table_html(headers, rows):
         th = ''.join(
             f'<th style="padding:4px 10px;border:1px solid #ddd;'
@@ -5184,9 +5201,9 @@ def create_tab(ctx):
                     if not values:
                         row.append('—')
                     elif len(values) == 1:
-                        row.append(values[0])
+                        row.append(_format_table_output_value(values[0]))
                     elif row_idx < len(values):
-                        row.append(values[row_idx])
+                        row.append(_format_table_output_value(values[row_idx]))
                     else:
                         row.append('—')
                 rows.append(row)
