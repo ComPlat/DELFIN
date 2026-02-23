@@ -4930,9 +4930,9 @@ def create_tab(ctx):
                 layout=widgets.Layout(width='92px', height='26px'),
             )
             occ_dd = widgets.Dropdown(
-                options=[('last', 'last'), ('first', 'first')],
+                options=[('last', 'last'), ('first', 'first'), ('all', 'all')],
                 value=col.get('occ', 'last'),
-                layout=widgets.Layout(width='62px', height='26px'),
+                layout=widgets.Layout(width='66px', height='26px'),
             )
             pat_w = widgets.Text(
                 value=col.get('pattern', ''),
@@ -4986,46 +4986,54 @@ def create_tab(ctx):
             })
         calc_table_cols_box.children = tuple(rows)
 
-    def _extract_value(col_def, text, json_data):
+    def _extract_values(col_def, text, json_data):
         typ = col_def.get('type', 'regex')
         pat = col_def.get('pattern', '').strip()
         occ = col_def.get('occ', 'last')
         if not pat:
-            return '—'
+            return ['—']
         try:
             if typ == 'regex':
                 rx = re.compile(pat)
                 if rx.groups > 0:
                     matches = rx.findall(text)
                     if not matches:
-                        return '—'
-                    val = matches[-1] if occ == 'last' else matches[0]
-                    if isinstance(val, tuple):
-                        val = val[0]
-                    return str(val).strip()
-                iters = list(rx.finditer(text))
-                if not iters:
-                    return '—'
-                m = iters[-1] if occ == 'last' else iters[0]
-                line_end = text.find('\n', m.end())
-                if line_end == -1:
-                    line_end = len(text)
-                tail = text[m.end():line_end]
-                nums = [nm.group(0) for nm in _table_number_re.finditer(tail)]
-                if nums:
-                    chosen = nums[-1] if occ == 'last' else nums[0]
-                    return _normalize_table_number(chosen)
-                # wrapped lines: also inspect a short window after the match
-                near = text[m.end():min(len(text), m.end() + 240)]
-                near_nums = [nm.group(0) for nm in _table_number_re.finditer(near)]
-                if near_nums:
-                    chosen = near_nums[-1] if occ == 'last' else near_nums[0]
-                    return _normalize_table_number(chosen)
-                # fallback: keep old behavior if no number follows in the line
-                return m.group(0).strip()
+                        return ['—']
+                    values = []
+                    for match in matches:
+                        val = match
+                        if isinstance(val, tuple):
+                            val = val[0] if val else '—'
+                        values.append(str(val).strip())
+                else:
+                    values = []
+                    for m in rx.finditer(text):
+                        line_end = text.find('\n', m.end())
+                        if line_end == -1:
+                            line_end = len(text)
+                        tail = text[m.end():line_end]
+                        nums = [nm.group(0) for nm in _table_number_re.finditer(tail)]
+                        if nums:
+                            values.append(_normalize_table_number(nums[0]))
+                            continue
+                        # wrapped lines: inspect a short window after the match
+                        near = text[m.end():min(len(text), m.end() + 240)]
+                        near_nums = [nm.group(0) for nm in _table_number_re.finditer(near)]
+                        if near_nums:
+                            values.append(_normalize_table_number(near_nums[0]))
+                            continue
+                        # fallback: keep old behavior if no number follows
+                        values.append(m.group(0).strip())
+                    if not values:
+                        return ['—']
+                if occ == 'all':
+                    return values
+                if occ == 'first':
+                    return [values[0]]
+                return [values[-1]]
             elif typ == 'json':
                 if json_data is None:
-                    return '—'
+                    return ['—']
                 obj = json_data
                 for part in pat.split('.'):
                     if isinstance(obj, dict):
@@ -5034,13 +5042,22 @@ def create_tab(ctx):
                         try:
                             obj = obj[int(part)]
                         except (ValueError, IndexError):
-                            return '—'
+                            return ['—']
                     else:
-                        return '—'
-                return str(obj)
+                        return ['—']
+                if isinstance(obj, list):
+                    if not obj:
+                        return ['—']
+                    values = [str(v) for v in obj]
+                    if occ == 'all':
+                        return values
+                    if occ == 'first':
+                        return [values[0]]
+                    return [values[-1]]
+                return [str(obj)]
         except Exception as exc:
-            return f'err:{exc}'
-        return '—'
+            return [f'err:{exc}']
+        return ['—']
 
     def _render_extract_table_html(headers, rows):
         th = ''.join(
@@ -5159,15 +5176,31 @@ def create_tab(ctx):
                     json_data = json.loads(content)
                 except Exception:
                     pass
-            rows.append([folder.name] + [_extract_value(c, content, json_data) for c in cols])
+            col_values = [_extract_values(c, content, json_data) for c in cols]
+            row_count = max((len(vs) for vs in col_values), default=1)
+            for row_idx in range(row_count):
+                row = [folder.name]
+                for values in col_values:
+                    if not values:
+                        row.append('—')
+                    elif len(values) == 1:
+                        row.append(values[0])
+                    elif row_idx < len(values):
+                        row.append(values[row_idx])
+                    else:
+                        row.append('—')
+                rows.append(row)
         calc_table_output.value = _render_extract_table_html(headers, rows)
         import io, csv as _csv
         buf = io.StringIO()
         _csv.writer(buf).writerows([headers] + rows)
         state['table_csv_data'] = buf.getvalue()
         calc_table_csv_btn.layout.display = 'inline-flex'
-        n = len(rows)
-        msg = f'<span style="color:#2e7d32;">{n} folder(s) processed'
+        folder_count = len(folders)
+        row_count = len(rows)
+        msg = f'<span style="color:#2e7d32;">{folder_count} folder(s) processed'
+        if row_count != folder_count:
+            msg += f', {row_count} row(s) generated'
         if missing:
             msg += f', {missing} without {_html.escape(target_file)}'
         calc_table_status.value = msg + '.</span>'
