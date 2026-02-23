@@ -913,10 +913,25 @@ def write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index, start_di
         block = basis_block if basis_block.endswith("\n") else basis_block + "\n"
         sections.append(block)
     sections.append(f"%maxcore {maxcore}\n")
+    if broken_sym_line and broken_sym_line.strip().lower().startswith("%scf"):
+        scf_inner = broken_sym_line.strip()[4:].strip()
+        if scf_inner.lower().endswith("end"):
+            scf_inner = scf_inner[:-3].strip()
+        scf_lines = [ln.strip() for ln in scf_inner.splitlines() if ln.strip()]
+        if not any(ln.lower().startswith("maxiter") for ln in scf_lines):
+            scf_lines.append("MaxIter 375")
+        sections.append("%scf\n")
+        for ln in scf_lines:
+            sections.append(f"  {ln}\n")
+        sections.append("end\n")
+    else:
+        sections.append("%scf\n")
+        sections.append("  MaxIter 375\n")
+        sections.append("end\n")
+        if broken_sym_line:
+            add = broken_sym_line if broken_sym_line.endswith("\n") else broken_sym_line + "\n"
+            sections.append(add)
     sections.append(f"%pal nprocs {PAL} end\n")
-    if broken_sym_line:
-        add = broken_sym_line if broken_sym_line.endswith("\n") else broken_sym_line + "\n"
-        sections.append(add)
     sections.extend(_build_qmmm_block_lines(qmmm_range))
     sections.append("%geom\n")
     sections.append("  MaxIter 400\n")

@@ -861,6 +861,60 @@ def _sync_occupier_spin_metadata(ctx: PipelineContext, config: dict) -> None:
     config['_multiplicity_display'] = label
 
 
+def _is_enabled_flag(value: object) -> bool:
+    """Interpret typical ON/OFF config values."""
+    return str(value or "").strip().lower() in {"on", "yes", "true", "1"}
+
+
+def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
+    """Run CO2 coordinator in recalc mode when enabled via CONTROL."""
+    if not _is_enabled_flag(config.get("co2_coordination", "off")):
+        return True
+
+    co2_dir = workspace_root / "CO2_coordination"
+    co2_control = co2_dir / "CONTROL.txt"
+
+    # Recover missing CO2 workspace from current DELFIN outputs if needed.
+    if not co2_control.exists():
+        delta_raw = config.get("co2_species_delta", 0)
+        try:
+            delta = int(delta_raw)
+        except Exception:
+            delta = 0
+        try:
+            from delfin.co2.chain_setup import setup_co2_from_delfin
+
+            logger.info(
+                "[recalc] CO2 workspace missing/incomplete. Recreating CO2_coordination (delta=%s).",
+                delta,
+            )
+            setup_co2_from_delfin(workspace_root, delta)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[recalc] Failed to prepare CO2 workspace: %s", exc, exc_info=True)
+            return False
+
+    logger.info("[recalc] Starting CO2 Coordinator recalc in %s", co2_dir)
+    prev_cwd = Path.cwd()
+    prev_env = os.environ.get("DELFIN_CO2_RECALC")
+    os.environ["DELFIN_CO2_RECALC"] = "1"
+    try:
+        from delfin.co2.CO2_Coordinator6 import main as co2_main
+
+        os.chdir(co2_dir)
+        co2_main()
+        logger.info("[recalc] CO2 Coordinator recalc finished")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[recalc] CO2 Coordinator recalc failed: %s", exc, exc_info=True)
+        return False
+    finally:
+        os.chdir(prev_cwd)
+        if prev_env is None:
+            os.environ.pop("DELFIN_CO2_RECALC", None)
+        else:
+            os.environ["DELFIN_CO2_RECALC"] = prev_env
+
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1470,6 +1524,9 @@ def main(argv: list[str] | None = None) -> int:
                 logger.warning("DELFIN.docx report generation returned status %d", report_status)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to generate DELFIN.docx: %s", exc, exc_info=True)
+
+        if RECALC_MODE and not _run_co2_recalc_if_enabled(config, workspace_root):
+            return _finalize(1)
 
         return _finalize(0)
     except KeyboardInterrupt:
