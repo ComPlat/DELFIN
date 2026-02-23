@@ -672,14 +672,24 @@ def create_tab(ctx):
                 job_dir = ctx.calc_dir / safe_job_name
                 job_dir.mkdir(parents=True, exist_ok=True)
 
-                control_content = re.sub(
-                    r'(?m)^SMILES=.*$', f'SMILES={smi}', control_content_base,
-                )
+                smiles_line = f'SMILES={smi}'
+                if re.search(r'(?m)^SMILES=.*$', control_content_base):
+                    control_content = re.sub(
+                        r'(?m)^SMILES=.*$',
+                        lambda _m, repl=smiles_line: repl,
+                        control_content_base,
+                    )
+                else:
+                    control_content = control_content_base.rstrip() + f'\n{smiles_line}\n'
                 for key, value in extras.items():
                     pattern = rf'(?m)^{re.escape(key)}\s*=.*$'
                     replacement = f'{key}={value}'
                     if re.search(pattern, control_content):
-                        control_content = re.sub(pattern, replacement, control_content)
+                        control_content = re.sub(
+                            pattern,
+                            lambda _m, repl=replacement: repl,
+                            control_content,
+                        )
                     else:
                         control_content = control_content.rstrip() + f'\n{replacement}\n'
 
