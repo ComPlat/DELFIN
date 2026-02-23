@@ -72,20 +72,18 @@ def create_tab(ctx):
         layout=widgets.Layout(width='170px'),
     )
 
-    smiles_batch_help = widgets.Label(
-        "Batch list: SMILES 'Name;SMILES;key=value;...' or XYZ block "
-        "'Name;key=value;...' + 'XYZ' ... '*'"
-    )
     smiles_batch_widget = widgets.Textarea(
         value='',
         placeholder=(
             "name;SMILES;key=value;...\n"
             "Ni_1;[Ni];charge=2;solvent=water\n"
+            "Co_1;[Co];charge=3\n"
             "\n"
             "name;key=value;...\n"
             "XYZ\n"
-            "Fe  0.0000  0.0000  0.0000\n"
-            "N   1.9000  0.0000  0.0000\n"
+            "*\n"
+            "name;key=value;...\n"
+            "XYZ\n"
             "*"
         ),
         layout=widgets.Layout(width='100%', height='160px', box_sizing='border-box'),
@@ -1153,8 +1151,7 @@ def create_tab(ctx):
         widgets.HBox([build_complex_button, guppy_submit_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
-        widgets.HTML('<b>Batch Input (SMILES/XYZ):</b>'),
-        smiles_batch_help,
+        widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
         smiles_batch_widget, spacer,
         widgets.HBox(
             [smiles_prev_button, smiles_preview_label,
