@@ -2154,12 +2154,7 @@ def create_tab(ctx):
             if (__INDEX__ >= 0) {
                 setTimeout(function() {
                     const mark = document.getElementById('calc-current-match');
-                    if (!mark) return;
-                    const b = document.getElementById('calc-content-box');
-                    if (!b) return;
-                    const br = b.getBoundingClientRect();
-                    const mr = mark.getBoundingClientRect();
-                    b.scrollTop += (mr.top - br.top) - (b.clientHeight / 2);
+                    if (mark) { mark.scrollIntoView({block: 'center'}); }
                 }, 0);
             }
         })();
