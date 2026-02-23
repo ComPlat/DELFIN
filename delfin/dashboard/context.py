@@ -19,7 +19,7 @@ class DashboardContext:
     """
     # Paths
     calc_dir: Path = field(default_factory=lambda: Path.home() / 'calc')
-    archiv_dir: Path = field(default_factory=lambda: Path.home() / 'archiv')
+    archive_dir: Path = field(default_factory=lambda: Path.home() / 'archive')
     notebook_dir: Path = field(default_factory=Path.cwd)
     repo_dir: Optional[Path] = None
 

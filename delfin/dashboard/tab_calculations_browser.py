@@ -124,7 +124,7 @@ def create_tab(ctx):
     )
 
     # Detect whether we are inside the Archive tab (calc_dir == archiv_dir)
-    _is_archive_tab = ctx.calc_dir.resolve() == ctx.archiv_dir.resolve()
+    _is_archive_tab = ctx.calc_dir.resolve() == ctx.archive_dir.resolve()
 
     # Move-to-Archive button (hidden when we are already inside the Archive)
     calc_move_archive_btn = widgets.Button(
@@ -2152,13 +2152,15 @@ def create_tab(ctx):
             html += esc(text.slice(last));
             el.innerHTML = html;
             if (__INDEX__ >= 0) {
-                const mark = document.getElementById('calc-current-match');
-                if (mark) {
-                    const boxRect = box.getBoundingClientRect();
-                    const markRect = mark.getBoundingClientRect();
-                    const delta = (markRect.top - boxRect.top) - (box.clientHeight / 2);
-                    box.scrollTop += delta;
-                }
+                setTimeout(function() {
+                    const mark = document.getElementById('calc-current-match');
+                    if (!mark) return;
+                    const b = document.getElementById('calc-content-box');
+                    if (!b) return;
+                    const br = b.getBoundingClientRect();
+                    const mr = mark.getBoundingClientRect();
+                    b.scrollTop += (mr.top - br.top) - (b.clientHeight / 2);
+                }, 0);
             }
         })();
         """
@@ -4655,7 +4657,7 @@ def create_tab(ctx):
         calc_move_archive_confirm.layout.display = 'none'
         if not real:
             return
-        dest_dir = ctx.archiv_dir
+        dest_dir = ctx.archive_dir
         dest_dir.mkdir(parents=True, exist_ok=True)
         errors, moved = [], []
         for label in real:

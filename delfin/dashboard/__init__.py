@@ -20,7 +20,7 @@ from .context import DashboardContext
 from .helpers import create_busy_css, disable_spellcheck_global
 
 from . import (
-    tab_archiv_statistics,
+    tab_archive_statistics,
     tab_calculations_browser,
     tab_job_status,
     tab_orca_builder,
@@ -63,8 +63,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             calc_dir = home / 'calc'
     calc_dir = Path(calc_dir)
     calc_dir.mkdir(parents=True, exist_ok=True)
-    archiv_dir = calc_dir.parent / 'archiv'
-    archiv_dir.mkdir(parents=True, exist_ok=True)
+    archive_dir = calc_dir.parent / 'archive'
+    archive_dir.mkdir(parents=True, exist_ok=True)
 
     repo_dir = _find_delfin_root()
 
@@ -113,7 +113,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # -- build context -----------------------------------------------------
     ctx = DashboardContext(
         calc_dir=calc_dir,
-        archiv_dir=archiv_dir,
+        archive_dir=archive_dir,
         notebook_dir=notebook_dir,
         repo_dir=repo_dir,
         backend=backend_obj,
@@ -146,7 +146,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         tab_tm, _ = tab_turbomole_builder.create_tab(ctx)
 
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
-    tab6, refs6 = tab_archiv_statistics.create_tab(ctx)
+    tab6, refs6 = tab_archive_statistics.create_tab(ctx)
 
     # Run both calc-browser init scripts in ONE ctx.run_js() call.
     # If called separately, the second call's clear_output() would wipe the
