@@ -8,7 +8,6 @@ from IPython.display import clear_output
 
 from delfin.config import parse_control_text, validate_control_text
 from delfin.smiles_converter import contains_metal
-from delfin.build_up_complex import get_ligand_charge
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck
@@ -511,6 +510,17 @@ def create_tab(ctx):
                 pass
         return '\n'.join(lines).strip()
 
+    def _get_smiles_charge(smi):
+        """Sum formal charges of all atoms in a SMILES string via RDKit."""
+        try:
+            from rdkit import Chem
+            mol = Chem.MolFromSmiles(smi, sanitize=False)
+            if mol is None:
+                return 0
+            return sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
+        except Exception:
+            return 0
+
     def _needs_smiles_charge(control_content, extras):
         """Return True if charge should be auto-extracted from SMILES.
 
@@ -830,7 +840,7 @@ def create_tab(ctx):
 
                 # Auto-fill charge from SMILES if needed
                 if input_kind == 'smiles' and _needs_smiles_charge(control_content, extras):
-                    extras['charge'] = str(get_ligand_charge(smi))
+                    extras['charge'] = str(_get_smiles_charge(smi))
 
                 for key, value in extras.items():
                     pattern = rf'(?m)^{re.escape(key)}\s*=.*$'
@@ -937,7 +947,7 @@ def create_tab(ctx):
 
                 # Auto-fill charge from SMILES if CONTROL.txt has none/empty/[CHARGE]
                 if smiles_for_charge and _needs_smiles_charge(control_content, {}):
-                    auto_charge = get_ligand_charge(smiles_for_charge)
+                    auto_charge = _get_smiles_charge(smiles_for_charge)
                     charge_pat = r'(?m)^charge\s*=.*$'
                     if re.search(charge_pat, control_content, re.IGNORECASE):
                         control_content = re.sub(
