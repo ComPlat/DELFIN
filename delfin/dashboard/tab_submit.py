@@ -552,14 +552,16 @@ def create_tab(ctx):
             force_xyz = False
             for token in parts[1:]:
                 if '=' in token:
-                    key, value = token.split('=', 1)
-                    key = key.strip()
-                    value = value.strip()
-                    if not key:
-                        errors.append(f"Line {line_no}: Invalid override '{token}' (empty key)")
+                    key_candidate = token.split('=', 1)[0].strip()
+                    # Valid key: starts with lowercase letter, only word chars
+                    # (SMILES atoms like O, C, N, Cl are uppercase → treated as SMILES)
+                    if (key_candidate[:1].islower()
+                            and key_candidate.replace('_', '').isalnum()):
+                        key, value = token.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        extras[key] = value
                         continue
-                    extras[key] = value
-                    continue
                 if token.upper() == 'XYZ':
                     force_xyz = True
                     continue

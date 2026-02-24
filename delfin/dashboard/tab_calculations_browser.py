@@ -615,7 +615,7 @@ def create_tab(ctx):
     )
     calc_options_dropdown.add_class('calc-options-dropdown')
     calc_override_input = widgets.Text(
-        value='', placeholder='STAGE=INDEX',
+        value='', placeholder='STAGE=INDEX[,STAGE=INDEX,...]',
         layout=widgets.Layout(width='140px', min_width='140px', height='26px', display='none'),
     )
     calc_override_time = widgets.Text(
@@ -4644,10 +4644,17 @@ def create_tab(ctx):
                 )
 
             if result.returncode == 0:
-                calc_override_status.value = (
-                    f'<span style="color:#388e3c;">Submitted from {workspace_root}: '
-                    f'{result.stdout.strip()}</span>'
-                )
+                if not is_recalc:
+                    calc_override_status.value = (
+                        f'<span style="color:#388e3c;">Submitted from {workspace_root} '
+                        f'(Override: {_html.escape(override_value)}): '
+                        f'{result.stdout.strip()}</span>'
+                    )
+                else:
+                    calc_override_status.value = (
+                        f'<span style="color:#388e3c;">Submitted from {workspace_root}: '
+                        f'{result.stdout.strip()}</span>'
+                    )
             else:
                 calc_override_status.value = (
                     f'<span style="color:#d32f2f;">Error: {result.stderr.strip()}</span>'
