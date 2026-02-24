@@ -488,6 +488,34 @@ def validate_control_text(control_text: str) -> List[str]:
     return all_errors
 
 
+def get_esd_hints(control_text: str) -> List[str]:
+    """Return advisory hints when ESD_modul=yes but ESD fields are still empty [].
+
+    These are non-blocking — submission proceeds normally.
+    """
+    try:
+        config = parse_control_text(control_text)
+    except Exception:
+        return []
+    if str(config.get('ESD_modul', 'no')).lower() != 'yes':
+        return []
+    hints = []
+    esd_fields = {
+        'states': '[S1,T1,S2,T2]',
+        'ISCs': '[S1>T1,T1>S1]',
+        'ICs': '[S2>S1]',
+        'emission_rates': '[f,p]',
+    }
+    for field, example in esd_fields.items():
+        val = config.get(field)
+        if val is None or val == [] or val == '':
+            hints.append(
+                f"ESD_modul=yes: {field}=[] — "
+                f"define if needed (e.g. {example}), leave [] if not used"
+            )
+    return hints
+
+
 def validate_control_file(file_path: str) -> List[str]:
     """Validate CONTROL.txt file and return a list of errors (empty if valid)."""
     try:

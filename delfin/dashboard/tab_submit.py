@@ -6,7 +6,7 @@ import py3Dmol
 import ipywidgets as widgets
 from IPython.display import clear_output
 
-from delfin.config import parse_control_text, validate_control_text
+from delfin.config import parse_control_text, validate_control_text, get_esd_hints
 from delfin.smiles_converter import contains_metal
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
@@ -998,6 +998,11 @@ def create_tab(ctx):
                     print(f'- {err}')
             else:
                 print('CONTROL.txt looks valid.')
+            hints = get_esd_hints(control_widget.value)
+            if hints:
+                print('ESD hints (non-blocking):')
+                for h in hints:
+                    print(f'  ℹ {h}')
 
     def handle_only_goat_submit(button):
         with only_goat_output:
