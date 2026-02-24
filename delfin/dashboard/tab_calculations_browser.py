@@ -5038,17 +5038,18 @@ def create_tab(ctx):
             if typ in ('regex', 'text'):
                 rx = re.compile(re.escape(pat) if typ == 'text' else pat)
                 if rx.groups > 0:
-                    matches = rx.findall(text)
-                    if not matches:
+                    # explicit capture group — no line tracking possible
+                    raw_matches = rx.finditer(text)
+                    values = []  # list of (value_str, line_num_or_None)
+                    for m in raw_matches:
+                        g = m.group(1)
+                        val = str(g).strip() if g is not None else '—'
+                        line_num = text[:m.start()].count('\n') + 1
+                        values.append((val, line_num))
+                    if not values:
                         return ['—']
-                    values = []
-                    for match in matches:
-                        val = match
-                        if isinstance(val, tuple):
-                            val = val[0] if val else '—'
-                        values.append(str(val).strip())
                 else:
-                    values = []   # list of (value_str, line_num)
+                    values = []  # list of (value_str, line_num)
                     for m in rx.finditer(text):
                         line_num = text[:m.start()].count('\n') + 1
                         line_end = text.find('\n', m.end())
@@ -5070,7 +5071,7 @@ def create_tab(ctx):
                     if not values:
                         return ['—']
                 if occ == 'all':
-                    return [f'{v} (L{ln})' for v, ln in values]
+                    return values  # list of (value_str, line_num)
                 if occ == 'first':
                     return [values[0][0]]
                 return [values[-1][0]]
@@ -5198,7 +5199,12 @@ def create_tab(ctx):
             calc_table_status.value = '<span style="color:#d32f2f;">No folders found.</span>'
             return
         cols = state['table_col_defs']
-        headers = ['Job'] + [c.get('name', f'Col {i+1}') for i, c in enumerate(cols)]
+        headers = ['Job']
+        for i, c in enumerate(cols):
+            headers.append(c.get('name', f'Col {i+1}'))
+            if c.get('occ') == 'all':
+                headers.append(c.get('name', f'Col {i+1}') + ' (Line)')
+        _n_header_cols = len(headers) - 1  # excluding Job
         rows = []
         missing = 0
         for folder in folders:
@@ -5213,7 +5219,7 @@ def create_tab(ctx):
             else:
                 file_paths = []
             if not file_paths:
-                rows.append([folder.name] + ['—'] * len(cols))
+                rows.append([folder.name] + ['—'] * _n_header_cols)
                 missing += 1
                 continue
             for file_path in file_paths:
@@ -5224,7 +5230,7 @@ def create_tab(ctx):
                 try:
                     content = file_path.read_text(errors='replace')
                 except Exception:
-                    rows.append([job_label] + ['err'] * len(cols))
+                    rows.append([job_label] + ['err'] * _n_header_cols)
                     continue
                 json_data = None
                 if file_path.suffix.lower() == '.json':
@@ -5236,15 +5242,26 @@ def create_tab(ctx):
                 row_count = max((len(vs) for vs in col_values), default=1)
                 for row_idx in range(row_count):
                     row = [job_label]
-                    for values in col_values:
-                        if not values:
+                    for c, values in zip(cols, col_values):
+                        is_all = c.get('occ') == 'all'
+                        if not values or values == ['—']:
                             row.append('—')
-                        elif len(values) == 1:
-                            row.append(_format_table_output_value(values[0]))
+                            if is_all:
+                                row.append('—')
                         elif row_idx < len(values):
-                            row.append(_format_table_output_value(values[row_idx]))
+                            v = values[row_idx]
+                            if isinstance(v, tuple):
+                                row.append(_format_table_output_value(v[0]))
+                                if is_all:
+                                    row.append(str(v[1]) if v[1] is not None else '—')
+                            else:
+                                row.append(_format_table_output_value(v))
+                                if is_all:
+                                    row.append('—')
                         else:
                             row.append('—')
+                            if is_all:
+                                row.append('—')
                     rows.append(row)
         calc_table_output.value = _render_extract_table_html(headers, rows)
         import io, csv as _csv
