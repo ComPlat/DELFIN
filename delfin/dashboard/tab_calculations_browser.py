@@ -5214,9 +5214,13 @@ def create_tab(ctx):
                 missing += 1
                 continue
             try:
+                job_label = str(file_path.parent.relative_to(base_dir))
+            except ValueError:
+                job_label = folder.name
+            try:
                 content = file_path.read_text(errors='replace')
             except Exception:
-                rows.append([folder.name] + ['err'] * len(cols))
+                rows.append([job_label] + ['err'] * len(cols))
                 continue
             json_data = None
             if file_path.suffix.lower() == '.json':
@@ -5227,7 +5231,7 @@ def create_tab(ctx):
             col_values = [_extract_values(c, content, json_data) for c in cols]
             row_count = max((len(vs) for vs in col_values), default=1)
             for row_idx in range(row_count):
-                row = [folder.name]
+                row = [job_label]
                 for values in col_values:
                     if not values:
                         row.append('—')
