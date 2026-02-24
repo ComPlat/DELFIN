@@ -247,7 +247,7 @@ def create_tab(ctx):
         value='',
         layout=widgets.Layout(
             width='100%', overflow_x='auto', overflow_y='auto',
-            max_height='420px',
+            flex='1 1 0', min_height='0',
         ),
     )
     calc_table_cols_box = widgets.VBox(
@@ -277,6 +277,7 @@ def create_tab(ctx):
     ], layout=widgets.Layout(
         display='none', width='100%', padding='8px', gap='6px',
         border='1px solid #e0e0e0', border_radius='4px', overflow_x='hidden',
+        flex='1 1 0', min_height='0',
     ))
 
     # Delete confirmation
@@ -5941,6 +5942,10 @@ def create_tab(ctx):
         '.calc-content-area .widget-html-content { height:100%; }'
         '.calc-edit-area textarea { height:100% !important; }'
         '.calc-tab .widget-vbox, .calc-tab .widget-hbox { overflow-y:hidden !important; }'
+        '.calc-tab .calc-table-panel { flex:1 1 0 !important; min-height:0 !important;'
+        ' overflow:hidden !important; }'
+        '.calc-table-output { flex:1 1 0 !important; min-height:0 !important;'
+        ' overflow-y:auto !important; overflow-x:auto !important; max-height:none !important; }'
         '.calc-right .widget-output, .calc-right .jupyter-widgets-output-area { overflow:hidden !important; }'
         '.calc-right .widget-output .output_area { overflow:hidden !important; }'
         '.calc-right .widget-output .output { overflow:hidden !important; }'
@@ -6097,6 +6102,8 @@ def create_tab(ctx):
     calc_left.add_class('calc-left')
     calc_right.add_class('calc-right')
     calc_content_area.add_class('calc-content-area')
+    calc_table_panel.add_class('calc-table-panel')
+    calc_table_output.add_class('calc-table-output')
 
     # Enable draggable splitter + dynamic mol-viewer resize + $3Dmol patch
     # Stored as a plain string; the CALLER (create_dashboard in __init__.py)
