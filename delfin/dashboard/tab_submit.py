@@ -1274,6 +1274,13 @@ def create_tab(ctx):
             max-width: 100% !important;
             overflow-x: hidden !important;
         }
+        .submit-mol-output .output_subarea,
+        .submit-mol-output .jp-OutputArea-output,
+        .submit-mol-output .jp-OutputArea-child,
+        .submit-mol-output .output_area {
+            padding: 0 !important;
+            margin: 0 !important;
+        }
         </style>
         """
     )
@@ -1281,6 +1288,7 @@ def create_tab(ctx):
     submit_left.add_class('submit-split-pane')
     submit_right.add_class('submit-split-pane')
     mol_output.add_class('submit-split-pane')
+    mol_output.add_class('submit-mol-output')
     tab_widget = widgets.VBox([submit_css, tab_widget], layout=widgets.Layout(width='100%'))
 
     return tab_widget, {'reset_form': reset_form, 'mol_output': mol_output}
