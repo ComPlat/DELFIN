@@ -78,7 +78,7 @@ def create_tab(ctx):
         'delete_current': False,
         'select_mode': False,
         'table_col_defs': [
-            {'name': 'Value 1', 'type': 'regex', 'pattern': '', 'occ': 'last'},
+            {'name': 'Value 1', 'type': 'text', 'pattern': '', 'occ': 'last'},
         ],
         'table_col_widgets': [],
         'table_csv_data': '',
@@ -4965,8 +4965,8 @@ def create_tab(ctx):
                 layout=widgets.Layout(width='100px', height='26px'),
             )
             type_dd = widgets.Dropdown(
-                options=[('Regex', 'regex'), ('JSON path', 'json')],
-                value=col.get('type', 'regex'),
+                options=[('Text', 'text'), ('Regex', 'regex'), ('JSON path', 'json')],
+                value=col.get('type', 'text'),
                 layout=widgets.Layout(width='92px', height='26px'),
             )
             occ_dd = widgets.Dropdown(
@@ -4974,9 +4974,10 @@ def create_tab(ctx):
                 value=col.get('occ', 'last'),
                 layout=widgets.Layout(width='66px', height='26px'),
             )
+            _pat_placeholders = {'regex': 'regex pattern', 'json': 'key.path', 'text': 'literal text'}
             pat_w = widgets.Text(
                 value=col.get('pattern', ''),
-                placeholder='regex pattern' if col.get('type', 'regex') == 'regex' else 'key.path',
+                placeholder=_pat_placeholders.get(col.get('type', 'text'), 'literal text'),
                 layout=widgets.Layout(flex='1 1 auto', min_width='80px', height='26px'),
             )
             preset_dd = widgets.Dropdown(
@@ -4990,7 +4991,8 @@ def create_tab(ctx):
             )
 
             def _on_type_change(change, pw=pat_w):
-                pw.placeholder = 'regex pattern' if change['new'] == 'regex' else 'key.path'
+                _ph = {'regex': 'regex pattern', 'json': 'key.path', 'text': 'literal text'}
+                pw.placeholder = _ph.get(change['new'], 'literal text')
 
             def _on_preset(change, idx=i):
                 label = change['new']
@@ -5033,8 +5035,8 @@ def create_tab(ctx):
         if not pat:
             return ['—']
         try:
-            if typ == 'regex':
-                rx = re.compile(pat)
+            if typ in ('regex', 'text'):
+                rx = re.compile(re.escape(pat) if typ == 'text' else pat)
                 if rx.groups > 0:
                     matches = rx.findall(text)
                     if not matches:
@@ -5046,31 +5048,32 @@ def create_tab(ctx):
                             val = val[0] if val else '—'
                         values.append(str(val).strip())
                 else:
-                    values = []
+                    values = []   # list of (value_str, line_num)
                     for m in rx.finditer(text):
+                        line_num = text[:m.start()].count('\n') + 1
                         line_end = text.find('\n', m.end())
                         if line_end == -1:
                             line_end = len(text)
                         tail = text[m.end():line_end]
                         nums = [nm.group(0) for nm in _table_number_re.finditer(tail)]
                         if nums:
-                            values.append(_normalize_table_number(nums[0]))
+                            values.append((_normalize_table_number(nums[0]), line_num))
                             continue
                         # wrapped lines: inspect a short window after the match
                         near = text[m.end():min(len(text), m.end() + 240)]
                         near_nums = [nm.group(0) for nm in _table_number_re.finditer(near)]
                         if near_nums:
-                            values.append(_normalize_table_number(near_nums[0]))
+                            values.append((_normalize_table_number(near_nums[0]), line_num))
                             continue
                         # fallback: keep old behavior if no number follows
-                        values.append(m.group(0).strip())
+                        values.append((m.group(0).strip(), line_num))
                     if not values:
                         return ['—']
                 if occ == 'all':
-                    return values
+                    return [f'{v} (L{ln})' for v, ln in values]
                 if occ == 'first':
-                    return [values[0]]
-                return [values[-1]]
+                    return [values[0][0]]
+                return [values[-1][0]]
             elif typ == 'json':
                 if json_data is None:
                     return ['—']
@@ -5201,47 +5204,48 @@ def create_tab(ctx):
         for folder in folders:
             direct = folder / target_file
             if direct.is_file():
-                file_path = direct
+                file_paths = [direct]
             elif calc_table_recursive_cb.value:
                 try:
-                    file_path = next(folder.rglob(target_file), None)
+                    file_paths = sorted(folder.rglob(target_file))
                 except Exception:
-                    file_path = None
+                    file_paths = []
             else:
-                file_path = None
-            if file_path is None:
+                file_paths = []
+            if not file_paths:
                 rows.append([folder.name] + ['—'] * len(cols))
                 missing += 1
                 continue
-            try:
-                job_label = str(file_path.parent.relative_to(base_dir))
-            except ValueError:
-                job_label = folder.name
-            try:
-                content = file_path.read_text(errors='replace')
-            except Exception:
-                rows.append([job_label] + ['err'] * len(cols))
-                continue
-            json_data = None
-            if file_path.suffix.lower() == '.json':
+            for file_path in file_paths:
                 try:
-                    json_data = json.loads(content)
+                    job_label = str(file_path.parent.relative_to(base_dir))
+                except ValueError:
+                    job_label = folder.name
+                try:
+                    content = file_path.read_text(errors='replace')
                 except Exception:
-                    pass
-            col_values = [_extract_values(c, content, json_data) for c in cols]
-            row_count = max((len(vs) for vs in col_values), default=1)
-            for row_idx in range(row_count):
-                row = [job_label]
-                for values in col_values:
-                    if not values:
-                        row.append('—')
-                    elif len(values) == 1:
-                        row.append(_format_table_output_value(values[0]))
-                    elif row_idx < len(values):
-                        row.append(_format_table_output_value(values[row_idx]))
-                    else:
-                        row.append('—')
-                rows.append(row)
+                    rows.append([job_label] + ['err'] * len(cols))
+                    continue
+                json_data = None
+                if file_path.suffix.lower() == '.json':
+                    try:
+                        json_data = json.loads(content)
+                    except Exception:
+                        pass
+                col_values = [_extract_values(c, content, json_data) for c in cols]
+                row_count = max((len(vs) for vs in col_values), default=1)
+                for row_idx in range(row_count):
+                    row = [job_label]
+                    for values in col_values:
+                        if not values:
+                            row.append('—')
+                        elif len(values) == 1:
+                            row.append(_format_table_output_value(values[0]))
+                        elif row_idx < len(values):
+                            row.append(_format_table_output_value(values[row_idx]))
+                        else:
+                            row.append('—')
+                    rows.append(row)
         calc_table_output.value = _render_extract_table_html(headers, rows)
         import io, csv as _csv
         buf = io.StringIO()
