@@ -8,6 +8,7 @@ from IPython.display import clear_output
 
 from delfin.config import parse_control_text, validate_control_text
 from delfin.smiles_converter import contains_metal
+from delfin.build_up_complex import get_ligand_charge
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck
@@ -510,6 +511,23 @@ def create_tab(ctx):
                 pass
         return '\n'.join(lines).strip()
 
+    def _needs_smiles_charge(control_content, extras):
+        """Return True if charge should be auto-extracted from SMILES.
+
+        Triggers when:
+        - extras['charge'] is empty or '[CHARGE]'
+        - charge is not in extras AND CONTROL.txt has no charge, charge=, or charge=[CHARGE]
+        """
+        charge_extra = extras.get('charge', None)
+        if charge_extra is not None:
+            v = charge_extra.strip()
+            return not v or v == '[CHARGE]'
+        m = re.search(r'(?m)^charge\s*=\s*(.*)$', control_content, re.IGNORECASE)
+        if not m:
+            return True
+        val = m.group(1).strip()
+        return not val or val == '[CHARGE]'
+
     def parse_batch_entries():
         """Parse mixed SMILES/XYZ batch textarea.
 
@@ -810,6 +828,10 @@ def create_tab(ctx):
                         continue
                     control_content = control_content_base
 
+                # Auto-fill charge from SMILES if needed
+                if input_kind == 'smiles' and _needs_smiles_charge(control_content, extras):
+                    extras['charge'] = str(get_ligand_charge(smi))
+
                 for key, value in extras.items():
                     pattern = rf'(?m)^{re.escape(key)}\s*=.*$'
                     replacement = f'{key}={value}'
@@ -905,10 +927,25 @@ def create_tab(ctx):
             try:
                 job_dir.mkdir(parents=True, exist_ok=True)
 
+                smiles_for_charge = cache.get('smiles') or (
+                    raw_input if input_type == 'smiles' else None
+                )
                 if cache.get('smiles'):
                     control_content = control_content.replace(
                         'SMILES=', f"SMILES={cache['smiles']}",
                     )
+
+                # Auto-fill charge from SMILES if CONTROL.txt has none/empty/[CHARGE]
+                if smiles_for_charge and _needs_smiles_charge(control_content, {}):
+                    auto_charge = get_ligand_charge(smiles_for_charge)
+                    charge_pat = r'(?m)^charge\s*=.*$'
+                    if re.search(charge_pat, control_content, re.IGNORECASE):
+                        control_content = re.sub(
+                            charge_pat, f'charge={auto_charge}', control_content,
+                            flags=re.IGNORECASE,
+                        )
+                    else:
+                        control_content = control_content.rstrip() + f'\ncharge={auto_charge}\n'
 
                 (job_dir / 'CONTROL.txt').write_text(control_content)
                 (job_dir / 'input.txt').write_text(input_content)
