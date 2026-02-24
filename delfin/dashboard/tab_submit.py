@@ -23,7 +23,7 @@ def create_tab(ctx):
 
     Returns ``(tab_widget, refs_dict)``.
     """
-    SUBMIT_MOL_HEIGHT = 500
+    SUBMIT_MOL_HEIGHT = 650
 
     # -- widgets --------------------------------------------------------
     job_name_widget = widgets.Text(
