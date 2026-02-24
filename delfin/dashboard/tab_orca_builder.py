@@ -55,7 +55,7 @@ def create_tab(ctx):
             '6\nComment\nC  0.0  0.0  0.0\n...\nor just:\nC  0.0  0.0  0.0\n...'
         ),
         description='Coordinates:',
-        layout=widgets.Layout(width='100%', height='400px', box_sizing='border-box'), style=ws,
+        layout=widgets.Layout(width='100%', height='600px', box_sizing='border-box'), style=ws,
     )
     orca_charge = widgets.IntText(value=0, description='Charge:',
                                   layout=widgets.Layout(width='200px'), style=ws)
@@ -120,12 +120,12 @@ def create_tab(ctx):
         value='',
         placeholder='Paste file paths (one per line):\n/path/to/file.gbw\n/path/to/file.xyz',
         description='File Paths:',
-        layout=widgets.Layout(width='100%', height='80px', box_sizing='border-box'), style=ws,
+        layout=widgets.Layout(width='100%', height='150px', box_sizing='border-box'), style=ws,
     )
 
     orca_preview = widgets.Textarea(
         value='', description='INP Preview:',
-        layout=widgets.Layout(width='100%', height='550px', box_sizing='border-box'), style=ws,
+        layout=widgets.Layout(width='100%', height='700px', box_sizing='border-box'), style=ws,
         disabled=False,
     )
 
@@ -138,7 +138,7 @@ def create_tab(ctx):
     orca_output = widgets.Output()
 
     orca_mol_output = widgets.Output(layout=widgets.Layout(
-        border='2px solid #1976d2', width='100%', min_height='300px',
+        border='2px solid #1976d2', width='100%', min_height='500px',
         overflow='hidden', box_sizing='border-box',
     ))
 
@@ -305,7 +305,7 @@ def create_tab(ctx):
 
     # -- handlers -------------------------------------------------------
     _VIEWER_JS_TMPL = (
-        '<div id="__DIV__" style="width:100%;height:400px;position:relative;"></div>\n'
+        '<div id="__DIV__" style="width:100%;height:600px;position:relative;"></div>\n'
         '<script>\n'
         'if(typeof $3Dmol==="undefined"){\n'
         '  var _s=document.createElement("script");\n'
