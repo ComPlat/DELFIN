@@ -5240,7 +5240,7 @@ def create_tab(ctx):
         calc_table_output.value = _render_extract_table_html(headers, rows)
         import io, csv as _csv
         buf = io.StringIO()
-        _csv.writer(buf).writerows([headers] + rows)
+        _csv.writer(buf, delimiter=';').writerows([headers] + rows)
         state['table_csv_data'] = buf.getvalue()
         calc_table_csv_btn.layout.display = 'inline-flex'
         folder_count = len(folders)
