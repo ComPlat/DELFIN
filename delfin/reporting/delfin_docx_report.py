@@ -590,27 +590,50 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         if alpha_iso_au is not None and alpha_iso_a3 is not None:
             parts.append(f"The isotropic polarizability α is {alpha_iso_au:.2f} a.u. ({alpha_iso_a3:.2f} Å³).")
 
-    # Hyperpolarizability (if available) - values converted to 10^-30 esu
+    # Hyperpolarizability (if available) - values in 10^-30 esu
     hyperpol = gs.get("hyperpolarizability", {}) or {}
     if hyperpol:
         beta_tot_esu = hyperpol.get("beta_tot_esu")
         beta_mu_esu = hyperpol.get("beta_mu_esu")
-        beta_zzz_aligned_esu = hyperpol.get("beta_zzz_aligned_esu")
-        beta_hrs_esu = hyperpol.get("beta_HRS_esu")
+        kleinman_score = hyperpol.get("kleinman_score")
+        kleinman_applied = hyperpol.get("kleinman_applied")
+
         if beta_tot_esu is not None:
-            # Convert to 10^-30 esu (multiply by 1e30 to get coefficient)
             beta_tot_30 = beta_tot_esu * 1e30
             parts.append(f"The static hyperpolarizability β{{sub:tot}} is {beta_tot_30:.2f} × 10⁻³⁰ esu.")
         if beta_mu_esu is not None:
             beta_mu_30 = beta_mu_esu * 1e30
             parts.append(f"The dipole-projected hyperpolarizability β{{sub:μ}} is {beta_mu_30:.2f} × 10⁻³⁰ esu.")
-        if beta_zzz_aligned_esu is not None:
-            beta_zzz_aligned_30 = beta_zzz_aligned_esu * 1e30
-            beta_zzz_aligned_30_half = beta_zzz_aligned_30 / 2
-            parts.append(f"The dipole-aligned hyperpolarizability β'{{sub:zzz}} is {beta_zzz_aligned_30:.2f} × 10⁻³⁰ esu. Under Kleinman symmetry (static limit), β'{{sub:zzz}}/2 = {beta_zzz_aligned_30_half:.2f} × 10⁻³⁰ esu.")
-        if beta_hrs_esu is not None:
-            beta_hrs_30 = beta_hrs_esu * 1e30
-            parts.append(f"The Hyper-Rayleigh scattering hyperpolarizability β{{sub:HRS}} is {beta_hrs_30:.2f} × 10⁻³⁰ esu.")
+
+        # β'_zzz with Kleinman info and both conventions
+        sym_T = hyperpol.get("beta_zzz_aligned_sym_T_esu_30")
+        sym_B = hyperpol.get("beta_zzz_aligned_sym_B_esu_30")
+        if sym_T is not None and sym_B is not None:
+            score_info = ""
+            if kleinman_score is not None:
+                applied_str = "applied" if kleinman_applied else "not applied"
+                score_info = f", Kleinman score ε = {kleinman_score:.3f}, {applied_str}"
+            parts.append(
+                f"The dipole-aligned hyperpolarizability β'{{sub:zzz}} "
+                f"(Kleinman-symmetrised{score_info}): "
+                f"{sym_T:.2f} × 10⁻³⁰ esu (T convention) / "
+                f"{sym_B:.2f} × 10⁻³⁰ esu (B convention). "
+                f"Following Willets et al. (J. Chem. Phys. 97, 7590, 1992): "
+                f"the T convention defines μ = μ⁰ + αE + ½β{{sup:T}}E² + … (used by ORCA and most QC codes); "
+                f"the B convention defines μ = μ⁰ + αE + β{{sup:B}}E² + … (common in SHG/HRS papers), "
+                f"giving β{{sup:B}} = β{{sup:T}}/2. "
+                f"Please verify the convention of the experimental reference before comparing."
+            )
+
+        # β_HRS with both conventions
+        hrs_T = hyperpol.get("beta_HRS_T_esu_30")
+        hrs_B = hyperpol.get("beta_HRS_B_esu_30")
+        if hrs_T is not None and hrs_B is not None:
+            parts.append(
+                f"The Hyper-Rayleigh scattering hyperpolarizability β{{sub:HRS}} is "
+                f"{hrs_T:.2f} × 10⁻³⁰ esu (T convention) / "
+                f"{hrs_B:.2f} × 10⁻³⁰ esu (B convention)."
+            )
 
     if vib_frequencies:
         vib_list = ", ".join(f"{freq:.0f}" for freq in vib_frequencies)
@@ -934,25 +957,35 @@ def _format_m_charge_label(paragraph, charge: Any) -> bool:
 
 
 def _add_paragraph_with_subscript(doc: Document, text: str) -> None:
-    """Add a paragraph with subscript formatting for markers like {sub:text}.
+    """Add a paragraph with sub- and superscript formatting.
 
-    Example: "β{sub:zzz} is 1.2e-27 esu" -> β with zzz as subscript
+    Supported markers:
+        {sub:text}  →  text rendered as subscript
+        {sup:text}  →  text rendered as superscript
+
+    Example: "β{sub:zzz} = β{sup:T}/2" → β with subscript zzz, then = β, then T as superscript, /2 normal.
     """
     import re
 
     para = doc.add_paragraph()
-    # Split by {sub:...} markers
-    parts = re.split(r'\{sub:([^}]+)\}', text)
+    # Split by {sub:...} or {sup:...} markers, capturing type and content
+    parts = re.split(r'\{(sub|sup):([^}]+)\}', text)
+    # parts cycles as: [normal, type, content, normal, type, content, ...]
 
+    script_type = None
     for i, part in enumerate(parts):
-        if i % 2 == 0:
-            # Normal text
+        remainder = i % 3
+        if remainder == 0:
             if part:
                 para.add_run(part)
+        elif remainder == 1:
+            script_type = part          # 'sub' or 'sup'
         else:
-            # Subscript text
             run = para.add_run(part)
-            run.font.subscript = True
+            if script_type == 'sub':
+                run.font.subscript = True
+            else:
+                run.font.superscript = True
 
     return para
 
