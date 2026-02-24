@@ -6,13 +6,20 @@ from pathlib import Path
 
 import py3Dmol
 import ipywidgets as widgets
-from IPython.display import clear_output
+import json
+import uuid
+
+from IPython.display import clear_output, display, HTML
 
 from delfin.common.control_validator import (
     ORCA_FUNCTIONALS, ORCA_BASIS_SETS, DISP_CORR_VALUES, _RI_JKX_KEYWORDS,
 )
 
-from .molecule_viewer import strip_xyz_header, apply_molecule_view_style
+from .molecule_viewer import (
+    strip_xyz_header,
+    DEFAULT_3DMOL_STYLE_JS, DEFAULT_3DMOL_ZOOM,
+    patch_viewer_mouse_controls_js,
+)
 from .input_processing import parse_inp_resources, sanitize_orca_input
 
 
@@ -38,9 +45,14 @@ def create_tab(ctx):
     orca_coords = widgets.Textarea(
         value='',
         placeholder=(
-            'Paste XYZ coordinates (with or without header):\n\n'
-            '6\nComment line\nC  0.0  0.0  0.0\n...\n\nor just:\n'
-            'C  0.0  0.0  0.0\n...'
+            'Paste XYZ coordinates or use named file blocks:\n\n'
+            'name1.xyz;\n6\nComment\nC  0.0  0.0  0.0\n...\n*\n\n'
+            'name2.xyz;\nFe  0.0  0.0  0.0\nC   1.5  0.0  0.0\n*\n\n'
+            'Named blocks write .xyz files to the job directory and use\n'
+            '* xyzfile in the INP (header optional - auto-added if missing).\n'
+            'Navigate all molecules with the ◀ ▶ buttons in the preview.\n\n'
+            'Or plain XYZ (with or without header):\n'
+            '6\nComment\nC  0.0  0.0  0.0\n...\nor just:\nC  0.0  0.0  0.0\n...'
         ),
         description='Coordinates:',
         layout=widgets.Layout(width='100%', height='400px', box_sizing='border-box'), style=ws,
@@ -130,14 +142,58 @@ def create_tab(ctx):
         overflow='hidden', box_sizing='border-box',
     ))
 
+    orca_mol_prev_btn = widgets.Button(
+        description='◀', tooltip='Previous molecule',
+        layout=widgets.Layout(width='36px', height='28px'),
+    )
+    orca_mol_next_btn = widgets.Button(
+        description='▶', tooltip='Next molecule',
+        layout=widgets.Layout(width='36px', height='28px'),
+    )
+    orca_mol_nav_label = widgets.HTML(value='')
+    orca_mol_nav_row = widgets.HBox(
+        [orca_mol_prev_btn, orca_mol_nav_label, orca_mol_next_btn],
+        layout=widgets.Layout(display='none', align_items='center', gap='6px'),
+    )
     # -- state ----------------------------------------------------------
     state = {
         'extra_files': {},
         'last_auto_keywords': '',
         'is_resetting': False,
+        'xyz_blocks': [],
+        'xyz_view_idx': 0,
     }
 
     # -- helpers --------------------------------------------------------
+    def parse_xyz_blocks(text):
+        """Parse 'name.xyz;\\n<coords>\\n*' blocks.
+
+        Returns a list of ``(filename, full_xyz_str)`` tuples, or *None* if
+        no named blocks are found.  The returned XYZ strings always include
+        the standard two-line header (atom count + empty comment line).
+        """
+        blocks = []
+        pattern = re.compile(
+            r'^(\S+\.xyz)\s*;\s*\n(.*?)^\s*\*\s*$',
+            re.MULTILINE | re.DOTALL,
+        )
+        for m in pattern.finditer(text):
+            filename = m.group(1)
+            content = m.group(2).strip()
+            lines = [l for l in content.split('\n') if l.strip()]
+            if not lines:
+                continue
+            try:
+                int(lines[0].strip())
+                # First line is an integer → XYZ header already present
+                full_xyz = content
+            except ValueError:
+                # No header → count atom lines and prepend N + empty comment
+                n = len(lines)
+                full_xyz = f'{n}\n\n' + '\n'.join(lines)
+            blocks.append((filename, full_xyz))
+        return blocks if blocks else None
+
     def _build_keyword_line():
         keywords = [orca_method.value, orca_job_type.value, orca_basis.value]
         if orca_dispersion.value != 'None':
@@ -168,8 +224,16 @@ def create_tab(ctx):
         pal_block = f'%pal\n  nprocs {orca_pal.value}\nend'
         maxcore_line = f'%maxcore {orca_maxcore.value}'
         output_block = _build_output_block()
-        coords = strip_xyz_header(orca_coords.value)
-        coord_block = f'* xyz {orca_charge.value} {orca_multiplicity.value}\n{coords}\n*'
+        xyz_blocks = parse_xyz_blocks(orca_coords.value)
+        if xyz_blocks:
+            # Use external XYZ file – coordinates are written to the job dir
+            coord_block = (
+                f'* xyzfile {orca_charge.value} {orca_multiplicity.value}'
+                f' {xyz_blocks[0][0]}'
+            )
+        else:
+            coords = strip_xyz_header(orca_coords.value)
+            coord_block = f'* xyz {orca_charge.value} {orca_multiplicity.value}\n{coords}\n*'
         inp = f'{keyword_line}\n\n{pal_block}\n\n{maxcore_line}\n'
         if output_block:
             inp += f'\n{output_block}\n'
@@ -240,27 +304,162 @@ def create_tab(ctx):
         state['last_auto_keywords'] = _build_keyword_line()
 
     # -- handlers -------------------------------------------------------
-    def update_orca_molecule_view(change=None):
-        with orca_mol_output:
-            clear_output()
-            raw = orca_coords.value.strip()
-            if not raw:
-                print('Paste XYZ coordinates to see 3D preview.')
-                return
-            coords = strip_xyz_header(raw)
-            if not coords:
-                print('No valid coordinates.')
-                return
+    _VIEWER_JS_TMPL = (
+        '<div id="__DIV__" style="width:100%;height:400px;position:relative;"></div>\n'
+        '<script>\n'
+        'if(typeof $3Dmol==="undefined"){\n'
+        '  var _s=document.createElement("script");\n'
+        '  _s.src="https://3Dmol.org/build/3Dmol-min.js";\n'
+        '  document.head.appendChild(_s);\n'
+        '}\n'
+        '(function(){\n'
+        '  var tries=0;\n'
+        '  function init(){\n'
+        '    var el=document.getElementById("__DIV__");\n'
+        '    if(!el||typeof $3Dmol==="undefined"){\n'
+        '      tries++;if(tries<80)setTimeout(init,50);return;\n'
+        '    }\n'
+        '    __RESET__\n'
+        '    window._orcaBuildViewState=window._orcaBuildViewState||null;\n'
+        '    var prev=window._orcaBuildViewer||null;\n'
+        '    if(prev&&typeof prev.getView==="function"){\n'
+        '      try{window._orcaBuildViewState=prev.getView();}catch(_e){}\n'
+        '    }\n'
+        '    var saved=window._orcaBuildViewState;\n'
+        '    var viewer=$3Dmol.createViewer(el,{backgroundColor:"white"});\n'
+        '    __MOUSE__\n'
+        '    viewer.addModel(__XYZ__,"xyz");\n'
+        '    viewer.setStyle({},__STYLE__);\n'
+        '    __LABELS__\n'
+        '    if(saved&&typeof viewer.setView==="function"){\n'
+        '      try{viewer.setView(saved);}catch(_e){\n'
+        '        viewer.zoomTo();viewer.center();viewer.zoom(__ZOOM__);\n'
+        '      }\n'
+        '    }else{\n'
+        '      viewer.zoomTo();viewer.center();viewer.zoom(__ZOOM__);\n'
+        '    }\n'
+        '    viewer.render();\n'
+        '    window._orcaBuildViewer=viewer;\n'
+        '  }\n'
+        '  setTimeout(init,0);\n'
+        '})();\n'
+        '</script>\n'
+    )
+
+    def _atom_labels_js(full_xyz, var='viewer'):
+        """Return JS fragment adding atom-index labels at atom centers."""
+        lines = full_xyz.split('\n')
+        try:
+            n_atoms = int(lines[0].strip())
+        except (ValueError, IndexError):
+            return ''
+        calls = []
+        for i, line in enumerate(lines[2: 2 + n_atoms]):
+            parts = line.split()
+            if len(parts) < 4:
+                continue
             try:
-                lines = [l for l in coords.split('\n') if l.strip()]
-                n = len(lines)
-                xyz_data = f'{n}\nORCA Builder Preview\n{coords}'
-                view = py3Dmol.view(width='100%', height=400)
-                view.addModel(xyz_data, 'xyz')
-                apply_molecule_view_style(view)
-                view.show()
-            except Exception as e:
-                print(f'Could not visualize: {e}')
+                x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
+            except ValueError:
+                continue
+            calls.append(
+                f'{var}.addLabel("{i + 1}",'
+                f'{{position:{{x:{x:.6f},y:{y:.6f},z:{z:.6f}}},'
+                f'fontSize:12,fontColor:"black",showBackground:false,inFront:true}});'
+            )
+        return '\n    '.join(calls)
+
+    def _viewer_html(xyz_data, label_js='', reset_view=False):
+        """Build a self-contained HTML block that renders xyz_data in a $3Dmol viewer.
+
+        The viewer saves its orientation to ``window._orcaBuildViewState`` before
+        destroying itself, so the next call can restore it (orientation preserved
+        across prev/next navigation).  When *reset_view* is True the saved state
+        is cleared first (used when the user enters new coordinates).
+        """
+        div_id = 'orca-mol-' + uuid.uuid4().hex[:10]
+        mouse_js = patch_viewer_mouse_controls_js('viewer', 'el')
+        zoom = str(DEFAULT_3DMOL_ZOOM if DEFAULT_3DMOL_ZOOM is not None else 0.9)
+        reset_js = 'window._orcaBuildViewState=null;' if reset_view else ''
+        html = (
+            _VIEWER_JS_TMPL
+            .replace('__DIV__', div_id)
+            .replace('__RESET__', reset_js)
+            .replace('__MOUSE__', mouse_js)
+            .replace('__XYZ__', json.dumps(xyz_data))
+            .replace('__STYLE__', DEFAULT_3DMOL_STYLE_JS)
+            .replace('__LABELS__', label_js)
+            .replace('__ZOOM__', zoom)
+        )
+        return html
+
+    def _update_nav_label():
+        blocks = state['xyz_blocks']
+        n = len(blocks)
+        if n > 1:
+            idx = state['xyz_view_idx']
+            orca_mol_nav_label.value = (
+                f'<span style="font-size:12px;">'
+                f'{idx + 1}&thinsp;/&thinsp;{n}: {blocks[idx][0]}'
+                f'</span>'
+            )
+            orca_mol_nav_row.layout.display = ''
+        else:
+            orca_mol_nav_label.value = ''
+            orca_mol_nav_row.layout.display = 'none'
+
+    def _refresh_mol_view(reset_view=False):
+        """Re-render the molecule viewer, preserving orientation unless *reset_view*."""
+        blocks = state['xyz_blocks']
+        _update_nav_label()
+        with orca_mol_output:
+            clear_output(wait=True)
+            if blocks:
+                idx = state['xyz_view_idx']
+                _, full_xyz = blocks[idx]
+                try:
+                    label_js = _atom_labels_js(full_xyz)
+                    display(HTML(_viewer_html(full_xyz, label_js, reset_view=reset_view)))
+                except Exception as e:
+                    print(f'Could not visualize: {e}')
+            else:
+                raw = orca_coords.value.strip()
+                if not raw:
+                    print('Paste XYZ coordinates to see 3D preview.')
+                    return
+                coords = strip_xyz_header(raw)
+                if not coords:
+                    print('No valid coordinates.')
+                    return
+                try:
+                    atom_lines = [l for l in coords.split('\n') if l.strip()]
+                    n = len(atom_lines)
+                    xyz_data = f'{n}\nORCA Builder Preview\n{coords}'
+                    label_js = _atom_labels_js(xyz_data)
+                    display(HTML(_viewer_html(xyz_data, label_js, reset_view=reset_view)))
+                except Exception as e:
+                    print(f'Could not visualize: {e}')
+
+    def update_orca_molecule_view(change=None):
+        state['xyz_blocks'] = parse_xyz_blocks(orca_coords.value) or []
+        state['xyz_view_idx'] = 0
+        _refresh_mol_view(reset_view=True)  # new coords → reset camera
+
+    def on_mol_prev(btn):
+        blocks = state['xyz_blocks']
+        if not blocks:
+            return
+        state['xyz_view_idx'] = (state['xyz_view_idx'] - 1) % len(blocks)
+        _update_nav_label()
+        _refresh_mol_view(reset_view=False)  # keep orientation
+
+    def on_mol_next(btn):
+        blocks = state['xyz_blocks']
+        if not blocks:
+            return
+        state['xyz_view_idx'] = (state['xyz_view_idx'] + 1) % len(blocks)
+        _update_nav_label()
+        _refresh_mol_view(reset_view=False)  # keep orientation
 
     def update_orca_preview(change=None):
         if state.get('is_resetting'):
@@ -298,12 +497,32 @@ def create_tab(ctx):
                 text = re.sub(r'\n?%output\b.*?\nend\n?', '\n', text,
                               count=1, flags=re.DOTALL | re.IGNORECASE)
         elif new_output:
-            text = re.sub(r'(\n\* xyz )', f'\n{new_output}\n\\1', text, count=1)
+            text = re.sub(
+                r'(\n\* xyz(?:file)? )',
+                f'\n{new_output}\n\\1', text, count=1,
+            )
 
-        coords = strip_xyz_header(orca_coords.value)
-        new_coord = f'* xyz {orca_charge.value} {orca_multiplicity.value}\n{coords}\n*'
-        text = re.sub(r'\*\s*xyz\s+[-\d]+\s+\d+\s*\n.*?\n\*',
-                      new_coord, text, count=1, flags=re.DOTALL)
+        xyz_blocks = parse_xyz_blocks(orca_coords.value)
+        if xyz_blocks:
+            new_coord = (
+                f'* xyzfile {orca_charge.value} {orca_multiplicity.value}'
+                f' {xyz_blocks[0][0]}'
+            )
+        else:
+            coords = strip_xyz_header(orca_coords.value)
+            new_coord = f'* xyz {orca_charge.value} {orca_multiplicity.value}\n{coords}\n*'
+        # Replace existing coord block – handles both xyzfile (single line) and
+        # inline xyz (multi-line) formats, including switches between the two.
+        new_text = re.sub(
+            r'\*\s*xyzfile\s+[-\d]+\s+\d+\s+\S+',
+            new_coord, text, count=1, flags=re.MULTILINE | re.IGNORECASE,
+        )
+        if new_text == text:
+            new_text = re.sub(
+                r'\*\s*xyz\s+[-\d]+\s+\d+\s*\n.*?\n\*',
+                new_coord, text, count=1, flags=re.DOTALL,
+            )
+        text = new_text
         orca_preview.value = sanitize_orca_input(text)
 
     def handle_orca_generate(button):
@@ -344,6 +563,12 @@ def create_tab(ctx):
 
             inp_path = job_dir / f'{safe_job_name}.inp'
             inp_path.write_text(inp_content)
+
+            # Write named XYZ files (from name.xyz;...* blocks) to job dir
+            xyz_blocks = parse_xyz_blocks(orca_coords.value)
+            if xyz_blocks:
+                for filename, xyz_content in xyz_blocks:
+                    (job_dir / filename).write_text(xyz_content)
 
             saved_files = save_uploaded_files(job_dir)
 
@@ -410,6 +635,8 @@ def create_tab(ctx):
         w.observe(update_orca_preview, names='value')
 
     orca_coords.observe(update_orca_molecule_view, names='value')
+    orca_mol_prev_btn.on_click(on_mol_prev)
+    orca_mol_next_btn.on_click(on_mol_next)
     update_orca_molecule_view()
     update_orca_preview()
     state['last_auto_keywords'] = _build_keyword_line()
@@ -454,6 +681,7 @@ def create_tab(ctx):
         widgets.HTML('<b>ORCA Input Preview (editable):</b>'),
         orca_preview,
         widgets.HTML('<b>Molecule Preview:</b>', layout=widgets.Layout(margin='10px 0 0 0')),
+        orca_mol_nav_row,
         orca_mol_output,
     ], layout=widgets.Layout(
         flex='1 1 0', min_width='0', padding='10px',
