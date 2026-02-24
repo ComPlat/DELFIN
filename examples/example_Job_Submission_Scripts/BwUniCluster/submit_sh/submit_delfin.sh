@@ -233,13 +233,29 @@ export OMPI_MCA_rmaps_base_mapping_policy=core
 export OMPI_MCA_rmaps_base_oversubscribe=true # Allow ORCA's dynamic parallelism
 
 # Activate DELFIN virtual environment
-source "$DELFIN_DIR/.venv/bin/activate"
+# Copy venv to local SSD ($TMPDIR) to avoid HOME filesystem I/O on Python startup.
+# 50 simultaneous jobs each open ~600k files from HOME; copying venv to local SSD
+# reduces open() calls on HOME by ~95% and is recommended by HPC admins.
+if [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
+    VENV_LOCAL="$TMPDIR/delfin_venv_${SLURM_JOB_ID}"
+    echo "Copying venv to local SSD ($VENV_LOCAL) to reduce HOME I/O..."
+    cp -a "$DELFIN_DIR/.venv" "$VENV_LOCAL"
+    # Rewrite shebangs/paths: activate script uses absolute paths
+    sed -i "s|$DELFIN_DIR/.venv|$VENV_LOCAL|g" "$VENV_LOCAL/bin/activate" 2>/dev/null || true
+    source "$VENV_LOCAL/bin/activate"
+    echo "venv loaded from local SSD."
+else
+    source "$DELFIN_DIR/.venv/bin/activate"
+fi
 
 # Environment variables
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export DELFIN_ORCA_PROGRESS=0
 export MPLBACKEND=Agg
+# Reduce HOME filesystem I/O: avoid writing .pyc files and user site-packages
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
 
 # Scratch directory setup
 # Priority: 1) BeeOND (for multi-node), 2) $TMPDIR (local SSD), 3) /scratch (network, last resort)
@@ -597,6 +613,6 @@ echo "========================================"
 rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
 
 # Cleanup scratch
-rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR"
+rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}"
 
 exit $EXIT_CODE
