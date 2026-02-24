@@ -59,6 +59,9 @@ def create_tab(ctx):
     CALC_SEARCH_MAX_MATCHES = 2000
     CALC_HIGHLIGHT_MAX_CHARS = 400_000
     CALC_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
+    # Trajectories with more frames than this use single-frame mode
+    # (avoids embedding the full XYZ in a JS template literal via comm)
+    CALC_XYZ_LARGE_TRAJ_FRAMES = 500
     # -- state (closure-captured) -------------------------------------------
     state = {
         'current_path': '',
@@ -3315,9 +3318,15 @@ def create_tab(ctx):
         calc_xyz_frame_input.value = idx + 1
         calc_xyz_frame_input.max = len(frames)
         calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
+        large_traj_note = (
+            f' <span style="color:#888;font-size:0.85em;">'
+            f'(large trajectory, single-frame mode)</span>'
+            if len(frames) > CALC_XYZ_LARGE_TRAJ_FRAMES else ''
+        )
         calc_xyz_frame_total.value = f"<b>/ {len(frames)}</b>"
         calc_xyz_frame_label.value = (
             f"{_html.escape(comment[:100])}{'...' if len(comment) > 100 else ''}"
+            f"{large_traj_note}"
         )
         selected_path = _calc_selected_item_path()
         rmsd_enabled = bool(
@@ -3327,8 +3336,11 @@ def create_tab(ctx):
         )
         _calc_set_rmsd_available(rmsd_enabled)
 
-        # Trajectory: use JS viewer and keep orientation when switching frames
-        if len(frames) > 1:
+        # Trajectory: use JS viewer and keep orientation when switching frames.
+        # For large trajectories, fall back to single-frame mode to avoid
+        # embedding tens of MB in a JS template literal over the comm channel.
+        large_traj = len(frames) > CALC_XYZ_LARGE_TRAJ_FRAMES
+        if len(frames) > 1 and not large_traj:
             if initial_load or not state['traj_viewer_ready']:
                 full_xyz = ""
                 for comm, block, natoms in frames:
