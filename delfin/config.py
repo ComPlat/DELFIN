@@ -21,6 +21,12 @@ _TEMPLATE_REQUIRED_KEYS: Set[str] = set()
 _PLACEHOLDER_VALIDATION_VALUES: Dict[str, Any] = {
     "charge": 0,
     "solvent": "DMF",
+    "method": "classic",
+    "ESD_modus": "tddft",
+}
+_PLACEHOLDER_MESSAGES: Dict[str, str] = {
+    "method": "Placeholder [METHOD] must be set to one of: classic, manually, OCCUPIER",
+    "ESD_modus": "Placeholder [ESD_MODUS] must be set to one of: TDDFT, deltaSCF, hybrid1",
 }
 _KNOWN_ORCA_OVERRIDE_BASENAMES: Set[str] = {
     "basename",
@@ -243,7 +249,7 @@ def _load_template_defaults() -> Dict[str, Any]:
         parsed = _parse_control_file("<template>", keep_steps_literal=True, content=CONTROL_TEMPLATE)
         sanitized: Dict[str, Any] = {}
         for key, value in parsed.items():
-            if isinstance(value, str) and "|" in value:
+            if isinstance(value, str) and "|" in value and not _is_placeholder_value(value):
                 value = value.split("|", 1)[0].strip()
 
             if _is_placeholder_value(value):
@@ -462,10 +468,17 @@ def validate_control_text(control_text: str) -> List[str]:
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
 
     # Collect placeholder errors (don't raise, just collect)
+    esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
     missing_required = _collect_missing_required_keys(user_keys, placeholder_keys)
     for key in missing_required:
+        # ESD_modus only matters when ESD_modul=yes
+        if key == 'ESD_modus' and not esd_enabled:
+            continue
         if key in placeholder_keys:
-            all_errors.append(f"Placeholder [{key.upper()}] must be replaced with an actual value")
+            msg = _PLACEHOLDER_MESSAGES.get(
+                key, f"Placeholder [{key.upper()}] must be replaced with an actual value"
+            )
+            all_errors.append(msg)
         else:
             all_errors.append(f"Missing required key: {key}")
 
@@ -488,8 +501,22 @@ def validate_control_text(control_text: str) -> List[str]:
     return all_errors
 
 
+def _esd_parse_transitions(val: Any) -> List[str]:
+    """Extract individual transition strings from an ESD field value (ISCs/ICs)."""
+    if not val or val == [] or _is_placeholder_value(val):
+        return []
+    if isinstance(val, list):
+        return [str(v).strip() for v in val if str(v).strip()]
+    if isinstance(val, str):
+        s = val.strip()
+        if s.startswith('[') and s.endswith(']'):
+            s = s[1:-1]
+        return [t.strip() for t in s.split(',') if t.strip()]
+    return []
+
+
 def get_esd_hints(control_text: str) -> List[str]:
-    """Return advisory hints when ESD_modul=yes but ESD fields are still empty [].
+    """Return advisory hints when ESD_modul=yes but ESD fields need attention.
 
     These are non-blocking — submission proceeds normally.
     """
@@ -500,6 +527,12 @@ def get_esd_hints(control_text: str) -> List[str]:
     if str(config.get('ESD_modul', 'no')).lower() != 'yes':
         return []
     hints = []
+    method_val = str(config.get('method', '')).strip().lower()
+    if method_val in ('occupier', 'manually'):
+        hints.append(
+            f"ESD_modul=yes with method={config.get('method')} — "
+            f"ESD is only supported with method=classic"
+        )
     esd_fields = {
         'states': '[S1,T1,S2,T2]',
         'ISCs': '[S1>T1,T1>S1]',
@@ -508,11 +541,36 @@ def get_esd_hints(control_text: str) -> List[str]:
     }
     for field, example in esd_fields.items():
         val = config.get(field)
-        if val is None or val == [] or val == '':
+        if val is None or _is_placeholder_value(val):
             hints.append(
-                f"ESD_modul=yes: {field}=[] — "
-                f"define if needed (e.g. {example}), leave [] if not used"
+                f"ESD_modul=yes: {field} not set — "
+                f"define if needed (e.g. {field}={example[1:-1]}), or clear with {field}= or {field}=[]"
             )
+
+    # Warn if ISCs contain same-spin transitions (those belong in ICs)
+    for trans in _esd_parse_transitions(config.get('ISCs')):
+        if '>' in trans:
+            a, b = trans.split('>', 1)
+            a_spin = a.strip()[:1].upper()
+            b_spin = b.strip()[:1].upper()
+            if a_spin and b_spin and a_spin == b_spin:
+                hints.append(
+                    f"ISCs={trans!r}: same-spin transition (S→S or T→T) — "
+                    f"did you mean ICs={trans}? ISCs connect different spin states (S↔T)"
+                )
+
+    # Warn if ICs contain different-spin transitions (those belong in ISCs)
+    for trans in _esd_parse_transitions(config.get('ICs')):
+        if '>' in trans:
+            a, b = trans.split('>', 1)
+            a_spin = a.strip()[:1].upper()
+            b_spin = b.strip()[:1].upper()
+            if a_spin and b_spin and a_spin != b_spin:
+                hints.append(
+                    f"ICs={trans!r}: different-spin transition (S→T or T→S) — "
+                    f"did you mean ISCs={trans}? ICs connect same spin states (S→S, T→T)"
+                )
+
     return hints
 
 

@@ -38,12 +38,12 @@ Redox steps:
 calc_initial=yes
 oxidation_steps=1,2,3
 reduction_steps=1,2,3
-method=classic|manually|OCCUPIER
+method=[classic|manually|OCCUPIER]
 calc_potential_method=2
 ------------------------------------
 ESD module (excited state dynamics):
 ESD_modul=no
-ESD_modus=TDDFT|deltaSCF|hybrid1
+ESD_modus=[TDDFT|deltaSCF|hybrid1]
 ESD_frequency=yes
 states=S1,T1,S2,T2
 ISCs=S1>T1,T1>S1
