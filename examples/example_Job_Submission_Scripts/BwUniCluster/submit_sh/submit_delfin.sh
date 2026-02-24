@@ -326,7 +326,7 @@ cleanup() {
     # CRITICAL: Copy ALL results back before cleanup
     echo "Copying results back to $SLURM_SUBMIT_DIR..."
     if [ -d "$RUN_DIR" ]; then
-        rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        rsync -a --exclude='*.tmp' --exclude='*.inp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Results copied successfully."
     else
         echo "WARNING: RUN_DIR not found, nothing to copy."
@@ -343,7 +343,7 @@ periodic_copy() {
     while true; do
         sleep 7200
         if [ -d "$RUN_DIR" ]; then
-            rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+            rsync -a --exclude='*.tmp' --exclude='*.inp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         fi
     done
 }
@@ -386,7 +386,7 @@ schedule_final_backup() {
     echo "Final backup 5 min before timeout: $(date)"
     echo "========================================"
     if [ -d "$RUN_DIR" ]; then
-        rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        rsync -a --exclude='*.tmp' --exclude='*.inp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Final backup completed."
     fi
 }
@@ -610,7 +610,7 @@ echo "Exit Code:   $EXIT_CODE"
 echo "========================================"
 
 # Copy results back
-rsync -a --exclude='*.tmp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
+rsync -a --exclude='*.tmp' --exclude='*.inp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
 
 # Cleanup scratch
 rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}"
