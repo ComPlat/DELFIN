@@ -18,6 +18,7 @@ from IPython.display import clear_output, display
 from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
 from .context import DashboardContext
 from .helpers import create_busy_css, disable_spellcheck_global
+from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
 
 from . import (
     tab_archive_statistics,
@@ -151,7 +152,13 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # Run both calc-browser init scripts in ONE ctx.run_js() call.
     # If called separately, the second call's clear_output() would wipe the
     # first tab's splitter-init JS before the browser ever executes it.
-    _calc_init = refs5.get('init_js', '') + '\n' + refs6.get('init_js', '')
+    _calc_init = (
+        RIGHT_MOUSE_TRANSLATE_PATCH_JS
+        + '\n'
+        + refs5.get('init_js', '')
+        + '\n'
+        + refs6.get('init_js', '')
+    )
     if _calc_init.strip():
         ctx.run_js(_calc_init)
 

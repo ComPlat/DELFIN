@@ -26,7 +26,12 @@ from .input_processing import (
     is_smiles,
 )
 from .helpers import disable_spellcheck
-from .molecule_viewer import coord_to_xyz, parse_xyz_frames, DEFAULT_3DMOL_STYLE_JS
+from .molecule_viewer import (
+    coord_to_xyz,
+    parse_xyz_frames,
+    DEFAULT_3DMOL_STYLE_JS,
+    patch_viewer_mouse_controls_js,
+)
 from rdkit import Chem, RDLogger
 from rdkit.Chem import rdDepictor, AllChem
 from rdkit.Chem.Draw import MolToImage
@@ -102,6 +107,7 @@ def create_tab(ctx):
     calc_scope_id = f'calc-scope-{abs(id(state))}'
     calc_resize_mol_fn = f'calcResizeMolViewer_{abs(id(state))}'
     calc_resize_pre_fn = f'calcResizePreselect3D_{abs(id(state))}'
+    VIEWER_MOUSE_PATCH_JS = patch_viewer_mouse_controls_js('viewer', 'el')
 
     # -- widgets ------------------------------------------------------------
     calc_path_label = widgets.HTML(
@@ -1122,6 +1128,7 @@ def create_tab(ctx):
                             el.style.height = side + 'px';
                         }}
                         var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                        {VIEWER_MOUSE_PATCH_JS}
                         var molData = {mol_json};
                         viewer.addModel(molData, "mol");
                         viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
@@ -1504,6 +1511,7 @@ def create_tab(ctx):
                 }}
                 var savedView = window._calcMolViewStateByScope[viewScope] || null;
                 var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                {VIEWER_MOUSE_PATCH_JS}
                 var molData = {data_json};
                 viewer.addModel(molData, "{fmt}");
                 viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
@@ -3157,6 +3165,7 @@ def create_tab(ctx):
                 }}
                 var savedView = window._calcMolViewStateByScope[viewScope] || null;
                 var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                {VIEWER_MOUSE_PATCH_JS}
                 var targetData = {target_json};
                 var refData = {ref_json};
                 viewer.addModel(targetData, "xyz");
@@ -3262,6 +3271,7 @@ def create_tab(ctx):
                     return;
                 }}
                 var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                {VIEWER_MOUSE_PATCH_JS}
                 var targetData = {target_json};
                 var refData = {ref_json};
                 viewer.addModel(targetData, "xyz");
@@ -3393,6 +3403,7 @@ def create_tab(ctx):
                             }}
                             var savedView = window._calcMolViewStateByScope[viewScope] || null;
                             var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                            {VIEWER_MOUSE_PATCH_JS}
                             var xyz = `{full_xyz}`;
                             viewer.addModelsAsFrames(xyz, "xyz");
                             viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
