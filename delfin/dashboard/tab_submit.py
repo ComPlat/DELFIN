@@ -79,11 +79,13 @@ def create_tab(ctx):
             "Ni_1;[Ni];charge=2;solvent=water\n"
             "Co_1;[Co];charge=3\n"
             "\n"
-            "name;key=value;...\n"
-            "XYZ\n"
+            "name1.xyz;\n"
+            "C  0.0  0.0  0.0\n"
+            "H  0.0  0.0  1.0\n"
             "*\n"
-            "name;key=value;...\n"
+            "name2;charge=1;\n"
             "XYZ\n"
+            "C  0.0  0.0  0.0\n"
             "*"
         ),
         layout=widgets.Layout(width='100%', height='220px', box_sizing='border-box'),
@@ -545,9 +547,13 @@ def create_tab(ctx):
         1) SMILES line:
            Name;SMILES;key=value;...
         2) XYZ block:
-           Name;key=value;...
+           Name;key=value;...    # key=value optional
            XYZ
            <coordinates ...>    # with or without XYZ header lines
+           *
+           or short form:
+           Name.xyz;
+           <coordinates ...>
            *
         """
         entries = []
@@ -565,12 +571,9 @@ def create_tab(ctx):
                 errors.append(f"Line {line_no}: Missing ';' delimiter -> {line}")
                 continue
 
-            parts = [p.strip() for p in line.split(';') if p.strip()]
-            if len(parts) < 2:
-                errors.append(f'Line {line_no}: Missing name or payload -> {line}')
-                continue
-
-            name = parts[0]
+            parts = [p.strip() for p in line.split(';')]
+            name = parts[0] if parts else ''
+            header_tokens = parts[1:]
             if not name:
                 errors.append(f'Line {line_no}: Missing name -> {line}')
                 continue
@@ -578,7 +581,9 @@ def create_tab(ctx):
             extras = {}
             smiles_payload = None
             force_xyz = False
-            for token in parts[1:]:
+            for token in header_tokens:
+                if not token:
+                    continue
                 if '=' in token:
                     key_candidate = token.split('=', 1)[0].strip()
                     # Valid key: starts with lowercase letter, only word chars
