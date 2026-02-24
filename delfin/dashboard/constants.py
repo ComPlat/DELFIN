@@ -35,6 +35,7 @@ COMMON_STYLE = {'description_width': 'initial'}
 # Search suggestions for Calculations Browser
 # ---------------------------------------------------------------------------
 CALC_SEARCH_OPTIONS = [
+    '***imaginary mode***',
     'ABSORPTION SPECTRUM',
     'ERROR',
     'FINAL SINGLE POINT ENERGY',
