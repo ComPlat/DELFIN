@@ -5266,7 +5266,8 @@ def create_tab(ctx):
         calc_table_output.value = _render_extract_table_html(headers, rows)
         import io, csv as _csv
         buf = io.StringIO()
-        _csv.writer(buf, delimiter=';').writerows([headers] + rows)
+        csv_rows = [['' if c == '—' else c for c in row] for row in rows]
+        _csv.writer(buf, delimiter=';').writerows([headers] + csv_rows)
         state['table_csv_data'] = buf.getvalue()
         calc_table_csv_btn.layout.display = 'inline-flex'
         folder_count = len(folders)
@@ -5283,10 +5284,10 @@ def create_tab(ctx):
         if not data:
             return
         import base64 as _b64
-        b64 = _b64.b64encode(data.encode()).decode()
+        b64 = _b64.b64encode(data.encode('utf-8-sig')).decode()
         _js = (
             'var a=document.createElement("a");'
-            f'a.href="data:text/csv;base64,{b64}";'
+            f'a.href="data:text/csv;charset=utf-8;base64,{b64}";'
             'a.download="extract_table.csv";'
             'document.body.appendChild(a);a.click();document.body.removeChild(a);'
         )
