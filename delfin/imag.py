@@ -17,6 +17,7 @@ from delfin.global_manager import get_global_manager
 from .utils import search_transition_metals, resolve_level_of_theory
 from .energies import find_electronic_energy
 from .orca import run_orca_IMAG, run_orca
+from . import smart_recalc
 from .xyz_io import (
     split_qmmm_sections,
     _ensure_qmmm_implicit_model,
@@ -601,28 +602,20 @@ def _run_sp_candidates_sequential(
     jobs: List[_IMAGCandidateJob],
 ) -> List[_ImagSinglePointResult]:
     results: List[_ImagSinglePointResult] = []
-    recalc = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
 
     for job in jobs:
         result = _ImagSinglePointResult(job=job)
 
-        # RECALC mode: Check if output already exists and is valid
-        if recalc and job.sp_output_path.exists():
-            try:
-                if job.sp_output_path.stat().st_size >= 100:
-                    with job.sp_output_path.open("r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
-                        if OK_MARKER in content:
-                            energy = find_electronic_energy(str(job.sp_output_path))
-                            if energy is not None:
-                                logging.info(f"[recalc] IMAG SP mode {job.mode_index} ({job.direction}): skip (energy={energy})")
-                                result.success = True
-                                result.energy = energy
-                                result.optimized_geometry = _locate_relaxed_xyz(job.sp_input_path, job.sp_output_path)
-                                results.append(result)
-                                continue
-            except Exception as e:
-                logging.debug(f"[recalc] Failed to check existing IMAG SP output for mode {job.mode_index}: {e}")
+        # Smart recalc: skip when inp+deps are unchanged and output is complete
+        if smart_recalc.should_skip(job.sp_input_path, job.sp_output_path):
+            energy = find_electronic_energy(str(job.sp_output_path))
+            if energy is not None:
+                logging.info(f"[smart_recalc] IMAG SP mode {job.mode_index} ({job.direction}): skip (energy={energy})")
+                result.success = True
+                result.energy = energy
+                result.optimized_geometry = _locate_relaxed_xyz(job.sp_input_path, job.sp_output_path)
+                results.append(result)
+                continue
 
         sp_success = run_orca(
             str(job.sp_input_path),
@@ -656,30 +649,22 @@ def _run_sp_candidates_parallel(
     maxcore_value: int,
 ) -> List[_ImagSinglePointResult]:
     handles: List[tuple[_ImagSinglePointResult, threading.Event]] = []
-    recalc = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
 
     for job in jobs:
         result = _ImagSinglePointResult(job=job)
         event = threading.Event()
 
-        # RECALC mode: Check if output already exists and is valid before submitting to pool
-        if recalc and job.sp_output_path.exists():
-            try:
-                if job.sp_output_path.stat().st_size >= 100:
-                    with job.sp_output_path.open("r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
-                        if OK_MARKER in content:
-                            energy = find_electronic_energy(str(job.sp_output_path))
-                            if energy is not None:
-                                logging.info(f"[recalc] IMAG SP mode {job.mode_index} ({job.direction}): skip (energy={energy})")
-                                result.success = True
-                                result.energy = energy
-                                result.optimized_geometry = _locate_relaxed_xyz(job.sp_input_path, job.sp_output_path)
-                                event.set()
-                                handles.append((result, event))
-                                continue
-            except Exception as e:
-                logging.debug(f"[recalc] Failed to check existing IMAG SP output for mode {job.mode_index}: {e}")
+        # Smart recalc: skip when inp+deps are unchanged and output is complete
+        if smart_recalc.should_skip(job.sp_input_path, job.sp_output_path):
+            energy = find_electronic_energy(str(job.sp_output_path))
+            if energy is not None:
+                logging.info(f"[smart_recalc] IMAG SP mode {job.mode_index} ({job.direction}): skip (energy={energy})")
+                result.success = True
+                result.energy = energy
+                result.optimized_geometry = _locate_relaxed_xyz(job.sp_input_path, job.sp_output_path)
+                event.set()
+                handles.append((result, event))
+                continue
 
         handles.append((result, event))
 
@@ -1466,21 +1451,14 @@ def run_IMAG(
                 sp_input_path = imag_folder / f"{sp_label}_sp.inp"
                 sp_output_path = imag_folder / f"{sp_label}_sp.out"
 
-                # RECALC mode: Check if this single-point calculation already exists and is valid
+                # Smart recalc: reuse existing SP if inp+deps unchanged and output is complete.
                 # Do this BEFORE deleting files!
                 sp_exists_and_valid = False
-                if recalc and sp_output_path.exists():
-                    try:
-                        if sp_output_path.stat().st_size >= 100:
-                            with sp_output_path.open("r", encoding="utf-8", errors="replace") as f:
-                                content = f.read()
-                                if OK_MARKER in content:
-                                    energy = find_electronic_energy(str(sp_output_path))
-                                    if energy is not None:
-                                        sp_exists_and_valid = True
-                                        logging.info(f"[recalc] IMAG SP mode {mode_index} ({direction_label}): reusing existing result (energy={energy})")
-                    except Exception as e:
-                        logging.debug(f"[recalc] Failed to check existing IMAG SP output for mode {mode_index}: {e}")
+                if smart_recalc.should_skip(sp_input_path, sp_output_path):
+                    _sr_energy = find_electronic_energy(str(sp_output_path))
+                    if _sr_energy is not None:
+                        sp_exists_and_valid = True
+                        logging.info(f"[smart_recalc] IMAG SP mode {mode_index} ({direction_label}): reusing existing result (energy={_sr_energy})")
 
                 # Only delete and recreate if job doesn't exist or is invalid
                 if not sp_exists_and_valid:

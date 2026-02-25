@@ -1268,13 +1268,6 @@ def run_OCCUPIER():
             gbw_candidate = "input.gbw" if src_idx == 1 else f"input{src_idx}.gbw"
 
             def _work(cores: int) -> None:
-                if recalc and _has_ok_marker(out):
-                    logger.info("[recalc] Skipping ORCA for %s; found '%s'.", out, OK)
-                    parsed_val = finder(out)
-                    with results_lock:
-                        fspe_results[idx] = parsed_val
-                    return
-
                 parts: list[str] = []
 
                 if pass_wf_enabled:

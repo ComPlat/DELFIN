@@ -29,6 +29,7 @@ from delfin.orca_recovery import (
     RecoveryStrategy,
     RetryStateTracker,
 )
+from . import smart_recalc
 
 logger = get_logger(__name__)
 
@@ -1243,10 +1244,20 @@ def run_orca(
     # Apply CONTROL overrides like keyword:<base>=... / addition:<base>=...
     _apply_control_overrides_to_input(input_path, working_dir)
 
+    # Smart recalc: skip execution when inp+deps are unchanged and output is complete.
+    # The check runs *after* overrides are applied so any override-induced change is
+    # captured in the fingerprint.
+    if smart_recalc.should_skip(input_path, output_path):
+        logger.info(
+            "[smart_recalc] Skipping ORCA for '%s'; inp+deps unchanged and output complete.",
+            input_file_path,
+        )
+        return True
+
     # Isolated execution: run ORCA in a separate subdirectory to avoid
     # race conditions on parallel filesystems (Lustre)
     if isolate:
-        return _run_orca_isolated(
+        result = _run_orca_isolated(
             orca_path,
             input_path,
             output_path,
@@ -1254,6 +1265,9 @@ def run_orca(
             scratch_subdir=scratch_subdir,
             copy_files=copy_files,
         )
+        if result:
+            smart_recalc.store_fingerprint(input_path)
+        return result
 
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1271,6 +1285,7 @@ def run_orca(
         working_dir=working_dir,
     ):
         logger.info(f"ORCA run successful for '{input_file_path}'")
+        smart_recalc.store_fingerprint(input_path)
         return True
     return False
 

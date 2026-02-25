@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from .orca import run_orca
 from .xyz_io import modify_file2
+from . import smart_recalc
 
 
 def _resolve_work_input(config) -> Path:
@@ -73,8 +74,8 @@ def XTB(multiplicity, charge, config):
 
     try:
         os.chdir(work)
-        if _recalc_on() and _orca_ok("output_XTB.out") and Path("XTB.xyz").exists():
-            logging.info("[recalc] skipping xTB; output_XTB.out is complete.")
+        if smart_recalc.should_skip(inp, out) and Path("XTB.xyz").exists():
+            logging.info("[smart_recalc] skipping xTB; inp+deps unchanged and output complete.")
         else:
             run_orca("XTB.inp", "output_XTB.out")
         if not Path("XTB.xyz").exists():
@@ -115,8 +116,8 @@ def XTB_GOAT(multiplicity, charge, config):
 
     try:
         os.chdir(work)
-        if _recalc_on() and _orca_ok("output_XTB_GOAT.out") and Path("XTB_GOAT.globalminimum.xyz").exists():
-            logging.info("[recalc] skipping GOAT; output_XTB_GOAT.out is complete.")
+        if smart_recalc.should_skip(inp, out) and Path("XTB_GOAT.globalminimum.xyz").exists():
+            logging.info("[smart_recalc] skipping GOAT; inp+deps unchanged and output complete.")
         else:
             run_orca("XTB_GOAT.inp", "output_XTB_GOAT.out")
         if not Path("XTB_GOAT.globalminimum.xyz").exists():
@@ -219,8 +220,8 @@ def XTB_SOLVATOR(source_file, multiplicity, charge, solvent, number_explicit_sol
 
     try:
         os.chdir(work)
-        if _recalc_on() and _orca_ok("output_XTB_SOLVATOR.out") and Path("XTB_SOLVATOR.solvator.xyz").exists():
-            logging.info("[recalc] skipping XTB_SOLVATOR; output_XTB_SOLVATOR.out is complete.")
+        if smart_recalc.should_skip(inp, out) and Path("XTB_SOLVATOR.solvator.xyz").exists():
+            logging.info("[smart_recalc] skipping XTB_SOLVATOR; inp+deps unchanged and output complete.")
         else:
             run_orca("XTB_SOLVATOR.inp", "output_XTB_SOLVATOR.out")
         if not Path("XTB_SOLVATOR.solvator.xyz").exists():
