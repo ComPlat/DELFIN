@@ -5028,6 +5028,71 @@ def create_tab(ctx):
             })
         calc_table_cols_box.children = tuple(rows)
 
+    def _json_collect_key_values(node, key):
+        matches = []
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                if key in current:
+                    matches.append(current[key])
+                values = list(current.values())
+                for value in reversed(values):
+                    stack.append(value)
+            elif isinstance(current, list):
+                for item in reversed(current):
+                    stack.append(item)
+        return matches
+
+    def _json_extract_path_values(json_data, path):
+        parts = [part.strip() for part in path.split('.') if part.strip()]
+        if not parts:
+            return []
+        nodes = [json_data]
+        for part in parts:
+            next_nodes = []
+            lower_part = part.lower()
+            for node in nodes:
+                node_matches = []
+                if isinstance(node, dict):
+                    if part == '*':
+                        node_matches.extend(node.values())
+                    elif part in node:
+                        node_matches.append(node[part])
+                    else:
+                        # Convenience fallback: search this key recursively.
+                        node_matches.extend(_json_collect_key_values(node, part))
+                elif isinstance(node, list):
+                    if part in ('*', '[]'):
+                        node_matches.extend(node)
+                    elif lower_part == 'last':
+                        if node:
+                            node_matches.append(node[-1])
+                    elif lower_part == 'first':
+                        if node:
+                            node_matches.append(node[0])
+                    else:
+                        try:
+                            node_matches.append(node[int(part)])
+                        except (ValueError, IndexError):
+                            for item in node:
+                                if isinstance(item, dict) and part in item:
+                                    node_matches.append(item[part])
+                            if not node_matches:
+                                for item in node:
+                                    node_matches.extend(_json_collect_key_values(item, part))
+                next_nodes.extend(node_matches)
+            if not next_nodes:
+                return []
+            nodes = next_nodes
+        flat_nodes = []
+        for node in nodes:
+            if isinstance(node, list):
+                flat_nodes.extend(node)
+            else:
+                flat_nodes.append(node)
+        return flat_nodes
+
     def _extract_values(col_def, text, json_data):
         typ = col_def.get('type', 'regex')
         pat = col_def.get('pattern', '').strip()
@@ -5078,27 +5143,15 @@ def create_tab(ctx):
             elif typ == 'json':
                 if json_data is None:
                     return ['—']
-                obj = json_data
-                for part in pat.split('.'):
-                    if isinstance(obj, dict):
-                        obj = obj.get(part, '—')
-                    elif isinstance(obj, list):
-                        try:
-                            obj = obj[int(part)]
-                        except (ValueError, IndexError):
-                            return ['—']
-                    else:
-                        return ['—']
-                if isinstance(obj, list):
-                    if not obj:
-                        return ['—']
-                    values = [str(v) for v in obj]
-                    if occ == 'all':
-                        return values
-                    if occ == 'first':
-                        return [values[0]]
-                    return [values[-1]]
-                return [str(obj)]
+                values = _json_extract_path_values(json_data, pat)
+                if not values:
+                    return ['—']
+                rendered = [str(v) for v in values]
+                if occ == 'all':
+                    return rendered
+                if occ == 'first':
+                    return [rendered[0]]
+                return [rendered[-1]]
         except Exception as exc:
             return [f'err:{exc}']
         return ['—']
