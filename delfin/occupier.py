@@ -39,6 +39,7 @@ from .parallel_classic_manually import (
     normalize_parallel_token,
 )
 from .process_checker import check_and_warn_competing_processes
+from .parser import extract_last_uhf_deviation
 
 logger = get_logger(__name__)
 
@@ -480,6 +481,129 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
 
 
 # ======================== End of extracted helper functions ========================
+
+
+def _check_contamination_trigger(
+    sequence: list,
+    fspe_results: dict,
+    config: dict,
+    *,
+    freq_enabled: bool,
+    apm: str,
+) -> Optional[Dict[str, Any]]:
+    """Check whether a contamination-triggered BS job should be run.
+
+    Returns a new sequence-entry dict (ready for make_work / WorkflowJob) if
+    the trigger fires, or None if no additional job is needed.
+
+    Trigger conditions (all must hold):
+      • contamination_bs_trigger = yes  (default)
+      • Preliminary winner is NOT a BS state
+      • No BS entry for the same multiplicity already exists in sequence
+      • UHF spin contamination of winner > contamination_bs_threshold (default 0.5)
+      • Output file of winner does NOT already contain a completed BS(m,1) run
+
+    Controlled by CONTROL.txt:
+      contamination_bs_trigger   = yes/no  (default: yes)
+      contamination_bs_threshold = float   (default: 0.5)
+    """
+    trigger_enabled = str(config.get("contamination_bs_trigger", "yes")).strip().lower() in (
+        "yes", "true", "1", "on"
+    )
+    if not trigger_enabled:
+        return None
+
+    try:
+        cont_threshold = float(str(config.get("contamination_bs_threshold", 0.5)).strip())
+    except (TypeError, ValueError):
+        cont_threshold = 0.5
+
+    # Find preliminary winner: lowest energy among non-None results
+    best_idx: Optional[int] = None
+    best_energy: Optional[float] = None
+    for entry in sequence:
+        idx_e = int(entry["index"])
+        val = fspe_results.get(idx_e)
+        if val is not None:
+            if best_energy is None or val < best_energy:
+                best_idx, best_energy = idx_e, val
+
+    if best_idx is None:
+        logger.debug("[contamination_trigger] No valid energy results, skipping.")
+        return None
+
+    best_entry = next((e for e in sequence if int(e["index"]) == best_idx), None)
+    if best_entry is None:
+        return None
+
+    # Only trigger when winner is NOT already a BS state
+    if bool(best_entry.get("BS")):
+        logger.debug(
+            "[contamination_trigger] Winner (idx=%d) is already a BS state, skipping.", best_idx
+        )
+        return None
+
+    m_winner = int(best_entry.get("m", 0))
+
+    # Check: no BS entry for the same multiplicity already exists
+    already_has_bs = any(
+        bool(e.get("BS")) and int(e.get("m", 0)) == m_winner
+        for e in sequence
+    )
+    if already_has_bs:
+        logger.debug(
+            "[contamination_trigger] BS for m=%d already in sequence, skipping.", m_winner
+        )
+        return None
+
+    # Read spin contamination from winner's output file
+    out_file = "output.out" if best_idx == 1 else f"output{best_idx}.out"
+    out_path = resolve_path(out_file)
+    if not out_path.exists():
+        logger.debug(
+            "[contamination_trigger] Output file '%s' not found, skipping.", out_path
+        )
+        return None
+
+    try:
+        deviation = extract_last_uhf_deviation(str(out_path))
+    except Exception as exc:
+        logger.debug(
+            "[contamination_trigger] Could not read contamination from '%s': %s", out_path, exc
+        )
+        return None
+
+    if deviation is None:
+        logger.debug(
+            "[contamination_trigger] No UHF spin contamination block in '%s' "
+            "(likely RKS singlet), skipping.", out_path
+        )
+        return None
+
+    if deviation <= cont_threshold:
+        logger.info(
+            "[contamination_trigger] Winner (idx=%d, m=%d): contamination=%.3f <= threshold=%.3f, "
+            "no BS trigger needed.",
+            best_idx, m_winner, deviation, cont_threshold,
+        )
+        return None
+
+    logger.info(
+        "[contamination_trigger] Winner (idx=%d, m=%d): contamination=%.3f > threshold=%.3f. "
+        "Will trigger additional BS(%d,1) calculation.",
+        best_idx, m_winner, deviation, cont_threshold, m_winner,
+    )
+
+    # Build new sequence entry
+    new_idx = max(int(e["index"]) for e in sequence) + 1
+    bs_str = f"{m_winner},1"
+    new_entry: Dict[str, Any] = {
+        "index": new_idx,
+        "m": m_winner,
+        "BS": bs_str,
+        "from": best_idx,
+    }
+    return new_entry
 
 
 def run_OCCUPIER():
@@ -1287,6 +1411,50 @@ def run_OCCUPIER():
                 manager._sync_parallel_flag()
 
             manager.run()
+
+            # Post-hoc contamination trigger — runs BEFORE shutdown so the global
+            # pool still accounts for this step's core reservation (no oversubscription
+            # with other parallel OCCUPIER steps that share the same pool).
+            _ct_entry = _check_contamination_trigger(
+                sequence, fspe_results, config,
+                freq_enabled=freq_enabled,
+                apm=apm,
+            )
+            if _ct_entry is not None:
+                # Check recalc guard: if output already exists and completed, just parse
+                _ct_idx = int(_ct_entry["index"])
+                _ct_out = "output.out" if _ct_idx == 1 else f"output{_ct_idx}.out"
+                _ct_out_path = resolve_path(_ct_out)
+                _ct_already_done = False
+                if _ct_out_path.exists():
+                    try:
+                        if "ORCA TERMINATED NORMALLY" in _ct_out_path.read_text(
+                            encoding="utf-8", errors="replace"
+                        ):
+                            logger.info(
+                                "[contamination_trigger] Output '%s' already complete, "
+                                "skipping ORCA run.", _ct_out,
+                            )
+                            sequence.append(_ct_entry)
+                            fspe_results[_ct_idx] = finder(_ct_out)
+                            _ct_already_done = True
+                    except Exception:
+                        pass
+
+                if not _ct_already_done:
+                    # All regular FoBs are done — this is the only job left,
+                    # so it gets the full core allocation of this OCCUPIER step.
+                    _ct_cores = manager.total_cores
+                    try:
+                        make_work(_ct_entry)(_ct_cores)
+                        sequence.append(_ct_entry)
+                    except Exception as _ct_exc:
+                        logger.error(
+                            "[contamination_trigger] Job failed: %s", _ct_exc
+                        )
+                        sequence.append(_ct_entry)
+                        fspe_results.setdefault(_ct_idx, None)
+
         finally:
             if manager is not None:
                 manager.shutdown()
