@@ -907,6 +907,7 @@ def write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index, start_di
 
     keywords_line = _ensure_qmmm_keyword(orca_keywords, qmmm_range)
     keywords_line = _append_orca_keyword(keywords_line, "NoTRAH")
+    keywords_line = _append_orca_keyword(keywords_line, "SlowConv")
     basis_block = _format_basis_block(metal_symbol, metal_basis, keywords_line)
     sections = [f"! {keywords_line}\n"]
     if basis_block:
