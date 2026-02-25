@@ -433,7 +433,8 @@ def _build_qmmm_block_lines(qmmm_range: Optional[Tuple[int, int]]) -> List[str]:
 
 def _build_newgto_assignments(atoms, keywords: str, metal_basis: Optional[str],
                               control_args: Optional[Dict], qmmm_range: Optional[Tuple[int, int]],
-                              skip_metals: bool = False) -> Dict[int, str]:
+                              skip_metals: bool = False,
+                              co2_indices: Optional[Sequence[int]] = None) -> Dict[int, str]:
     if not metal_basis:
         return {}
     if _is_semiempirical_keywords(keywords):
@@ -471,13 +472,21 @@ def _build_newgto_assignments(atoms, keywords: str, metal_basis: Optional[str],
             if idx <= qm_last:
                 assignments[idx] = basis
 
+    # CO2 atoms always get the metal basis set
+    if co2_indices:
+        for idx in co2_indices:
+            if idx <= qm_last:
+                assignments[idx] = basis
+
     return assignments
 
 
 def _format_geometry_lines(atoms, keywords: str, metal_basis: Optional[str], control_args: Optional[Dict],
-                           qmmm_range: Optional[Tuple[int, int]], basis_block_present: bool = False) -> List[str]:
+                           qmmm_range: Optional[Tuple[int, int]], basis_block_present: bool = False,
+                           co2_indices: Optional[Sequence[int]] = None) -> List[str]:
     assignments = _build_newgto_assignments(
-        atoms, keywords, metal_basis, control_args, qmmm_range, skip_metals=basis_block_present
+        atoms, keywords, metal_basis, control_args, qmmm_range, skip_metals=basis_block_present,
+        co2_indices=co2_indices,
     )
     qm_last = qmmm_range[1] if qmmm_range else None
     lines = []
@@ -849,7 +858,8 @@ def _append_orca_keyword(keywords, keyword):
 def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB SP ALPB(DMF)", broken_sym="",
                                 charge=-2, multiplicity=1, PAL=8, maxcore=2000, tag="calc",
                                 metal_symbol=None, metal_basis=None, control_args=None,
-                                qmmm_range: Optional[Tuple[int, int]] = None):
+                                qmmm_range: Optional[Tuple[int, int]] = None,
+                                co2_indices: Optional[Sequence[int]] = None):
     os.makedirs(outdir, exist_ok=True)
     inp = os.path.join(outdir, f"{tag}.inp")
     out = os.path.join(outdir, f"{tag}.out")
@@ -874,7 +884,8 @@ def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB
     lines.append(f"* xyz {charge} {multiplicity}\n")
     has_basis_block = bool(basis_block)
     lines.extend(_format_geometry_lines(
-        atoms, keywords_line, metal_basis, control_args, qmmm_range, basis_block_present=has_basis_block
+        atoms, keywords_line, metal_basis, control_args, qmmm_range, basis_block_present=has_basis_block,
+        co2_indices=co2_indices,
     ))
     lines.append("*\n")
 
@@ -899,7 +910,8 @@ def write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index, start_di
                              orca_keywords="GFN2-XTB OPT ALPB(DMF)", broken_sym="",
                              charge=-2, multiplicity=3, PAL=4, maxcore=2000,
                              metal_symbol=None, metal_basis=None, control_args=None,
-                             qmmm_range: Optional[Tuple[int, int]] = None):
+                             qmmm_range: Optional[Tuple[int, int]] = None,
+                             co2_indices: Optional[Sequence[int]] = None):
     broken_sym_line = broken_sym if broken_sym else ""
     # For QM/MM workflows we keep the 0-based indexing convention throughout.
     i_orca = metal_index
@@ -942,7 +954,8 @@ def write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index, start_di
     sections.append("end\n")
     sections.append(f"* xyz {charge} {multiplicity}\n")
     sections.extend(_format_geometry_lines(
-        atoms, keywords_line, metal_basis, control_args, qmmm_range, basis_block_present=bool(basis_block)
+        atoms, keywords_line, metal_basis, control_args, qmmm_range, basis_block_present=bool(basis_block),
+        co2_indices=co2_indices,
     ))
     sections.append("*\n")
 
@@ -1104,7 +1117,8 @@ def _calculate_single_angle(ang, base_atoms, co2_indices, charge, multiplicity, 
         charge=charge, multiplicity=multiplicity,
         PAL=PAL, maxcore=maxcore, tag="calc",
         metal_symbol=metal_symbol, metal_basis=metal_basis,
-        control_args=control_args, qmmm_range=qmmm_range
+        control_args=control_args, qmmm_range=qmmm_range,
+        co2_indices=co2_indices,
     )
     try:
         E = parse_orca_energy(out_path)  # Hartree
@@ -1425,7 +1439,8 @@ def main():
         metal_symbol=metal_symbol_scan,
         metal_basis=metal_basis,
         control_args=args,
-        qmmm_range=qmmm_range
+        qmmm_range=qmmm_range,
+        co2_indices=co2_indices,
     )
 
     # --- 5) Plot distance scan results (if present) ---
