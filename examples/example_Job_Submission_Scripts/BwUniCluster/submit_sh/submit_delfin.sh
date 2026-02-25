@@ -323,10 +323,21 @@ cleanup() {
     # Capture scheduler reason at shutdown.
     write_slurm_reason
 
+    # Rescue files from any active iso dirs (ORCA was killed mid-run)
+    # Copy contents to parent dir so rsync picks them up normally
+    if [ -d "$RUN_DIR" ]; then
+        while IFS= read -r -d '' iso_dir; do
+            parent_dir="$(dirname "$iso_dir")"
+            find "$iso_dir" -maxdepth 1 -type f ! -name "*.inp" | while IFS= read -r f; do
+                cp -f "$f" "$parent_dir/" 2>/dev/null || true
+            done
+        done < <(find "$RUN_DIR" -name '.orca_iso*' -type d -print0 2>/dev/null)
+    fi
+
     # CRITICAL: Copy ALL results back before cleanup
     echo "Copying results back to $SLURM_SUBMIT_DIR..."
     if [ -d "$RUN_DIR" ]; then
-        rsync -a --exclude='*.tmp' --exclude='*.inp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        rsync -a --exclude='*.tmp' --exclude='*.inp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Results copied successfully."
     else
         echo "WARNING: RUN_DIR not found, nothing to copy."
@@ -343,7 +354,7 @@ periodic_copy() {
     while true; do
         sleep 7200
         if [ -d "$RUN_DIR" ]; then
-            rsync -a --exclude='*.tmp' --exclude='*.inp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+            rsync -a --exclude='*.tmp' --exclude='*.inp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         fi
     done
 }
@@ -386,7 +397,7 @@ schedule_final_backup() {
     echo "Final backup 5 min before timeout: $(date)"
     echo "========================================"
     if [ -d "$RUN_DIR" ]; then
-        rsync -a --exclude='*.tmp' --exclude='*.inp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        rsync -a --exclude='*.tmp' --exclude='*.inp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Final backup completed."
     fi
 }
@@ -455,9 +466,9 @@ echo "Git Commit: $(git rev-parse --short HEAD 2>/dev/null || echo 'N/A')"
 echo ""
 cd - > /dev/null
 
-# Copy ALL input files to scratch
+# Copy ALL input files to scratch (exclude leftover iso dirs from previous runs)
 echo "Copying input files to scratch..."
-cp -a "$SLURM_SUBMIT_DIR"/* "$RUN_DIR"/ 2>/dev/null || true
+rsync -a --exclude='.orca_iso*' "$SLURM_SUBMIT_DIR"/ "$RUN_DIR"/ 2>/dev/null || true
 # Remove output files from previous runs (if any)
 rm -f "$RUN_DIR"/delfin_*.out "$RUN_DIR"/delfin_*.err 2>/dev/null || true
 
@@ -610,7 +621,7 @@ echo "Exit Code:   $EXIT_CODE"
 echo "========================================"
 
 # Copy results back
-rsync -a --exclude='*.tmp' --exclude='*.inp' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
+rsync -a --exclude='*.tmp' --exclude='*.inp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
 
 # Cleanup scratch
 rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}"
