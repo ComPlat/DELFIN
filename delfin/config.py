@@ -282,14 +282,19 @@ def _load_template_defaults() -> Dict[str, Any]:
     return deepcopy(_TEMPLATE_DEFAULTS_CACHE)
 
 
-def _collect_missing_required_keys(user_keys: Set[str], placeholder_keys: Set[str]) -> List[str]:
+def _collect_missing_required_keys(user_keys: Set[str], placeholder_keys: Set[str],
+                                    esd_enabled: bool = True) -> List[str]:
     required_missing = {key for key in _TEMPLATE_REQUIRED_KEYS if key not in user_keys}
     placeholder_required = _TEMPLATE_REQUIRED_KEYS & placeholder_keys
-    return sorted(required_missing | placeholder_required)
+    missing = sorted(required_missing | placeholder_required)
+    if not esd_enabled:
+        missing = [k for k in missing if k != "ESD_modus"]
+    return missing
 
 
-def _raise_if_missing_required(user_keys: Set[str], placeholder_keys: Set[str]) -> None:
-    missing_all = _collect_missing_required_keys(user_keys, placeholder_keys)
+def _raise_if_missing_required(user_keys: Set[str], placeholder_keys: Set[str],
+                                esd_enabled: bool = True) -> None:
+    missing_all = _collect_missing_required_keys(user_keys, placeholder_keys, esd_enabled=esd_enabled)
     if missing_all:
         joined = ", ".join(missing_all)
         raise ValueError(
@@ -430,7 +435,8 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     user_keys = set(config.keys())
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
     defaults = _load_template_defaults()
-    _raise_if_missing_required(user_keys, placeholder_keys)
+    esd_enabled = str(config.get("ESD_modul", "no")).strip().lower() == "yes"
+    _raise_if_missing_required(user_keys, placeholder_keys, esd_enabled=esd_enabled)
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
@@ -604,7 +610,8 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     user_keys = set(config.keys())
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
     defaults = _load_template_defaults()
-    _raise_if_missing_required(user_keys, placeholder_keys)
+    esd_enabled = str(config.get("ESD_modul", "no")).strip().lower() == "yes"
+    _raise_if_missing_required(user_keys, placeholder_keys, esd_enabled=esd_enabled)
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
