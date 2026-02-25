@@ -309,6 +309,24 @@ write_slurm_reason() {
 
 write_slurm_reason
 
+# Rescue files from any active .orca_iso* dirs into their parent directory.
+# Non-.inp files are overwritten (latest ORCA state), .inp files are never
+# overwritten (cp -n) so the original input is preserved.
+rescue_iso_files() {
+    [ -d "$RUN_DIR" ] || return 0
+    while IFS= read -r -d '' iso_dir; do
+        parent_dir="$(dirname "$iso_dir")"
+        find "$iso_dir" -maxdepth 1 -type f | while IFS= read -r f; do
+            fname="$(basename "$f")"
+            if [[ "$fname" == *.inp ]]; then
+                cp -n "$f" "$parent_dir/" 2>/dev/null || true   # no-clobber for .inp
+            else
+                cp -f "$f" "$parent_dir/" 2>/dev/null || true   # overwrite for everything else
+            fi
+        done
+    done < <(find "$RUN_DIR" -name '.orca_iso*' -type d -print0 2>/dev/null)
+}
+
 # Cleanup function for trap (handles SIGTERM from timeout, SIGINT, etc.)
 cleanup() {
     local signal_name="${1:-UNKNOWN}"
@@ -324,15 +342,7 @@ cleanup() {
     write_slurm_reason
 
     # Rescue files from any active iso dirs (ORCA was killed mid-run)
-    # Copy contents to parent dir so rsync picks them up normally
-    if [ -d "$RUN_DIR" ]; then
-        while IFS= read -r -d '' iso_dir; do
-            parent_dir="$(dirname "$iso_dir")"
-            find "$iso_dir" -maxdepth 1 -type f ! -name "*.inp" | while IFS= read -r f; do
-                cp -f "$f" "$parent_dir/" 2>/dev/null || true
-            done
-        done < <(find "$RUN_DIR" -name '.orca_iso*' -type d -print0 2>/dev/null)
-    fi
+    rescue_iso_files
 
     # CRITICAL: Copy ALL results back before cleanup
     echo "Copying results back to $SLURM_SUBMIT_DIR..."
@@ -397,6 +407,7 @@ schedule_final_backup() {
     echo "Final backup 5 min before timeout: $(date)"
     echo "========================================"
     if [ -d "$RUN_DIR" ]; then
+        rescue_iso_files
         rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Final backup completed."
     fi
@@ -621,6 +632,7 @@ echo "Exit Code:   $EXIT_CODE"
 echo "========================================"
 
 # Copy results back
+rescue_iso_files
 rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
 
 # Cleanup scratch
