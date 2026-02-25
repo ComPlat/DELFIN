@@ -380,8 +380,8 @@ get_walltime_seconds() {
     }'
 }
 
-# Schedule final backup 5 minutes before timeout
-SAFETY_MARGIN=300  # 5 minutes in seconds
+# Schedule final backup 10 minutes before timeout
+SAFETY_MARGIN=600  # 10 minutes in seconds
 schedule_final_backup() {
     local walltime_sec
     walltime_sec=$(get_walltime_seconds)
@@ -390,7 +390,7 @@ schedule_final_backup() {
         return
     fi
     local wait_time=$((walltime_sec - SAFETY_MARGIN))
-    echo "Scheduled final backup in $((wait_time / 3600))h $((wait_time % 3600 / 60))m (5 min before timeout)"
+    echo "Scheduled final backup in $((wait_time / 3600))h $((wait_time % 3600 / 60))m (10 min before timeout)"
     sleep "$wait_time"
     echo ""
     echo "========================================"
