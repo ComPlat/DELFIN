@@ -635,6 +635,55 @@ def create_tab(ctx):
         layout=widgets.Layout(width='100%', display='none'),
     )
 
+    # Build Batch from XYZ widgets
+    calc_xyz_batch_filename = widgets.Text(
+        value='',
+        placeholder='xyz_batch.txt',
+        layout=widgets.Layout(width='220px', min_width='160px', height='26px'),
+    )
+    calc_xyz_batch_refresh_btn = widgets.Button(
+        description='Refresh',
+        layout=widgets.Layout(width='88px', min_width='88px', height='26px'),
+    )
+    calc_xyz_batch_build_btn = widgets.Button(
+        description='Build Batch TXT', button_style='primary',
+        layout=widgets.Layout(width='130px', min_width='130px', height='26px'),
+    )
+    calc_xyz_batch_select = widgets.SelectMultiple(
+        options=[], rows=10,
+        layout=widgets.Layout(width='100%', min_height='170px', max_height='300px'),
+    )
+    calc_xyz_batch_select.add_class('delfin-multi-select')
+    calc_xyz_batch_root_info = widgets.HTML(
+        value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_xyz_batch_status = widgets.HTML(
+        value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_xyz_batch_panel = widgets.VBox(
+        [
+            widgets.HTML('<b>Build Batch from XYZ</b>'),
+            widgets.HTML(
+                '<span style="color:#555;">Select File / Jobs (folders or .xyz files).</span>'
+            ),
+            calc_xyz_batch_root_info,
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Download name:</b>'),
+                    calc_xyz_batch_filename,
+                    calc_xyz_batch_refresh_btn,
+                    calc_xyz_batch_build_btn,
+                ],
+                layout=widgets.Layout(
+                    gap='8px', align_items='center', flex_flow='row wrap', width='100%',
+                ),
+            ),
+            calc_xyz_batch_select,
+            calc_xyz_batch_status,
+        ],
+        layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
+    )
+
     # -- preselection widgets ----------------------------------------------
     calc_preselect_title = widgets.HTML('<b>Preselection</b>')
     calc_preselect_progress = widgets.HTML('')
@@ -1644,6 +1693,192 @@ def create_tab(ctx):
             if current_dir.exists():
                 return current_dir
         return None
+
+    def _calc_xyz_batch_default_filename():
+        selected_path = _calc_selected_item_path()
+        if selected_path and selected_path.suffix.lower() == '.xyz':
+            base = selected_path.stem
+        elif state.get('current_path'):
+            base = Path(state['current_path']).name
+        else:
+            base = 'xyz_batch'
+        safe = ''.join(c for c in str(base) if c.isalnum() or c in ('_', '-'))
+        if not safe:
+            safe = 'xyz_batch'
+        if not safe.endswith('_batch'):
+            safe = f'{safe}_batch'
+        return f'{safe}.txt'
+
+    def _calc_xyz_batch_clean_xyz(raw_xyz):
+        text = (raw_xyz or '').strip()
+        if not text:
+            return ''
+        try:
+            frames = parse_xyz_frames(text)
+        except Exception:
+            frames = []
+        if frames:
+            _comment, xyz_block, _n_atoms = frames[0]
+            return '\n'.join(line.rstrip() for line in xyz_block.splitlines() if line.strip()).strip()
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            try:
+                int(lines[0].strip())
+                return '\n'.join(line.rstrip() for line in lines[2:] if line.strip()).strip()
+            except ValueError:
+                pass
+        return '\n'.join(line.rstrip() for line in lines if line.strip()).strip()
+
+    def _calc_xyz_batch_resolve_source(item_path):
+        if item_path.is_file():
+            if item_path.suffix.lower() == '.xyz':
+                return item_path, None
+            return None, f'{item_path.name}: not an .xyz file'
+        if item_path.is_dir():
+            named_xyz = item_path / f'{item_path.name}.xyz'
+            if named_xyz.exists() and named_xyz.is_file():
+                return named_xyz, None
+            try:
+                xyz_candidates = sorted(
+                    [p for p in item_path.iterdir() if p.is_file() and p.suffix.lower() == '.xyz'],
+                    key=lambda p: p.name.lower(),
+                )
+            except Exception:
+                return None, f'{item_path.name}: cannot scan folder'
+            if xyz_candidates:
+                return xyz_candidates[0], None
+            return None, f'{item_path.name}: no .xyz file found'
+        return None, f'{item_path.name}: unsupported selection'
+
+    def _calc_collect_xyz_batch_labels(base_dir):
+        labels = []
+        try:
+            entries = sorted(
+                base_dir.iterdir(),
+                key=lambda x: (not x.is_dir(), x.name.lower()),
+            )
+        except Exception:
+            return labels
+
+        for entry in entries:
+            if entry.is_dir():
+                labels.append(f'📂 {entry.name}')
+            elif entry.is_file() and entry.suffix.lower() == '.xyz':
+                labels.append(f'🔬 {entry.name}')
+        return labels
+
+    def _calc_refresh_xyz_batch_selector():
+        root_dir = _calc_dir()
+        candidates = _calc_collect_xyz_batch_labels(root_dir)
+        previous_selection = set(calc_xyz_batch_select.value or ())
+        calc_xyz_batch_select.options = candidates
+        kept = tuple(label for label in candidates if label in previous_selection)
+        selected_label = calc_file_list.value
+        if kept:
+            calc_xyz_batch_select.value = kept
+        elif state.get('current_path'):
+            calc_xyz_batch_select.value = ()
+        elif selected_label in candidates:
+            calc_xyz_batch_select.value = (selected_label,)
+        else:
+            calc_xyz_batch_select.value = ()
+        calc_xyz_batch_root_info.value = (
+            f'<span style="color:#555;">Explorer root:</span> '
+            f'<code>{_html.escape(str(root_dir))}</code>'
+        )
+        if not calc_xyz_batch_filename.value.strip():
+            calc_xyz_batch_filename.value = _calc_xyz_batch_default_filename()
+
+    def _calc_show_xyz_batch_panel(show):
+        if show:
+            _calc_refresh_xyz_batch_selector()
+            calc_xyz_batch_panel.layout.display = 'block'
+        else:
+            calc_xyz_batch_panel.layout.display = 'none'
+
+    def calc_on_xyz_batch_refresh(_button=None):
+        _calc_refresh_xyz_batch_selector()
+        calc_xyz_batch_status.value = '<span style="color:#555;">Selection refreshed.</span>'
+
+    def calc_on_xyz_batch_build(_button):
+        selected_labels = [label for label in calc_xyz_batch_select.value if not str(label).startswith('(')]
+        if not selected_labels:
+            calc_xyz_batch_status.value = '<span style="color:#d32f2f;">No files/jobs selected.</span>'
+            return
+
+        root_dir = _calc_dir()
+        entries = []
+        skipped = []
+        for label in selected_labels:
+            item_name = _calc_label_to_name(label)
+            if not item_name:
+                skipped.append(f'{label}: invalid item name')
+                continue
+            item_path = root_dir / item_name
+            if not item_path.exists():
+                skipped.append(f'{item_name}: item not found')
+                continue
+
+            xyz_path, xyz_err = _calc_xyz_batch_resolve_source(item_path)
+            if xyz_path is None:
+                skipped.append(xyz_err or f'{item_name}: no xyz source')
+                continue
+
+            try:
+                raw_xyz = xyz_path.read_text(errors='ignore')
+            except Exception as exc:
+                skipped.append(f'{item_name}: read failed ({exc})')
+                continue
+
+            xyz_content = _calc_xyz_batch_clean_xyz(raw_xyz)
+            if not xyz_content:
+                skipped.append(f'{item_name}: empty xyz coordinates')
+                continue
+
+            base_name = item_path.name if item_path.is_dir() else item_path.stem
+            safe_name = ''.join(c for c in str(base_name) if c.isalnum() or c in ('_', '-'))
+            if not safe_name:
+                skipped.append(f'{item_name}: invalid batch name')
+                continue
+            entries.append((f'{safe_name}_batch', xyz_content))
+
+        if not entries:
+            msg = '<span style="color:#d32f2f;">No valid XYZ entries found.</span>'
+            if skipped:
+                details = '; '.join(_html.escape(s) for s in skipped[:3])
+                more = '' if len(skipped) <= 3 else f' (+{len(skipped) - 3} more)'
+                msg += f' <span style="color:#ef6c00;">{details}{more}</span>'
+            calc_xyz_batch_status.value = msg
+            return
+
+        lines = []
+        for idx, (entry_name, xyz_content) in enumerate(entries):
+            lines.append(f'{entry_name};')
+            lines.extend(xyz_content.splitlines())
+            lines.append('*')
+            if idx < len(entries) - 1:
+                lines.append('')
+        payload_text = '\n'.join(lines).rstrip() + '\n'
+
+        requested = calc_xyz_batch_filename.value.strip() or _calc_xyz_batch_default_filename()
+        safe_file = re.sub(r'[^A-Za-z0-9._-]+', '_', requested).strip('._')
+        if not safe_file:
+            safe_file = _calc_xyz_batch_default_filename()
+        if not safe_file.lower().endswith('.txt'):
+            safe_file += '.txt'
+
+        payload = payload_text.encode('utf-8')
+        _calc_trigger_download(safe_file, payload, mime='text/plain;charset=utf-8')
+
+        status = (
+            f'<span style="color:#2e7d32;">Download started: '
+            f'{_html.escape(safe_file)} ({len(entries)} entries)</span>'
+        )
+        if skipped:
+            details = '; '.join(_html.escape(s) for s in skipped[:3])
+            more = '' if len(skipped) <= 3 else f' (+{len(skipped) - 3} more)'
+            status += f' <span style="color:#ef6c00;">Skipped {len(skipped)}: {details}{more}</span>'
+        calc_xyz_batch_status.value = status
 
     # -- view / display helpers ---------------------------------------------
     def _calc_format_bytes(n_bytes):
@@ -3601,6 +3836,7 @@ def create_tab(ctx):
         calc_file_info.value = ''
         calc_path_display.value = ''
         calc_download_status.value = ''
+        calc_xyz_batch_status.value = ''
         calc_search_result.value = ''
         calc_search_suggest.value = '(Select)'
         calc_search_input.value = ''
@@ -3611,6 +3847,7 @@ def create_tab(ctx):
         calc_copy_btn.disabled = True
         calc_copy_path_btn.disabled = True
         calc_download_btn.disabled = True
+        _calc_show_xyz_batch_panel(False)
         _calc_hide_chunk_controls()
         calc_update_view()
         calc_set_message('Select a file...')
@@ -3849,6 +4086,14 @@ def create_tab(ctx):
                 calc_options_dropdown.value = '(Options)'
                 calc_options_dropdown.layout.display = 'block'
                 return
+        if selected and sel_lower.endswith('.xyz'):
+            xyz_options = ['(Options)', 'Build Batch from XYZ']
+            if rmsd_available:
+                xyz_options.append('RMSD')
+            calc_options_dropdown.options = xyz_options
+            calc_options_dropdown.value = '(Options)'
+            calc_options_dropdown.layout.display = 'block'
+            return
         if selected and 'OCCUPIER.txt' in selected:
             calc_options_dropdown.options = ['(Options)', 'Override']
             calc_options_dropdown.value = '(Options)'
@@ -4385,6 +4630,8 @@ def create_tab(ctx):
         threading.Thread(target=run_report, daemon=True).start()
 
     def calc_on_options_change(change):
+        if change['new'] != 'Build Batch from XYZ':
+            _calc_show_xyz_batch_panel(False)
         if change['new'] == 'Override':
             calc_override_input.layout.display = 'block'
             calc_override_time.layout.display = 'block'
@@ -4456,6 +4703,23 @@ def create_tab(ctx):
             _calc_preselect_load(csv_path, mode=mode)
             _calc_preselect_show(True)
             _calc_preselect_render_current()
+        elif change['new'] == 'Build Batch from XYZ':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            selected_path = _calc_selected_item_path()
+            if not selected_path or selected_path.suffix.lower() != '.xyz':
+                _calc_show_xyz_batch_panel(False)
+                calc_xyz_batch_status.value = (
+                    '<span style="color:#d32f2f;">Select a .xyz file first.</span>'
+                )
+                return
+            calc_xyz_batch_filename.value = _calc_xyz_batch_default_filename()
+            _calc_show_xyz_batch_panel(True)
         elif change['new'] == 'RMSD':
             calc_override_input.layout.display = 'none'
             calc_override_time.layout.display = 'none'
@@ -4464,6 +4728,7 @@ def create_tab(ctx):
             calc_override_status.value = ''
             calc_edit_area.layout.display = 'none'
             _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
             if not state.get('rmsd_available'):
                 try:
                     calc_options_dropdown.unobserve(calc_on_options_change, names='value')
@@ -4491,6 +4756,7 @@ def create_tab(ctx):
             calc_override_status.value = ''
             calc_edit_area.layout.display = 'none'
             _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
             calc_content_area.layout.display = 'block'
 
     def calc_on_override_start(button):
@@ -5404,6 +5670,7 @@ def create_tab(ctx):
         calc_file_info.value = ''
         calc_path_display.value = ''
         calc_download_status.value = ''
+        calc_xyz_batch_status.value = ''
         state['file_content'] = ''
         state['selected_file_path'] = None
         state['selected_file_size'] = 0
@@ -5415,6 +5682,7 @@ def create_tab(ctx):
         _calc_hide_chunk_controls()
         calc_reset_recalc_state()
         _calc_preselect_show(False)
+        _calc_show_xyz_batch_panel(False)
 
         # Reset xyz trajectory controls
         state['xyz_frames'].clear()
@@ -5925,6 +6193,8 @@ def create_tab(ctx):
     calc_copy_btn.on_click(calc_on_content_copy)
     calc_copy_path_btn.on_click(calc_on_path_copy)
     calc_download_btn.on_click(calc_on_download)
+    calc_xyz_batch_refresh_btn.on_click(calc_on_xyz_batch_refresh)
+    calc_xyz_batch_build_btn.on_click(calc_on_xyz_batch_build)
     calc_report_btn.on_click(calc_on_report)
     disable_spellcheck(ctx, class_name='calc-search-input')
 
@@ -6133,6 +6403,7 @@ def create_tab(ctx):
         calc_path_display,
         calc_download_status,
         calc_report_status,
+        calc_xyz_batch_panel,
         calc_mol_container,
         calc_content_label,
         calc_preselect_container,
