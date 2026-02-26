@@ -649,6 +649,10 @@ def create_tab(ctx):
         description='Build Batch TXT', button_style='primary',
         layout=widgets.Layout(width='130px', min_width='130px', height='26px'),
     )
+    calc_xyz_batch_copy_btn = widgets.Button(
+        description='Copy Batch TXT', button_style='success',
+        layout=widgets.Layout(width='130px', min_width='130px', height='26px'),
+    )
     calc_xyz_batch_select = widgets.SelectMultiple(
         options=[], rows=10,
         layout=widgets.Layout(width='100%', min_height='170px', max_height='300px'),
@@ -673,6 +677,7 @@ def create_tab(ctx):
                     calc_xyz_batch_filename,
                     calc_xyz_batch_refresh_btn,
                     calc_xyz_batch_build_btn,
+                    calc_xyz_batch_copy_btn,
                 ],
                 layout=widgets.Layout(
                     gap='8px', align_items='center', flex_flow='row wrap', width='100%',
@@ -1800,11 +1805,17 @@ def create_tab(ctx):
         _calc_refresh_xyz_batch_selector()
         calc_xyz_batch_status.value = '<span style="color:#555;">Selection refreshed.</span>'
 
-    def calc_on_xyz_batch_build(_button):
+    def _calc_xyz_batch_skipped_html(skipped):
+        if not skipped:
+            return ''
+        details = '; '.join(_html.escape(s) for s in skipped[:3])
+        more = '' if len(skipped) <= 3 else f' (+{len(skipped) - 3} more)'
+        return f' <span style="color:#ef6c00;">Skipped {len(skipped)}: {details}{more}</span>'
+
+    def _calc_xyz_batch_prepare_export():
         selected_labels = [label for label in calc_xyz_batch_select.value if not str(label).startswith('(')]
         if not selected_labels:
-            calc_xyz_batch_status.value = '<span style="color:#d32f2f;">No files/jobs selected.</span>'
-            return
+            return None, [], 'No files/jobs selected.'
 
         root_dir = _calc_dir()
         entries = []
@@ -1843,13 +1854,7 @@ def create_tab(ctx):
             entries.append((f'{safe_name}_batch', xyz_content))
 
         if not entries:
-            msg = '<span style="color:#d32f2f;">No valid XYZ entries found.</span>'
-            if skipped:
-                details = '; '.join(_html.escape(s) for s in skipped[:3])
-                more = '' if len(skipped) <= 3 else f' (+{len(skipped) - 3} more)'
-                msg += f' <span style="color:#ef6c00;">{details}{more}</span>'
-            calc_xyz_batch_status.value = msg
-            return
+            return None, skipped, 'No valid XYZ entries found.'
 
         lines = []
         for idx, (entry_name, xyz_content) in enumerate(entries):
@@ -1867,17 +1872,60 @@ def create_tab(ctx):
         if not safe_file.lower().endswith('.txt'):
             safe_file += '.txt'
 
-        payload = payload_text.encode('utf-8')
+        export_data = {
+            'payload_text': payload_text,
+            'safe_file': safe_file,
+            'entry_count': len(entries),
+        }
+        return export_data, skipped, ''
+
+    def calc_on_xyz_batch_build(_button):
+        export_data, skipped, error = _calc_xyz_batch_prepare_export()
+        if error:
+            calc_xyz_batch_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(error)}</span>'
+                + _calc_xyz_batch_skipped_html(skipped)
+            )
+            return
+
+        payload = export_data['payload_text'].encode('utf-8')
+        safe_file = export_data['safe_file']
+        entry_count = int(export_data['entry_count'])
         _calc_trigger_download(safe_file, payload, mime='text/plain;charset=utf-8')
 
         status = (
             f'<span style="color:#2e7d32;">Download started: '
-            f'{_html.escape(safe_file)} ({len(entries)} entries)</span>'
+            f'{_html.escape(safe_file)} ({entry_count} entries)</span>'
         )
-        if skipped:
-            details = '; '.join(_html.escape(s) for s in skipped[:3])
-            more = '' if len(skipped) <= 3 else f' (+{len(skipped) - 3} more)'
-            status += f' <span style="color:#ef6c00;">Skipped {len(skipped)}: {details}{more}</span>'
+        status += _calc_xyz_batch_skipped_html(skipped)
+        calc_xyz_batch_status.value = status
+
+    def calc_on_xyz_batch_copy(_button):
+        export_data, skipped, error = _calc_xyz_batch_prepare_export()
+        if error:
+            calc_xyz_batch_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(error)}</span>'
+                + _calc_xyz_batch_skipped_html(skipped)
+            )
+            return
+
+        payload_text = export_data['payload_text']
+        safe_file = export_data['safe_file']
+        entry_count = int(export_data['entry_count'])
+        escaped_payload = json.dumps(payload_text)
+        _run_js(
+            "(function(){"
+            f"const txt={escaped_payload};"
+            "navigator.clipboard.writeText(txt)"
+            ".then(() => console.log('Copied batch txt'))"
+            ".catch(err => console.error('Copy failed:', err));"
+            "})();"
+        )
+        status = (
+            f'<span style="color:#2e7d32;">Copied to clipboard (Strg+V): '
+            f'{_html.escape(safe_file)} ({entry_count} entries)</span>'
+        )
+        status += _calc_xyz_batch_skipped_html(skipped)
         calc_xyz_batch_status.value = status
 
     # -- view / display helpers ---------------------------------------------
@@ -6195,6 +6243,7 @@ def create_tab(ctx):
     calc_download_btn.on_click(calc_on_download)
     calc_xyz_batch_refresh_btn.on_click(calc_on_xyz_batch_refresh)
     calc_xyz_batch_build_btn.on_click(calc_on_xyz_batch_build)
+    calc_xyz_batch_copy_btn.on_click(calc_on_xyz_batch_copy)
     calc_report_btn.on_click(calc_on_report)
     disable_spellcheck(ctx, class_name='calc-search-input')
 
