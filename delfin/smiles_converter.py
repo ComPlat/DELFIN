@@ -1220,6 +1220,53 @@ def _prepare_mol_for_embedding(smiles: str):
     return mol
 
 
+def _xyz_to_canonical_smiles(xyz_delfin: str) -> Optional[str]:
+    """Convert DELFIN-format XYZ to a canonical SMILES via OpenBabel.
+
+    Metal–ligand bonds perceived by OB from interatomic distances are
+    intentionally removed before canonicalisation so that the comparison
+    reflects only the organic/ligand connectivity (bond perception for
+    M–L is unreliable and distance-dependent).
+
+    Returns the canonical SMILES string, or ``None`` on failure.
+    """
+    if not OPENBABEL_AVAILABLE:
+        return None
+    try:
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        if not lines:
+            return None
+        std_xyz = f"{len(lines)}\n\n" + "\n".join(lines) + "\n"
+        ob_mol = pybel.readstring('xyz', std_xyz)
+
+        # Remove bonds involving metal atoms — OB perceives them from
+        # distance alone which is geometry-dependent and unreliable.
+        metal_ob_idxs = {a.OBAtom.GetIdx() for a in ob_mol.atoms
+                         if a.atomicnum in _METAL_ATOMICNUMS}
+        if metal_ob_idxs:
+            raw = ob_mol.OBMol
+            bonds_to_del = []
+            for bond in pybel.ob.OBMolBondIter(raw):
+                bi = bond.GetBeginAtomIdx()
+                ei = bond.GetEndAtomIdx()
+                if bi in metal_ob_idxs or ei in metal_ob_idxs:
+                    bonds_to_del.append(bond)
+            for bond in bonds_to_del:
+                raw.DeleteBond(bond)
+
+        # Canonical SMILES (fragment-aware — disconnected parts separated by '.')
+        conv = pybel.ob.OBConversion()
+        conv.SetOutFormat('can')
+        raw_smi = conv.WriteString(ob_mol.OBMol).strip()
+        if not raw_smi:
+            return None
+        # Normalise: sort dot-separated fragments for stable comparison
+        parts = sorted(raw_smi.split('.'))
+        return '.'.join(parts)
+    except Exception:
+        return None
+
+
 def _roundtrip_ring_count_ok(xyz_delfin: str, original_smiles: str, tolerance: int = 2) -> bool:
     """Validate a 3D structure by round-tripping coordinates → SMILES via OpenBabel.
 
@@ -1360,17 +1407,14 @@ def _has_bad_geometry(mol, conf_id: int) -> bool:
                 if angle < min_angle:
                     return True
 
-        # Tetradentate macrocyclic check (porphyrins, phthalocyanines, salen…):
-        # if 4-coordinate AND all 6 pairs are chelate (= fully macrocyclic),
-        # reject tetrahedral ETKDG artifacts where no angle exceeds ~115°.
-        # Real porphyrin distortions (saddling, doming, ruffling) keep at least
-        # one angle well above 115°; only artifacts where all 4 donors cluster
-        # on one side produce a max angle near the tetrahedral value (109.5°).
-        # 6-coordinate metals (Ir, Ru, …) have n=6, n_pairs=15, so this check
-        # never triggers for tris-bidentate complexes like fac/mer-Ir(ppy)3.
-        if n == 4 and len(chelate_set) == n_pairs and all_angles:
-            if max(a for a, _ in all_angles) < 115.0:
-                return True
+        # NOTE: The old macrocyclic tetrahedral-rejection check (CN=4, all
+        # pairs chelate, max angle < 115°) was removed.  It incorrectly
+        # rejected valid tetrahedral structures (ideal 109.5°).  With the
+        # BFS path-length cutoff in _chelate_pairs (max_path=4), macrocyclic
+        # opposite-donor pairs are no longer marked as chelate, so the
+        # "all pairs chelate" condition rarely triggers anyway.  The
+        # _geometry_quality_score function already handles tetrahedral vs
+        # square-planar ranking correctly.
     return False
 
 
@@ -1901,19 +1945,18 @@ def _compute_coordination_fingerprint(mol, conf_id: int, dtype_map: Optional[Dic
             tuple(sorted((da, db))) for da, db in detailed_trans_raw
         ))
 
-        # Part 2: same-element cis/trans pattern, only useful when all
-        # donors share the same element (e.g. Fe with 6 N).  For mixed-
-        # element complexes the trans pairs already differentiate.
-        unique_elems = set(s for s, _ in coord_atoms)
-        if len(unique_elems) == 1:
-            same_elem_pattern: List[tuple] = []
-            for angle, sa, sb, _ia, _ib in angle_pairs:
+        # Part 2: pairwise cis/trans pattern for ALL same-element donor
+        # pairs (not just when all donors share one element).  This adds
+        # sensitivity for mixed complexes like MA2B2C2 where two different
+        # "cis-A" arrangements produce identical trans-pair signatures but
+        # differ in which same-element pairs are cis vs trans.
+        same_elem_pattern: List[tuple] = []
+        for angle, sa, sb, _ia, _ib in angle_pairs:
+            if sa == sb:  # same element pair
                 cls = 'cis' if angle < 135 else 'trans'
                 same_elem_pattern.append((sa, cls))
-            same_elem_pattern.sort()
-            fp_parts.append((trans_pairs, tuple(same_elem_pattern), detailed_trans))
-        else:
-            fp_parts.append((trans_pairs, (), detailed_trans))
+        same_elem_pattern.sort()
+        fp_parts.append((trans_pairs, tuple(same_elem_pattern), detailed_trans))
 
     return tuple(sorted(fp_parts))
 
@@ -1958,12 +2001,19 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
             if pair[0] == pair[1]:
                 same_trans[pair[0]] = same_trans.get(pair[0], 0) + 1
 
-        # Also count from same_elem_pattern (for all-same-element)
-        for sym, cls in same_elem_pattern:
-            if cls == 'trans':
-                if sym not in same_trans:
-                    same_trans[sym] = 0
-                same_trans[sym] += 1
+        # Supplement from same_elem_pattern ONLY when trans_pairs contain
+        # exclusively same-element pairs (= all donors share one element).
+        # In this case trans_pairs cannot distinguish isomers by element
+        # and the cis/trans angle classification is the only differentiator.
+        # For mixed-element complexes, trans_pairs already carry the needed
+        # information; adding same_elem_pattern would double-count.
+        has_hetero_trans = any(p[0] != p[1] for p in trans_pairs)
+        if not has_hetero_trans:
+            for sym, cls in same_elem_pattern:
+                if cls == 'trans':
+                    if sym not in same_trans:
+                        same_trans[sym] = 0
+                    same_trans[sym] += 1
 
         # --- 6-coordinate patterns ---
         if n_coord == 6:
@@ -2086,12 +2136,22 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
 # Topological isomer enumerator (Feature 1)
 # ---------------------------------------------------------------------------
 
-def _chelate_pairs(mol, metal_idx: int, donor_indices: List[int]) -> List[FrozenSet]:
-    """Find donor pairs connected through a non-metal path (chelate constraints).
+def _chelate_pairs(mol, metal_idx: int, donor_indices: List[int],
+                    max_path: int = 4) -> List[FrozenSet]:
+    """Find donor pairs connected through a short non-metal path (chelate constraints).
 
     BFS from each donor atom to every other donor, blocking the metal.
-    A successful path means the two donors are part of the same chelate ring
-    and must stay *cis* (cannot occupy trans positions).
+    A successful path with length <= *max_path* bonds means the two donors
+    form a chelate ring small enough to enforce a *cis* constraint (up to a
+    ``max_path + 1``-membered chelate ring counting the metal).
+
+    Longer paths (e.g. opposite donors of a 14-membered macrocycle) are
+    **not** marked as chelate because they can adopt trans arrangements.
+
+    Args:
+        max_path: Maximum number of bonds in the non-metal path between two
+            donors to count as a chelate pair.  Default 4 corresponds to a
+            6-membered chelate ring (donor–4 bridge atoms–donor + metal).
 
     Returns a list of frozensets {donor_i_idx, donor_j_idx}.
     """
@@ -2101,20 +2161,24 @@ def _chelate_pairs(mol, metal_idx: int, donor_indices: List[int]) -> List[Frozen
         for j in range(i + 1, n):
             start = donor_indices[i]
             target = donor_indices[j]
+            # BFS with distance tracking, blocking the metal atom
             visited = {metal_idx, start}
-            queue = [start]
-            found = False
-            while queue and not found:
-                current = queue.pop(0)
+            queue: List[Tuple[int, int]] = [(start, 0)]  # (atom_idx, distance)
+            found_dist = -1
+            while queue and found_dist < 0:
+                current, dist = queue.pop(0)
+                if dist >= max_path:
+                    # Cannot reach target within max_path from here
+                    continue
                 for nbr in mol.GetAtomWithIdx(current).GetNeighbors():
                     ni = nbr.GetIdx()
                     if ni == target:
-                        found = True
+                        found_dist = dist + 1
                         break
                     if ni not in visited:
                         visited.add(ni)
-                        queue.append(ni)
-            if found:
+                        queue.append((ni, dist + 1))
+            if 0 < found_dist <= max_path:
                 pairs.append(frozenset([donor_indices[i], donor_indices[j]]))
     return pairs
 
@@ -2271,12 +2335,12 @@ def _enumerate_topological_isomers(
             valid = True
             for chelate in chelate_pairs:
                 chelate_list = sorted(chelate)
-                # Find the geometry positions of these two donors
-                try:
-                    pos_i = perm.index(chelate_list[0])
-                    pos_j = perm.index(chelate_list[1])
-                except ValueError:
-                    continue
+                # Find the geometry positions of these two donors.
+                # chelate_list contains donor-list indices (0..n_coord-1),
+                # which are always present in perm (a permutation of the
+                # same range), so .index() will always succeed.
+                pos_i = perm.index(chelate_list[0])
+                pos_j = perm.index(chelate_list[1])
                 for ta, tb in trans_pos:
                     if (pos_i == ta and pos_j == tb) or (pos_i == tb and pos_j == ta):
                         valid = False
@@ -2642,7 +2706,21 @@ def _generate_topological_isomers(
             )
             continue
 
-        isomers = _enumerate_topological_isomers(donor_labels, n_coord, chelate_ps)
+        # Convert chelate pairs from atom indices to donor-list indices.
+        # _chelate_pairs returns frozensets of atom indices (e.g. {1, 12}),
+        # but _enumerate_topological_isomers works with donor-list indices
+        # (0..n_coord-1).  Without this mapping the constraint check always
+        # hits ValueError → silently skipped → all constraints ignored.
+        atom_to_listidx = {atom_idx: li for li, atom_idx in enumerate(donor_indices)}
+        chelate_list_pairs: List[FrozenSet] = []
+        for cp in chelate_ps:
+            pair = sorted(cp)
+            if pair[0] in atom_to_listidx and pair[1] in atom_to_listidx:
+                chelate_list_pairs.append(frozenset([
+                    atom_to_listidx[pair[0]], atom_to_listidx[pair[1]]
+                ]))
+
+        isomers = _enumerate_topological_isomers(donor_labels, n_coord, chelate_list_pairs)
 
         for canonical_form, perm in isomers:
             if len(results) >= max_isomers:
@@ -2664,9 +2742,15 @@ def _generate_topological_isomers(
                     continue
                 cid = mol_tmp.AddConformer(conf, assignId=True)
                 try:
-                    if _has_atom_clash(mol_tmp.GetMol(), cid):
-                        continue
-                    if _has_bad_geometry(mol_tmp.GetMol(), cid):
+                    # Relaxed clash check for topo-generated structures:
+                    # use min_dist=0.3 instead of default 0.5 since the
+                    # topological enumerator guarantees correct topology
+                    # and minor steric overlaps are expected before UFF.
+                    # Skip _has_bad_geometry entirely — the topo enumerator
+                    # places donors at ideal geometry positions, so angle-
+                    # based rejection would discard valid structures
+                    # (especially TH with 109.5° angles).
+                    if _has_atom_clash(mol_tmp.GetMol(), cid, min_dist=0.3):
                         continue
                 except Exception:
                     pass
@@ -3258,41 +3342,69 @@ def smiles_to_xyz_isomers(
 
     # --- Topological enumerator: guarantee completeness ---
     # Runs after sampling-based dedup; adds any isomers not found by sampling.
-    # Skip if sampling already found results for every label produced by the
-    # enumerator (compare against base label, stripping numeric suffix like
-    # 'mer-2' → 'mer' so we don't add a topo 'mer' when sampling found 'mer-1').
+    # Dedup is now fingerprint-based (not label-based) so that distinct
+    # topo-isomers with the same label (e.g. two different "mer" arrangements)
+    # are not incorrectly suppressed.
     if has_metal:
         try:
+            # Collect fingerprints from sampling results
+            existing_fps: set = set()
+            dtype_map_topo = _donor_type_map(mol)
+            for existing_xyz, _existing_display in results:
+                try:
+                    mol_tmp = Chem.RWMol(mol)
+                    mol_tmp.RemoveAllConformers()
+                    conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), existing_xyz)
+                    if conf is not None:
+                        cid = mol_tmp.AddConformer(conf, assignId=True)
+                        fp = _compute_coordination_fingerprint(
+                            mol_tmp.GetMol(), cid, dtype_map=dtype_map_topo
+                        )
+                        existing_fps.add(fp)
+                except Exception:
+                    pass
+
             existing_displays = {display for _, display in results}
-            # Derive base labels: strip trailing '-<digits>' suffix
-            import re as _re
-            existing_base = {_re.sub(r'-\d+$', '', d) for d in existing_displays}
 
             topo_results = _generate_topological_isomers(
                 mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
             )
-            # True if sampling already found at least one unlabelled isomer
-            sampling_has_unlabelled = any(
-                _re.match(r'^Isomer \d+$', d) for d in existing_displays
-            )
 
             for topo_xyz, topo_label in topo_results:
+                # Compute fingerprint of topo structure for dedup
+                topo_fp = None
+                try:
+                    mol_tmp = Chem.RWMol(mol)
+                    mol_tmp.RemoveAllConformers()
+                    conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), topo_xyz)
+                    if conf is not None:
+                        cid = mol_tmp.AddConformer(conf, assignId=True)
+                        topo_fp = _compute_coordination_fingerprint(
+                            mol_tmp.GetMol(), cid, dtype_map=dtype_map_topo
+                        )
+                except Exception:
+                    pass
+
+                # Skip if this fingerprint was already seen
+                if topo_fp is not None and topo_fp in existing_fps:
+                    continue
+
                 norm = topo_label or ''
-                # Skip if base label already covered by sampling
-                if norm and norm in existing_base:
-                    continue
-                # Skip unlabelled topo results when sampling already produced
-                # Isomer-N entries (macrocycle / all-same-element complexes
-                # where there is really only one geometric isomer).
-                if not norm and sampling_has_unlabelled:
-                    continue
                 if not norm:
                     unknown_counter += 1
                     display = f'Isomer {unknown_counter}'
                 else:
-                    display = norm
+                    # Number duplicate labels
+                    if norm in existing_displays:
+                        suffix = 2
+                        while f'{norm}-{suffix}' in existing_displays:
+                            suffix += 1
+                        display = f'{norm}-{suffix}'
+                    else:
+                        display = norm
                 existing_displays.add(display)
-                existing_base.add(norm)
+                if topo_fp is not None:
+                    existing_fps.add(topo_fp)
                 results.append((topo_xyz, display))
         except Exception as _topo_exc:
             logger.debug("Topological isomer generation failed: %s", _topo_exc)
@@ -3319,6 +3431,65 @@ def smiles_to_xyz_isomers(
                     existing_base.add(alt_label)
         except Exception as _alt_exc:
             logger.debug("Alternative binding mode generation failed: %s", _alt_exc)
+
+    # --- Topology validation: majority-vote SMILES filter ---
+    # Convert every result XYZ back to canonical SMILES (metal bonds stripped)
+    # and keep only structures whose topology matches the majority.
+    # This catches fragmented or topology-corrupted structures from UFF /
+    # topo-embedding / linkage permutation without relying on the input SMILES.
+    if len(results) > 1 and OPENBABEL_AVAILABLE:
+        try:
+            smi_per_result: List[Optional[str]] = []
+            for xyz, _label in results:
+                smi_per_result.append(_xyz_to_canonical_smiles(xyz))
+
+            # Count occurrences — only non-None SMILES participate in voting
+            from collections import Counter
+            valid_smiles = [s for s in smi_per_result if s is not None]
+            if valid_smiles:
+                counts = Counter(valid_smiles)
+                majority_smi, majority_count = counts.most_common(1)[0]
+
+                # quick XYZ as tie-breaker: if it matches a minority SMILES,
+                # use that instead (quick usually preserves topology well)
+                quick_xyz, _qerr = smiles_to_xyz_quick(smiles)
+                if quick_xyz:
+                    quick_smi = _xyz_to_canonical_smiles(quick_xyz)
+                    if quick_smi and quick_smi in counts and quick_smi != majority_smi:
+                        # quick disagrees with majority — trust quick only if
+                        # the majority is very slim (≤50 % of valid results)
+                        if majority_count <= len(valid_smiles) / 2:
+                            majority_smi = quick_smi
+                            logger.debug(
+                                "Topology vote: quick SMILES overrides slim "
+                                "majority (%d/%d)", majority_count, len(valid_smiles)
+                            )
+
+                filtered: List[Tuple[str, str]] = []
+                n_dropped = 0
+                for (xyz, label), smi in zip(results, smi_per_result):
+                    if smi is None:
+                        # Could not convert → keep (benefit of the doubt)
+                        filtered.append((xyz, label))
+                    elif smi == majority_smi:
+                        filtered.append((xyz, label))
+                    else:
+                        n_dropped += 1
+                        logger.debug(
+                            "Topology filter dropped '%s': SMILES mismatch "
+                            "('%s' vs majority '%s')",
+                            label, smi[:80], majority_smi[:80],
+                        )
+                if filtered:
+                    results = filtered
+                if n_dropped:
+                    logger.info(
+                        "Topology filter: kept %d, dropped %d structure(s) "
+                        "with inconsistent connectivity",
+                        len(results), n_dropped,
+                    )
+        except Exception as _topo_filt_exc:
+            logger.debug("Topology filter failed, keeping all results: %s", _topo_filt_exc)
 
     return results, None
 
