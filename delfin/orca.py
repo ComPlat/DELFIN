@@ -997,6 +997,17 @@ def _run_orca_isolated(
     basename = input_path.stem
     parent_dir = input_path.parent
 
+    # Remove legacy empty isolation directory names from older releases
+    # (e.g. ".orca_iso_initial") so they don't accumulate in work folders.
+    legacy_iso_dir = parent_dir / f".orca_iso_{basename}"
+    if legacy_iso_dir.exists():
+        try:
+            if legacy_iso_dir.is_dir() and not any(legacy_iso_dir.iterdir()):
+                legacy_iso_dir.rmdir()
+                logger.debug(f"Removed legacy empty isolation directory: {legacy_iso_dir}")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Could not remove legacy isolation directory {legacy_iso_dir}: {exc}")
+
     # Verify all required dependency files exist before creating isolated directory
     if copy_files:
         missing_files = [f for f in copy_files if not (parent_dir / f).exists()]
@@ -1184,6 +1195,16 @@ def _cleanup_isolated_dir(iso_dir: Path, initial_delay: float = 0.5) -> None:
                     f"retrying in {delay:.1f}s: {exc}"
                 )
                 time.sleep(delay)
+
+    # Some filesystems intermittently fail rmtree but leave an empty directory.
+    # In that case, try a final plain rmdir so no empty .orca_iso_* folder remains.
+    try:
+        if iso_dir.exists() and iso_dir.is_dir() and not any(iso_dir.iterdir()):
+            iso_dir.rmdir()
+            logger.debug(f"Removed empty isolated directory via fallback rmdir: {iso_dir}")
+            return
+    except Exception as exc:  # noqa: BLE001
+        last_exc = exc
 
     if last_exc is not None:
         logger.warning(f"Could not clean up isolated directory {iso_dir}: {last_exc}")
