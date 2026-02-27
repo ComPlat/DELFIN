@@ -15,6 +15,7 @@ from delfin.common.paths import ensure_relative_link
 from delfin.config import OCCUPIER_parser
 from delfin.copy_helpers import read_occupier_file
 from delfin.orca import run_orca_with_intelligent_recovery
+from delfin import smart_recalc
 from delfin.parallel_classic_manually import WorkflowJob, _update_pal_block, normalize_parallel_token
 from delfin.process_checker import check_and_warn_competing_processes
 from delfin.reporting import generate_summary_report_OCCUPIER
@@ -39,10 +40,6 @@ _cwd_lock = threading.RLock()
 
 # Global lock preventing concurrent geometry file writes (prevents race conditions)
 _geometry_lock = threading.Lock()
-
-_OK_MARKER = "ORCA TERMINATED NORMALLY"
-_MIN_OK_FILESIZE = 100
-
 
 def _fallback_propagate_geometry(folder_name: str, folder_path: Path) -> None:
     """Best-effort propagation when OCCUPIER.txt is missing.
@@ -87,13 +84,13 @@ def _fallback_propagate_geometry(folder_name: str, folder_path: Path) -> None:
                     )
 
 
-def _has_ok_marker(path: Path) -> bool:
+def _should_skip_recalc(inp_path: Path, out_path: Path, recalc_enabled: bool) -> bool:
+    if not recalc_enabled:
+        return False
     try:
-        if not path.exists() or path.stat().st_size < _MIN_OK_FILESIZE:
-            return False
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            return _OK_MARKER in fh.read()
-    except Exception:
+        return smart_recalc.should_skip(inp_path, out_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[smart_recalc] could not check %s / %s: %s", inp_path, out_path, exc)
         return False
 
 
@@ -446,7 +443,7 @@ def _create_occupier_fob_jobs(
                 inp_path = target_folder / _inp_name
                 out_path = target_folder / _out_name
 
-                if recalc_enabled and _has_ok_marker(out_path):
+                if _should_skip_recalc(inp_path, out_path, recalc_enabled):
                     energy = _parse_energy(out_path, use_gibbs)
                     logger.info("[%s] FoB %d: RECALC skip (energy=%s)", folder_name, _idx, energy)
                     with results_lock:
@@ -635,7 +632,7 @@ def _create_occupier_fob_jobs(
                 _update_pal_block(str(inp_path), cores)
 
                 # Double-check recalc status after preparing input
-                if recalc_enabled and _has_ok_marker(out_path):
+                if _should_skip_recalc(inp_path, out_path, recalc_enabled):
                     energy = _parse_energy(out_path, use_gibbs)
                     logger.info(
                         "[%s] FoB %d: RECALC skip after prepare (energy=%s)",

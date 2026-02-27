@@ -40,6 +40,7 @@ from .parallel_classic_manually import (
 )
 from .process_checker import check_and_warn_competing_processes
 from .parser import extract_last_uhf_deviation
+from . import smart_recalc
 
 logger = get_logger(__name__)
 
@@ -1229,25 +1230,18 @@ def run_OCCUPIER():
         fspe_results: dict[int, float | None] = {}
         results_lock = threading.Lock()
 
-        OK = "ORCA TERMINATED NORMALLY"
         recalc = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
         geometry_wait_timeout = _parse_geometry_wait(
             config.get("occupier_geometry_wait_s"), default=None
         )
 
-        def _has_ok_marker(path: str) -> bool:
-            candidate = resolve_path(path)
-            if not candidate.exists():
+        def _should_skip_orca(inp_path: str, out_path: str) -> bool:
+            if not recalc:
                 return False
             try:
-                # Check file size to avoid reading incomplete files
-                if candidate.stat().st_size < 100:  # Files with OK marker should be larger
-                    return False
-                with candidate.open("r", encoding="utf-8", errors="replace") as _f:
-                    content = _f.read()
-                    return OK in content
+                return smart_recalc.should_skip(resolve_path(inp_path), resolve_path(out_path))
             except Exception as e:
-                logger.debug("[recalc] could not check %s (%s) -> will run", path, e)
+                logger.debug("[smart_recalc] could not check %s / %s (%s) -> will run", inp_path, out_path, e)
                 return False
 
         freq_enabled = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
@@ -1338,8 +1332,11 @@ def run_OCCUPIER():
                 _update_pal_block(inp, cores)
 
                 # Second check right before execution (race condition protection)
-                if recalc and _has_ok_marker(out):
-                    logger.info("[recalc] Skipping ORCA for %s; completed by another process.", out)
+                if _should_skip_orca(inp, out):
+                    logger.info(
+                        "[smart_recalc] Skipping ORCA for %s; inp+deps unchanged and output complete.",
+                        out,
+                    )
                     parsed_val = finder(out)
                     with results_lock:
                         fspe_results[idx] = parsed_val
@@ -1416,23 +1413,17 @@ def run_OCCUPIER():
             if _ct_entry is not None:
                 # Check recalc guard: if output already exists and completed, just parse
                 _ct_idx = int(_ct_entry["index"])
+                _ct_in = "input.inp" if _ct_idx == 1 else f"input{_ct_idx}.inp"
                 _ct_out = "output.out" if _ct_idx == 1 else f"output{_ct_idx}.out"
-                _ct_out_path = resolve_path(_ct_out)
                 _ct_already_done = False
-                if _ct_out_path.exists():
-                    try:
-                        if "ORCA TERMINATED NORMALLY" in _ct_out_path.read_text(
-                            encoding="utf-8", errors="replace"
-                        ):
-                            logger.info(
-                                "[contamination_trigger] Output '%s' already complete, "
-                                "skipping ORCA run.", _ct_out,
-                            )
-                            sequence.append(_ct_entry)
-                            fspe_results[_ct_idx] = finder(_ct_out)
-                            _ct_already_done = True
-                    except Exception:
-                        pass
+                if _should_skip_orca(_ct_in, _ct_out):
+                    logger.info(
+                        "[contamination_trigger] Output '%s' unchanged and complete, "
+                        "skipping ORCA run.", _ct_out,
+                    )
+                    sequence.append(_ct_entry)
+                    fspe_results[_ct_idx] = finder(_ct_out)
+                    _ct_already_done = True
 
                 if not _ct_already_done:
                     # All regular FoBs are done — this is the only job left,

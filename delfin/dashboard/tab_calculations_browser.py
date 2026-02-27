@@ -4017,11 +4017,29 @@ def create_tab(ctx):
         if not current_path:
             return None
         path_parts = current_path.split('/')
-        for i in range(len(path_parts), 0, -1):
+        candidates = []
+        for i in range(1, len(path_parts) + 1):
             test_path = '/'.join(path_parts[:i])
-            if (_calc_dir() / test_path / 'CONTROL.txt').exists():
-                return test_path
-        return None
+            test_dir = _calc_dir() / test_path
+            if (test_dir / 'CONTROL.txt').exists():
+                candidates.append(test_path)
+
+        if not candidates:
+            return None
+
+        # Prefer the outermost real DELFIN workspace (contains top-level markers),
+        # not nested OCCUPIER subfolders that also carry CONTROL.txt snapshots.
+        for candidate in candidates:
+            candidate_dir = _calc_dir() / candidate
+            if (
+                (candidate_dir / 'input.txt').exists()
+                or (candidate_dir / 'start.txt').exists()
+                or (candidate_dir / 'DELFIN.txt').exists()
+            ):
+                return candidate
+
+        # Fallback: still use the outermost CONTROL-bearing directory.
+        return candidates[0]
 
     # -- delete helpers -----------------------------------------------------
     def calc_delete_hide_confirm():

@@ -22,6 +22,7 @@ from ase.data import covalent_radii
 import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
+from delfin import smart_recalc
 
 # === Templates erzeugen (--define) ===========================================
 def write_default_files(control_path="CONTROL.txt", co2_path="co2.xyz",
@@ -1097,9 +1098,10 @@ def _calculate_single_angle(ang, base_atoms, co2_indices, charge, multiplicity, 
     _write_xyz_with_separator(atoms, xyz_path, qm_count, separator=separator_line, insert_separator=False)
 
     out_path = os.path.join(ang_dir, "calc.out")
+    inp_path = os.path.join(ang_dir, "calc.inp")
 
-    # Check if calculation is already complete (recalc mode)
-    if recalc_mode and _is_orca_calculation_complete(out_path):
+    # Smart recalc: skip only when inp+deps are unchanged and output is complete.
+    if recalc_mode and smart_recalc.should_skip(inp_path, out_path):
         print(f"[recalc] Skipping angle {ang}° - already complete")
         try:
             E = parse_orca_energy(out_path)

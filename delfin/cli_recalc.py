@@ -6,6 +6,7 @@ from typing import Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.common.paths import resolve_path, scratch_path
+from delfin import smart_recalc
 
 logger = get_logger(__name__)
 
@@ -20,33 +21,17 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
     from .orca import run_orca as _run_orca_real
     from .xtb_crest import XTB as _XTB_real, XTB_GOAT as _XTB_GOAT_real, run_crest_workflow as _CREST_real, XTB_SOLVATOR as _SOLV_real
 
-    OK_MARKER = "ORCA TERMINATED NORMALLY"
-
     def _run_orca_wrapper(inp_file, out_file, *args, **kwargs):
         force_targets = {resolve_path(p).resolve() for p in (force_outputs or set())}
 
-        def _check_completion(path):
-            """Check if output file is complete with proper error handling."""
-            if not path.exists():
-                return False
-            try:
-                # Check file size to avoid reading incomplete files
-                if path.stat().st_size < 100:  # Files with OK_MARKER should be larger
-                    return False
-                with path.open("r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-                    return OK_MARKER in content
-            except Exception as e:
-                logger.debug("[recalc] could not check %s (%s) -> will run", path, e)
-                return False
-
+        inp_path = resolve_path(inp_file)
         out_path = resolve_path(out_file)
-        out_resolved = out_path.resolve() if out_path.exists() else out_path
+        out_resolved = out_path.resolve()
         force_run = out_resolved in force_targets
 
         # First check
-        if not force_run and _check_completion(out_path):
-            logger.info("[recalc] skipping ORCA; %s appears complete.", out_file)
+        if not force_run and smart_recalc.should_skip(inp_path, out_path):
+            logger.info("[smart_recalc] skipping ORCA; %s inp+deps unchanged and output complete.", out_file)
             return True  # Already complete = success
 
         if force_run:
@@ -63,8 +48,8 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
             logger.info("[recalc] (re)running ORCA for %s", out_file)
 
         # Second check right before execution (race condition protection)
-        if not force_run and _check_completion(out_path):
-            logger.info("[recalc] skipping ORCA; %s completed by another process.", out_file)
+        if not force_run and smart_recalc.should_skip(inp_path, out_path):
+            logger.info("[smart_recalc] skipping ORCA; %s completed by another process.", out_file)
             return True  # Already complete = success
 
         return _run_orca_real(inp_file, out_file, *args, **kwargs)
