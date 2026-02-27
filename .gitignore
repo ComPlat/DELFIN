@@ -12,6 +12,7 @@ __pycache__/
 *$py.class
 
 .venv/
+delfin_venv.tar
 
 # Local server config
 pyproject_qmserver.toml

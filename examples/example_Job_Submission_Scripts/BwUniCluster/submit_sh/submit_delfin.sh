@@ -233,13 +233,21 @@ export OMPI_MCA_rmaps_base_mapping_policy=core
 export OMPI_MCA_rmaps_base_oversubscribe=true # Allow ORCA's dynamic parallelism
 
 # Activate DELFIN virtual environment
-# Copy venv to local SSD ($TMPDIR) to avoid HOME filesystem I/O on Python startup.
-# 50 simultaneous jobs each open ~600k files from HOME; copying venv to local SSD
-# reduces open() calls on HOME by ~95% and is recommended by HPC admins.
+# Use a pre-packed tarball (delfin_venv.tar) to transfer the venv to local SSD.
+# Reading 1 tar file from HOME generates ~5 getxattr ops instead of ~150,000
+# (one per file in the venv). Run once to create: tar -cf delfin_venv.tar .venv/
+VENV_TAR="$DELFIN_DIR/delfin_venv.tar"
 if [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
     VENV_LOCAL="$TMPDIR/delfin_venv_${SLURM_JOB_ID}"
-    echo "Copying venv to local SSD ($VENV_LOCAL) to reduce HOME I/O..."
-    cp -a "$DELFIN_DIR/.venv" "$VENV_LOCAL"
+    if [ -f "$VENV_TAR" ]; then
+        echo "Unpacking venv tarball to local SSD ($VENV_LOCAL) to minimise HOME I/O..."
+        mkdir -p "$VENV_LOCAL"
+        tar -xf "$VENV_TAR" --strip-components=1 -C "$VENV_LOCAL"
+    else
+        echo "WARNING: $VENV_TAR not found, falling back to cp -a (higher HOME I/O)."
+        echo "         Run once: cd $DELFIN_DIR && tar -cf delfin_venv.tar .venv/"
+        cp -a "$DELFIN_DIR/.venv" "$VENV_LOCAL"
+    fi
     # Rewrite shebangs/paths: activate script uses absolute paths
     sed -i "s|$DELFIN_DIR/.venv|$VENV_LOCAL|g" "$VENV_LOCAL/bin/activate" 2>/dev/null || true
     source "$VENV_LOCAL/bin/activate"
