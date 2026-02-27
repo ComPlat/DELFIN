@@ -79,7 +79,7 @@ def create_tab(ctx):
             "Ni_1;[Ni];charge=2;solvent=water\n"
             "Co_1;[Co];charge=3\n"
             "\n"
-            "name1.xyz;\n"
+            "name1;key=value;\n"
             "C  0.0  0.0  0.0\n"
             "H  0.0  0.0  1.0\n"
             "*\n"
