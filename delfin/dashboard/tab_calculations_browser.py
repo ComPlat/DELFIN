@@ -1455,6 +1455,54 @@ def create_tab(ctx):
     def _run_js(script):
         ctx.run_js(script)
 
+    def _calc_copy_to_clipboard(text, label='content'):
+        text_payload = json.dumps(text)
+        label_payload = json.dumps(label)
+        _run_js(
+            "(function(){"
+            f"const text={text_payload};"
+            f"const label={label_payload};"
+            "function _manualPrompt(){"
+            "try{window.prompt('Copy to clipboard (Cmd+C/Ctrl+C, Enter):', text);}catch(_e){}"
+            "}"
+            "function _legacyCopy(){"
+            "try{"
+            "const ta=document.createElement('textarea');"
+            "ta.value=text;"
+            "ta.setAttribute('readonly','readonly');"
+            "ta.style.position='fixed';"
+            "ta.style.top='-1000px';"
+            "ta.style.left='-1000px';"
+            "ta.style.opacity='0';"
+            "document.body.appendChild(ta);"
+            "ta.focus();"
+            "ta.select();"
+            "ta.setSelectionRange(0, ta.value.length);"
+            "const ok=document.execCommand('copy');"
+            "document.body.removeChild(ta);"
+            "return !!ok;"
+            "}catch(_e){"
+            "return false;"
+            "}"
+            "}"
+            "function _done(method){"
+            "console.log('Copied ' + label + ' via ' + method);"
+            "}"
+            "if(navigator.clipboard && navigator.clipboard.writeText){"
+            "navigator.clipboard.writeText(text)"
+            ".then(function(){_done('navigator.clipboard');})"
+            ".catch(function(err){"
+            "console.warn('Clipboard API failed for ' + label + ':', err);"
+            "if(_legacyCopy()){_done('execCommand');return;}"
+            "_manualPrompt();"
+            "});"
+            "}else{"
+            "if(_legacyCopy()){_done('execCommand');return;}"
+            "_manualPrompt();"
+            "}"
+            "})();"
+        )
+
     def _calc_clear_main_viewer_state(reset_view_state=False):
         calc_mol_viewer.clear_output()
         scope_key_json = json.dumps(calc_scope_id)
@@ -1912,17 +1960,9 @@ def create_tab(ctx):
         payload_text = export_data['payload_text']
         safe_file = export_data['safe_file']
         entry_count = int(export_data['entry_count'])
-        escaped_payload = json.dumps(payload_text)
-        _run_js(
-            "(function(){"
-            f"const txt={escaped_payload};"
-            "navigator.clipboard.writeText(txt)"
-            ".then(() => console.log('Copied batch txt'))"
-            ".catch(err => console.error('Copy failed:', err));"
-            "})();"
-        )
+        _calc_copy_to_clipboard(payload_text, label='batch xyz export')
         status = (
-            f'<span style="color:#2e7d32;">Copied to clipboard (Strg+V): '
+            f'<span style="color:#2e7d32;">Copy prepared (paste with Cmd+V/Ctrl+V): '
             f'{_html.escape(safe_file)} ({entry_count} entries)</span>'
         )
         status += _calc_xyz_batch_skipped_html(skipped)
@@ -4420,12 +4460,7 @@ def create_tab(ctx):
             return
         comment, xyz_block, n_atoms = frames[idx]
         xyz_content = f"{n_atoms}\n{comment}\n{xyz_block}"
-        escaped = xyz_content.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
-        _run_js(
-            f"navigator.clipboard.writeText('{escaped}')"
-            f".then(() => console.log('Copied frame {idx+1}'))"
-            f".catch(err => console.error('Copy failed:', err));"
-        )
+        _calc_copy_to_clipboard(xyz_content, label=f'xyz frame {idx + 1}')
 
     def calc_on_rmsd_toggle(button=None):
         if not state.get('rmsd_available'):
@@ -4549,12 +4584,7 @@ def create_tab(ctx):
     def calc_on_coord_copy(button):
         if not state['file_content']:
             return
-        escaped = state['file_content'].replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
-        _run_js(
-            f"navigator.clipboard.writeText('{escaped}')"
-            f".then(() => console.log('Copied coord'))"
-            f".catch(err => console.error('Copy failed:', err));"
-        )
+        _calc_copy_to_clipboard(state['file_content'], label='coord content')
 
     def calc_on_content_copy(button):
         content = ''
@@ -4564,12 +4594,7 @@ def create_tab(ctx):
             content = state['file_content'] or ''
         if not content:
             return
-        escaped = content.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
-        _run_js(
-            f"navigator.clipboard.writeText('{escaped}')"
-            f".then(() => console.log('Copied file content'))"
-            f".catch(err => console.error('Copy failed:', err));"
-        )
+        _calc_copy_to_clipboard(content, label='file content')
 
     def calc_on_path_copy(button):
         full_path_obj = _calc_selected_item_path()
@@ -4583,12 +4608,7 @@ def create_tab(ctx):
             f' style="width:100%;font-family:monospace;font-size:12px;border:1px solid #aaa;'
             f'padding:2px;background:#f8f8f8" readonly>'
         )
-        escaped = full_path.replace('\\', '\\\\').replace("'", "\\'")
-        _run_js(
-            f"navigator.clipboard.writeText('{escaped}')"
-            f".then(() => console.log('Copied path'))"
-            f".catch(err => console.error('Copy failed:', err));"
-        )
+        _calc_copy_to_clipboard(full_path, label='path')
 
     def _calc_trigger_download(filename, payload, mime='application/octet-stream'):
         b64 = base64.b64encode(payload).decode('ascii')
