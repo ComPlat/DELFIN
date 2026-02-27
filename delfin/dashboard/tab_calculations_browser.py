@@ -4164,7 +4164,11 @@ def create_tab(ctx):
             calc_options_dropdown.options = ['(Options)', 'Override']
             calc_options_dropdown.value = '(Options)'
             calc_options_dropdown.layout.display = 'block'
-        elif selected and ('CONTROL.txt' in selected or sel_lower.endswith('.inp')):
+        elif selected and 'CONTROL.txt' in selected:
+            calc_options_dropdown.options = ['(Options)', 'Recalc', 'Smart Recalc']
+            calc_options_dropdown.value = '(Options)'
+            calc_options_dropdown.layout.display = 'block'
+        elif selected and sel_lower.endswith('.inp'):
             calc_options_dropdown.options = ['(Options)', 'Recalc']
             calc_options_dropdown.value = '(Options)'
             calc_options_dropdown.layout.display = 'block'
@@ -4712,7 +4716,7 @@ def create_tab(ctx):
                 name = _calc_label_to_name(selected)
                 stage_name = name.replace('_OCCUPIER.txt', '').replace('OCCUPIER.txt', '')
                 calc_override_input.value = f'{stage_name}=' if stage_name else ''
-        elif change['new'] == 'Recalc':
+        elif change['new'] in ('Recalc', 'Smart Recalc'):
             calc_override_input.layout.display = 'none'
             calc_override_time.layout.display = 'block'
             calc_override_btn.layout.display = 'block'
@@ -4826,7 +4830,9 @@ def create_tab(ctx):
             calc_content_area.layout.display = 'block'
 
     def calc_on_override_start(button):
-        is_recalc = calc_options_dropdown.value == 'Recalc'
+        selected_option = calc_options_dropdown.value
+        is_recalc = selected_option in ('Recalc', 'Smart Recalc')
+        is_smart_recalc = selected_option == 'Smart Recalc'
         selected = calc_file_list.value
         selected_name = _calc_label_to_name(selected) if selected else ''
         is_inp_recalc = bool(is_recalc and selected_name.lower().endswith('.inp'))
@@ -4967,10 +4973,11 @@ def create_tab(ctx):
 
             if is_recalc:
                 job_name = f'recalc_{workspace_root.replace("/", "_")}'
+                recalc_mode = 'delfin-recalc' if is_smart_recalc else 'delfin-recalc-classic'
                 result = ctx.backend.submit_delfin(
                     job_dir=workspace_path,
                     job_name=job_name,
-                    mode='delfin-recalc',
+                    mode=recalc_mode,
                     time_limit=calc_override_time.value,
                     pal=pal_used,
                     maxcore=maxcore_used,
@@ -4996,8 +5003,9 @@ def create_tab(ctx):
                         f'{result.stdout.strip()}</span>'
                     )
                 else:
+                    recalc_label = 'Smart Recalc' if is_smart_recalc else 'Recalc'
                     calc_override_status.value = (
-                        f'<span style="color:#388e3c;">Submitted from {workspace_root}: '
+                        f'<span style="color:#388e3c;">Submitted {recalc_label} from {workspace_root}: '
                         f'{result.stdout.strip()}</span>'
                     )
             else:

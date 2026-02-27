@@ -4,7 +4,7 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | delfin-recalc-override | orca | build | guppy | delfin-co2-chain | auto
+#   delfin | delfin-recalc | delfin-recalc-classic | delfin-recalc-override | orca | build | guppy | delfin-co2-chain | auto
 #
 # ENVIRONMENT VARIABLES:
 #   DELFIN_MODE          : Run mode (default: auto)
@@ -180,6 +180,13 @@ case "$MODE" in
         ;;
     delfin-recalc)
         echo "Starting DELFIN --recalc..."
+        export DELFIN_SMART_RECALC="${DELFIN_SMART_RECALC:-1}"
+        "$DELFIN_BIN" --recalc
+        EXIT_CODE=$?
+        ;;
+    delfin-recalc-classic)
+        echo "Starting DELFIN --recalc (classic marker mode)..."
+        export DELFIN_SMART_RECALC=0
         "$DELFIN_BIN" --recalc
         EXIT_CODE=$?
         ;;

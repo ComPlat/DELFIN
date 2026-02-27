@@ -28,10 +28,14 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
         out_path = resolve_path(out_file)
         out_resolved = out_path.resolve()
         force_run = out_resolved in force_targets
+        smart_mode = smart_recalc.smart_mode_enabled()
 
         # First check
         if not force_run and smart_recalc.should_skip(inp_path, out_path):
-            logger.info("[smart_recalc] skipping ORCA; %s inp+deps unchanged and output complete.", out_file)
+            if smart_mode:
+                logger.info("[smart_recalc] skipping ORCA; %s inp+deps unchanged and output complete.", out_file)
+            else:
+                logger.info("[recalc] skipping ORCA; %s output complete (classic mode).", out_file)
             return True  # Already complete = success
 
         if force_run:
@@ -49,7 +53,10 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
 
         # Second check right before execution (race condition protection)
         if not force_run and smart_recalc.should_skip(inp_path, out_path):
-            logger.info("[smart_recalc] skipping ORCA; %s completed by another process.", out_file)
+            if smart_mode:
+                logger.info("[smart_recalc] skipping ORCA; %s completed by another process.", out_file)
+            else:
+                logger.info("[recalc] skipping ORCA; %s completed by another process (classic mode).", out_file)
             return True  # Already complete = success
 
         return _run_orca_real(inp_file, out_file, *args, **kwargs)

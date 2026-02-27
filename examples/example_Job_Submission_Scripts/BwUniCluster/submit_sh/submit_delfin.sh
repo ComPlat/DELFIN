@@ -18,7 +18,7 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | orca | build | guppy | delfin-co2-chain | auto (default: auto)
+#   delfin | delfin-recalc | delfin-recalc-classic | orca | build | guppy | delfin-co2-chain | auto (default: auto)
 #   BUILD_MULTIPLICITY: Spin multiplicity for build mode (default: 1)
 #   GUPPY_RUNS: Number of GUPPY sampling runs (default: 20)
 #   GUPPY_CHARGE: Optional charge override for GUPPY (default: auto from SMILES)
@@ -527,6 +527,13 @@ case "$MODE" in
         ;;
     delfin-recalc)
         echo "Starting DELFIN --recalc..."
+        export DELFIN_SMART_RECALC="${DELFIN_SMART_RECALC:-1}"
+        delfin --recalc
+        EXIT_CODE=$?
+        ;;
+    delfin-recalc-classic)
+        echo "Starting DELFIN --recalc (classic marker mode)..."
+        export DELFIN_SMART_RECALC=0
         delfin --recalc
         EXIT_CODE=$?
         ;;
@@ -627,7 +634,7 @@ case "$MODE" in
         ;;
     *)
         echo "ERROR: Unknown mode: $MODE"
-        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-override, orca, build, guppy, delfin-co2-chain, auto"
+        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-classic, delfin-recalc-override, orca, build, guppy, delfin-co2-chain, auto"
         EXIT_CODE=1
         ;;
 esac

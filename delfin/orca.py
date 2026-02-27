@@ -1265,10 +1265,21 @@ def run_orca(
     # Apply CONTROL overrides like keyword:<base>=... / addition:<base>=...
     _apply_control_overrides_to_input(input_path, working_dir)
 
+    extra_deps = []
+    if copy_files:
+        for dep in copy_files:
+            try:
+                dep_path = Path(dep)
+                if not dep_path.is_absolute():
+                    dep_path = input_path.parent / dep_path
+                extra_deps.append(dep_path)
+            except Exception:
+                continue
+
     # Smart recalc: skip execution when inp+deps are unchanged and output is complete.
     # The check runs *after* overrides are applied so any override-induced change is
     # captured in the fingerprint.
-    if smart_recalc.should_skip(input_path, output_path):
+    if smart_recalc.should_skip(input_path, output_path, extra_deps=extra_deps):
         logger.info(
             "[smart_recalc] Skipping ORCA for '%s'; inp+deps unchanged and output complete.",
             input_file_path,
@@ -1287,7 +1298,7 @@ def run_orca(
             copy_files=copy_files,
         )
         if result:
-            smart_recalc.store_fingerprint(input_path)
+            smart_recalc.store_fingerprint(input_path, extra_deps=extra_deps)
         return result
 
     try:
@@ -1306,7 +1317,7 @@ def run_orca(
         working_dir=working_dir,
     ):
         logger.info(f"ORCA run successful for '{input_file_path}'")
-        smart_recalc.store_fingerprint(input_path)
+        smart_recalc.store_fingerprint(input_path, extra_deps=extra_deps)
         return True
     return False
 

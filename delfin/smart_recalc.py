@@ -2,12 +2,19 @@
 
 Uses a SHA-256 fingerprint of:
  - The ORCA input file content (after all overrides have been applied)
- - The name, size, and modification time of each GBW file referenced via ``%moinp``
+ - Referenced dependency files from the input (e.g. ``%moinp``, ``* xyzfile``,
+   Hessian references in ESD blocks, and other quoted file references)
+ - Optional extra dependencies passed by the caller (e.g. ``copy_files``)
 
 The fingerprint is persisted as a ``.fprint`` sidecar file next to the input file.
-On ``delfin --recalc`` (``DELFIN_RECALC=1``), ``should_skip()`` returns *True* only when
-the stored fingerprint matches the current one **and** the output contains
-``ORCA TERMINATED NORMALLY``.
+
+Modes:
+ - Smart recalc (default): ``DELFIN_SMART_RECALC=1`` (or unset)
+ - Classic recalc: ``DELFIN_SMART_RECALC=0`` (skip by marker only)
+
+On ``delfin --recalc`` (``DELFIN_RECALC=1``), ``should_skip()`` returns:
+ - Smart mode: True only when fingerprint matches and output is complete.
+ - Classic mode: True when output is complete.
 """
 
 import hashlib
@@ -15,13 +22,30 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
 OK_MARKER = "ORCA TERMINATED NORMALLY"
 
-# Matches: %moinp "file.gbw"  (case-insensitive, optional surrounding whitespace)
-_MOINP_RE = re.compile(r'%moinp\s+"([^"]+)"', re.IGNORECASE)
+# Explicit dependency patterns commonly used in ORCA/DELFIN inputs.
+_MOINP_RE = re.compile(
+    r'^\s*%?moinp\s+(?:"([^"]+)"|(\S+))',
+    re.IGNORECASE | re.MULTILINE,
+)
+_XYZFILE_RE = re.compile(
+    r'^\s*\*\s*xyzfile\s+\S+\s+\S+\s+(?:"([^"]+)"|(\S+))',
+    re.IGNORECASE | re.MULTILINE,
+)
+_HESS_DIRECTIVE_RE = re.compile(
+    r'^\s*(?:gshessian|eshessian|tshessian|iscishess|iscfshess|inhess(?:ian)?|inhessname)\s+'
+    r'(?:"([^"]+)"|(\S+))',
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Broad fallback: quoted tokens that look like file paths.
+_QUOTED_TOKEN_RE = re.compile(r'"([^"\n]+)"')
+_PATHLIKE_EXT_RE = re.compile(r'.+\.[A-Za-z0-9]{1,12}$')
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +56,13 @@ def recalc_enabled() -> bool:
     """Return True when the ``DELFIN_RECALC`` environment variable is set."""
     return str(os.environ.get("DELFIN_RECALC", "0")).lower() in (
         "1", "true", "yes", "on", "y"
+    )
+
+
+def smart_mode_enabled() -> bool:
+    """Return True when smart dependency-aware recalc logic is enabled."""
+    return str(os.environ.get("DELFIN_SMART_RECALC", "1")).lower() not in (
+        "0", "false", "no", "off", "n"
     )
 
 
@@ -47,30 +78,98 @@ def has_ok_marker(out_path) -> bool:
 # Fingerprint logic
 # ---------------------------------------------------------------------------
 
-def _gbw_deps(inp_path: Path) -> list:
-    """Return resolved absolute paths of GBW files referenced via ``%moinp``."""
+def _looks_like_file_reference(token: str) -> bool:
+    """Heuristic filter for path-like tokens found in ORCA input text."""
+    value = str(token or "").strip().strip('"').strip("'").rstrip(",;")
+    if not value:
+        return False
+    low = value.lower()
+    if low in {"true", "false", "none", "null", "auto"}:
+        return False
+    if "/" in value or "\\" in value:
+        return True
+    return bool(_PATHLIKE_EXT_RE.match(value))
+
+
+def _resolve_dep_path(raw_dep: str, inp_path: Path) -> Path:
+    dep = Path(str(raw_dep).strip().strip('"').strip("'").rstrip(",;"))
+    if not dep.is_absolute():
+        dep = inp_path.parent / dep
+    try:
+        return dep.resolve()
+    except Exception:
+        return dep
+
+
+def _collect_input_dependencies(inp_path: Path) -> List[Path]:
+    """Return resolved absolute dependency paths referenced by the ORCA input."""
     try:
         text = inp_path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return []
-    deps = []
-    for m in _MOINP_RE.finditer(text):
-        dep = Path(m.group(1))
-        if not dep.is_absolute():
-            dep = inp_path.parent / dep
-        try:
-            deps.append(dep.resolve())
-        except Exception:
-            deps.append(dep)
+
+    raw_candidates: list[str] = []
+    for match in _MOINP_RE.finditer(text):
+        raw = match.group(1) or match.group(2)
+        if raw:
+            raw_candidates.append(raw)
+    for match in _XYZFILE_RE.finditer(text):
+        raw = match.group(1) or match.group(2)
+        if raw:
+            raw_candidates.append(raw)
+    for match in _HESS_DIRECTIVE_RE.finditer(text):
+        raw = match.group(1) or match.group(2)
+        if raw:
+            raw_candidates.append(raw)
+    for match in _QUOTED_TOKEN_RE.finditer(text):
+        raw = match.group(1)
+        if raw:
+            raw_candidates.append(raw)
+
+    deps: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        if not _looks_like_file_reference(raw):
+            continue
+        dep = _resolve_dep_path(raw, inp_path)
+        key = str(dep)
+        if key in seen:
+            continue
+        seen.add(key)
+        deps.append(dep)
     return deps
 
 
-def compute_fingerprint(inp_path) -> str:
-    """Return a hex-digest fingerprint for *inp_path* and its GBW dependencies.
+def _normalize_extra_dependencies(inp_path: Path, extra_deps: Optional[Iterable]) -> List[Path]:
+    if not extra_deps:
+        return []
+    deps: list[Path] = []
+    seen: set[str] = set()
+    for raw in extra_deps:
+        if raw is None:
+            continue
+        dep = Path(raw)
+        if not dep.is_absolute():
+            dep = inp_path.parent / dep
+        try:
+            dep = dep.resolve()
+        except Exception:
+            pass
+        key = str(dep)
+        if key in seen:
+            continue
+        seen.add(key)
+        deps.append(dep)
+    return deps
+
+
+def compute_fingerprint(inp_path, extra_deps: Optional[Iterable] = None) -> str:
+    """Return a hex-digest fingerprint for *inp_path* and its dependencies.
 
     The fingerprint covers:
     - The full byte content of the input file.
-    - For each ``%moinp`` dependency: ``<name>:<size>:<mtime_ns>``.
+    - For each dependency: ``<resolved_path>:<size>:<mtime_ns>``.
+      (input-referenced dependencies + optional ``extra_deps``).
 
     Returns an empty string when the input file cannot be read.
     """
@@ -80,14 +179,23 @@ def compute_fingerprint(inp_path) -> str:
         h.update(inp.read_bytes())
     except Exception:
         return ""
-    for dep in _gbw_deps(inp):
+
+    deps: list[Path] = []
+    deps.extend(_collect_input_dependencies(inp))
+    deps.extend(_normalize_extra_dependencies(inp, extra_deps))
+
+    # Stable ordering independent of discovery order.
+    unique_sorted = sorted({str(dep): dep for dep in deps}.values(), key=lambda p: str(p))
+
+    for dep in unique_sorted:
+        dep_id = str(dep)
         try:
             st = dep.stat()
-            h.update(f"{dep.name}:{st.st_size}:{st.st_mtime_ns}".encode())
+            h.update(f"{dep_id}:{st.st_size}:{st.st_mtime_ns}".encode())
         except Exception:
             # Dependency missing — include a marker so the fingerprint differs
             # from a previous run where it existed.
-            h.update(f"{dep.name}:missing".encode())
+            h.update(f"{dep_id}:missing".encode())
     return h.hexdigest()
 
 
@@ -95,7 +203,7 @@ def _fprint_path(inp_path: Path) -> Path:
     return inp_path.with_suffix(inp_path.suffix + ".fprint")
 
 
-def fingerprint_unchanged(inp_path) -> bool:
+def fingerprint_unchanged(inp_path, extra_deps: Optional[Iterable] = None) -> bool:
     """Return True when the stored ``.fprint`` sidecar matches the current fingerprint."""
     inp = Path(inp_path)
     fp_file = _fprint_path(inp)
@@ -105,14 +213,14 @@ def fingerprint_unchanged(inp_path) -> bool:
         stored = fp_file.read_text(encoding="utf-8").strip()
     except Exception:
         return False
-    current = compute_fingerprint(inp)
+    current = compute_fingerprint(inp, extra_deps=extra_deps)
     return bool(current) and stored == current
 
 
-def store_fingerprint(inp_path) -> None:
+def store_fingerprint(inp_path, extra_deps: Optional[Iterable] = None) -> None:
     """Persist the current fingerprint of *inp_path* as a ``.fprint`` sidecar file."""
     inp = Path(inp_path)
-    fp = compute_fingerprint(inp)
+    fp = compute_fingerprint(inp, extra_deps=extra_deps)
     if not fp:
         return
     try:
@@ -125,19 +233,21 @@ def store_fingerprint(inp_path) -> None:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def should_skip(inp_path, out_path) -> bool:
+def should_skip(inp_path, out_path, extra_deps: Optional[Iterable] = None) -> bool:
     """Return True when ORCA execution can safely be skipped.
 
     All three conditions must hold:
     1. ``DELFIN_RECALC`` is enabled in the environment.
     2. *out_path* exists and contains ``ORCA TERMINATED NORMALLY``.
-    3. The ``.fprint`` sidecar of *inp_path* matches the current fingerprint
-       (i.e. neither the inp content nor any referenced GBW dependency changed).
+    3. Smart mode only: the ``.fprint`` sidecar of *inp_path* matches the
+       current fingerprint (i.e. neither inp content nor dependencies changed).
     """
     if not recalc_enabled():
         return False
     if not has_ok_marker(out_path):
         return False
-    if not fingerprint_unchanged(inp_path):
+    if not smart_mode_enabled():
+        return True
+    if not fingerprint_unchanged(inp_path, extra_deps=extra_deps):
         return False
     return True
