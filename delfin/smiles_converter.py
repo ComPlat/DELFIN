@@ -88,6 +88,143 @@ except Exception:
     ])
 
 
+# ---------------------------------------------------------------------------
+# Covalent radii (Pyykkö 2009, single-bond values in Å)
+# Used as fallback for M-L bond length estimation when no specific value
+# is available in _METAL_LIGAND_BOND_LENGTHS.
+# ---------------------------------------------------------------------------
+_COVALENT_RADII: Dict[str, float] = {
+    # 3d transition metals
+    'Sc': 1.70, 'Ti': 1.60, 'V': 1.53, 'Cr': 1.39, 'Mn': 1.39,
+    'Fe': 1.32, 'Co': 1.26, 'Ni': 1.24, 'Cu': 1.32, 'Zn': 1.22,
+    # 4d transition metals
+    'Y': 1.90, 'Zr': 1.75, 'Nb': 1.64, 'Mo': 1.54, 'Tc': 1.47,
+    'Ru': 1.46, 'Rh': 1.42, 'Pd': 1.39, 'Ag': 1.45, 'Cd': 1.44,
+    # 5d transition metals
+    'La': 2.07, 'Hf': 1.75, 'Ta': 1.70, 'W': 1.62, 'Re': 1.51,
+    'Os': 1.44, 'Ir': 1.41, 'Pt': 1.36, 'Au': 1.36, 'Hg': 1.32,
+    # Lanthanides
+    'Ce': 2.04, 'Pr': 2.03, 'Nd': 2.01, 'Pm': 1.99, 'Sm': 1.98,
+    'Eu': 1.98, 'Gd': 1.96, 'Tb': 1.94, 'Dy': 1.92, 'Ho': 1.92,
+    'Er': 1.89, 'Tm': 1.90, 'Yb': 1.87, 'Lu': 1.87,
+    # Actinides
+    'Ac': 2.15, 'Th': 2.06, 'Pa': 2.00, 'U': 1.96, 'Np': 1.90, 'Pu': 1.87,
+    # Main-group metals
+    'Li': 1.28, 'Na': 1.66, 'K': 2.03, 'Rb': 2.20, 'Cs': 2.44,
+    'Be': 0.96, 'Mg': 1.41, 'Ca': 1.76, 'Sr': 1.95, 'Ba': 2.15,
+    'Al': 1.21, 'Ga': 1.22, 'In': 1.42, 'Tl': 1.45,
+    'Sn': 1.39, 'Pb': 1.46, 'Bi': 1.48, 'Po': 1.40,
+    # Non-metals (common donor atoms and halogens)
+    'H': 0.31, 'C': 0.76, 'N': 0.71, 'O': 0.66, 'F': 0.57,
+    'P': 1.07, 'S': 1.05, 'Cl': 1.02, 'Se': 1.20, 'Br': 1.20,
+    'Te': 1.38, 'I': 1.39,
+}
+
+# ---------------------------------------------------------------------------
+# Typical M-L bond lengths (Å) from crystallographic databases.
+# Keyed as (metal_symbol, donor_element) → distance.
+# ---------------------------------------------------------------------------
+_METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
+    # Iridium
+    ('Ir', 'C'): 2.02, ('Ir', 'N'): 2.15, ('Ir', 'O'): 2.12,
+    ('Ir', 'P'): 2.30, ('Ir', 'Cl'): 2.38, ('Ir', 'S'): 2.38,
+    # Ruthenium
+    ('Ru', 'C'): 2.00, ('Ru', 'N'): 2.10, ('Ru', 'O'): 2.08,
+    ('Ru', 'P'): 2.30, ('Ru', 'Cl'): 2.40, ('Ru', 'S'): 2.35,
+    # Rhodium
+    ('Rh', 'C'): 2.00, ('Rh', 'N'): 2.10, ('Rh', 'O'): 2.05,
+    ('Rh', 'P'): 2.28, ('Rh', 'Cl'): 2.38,
+    # Platinum
+    ('Pt', 'C'): 2.00, ('Pt', 'N'): 2.05, ('Pt', 'O'): 2.02,
+    ('Pt', 'P'): 2.25, ('Pt', 'Cl'): 2.30, ('Pt', 'S'): 2.30,
+    ('Pt', 'Br'): 2.43,
+    # Palladium
+    ('Pd', 'C'): 2.00, ('Pd', 'N'): 2.05, ('Pd', 'O'): 2.02,
+    ('Pd', 'P'): 2.28, ('Pd', 'Cl'): 2.30, ('Pd', 'S'): 2.30,
+    # Gold
+    ('Au', 'C'): 2.00, ('Au', 'N'): 2.05, ('Au', 'P'): 2.28,
+    ('Au', 'Cl'): 2.28, ('Au', 'S'): 2.30,
+    # Iron
+    ('Fe', 'C'): 1.91, ('Fe', 'N'): 1.97, ('Fe', 'O'): 2.00,
+    ('Fe', 'P'): 2.20, ('Fe', 'Cl'): 2.28, ('Fe', 'S'): 2.30,
+    # Cobalt
+    ('Co', 'C'): 1.90, ('Co', 'N'): 1.95, ('Co', 'O'): 1.95,
+    ('Co', 'P'): 2.18, ('Co', 'Cl'): 2.25,
+    # Nickel
+    ('Ni', 'C'): 1.88, ('Ni', 'N'): 1.90, ('Ni', 'O'): 1.88,
+    ('Ni', 'P'): 2.15, ('Ni', 'Cl'): 2.20,
+    # Copper
+    ('Cu', 'C'): 1.95, ('Cu', 'N'): 2.00, ('Cu', 'O'): 1.97,
+    ('Cu', 'P'): 2.20, ('Cu', 'Cl'): 2.25, ('Cu', 'S'): 2.30,
+    # Zinc
+    ('Zn', 'N'): 2.05, ('Zn', 'O'): 2.10, ('Zn', 'S'): 2.30,
+    ('Zn', 'Cl'): 2.20,
+    # Manganese
+    ('Mn', 'N'): 2.05, ('Mn', 'O'): 2.10, ('Mn', 'Cl'): 2.35,
+    # Chromium
+    ('Cr', 'N'): 2.05, ('Cr', 'O'): 2.00, ('Cr', 'Cl'): 2.30,
+    # Titanium
+    ('Ti', 'N'): 2.10, ('Ti', 'O'): 1.95, ('Ti', 'Cl'): 2.30,
+    # Zirconium
+    ('Zr', 'N'): 2.20, ('Zr', 'O'): 2.10, ('Zr', 'Cl'): 2.45,
+    # Molybdenum
+    ('Mo', 'N'): 2.15, ('Mo', 'O'): 2.05, ('Mo', 'Cl'): 2.40,
+    ('Mo', 'S'): 2.40,
+    # Tungsten
+    ('W', 'N'): 2.15, ('W', 'O'): 2.05, ('W', 'Cl'): 2.40,
+    # Rhenium
+    ('Re', 'N'): 2.15, ('Re', 'O'): 2.05, ('Re', 'Cl'): 2.40,
+    # Osmium
+    ('Os', 'N'): 2.10, ('Os', 'O'): 2.05, ('Os', 'Cl'): 2.35,
+    ('Os', 'P'): 2.30,
+    # Silver
+    ('Ag', 'N'): 2.15, ('Ag', 'O'): 2.20, ('Ag', 'P'): 2.35,
+    ('Ag', 'S'): 2.40, ('Ag', 'Cl'): 2.30,
+    # Lanthanides (representative: La, Ce, Gd, Lu)
+    ('La', 'N'): 2.55, ('La', 'O'): 2.45, ('La', 'Cl'): 2.75,
+    ('Ce', 'N'): 2.50, ('Ce', 'O'): 2.40, ('Ce', 'Cl'): 2.70,
+    ('Gd', 'N'): 2.45, ('Gd', 'O'): 2.35, ('Gd', 'Cl'): 2.65,
+    ('Lu', 'N'): 2.30, ('Lu', 'O'): 2.20, ('Lu', 'Cl'): 2.50,
+    # Actinides
+    ('U', 'N'): 2.55, ('U', 'O'): 2.30, ('U', 'Cl'): 2.65,
+    ('Th', 'N'): 2.55, ('Th', 'O'): 2.35, ('Th', 'Cl'): 2.70,
+}
+
+
+def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
+    """Return estimated M-L bond length in Å.
+
+    Lookup order:
+    1. Specific (metal, donor) pair in _METAL_LIGAND_BOND_LENGTHS
+    2. Sum of covalent radii + 0.5 Å (coordination bond correction)
+    3. Default 2.0 Å
+    """
+    key = (metal_symbol, donor_symbol)
+    if key in _METAL_LIGAND_BOND_LENGTHS:
+        return _METAL_LIGAND_BOND_LENGTHS[key]
+    r_m = _COVALENT_RADII.get(metal_symbol)
+    r_d = _COVALENT_RADII.get(donor_symbol)
+    if r_m is not None and r_d is not None:
+        return r_m + r_d + 0.5
+    return 2.0
+
+
+# ---------------------------------------------------------------------------
+# Preferred CN=4 geometry per metal (d8 → square-planar, others → tetrahedral)
+# ---------------------------------------------------------------------------
+_PREFERRED_CN4_GEOMETRY: Dict[str, str] = {
+    # d8 metals (strong square-planar preference)
+    'Ni': 'SQ', 'Pd': 'SQ', 'Pt': 'SQ', 'Au': 'SQ',
+    'Rh': 'SQ', 'Ir': 'SQ',
+    # Tetrahedral preference
+    'Zn': 'TH', 'Cd': 'TH', 'Hg': 'TH',
+    'Co': 'TH', 'Fe': 'TH', 'Mn': 'TH', 'Cu': 'TH',
+    'Ti': 'TH', 'Zr': 'TH', 'Hf': 'TH',
+    'V': 'TH', 'Cr': 'TH',
+    'Al': 'TH', 'Ga': 'TH', 'In': 'TH',
+}
+
+
 def _is_simple_organometallic(smiles: str) -> bool:
     """Heuristic: simple organometallics like C[Mg]Br where adding Hs is wrong."""
     # Look for bracketed metals commonly used in organometallic reagents
@@ -372,6 +509,10 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
             4: [(1, 1, 1), (-1, -1, 1), (-1, 1, -1), (1, -1, -1)],  # tetrahedral
             5: [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -0.5, 0.866), (0, -0.5, -0.866)],
             6: [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)],
+            7: [(0, 0, 1), (0, 0, -1), (1, 0, 0), (0.309, 0.951, 0),
+                (-0.809, 0.588, 0), (-0.809, -0.588, 0), (0.309, -0.951, 0)],
+            8: [(1.414, 0, 0.8), (0, 1.414, 0.8), (-1.414, 0, 0.8), (0, -1.414, 0.8),
+                (1, 1, -0.8), (-1, 1, -0.8), (-1, -1, -0.8), (1, -1, -0.8)],
         }
 
         n_atoms = mol.GetNumAtoms()
@@ -392,8 +533,10 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                 else:
                     vectors = _COORD_VECTORS_BASE.get(n_coord, _COORD_VECTORS_BASE.get(6, []))
 
-                bond_len = 2.0
+                metal_sym = mol.GetAtomWithIdx(mi).GetSymbol()
                 for i, nbr_idx in enumerate(neighbors):
+                    donor_sym = mol.GetAtomWithIdx(nbr_idx).GetSymbol()
+                    bond_len = _get_ml_bond_length(metal_sym, donor_sym)
                     if i < len(vectors):
                         vx, vy, vz = vectors[i]
                         mag = math.sqrt(vx**2 + vy**2 + vz**2)
@@ -458,6 +601,10 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
             tetra_vecs = [(1, 1, 1), (-1, -1, 1), (-1, 1, -1), (1, -1, -1)]
             sq_vecs = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)]
 
+            # Determine preferred geometry from metal identity
+            metal_syms = [mol.GetAtomWithIdx(mi).GetSymbol() for mi in metal_indices]
+            pref_geom = _PREFERRED_CN4_GEOMETRY.get(metal_syms[0], 'SQ')
+
             xyz_tetra = _build_xyz_for_4coord_vecs(tetra_vecs)
             xyz_sq = _build_xyz_for_4coord_vecs(sq_vecs)
 
@@ -478,9 +625,10 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                     score_s = _geometry_quality_score(mol_tmp.GetMol(), cid_s)
                     xyz_str = xyz_tetra if score_t <= score_s else xyz_sq
                 else:
-                    xyz_str = xyz_tetra  # fallback: keep tetrahedral
+                    # Use metal-preferred geometry as fallback
+                    xyz_str = xyz_tetra if pref_geom == 'TH' else xyz_sq
             except Exception:
-                xyz_str = xyz_tetra
+                xyz_str = xyz_tetra if pref_geom == 'TH' else xyz_sq
         else:
             # Standard path for non-4-coord metals (use default vectors)
             xyz_str = _build_xyz_for_4coord_vecs(
@@ -735,15 +883,30 @@ def _normalize_metal_smiles(smiles: str) -> Optional[str]:
     """Normalize neutral metal SMILES to charged form as a fallback.
 
     Converts common neutral metal notations to their typical charged forms:
-    - Ni, Co, Fe → +2
-    - Ru, Rh, Ir → +3
+    - Ni, Co, Fe, Cu, Zn, Mn → +2
+    - Cr, Rh, Ir → +3
+    - Ru → +2 (most common in coordination chemistry)
     - Neutral [N] → [N-] for coordination
     """
     # Common oxidation states for metals in coordination complexes
     metal_charges = {
+        # 3d metals
         'Ni': '+2', 'Co': '+2', 'Fe': '+2', 'Cu': '+2', 'Zn': '+2',
-        'Mn': '+2', 'Cr': '+3', 'Ru': '+2', 'Rh': '+3', 'Ir': '+3',
-        'Pd': '+2', 'Pt': '+2', 'Au': '+3', 'Ag': '+1',
+        'Mn': '+2', 'Cr': '+3', 'V': '+3', 'Ti': '+4', 'Sc': '+3',
+        # 4d metals
+        'Ru': '+2', 'Rh': '+3', 'Pd': '+2', 'Ag': '+1',
+        'Mo': '+4', 'Zr': '+4', 'Nb': '+5', 'Y': '+3', 'Cd': '+2',
+        # 5d metals
+        'Ir': '+3', 'Pt': '+2', 'Au': '+3', 'Hg': '+2',
+        'Os': '+2', 'Re': '+5', 'W': '+6', 'Ta': '+5', 'Hf': '+4',
+        # Lanthanides (all typically +3)
+        'La': '+3', 'Ce': '+3', 'Pr': '+3', 'Nd': '+3', 'Sm': '+3',
+        'Eu': '+3', 'Gd': '+3', 'Tb': '+3', 'Dy': '+3', 'Ho': '+3',
+        'Er': '+3', 'Tm': '+3', 'Yb': '+3', 'Lu': '+3',
+        # Actinides
+        'Th': '+4', 'U': '+4', 'Np': '+4', 'Pu': '+4',
+        # Main group
+        'Al': '+3', 'Ga': '+3', 'In': '+3',
     }
 
     normalized = smiles
@@ -1350,11 +1513,28 @@ def _has_atom_clash(mol, conf_id: int, min_dist: float = 0.5) -> bool:
     return False
 
 
+def _ml_distance_range(metal_symbol: str, donor_symbol: str) -> Tuple[float, float]:
+    """Return (min_dist, max_dist) in Å for a metal-donor pair.
+
+    Uses covalent radii sum with scaling factors:
+    - min_dist = 0.7 × (r_M + r_D)
+    - max_dist = 1.8 × (r_M + r_D)
+    Falls back to (1.4, 3.5) if radii are unknown.
+    """
+    r_m = _COVALENT_RADII.get(metal_symbol)
+    r_d = _COVALENT_RADII.get(donor_symbol)
+    if r_m is not None and r_d is not None:
+        r_sum = r_m + r_d
+        return (0.7 * r_sum, 1.8 * r_sum)
+    return (1.4, 3.5)
+
+
 def _has_bad_geometry(mol, conf_id: int) -> bool:
     """Return True if the conformer has unrealistic metal-ligand geometry.
 
     Checks:
-    1. Metal-ligand bond lengths must be within 1.4-3.5 Å
+    1. Metal-ligand bond lengths must be within metal-specific distance range
+       (derived from covalent radii, fallback to 1.4-3.5 Å)
     2. L-M-L angles: chelate bite angles (donors in the same chelate ring)
        may be as small as 40°; all other L-M-L pairs must be >=50°.
        This correctly allows 5- and 6-membered chelate ring bite angles
@@ -1370,6 +1550,7 @@ def _has_bad_geometry(mol, conf_id: int) -> bool:
         if not neighbors:
             continue
 
+        metal_sym = atom.GetSymbol()
         nbr_indices = [nb.GetIdx() for nb in neighbors]
         coord_positions = []
         for nbr in neighbors:
@@ -1378,7 +1559,8 @@ def _has_bad_geometry(mol, conf_id: int) -> bool:
             dy = nbr_pos.y - metal_pos.y
             dz = nbr_pos.z - metal_pos.z
             dist = math.sqrt(dx*dx + dy*dy + dz*dz)
-            if dist < 1.4 or dist > 3.5:
+            min_d, max_d = _ml_distance_range(metal_sym, nbr.GetSymbol())
+            if dist < min_d or dist > max_d:
                 return True
             coord_positions.append(nbr_pos)
 
@@ -1473,7 +1655,18 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
         if not angles:
             continue
 
-        if len(neighbors) == 4 and len(angles) == 6:
+        if len(neighbors) == 2 and len(angles) == 1:
+            # CN=2 (linear): ideal angle = 180°
+            total_penalty += abs(angles[0] - 180.0)
+        elif len(neighbors) == 3 and len(angles) == 3:
+            # CN=3: best of trigonal-planar (all 120°) vs T-shaped (90°,90°,180°)
+            tp_pen = sum(abs(a - 120.0) for a in angles)
+            ts_targets = sorted([90.0, 90.0, 180.0])
+            ts_pen = sum(
+                abs(a - t) for a, t in zip(sorted(angles), ts_targets)
+            )
+            total_penalty += min(tp_pen, ts_pen)
+        elif len(neighbors) == 4 and len(angles) == 6:
             tetra_pen = sum(abs(a - 109.5) for a in angles)
             square_targets = [90.0, 90.0, 90.0, 90.0, 180.0, 180.0]
             square_pen = sum(
@@ -1495,6 +1688,15 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
             ideal_7 = [72.0, 90.0, 144.0, 180.0]
             for a in angles:
                 total_penalty += min(abs(a - t) for t in ideal_7)
+        elif len(neighbors) == 8:
+            # CN=8: score against best of SAP (D4d) or DD (D2d)
+            # SAP: 8×~73° + 8×~118° + 4×~143° + 4×~70° + 4×~180° (28 pairs)
+            # Simplified: penalize each angle against nearest ideal
+            ideal_sap = [52.4, 73.1, 118.5, 143.1, 180.0]
+            ideal_dd = [62.2, 73.7, 117.4, 143.6, 180.0]
+            sap_pen = sum(min(abs(a - t) for t in ideal_sap) for a in angles)
+            dd_pen = sum(min(abs(a - t) for t in ideal_dd) for a in angles)
+            total_penalty += min(sap_pen, dd_pen)
         else:
             # General: penalize distance from nearest ideal (90 or 180)
             for a in angles:
@@ -2095,6 +2297,23 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
                     return f'{majority}-all-trans'
                 return f'{"/".join(minorities)}-cis'
 
+        # --- 2-coordinate patterns ---
+        if n_coord == 2:
+            return 'linear'
+
+        # --- 3-coordinate patterns ---
+        if n_coord == 3:
+            if len(elem_counts) == 1:
+                return ''  # MA3: single isomer (trigonal-planar)
+            # MA2B: cis/trans only for T-shaped geometry (where trans pair exists)
+            if count_signature == [1, 2] and trans_pairs:
+                minority = [s for s, c in elem_counts.items() if c == 1][0]
+                is_trans = any(minority in p for p in trans_pairs)
+                if is_trans:
+                    return 'trans'
+                return 'cis'
+            return ''
+
         # --- 4-coordinate patterns ---
         if n_coord == 4:
             if count_signature == [2, 2]:
@@ -2128,6 +2347,21 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
             if c == 2:
                 n_trans = same_trans.get(minority, 0)
                 return 'ax-ax' if n_trans >= 1 else 'ax-eq'
+
+        # --- 8-coordinate patterns ---
+        if n_coord == 8:
+            if len(elem_counts) == 1:
+                return ''  # MA8: single isomer
+            # For mixed-element CN=8: count trans-pair types for differentiation
+            n_total_same_trans = sum(same_trans.values())
+            if count_signature == [4, 4]:
+                # MA4B4: classify by number of same-element trans pairs
+                if n_total_same_trans == 0:
+                    return 'all-cis'
+                if n_total_same_trans >= 4:
+                    return 'all-trans'
+                return f'{n_total_same_trans}-trans'
+            return ''
 
     return ''
 
@@ -2246,6 +2480,38 @@ def _canonical_ts(types: tuple) -> tuple:
     return ('TS', trans, types[2])
 
 
+def _canonical_sap(types: tuple) -> tuple:
+    """Canonical form for square-antiprismatic (D4d).
+
+    Positions 0-3 = top square, 4-7 = bottom square (staggered by 45°).
+    Trans pairs: 0-6, 1-7, 2-4, 3-5 (opposite vertices through center).
+    """
+    trans_pairs = tuple(sorted([
+        tuple(sorted([types[0], types[6]])),
+        tuple(sorted([types[1], types[7]])),
+        tuple(sorted([types[2], types[4]])),
+        tuple(sorted([types[3], types[5]])),
+    ]))
+    return ('SAP', trans_pairs)
+
+
+def _canonical_dd(types: tuple) -> tuple:
+    """Canonical form for dodecahedral (D2d, = two interpenetrating trapezoids).
+
+    Positions 0-3 = A sites (larger trapezoid), 4-7 = B sites (smaller).
+    Trans pairs: 0-2, 1-3 (A-site), 4-6, 5-7 (B-site).
+    """
+    a_pairs = tuple(sorted([
+        tuple(sorted([types[0], types[2]])),
+        tuple(sorted([types[1], types[3]])),
+    ]))
+    b_pairs = tuple(sorted([
+        tuple(sorted([types[4], types[6]])),
+        tuple(sorted([types[5], types[7]])),
+    ]))
+    return ('DD', a_pairs, b_pairs)
+
+
 # Trans position pairs (indices into the geometry vector list) for each geometry
 _TOPO_TRANS_POSITIONS: Dict[str, List[Tuple[int, int]]] = {
     'LIN': [(0, 1)],
@@ -2257,6 +2523,8 @@ _TOPO_TRANS_POSITIONS: Dict[str, List[Tuple[int, int]]] = {
     'TBP': [(0, 1)],          # only axial-axial is strictly 180°
     'SP':  [(1, 3), (2, 4)],  # trans basal pairs
     'PBP': [(0, 1)],          # axial-axial
+    'SAP': [(0, 6), (1, 7), (2, 4), (3, 5)],  # square-antiprismatic
+    'DD':  [(0, 2), (1, 3), (4, 6), (5, 7)],  # dodecahedral
 }
 
 _TOPO_CANONICAL_FNS = {
@@ -2269,6 +2537,8 @@ _TOPO_CANONICAL_FNS = {
     'TBP': _canonical_tbp,
     'SP':  _canonical_sp,
     'PBP': _canonical_pbp,
+    'SAP': _canonical_sap,
+    'DD':  _canonical_dd,
 }
 
 # Idealized coordination vectors per geometry (bond length ~2 Å)
@@ -2284,6 +2554,12 @@ _TOPO_GEOMETRY_VECTORS: Dict[str, List[Tuple[float, float, float]]] = {
     'SP':  [(0, 0, 2.2), (2, 0, 0.4), (0, 2, 0.4), (-2, 0, 0.4), (0, -2, 0.4)],
     'PBP': [(0, 0, 2), (0, 0, -2), (2, 0, 0), (0.618, 1.902, 0),
             (-1.618, 1.176, 0), (-1.618, -1.176, 0), (0.618, -1.902, 0)],
+    # Square-antiprismatic (D4d): top square at z=+0.8, bottom at z=-0.8, rotated 45°
+    'SAP': [(1.414, 0, 0.8), (0, 1.414, 0.8), (-1.414, 0, 0.8), (0, -1.414, 0.8),
+            (1, 1, -0.8), (-1, 1, -0.8), (-1, -1, -0.8), (1, -1, -0.8)],
+    # Dodecahedral (D2d): two interpenetrating trapezoids
+    'DD':  [(1.414, 0, 1), (0, 1.414, -1), (-1.414, 0, 1), (0, -1.414, -1),
+            (0.9, 0.9, 0), (-0.9, 0.9, 0), (-0.9, -0.9, 0), (0.9, -0.9, 0)],
 }
 
 
@@ -2291,6 +2567,7 @@ def _enumerate_topological_isomers(
     donor_labels: List[str],
     n_coord: int,
     chelate_pairs: List[FrozenSet],
+    metal_symbol: str = '',
 ) -> List[Tuple[tuple, List[int]]]:
     """Return all unique (canonical_form, permutation) pairs.
 
@@ -2300,8 +2577,9 @@ def _enumerate_topological_isomers(
     Args:
         donor_labels: Element symbol per donor atom (index = position in
             donor_indices list passed by the caller).
-        n_coord: Coordination number (2–7).
+        n_coord: Coordination number (2–8).
         chelate_pairs: frozensets of donor-list indices that must stay cis.
+        metal_symbol: Metal element symbol (used for CN=4 geometry preference).
 
     Returns:
         List of (canonical_form_tuple, perm_list) for every unique isomer.
@@ -2313,13 +2591,18 @@ def _enumerate_topological_isomers(
     elif n_coord == 3:
         geometries = ['TP', 'TS']
     elif n_coord == 4:
-        geometries = ['SQ', 'TH']
+        # Metal-aware geometry ordering: preferred geometry first
+        pref = _PREFERRED_CN4_GEOMETRY.get(metal_symbol, 'SQ')
+        other = 'TH' if pref == 'SQ' else 'SQ'
+        geometries = [pref, other]
     elif n_coord == 5:
         geometries = ['TBP', 'SP']
     elif n_coord == 6:
         geometries = ['OH']
     elif n_coord == 7:
         geometries = ['PBP']
+    elif n_coord == 8:
+        geometries = ['SAP', 'DD']
     else:
         return []
 
@@ -2516,15 +2799,18 @@ def _build_topology_xyz(
         placed.add(metal_idx)
 
         # Donors at geometry positions
+        metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
         donor_target_map: Dict[int, Tuple[float, float, float]] = {}
         for pos_idx, donor_list_idx in enumerate(perm):
             donor_atom_idx = donor_atom_indices[donor_list_idx]
+            donor_sym = mol.GetAtomWithIdx(donor_atom_idx).GetSymbol()
+            bl = _get_ml_bond_length(metal_sym, donor_sym)
             vx, vy, vz = vectors[pos_idx]
             mag = math.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
             if mag > 1e-8:
-                vx = vx / mag * 2.0
-                vy = vy / mag * 2.0
-                vz = vz / mag * 2.0
+                vx = vx / mag * bl
+                vy = vy / mag * bl
+                vz = vz / mag * bl
             coords[donor_atom_idx] = (vx, vy, vz)
             donor_target_map[donor_atom_idx] = (vx, vy, vz)
             placed.add(donor_atom_idx)
@@ -2647,6 +2933,13 @@ def _build_topology_xyz(
 
         if apply_uff:
             try:
+                # Free UFF optimization — do NOT constrain the metal or
+                # M-L distances here.  Constraints prevent proper ligand
+                # backbone relaxation and cause roundtrip connectivity
+                # failures (structures get dropped by the topology filter).
+                # The constraint API in _optimize_xyz_openbabel is available
+                # for callers that need it, but the topology builder relies
+                # on unconstrained relaxation for best results.
                 xyz = _optimize_xyz_openbabel(xyz)
             except Exception as uff_exc:
                 # Keep the generated topology geometry when UFF fails.
@@ -2683,7 +2976,7 @@ def _generate_topological_isomers(
         donor_indices = [nbr.GetIdx() for nbr in atom.GetNeighbors()]
         n_coord = len(donor_indices)
 
-        if n_coord < 2 or n_coord > 7:
+        if n_coord < 2 or n_coord > 8:
             continue
 
         # Use element symbols as donor labels for canonical form comparison
@@ -2720,7 +3013,10 @@ def _generate_topological_isomers(
                     atom_to_listidx[pair[0]], atom_to_listidx[pair[1]]
                 ]))
 
-        isomers = _enumerate_topological_isomers(donor_labels, n_coord, chelate_list_pairs)
+        isomers = _enumerate_topological_isomers(
+            donor_labels, n_coord, chelate_list_pairs,
+            metal_symbol=atom.GetSymbol(),
+        )
 
         for canonical_form, perm in isomers:
             if len(results) >= max_isomers:
@@ -2764,15 +3060,21 @@ def _generate_topological_isomers(
                 # distinguish them from the primary geometry's isomers.
                 # Primary geometry labels stay unprefixed so they dedup
                 # correctly against sampling results.
-                _PRIMARY_GEOM = {
-                    2: 'LIN', 3: 'TP', 4: 'SQ', 5: 'TBP',
-                    6: 'OH', 7: 'PBP',
+                _PRIMARY_GEOM_BASE = {
+                    2: 'LIN', 3: 'TP', 5: 'TBP',
+                    6: 'OH', 7: 'PBP', 8: 'SAP',
                 }
+                # CN=4: use metal-specific preference (d8 → SQ, else → TH)
+                _PRIMARY_GEOM = dict(_PRIMARY_GEOM_BASE)
+                _PRIMARY_GEOM[4] = _PREFERRED_CN4_GEOMETRY.get(
+                    atom.GetSymbol(), 'SQ'
+                )
                 _GEOM_PRETTY = {
                     'LIN': 'linear', 'TP': 'trigonal-planar', 'TS': 'T-shaped',
                     'SQ': 'square-planar', 'TH': 'tetrahedral',
                     'TBP': 'trigonal-bipyramidal', 'SP': 'square-pyramidal',
                     'OH': 'octahedral', 'PBP': 'pentagonal-bipyramidal',
+                    'SAP': 'square-antiprismatic', 'DD': 'dodecahedral',
                 }
                 primary = _PRIMARY_GEOM.get(n_coord)
                 if primary and geom_name != primary:
@@ -2987,24 +3289,63 @@ def _is_viable_donor(mol, atom_idx: int, metal_bonded: set) -> bool:
     """
     atom = mol.GetAtomWithIdx(atom_idx)
     sym = atom.GetSymbol()
-    if sym not in ('N', 'O', 'S', 'P'):
-        return False
-    # Already bonded to a metal
+
+    # Already bonded to a metal → not an *alternative* donor
     if any(nbr.GetSymbol() in _METAL_SET for nbr in atom.GetNeighbors()):
         return False
-    # Count double bonds to carbon — carbonyl O (C=O) has only one neighbor
-    # and that bond is a double bond, so it has no remaining lone pair for sigma donation
-    if sym == 'O':
-        nbrs = list(atom.GetNeighbors())
-        if len(nbrs) == 1 and nbrs[0].GetSymbol() == 'C':
-            bond = mol.GetBondBetweenAtoms(atom_idx, nbrs[0].GetIdx())
-            if bond is not None and bond.GetBondTypeAsDouble() >= 1.5:
-                return False  # carbonyl oxygen — not a viable donor
-    return True
+
+    # Standard heteroatom donors: N, O, S, P
+    if sym in ('N', 'O', 'S', 'P'):
+        # Count double bonds to carbon — carbonyl O (C=O) has only one neighbor
+        # and that bond is a double bond, so it has no remaining lone pair for sigma donation
+        if sym == 'O':
+            nbrs = list(atom.GetNeighbors())
+            if len(nbrs) == 1 and nbrs[0].GetSymbol() == 'C':
+                bond = mol.GetBondBetweenAtoms(atom_idx, nbrs[0].GetIdx())
+                if bond is not None and bond.GetBondTypeAsDouble() >= 1.5:
+                    return False  # carbonyl oxygen — not a viable donor
+        return True
+
+    # Carbon donors: cyclometalated aromatic C (ppy-type) or NHC carbens
+    if sym == 'C':
+        # Aromatic C that could be cyclometalated
+        if atom.GetIsAromatic():
+            return True
+        # NHC-type carbene: C bonded to ≥2 N atoms
+        n_nitrogen_nbrs = sum(
+            1 for nbr in atom.GetNeighbors() if nbr.GetSymbol() == 'N'
+        )
+        if n_nitrogen_nbrs >= 2:
+            return True
+
+    return False
+
+
+def _find_bridging_donors(mol) -> List[Tuple[int, List[int]]]:
+    """Detect bridging donor atoms bound to ≥2 metal centers.
+
+    Returns list of ``(donor_idx, [metal_idx_1, metal_idx_2, …])``.
+    """
+    bridging: List[Tuple[int, List[int]]] = []
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() in _METAL_SET:
+            continue
+        metal_nbrs = [
+            nbr.GetIdx() for nbr in atom.GetNeighbors()
+            if nbr.GetSymbol() in _METAL_SET
+        ]
+        if len(metal_nbrs) >= 2:
+            bridging.append((atom.GetIdx(), metal_nbrs))
+    return bridging
 
 
 def _ligand_fragments(mol, metal_idx: int) -> List[set]:
-    """Decompose non-metal atoms into ligand fragments (connected components after removing metal)."""
+    """Decompose non-metal atoms into ligand fragments (connected components after removing metal).
+
+    Bridging donors (atoms bound to ≥2 metals) are included in ALL
+    fragments they connect to, so each metal center's fragment list is
+    complete.
+    """
     non_metal = {a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() not in _METAL_SET}
     adj: Dict[int, set] = {i: set() for i in non_metal}
     for bond in mol.GetBonds():
@@ -3029,6 +3370,19 @@ def _ligand_fragments(mol, metal_idx: int) -> List[set]:
                 if nbr not in visited:
                     stack.append(nbr)
         fragments.append(frag)
+
+    # Bridging donors: ensure they appear in every fragment whose metal
+    # they coordinate to.  This prevents incorrect fragment splitting
+    # for μ-Cl, μ-OR, μ-oxo bridged complexes.
+    bridging = _find_bridging_donors(mol)
+    if bridging:
+        for donor_idx, metal_list in bridging:
+            for frag in fragments:
+                # If any atom in frag is a neighbour of donor_idx (via adj),
+                # the donor should be in this fragment.
+                if donor_idx not in frag and frag & adj.get(donor_idx, set()):
+                    frag.add(donor_idx)
+
     return fragments
 
 
@@ -4081,7 +4435,11 @@ def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
     return '\n'.join(lines) + '\n'
 
 
-def _optimize_xyz_openbabel(xyz_delfin: str, steps: int = 500) -> str:
+def _optimize_xyz_openbabel(
+    xyz_delfin: str,
+    steps: int = 500,
+    constraints: Optional[Dict] = None,
+) -> str:
     """Optimize a DELFIN-format XYZ string using Open Babel's UFF force field.
 
     Open Babel's UFF implementation includes full parameters for transition
@@ -4092,6 +4450,10 @@ def _optimize_xyz_openbabel(xyz_delfin: str, steps: int = 500) -> str:
         xyz_delfin: Coordinate block in DELFIN format (``symbol x y z`` per line,
             no atom-count header).
         steps: Maximum number of conjugate-gradient steps.
+        constraints: Optional dict with keys:
+            - ``'fix_atoms'``: list of 0-based atom indices to freeze in place
+            - ``'distances'``: list of ``(idx_a, idx_b, target_dist)``
+            - ``'angles'``: list of ``(idx_a, idx_b, idx_c, target_angle_deg)``
 
     Returns:
         Optimized DELFIN-format XYZ string, or the original string if
@@ -4122,6 +4484,27 @@ def _optimize_xyz_openbabel(xyz_delfin: str, steps: int = 500) -> str:
         if not ff.Setup(ob_mol.OBMol):
             logger.debug("Open Babel UFF setup failed, returning unoptimized geometry")
             return xyz_delfin
+
+        # Apply constraints (if provided) to preserve coordination geometry
+        if constraints:
+            try:
+                ob_constraints = pybel.ob.OBFFConstraints()
+                # Fix atom positions (1-based indices for OB)
+                for idx in constraints.get('fix_atoms', []):
+                    ob_constraints.AddAtomConstraint(idx + 1)
+                # Distance constraints
+                for idx_a, idx_b, target in constraints.get('distances', []):
+                    ob_constraints.AddDistanceConstraint(
+                        idx_a + 1, idx_b + 1, target
+                    )
+                # Angle constraints
+                for idx_a, idx_b, idx_c, target in constraints.get('angles', []):
+                    ob_constraints.AddAngleConstraint(
+                        idx_a + 1, idx_b + 1, idx_c + 1, target
+                    )
+                ff.SetConstraints(ob_constraints)
+            except Exception as e:
+                logger.debug("OB UFF constraint setup failed, running unconstrained: %s", e)
 
         ff.ConjugateGradients(steps)
         ff.GetCoordinates(ob_mol.OBMol)
