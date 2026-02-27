@@ -2435,16 +2435,6 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
         except Exception:
             return "na"
 
-    # For UKS windows store alpha/beta occupancy per MO index so cube names can
-    # explicitly show which spin channel is occupied at that index.
-    spin_occupancies: Dict[int, Dict[str, Any]] = {}
-    for item in mo_entries:
-        idx = item.get("index")
-        spin_label = item.get("spin")
-        if idx is None or spin_label not in ("alpha", "beta"):
-            continue
-        spin_occupancies.setdefault(int(idx), {})[spin_label] = item.get("occupancy")
-
     for entry in mo_entries:
         abs_mo_number = entry.get("index")
         spin = entry.get("spin")
@@ -2589,10 +2579,8 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
             # Render
             safe_name = mo_name.replace(" ", "_").replace("(", "").replace(")", "")
             if spin in ("alpha", "beta"):
-                idx_occ = spin_occupancies.get(int(abs_mo_number), {})
-                a_tag = _occupation_tag(idx_occ.get("alpha"))
-                b_tag = _occupation_tag(idx_occ.get("beta"))
-                safe_name = f"{safe_name}_a_{a_tag}_b_{b_tag}"
+                spin_tag = _occupation_tag(entry.get("occupancy"))
+                safe_name = f"{safe_name}_{spin_tag}"
             output_png = project_dir / f"MO_{safe_name}.png"
             cmd.ray(1200, 1200)
             cmd.png(str(output_png), dpi=150)
