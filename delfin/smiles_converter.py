@@ -1459,9 +1459,23 @@ def _roundtrip_ring_count_ok(xyz_delfin: str, original_smiles: str, tolerance: i
             # Using total SSSR here would include chelate rings and cause false
             # rejections for aromatic metal complexes (e.g. Ir(ppy)3).
             return True
-        # Organic-only ring count from original SMILES via RDKit (exclude metal rings)
+        # Organic-only ring count from original SMILES.
+        # OB is used first (same engine as XYZ parsing → consistent ring perception).
+        # RDKit SMILES parsing often fails for metal-cyclometallated SMILES where
+        # all ring-closure bonds pass through the metal atom (e.g. Ir(ppy)3),
+        # causing RDKit to report 0 organic rings and rejecting all conformers.
         orig_rings = None
-        if RDKIT_AVAILABLE:
+        try:
+            orig_mol_ob = pybel.readstring('smi', original_smiles)
+            _metal_smi_idxs = {a.idx for a in orig_mol_ob.atoms
+                               if a.atomicnum in _METAL_ATOMICNUMS}
+            orig_rings = sum(
+                1 for ring in orig_mol_ob.sssr
+                if not any(i in _metal_smi_idxs for i in ring._path)
+            )
+        except Exception:
+            pass
+        if orig_rings is None and RDKIT_AVAILABLE:
             try:
                 orig_mol_rd = Chem.MolFromSmiles(original_smiles, sanitize=False)
                 if orig_mol_rd is not None:
@@ -1481,27 +1495,42 @@ def _roundtrip_ring_count_ok(xyz_delfin: str, original_smiles: str, tolerance: i
             except Exception:
                 pass
         if orig_rings is None:
-            orig_mol_ob = pybel.readstring('smi', original_smiles)
-            orig_rings = len(orig_mol_ob.sssr)
+            return True
         return abs(rt_rings - orig_rings) <= tolerance
     except Exception:
         return True
 
 
 def _no_spurious_bonds(xyz_delfin: str, original_smiles: str) -> bool:
-    """Return True if OB-perceived XYZ bonds introduce no spurious non-metal pairs.
+    """Return True if OB-perceived XYZ contains no clearly spurious homodiatomic bonds.
 
-    Detects geometry artifacts like O-O or N-N bonds that OpenBabel perceives
-    from short atom distances in the XYZ but are absent from the original SMILES
-    graph (e.g. two oxygen ligands unexpectedly bridged in a bad conformer).
-    Metal-containing bonds and H atoms are ignored on both sides.
+    Only checks a short whitelist of homodiatomic element pairs that are very
+    unlikely to appear in typical coordination-chemistry SMILES but can be
+    falsely perceived by OpenBabel from close atom distances in bad geometries:
+
+        O-O  (peroxide artifact)
+        F-F, Cl-Cl, Br-Br, I-I  (halogen-halogen artifact)
+
+    N-N, P-P, S-S are intentionally NOT checked: these appear in legitimate
+    ligands (hydrazine, phosphine dimers, disulfides) and also produce false
+    positives for metal complexes where heteroatom donors from different
+    ligands end up close in ETKDG-generated geometries.
 
     Returns True (permissive) on any error or if required libraries are absent.
     """
+    # Homodiatomic pairs to check (frozenset of atomic number, atomic number)
+    _CHECKED_HOMODIATOMIC = {
+        frozenset([8, 8]),    # O-O
+        frozenset([9, 9]),    # F-F
+        frozenset([17, 17]),  # Cl-Cl
+        frozenset([35, 35]),  # Br-Br
+        frozenset([53, 53]),  # I-I
+    }
+
     if not OPENBABEL_AVAILABLE or not RDKIT_AVAILABLE:
         return True
     try:
-        # --- Non-metal heavy-atom bond element-pair set from original SMILES ---
+        # Homodiatomic pairs present in the original SMILES (e.g. real peroxides)
         orig_mol = Chem.MolFromSmiles(original_smiles, sanitize=False)
         if orig_mol is None:
             return True
@@ -1509,17 +1538,15 @@ def _no_spurious_bonds(xyz_delfin: str, original_smiles: str) -> bool:
             orig_mol.UpdatePropertyCache(strict=False)
         except Exception:
             pass
-        orig_pairs: set = set()
+        orig_homo: set = set()
         for bond in orig_mol.GetBonds():
             n1 = bond.GetBeginAtom().GetAtomicNum()
             n2 = bond.GetEndAtom().GetAtomicNum()
-            if n1 in _METAL_ATOMICNUMS or n2 in _METAL_ATOMICNUMS:
-                continue
-            if n1 <= 1 or n2 <= 1:
-                continue
-            orig_pairs.add(frozenset([n1, n2]))
+            pair = frozenset([n1, n2])
+            if pair in _CHECKED_HOMODIATOMIC:
+                orig_homo.add(pair)
 
-        # --- Non-metal heavy-atom bond element-pair set from OB-perceived XYZ ---
+        # Homodiatomic pairs OB perceives in XYZ
         lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
         if not lines:
             return True
@@ -1527,22 +1554,16 @@ def _no_spurious_bonds(xyz_delfin: str, original_smiles: str) -> bool:
         rt_mol = pybel.readstring('xyz', std_xyz)
         try:
             from openbabel import openbabel as _ob
-            xyz_pairs: set = set()
             for bond in _ob.OBMolBondIter(rt_mol.OBMol):
                 n1 = bond.GetBeginAtom().GetAtomicNum()
                 n2 = bond.GetEndAtom().GetAtomicNum()
-                if n1 in _METAL_ATOMICNUMS or n2 in _METAL_ATOMICNUMS:
-                    continue
-                if n1 <= 1 or n2 <= 1:
-                    continue
-                xyz_pairs.add(frozenset([n1, n2]))
+                pair = frozenset([n1, n2])
+                if pair in _CHECKED_HOMODIATOMIC and pair not in orig_homo:
+                    logger.debug("Spurious homodiatomic bond in XYZ: %s-%s", n1, n2)
+                    return False
         except Exception:
             return True
 
-        spurious = xyz_pairs - orig_pairs
-        if spurious:
-            logger.debug("Spurious bond element pairs in XYZ: %s", spurious)
-            return False
         return True
     except Exception:
         return True
