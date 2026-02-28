@@ -3878,65 +3878,6 @@ def smiles_to_xyz_isomers(
         except Exception as _alt_exc:
             logger.debug("Alternative binding mode generation failed: %s", _alt_exc)
 
-    # --- Topology validation: majority-vote SMILES filter ---
-    # Convert every result XYZ back to canonical SMILES (metal bonds stripped)
-    # and keep only structures whose topology matches the majority.
-    # This catches fragmented or topology-corrupted structures from UFF /
-    # topo-embedding / linkage permutation without relying on the input SMILES.
-    if len(results) > 1 and OPENBABEL_AVAILABLE:
-        try:
-            smi_per_result: List[Optional[str]] = []
-            for xyz, _label in results:
-                smi_per_result.append(_xyz_to_canonical_smiles(xyz))
-
-            # Count occurrences — only non-None SMILES participate in voting
-            from collections import Counter
-            valid_smiles = [s for s in smi_per_result if s is not None]
-            if valid_smiles:
-                counts = Counter(valid_smiles)
-                majority_smi, majority_count = counts.most_common(1)[0]
-
-                # quick XYZ as tie-breaker: if it matches a minority SMILES,
-                # use that instead (quick usually preserves topology well)
-                quick_xyz, _qerr = smiles_to_xyz_quick(smiles)
-                if quick_xyz:
-                    quick_smi = _xyz_to_canonical_smiles(quick_xyz)
-                    if quick_smi and quick_smi in counts and quick_smi != majority_smi:
-                        # quick disagrees with majority — trust quick only if
-                        # the majority is very slim (≤50 % of valid results)
-                        if majority_count <= len(valid_smiles) / 2:
-                            majority_smi = quick_smi
-                            logger.debug(
-                                "Topology vote: quick SMILES overrides slim "
-                                "majority (%d/%d)", majority_count, len(valid_smiles)
-                            )
-
-                filtered: List[Tuple[str, str]] = []
-                n_dropped = 0
-                for (xyz, label), smi in zip(results, smi_per_result):
-                    if smi is None:
-                        # Could not convert → keep (benefit of the doubt)
-                        filtered.append((xyz, label))
-                    elif smi == majority_smi:
-                        filtered.append((xyz, label))
-                    else:
-                        n_dropped += 1
-                        logger.debug(
-                            "Topology filter dropped '%s': SMILES mismatch "
-                            "('%s' vs majority '%s')",
-                            label, smi[:80], majority_smi[:80],
-                        )
-                if filtered:
-                    results = filtered
-                if n_dropped:
-                    logger.info(
-                        "Topology filter: kept %d, dropped %d structure(s) "
-                        "with inconsistent connectivity",
-                        len(results), n_dropped,
-                    )
-        except Exception as _topo_filt_exc:
-            logger.debug("Topology filter failed, keeping all results: %s", _topo_filt_exc)
-
     return results, None
 
 
