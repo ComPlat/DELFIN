@@ -1569,6 +1569,144 @@ def _no_spurious_bonds(xyz_delfin: str, original_smiles: str) -> bool:
         return True
 
 
+def _organic_fragment_signature(smiles: str) -> "frozenset | None":
+    """Return a frozenset-of-frozensets describing the multiset of organic fragments.
+
+    Each fragment is represented as a frozenset of ``(element_symbol, count)``
+    pairs (metals excluded).  The outer collection is a frozenset of
+    ``(fragment_signature, multiplicity)`` tuples so that, e.g., three identical
+    ppy ligands produce one entry with multiplicity 3.
+
+    Returns None on any error so callers can be permissive.
+    """
+    if not RDKIT_AVAILABLE:
+        return None
+    try:
+        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        if mol is None:
+            return None
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        # Remove metal atoms to get pure organic connectivity
+        rw = Chem.RWMol(mol)
+        metal_indices = sorted(
+            [a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET],
+            reverse=True,
+        )
+        for idx in metal_indices:
+            rw.RemoveAtom(idx)
+        org_mol = rw.GetMol()
+        frags = Chem.GetMolFrags(org_mol, asMols=False)
+        frag_sigs: dict = {}
+        atoms = list(org_mol.GetAtoms())
+        for frag in frags:
+            counts: dict = {}
+            for aidx in frag:
+                sym = atoms[aidx].GetSymbol()
+                counts[sym] = counts.get(sym, 0) + 1
+            sig = frozenset(counts.items())
+            frag_sigs[sig] = frag_sigs.get(sig, 0) + 1
+        return frozenset(frag_sigs.items())
+    except Exception:
+        return None
+
+
+def _organic_fragment_signature_xyz(xyz_delfin: str) -> "frozenset | None":
+    """Return the organic fragment signature for a delfin-format XYZ string.
+
+    Uses OpenBabel bond perception.  Returns None on any error.
+    """
+    if not OPENBABEL_AVAILABLE:
+        return None
+    try:
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        if not lines:
+            return None
+        std_xyz = f"{len(lines)}\n\n" + "\n".join(lines) + "\n"
+        ob_mol = pybel.readstring('xyz', std_xyz).OBMol
+        try:
+            from openbabel import openbabel as _ob
+        except ImportError:
+            return None
+
+        metal_ob_idx = {a.GetIdx() for a in _ob.OBMolAtomIter(ob_mol)
+                        if a.GetAtomicNum() in _METAL_ATOMICNUMS}
+
+        # Build adjacency list excluding metal atoms and hydrogen.
+        # Hydrogen is excluded so the signature matches _organic_fragment_signature
+        # (which uses RDKit SMILES without implicit H), enabling exact comparison.
+        n_atoms = ob_mol.NumAtoms()
+        adj: dict = {i: set() for i in range(1, n_atoms + 1)
+                     if ob_mol.GetAtom(i).GetAtomicNum() not in _METAL_ATOMICNUMS
+                     and ob_mol.GetAtom(i).GetAtomicNum() not in (0, 1)}
+
+        for bond in _ob.OBMolBondIter(ob_mol):
+            i1 = bond.GetBeginAtomIdx()
+            i2 = bond.GetEndAtomIdx()
+            if i1 in adj and i2 in adj:
+                adj[i1].add(i2)
+                adj[i2].add(i1)
+
+        # BFS to find connected heavy-atom components (organic fragments)
+        visited: set = set()
+        frag_sigs: dict = {}
+        for start in list(adj.keys()):
+            if start in visited:
+                continue
+            component = []
+            queue = [start]
+            while queue:
+                node = queue.pop()
+                if node in visited:
+                    continue
+                visited.add(node)
+                component.append(node)
+                queue.extend(adj[node] - visited)
+            counts: dict = {}
+            for aidx in component:
+                sym = Chem.GetPeriodicTable().GetElementSymbol(
+                    ob_mol.GetAtom(aidx).GetAtomicNum()
+                ) if RDKIT_AVAILABLE else str(ob_mol.GetAtom(aidx).GetAtomicNum())
+                counts[sym] = counts.get(sym, 0) + 1
+            sig = frozenset(counts.items())
+            frag_sigs[sig] = frag_sigs.get(sig, 0) + 1
+        return frozenset(frag_sigs.items())
+    except Exception:
+        return None
+
+
+def _fragment_topology_ok(xyz_delfin: str, original_smiles: str) -> bool:
+    """Return True if the organic heavy-atom fragment topology of the XYZ matches the SMILES.
+
+    Both signatures count only heavy atoms (no H, no metals), so they can be
+    compared exactly.  This catches corrupted geometries where ligands have
+    broken apart or fused together, while accepting fac/mer isomers (identical
+    fragment sets, different geometry).
+
+    Returns True (permissive) on any error or if required libraries are absent.
+    """
+    orig_sig = _organic_fragment_signature(original_smiles)
+    if orig_sig is None:
+        return True
+    xyz_sig = _organic_fragment_signature_xyz(xyz_delfin)
+    if xyz_sig is None:
+        return True
+
+    if orig_sig == xyz_sig:
+        return True
+
+    def _total_frags(sig):
+        return sum(mult for _, mult in sig)
+
+    logger.debug(
+        "Fragment topology mismatch: SMILES has %d organic fragments, XYZ has %d",
+        _total_frags(orig_sig), _total_frags(xyz_sig),
+    )
+    return False
+
+
 def _has_atom_clash(mol, conf_id: int, min_dist: float = 0.5) -> bool:
     """Return True if any pair of non-bonded atoms is closer than *min_dist* Å.
 
@@ -3778,6 +3916,12 @@ def smiles_to_xyz_isomers(
             if not _no_spurious_bonds(xyz, smiles):
                 logger.debug("Skipping conformer %d: spurious bonds", cid)
                 continue
+            # Fragment topology check: organic ligand fragments must match the
+            # original SMILES (catches broken/fused ligands while preserving
+            # fac/mer isomers which have identical fragment sets).
+            if not _fragment_topology_ok(xyz, smiles):
+                logger.debug("Skipping conformer %d: fragment topology mismatch", cid)
+                continue
             results.append((xyz, display))
 
         if not results:
@@ -3851,6 +3995,9 @@ def smiles_to_xyz_isomers(
                 existing_displays.add(display)
                 if topo_fp is not None:
                     existing_fps.add(topo_fp)
+                if not _fragment_topology_ok(topo_xyz, smiles):
+                    logger.debug("Skipping topo isomer %s: fragment topology mismatch", display)
+                    continue
                 results.append((topo_xyz, display))
         except Exception as _topo_exc:
             logger.debug("Topological isomer generation failed: %s", _topo_exc)
@@ -3859,7 +4006,11 @@ def smiles_to_xyz_isomers(
     if has_metal:
         try:
             link_results = _generate_linkage_isomers(mol, smiles, apply_uff=apply_uff)
-            results.extend(link_results)
+            for _lxyz, _llabel in link_results:
+                if _fragment_topology_ok(_lxyz, smiles):
+                    results.append((_lxyz, _llabel))
+                else:
+                    logger.debug("Skipping linkage isomer %s: fragment topology mismatch", _llabel)
         except Exception as _link_exc:
             logger.debug("Linkage isomer generation failed: %s", _link_exc)
 
@@ -3873,6 +4024,9 @@ def smiles_to_xyz_isomers(
             )
             for alt_xyz, alt_label in alt_results:
                 if alt_label not in existing_base:
+                    if not _fragment_topology_ok(alt_xyz, smiles):
+                        logger.debug("Skipping alt-binding isomer %s: fragment topology mismatch", alt_label)
+                        continue
                     results.append((alt_xyz, alt_label))
                     existing_base.add(alt_label)
         except Exception as _alt_exc:
