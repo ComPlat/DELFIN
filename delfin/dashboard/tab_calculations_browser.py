@@ -689,6 +689,43 @@ def create_tab(ctx):
         layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
     )
 
+    # Print Mode widgets (.out -> .hess via orca_pltvib)
+    calc_print_mode_input = widgets.Text(
+        value='',
+        placeholder='e.g. 6 7 8 or 6,7,8',
+        layout=widgets.Layout(width='220px', min_width='180px', height='26px'),
+    )
+    calc_print_mode_plot_btn = widgets.Button(
+        description='Plot',
+        button_style='primary',
+        layout=widgets.Layout(width='88px', min_width='88px', height='26px'),
+    )
+    calc_print_mode_file_info = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_print_mode_status = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_print_mode_panel = widgets.VBox(
+        [
+            widgets.HTML('<b>Print Mode</b>'),
+            widgets.HTML(
+                '<span style="color:#555;">Enter modes to print.</span>'
+            ),
+            calc_print_mode_file_info,
+            widgets.HBox(
+                [widgets.HTML('<b>Modes:</b>'), calc_print_mode_input, calc_print_mode_plot_btn],
+                layout=widgets.Layout(
+                    gap='8px', align_items='center', flex_flow='row wrap', width='100%',
+                ),
+            ),
+            calc_print_mode_status,
+        ],
+        layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
+    )
+
     # -- preselection widgets ----------------------------------------------
     calc_preselect_title = widgets.HTML('<b>Preselection</b>')
     calc_preselect_progress = widgets.HTML('')
@@ -1848,6 +1885,114 @@ def create_tab(ctx):
             calc_xyz_batch_panel.layout.display = 'block'
         else:
             calc_xyz_batch_panel.layout.display = 'none'
+
+    def _calc_print_mode_parse_modes(raw_modes):
+        tokens = [tok.strip() for tok in re.split(r'[\s,]+', str(raw_modes or '').strip()) if tok.strip()]
+        if not tokens:
+            return None, 'Please enter at least one mode (e.g. 6 7 8).'
+        modes = []
+        for token in tokens:
+            try:
+                mode_idx = int(token)
+            except ValueError:
+                return None, f'Invalid mode: {token}'
+            if mode_idx <= 0:
+                return None, 'Mode indices must be positive integers.'
+            modes.append(str(mode_idx))
+        return modes, ''
+
+    def _calc_print_mode_target_paths():
+        out_path = _calc_get_selected_path()
+        if out_path is None or not out_path.exists():
+            return None, None, 'Select a .out file first.'
+        if out_path.suffix.lower() != '.out':
+            return None, None, 'Selected file is not a .out file.'
+        hess_path = out_path.with_suffix('.hess')
+        if not hess_path.exists():
+            return out_path, None, f'Missing Hessian file: {hess_path.name}'
+        return out_path, hess_path, ''
+
+    def _calc_refresh_print_mode_info():
+        out_path = _calc_get_selected_path()
+        if out_path and out_path.suffix.lower() == '.out':
+            hess_path = out_path.with_suffix('.hess')
+            if hess_path.exists():
+                hess_html = f'<span style="color:#2e7d32;">{_html.escape(hess_path.name)}</span>'
+            else:
+                hess_html = f'<span style="color:#d32f2f;">{_html.escape(hess_path.name)} (missing)</span>'
+            calc_print_mode_file_info.value = (
+                f'<span style="color:#555;">Job:</span> <code>{_html.escape(out_path.name)}</code>'
+                f' &nbsp;→&nbsp; '
+                f'<span style="color:#555;">Hessian:</span> <code>{hess_html}</code>'
+            )
+        else:
+            calc_print_mode_file_info.value = '<span style="color:#d32f2f;">Select a .out file.</span>'
+
+    def _calc_show_print_mode_panel(show):
+        if show:
+            _calc_refresh_print_mode_info()
+            calc_print_mode_panel.layout.display = 'block'
+        else:
+            calc_print_mode_panel.layout.display = 'none'
+
+    def calc_on_print_mode_plot(_button):
+        modes, err = _calc_print_mode_parse_modes(calc_print_mode_input.value)
+        if err:
+            calc_print_mode_status.value = f'<span style="color:#d32f2f;">{_html.escape(err)}</span>'
+            return
+
+        out_path, hess_path, path_err = _calc_print_mode_target_paths()
+        _calc_refresh_print_mode_info()
+        if path_err:
+            calc_print_mode_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(path_err)}</span>'
+            )
+            return
+
+        if shutil.which('orca_pltvib') is None:
+            calc_print_mode_status.value = (
+                '<span style="color:#d32f2f;">orca_pltvib not found in PATH.</span>'
+            )
+            return
+
+        cmd = ['orca_pltvib', hess_path.name, *modes]
+        cmd_text = _html.escape(' '.join(cmd))
+        workdir_text = _html.escape(str(hess_path.parent))
+        calc_print_mode_status.value = (
+            f'<span style="color:#1976d2;">Starting: <code>{cmd_text}</code> '
+            f'in <code>{workdir_text}</code> ...</span>'
+        )
+
+        def _run_print_mode():
+            try:
+                result = subprocess.run(
+                    cmd,
+                    cwd=str(hess_path.parent),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    calc_print_mode_status.value = (
+                        f'<span style="color:#2e7d32;">Finished: <code>{cmd_text}</code> '
+                        f'for <code>{_html.escape(out_path.name)}</code>.</span>'
+                    )
+                else:
+                    err = (result.stderr or result.stdout or '').strip()
+                    if len(err) > 240:
+                        err = err[:240] + '...'
+                    calc_print_mode_status.value = (
+                        '<span style="color:#d32f2f;">'
+                        f'orca_pltvib failed (rc={result.returncode}): '
+                        f'{_html.escape(err or "no error output")}'
+                        '</span>'
+                    )
+            except Exception as exc:
+                calc_print_mode_status.value = (
+                    f'<span style="color:#d32f2f;">Failed: {_html.escape(str(exc))}</span>'
+                )
+
+        threading.Thread(target=_run_print_mode, daemon=True).start()
 
     def calc_on_xyz_batch_refresh(_button=None):
         _calc_refresh_xyz_batch_selector()
@@ -3925,6 +4070,7 @@ def create_tab(ctx):
         calc_path_display.value = ''
         calc_download_status.value = ''
         calc_xyz_batch_status.value = ''
+        calc_print_mode_status.value = ''
         calc_search_result.value = ''
         calc_search_suggest.value = '(Select)'
         calc_search_input.value = ''
@@ -3936,6 +4082,7 @@ def create_tab(ctx):
         calc_copy_path_btn.disabled = True
         calc_download_btn.disabled = True
         _calc_show_xyz_batch_panel(False)
+        _calc_show_print_mode_panel(False)
         _calc_hide_chunk_controls()
         calc_update_view()
         calc_set_message('Select a file...')
@@ -4210,6 +4357,13 @@ def create_tab(ctx):
             calc_options_dropdown.layout.display = 'block'
         elif selected and sel_lower.endswith('.inp'):
             calc_options_dropdown.options = ['(Options)', 'Recalc']
+            calc_options_dropdown.value = '(Options)'
+            calc_options_dropdown.layout.display = 'block'
+        elif selected and sel_lower.endswith('.out'):
+            out_options = ['(Options)', 'Print Mode']
+            if rmsd_available:
+                out_options.append('RMSD')
+            calc_options_dropdown.options = out_options
             calc_options_dropdown.value = '(Options)'
             calc_options_dropdown.layout.display = 'block'
         elif selected and rmsd_available:
@@ -4722,6 +4876,8 @@ def create_tab(ctx):
     def calc_on_options_change(change):
         if change['new'] != 'Build Batch from XYZ':
             _calc_show_xyz_batch_panel(False)
+        if change['new'] != 'Print Mode':
+            _calc_show_print_mode_panel(False)
         if change['new'] == 'Override':
             calc_override_input.layout.display = 'block'
             calc_override_time.layout.display = 'block'
@@ -4810,6 +4966,17 @@ def create_tab(ctx):
                 return
             calc_xyz_batch_filename.value = _calc_xyz_batch_default_filename()
             _calc_show_xyz_batch_panel(True)
+        elif change['new'] == 'Print Mode':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(True)
+            calc_content_area.layout.display = 'block'
         elif change['new'] == 'RMSD':
             calc_override_input.layout.display = 'none'
             calc_override_time.layout.display = 'none'
@@ -5765,6 +5932,7 @@ def create_tab(ctx):
         calc_path_display.value = ''
         calc_download_status.value = ''
         calc_xyz_batch_status.value = ''
+        calc_print_mode_status.value = ''
         state['file_content'] = ''
         state['selected_file_path'] = None
         state['selected_file_size'] = 0
@@ -5777,6 +5945,7 @@ def create_tab(ctx):
         calc_reset_recalc_state()
         _calc_preselect_show(False)
         _calc_show_xyz_batch_panel(False)
+        _calc_show_print_mode_panel(False)
 
         # Reset xyz trajectory controls
         state['xyz_frames'].clear()
@@ -6290,6 +6459,7 @@ def create_tab(ctx):
     calc_xyz_batch_refresh_btn.on_click(calc_on_xyz_batch_refresh)
     calc_xyz_batch_build_btn.on_click(calc_on_xyz_batch_build)
     calc_xyz_batch_copy_btn.on_click(calc_on_xyz_batch_copy)
+    calc_print_mode_plot_btn.on_click(calc_on_print_mode_plot)
     calc_report_btn.on_click(calc_on_report)
     disable_spellcheck(ctx, class_name='calc-search-input')
 
@@ -6499,6 +6669,7 @@ def create_tab(ctx):
         calc_download_status,
         calc_report_status,
         calc_xyz_batch_panel,
+        calc_print_mode_panel,
         calc_mol_container,
         calc_content_label,
         calc_preselect_container,
