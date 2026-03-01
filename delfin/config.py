@@ -289,8 +289,10 @@ def _collect_missing_required_keys(user_keys: Set[str], placeholder_keys: Set[st
     required_missing = {key for key in _TEMPLATE_REQUIRED_KEYS if key not in user_keys}
     placeholder_required = _TEMPLATE_REQUIRED_KEYS & placeholder_keys
     missing = sorted(required_missing | placeholder_required)
+    # ESD_T1_opt is optional (default: uks); keep it as non-blocking hint only.
+    missing = [k for k in missing if k != "ESD_T1_opt"]
     if not esd_enabled:
-        missing = [k for k in missing if k not in {"ESD_modus", "ESD_T1_opt"}]
+        missing = [k for k in missing if k != "ESD_modus"]
     return missing
 
 
@@ -554,6 +556,12 @@ def get_esd_hints(control_text: str) -> List[str]:
                 f"ESD_modul=yes: {field} not set — "
                 f"define if needed (e.g. {field}={example[1:-1]}), or clear with {field}= or {field}=[]"
             )
+
+    t1_opt = config.get('ESD_T1_opt')
+    if t1_opt is None or _is_placeholder_value(t1_opt):
+        hints.append(
+            "ESD_modul=yes: ESD_T1_opt not set — set ESD_T1_opt=uks or ESD_T1_opt=tddft."
+        )
 
     # Warn if ISCs contain same-spin transitions (those belong in ICs)
     for trans in _esd_parse_transitions(config.get('ISCs')):
