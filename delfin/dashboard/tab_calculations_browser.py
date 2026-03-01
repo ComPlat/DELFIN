@@ -2327,6 +2327,7 @@ def create_tab(ctx):
                 )
 
         threading.Thread(target=_run_print_mode, daemon=True).start()
+        calc_options_dropdown.value = '(Options)'
 
     def calc_on_xyz_batch_refresh(_button=None):
         _calc_refresh_xyz_batch_selector()
