@@ -190,6 +190,15 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Th', 'N'): 2.55, ('Th', 'O'): 2.35, ('Th', 'Cl'): 2.70,
 }
 
+# M–Centroid distances for hapto (η) ligands in Å
+# Key: (metal_symbol, ring_size)  — ring_size == hapticity η
+_HAPTO_CENTROID_DISTANCES: Dict[Tuple[str, int], float] = {
+    ('Fe', 5): 1.65, ('Ru', 5): 1.82, ('Os', 5): 1.83,
+    ('Fe', 6): 1.56, ('Ru', 6): 1.71, ('Cr', 6): 1.72,
+    ('Co', 5): 1.71, ('Rh', 5): 1.83, ('Ir', 5): 1.84,
+    ('Ni', 5): 1.76,
+}
+
 
 def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
     """Return estimated M-L bond length in Å.
@@ -511,6 +520,14 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                 (-0.809, 0.588, 0), (-0.809, -0.588, 0), (0.309, -0.951, 0)],
             8: [(1.414, 0, 0.8), (0, 1.414, 0.8), (-1.414, 0, 0.8), (0, -1.414, 0.8),
                 (1, 1, -0.8), (-1, 1, -0.8), (-1, -1, -0.8), (1, -1, -0.8)],
+            # Tricapped trigonal prism (CN=9)
+            9: [(1.55, 0.0, -1.0), (-0.775, 1.342, -1.0), (-0.775, -1.342, -1.0),
+                (1.55, 0.0,  1.0), (-0.775, 1.342,  1.0), (-0.775, -1.342,  1.0),
+                (0.0,  2.0,  0.0), (-1.732, -1.0,   0.0), (1.732, -1.0,    0.0)],
+            # Bicapped square antiprism (CN=10)
+            10: [(1.414, 0.0, 0.8), (0.0, 1.414, 0.8), (-1.414, 0.0, 0.8), (0.0, -1.414, 0.8),
+                 (1.0, 1.0, -0.8), (-1.0, 1.0, -0.8), (-1.0, -1.0, -0.8), (1.0, -1.0, -0.8),
+                 (0.0, 0.0, 2.4), (0.0, 0.0, -2.4)],
         }
 
         n_atoms = mol.GetNumAtoms()
@@ -1917,6 +1934,16 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
             sap_pen = sum(min(abs(a - t) for t in ideal_sap) for a in angles)
             dd_pen = sum(min(abs(a - t) for t in ideal_dd) for a in angles)
             total_penalty += min(sap_pen, dd_pen)
+        elif len(neighbors) == 9:
+            # TTP (D3h): typical angles 68°/98°/117°/137°
+            ideal_9 = [68.0, 98.0, 117.0, 137.0]
+            for a in angles:
+                total_penalty += min(abs(a - t) for t in ideal_9)
+        elif len(neighbors) == 10:
+            # BSAP: axial caps ~145°, equatorial ~72°/144°
+            ideal_10 = [72.0, 101.0, 144.0, 180.0]
+            for a in angles:
+                total_penalty += min(abs(a - t) for t in ideal_10)
         else:
             # General: penalize distance from nearest ideal (90 or 180)
             for a in angles:
@@ -2732,6 +2759,26 @@ def _canonical_dd(types: tuple) -> tuple:
     return ('DD', a_pairs, b_pairs)
 
 
+def _canonical_ttp(types: tuple) -> tuple:
+    """TTP (D3h): positions 0-2 = bottom prism, 3-5 = top prism, 6-8 = caps.
+    Canonical = (sorted prism-pairs by column, sorted caps)."""
+    prism_pairs = tuple(sorted([
+        tuple(sorted([types[i], types[i + 3]])) for i in range(3)
+    ]))
+    caps = tuple(sorted([types[6], types[7], types[8]]))
+    return ('TTP', prism_pairs, caps)
+
+
+def _canonical_bsap(types: tuple) -> tuple:
+    """BSAP (C4v): positions 0-3 = top square, 4-7 = bottom square, 8-9 = axial caps."""
+    cap_pair = tuple(sorted([types[8], types[9]]))
+    sq_trans = tuple(sorted([
+        tuple(sorted([types[0], types[6]])), tuple(sorted([types[1], types[7]])),
+        tuple(sorted([types[2], types[4]])), tuple(sorted([types[3], types[5]])),
+    ]))
+    return ('BSAP', cap_pair, sq_trans)
+
+
 # Trans position pairs (indices into the geometry vector list) for each geometry
 _TOPO_TRANS_POSITIONS: Dict[str, List[Tuple[int, int]]] = {
     'LIN': [(0, 1)],
@@ -2745,6 +2792,8 @@ _TOPO_TRANS_POSITIONS: Dict[str, List[Tuple[int, int]]] = {
     'PBP': [(0, 1)],          # axial-axial
     'SAP': [(0, 6), (1, 7), (2, 4), (3, 5)],  # square-antiprismatic
     'DD':  [(0, 2), (1, 3), (4, 6), (5, 7)],  # dodecahedral
+    'TTP': [],          # no strict trans pairs in tricapped trigonal prism
+    'BSAP': [(8, 9)],   # axial caps are trans in bicapped square antiprism
 }
 
 _TOPO_CANONICAL_FNS = {
@@ -2759,6 +2808,8 @@ _TOPO_CANONICAL_FNS = {
     'PBP': _canonical_pbp,
     'SAP': _canonical_sap,
     'DD':  _canonical_dd,
+    'TTP': _canonical_ttp,
+    'BSAP': _canonical_bsap,
 }
 
 # Idealized coordination vectors per geometry (bond length ~2 Å)
@@ -2780,6 +2831,20 @@ _TOPO_GEOMETRY_VECTORS: Dict[str, List[Tuple[float, float, float]]] = {
     # Dodecahedral (D2d): two interpenetrating trapezoids
     'DD':  [(1.414, 0, 1), (0, 1.414, -1), (-1.414, 0, 1), (0, -1.414, -1),
             (0.9, 0.9, 0), (-0.9, 0.9, 0), (-0.9, -0.9, 0), (0.9, -0.9, 0)],
+    # Tricapped trigonal prism (D3h) — CN=9
+    # Bottom prism (z=-1), top prism (z=+1), 3 capping atoms (z=0, rotated 60°)
+    'TTP': [
+        (1.55, 0.0, -1.0), (-0.775,  1.342, -1.0), (-0.775, -1.342, -1.0),
+        (1.55, 0.0,  1.0), (-0.775,  1.342,  1.0), (-0.775, -1.342,  1.0),
+        (0.0,  2.0,  0.0), (-1.732, -1.0,   0.0), ( 1.732, -1.0,    0.0),
+    ],
+    # Bicapped square antiprism (C4v) — CN=10
+    # SAP base (8 atoms) + 2 axial caps
+    'BSAP': [
+        (1.414, 0.0,  0.8), (0.0,  1.414,  0.8), (-1.414, 0.0,  0.8), (0.0, -1.414,  0.8),
+        (1.0,   1.0, -0.8), (-1.0, 1.0,   -0.8), (-1.0,  -1.0, -0.8), (1.0, -1.0,   -0.8),
+        (0.0,   0.0,  2.4), (0.0,  0.0,   -2.4),
+    ],
 }
 
 
@@ -2823,6 +2888,10 @@ def _enumerate_topological_isomers(
         geometries = ['PBP']
     elif n_coord == 8:
         geometries = ['SAP', 'DD']
+    elif n_coord == 9:
+        geometries = ['TTP']
+    elif n_coord == 10:
+        geometries = ['BSAP']
     else:
         return []
 
@@ -2982,13 +3051,239 @@ def _embed_fragment_procrustes(
     return True
 
 
+# ---------------------------------------------------------------------------
+# Hapto-ligand detection and geometry helpers
+# ---------------------------------------------------------------------------
+
+def _is_conjugated_ring(mol, ring_atoms: list) -> bool:
+    """Return True if the ring is likely to be an η-bonded (hapto) ring.
+
+    Accepts rings where all atoms are:
+    1. Aromatic (explicit aromatic flag), OR
+    2. sp2-hybridised (has at least one double/aromatic bond in the ring), OR
+    3. All-carbon ring consistent with Cp/allyl/benzene (each C has ≤ 1 H
+       and at most 1 substituent outside the ring that is not a metal).
+
+    This last case catches σ-SMILES representations of Cp rings ([CH]1[CH][CH][CH][CH]1)
+    where RDKit does not assign aromaticity but the ring is chemically conjugated.
+    """
+    from rdkit.Chem import rdchem
+    ring_set = set(ring_atoms)
+    all_aromatic = True
+    any_pi = False
+
+    for idx in ring_atoms:
+        atom = mol.GetAtomWithIdx(idx)
+        if not atom.GetIsAromatic():
+            all_aromatic = False
+        # sp2 check: has at least one double/aromatic bond
+        for b in atom.GetBonds():
+            if b.GetBondTypeAsDouble() >= 1.5:
+                any_pi = True
+            if b.GetBondType() == rdchem.BondType.DOUBLE:
+                any_pi = True
+
+    if all_aromatic:
+        return True
+    if any_pi:
+        # At least partially unsaturated — check that all ring atoms are sp2 or aromatic
+        for idx in ring_atoms:
+            atom = mol.GetAtomWithIdx(idx)
+            if atom.GetIsAromatic():
+                continue
+            has_local_pi = any(b.GetBondTypeAsDouble() >= 1.5 for b in atom.GetBonds())
+            if not has_local_pi:
+                return False
+        return True
+
+    # Fallback: all-carbon ring where every C has ≤ 1 H and
+    # at most 1 non-ring, non-metal bond (σ-SMILES Cp convention)
+    if all(mol.GetAtomWithIdx(i).GetSymbol() == 'C' for i in ring_atoms):
+        for idx in ring_atoms:
+            atom = mol.GetAtomWithIdx(idx)
+            n_h = atom.GetTotalNumHs()
+            if n_h > 1:
+                return False
+            # Count non-ring, non-metal neighbours
+            n_ext = sum(
+                1 for nbr in atom.GetNeighbors()
+                if nbr.GetIdx() not in ring_set and nbr.GetSymbol() not in _METAL_SET
+            )
+            if n_ext > 1:
+                return False
+        return True
+
+    return False
+
+
+def _detect_hapto_groups(mol, metal_idx: int) -> List[Dict]:
+    """Detect η-bonded ring ligands attached to *metal_idx*.
+
+    Supports two SMILES conventions:
+    - Fall A (explicit-η): ≥2 ring atoms are direct metal neighbours
+    - Fall B (σ-SMILES): exactly 1 ring atom is a metal neighbour AND
+      the ring is fully conjugated/aromatic AND ring size 3–8
+
+    Returns a list of dicts:
+        {'ring': [atom_idx, ...], 'eta': int, 'bonded': [atom_idx, ...]}
+    where ``bonded`` are the ring atoms that are actual metal neighbours
+    (1 for σ-SMILES, η for explicit).
+    """
+    try:
+        ring_info = mol.GetRingInfo()
+    except Exception:
+        return []
+
+    metal_neighbors = {nbr.GetIdx() for nbr in mol.GetAtomWithIdx(metal_idx).GetNeighbors()}
+    groups: List[Dict] = []
+    processed_rings: set = set()  # avoid double-counting same ring
+
+    for ring in ring_info.AtomRings():
+        # Exclude the metal itself from the ring atom list (for M-in-ring SMILES)
+        ring_no_metal = [idx for idx in ring if idx != metal_idx]
+        ring_size = len(ring_no_metal)
+        if ring_size < 2 or ring_size > 8:
+            continue
+        ring_set = frozenset(ring_no_metal)
+        if ring_set in processed_rings:
+            continue
+
+        bonded = [idx for idx in ring_no_metal if idx in metal_neighbors]
+        if len(bonded) >= 2:
+            # Fall A: explicit η — clearly hapto
+            processed_rings.add(ring_set)
+            groups.append({'ring': ring_no_metal, 'eta': ring_size, 'bonded': bonded})
+        elif len(bonded) == 1 and _is_conjugated_ring(mol, ring_no_metal):
+            # Fall B: σ-SMILES of a conjugated ring → treat as hapto
+            processed_rings.add(ring_set)
+            groups.append({'ring': ring_no_metal, 'eta': ring_size, 'bonded': bonded})
+
+    # Remove spurious sub-rings: if ring A is a subset of ring B's atoms,
+    # A is just a partial slice of B (an artefact of explicit η-bonding in SMILES)
+    # and should be discarded.
+    if len(groups) > 1:
+        ring_sets = [frozenset(g['ring']) for g in groups]
+        keep = []
+        for i, g in enumerate(groups):
+            rs = ring_sets[i]
+            dominated = any(
+                rs < ring_sets[j]  # proper subset of another ring
+                for j in range(len(groups)) if j != i
+            )
+            if not dominated:
+                keep.append(g)
+        groups = keep
+
+    return groups
+
+
+def _effective_donors(
+    mol, metal_idx: int, hapto_groups: List[Dict]
+) -> Tuple[List, Dict]:
+    """Build the effective donor list, replacing hapto rings with sentinels.
+
+    Returns:
+        (effective_donor_list, hapto_group_map)
+        - effective_donor_list: real donor atom indices + sentinel ints
+          (negative, -1 - group_index) for each hapto group
+        - hapto_group_map: sentinel_idx → hapto group dict (with 'centroid' added)
+    """
+    metal_neighbors = [nbr.GetIdx() for nbr in mol.GetAtomWithIdx(metal_idx).GetNeighbors()]
+
+    # Collect all real donor indices that are part of a hapto group
+    hapto_atoms: set = set()
+    for g in hapto_groups:
+        for idx in g['bonded']:
+            hapto_atoms.add(idx)
+
+    effective: List = []
+    hapto_map: Dict[int, Dict] = {}
+
+    # Add sentinels for each hapto group first
+    for i, g in enumerate(hapto_groups):
+        sentinel = -1 - i
+        effective.append(sentinel)
+        hapto_map[sentinel] = g
+
+    # Add remaining (non-hapto) donors
+    for idx in metal_neighbors:
+        if idx not in hapto_atoms:
+            effective.append(idx)
+
+    return effective, hapto_map
+
+
+def _compute_ring_centroid(
+    coords: List[Tuple[float, float, float]], ring_atoms: List[int]
+) -> Tuple[float, float, float]:
+    """Return the geometric centroid of the ring atoms."""
+    xs = [coords[i][0] for i in ring_atoms]
+    ys = [coords[i][1] for i in ring_atoms]
+    zs = [coords[i][2] for i in ring_atoms]
+    n = len(ring_atoms)
+    return (sum(xs) / n, sum(ys) / n, sum(zs) / n)
+
+
+def _orient_hapto_ring(
+    coords: List[Tuple[float, float, float]],
+    ring_atoms: List[int],
+    metal_pos: Tuple[float, float, float],
+    centroid_target: Tuple[float, float, float],
+    ring_radius: float = 1.21,
+) -> None:
+    """Orient a hapto ring so its centroid is at *centroid_target* and its
+    normal points from the centroid toward the metal.
+
+    Ring atoms are placed uniformly on a circle of *ring_radius* in a plane
+    perpendicular to the M–centroid axis, centred at *centroid_target*.
+    Modifies *coords* in place.
+    """
+    # M → centroid direction (ring normal points this way, away from metal)
+    mx, my, mz = metal_pos
+    cx, cy, cz = centroid_target
+    dx, dy, dz = cx - mx, cy - my, cz - mz
+    mag = math.sqrt(dx*dx + dy*dy + dz*dz)
+    if mag < 1e-8:
+        return
+    nx, ny, nz = dx / mag, dy / mag, dz / mag  # unit normal
+
+    # Build two orthogonal vectors in the ring plane
+    # Choose a reference vector not parallel to normal
+    if abs(nx) < 0.9:
+        ref_x, ref_y, ref_z = 1.0, 0.0, 0.0
+    else:
+        ref_x, ref_y, ref_z = 0.0, 1.0, 0.0
+    # u = normal × ref (Gram-Schmidt)
+    ux = ny * ref_z - nz * ref_y
+    uy = nz * ref_x - nx * ref_z
+    uz = nx * ref_y - ny * ref_x
+    um = math.sqrt(ux*ux + uy*uy + uz*uz)
+    if um < 1e-8:
+        return
+    ux /= um; uy /= um; uz /= um
+    # v = normal × u
+    vx = ny * uz - nz * uy
+    vy = nz * ux - nx * uz
+    vz = nx * uy - ny * ux
+
+    n_atoms = len(ring_atoms)
+    for k, idx in enumerate(ring_atoms):
+        angle = 2 * math.pi * k / n_atoms
+        cos_a = math.cos(angle); sin_a = math.sin(angle)
+        rx = cx + ring_radius * (ux * cos_a + vx * sin_a)
+        ry = cy + ring_radius * (uy * cos_a + vy * sin_a)
+        rz = cz + ring_radius * (uz * cos_a + vz * sin_a)
+        coords[idx] = (rx, ry, rz)
+
+
 def _build_topology_xyz(
     mol,
     metal_idx: int,
-    donor_atom_indices: List[int],
+    donor_atom_indices: List,
     perm: List[int],
     geometry: str,
     apply_uff: bool,
+    hapto_group_map: Optional[Dict] = None,
 ) -> Optional[str]:
     """Build a DELFIN XYZ for one topological arrangement.
 
@@ -3000,14 +3295,18 @@ def _build_topology_xyz(
     Args:
         mol: RDKit mol (with H atoms, as from ``_prepare_mol_for_embedding``).
         metal_idx: Index of the metal atom in *mol*.
-        donor_atom_indices: List of donor atom indices (length == n_coord).
+        donor_atom_indices: List of donor atom indices (or sentinel ints for hapto).
         perm: ``perm[position] = index into donor_atom_indices``.
         geometry: Key in ``_TOPO_GEOMETRY_VECTORS`` ('OH', 'SQ', …).
         apply_uff: Whether to run OB UFF optimization after placement.
+        hapto_group_map: Optional dict mapping sentinel int → hapto group dict.
 
     Returns:
         DELFIN-format XYZ string, or None on failure.
     """
+    if hapto_group_map is None:
+        hapto_group_map = {}
+
     try:
         vectors = _TOPO_GEOMETRY_VECTORS[geometry]
         n_atoms = mol.GetNumAtoms()
@@ -3018,22 +3317,46 @@ def _build_topology_xyz(
         coords[metal_idx] = (0.0, 0.0, 0.0)
         placed.add(metal_idx)
 
-        # Donors at geometry positions
+        # Donors at geometry positions; sentinels get a centroid position
         metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
         donor_target_map: Dict[int, Tuple[float, float, float]] = {}
+        # sentinel → centroid_target (for hapto ring orientation after BFS)
+        hapto_centroid_targets: Dict[int, Tuple[float, float, float]] = {}
+
         for pos_idx, donor_list_idx in enumerate(perm):
             donor_atom_idx = donor_atom_indices[donor_list_idx]
-            donor_sym = mol.GetAtomWithIdx(donor_atom_idx).GetSymbol()
-            bl = _get_ml_bond_length(metal_sym, donor_sym)
             vx, vy, vz = vectors[pos_idx]
             mag = math.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
-            if mag > 1e-8:
-                vx = vx / mag * bl
-                vy = vy / mag * bl
-                vz = vz / mag * bl
-            coords[donor_atom_idx] = (vx, vy, vz)
-            donor_target_map[donor_atom_idx] = (vx, vy, vz)
-            placed.add(donor_atom_idx)
+
+            if donor_atom_idx in hapto_group_map:
+                # Hapto sentinel: place centroid at M–centroid distance
+                g = hapto_group_map[donor_atom_idx]
+                eta = g['eta']
+                hc_dist = _HAPTO_CENTROID_DISTANCES.get(
+                    (metal_sym, eta),
+                    _COVALENT_RADII.get(metal_sym, 1.3) + 1.4 * 0.77 + 0.3,
+                )
+                if mag > 1e-8:
+                    cx = vx / mag * hc_dist
+                    cy = vy / mag * hc_dist
+                    cz = vz / mag * hc_dist
+                else:
+                    cx, cy, cz = hc_dist, 0.0, 0.0
+                centroid_pos = (cx, cy, cz)
+                hapto_centroid_targets[donor_atom_idx] = centroid_pos
+                # Pre-place the bonded ring atoms near the centroid
+                for ridx in g['bonded']:
+                    coords[ridx] = centroid_pos
+                    placed.add(ridx)
+            else:
+                bl = _get_ml_bond_length(metal_sym, mol.GetAtomWithIdx(donor_atom_idx).GetSymbol())
+                if mag > 1e-8:
+                    vx = vx / mag * bl
+                    vy = vy / mag * bl
+                    vz = vz / mag * bl
+                coords[donor_atom_idx] = (vx, vy, vz)
+                donor_target_map[donor_atom_idx] = (vx, vy, vz)
+                placed.add(donor_atom_idx)
 
         # --- Fragment embedding approach ---
         # Decompose non-metal atoms into ligand fragments (connected components
@@ -3143,6 +3466,22 @@ def _build_topology_xyz(
                 placed.add(nbr_idx)
                 queue.append(nbr_idx)
 
+        # Orient hapto rings: place ring atoms in a circle perpendicular to M–centroid axis
+        if hapto_group_map:
+            metal_pos = coords[metal_idx]
+            for sentinel, g in hapto_group_map.items():
+                centroid_tgt = hapto_centroid_targets.get(sentinel)
+                if centroid_tgt is None:
+                    continue
+                ring_atoms = g['ring']
+                eta = g['eta']
+                # Typical C–C bond length in conjugated rings: ~1.40 Å
+                # Ring radius from centroid: r = side / (2 * sin(π/η))
+                cc_bond = 1.40
+                ring_radius = cc_bond / (2 * math.sin(math.pi / eta)) if eta >= 3 else 1.0
+                _orient_hapto_ring(coords, ring_atoms, metal_pos, centroid_tgt, ring_radius)
+                placed.update(ring_atoms)
+
         # Build XYZ string
         lines = []
         for i in range(n_atoms):
@@ -3193,38 +3532,46 @@ def _generate_topological_isomers(
         if atom.GetSymbol() not in _METAL_SET:
             continue
         metal_idx = atom.GetIdx()
-        donor_indices = [nbr.GetIdx() for nbr in atom.GetNeighbors()]
-        n_coord = len(donor_indices)
 
-        if n_coord < 2 or n_coord > 8:
+        # Detect hapto groups and build effective donor list (sentinels for hapto rings)
+        hapto_groups = _detect_hapto_groups(mol, metal_idx)
+        eff_donors, hapto_map = _effective_donors(mol, metal_idx, hapto_groups)
+        n_coord = len(eff_donors)
+
+        if n_coord < 2 or n_coord > 10:
             continue
 
-        # Use element symbols as donor labels for canonical form comparison
-        donor_labels = [
-            dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset()))[0]
-            for d in donor_indices
-        ]
+        # Use element symbols as donor labels for canonical form comparison.
+        # Hapto sentinels (negative ints) get label 'Cnt' (centroid).
+        def _donor_label(d) -> str:
+            if d in hapto_map:
+                return 'Cnt'
+            return dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset()))[0]
 
-        chelate_ps = _chelate_pairs(mol, metal_idx, donor_indices)
+        donor_labels = [_donor_label(d) for d in eff_donors]
+
+        # Chelate pairs: only meaningful for real (non-hapto) donors
+        real_donors = [d for d in eff_donors if d not in hapto_map]
+        chelate_ps = _chelate_pairs(mol, metal_idx, real_donors)
 
         # Skip macrocyclic complexes: when ALL donor pairs are chelate-connected
         # (complete chelate graph), every donor is part of one big ring.
         # The BFS in _build_topology_xyz cannot respect ring-closure constraints
         # and always produces broken structures for macrocycles.
         max_pairs = n_coord * (n_coord - 1) // 2
-        if len(chelate_ps) >= max_pairs:
+        if len(chelate_ps) >= max_pairs and max_pairs > 0:
             logger.debug(
                 "Skipping topo enumerator for macrocyclic complex (CN=%d, "
                 "chelate_pairs=%d/%d)", n_coord, len(chelate_ps), max_pairs
             )
             continue
 
-        # Convert chelate pairs from atom indices to donor-list indices.
+        # Convert chelate pairs from atom indices to effective-donor-list indices.
         # _chelate_pairs returns frozensets of atom indices (e.g. {1, 12}),
         # but _enumerate_topological_isomers works with donor-list indices
         # (0..n_coord-1).  Without this mapping the constraint check always
         # hits ValueError → silently skipped → all constraints ignored.
-        atom_to_listidx = {atom_idx: li for li, atom_idx in enumerate(donor_indices)}
+        atom_to_listidx = {d: li for li, d in enumerate(eff_donors)}
         chelate_list_pairs: List[FrozenSet] = []
         for cp in chelate_ps:
             pair = sorted(cp)
@@ -3244,7 +3591,8 @@ def _generate_topological_isomers(
             geom_name = canonical_form[0]  # 'OH', 'SQ', 'TH', 'LIN', 'TP', 'TS', …
             try:
                 xyz = _build_topology_xyz(
-                    mol, metal_idx, donor_indices, perm, geom_name, apply_uff
+                    mol, metal_idx, eff_donors, perm, geom_name, apply_uff,
+                    hapto_group_map=hapto_map if hapto_map else None,
                 )
                 if xyz is None:
                     continue
@@ -3283,6 +3631,7 @@ def _generate_topological_isomers(
                 _PRIMARY_GEOM_BASE = {
                     2: 'LIN', 3: 'TP', 5: 'TBP',
                     6: 'OH', 7: 'PBP', 8: 'SAP',
+                    9: 'TTP', 10: 'BSAP',
                 }
                 # CN=4: use metal-specific preference (d8 → SQ, else → TH)
                 _PRIMARY_GEOM = dict(_PRIMARY_GEOM_BASE)
@@ -3295,6 +3644,8 @@ def _generate_topological_isomers(
                     'TBP': 'trigonal-bipyramidal', 'SP': 'square-pyramidal',
                     'OH': 'octahedral', 'PBP': 'pentagonal-bipyramidal',
                     'SAP': 'square-antiprismatic', 'DD': 'dodecahedral',
+                    'TTP': 'tricapped-trigonal-prismatic',
+                    'BSAP': 'bicapped-square-antiprismatic',
                 }
                 primary = _PRIMARY_GEOM.get(n_coord)
                 if primary and geom_name != primary:
@@ -3479,7 +3830,10 @@ def _generate_linkage_isomers(
             metal_atom = alt_mol.GetAtomWithIdx(metal_idx)
             donor_indices = [nbr.GetIdx() for nbr in metal_atom.GetNeighbors()]
             n_coord = len(donor_indices)
-            geom_map = {2: 'LIN', 3: 'TP', 4: 'SQ', 5: 'TBP', 6: 'OH', 7: 'PBP'}
+            geom_map = {
+                2: 'LIN', 3: 'TP', 4: 'SQ', 5: 'TBP', 6: 'OH', 7: 'PBP',
+                8: 'SAP', 9: 'TTP', 10: 'BSAP',
+            }
             if n_coord not in geom_map:
                 continue
             geom = geom_map[n_coord]
