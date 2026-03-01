@@ -3855,7 +3855,7 @@ def smiles_to_xyz_isomers(
                 if base_i != base_j:
                     continue
                 rmsd = _conformer_rmsd(mol, cid_i, cid_j)
-                if rmsd < 1.5:
+                if rmsd < 2.5:
                     # Keep the conformer with the better geometry score
                     if si <= sj:
                         removed.add(j)
@@ -3980,6 +3980,23 @@ def smiles_to_xyz_isomers(
                     continue
 
                 norm = topo_label or ''
+                # Skip if sampling already produced an isomer with the same
+                # base label (e.g. topo "trans" when sampling found "trans").
+                # Fingerprint comparison alone fails here because OB-distorted
+                # sampling geometries have slightly different angles than the
+                # ideal topo geometry.
+                if norm:
+                    _existing_base_labels = {
+                        re.sub(r'-\d+$', '', d) for d in existing_displays if d
+                    }
+                    if norm in _existing_base_labels:
+                        logger.debug(
+                            "Skipping topo isomer %s: label already covered by sampling",
+                            norm,
+                        )
+                        if topo_fp is not None:
+                            existing_fps.add(topo_fp)
+                        continue
                 if not norm:
                     unknown_counter += 1
                     display = f'Isomer {unknown_counter}'
@@ -4031,6 +4048,30 @@ def smiles_to_xyz_isomers(
                     existing_base.add(alt_label)
         except Exception as _alt_exc:
             logger.debug("Alternative binding mode generation failed: %s", _alt_exc)
+
+    # --- Final label dedup (safety net) ---
+    # Collapse entries that share the same base label (e.g. "trans-1" and
+    # "trans-2" that slipped through fingerprint/RMSD dedup).  Keep the first
+    # occurrence (best score from sampling or first topo result) and rename it
+    # to the bare base label so the user sees "trans" not "trans-1".
+    # "Isomer N" labels use spaces not dashes, so they are never collapsed.
+    if results:
+        _seen_base: Dict[str, int] = {}
+        _keep: List[bool] = [True] * len(results)
+        for _idx, (_, _lbl) in enumerate(results):
+            _base = re.sub(r'-\d+$', '', _lbl) if _lbl else ''
+            if _base in _seen_base:
+                _keep[_idx] = False
+                logger.debug(
+                    "Final dedup: dropping duplicate label %r (base=%r kept at idx %d)",
+                    _lbl, _base, _seen_base[_base],
+                )
+            else:
+                _seen_base[_base] = _idx
+        results = [
+            (xyz, re.sub(r'-\d+$', '', lbl))
+            for (xyz, lbl), keep in zip(results, _keep) if keep
+        ]
 
     return results, None
 
