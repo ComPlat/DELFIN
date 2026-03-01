@@ -61,16 +61,10 @@ def create_tab(ctx):
     CALC_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
     # Trajectories with more frames than this use single-frame mode
     # (avoids embedding the full XYZ in a JS template literal via comm)
-    CALC_XYZ_LARGE_TRAJ_FRAMES = 500
+    CALC_XYZ_LARGE_TRAJ_FRAMES = 2000
     CALC_XYZ_PLAY_FPS_DEFAULT = 10
     CALC_XYZ_PLAY_FPS_MIN = 1
     CALC_XYZ_PLAY_FPS_MAX = 60
-    CALC_DYNAMIC_BONDS_STYLE_JS = (
-        '{'
-        'stick:{colorscheme:"Jmol",radius:0.11,singleBonds:true,doubleBondScaling:0.65,tripleBondScaling:0.65},'
-        'sphere:{colorscheme:"Jmol",scale:0.28}'
-        '}'
-    )
     # -- state (closure-captured) -------------------------------------------
     state = {
         'current_path': '',
@@ -399,12 +393,6 @@ def create_tab(ctx):
         step=1,
         layout=widgets.Layout(width='72px', height='28px'),
     )
-    calc_xyz_dynamic_bonds_btn = widgets.ToggleButton(
-        value=False,
-        description='Dynamic Bonds',
-        button_style='',
-        layout=widgets.Layout(width='170px', height='32px'),
-    )
     calc_xyz_play_btn = widgets.ToggleButton(
         value=False,
         description='Play',
@@ -466,9 +454,9 @@ def create_tab(ctx):
                 ),
             ),
             widgets.HBox(
-                [calc_xyz_dynamic_bonds_btn, calc_xyz_play_btn],
+                [calc_xyz_play_btn],
                 layout=widgets.Layout(
-                    gap='12px', align_items='center', width='100%', justify_content='space-between',
+                    gap='12px', align_items='center', width='100%', justify_content='flex-end',
                 ),
             ),
         ],
@@ -1599,12 +1587,6 @@ def create_tab(ctx):
         n_frames = len(state.get('xyz_frames') or [])
         return 1 < n_frames <= CALC_XYZ_LARGE_TRAJ_FRAMES
 
-    def _calc_current_traj_style_js():
-        return CALC_DYNAMIC_BONDS_STYLE_JS if calc_xyz_dynamic_bonds_btn.value else DEFAULT_3DMOL_STYLE_JS
-
-    def _calc_update_dynamic_bonds_button_style():
-        calc_xyz_dynamic_bonds_btn.button_style = 'info' if calc_xyz_dynamic_bonds_btn.value else ''
-
     def _calc_update_loop_button_style():
         calc_xyz_loop_checkbox.button_style = 'info' if calc_xyz_loop_checkbox.value else ''
 
@@ -1644,24 +1626,19 @@ def create_tab(ctx):
     def _calc_update_xyz_traj_control_state():
         n_frames = len(state.get('xyz_frames') or [])
         can_play = _calc_traj_can_play()
-        can_style = n_frames >= 1
         xyz_controls_visible = str(calc_xyz_controls.layout.display or 'none') != 'none'
         coord_controls_visible = str(calc_coord_controls.layout.display or 'none') != 'none'
         show_tray = xyz_controls_visible or coord_controls_visible
         calc_xyz_loop_checkbox.disabled = not can_play
         calc_xyz_fps_input.disabled = not can_play
-        calc_xyz_dynamic_bonds_btn.disabled = not can_style
         calc_xyz_play_btn.disabled = not can_play
         calc_xyz_tray_controls.layout.display = 'flex' if show_tray else 'none'
         _calc_update_loop_button_style()
-        _calc_update_dynamic_bonds_button_style()
-        if not can_style and calc_xyz_dynamic_bonds_btn.value:
-            calc_xyz_dynamic_bonds_btn.value = False
         if not can_play:
             _calc_stop_xyz_playback(update_button=True)
 
     def _calc_apply_traj_style():
-        style_js = _calc_current_traj_style_js()
+        style_js = DEFAULT_3DMOL_STYLE_JS
         scope_key_json = json.dumps(calc_scope_id)
         _run_js(
             f"""
@@ -4180,7 +4157,7 @@ def create_tab(ctx):
                 _mol3d_counter[0] += 1
                 viewer_id = f"calc_trj_viewer_{_mol3d_counter[0]}"
                 wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
-                traj_style_js = _calc_current_traj_style_js()
+                traj_style_js = DEFAULT_3DMOL_STYLE_JS
                 view_scope_json = json.dumps(
                     f"{calc_scope_id}:{state.get('current_path') or '/'}"
                 )
@@ -4991,12 +4968,6 @@ def create_tab(ctx):
         fps = max(CALC_XYZ_PLAY_FPS_MIN, min(CALC_XYZ_PLAY_FPS_MAX, fps))
         if calc_xyz_fps_input.value != fps:
             calc_xyz_fps_input.value = fps
-
-    def calc_on_xyz_dynamic_bonds_change(change):
-        if change.get('name') != 'value':
-            return
-        _calc_update_dynamic_bonds_button_style()
-        _calc_apply_traj_style()
 
     def calc_on_xyz_play_change(change):
         if change.get('name') != 'value':
@@ -6927,7 +6898,6 @@ def create_tab(ctx):
     calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
     calc_xyz_loop_checkbox.observe(calc_on_xyz_loop_change, names='value')
     calc_xyz_fps_input.observe(calc_on_xyz_fps_change, names='value')
-    calc_xyz_dynamic_bonds_btn.observe(calc_on_xyz_dynamic_bonds_change, names='value')
     calc_xyz_play_btn.observe(calc_on_xyz_play_change, names='value')
     calc_xyz_copy_btn.on_click(calc_on_xyz_copy)
     calc_rmsd_run_btn.on_click(calc_on_rmsd_run)
