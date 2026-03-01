@@ -4988,7 +4988,15 @@ def create_tab(ctx):
         if idx < 0 or idx >= len(frames):
             return
         comment, xyz_block, n_atoms = frames[idx]
-        xyz_content = f"{n_atoms}\n{comment}\n{xyz_block}"
+        try:
+            symbols, coords = _calc_parse_xyz_lines(
+                xyz_block.splitlines(), expected_atoms=n_atoms, allow_skip=False
+            )
+            xyz_content = _calc_build_xyz_from_symbols_coords(
+                symbols, coords, comment=(comment or f'Frame {idx + 1}')
+            ).rstrip()
+        except Exception:
+            xyz_content = f"{n_atoms}\n{comment}\n{xyz_block}"
         _calc_copy_to_clipboard(xyz_content, label=f'xyz frame {idx + 1}')
 
     def calc_on_rmsd_toggle(button=None):
