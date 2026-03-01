@@ -193,10 +193,17 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
 # M–Centroid distances for hapto (η) ligands in Å
 # Key: (metal_symbol, ring_size)  — ring_size == hapticity η
 _HAPTO_CENTROID_DISTANCES: Dict[Tuple[str, int], float] = {
+    # η5-cyclopentadienyl
     ('Fe', 5): 1.65, ('Ru', 5): 1.82, ('Os', 5): 1.83,
-    ('Fe', 6): 1.56, ('Ru', 6): 1.71, ('Cr', 6): 1.72,
     ('Co', 5): 1.71, ('Rh', 5): 1.83, ('Ir', 5): 1.84,
-    ('Ni', 5): 1.76,
+    ('Ni', 5): 1.76, ('Ti', 5): 2.05, ('V', 5): 1.92,
+    # η6-arene
+    ('Fe', 6): 1.56, ('Ru', 6): 1.71, ('Cr', 6): 1.72,
+    ('Mo', 6): 1.74, ('W', 6): 1.74, ('Mn', 6): 1.73,
+    # η3-allyl / η4
+    ('Pd', 3): 1.96, ('Pt', 3): 1.96, ('Rh', 3): 1.91,
+    ('Ir', 3): 1.91, ('Ni', 3): 1.85,
+    ('Pd', 4): 1.84, ('Pt', 4): 1.80, ('Rh', 4): 1.79,
 }
 
 
@@ -3130,6 +3137,8 @@ def _detect_hapto_groups(mol, metal_idx: int) -> List[Dict]:
     (1 for σ-SMILES, η for explicit).
     """
     try:
+        # Ensure ring information is populated (may be absent on freshly prepared mols)
+        Chem.FastFindRings(mol)
         ring_info = mol.GetRingInfo()
     except Exception:
         return []
@@ -3317,11 +3326,9 @@ def _build_topology_xyz(
         coords[metal_idx] = (0.0, 0.0, 0.0)
         placed.add(metal_idx)
 
-        # Donors at geometry positions; sentinels get a centroid position
+        # Donors at geometry positions; sentinels get immediate ring orientation
         metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
         donor_target_map: Dict[int, Tuple[float, float, float]] = {}
-        # sentinel → centroid_target (for hapto ring orientation after BFS)
-        hapto_centroid_targets: Dict[int, Tuple[float, float, float]] = {}
 
         for pos_idx, donor_list_idx in enumerate(perm):
             donor_atom_idx = donor_atom_indices[donor_list_idx]
@@ -3329,12 +3336,13 @@ def _build_topology_xyz(
             mag = math.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
 
             if donor_atom_idx in hapto_group_map:
-                # Hapto sentinel: place centroid at M–centroid distance
+                # Hapto sentinel: compute M–centroid distance and immediately
+                # orient the ring so H atoms placed by BFS afterwards are correct.
                 g = hapto_group_map[donor_atom_idx]
                 eta = g['eta']
                 hc_dist = _HAPTO_CENTROID_DISTANCES.get(
                     (metal_sym, eta),
-                    _COVALENT_RADII.get(metal_sym, 1.3) + 1.4 * 0.77 + 0.3,
+                    _COVALENT_RADII.get(metal_sym, 1.3) + 0.7,
                 )
                 if mag > 1e-8:
                     cx = vx / mag * hc_dist
@@ -3343,11 +3351,16 @@ def _build_topology_xyz(
                 else:
                     cx, cy, cz = hc_dist, 0.0, 0.0
                 centroid_pos = (cx, cy, cz)
-                hapto_centroid_targets[donor_atom_idx] = centroid_pos
-                # Pre-place the bonded ring atoms near the centroid
-                for ridx in g['bonded']:
-                    coords[ridx] = centroid_pos
-                    placed.add(ridx)
+                # cc_bond ≈ 1.40 Å in conjugated rings
+                cc_bond = 1.40
+                ring_radius = (cc_bond / (2 * math.sin(math.pi / eta))
+                               if eta >= 3 else 1.0)
+                # Orient ring atoms into a circle perpendicular to M–centroid axis.
+                # Metal is still at origin at this point.
+                _orient_hapto_ring(
+                    coords, g['ring'], (0.0, 0.0, 0.0), centroid_pos, ring_radius
+                )
+                placed.update(g['ring'])
             else:
                 bl = _get_ml_bond_length(metal_sym, mol.GetAtomWithIdx(donor_atom_idx).GetSymbol())
                 if mag > 1e-8:
@@ -3410,18 +3423,29 @@ def _build_topology_xyz(
             logger.debug("Fragment embedding failed, using BFS fallback: %s", _frag_exc)
 
         # BFS fallback for any atoms not placed by fragment embedding
-        bond_len_default = 1.4
         queue = list(placed)
         while queue:
             current = queue.pop(0)
             cx, cy, cz = coords[current]
             atom = mol.GetAtomWithIdx(current)
+            curr_sym = atom.GetSymbol()
             unplaced_nbrs = [
                 n.GetIdx() for n in atom.GetNeighbors()
                 if n.GetIdx() not in placed
             ]
             n_unplaced = len(unplaced_nbrs)
             for k, nbr_idx in enumerate(unplaced_nbrs):
+                # Bond length: use covalent radii for organic bonds, M-L table for metal bonds
+                nbr_sym = mol.GetAtomWithIdx(nbr_idx).GetSymbol()
+                if curr_sym in _METAL_SET:
+                    bond_len = _get_ml_bond_length(curr_sym, nbr_sym)
+                elif nbr_sym in _METAL_SET:
+                    bond_len = _get_ml_bond_length(nbr_sym, curr_sym)
+                else:
+                    r1 = _COVALENT_RADII.get(curr_sym, 0.77)
+                    r2 = _COVALENT_RADII.get(nbr_sym, 0.31 if nbr_sym == 'H' else 0.77)
+                    bond_len = r1 + r2 + 0.05
+
                 dx, dy, dz = 0.0, 0.0, 0.0
                 for other in atom.GetNeighbors():
                     oi = other.GetIdx()
@@ -3459,28 +3483,12 @@ def _build_topology_xyz(
                     mag_base = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
                     if mag_base < 1e-8:
                         mag_base = 1.0
-                dx = dx / mag_base * bond_len_default
-                dy = dy / mag_base * bond_len_default
-                dz = dz / mag_base * bond_len_default
+                dx = dx / mag_base * bond_len
+                dy = dy / mag_base * bond_len
+                dz = dz / mag_base * bond_len
                 coords[nbr_idx] = (cx + dx, cy + dy, cz + dz)
                 placed.add(nbr_idx)
                 queue.append(nbr_idx)
-
-        # Orient hapto rings: place ring atoms in a circle perpendicular to M–centroid axis
-        if hapto_group_map:
-            metal_pos = coords[metal_idx]
-            for sentinel, g in hapto_group_map.items():
-                centroid_tgt = hapto_centroid_targets.get(sentinel)
-                if centroid_tgt is None:
-                    continue
-                ring_atoms = g['ring']
-                eta = g['eta']
-                # Typical C–C bond length in conjugated rings: ~1.40 Å
-                # Ring radius from centroid: r = side / (2 * sin(π/η))
-                cc_bond = 1.40
-                ring_radius = cc_bond / (2 * math.sin(math.pi / eta)) if eta >= 3 else 1.0
-                _orient_hapto_ring(coords, ring_atoms, metal_pos, centroid_tgt, ring_radius)
-                placed.update(ring_atoms)
 
         # Build XYZ string
         lines = []
@@ -3490,19 +3498,13 @@ def _build_topology_xyz(
             lines.append(f"{atom.GetSymbol():4s} {x:12.6f} {y:12.6f} {z:12.6f}")
         xyz = '\n'.join(lines) + '\n'
 
-        if apply_uff:
+        # UFF optimization: skip for hapto complexes because OB only sees
+        # the σ-bonds and would collapse the sandwich geometry (Fe-Cp
+        # centroid distance collapses from 1.65 Å to ~3 Å after UFF).
+        if apply_uff and not hapto_group_map:
             try:
-                # Free UFF optimization — do NOT constrain the metal or
-                # M-L distances here.  Constraints prevent proper ligand
-                # backbone relaxation and cause roundtrip connectivity
-                # failures (structures get dropped by the topology filter).
-                # The constraint API in _optimize_xyz_openbabel is available
-                # for callers that need it, but the topology builder relies
-                # on unconstrained relaxation for best results.
                 xyz = _optimize_xyz_openbabel(xyz)
             except Exception as uff_exc:
-                # Keep the generated topology geometry when UFF fails.
-                # Dropping the isomer here can hide valid alternatives.
                 logger.debug("Topology UFF optimization failed, keeping unoptimized XYZ: %s", uff_exc)
 
         return xyz
@@ -4069,9 +4071,35 @@ def smiles_to_xyz_isomers(
             return [], err
         return [(xyz, '')], None
 
+    # For hapto (η) complexes: OB/ETKDG only see σ-bonds and cannot reproduce
+    # the sandwich geometry.  Skip sampling entirely and use only the
+    # topology-based hapto builder which places centroids correctly.
+    has_metal = contains_metal(smiles)
+    _is_hapto = False
+    if has_metal:
+        try:
+            for _atom in mol.GetAtoms():
+                if _atom.GetSymbol() in _METAL_SET:
+                    if _detect_hapto_groups(mol, _atom.GetIdx()):
+                        _is_hapto = True
+                        break
+        except Exception:
+            pass
+
+    if _is_hapto:
+        topo_results = _generate_topological_isomers(
+            mol, smiles, apply_uff=False, max_isomers=max_isomers
+        )
+        if topo_results:
+            return topo_results, None
+        # Fallback: return single OB geometry if topo fails
+        _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+        if _fb_err:
+            return [], _fb_err
+        return [(_fb_xyz, '')], None
+
     # For metal complexes: prepend OB conformers to the pool so that
     # Avogadro-quality geometries are always considered during isomer search.
-    has_metal = contains_metal(smiles)
     conf_ids: List[int] = []
     if has_metal and OPENBABEL_AVAILABLE:
         try:
