@@ -62,6 +62,15 @@ def create_tab(ctx):
     # Trajectories with more frames than this use single-frame mode
     # (avoids embedding the full XYZ in a JS template literal via comm)
     CALC_XYZ_LARGE_TRAJ_FRAMES = 500
+    CALC_XYZ_PLAY_FPS_DEFAULT = 10
+    CALC_XYZ_PLAY_FPS_MIN = 1
+    CALC_XYZ_PLAY_FPS_MAX = 60
+    CALC_DYNAMIC_BONDS_STYLE_JS = (
+        '{'
+        'stick:{colorscheme:"Jmol",radius:0.11,singleBonds:true,doubleBondScaling:0.65,tripleBondScaling:0.65},'
+        'sphere:{colorscheme:"Jmol",scale:0.28}'
+        '}'
+    )
     # -- state (closure-captured) -------------------------------------------
     state = {
         'current_path': '',
@@ -92,6 +101,9 @@ def create_tab(ctx):
         'xyz_current_frame': [0],
         'report_running': {},
         'traj_viewer_ready': False,
+        'traj_playing': False,
+        'traj_play_toggle_guard': False,
+        'traj_play_stop_event': None,
         'rmsd_available': False,
         'rmsd_mode_active': False,
         'rmsd_saved_display': {},
@@ -364,29 +376,66 @@ def create_tab(ctx):
 
     # XYZ trajectory controls
     calc_xyz_frame_label = widgets.HTML(
-        value='', layout=widgets.Layout(margin='4px 0'),
+        value='', layout=widgets.Layout(margin='0 0 6px 0'),
     )
     calc_xyz_frame_input = widgets.BoundedIntText(
         value=1, min=1, max=1, step=1,
-        layout=widgets.Layout(width='60px', height='28px'),
+        layout=widgets.Layout(width='72px', min_width='72px', height='28px'),
     )
+    calc_xyz_frame_input.add_class('calc-xyz-frame-input')
     calc_xyz_frame_total = widgets.HTML(
-        value='<b>/ 1</b>', layout=widgets.Layout(width='40px'),
+        value='<b>/ 1</b>', layout=widgets.Layout(width='62px', min_width='62px'),
     )
+    calc_xyz_loop_checkbox = widgets.ToggleButton(
+        value=True,
+        description='Loop',
+        button_style='info',
+        layout=widgets.Layout(width='82px', height='32px'),
+    )
+    calc_xyz_fps_input = widgets.BoundedIntText(
+        value=CALC_XYZ_PLAY_FPS_DEFAULT,
+        min=CALC_XYZ_PLAY_FPS_MIN,
+        max=CALC_XYZ_PLAY_FPS_MAX,
+        step=1,
+        layout=widgets.Layout(width='72px', height='28px'),
+    )
+    calc_xyz_dynamic_bonds_btn = widgets.ToggleButton(
+        value=False,
+        description='Dynamic Bonds',
+        button_style='',
+        layout=widgets.Layout(width='170px', height='32px'),
+    )
+    calc_xyz_play_btn = widgets.ToggleButton(
+        value=False,
+        description='Play',
+        icon='play',
+        button_style='success',
+        layout=widgets.Layout(width='86px', height='32px'),
+    )
+    calc_xyz_play_btn.add_class('calc-xyz-play-btn')
     calc_xyz_copy_btn = widgets.Button(
         description='📋 Copy Coordinates', button_style='success',
-        layout=widgets.Layout(width='160px', height='32px'),
+        layout=widgets.Layout(width='176px', min_width='176px', height='32px'),
+    )
+    calc_xyz_frame_inline = widgets.HBox(
+        [widgets.HTML('<b>Frame:</b>'), calc_xyz_frame_input, calc_xyz_frame_total],
+        layout=widgets.Layout(gap='10px', align_items='center', min_width='170px', flex='0 0 auto'),
     )
     calc_xyz_controls = widgets.HBox(
         [
-            widgets.HTML('<b>Frame:</b>'),
-            calc_xyz_frame_input,
-            calc_xyz_frame_total,
+            calc_xyz_frame_inline,
             calc_xyz_copy_btn,
         ],
-        layout=widgets.Layout(display='none', gap='6px', margin='6px 0', align_items='center'),
+        layout=widgets.Layout(
+            display='none',
+            gap='12px',
+            margin='0 0 6px 0',
+            align_items='center',
+            justify_content='space-between',
+            flex_flow='row nowrap',
+            width='100%',
+        ),
     )
-
     # Coord (Turbomole) copy button
     calc_coord_copy_btn = widgets.Button(
         description='📋 Copy Coordinates', button_style='success',
@@ -394,7 +443,44 @@ def create_tab(ctx):
     )
     calc_coord_controls = widgets.HBox(
         [calc_coord_copy_btn],
-        layout=widgets.Layout(display='none', gap='6px', margin='6px 0', align_items='center'),
+        layout=widgets.Layout(
+            display='none', gap='10px', margin='8px 0',
+            align_items='center', justify_content='flex-end', width='100%',
+        ),
+    )
+    calc_xyz_tray_controls = widgets.VBox(
+        [
+            calc_xyz_frame_label,
+            calc_xyz_controls,
+            calc_coord_controls,
+            widgets.HBox(
+                [
+                    calc_xyz_loop_checkbox,
+                    widgets.HBox(
+                        [widgets.HTML('<b>FPS:</b>'), calc_xyz_fps_input],
+                        layout=widgets.Layout(gap='6px', align_items='center', flex='0 0 auto'),
+                    ),
+                ],
+                layout=widgets.Layout(
+                    gap='12px', align_items='center', width='100%', justify_content='space-between',
+                ),
+            ),
+            widgets.HBox(
+                [calc_xyz_dynamic_bonds_btn, calc_xyz_play_btn],
+                layout=widgets.Layout(
+                    gap='12px', align_items='center', width='100%', justify_content='space-between',
+                ),
+            ),
+        ],
+        layout=widgets.Layout(
+            display='none',
+            gap='14px',
+            align_items='stretch',
+            width='360px',
+            min_width='340px',
+            max_width='420px',
+            margin='0',
+        ),
     )
 
     # RMSD controls (for single-frame XYZ files)
@@ -808,14 +894,31 @@ def create_tab(ctx):
     ], layout=widgets.Layout(display='none', margin='10px 0', width='100%'))
 
     # -- compound layout widgets (must be defined before closures that use them)
-    calc_mol_container = widgets.VBox([
-        calc_mol_label,
-        calc_xyz_frame_label,
-        calc_xyz_controls,
-        calc_coord_controls,
-        calc_rmsd_controls,
-        calc_mol_viewer,
-    ], layout=widgets.Layout(display='none', margin='0 0 10px 0', width='100%', align_items='stretch'))
+    calc_mol_view_wrap = widgets.Box(
+        [calc_mol_viewer],
+        layout=widgets.Layout(flex='0 0 auto', min_width='0', width='auto'),
+    )
+    calc_mol_view_row = widgets.HBox(
+        [calc_mol_view_wrap, calc_xyz_tray_controls],
+        layout=widgets.Layout(
+            width='100%',
+            gap='12px',
+            align_items='flex-start',
+            justify_content='flex-start',
+            flex_flow='row nowrap',
+        ),
+    )
+    calc_mol_view_row.add_class('calc-mol-view-row')
+    calc_mol_view_wrap.add_class('calc-mol-view-wrap')
+    calc_xyz_tray_controls.add_class('calc-xyz-tray-controls')
+    calc_mol_container = widgets.VBox(
+        [
+            calc_mol_label,
+            calc_rmsd_controls,
+            calc_mol_view_row,
+        ],
+        layout=widgets.Layout(display='none', margin='0 0 10px 0', width='100%', align_items='stretch'),
+    )
 
     calc_content_toolbar = widgets.HBox([
         calc_top_btn, calc_bottom_btn,
@@ -1491,6 +1594,260 @@ def create_tab(ctx):
 
     def _run_js(script):
         ctx.run_js(script)
+
+    def _calc_traj_can_play():
+        n_frames = len(state.get('xyz_frames') or [])
+        return 1 < n_frames <= CALC_XYZ_LARGE_TRAJ_FRAMES
+
+    def _calc_current_traj_style_js():
+        return CALC_DYNAMIC_BONDS_STYLE_JS if calc_xyz_dynamic_bonds_btn.value else DEFAULT_3DMOL_STYLE_JS
+
+    def _calc_update_dynamic_bonds_button_style():
+        calc_xyz_dynamic_bonds_btn.button_style = 'info' if calc_xyz_dynamic_bonds_btn.value else ''
+
+    def _calc_update_loop_button_style():
+        calc_xyz_loop_checkbox.button_style = 'info' if calc_xyz_loop_checkbox.value else ''
+
+    def _calc_set_play_button_state(active, sync_value=True):
+        active = bool(active)
+        state['traj_playing'] = active
+        calc_xyz_play_btn.description = 'Stop' if active else 'Play'
+        calc_xyz_play_btn.icon = 'stop' if active else 'play'
+        calc_xyz_play_btn.button_style = 'danger' if active else 'success'
+        if sync_value and calc_xyz_play_btn.value != active:
+            state['traj_play_toggle_guard'] = True
+            try:
+                calc_xyz_play_btn.value = active
+            finally:
+                state['traj_play_toggle_guard'] = False
+
+    def _calc_stop_xyz_playback(update_button=True):
+        stop_event = state.get('traj_play_stop_event')
+        state['traj_play_stop_event'] = None
+        if isinstance(stop_event, threading.Event):
+            stop_event.set()
+        scope_key_json = json.dumps(calc_scope_id)
+        _run_js(
+            f"""
+            (function() {{
+                var scopeKey = {scope_key_json};
+                if (window._calcTrajPlayTimerByScope && window._calcTrajPlayTimerByScope[scopeKey]) {{
+                    clearInterval(window._calcTrajPlayTimerByScope[scopeKey]);
+                    delete window._calcTrajPlayTimerByScope[scopeKey];
+                }}
+            }})();
+            """
+        )
+        if update_button:
+            _calc_set_play_button_state(False, sync_value=True)
+
+    def _calc_update_xyz_traj_control_state():
+        n_frames = len(state.get('xyz_frames') or [])
+        can_play = _calc_traj_can_play()
+        can_style = n_frames >= 1
+        xyz_controls_visible = str(calc_xyz_controls.layout.display or 'none') != 'none'
+        coord_controls_visible = str(calc_coord_controls.layout.display or 'none') != 'none'
+        show_tray = xyz_controls_visible or coord_controls_visible
+        calc_xyz_loop_checkbox.disabled = not can_play
+        calc_xyz_fps_input.disabled = not can_play
+        calc_xyz_dynamic_bonds_btn.disabled = not can_style
+        calc_xyz_play_btn.disabled = not can_play
+        calc_xyz_tray_controls.layout.display = 'flex' if show_tray else 'none'
+        _calc_update_loop_button_style()
+        _calc_update_dynamic_bonds_button_style()
+        if not can_style and calc_xyz_dynamic_bonds_btn.value:
+            calc_xyz_dynamic_bonds_btn.value = False
+        if not can_play:
+            _calc_stop_xyz_playback(update_button=True)
+
+    def _calc_apply_traj_style():
+        style_js = _calc_current_traj_style_js()
+        scope_key_json = json.dumps(calc_scope_id)
+        _run_js(
+            f"""
+            (function() {{
+                var scopeKey = {scope_key_json};
+                var viewer = null;
+                if (window._calcTrajViewerByScope && window._calcTrajViewerByScope[scopeKey]) {{
+                    viewer = window._calcTrajViewerByScope[scopeKey];
+                }} else if (window._calcMolViewerByScope && window._calcMolViewerByScope[scopeKey]) {{
+                    viewer = window._calcMolViewerByScope[scopeKey];
+                }}
+                if (!viewer) return;
+                try {{
+                    viewer.setStyle({{}}, {style_js});
+                    viewer.render();
+                }} catch (_e) {{}}
+            }})();
+            """
+        )
+
+    def _calc_render_traj_frame(frame_idx):
+        scope_key_json = json.dumps(calc_scope_id)
+        frame_idx = int(frame_idx)
+        _run_js(
+            f"""
+            (function() {{
+                var scopeKey = {scope_key_json};
+                var tries = 0;
+                function applyFrame() {{
+                    var viewer = null;
+                    if (window._calcTrajViewerByScope && window._calcTrajViewerByScope[scopeKey]) {{
+                        viewer = window._calcTrajViewerByScope[scopeKey];
+                    }} else if (window._calcMolViewerByScope && window._calcMolViewerByScope[scopeKey]) {{
+                        viewer = window._calcMolViewerByScope[scopeKey];
+                    }}
+                    if (!viewer) {{
+                        tries += 1;
+                        if (tries < 24) setTimeout(applyFrame, 50);
+                        return;
+                    }}
+                    try {{
+                        viewer.setFrame({frame_idx});
+                        viewer.render();
+                    }} catch (_e) {{}}
+                }}
+                setTimeout(applyFrame, 0);
+            }})();
+            """
+        )
+
+    def _calc_start_xyz_playback():
+        if not _calc_traj_can_play():
+            _calc_set_play_button_state(False, sync_value=True)
+            return
+
+        if not state.get('traj_viewer_ready'):
+            calc_update_xyz_viewer(initial_load=True)
+
+        _calc_stop_xyz_playback(update_button=False)
+        _calc_set_play_button_state(True, sync_value=False)
+        frames = state.get('xyz_frames') or []
+        frame_count = len(frames)
+        if frame_count <= 1:
+            _calc_set_play_button_state(False, sync_value=True)
+            return
+        try:
+            fps = int(calc_xyz_fps_input.value)
+        except Exception:
+            fps = CALC_XYZ_PLAY_FPS_DEFAULT
+        fps = max(CALC_XYZ_PLAY_FPS_MIN, min(CALC_XYZ_PLAY_FPS_MAX, fps))
+        delay_ms = max(16, int(round(1000.0 / float(fps))))
+        loop_enabled = bool(calc_xyz_loop_checkbox.value)
+        start_frame = int(state['xyz_current_frame'][0]) + 1
+        scope_key_json = json.dumps(calc_scope_id)
+        _run_js(
+            f"""
+            (function() {{
+                var scopeKey = {scope_key_json};
+                var frameCount = {int(frame_count)};
+                var loopEnabled = {str(loop_enabled).lower()};
+                var delayMs = {int(delay_ms)};
+                var startFrame = {int(start_frame)};
+                window._calcTrajPlayTimerByScope = window._calcTrajPlayTimerByScope || {{}};
+                if (window._calcTrajPlayTimerByScope[scopeKey]) {{
+                    clearInterval(window._calcTrajPlayTimerByScope[scopeKey]);
+                    delete window._calcTrajPlayTimerByScope[scopeKey];
+                }}
+                function getViewer() {{
+                    if (window._calcTrajViewerByScope && window._calcTrajViewerByScope[scopeKey]) {{
+                        return window._calcTrajViewerByScope[scopeKey];
+                    }}
+                    if (window._calcMolViewerByScope && window._calcMolViewerByScope[scopeKey]) {{
+                        return window._calcMolViewerByScope[scopeKey];
+                    }}
+                    return null;
+                }}
+                var scopeRoot = document.querySelector('.{calc_scope_id}');
+                if (!scopeRoot) return;
+                var frameWidget = scopeRoot.querySelector('.calc-xyz-frame-input');
+                var frameInput = frameWidget ? frameWidget.querySelector('input') : null;
+                var playButton = scopeRoot.querySelector('.calc-xyz-play-btn button');
+                if (!frameInput) return;
+                var frameModel = null;
+                (function initFrameModel() {{
+                    try {{
+                        var modelId = frameWidget
+                            ? (frameWidget.getAttribute('data-widget-id')
+                                || frameWidget.getAttribute('data-model-id'))
+                            : null;
+                        if (!modelId) return;
+                        var mgr = null;
+                        if (window.Jupyter
+                            && window.Jupyter.notebook
+                            && window.Jupyter.notebook.kernel
+                            && window.Jupyter.notebook.kernel.widget_manager) {{
+                            mgr = window.Jupyter.notebook.kernel.widget_manager;
+                        }} else if (window.jupyterWidgetManager) {{
+                            mgr = window.jupyterWidgetManager;
+                        }}
+                        if (!mgr || typeof mgr.get_model !== 'function') return;
+                        var modelPromise = mgr.get_model(modelId);
+                        if (modelPromise && typeof modelPromise.then === 'function') {{
+                            modelPromise.then(function(model) {{
+                                frameModel = model || null;
+                            }});
+                        }}
+                    }} catch (_e) {{}}
+                }})();
+
+                function syncFrameValue(next) {{
+                    frameInput.value = String(next);
+                    frameInput.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    frameInput.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    if (frameModel) {{
+                        try {{
+                            frameModel.set('value', next);
+                            frameModel.save_changes();
+                        }} catch (_e) {{}}
+                    }}
+                }}
+
+                var current = parseInt(frameInput.value || String(startFrame), 10);
+                if (!isFinite(current) || current < 1 || current > frameCount) {{
+                    current = Math.max(1, Math.min(frameCount, startFrame));
+                    syncFrameValue(current);
+                }}
+                var initViewer = getViewer();
+                if (initViewer) {{
+                    try {{
+                        initViewer.setFrame(current - 1);
+                        initViewer.render();
+                    }} catch (_e) {{}}
+                }}
+
+                var timer = setInterval(function() {{
+                    var nowVal = parseInt(frameInput.value || String(current), 10);
+                    if (!isFinite(nowVal) || nowVal < 1 || nowVal > frameCount) {{
+                        nowVal = current;
+                    }}
+                    var next = nowVal + 1;
+                    if (next > frameCount) {{
+                        if (loopEnabled) {{
+                            next = 1;
+                        }} else {{
+                            clearInterval(timer);
+                            delete window._calcTrajPlayTimerByScope[scopeKey];
+                            if (playButton) {{
+                                try {{ playButton.click(); }} catch (_e) {{}}
+                            }}
+                            return;
+                        }}
+                    }}
+                    current = next;
+                    syncFrameValue(next);
+                    var viewer = getViewer();
+                    if (viewer) {{
+                        try {{
+                            viewer.setFrame(next - 1);
+                            viewer.render();
+                        }} catch (_e) {{}}
+                    }}
+                }}, delayMs);
+                window._calcTrajPlayTimerByScope[scopeKey] = timer;
+            }})();
+            """
+        )
 
     def _calc_copy_to_clipboard(text, label='content'):
         text_payload = json.dumps(text)
@@ -2510,6 +2867,7 @@ def create_tab(ctx):
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
         else:
+            _calc_stop_xyz_playback(update_button=True)
             calc_mol_container.layout.display = 'none'
             calc_content_label.layout.display = 'block'
             if state['recalc_active']:
@@ -2919,12 +3277,14 @@ def create_tab(ctx):
         if active:
             if state.get('rmsd_mode_active'):
                 return
+            _calc_stop_xyz_playback(update_button=True)
             saved = {}
             widgets_to_hide = [
                 ('calc_mol_label', calc_mol_label),
                 ('calc_xyz_frame_label', calc_xyz_frame_label),
                 ('calc_xyz_controls', calc_xyz_controls),
                 ('calc_coord_controls', calc_coord_controls),
+                ('calc_mol_view_row', calc_mol_view_row),
                 ('calc_mol_viewer', calc_mol_viewer),
             ]
             for key, widget in widgets_to_hide:
@@ -2942,12 +3302,14 @@ def create_tab(ctx):
             ('calc_xyz_frame_label', calc_xyz_frame_label),
             ('calc_xyz_controls', calc_xyz_controls),
             ('calc_coord_controls', calc_coord_controls),
+            ('calc_mol_view_row', calc_mol_view_row),
             ('calc_mol_viewer', calc_mol_viewer),
         ]
         for key, widget in widgets_to_restore:
             widget.layout.display = saved.get(key, '')
         state['rmsd_saved_display'] = {}
         state['rmsd_mode_active'] = False
+        _calc_update_xyz_traj_control_state()
 
     def _calc_set_rmsd_available(enabled):
         state['rmsd_available'] = bool(enabled)
@@ -3804,6 +4166,7 @@ def create_tab(ctx):
             and len(frames) == 1
         )
         _calc_set_rmsd_available(rmsd_enabled)
+        _calc_update_xyz_traj_control_state()
 
         # Trajectory: use JS viewer and keep orientation when switching frames.
         # For large trajectories, fall back to single-frame mode to avoid
@@ -3817,6 +4180,7 @@ def create_tab(ctx):
                 _mol3d_counter[0] += 1
                 viewer_id = f"calc_trj_viewer_{_mol3d_counter[0]}"
                 wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
+                traj_style_js = _calc_current_traj_style_js()
                 view_scope_json = json.dumps(
                     f"{calc_scope_id}:{state.get('current_path') or '/'}"
                 )
@@ -3887,7 +4251,7 @@ def create_tab(ctx):
                             {VIEWER_MOUSE_PATCH_JS}
                             var xyz = `{full_xyz}`;
                             viewer.addModelsAsFrames(xyz, "xyz");
-                            viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
+                            viewer.setStyle({{}}, {traj_style_js});
                             if (savedView && typeof viewer.setView === 'function') {{
                                 try {{
                                     viewer.setView(savedView);
@@ -3940,6 +4304,7 @@ def create_tab(ctx):
         # Single frame: render with py3Dmol
         xyz_content = f"{n_atoms}\n{comment}\n{xyz_block}\n"
         _render_3dmol(xyz_content)
+        _calc_apply_traj_style()
 
     # -- ORCA terminated check ----------------------------------------------
     def calc_orca_terminated_normally(path):
@@ -4062,8 +4427,14 @@ def create_tab(ctx):
         state['chunk_dom_initialized'] = False
         calc_file_list.options = []
         state['traj_viewer_ready'] = False
+        _calc_stop_xyz_playback(update_button=True)
+        state['xyz_frames'].clear()
+        state['xyz_current_frame'][0] = 0
         _calc_clear_main_viewer_state(reset_view_state=False)
         calc_mol_container.layout.display = 'none'
+        calc_xyz_controls.layout.display = 'none'
+        calc_coord_controls.layout.display = 'none'
+        _calc_update_xyz_traj_control_state()
         _calc_set_rmsd_available(False)
         _calc_reset_rmsd_ui(clear_input=True)
         calc_file_info.value = ''
@@ -4604,6 +4975,38 @@ def create_tab(ctx):
         if state['xyz_frames'] and 1 <= new_val <= len(state['xyz_frames']):
             state['xyz_current_frame'][0] = new_val - 1
             calc_update_xyz_viewer(initial_load=False)
+
+    def calc_on_xyz_loop_change(change):
+        if change.get('name') != 'value':
+            return
+        _calc_update_loop_button_style()
+
+    def calc_on_xyz_fps_change(change):
+        if change.get('name') != 'value':
+            return
+        try:
+            fps = int(change.get('new'))
+        except Exception:
+            fps = CALC_XYZ_PLAY_FPS_DEFAULT
+        fps = max(CALC_XYZ_PLAY_FPS_MIN, min(CALC_XYZ_PLAY_FPS_MAX, fps))
+        if calc_xyz_fps_input.value != fps:
+            calc_xyz_fps_input.value = fps
+
+    def calc_on_xyz_dynamic_bonds_change(change):
+        if change.get('name') != 'value':
+            return
+        _calc_update_dynamic_bonds_button_style()
+        _calc_apply_traj_style()
+
+    def calc_on_xyz_play_change(change):
+        if change.get('name') != 'value':
+            return
+        if state.get('traj_play_toggle_guard'):
+            return
+        if bool(change.get('new')):
+            _calc_start_xyz_playback()
+        else:
+            _calc_stop_xyz_playback(update_button=True)
 
     def calc_on_xyz_copy(button):
         frames = state['xyz_frames']
@@ -5941,6 +6344,7 @@ def create_tab(ctx):
         state['file_chunk_start'] = 0
         state['file_chunk_end'] = 0
         state['chunk_dom_initialized'] = False
+        _calc_stop_xyz_playback(update_button=True)
         _calc_hide_chunk_controls()
         calc_reset_recalc_state()
         _calc_preselect_show(False)
@@ -5953,6 +6357,7 @@ def create_tab(ctx):
         state['traj_viewer_ready'] = False
         calc_xyz_controls.layout.display = 'none'
         calc_coord_controls.layout.display = 'none'
+        _calc_update_xyz_traj_control_state()
         _calc_set_rmsd_available(False)
         _calc_reset_rmsd_ui(clear_input=True)
         calc_xyz_frame_label.value = ''
@@ -6006,7 +6411,9 @@ def create_tab(ctx):
                     state['xyz_current_frame'][0] = 0
                     calc_xyz_controls.layout.display = 'none'
                     calc_coord_controls.layout.display = 'flex'
+                    _calc_update_xyz_traj_control_state()
                     _render_3dmol(xyz_data)
+                    _calc_apply_traj_style()
                 else:
                     calc_file_info.value = f'<b>{_html.escape(name)}</b> (could not parse)'
             except Exception as e:
@@ -6071,6 +6478,7 @@ def create_tab(ctx):
                         state['xyz_current_frame'][0] = 0
                         calc_xyz_controls.layout.display = 'none'
                         calc_coord_controls.layout.display = 'none'
+                        _calc_update_xyz_traj_control_state()
                         _calc_set_rmsd_available(False)
                         calc_xyz_frame_label.value = ''
                         _render_rmsd_preview_dual_xyz(
@@ -6093,6 +6501,7 @@ def create_tab(ctx):
                     calc_xyz_frame_total.value = f"<b>/ {n_frames}</b>"
                     calc_xyz_controls.layout.display = 'flex'
                     calc_coord_controls.layout.display = 'none'
+                    _calc_update_xyz_traj_control_state()
                     _calc_set_rmsd_available(False)
                     calc_update_xyz_viewer(initial_load=True)
                 else:
@@ -6107,12 +6516,15 @@ def create_tab(ctx):
                         calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
                         calc_xyz_controls.layout.display = 'flex'
                         calc_coord_controls.layout.display = 'none'
+                        _calc_update_xyz_traj_control_state()
                         _calc_set_rmsd_available(True)
                     else:
                         calc_xyz_controls.layout.display = 'none'
+                        _calc_update_xyz_traj_control_state()
                         _calc_set_rmsd_available(False)
                     calc_xyz_frame_label.value = ''
                     _render_3dmol(content)
+                    _calc_apply_traj_style()
                 calc_render_content(scroll_to='top')
             except Exception as e:
                 calc_set_message(f'Error: {e}')
@@ -6298,6 +6710,33 @@ def create_tab(ctx):
                     state['selected_inp_path'] = full_path
                     state['selected_inp_base'] = full_path.stem
                     calc_recalc_btn.disabled = False
+                elif suffix in ['.out', '.log']:
+                    try:
+                        xyz_source = full_path.read_text(errors='ignore')
+                        xyz_content = calc_extract_orca_xyz_block(xyz_source)
+                        if xyz_content:
+                            state['xyz_frames'].clear()
+                            state['xyz_frames'].extend(parse_xyz_frames(xyz_content))
+                            if state['xyz_frames']:
+                                state['xyz_current_frame'][0] = 0
+                                calc_xyz_frame_input.max = len(state['xyz_frames'])
+                                calc_xyz_frame_input.value = 1
+                                calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
+                                calc_xyz_controls.layout.display = 'flex'
+                                calc_coord_controls.layout.display = 'none'
+                                _calc_update_xyz_traj_control_state()
+                                if len(state['xyz_frames']) > 1:
+                                    calc_update_xyz_viewer(initial_load=True)
+                                else:
+                                    calc_xyz_frame_label.value = ''
+                                    _render_3dmol(xyz_content)
+                                    _calc_apply_traj_style()
+                            else:
+                                calc_xyz_controls.layout.display = 'none'
+                                _calc_update_xyz_traj_control_state()
+                            _set_view_toggle(False, False)
+                    except Exception:
+                        pass
                 calc_update_view()
                 return
 
@@ -6349,10 +6788,13 @@ def create_tab(ctx):
                             calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
                             calc_xyz_controls.layout.display = 'flex'
                             calc_coord_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
                         else:
                             calc_xyz_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
                         calc_xyz_frame_label.value = ''
                         _render_3dmol(xyz_content)
+                        _calc_apply_traj_style()
                 except Exception as exc:
                     calc_set_message(f'Error: {exc}')
 
@@ -6372,10 +6814,44 @@ def create_tab(ctx):
                             calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
                             calc_xyz_controls.layout.display = 'flex'
                             calc_coord_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
                         else:
                             calc_xyz_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
                         calc_xyz_frame_label.value = ''
                         _render_3dmol(xyz_content)
+                        _calc_apply_traj_style()
+                        _set_view_toggle(False, False)
+                    else:
+                        _set_view_toggle(False, True)
+                except Exception as exc:
+                    _set_view_toggle(False, True)
+                    calc_set_message(f'Error: {exc}')
+                calc_mol_container.layout.display = 'none'
+                calc_content_area.layout.display = 'block'
+            elif suffix in ['.out', '.log']:
+                try:
+                    xyz_content = calc_extract_orca_xyz_block(content)
+                    if xyz_content:
+                        state['xyz_frames'].clear()
+                        state['xyz_frames'].extend(parse_xyz_frames(xyz_content))
+                        if state['xyz_frames']:
+                            state['xyz_current_frame'][0] = 0
+                            calc_xyz_frame_input.max = len(state['xyz_frames'])
+                            calc_xyz_frame_input.value = 1
+                            calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
+                            calc_xyz_controls.layout.display = 'flex'
+                            calc_coord_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
+                            if len(state['xyz_frames']) > 1:
+                                calc_update_xyz_viewer(initial_load=True)
+                            else:
+                                calc_xyz_frame_label.value = ''
+                                _render_3dmol(xyz_content)
+                                _calc_apply_traj_style()
+                        else:
+                            calc_xyz_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
                         _set_view_toggle(False, False)
                     else:
                         _set_view_toggle(False, True)
@@ -6449,6 +6925,10 @@ def create_tab(ctx):
     calc_preselect_new3d.on_click(_calc_preselect_new_3d_structure)
     calc_sort_dropdown.observe(calc_on_sort_change, names='value')
     calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
+    calc_xyz_loop_checkbox.observe(calc_on_xyz_loop_change, names='value')
+    calc_xyz_fps_input.observe(calc_on_xyz_fps_change, names='value')
+    calc_xyz_dynamic_bonds_btn.observe(calc_on_xyz_dynamic_bonds_change, names='value')
+    calc_xyz_play_btn.observe(calc_on_xyz_play_change, names='value')
     calc_xyz_copy_btn.on_click(calc_on_xyz_copy)
     calc_rmsd_run_btn.on_click(calc_on_rmsd_run)
     calc_rmsd_hide_btn.on_click(calc_on_rmsd_hide)
@@ -6462,6 +6942,7 @@ def create_tab(ctx):
     calc_print_mode_plot_btn.on_click(calc_on_print_mode_plot)
     calc_report_btn.on_click(calc_on_report)
     disable_spellcheck(ctx, class_name='calc-search-input')
+    _calc_update_xyz_traj_control_state()
 
     # -- initialise ---------------------------------------------------------
     if ctx.calc_dir.exists():
