@@ -44,6 +44,7 @@ calc_potential_method=2
 ESD module (excited state dynamics):
 ESD_modul=no
 ESD_modus=[TDDFT|deltaSCF|hybrid1]
+ESD_T1_opt=[uks|tddft]
 ESD_frequency=yes
 states=S1,T1,S2,T2
 ISCs=S1>T1,T1>S1
@@ -258,6 +259,9 @@ ESD_modus: TDDFT (default), deltaSCF, or hybrid1 - Method for excited state calc
   → hybrid1: Two-step approach - TDDFT OPT (no FREQ) → deltaSCF OPT FREQ
              Creates {state}_first_TDDFT.inp and {state}_second.inp
              Prevents collapse to S0 by using TDDFT pre-optimization
+ESD_T1_opt: uks (default) or tddft - T1 optimization engine
+  → uks: Optimize T1 as unrestricted triplet ground state (multiplicity 3)
+  → tddft: Optimize T1 as TDDFT triplet root (iroot=1, irootmult=triplet; multiplicity 1)
 ESD_frequency: yes/no - Enable frequency calculations (default: yes)
   → When 'no': Only geometry optimization (OPT) is performed
   → ISC/IC calculations are disabled (require ZPE from frequency calculations)

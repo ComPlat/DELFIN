@@ -107,6 +107,7 @@ calc_potential_method=2
 ESD module (excited state dynamics):
 ESD_modul=no
 ESD_modus=[TDDFT|deltaSCF|hybrid1]
+ESD_T1_opt=[uks|tddft]
 ESD_frequency=yes
 states=[S1,T1,S2,T2]
 ISCs=[S1>T1,T1>S1]
@@ -316,6 +317,7 @@ calc_potential_method=2
 ESD module (excited state dynamics):
 ESD_modul=no
 ESD_modus=[TDDFT|deltaSCF|hybrid1]
+ESD_T1_opt=[uks|tddft]
 ESD_frequency=yes
 states=[S1,T1,S2,T2]
 ISCs=[S1>T1,T1>S1]

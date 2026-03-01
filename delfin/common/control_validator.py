@@ -1287,6 +1287,13 @@ def _as_esd_modus(value: Any) -> str:
     raise ValueError("must be one of: TDDFT, deltaSCF, hybrid1")
 
 
+def _as_esd_t1_opt(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"uks", "tddft"}:
+        return text
+    raise ValueError("must be one of: uks, tddft")
+
+
 def _as_properties_of_interest(value: Any) -> list[str] | str:
     if value is None or value == "":
         return ""
@@ -1459,6 +1466,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("co2_coordination", _as_on_off, default="off"),
     FieldSpec("co2_species_delta", _as_int, default=0),
     FieldSpec("ESD_modus", _as_esd_modus, default="tddft"),
+    FieldSpec("ESD_T1_opt", _as_esd_t1_opt, default="uks"),
     FieldSpec("ESD_nroots", _as_int, default=15),
     FieldSpec("ESD_maxdim", _as_int, default=None, allow_none=True),
     FieldSpec("ESD_SOC", _as_yes_no, default="false"),
@@ -1496,8 +1504,8 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
             validated[spec.name] = "deep"
             continue
 
-        # Skip ESD_modus validation if ESD_modul is not enabled
-        if spec.name == "ESD_modus" and not esd_modul_enabled:
+        # Skip ESD-specific mode switches if ESD_modul is not enabled
+        if spec.name in {"ESD_modus", "ESD_T1_opt"} and not esd_modul_enabled:
             validated[spec.name] = spec.default
             continue
 

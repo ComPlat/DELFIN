@@ -383,6 +383,12 @@ def _get_tddft_param(config: Dict[str, Any], param_name: str, default: Any) -> A
     return config.get(legacy_key, default)
 
 
+def _resolve_esd_t1_opt(config: Dict[str, Any]) -> str:
+    """Resolve T1 optimization engine selector (uks|tddft)."""
+    mode = str(config.get("ESD_T1_opt", "uks")).strip().lower()
+    return mode if mode in {"uks", "tddft"} else "uks"
+
+
 def calculate_dele_cm1(state1_file: str, state2_file: str) -> Optional[float]:
     """Calculate adiabatic energy difference (DELE) between two states.
 
@@ -694,6 +700,20 @@ def _create_state_input_delta_scf(
         Path to generated input file
     """
     state_upper = state.upper()
+
+    # Optional override: optimize T1 with TDDFT triplet root instead of UKS m=3.
+    if state_upper == "T1" and _resolve_esd_t1_opt(config) == "tddft":
+        return _create_state_input_tddft(
+            state=state,
+            esd_dir=esd_dir,
+            charge=charge,
+            solvent=solvent,
+            metals=metals,
+            main_basisset=main_basisset,
+            metal_basisset=metal_basisset,
+            config=config,
+        )
+
     input_file = esd_dir / f"{state_upper}.inp"
 
     # Determine multiplicity based on state type
@@ -1159,7 +1179,9 @@ def _create_state_input_hybrid1(
     """Generate hybrid TDDFT→deltaSCF input files for excited states.
 
     For S0: Creates standard TDDFT input
-    For T1: Creates simple UKS mult=3 optimization (lowest triplet, stable without deltaSCF)
+    For T1: Single-step optimization selected by ESD_T1_opt:
+      - uks (default): UKS mult=3 optimization
+      - tddft: TDDFT triplet-root optimization
     For excited states (S1, S2, T2, T3, etc.):
         1. {state}_first_TDDFT.inp: TDDFT OPT without FREQ
         2. {state}_second.inp: deltaSCF OPT with FREQ, reads from first step
@@ -1181,7 +1203,7 @@ def _create_state_input_hybrid1(
             config=config,
         )
 
-    # For T1 (lowest triplet), use simple UKS mult=3 like S0 (no two-step needed)
+    # For T1, use single-step path (UKS or TDDFT depending on ESD_T1_opt)
     if state_upper == "T1":
         return _create_state_input_delta_scf(
             state=state,
@@ -1453,6 +1475,7 @@ def _create_state_input_tddft(
     followiroot = str(_get_tddft_param(config, "followiroot", "true")).lower() in ("true", "yes", "1", "on")
     esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
     output_blocks = collect_output_blocks(config, allow=True)
+    t1_opt_mode = _resolve_esd_t1_opt(config)
 
     # Build solvation keyword once
     solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
@@ -1653,61 +1676,73 @@ def _create_state_input_tddft(
                 f.write(line)
             f.write("*\n\n")
         elif state_upper == "T1":
-            # T1 (lowest triplet) uses simple UKS + mult 3 optimization (like S0)
-            # NO deltaSCF - just a ground state triplet optimization
-            f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
-            f.write('%base "T1"\n')
-            f.write('%moinp "S0.gbw"\n')
-            f.write(f"%pal nprocs {pal} end\n")
-            f.write(f"%maxcore {maxcore}\n")
-            _write_output_blocks(f)
-            f.write(f"\n* xyz {charge} 3\n")  # Multiplicity 3 for lowest triplet
-            for line in coord_lines:
-                f.write(line)
-            f.write("*\n")
+            if t1_opt_mode == "tddft":
+                # Optimize T1 by following the first triplet TDDFT root.
+                f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
+                f.write('%base "T1"\n')
+                f.write('%moinp "S0.gbw"\n')
+                f.write(f"%pal nprocs {pal} end\n")
+                f.write(f"%maxcore {maxcore}\n")
+                _write_output_blocks(f)
+                _write_tddft_block(f, iroot=1, irootmult="triplet", triplets=True)
+                f.write(f"\n* xyz {charge} 1\n")
+                for line in coord_lines:
+                    f.write(line)
+                f.write("*\n")
+            else:
+                # Legacy/default behavior: unrestricted triplet optimization.
+                f.write("! " + _join_keywords(_build_keywords("UKS")) + " MOREAD\n")
+                f.write('%base "T1"\n')
+                f.write('%moinp "S0.gbw"\n')
+                f.write(f"%pal nprocs {pal} end\n")
+                f.write(f"%maxcore {maxcore}\n")
+                _write_output_blocks(f)
+                f.write(f"\n* xyz {charge} 3\n")  # Multiplicity 3 for lowest triplet
+                for line in coord_lines:
+                    f.write(line)
+                f.write("*\n")
 
-            # Add TDDFT check job for T1 (like in hybrid1/deltaSCF mode)
-            f.write("\n")
-            f.write("#==========================================\n")
-            f.write("# TDDFT Check: Transitions from T1\n")
-            f.write("#==========================================\n")
-            f.write("\n")
-            f.write("$new_job\n")
-
-            # TDDFT keyword line - RKS for TDDFT check
-            tddft_keywords_check = [
-                functional,
-                "RKS",
-                rel_token,
-                main_basis,
-                disp_corr,
-                ri_jkx,
-                aux_jk,
-            ]
-            if solvation_kw:
-                tddft_keywords_check.append(solvation_kw)
-            f.write("! " + " ".join(k for k in tddft_keywords_check if str(k).strip()) + "\n")
-
-            f.write('%base "T1_TDDFT"\n')
-            f.write(f"%pal nprocs {pal} end\n")
-            f.write(f"%maxcore {maxcore}\n")
-
-            # TDDFT block for check job
-            f.write("\n%tddft\n")
-            f.write(f"  nroots {nroots}\n")
-            f.write(f"  maxdim {maxdim}\n")
-            f.write(f"  tda {tda_flag}\n")
-            if tddft_maxiter is not None:
-                f.write(f"  maxiter {tddft_maxiter}\n")
-            f.write("  triplets true\n")
-            f.write("  dosoc false\n")
-            f.write("end\n")
-
-            basis_block = _format_basis_block_for_metals(metals, metal_basis)
-            if basis_block:
+                # Add TDDFT check job for transitions from T1 geometry.
                 f.write("\n")
-                f.write(basis_block)
-            f.write(f"\n* xyzfile {charge} 1 T1.xyz\n")
+                f.write("#==========================================\n")
+                f.write("# TDDFT Check: Transitions from T1\n")
+                f.write("#==========================================\n")
+                f.write("\n")
+                f.write("$new_job\n")
+
+                tddft_keywords_check = [
+                    functional,
+                    "RKS",
+                    rel_token,
+                    main_basis,
+                    disp_corr,
+                    ri_jkx,
+                    aux_jk,
+                ]
+                if solvation_kw:
+                    tddft_keywords_check.append(solvation_kw)
+                f.write("! " + " ".join(k for k in tddft_keywords_check if str(k).strip()) + "\n")
+
+                f.write('%base "T1_TDDFT"\n')
+                f.write(f"%pal nprocs {pal} end\n")
+                f.write(f"%maxcore {maxcore}\n")
+
+                # TDDFT block for check job
+                f.write("\n%tddft\n")
+                f.write(f"  nroots {nroots}\n")
+                f.write(f"  maxdim {maxdim}\n")
+                f.write(f"  tda {tda_flag}\n")
+                if tddft_maxiter is not None:
+                    f.write(f"  maxiter {tddft_maxiter}\n")
+                f.write("  triplets true\n")
+                f.write("  dosoc false\n")
+                f.write("end\n")
+
+                basis_block = _format_basis_block_for_metals(metals, metal_basis)
+                if basis_block:
+                    f.write("\n")
+                    f.write(basis_block)
+                f.write(f"\n* xyzfile {charge} 1 T1.xyz\n")
         elif state_upper == "T2":
             f.write("! " + _join_keywords(_build_keywords("RKS")) + " MOREAD\n")
             f.write('%base "T2"\n')

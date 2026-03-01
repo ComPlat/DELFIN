@@ -23,10 +23,12 @@ _PLACEHOLDER_VALIDATION_VALUES: Dict[str, Any] = {
     "solvent": "DMF",
     "method": "classic",
     "ESD_modus": "tddft",
+    "ESD_T1_opt": "uks",
 }
 _PLACEHOLDER_MESSAGES: Dict[str, str] = {
     "method": "Placeholder [METHOD] must be set to one of: classic, manually, OCCUPIER",
     "ESD_modus": "Placeholder [ESD_MODUS] must be set to one of: TDDFT, deltaSCF, hybrid1",
+    "ESD_T1_opt": "Placeholder [ESD_T1_OPT] must be set to one of: uks, tddft",
 }
 _KNOWN_ORCA_OVERRIDE_BASENAMES: Set[str] = {
     "basename",
@@ -288,7 +290,7 @@ def _collect_missing_required_keys(user_keys: Set[str], placeholder_keys: Set[st
     placeholder_required = _TEMPLATE_REQUIRED_KEYS & placeholder_keys
     missing = sorted(required_missing | placeholder_required)
     if not esd_enabled:
-        missing = [k for k in missing if k != "ESD_modus"]
+        missing = [k for k in missing if k not in {"ESD_modus", "ESD_T1_opt"}]
     return missing
 
 
@@ -477,8 +479,8 @@ def validate_control_text(control_text: str) -> List[str]:
     esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
     missing_required = _collect_missing_required_keys(user_keys, placeholder_keys)
     for key in missing_required:
-        # ESD_modus only matters when ESD_modul=yes
-        if key == 'ESD_modus' and not esd_enabled:
+        # ESD settings only matter when ESD_modul=yes
+        if key in {'ESD_modus', 'ESD_T1_opt'} and not esd_enabled:
             continue
         if key in placeholder_keys:
             msg = _PLACEHOLDER_MESSAGES.get(
