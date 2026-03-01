@@ -448,15 +448,10 @@ def create_tab(ctx):
                         [widgets.HTML('<b>FPS:</b>'), calc_xyz_fps_input],
                         layout=widgets.Layout(gap='6px', align_items='center', flex='0 0 auto'),
                     ),
+                    calc_xyz_play_btn,
                 ],
                 layout=widgets.Layout(
                     gap='12px', align_items='center', width='100%', justify_content='space-between',
-                ),
-            ),
-            widgets.HBox(
-                [calc_xyz_play_btn],
-                layout=widgets.Layout(
-                    gap='12px', align_items='center', width='100%', justify_content='flex-end',
                 ),
             ),
         ],
