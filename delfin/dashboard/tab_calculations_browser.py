@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from collections import Counter
 from itertools import permutations, product
 from pathlib import Path
@@ -2638,13 +2639,27 @@ def create_tab(ctx):
             return None
 
         base_dir = selected_path.parent
+        stem = selected_path.stem
+        stem_candidates = [stem]
+        out_match = re.match(r'(?i)^output(\d*)$', stem)
+        if out_match:
+            mapped = f"input{out_match.group(1)}"
+            if mapped not in stem_candidates:
+                stem_candidates.append(mapped)
+        inp_match = re.match(r'(?i)^input(\d*)$', stem)
+        if inp_match:
+            mapped = f"output{inp_match.group(1)}"
+            if mapped not in stem_candidates:
+                stem_candidates.append(mapped)
+
         candidates = []
 
         def _push(path):
             if path not in candidates:
                 candidates.append(path)
 
-        _push(base_dir / f'{selected_path.stem}.gbw')
+        for st in stem_candidates:
+            _push(base_dir / f'{st}.gbw')
         _push(base_dir / 'initial.gbw')
         _push(base_dir / 'ESD' / 'S0.gbw')
         try:
@@ -2655,7 +2670,8 @@ def create_tab(ctx):
 
         parent_dir = base_dir.parent
         if parent_dir != base_dir:
-            _push(parent_dir / f'{selected_path.stem}.gbw')
+            for st in stem_candidates:
+                _push(parent_dir / f'{st}.gbw')
             _push(parent_dir / 'initial.gbw')
             _push(parent_dir / 'ESD' / 'S0.gbw')
             try:
@@ -2670,10 +2686,30 @@ def create_tab(ctx):
         return None
 
     def _calc_mo_detect_spin(selected_path):
-        scheme = 'RKS'
+        scheme = None
         homo_index = None
         if selected_path is None or not selected_path.exists():
-            return scheme, homo_index
+            return 'RKS', homo_index
+
+        # Primary detection from selected .out (requested): HFTyp/Hartree-Fock type
+        try:
+            with selected_path.open('rb') as handle:
+                head = handle.read(1200000).decode('utf-8', errors='ignore')
+            hftyp_token = None
+            m_hftyp = re.search(
+                r'(?im)^\s*Hartree-?Fock\s+type.*?\b(UHF|RHF|ROHF|UKS|RKS)\b',
+                head,
+            )
+            if m_hftyp:
+                hftyp_token = str(m_hftyp.group(1)).upper().strip()
+            if not hftyp_token:
+                m_short = re.search(r'(?im)^\s*HFTyp\s*\.{2,}\s*([A-Za-z0-9_-]+)\b', head)
+                if m_short:
+                    hftyp_token = str(m_short.group(1)).upper().strip()
+            if hftyp_token:
+                scheme = 'UKS' if hftyp_token.startswith('U') else 'RKS'
+        except Exception:
+            head = ''
 
         project_dir = _calc_mo_project_dir(selected_path)
         json_candidates = []
@@ -2695,36 +2731,52 @@ def create_tab(ctx):
                 continue
             orbitals = ((data.get('ground_state_S0') or {}).get('orbitals') or {})
             raw_scheme = str(orbitals.get('occupation_scheme') or '').upper().strip()
-            if raw_scheme in ('UKS', 'UHF'):
-                scheme = 'UKS'
-            elif raw_scheme:
-                scheme = 'RKS'
+            if scheme is None:
+                if raw_scheme in ('UKS', 'UHF'):
+                    scheme = 'UKS'
+                elif raw_scheme:
+                    scheme = 'RKS'
             try:
                 raw_homo = orbitals.get('homo_index')
-                if raw_homo is not None:
+                if raw_homo is not None and homo_index is None:
                     homo_index = int(raw_homo)
             except Exception:
-                homo_index = None
-            if raw_scheme or homo_index is not None:
-                return scheme, homo_index
+                pass
+            if scheme is not None and homo_index is not None:
+                break
+
+        # Fallback: parse orbitals directly from selected ORCA output.
+        # This is robust for OCCUPIER directories without DELFIN_Data.json.
+        try:
+            from delfin.reporting.delfin_collector import parse_orbitals as _parse_orbitals
+
+            parsed = _parse_orbitals(selected_path)
+            if parsed:
+                parsed_scheme = str(parsed.get('occupation_scheme') or '').upper().strip()
+                if scheme is None:
+                    if parsed_scheme in ('UKS', 'UHF'):
+                        scheme = 'UKS'
+                    elif parsed_scheme:
+                        scheme = 'RKS'
+                raw_homo = parsed.get('homo_index')
+                if raw_homo is not None and homo_index is None:
+                    homo_index = int(raw_homo)
+        except Exception:
+            pass
 
         try:
+            tail = ''
             with selected_path.open('rb') as handle:
-                head = handle.read(300000).decode('utf-8', errors='ignore').upper()
-                tail = ''
-                try:
-                    handle.seek(0, 2)
-                    size = handle.tell()
-                    handle.seek(max(0, size - 300000))
-                    tail = handle.read().decode('utf-8', errors='ignore').upper()
-                except Exception:
-                    tail = ''
-            if re.search(r'\b(UKS|UHF)\b', head) or re.search(r'\b(UKS|UHF)\b', tail):
+                handle.seek(0, 2)
+                size = handle.tell()
+                handle.seek(max(0, size - 300000))
+                tail = handle.read().decode('utf-8', errors='ignore').upper()
+            if scheme is None and (re.search(r'\b(UKS|UHF)\b', head.upper()) or re.search(r'\b(UKS|UHF)\b', tail)):
                 scheme = 'UKS'
         except Exception:
             pass
 
-        return scheme, homo_index
+        return (scheme or 'RKS'), homo_index
 
     def _calc_refresh_mo_plot_info():
         selected_path = _calc_get_selected_path()
@@ -2873,7 +2925,6 @@ def create_tab(ctx):
         jobs = [(mo_idx, spin_name, spin_op) for mo_idx in mo_indices for spin_name, spin_op in spin_choices]
         gbw_dir = gbw_path.parent
         project_dir = _calc_mo_project_dir(selected_path) or gbw_dir
-        cube_dir = project_dir / 'MO_CUBES'
         calc_mo_plot_btn.disabled = True
         calc_mo_plot_status.value = (
             f'<span style="color:#1976d2;">Generating {len(jobs)} cube job(s) with '
@@ -2910,11 +2961,6 @@ def create_tab(ctx):
                 return sorted(uniq, key=lambda p: p.stat().st_mtime_ns)
 
             try:
-                try:
-                    cube_dir.mkdir(parents=True, exist_ok=True)
-                except Exception as exc:
-                    failures.append(f'MO_CUBES folder error: {exc}')
-
                 dens_candidates = [
                     project_dir / f'{gbw_path.stem}.densitiesinfo',
                     gbw_dir / f'{gbw_path.stem}.densitiesinfo',
@@ -2943,7 +2989,17 @@ def create_tab(ctx):
 
                     orca_input = f"1\n1\n2\n{mo_idx}\n3\n{spin_op}\n4\n70\n11\n12\n"
                     cubes_before = _collect_cube_files()
-                    before_keys = {str(p.resolve()) for p in cubes_before}
+                    before_state = {}
+                    for prev_cube in cubes_before:
+                        try:
+                            st_prev = prev_cube.stat()
+                        except Exception:
+                            continue
+                        before_state[str(prev_cube.resolve())] = (
+                            st_prev.st_mtime_ns,
+                            st_prev.st_ctime_ns,
+                            st_prev.st_size,
+                        )
                     try:
                         result = subprocess.run(
                             [orca_plot_exe, gbw_path.name, '-i'],
@@ -3000,26 +3056,50 @@ def create_tab(ctx):
                         )
                         continue
 
-                    cube_files = _collect_cube_files()
-                    new_cube_files = [p for p in cube_files if str(p.resolve()) not in before_keys]
-                    if not new_cube_files:
+                    changed_nonempty = []
+                    changed_empty = []
+                    for _poll in range(12):
+                        changed_nonempty = []
+                        changed_empty = []
+                        cube_files = _collect_cube_files()
+                        for cube_file in cube_files:
+                            try:
+                                st_now = cube_file.stat()
+                            except Exception:
+                                continue
+                            key = str(cube_file.resolve())
+                            prev = before_state.get(key)
+                            changed = (
+                                prev is None
+                                or st_now.st_mtime_ns > prev[0]
+                                or st_now.st_ctime_ns > prev[1]
+                                or st_now.st_size != prev[2]
+                            )
+                            if not changed:
+                                continue
+                            entry = (st_now.st_mtime_ns, cube_file, st_now.st_size)
+                            if st_now.st_size > 0:
+                                changed_nonempty.append(entry)
+                            else:
+                                changed_empty.append(entry)
+                        if changed_nonempty:
+                            break
+                        if _poll < 11:
+                            time.sleep(0.2)
+
+                    if not changed_nonempty and not changed_empty:
                         failures.append(f'MO {mo_idx} ({display_spin}): no cube file generated')
                         continue
+                    if not changed_nonempty:
+                        empty_names = ', '.join(item[1].name for item in sorted(changed_empty)[-2:])
+                        failures.append(
+                            f'MO {mo_idx} ({display_spin}): only empty cube file(s) generated ({empty_names})'
+                        )
+                        continue
 
-                    cube_source = new_cube_files[-1]
-                    cube_ext = cube_source.suffix.lower()
-                    if cube_ext not in ('.cube', '.cub'):
-                        cube_ext = '.cube'
-                    if scheme == 'UKS':
-                        cube_name = f'MO_{mo_idx}_{spin_name}{cube_ext}'
-                    else:
-                        cube_name = f'MO_{mo_idx}{cube_ext}'
-                    cube_target = cube_dir / cube_name
-                    try:
-                        shutil.copy2(cube_source, cube_target)
-                        generated.append(cube_target)
-                    except Exception as exc:
-                        failures.append(f'MO {mo_idx} ({display_spin}): copy failed ({exc})')
+                    changed_nonempty.sort(key=lambda item: item[0])
+                    cube_source = changed_nonempty[-1][1]
+                    generated.append(cube_source)
 
                 if generated:
                     shown = ', '.join(path.name for path in generated[:6])
