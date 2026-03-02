@@ -67,9 +67,18 @@ def smart_mode_enabled() -> bool:
 
 
 def has_ok_marker(out_path) -> bool:
-    """Return True when *out_path* exists and contains ``ORCA TERMINATED NORMALLY``."""
+    """Return True when *out_path* exists and contains ``ORCA TERMINATED NORMALLY``.
+
+    Only reads the last 8 KB of the file since the marker always appears
+    near the end, avoiding full reads of large (100–500 MB) output files.
+    """
     try:
-        return OK_MARKER in Path(out_path).read_text(encoding="utf-8", errors="replace")
+        p = Path(out_path)
+        size = p.stat().st_size
+        with p.open(encoding="utf-8", errors="replace") as f:
+            if size > 8192:
+                f.seek(size - 8192)
+            return OK_MARKER in f.read()
     except Exception:
         return False
 

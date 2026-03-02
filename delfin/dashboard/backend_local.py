@@ -149,15 +149,18 @@ class LocalJobBackend(JobBackend):
             data = self._load_jobs()
             jobs = data.get('jobs', [])
 
+            changed = False
             for job in jobs:
                 if job['status'] == 'RUNNING':
+                    old_status = job['status']
                     self._update_job_status(job)
+                    if job['status'] != old_status:
+                        changed = True
 
             used_cores = sum(j.get('pal', 0) for j in jobs if j['status'] == 'RUNNING')
             used_ram = sum(j.get('pal', 0) * j.get('maxcore', 0)
                           for j in jobs if j['status'] == 'RUNNING')
 
-            started_any = False
             for job in jobs:
                 if job['status'] != 'PENDING':
                     continue
@@ -168,9 +171,10 @@ class LocalJobBackend(JobBackend):
                     if self._start_job(job, data):
                         used_cores += needed_cores
                         used_ram += needed_ram
-                        started_any = True
-            self._save_jobs(data)
-            return started_any
+                        changed = True
+            if changed:
+                self._save_jobs(data)
+            return changed
 
     def _queue_worker(self):
         while self._worker_running:
@@ -178,7 +182,7 @@ class LocalJobBackend(JobBackend):
                 self._try_start_pending_jobs()
             except Exception:
                 pass
-            _time.sleep(5)
+            _time.sleep(30)
 
     # ------------------------------------------------------------------
     # Internal submit (enqueue)

@@ -38,6 +38,7 @@ _BASE_LINE_RE = re.compile(r'^\s*%base\s+"([^"]+)"', re.IGNORECASE)
 _BASE_LINE_FALLBACK_RE = re.compile(r"^\s*%base\s+(\S+)", re.IGNORECASE)
 _CONTROL_OVERRIDE_CACHE: Dict[Path, Tuple[float, Dict[str, List[str]], Dict[str, List[str]]]] = {}
 _CONTROL_OVERRIDE_LOCK = threading.Lock()
+_CONTROL_FILE_LOCATION_CACHE: Dict[str, Optional[Path]] = {}
 
 # Compile regex patterns at module level for performance
 _CPHF_PATTERN = re.compile(r'ITERATION\s+(\d+):.*?\(\s*[\d.]+\s+sec\s+(\d+)/(\d+)\s+done\)')
@@ -80,17 +81,29 @@ def _target_aliases(raw: str) -> List[str]:
 
 
 def _find_control_file(start_dir: Path) -> Optional[Path]:
-    """Find CONTROL.txt by walking from start_dir to parent directories."""
+    """Find CONTROL.txt by walking from start_dir to parent directories.
+
+    Results are cached for the lifetime of the process since CONTROL.txt
+    does not move during a delfin run.
+    """
+    key = str(start_dir)
+    if key in _CONTROL_FILE_LOCATION_CACHE:
+        return _CONTROL_FILE_LOCATION_CACHE[key]
+
     current = start_dir.resolve()
+    result: Optional[Path] = None
     for _ in range(10):
         candidate = current / "CONTROL.txt"
         if candidate.exists():
-            return candidate
+            result = candidate
+            break
         parent = current.parent
         if parent == current:
             break
         current = parent
-    return None
+
+    _CONTROL_FILE_LOCATION_CACHE[key] = result
+    return result
 
 
 def _parse_override_value(lines: List[str], start_idx: int, initial_value: str) -> Tuple[Any, int]:
@@ -743,11 +756,16 @@ def _copy_densitiesinfo(input_file_path: str, scratch_subdir: Optional[Path], wo
 
 
 def _check_orca_success(output_file: str) -> bool:
-    """Check if ORCA terminated normally by looking for success marker."""
+    """Check if ORCA terminated normally by looking for success marker.
+
+    Only reads the last 8 KB since the marker always appears near the end.
+    """
     try:
-        with open(output_file, 'r') as f:
-            content = f.read()
-            return 'ORCA TERMINATED NORMALLY' in content
+        size = os.path.getsize(output_file)
+        with open(output_file, 'r', errors='replace') as f:
+            if size > 8192:
+                f.seek(size - 8192)
+            return 'ORCA TERMINATED NORMALLY' in f.read()
     except Exception as e:
         logger.debug(f"Could not check ORCA success marker: {e}")
         return False
@@ -1018,10 +1036,18 @@ def _run_orca_isolated(
             )
             return False
 
+    # Place iso_dir on scratch when available to avoid HOME filesystem I/O.
+    scratch_env = os.environ.get("DELFIN_SCRATCH") or os.environ.get("ORCA_SCRDIR")
+    if scratch_env:
+        iso_base = Path(scratch_env)
+        iso_base.mkdir(parents=True, exist_ok=True)
+    else:
+        iso_base = parent_dir
+
     # Ensure uniqueness even when multiple jobs run in parallel threads.
     run_token = uuid.uuid4().hex[:8]
     thread_id = threading.get_ident()
-    iso_dir = parent_dir / f".orca_iso_{basename}_{os.getpid()}_{thread_id}_{run_token}"
+    iso_dir = iso_base / f".orca_iso_{basename}_{os.getpid()}_{thread_id}_{run_token}"
 
     try:
         # Create isolated directory
@@ -1032,26 +1058,28 @@ def _run_orca_isolated(
         iso_input = iso_dir / input_path.name
         shutil.copy2(input_path, iso_input)
 
-        # Rewrite file references in the copied input to use ../ paths
-        # This avoids copying large files (GBW can be GB!) while maintaining isolation
+        # Rewrite file references in the copied input to use absolute paths.
+        # This avoids copying large files (GBW can be GB!) while maintaining
+        # isolation — and works regardless of where iso_dir is located
+        # (scratch or parent_dir subdirectory).
         try:
             iso_inp_content = iso_input.read_text(encoding='utf-8', errors='replace')
             modified = False
 
-            # Rewrite %moinp paths to work from isolated subdirectory
-            # - Absolute paths (/scratch/...) stay unchanged
-            # - Relative paths (file.gbw) become ../file.gbw
-            # - Parent paths (../file.gbw) become ../../file.gbw
+            # Rewrite %moinp paths to absolute
+            # - Already absolute paths (/scratch/...) stay unchanged
+            # - Relative paths (file.gbw) become absolute to parent_dir
             def rewrite_moinp(m):
                 filename = m.group(1)
                 if filename.startswith('/'):
-                    return m.group(0)  # Absolute path - unchanged
-                return f'%moinp "../{filename}"'  # Add ../ prefix
+                    return m.group(0)
+                abs_path = str(parent_dir / filename)
+                return f'%moinp "{abs_path}"'
             new_content, n = re.subn(r'%moinp\s+"([^"]+)"', rewrite_moinp, iso_inp_content, flags=re.IGNORECASE)
             if n > 0:
                 iso_inp_content = new_content
                 modified = True
-                logger.debug(f"Rewrote {n} %moinp reference(s) to use ../ path")
+                logger.debug(f"Rewrote {n} %moinp reference(s) to absolute path")
 
             # Rewrite "* xyzfile charge mult file.xyz" (only first job, not after $new_job)
             new_job_match = re.search(r'\$new_job', iso_inp_content, re.IGNORECASE)
@@ -1062,25 +1090,27 @@ def _run_orca_isolated(
             def rewrite_xyzfile(m):
                 prefix, charge, mult, filename = m.group(1), m.group(2), m.group(3), m.group(4)
                 if filename.startswith('/'):
-                    return m.group(0)  # Absolute path - unchanged
-                return f'{prefix}xyzfile {charge} {mult} ../{filename}'  # Add ../ prefix
+                    return m.group(0)
+                abs_path = str(parent_dir / filename)
+                return f'{prefix}xyzfile {charge} {mult} {abs_path}'
             new_first_job, n = re.subn(r'(\*\s*)xyzfile\s+(\S+)\s+(\S+)\s+(\S+)', rewrite_xyzfile, first_job, flags=re.IGNORECASE)
             if n > 0:
                 iso_inp_content = new_first_job + rest
                 modified = True
-                logger.debug(f"Rewrote {n} xyzfile reference(s) to use ../ path")
+                logger.debug(f"Rewrote {n} xyzfile reference(s) to absolute path")
 
-            # Rewrite "file.hess" -> "../file.hess" (or "../../file.hess" if already relative)
+            # Rewrite "file.hess" -> absolute path
             def rewrite_hess(m):
                 filename = m.group(1)
                 if filename.startswith('/'):
-                    return m.group(0)  # Absolute path - unchanged
-                return f'"../{filename}"'  # Add ../ prefix
+                    return m.group(0)
+                abs_path = str(parent_dir / filename)
+                return f'"{abs_path}"'
             new_content, n = re.subn(r'"([^"]+\.hess)"', rewrite_hess, iso_inp_content, flags=re.IGNORECASE)
             if n > 0:
                 iso_inp_content = new_content
                 modified = True
-                logger.debug(f"Rewrote {n} .hess reference(s) to use ../ path")
+                logger.debug(f"Rewrote {n} .hess reference(s) to absolute path")
 
             # Write back if modified
             if modified:

@@ -29,7 +29,31 @@ module load chem/orca/6.1.1
 module load devel/python/3.11
 
 # DELFIN Environment
-source ~/delfin_env/bin/activate
+# venv auf lokale SSD kopieren um HOME I/O zu minimieren
+VENV_DIR="$HOME/delfin_env"
+VENV_TAR="$HOME/delfin_venv.tar"
+if [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
+    VENV_LOCAL="$TMPDIR/delfin_venv_${SLURM_JOB_ID}"
+    if [ -f "$VENV_TAR" ]; then
+        echo "Entpacke venv nach lokale SSD ($VENV_LOCAL)..."
+        mkdir -p "$VENV_LOCAL"
+        tar -xf "$VENV_TAR" --strip-components=1 -C "$VENV_LOCAL"
+    else
+        echo "WARNUNG: $VENV_TAR nicht gefunden, verwende cp (mehr HOME I/O)."
+        echo "         Einmalig ausführen: cd $HOME && tar -cf delfin_venv.tar delfin_env/"
+        cp -a "$VENV_DIR" "$VENV_LOCAL"
+    fi
+    sed -i "s|$VENV_DIR|$VENV_LOCAL|g" "$VENV_LOCAL/bin/activate" 2>/dev/null || true
+    source "$VENV_LOCAL/bin/activate"
+    echo "venv von lokaler SSD geladen."
+else
+    echo "WARNUNG: kein TMPDIR verfuegbar, lade venv direkt von HOME."
+    source "$VENV_DIR/bin/activate"
+fi
+
+# Python HOME I/O weiter reduzieren
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
 
 # Umgebung
 export OMP_NUM_THREADS=1
@@ -70,7 +94,6 @@ echo "Exit Code:   $EXIT_CODE"
 echo "========================================="
 
 # Cleanup
-rm -rf "$DELFIN_SCRATCH"
-rm -rf "$ORCA_TMP"
+rm -rf "$DELFIN_SCRATCH" "$ORCA_TMP" "${VENV_LOCAL:-}"
 
 exit $EXIT_CODE
