@@ -335,6 +335,12 @@ rescue_iso_files() {
     done < <(find "$RUN_DIR" -name '.orca_iso*' -type d -print0 2>/dev/null)
 }
 
+# Delete GOAT per-conformer outputs that should never be copied back to HOME.
+purge_xtb_goat_out_files() {
+    [ -d "$RUN_DIR" ] || return 0
+    find "$RUN_DIR" -type f -name 'XTB_GOAT.goat.*.out' -delete 2>/dev/null || true
+}
+
 # Cleanup function for trap (handles SIGTERM from timeout, SIGINT, etc.)
 cleanup() {
     local signal_name="${1:-UNKNOWN}"
@@ -351,11 +357,12 @@ cleanup() {
 
     # Rescue files from any active iso dirs (ORCA was killed mid-run)
     rescue_iso_files
+    purge_xtb_goat_out_files
 
     # CRITICAL: Copy ALL results back before cleanup
     echo "Copying results back to $SLURM_SUBMIT_DIR..."
     if [ -d "$RUN_DIR" ]; then
-        rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        rsync -a --exclude='*.tmp' --exclude='.orca_iso*' --exclude='XTB_GOAT.goat.*.out' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Results copied successfully."
     else
         echo "WARNING: RUN_DIR not found, nothing to copy."
@@ -372,7 +379,8 @@ periodic_copy() {
     while true; do
         sleep 7200
         if [ -d "$RUN_DIR" ]; then
-            rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+            purge_xtb_goat_out_files
+            rsync -a --exclude='*.tmp' --exclude='.orca_iso*' --exclude='XTB_GOAT.goat.*.out' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         fi
     done
 }
@@ -416,7 +424,8 @@ schedule_final_backup() {
     echo "========================================"
     if [ -d "$RUN_DIR" ]; then
         rescue_iso_files
-        rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        purge_xtb_goat_out_files
+        rsync -a --exclude='*.tmp' --exclude='.orca_iso*' --exclude='XTB_GOAT.goat.*.out' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
         echo "Final backup completed."
     fi
 }
@@ -492,6 +501,7 @@ rsync -a --exclude='.orca_iso*' "$SLURM_SUBMIT_DIR"/ "$RUN_DIR"/ 2>/dev/null || 
 rm -f "$RUN_DIR"/delfin_*.out "$RUN_DIR"/delfin_*.err 2>/dev/null || true
 
 cd "$RUN_DIR"
+purge_xtb_goat_out_files
 
 # Auto-detect mode if set to "auto"
 if [ "$MODE" = "auto" ]; then
@@ -648,7 +658,8 @@ echo "========================================"
 
 # Copy results back
 rescue_iso_files
-rsync -a --exclude='*.tmp' --exclude='.orca_iso*' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
+purge_xtb_goat_out_files
+rsync -a --exclude='*.tmp' --exclude='.orca_iso*' --exclude='XTB_GOAT.goat.*.out' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
 
 # Cleanup scratch
 rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}"

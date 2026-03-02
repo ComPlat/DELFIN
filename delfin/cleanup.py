@@ -15,6 +15,7 @@ DEFAULT_PATTERNS: Sequence[str] = [
     "*.tmp*",
     "*.bas*",
     "*_D0*",
+    "XTB_GOAT.goat.*.out",
 ]
 
 logger = get_logger(__name__)
