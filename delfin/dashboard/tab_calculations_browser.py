@@ -3,6 +3,7 @@
 import base64
 import html as _html
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -32,6 +33,7 @@ from .molecule_viewer import (
     DEFAULT_3DMOL_STYLE_JS,
     patch_viewer_mouse_controls_js,
 )
+from delfin.reporting.delfin_docx_report import _orca_plot_binary
 from rdkit import Chem, RDLogger
 from rdkit.Chem import rdDepictor, AllChem
 from rdkit.Chem.Draw import MolToImage
@@ -47,8 +49,8 @@ def create_tab(ctx):
     CALC_MOL_SIZE = 460
     CALC_MOL_DYNAMIC_SCALE = 0.9725
     CALC_MOL_ZOOM = 0.9
-    CALC_LEFT_DEFAULT = 360
-    CALC_LEFT_MIN = 360
+    CALC_LEFT_DEFAULT = 375
+    CALC_LEFT_MIN = 375
     CALC_LEFT_MAX = 520
     CALC_PRESELECT_VIZ_SIZE = 520
     CALC_RMSD_PANEL_HEIGHT = f'{CALC_MOL_SIZE}px'
@@ -101,6 +103,8 @@ def create_tab(ctx):
         'rmsd_available': False,
         'rmsd_mode_active': False,
         'rmsd_saved_display': {},
+        'clipboard_move': [],
+        'rename_source_path': '',
         'preselect': {
             'active': False,
             'entries': [],
@@ -171,6 +175,89 @@ def create_tab(ctx):
     calc_move_archive_status = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+
+    # Explorer folder/file management
+    calc_new_folder_input = widgets.Text(
+        placeholder='New folder name',
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px', display='none'),
+    )
+    calc_new_folder_btn = widgets.Button(
+        description='+ Folder',
+        button_style='success',
+        layout=widgets.Layout(width='90px', height='26px', display='none'),
+    )
+    calc_rename_input = widgets.Text(
+        placeholder='Rename selected/current folder',
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px', display='none'),
+    )
+    calc_rename_btn = widgets.Button(
+        description='Rename',
+        layout=widgets.Layout(width='90px', height='26px', display='none'),
+    )
+    calc_move_target_input = widgets.Text(
+        placeholder='Move target (relative or /from-root)',
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px', display='none'),
+    )
+    calc_action_source_input = widgets.Text(
+        placeholder='Action source item (internal)',
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px', display='none'),
+    )
+    calc_move_btn = widgets.Button(
+        description='Move',
+        layout=widgets.Layout(width='90px', height='26px', display='none'),
+    )
+    calc_explorer_new_btn = widgets.Button(
+        description='New Folder',
+        button_style='success',
+        layout=widgets.Layout(width='102px', height='26px'),
+    )
+    calc_explorer_rename_btn = widgets.Button(
+        description='✏ Rename',
+        layout=widgets.Layout(width='92px', height='26px'),
+    )
+    calc_explorer_cut_btn = widgets.Button(
+        description='✂ Cut',
+        layout=widgets.Layout(width='72px', height='26px'),
+    )
+    calc_explorer_paste_btn = widgets.Button(
+        description='📋 Paste',
+        layout=widgets.Layout(width='82px', height='26px'),
+        disabled=True,
+    )
+    calc_rename_prompt_label = widgets.HTML('<b>Rename:</b>')
+    calc_rename_prompt_input = widgets.Text(
+        placeholder='New name',
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
+    )
+    calc_rename_prompt_ok_btn = widgets.Button(
+        description='OK',
+        button_style='primary',
+        layout=widgets.Layout(width='56px', height='26px'),
+    )
+    calc_rename_prompt_cancel_btn = widgets.Button(
+        description='Cancel',
+        layout=widgets.Layout(width='78px', height='26px'),
+    )
+    calc_rename_prompt_row = widgets.HBox(
+        [
+            calc_rename_prompt_label,
+            calc_rename_prompt_input,
+            calc_rename_prompt_ok_btn,
+            calc_rename_prompt_cancel_btn,
+        ],
+        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+    )
+    calc_ops_status = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_new_folder_input.add_class('calc-cmd-new-folder-input')
+    calc_new_folder_btn.add_class('calc-cmd-new-folder-btn')
+    calc_rename_input.add_class('calc-cmd-rename-input')
+    calc_rename_btn.add_class('calc-cmd-rename-btn')
+    calc_move_target_input.add_class('calc-cmd-move-target')
+    calc_action_source_input.add_class('calc-cmd-action-source')
+    calc_move_btn.add_class('calc-cmd-move-btn')
 
     # ---- Table extraction panel (Archive tab only) -------------------------
     _TABLE_PRESETS = [
@@ -334,6 +421,7 @@ def create_tab(ctx):
             width='100%', flex='1 1 0', min_height='0', margin='-4px 0 0 0'
         ),
     )
+    calc_file_list.add_class('calc-file-list')
 
     # Multi-select list (shown only in Select mode)
     calc_multi_select = widgets.SelectMultiple(
@@ -795,6 +883,64 @@ def create_tab(ctx):
         layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
     )
 
+    # MO Plot widgets (.out/.gbw -> .cube via orca_plot)
+    calc_mo_plot_input = widgets.Text(
+        value='',
+        placeholder='e.g. 45 or 45,46,47',
+        layout=widgets.Layout(width='180px', min_width='160px', height='26px'),
+    )
+    calc_mo_plot_alpha_cb = widgets.Checkbox(
+        value=True,
+        description='Alpha',
+        layout=widgets.Layout(width='auto'),
+        indent=False,
+    )
+    calc_mo_plot_beta_cb = widgets.Checkbox(
+        value=True,
+        description='Beta',
+        layout=widgets.Layout(width='auto'),
+        indent=False,
+    )
+    calc_mo_plot_spin_box = widgets.HBox(
+        [calc_mo_plot_alpha_cb, calc_mo_plot_beta_cb],
+        layout=widgets.Layout(display='none', gap='4px'),
+    )
+    calc_mo_plot_btn = widgets.Button(
+        description='Plot MO',
+        button_style='primary',
+        layout=widgets.Layout(width='100px', min_width='100px', height='26px'),
+    )
+    calc_mo_plot_file_info = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_mo_plot_status = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_mo_plot_panel = widgets.VBox(
+        [
+            widgets.HTML('<b>MO Plot</b>'),
+            widgets.HTML(
+                '<span style="color:#555;">Generate orbital cube files via orca_plot and display in 3D viewer.</span>'
+            ),
+            calc_mo_plot_file_info,
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>MO #:</b>'),
+                    calc_mo_plot_input,
+                    calc_mo_plot_spin_box,
+                    calc_mo_plot_btn,
+                ],
+                layout=widgets.Layout(
+                    gap='8px', align_items='center', flex_flow='row wrap', width='100%',
+                ),
+            ),
+            calc_mo_plot_status,
+        ],
+        layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
+    )
+
     # -- preselection widgets ----------------------------------------------
     calc_preselect_title = widgets.HTML('<b>Preselection</b>')
     calc_preselect_progress = widgets.HTML('')
@@ -1061,6 +1207,156 @@ def create_tab(ctx):
             if state['current_path']
             else (_calc_dir() / name)
         )
+
+    def _calc_set_ops_status(message, color='#555'):
+        calc_ops_status.value = f'<span style="color:{color};">{message}</span>'
+
+    def _calc_current_dir():
+        return _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
+
+    def _calc_resolve_within_root(path):
+        root = _calc_dir().resolve()
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError('Path must remain inside explorer root.') from exc
+        return resolved
+
+    def _calc_is_relative_to(path, parent):
+        try:
+            path.relative_to(parent)
+            return True
+        except ValueError:
+            return False
+
+    def _calc_clean_item_name(raw_name):
+        name = str(raw_name or '').strip()
+        if not name:
+            raise ValueError('Name cannot be empty.')
+        if name in {'.', '..'}:
+            raise ValueError('Name cannot be "." or "..".')
+        if '/' in name or '\\' in name:
+            raise ValueError('Name cannot contain path separators.')
+        return name
+
+    def _calc_next_available_folder_name(base_name='New Folder'):
+        current_dir = _calc_current_dir()
+        candidate = str(base_name)
+        if not (current_dir / candidate).exists():
+            return candidate
+        idx = 2
+        while True:
+            candidate = f'{base_name} ({idx})'
+            if not (current_dir / candidate).exists():
+                return candidate
+            idx += 1
+
+    def _calc_selected_labels():
+        if state['select_mode']:
+            return [label for label in calc_multi_select.value if label and not label.startswith('(')]
+        selected = calc_file_list.value
+        if selected and not selected.startswith('('):
+            return [selected]
+        return []
+
+    def _calc_take_forced_action_source():
+        forced = str(calc_action_source_input.value or '').strip()
+        calc_action_source_input.value = ''
+        if not forced:
+            return None
+        try:
+            name = _calc_clean_item_name(forced)
+        except Exception:
+            return None
+        src = _calc_current_dir() / name
+        return src if src.exists() else None
+
+    def _calc_collect_move_sources():
+        forced_src = _calc_take_forced_action_source()
+        if forced_src is not None:
+            return [forced_src]
+        labels = _calc_selected_labels()
+        current_dir = _calc_current_dir()
+        sources = []
+        for label in labels:
+            name = _calc_label_to_name(label)
+            if not name:
+                continue
+            src = current_dir / name
+            if src.exists():
+                sources.append(src)
+        if sources:
+            return sources
+        # Fallback: allow moving current folder when nothing is selected.
+        if (not state['select_mode']) and state['current_path']:
+            cur = _calc_current_dir()
+            if cur.exists() and cur.resolve() != _calc_dir().resolve():
+                return [cur]
+        return []
+
+    def _calc_collect_selected_sources_only():
+        labels = _calc_selected_labels()
+        current_dir = _calc_current_dir()
+        sources = []
+        for label in labels:
+            name = _calc_label_to_name(label)
+            if not name:
+                continue
+            src = current_dir / name
+            if src.exists():
+                sources.append(src)
+        return sources
+
+    def _calc_collect_rename_source():
+        forced_src = _calc_take_forced_action_source()
+        if forced_src is not None:
+            return forced_src
+        labels = _calc_selected_labels()
+        if len(labels) > 1:
+            raise ValueError('Select exactly one item for rename.')
+        if labels:
+            name = _calc_label_to_name(labels[0])
+            if not name:
+                raise ValueError('Invalid selection.')
+            src = _calc_current_dir() / name
+            if not src.exists():
+                raise ValueError('Selected item not found.')
+            return src
+        # Fallback: rename current folder when nothing is selected.
+        if (not state['select_mode']) and state['current_path']:
+            src = _calc_current_dir()
+            if src.exists() and src.resolve() != _calc_dir().resolve():
+                return src
+        raise ValueError('Select one item or navigate into a folder to rename it.')
+
+    def _calc_refresh_listing_preserve_filter():
+        saved_filter = calc_folder_search.value
+        calc_list_directory()
+        if saved_filter:
+            calc_folder_search.value = saved_filter
+            calc_filter_file_list()
+
+    def _calc_hide_rename_prompt():
+        state['rename_source_path'] = ''
+        calc_rename_prompt_input.value = ''
+        calc_rename_prompt_row.layout.display = 'none'
+
+    def _calc_clipboard_paths():
+        raw_paths = state.get('clipboard_move') or []
+        valid = []
+        for raw in raw_paths:
+            try:
+                p = _calc_resolve_within_root(Path(raw))
+            except Exception:
+                continue
+            if p.exists():
+                valid.append(p)
+        state['clipboard_move'] = [str(p) for p in valid]
+        return valid
+
+    def _calc_update_explorer_action_state():
+        calc_explorer_paste_btn.disabled = (len(_calc_clipboard_paths()) == 0)
 
     def _calc_parse_mutation_csv(csv_path):
         entries = []
@@ -2264,6 +2560,164 @@ def create_tab(ctx):
         else:
             calc_print_mode_panel.layout.display = 'none'
 
+    def _calc_mo_plot_parse_indices(raw):
+        tokens = [tok.strip() for tok in re.split(r'[\s,]+', str(raw or '').strip()) if tok.strip()]
+        if not tokens:
+            return None, 'Please enter at least one MO index (e.g. 45 46 47).'
+        indices = []
+        for token in tokens:
+            try:
+                mo_idx = int(token)
+            except ValueError:
+                return None, f'Invalid MO index: {token}'
+            if mo_idx < 0:
+                return None, 'MO indices must be non-negative integers.'
+            indices.append(mo_idx)
+        return indices, ''
+
+    def _calc_mo_project_dir(selected_path):
+        if selected_path is None:
+            return None
+        try:
+            calc_root = _calc_dir().resolve()
+        except Exception:
+            calc_root = _calc_dir()
+        for parent in selected_path.parents:
+            if (parent / 'CONTROL.txt').exists() or (parent / 'DELFIN_Data.json').exists():
+                return parent
+            try:
+                if parent.resolve() == calc_root:
+                    break
+            except Exception:
+                if parent == calc_root:
+                    break
+        return selected_path.parent
+
+    def _calc_mo_find_gbw(selected_path):
+        if selected_path is None or not selected_path.exists():
+            return None
+
+        base_dir = selected_path.parent
+        candidates = []
+
+        def _push(path):
+            if path not in candidates:
+                candidates.append(path)
+
+        _push(base_dir / 'ESD' / 'S0.gbw')
+        _push(base_dir / f'{selected_path.stem}.gbw')
+        _push(base_dir / 'initial.gbw')
+        try:
+            for gbw in sorted(base_dir.glob('*.gbw'), key=lambda p: p.name.lower()):
+                _push(gbw)
+        except Exception:
+            pass
+
+        parent_dir = base_dir.parent
+        if parent_dir != base_dir:
+            _push(parent_dir / 'ESD' / 'S0.gbw')
+            _push(parent_dir / f'{selected_path.stem}.gbw')
+            _push(parent_dir / 'initial.gbw')
+            try:
+                for gbw in sorted(parent_dir.glob('*.gbw'), key=lambda p: p.name.lower()):
+                    _push(gbw)
+            except Exception:
+                pass
+
+        for path in candidates:
+            if path.exists() and path.is_file():
+                return path
+        return None
+
+    def _calc_mo_detect_spin(selected_path):
+        scheme = 'RKS'
+        homo_index = None
+        if selected_path is None or not selected_path.exists():
+            return scheme, homo_index
+
+        project_dir = _calc_mo_project_dir(selected_path)
+        json_candidates = []
+        if project_dir is not None:
+            json_candidates.append(project_dir / 'DELFIN_Data.json')
+        for parent in selected_path.parents:
+            candidate = parent / 'DELFIN_Data.json'
+            if candidate not in json_candidates:
+                json_candidates.append(candidate)
+            if project_dir is not None and parent == project_dir:
+                break
+
+        for json_path in json_candidates:
+            if not json_path.exists():
+                continue
+            try:
+                data = json.loads(json_path.read_text(errors='ignore'))
+            except Exception:
+                continue
+            orbitals = ((data.get('ground_state_S0') or {}).get('orbitals') or {})
+            raw_scheme = str(orbitals.get('occupation_scheme') or '').upper().strip()
+            if raw_scheme in ('UKS', 'UHF'):
+                scheme = 'UKS'
+            elif raw_scheme:
+                scheme = 'RKS'
+            try:
+                raw_homo = orbitals.get('homo_index')
+                if raw_homo is not None:
+                    homo_index = int(raw_homo)
+            except Exception:
+                homo_index = None
+            if raw_scheme or homo_index is not None:
+                return scheme, homo_index
+
+        try:
+            with selected_path.open('rb') as handle:
+                head = handle.read(300000).decode('utf-8', errors='ignore').upper()
+                tail = ''
+                try:
+                    handle.seek(0, 2)
+                    size = handle.tell()
+                    handle.seek(max(0, size - 300000))
+                    tail = handle.read().decode('utf-8', errors='ignore').upper()
+                except Exception:
+                    tail = ''
+            if re.search(r'\b(UKS|UHF)\b', head) or re.search(r'\b(UKS|UHF)\b', tail):
+                scheme = 'UKS'
+        except Exception:
+            pass
+
+        return scheme, homo_index
+
+    def _calc_refresh_mo_plot_info():
+        selected_path = _calc_get_selected_path()
+        if selected_path is None or selected_path.suffix.lower() != '.out':
+            calc_mo_plot_file_info.value = '<span style="color:#d32f2f;">Select a .out file.</span>'
+            calc_mo_plot_spin_box.layout.display = 'none'
+            return
+
+        gbw_path = _calc_mo_find_gbw(selected_path)
+        scheme, homo_index = _calc_mo_detect_spin(selected_path)
+        scheme = 'UKS' if scheme == 'UKS' else 'RKS'
+        calc_mo_plot_spin_box.layout.display = 'flex' if scheme == 'UKS' else 'none'
+
+        if gbw_path is not None and gbw_path.exists():
+            gbw_html = f'<span style="color:#2e7d32;">{_html.escape(str(gbw_path))}</span>'
+        else:
+            gbw_html = '<span style="color:#d32f2f;">not found</span>'
+        homo_text = str(homo_index) if homo_index is not None else 'n/a'
+        calc_mo_plot_file_info.value = (
+            f'<span style="color:#555;">GBW:</span> {gbw_html}'
+            f' &nbsp;|&nbsp; '
+            f'<span style="color:#555;">Type:</span> <code>{_html.escape(scheme)}</code>'
+            f' &nbsp;|&nbsp; '
+            f'<span style="color:#555;">HOMO:</span> <code>{_html.escape(homo_text)}</code>'
+        )
+
+    def _calc_show_mo_plot_panel(show):
+        if show:
+            _calc_refresh_mo_plot_info()
+            calc_mo_plot_panel.layout.display = 'block'
+        else:
+            calc_mo_plot_panel.layout.display = 'none'
+
     def calc_on_print_mode_plot(_button):
         modes, err = _calc_print_mode_parse_modes(calc_print_mode_input.value)
         if err:
@@ -2322,6 +2776,164 @@ def create_tab(ctx):
                 )
 
         threading.Thread(target=_run_print_mode, daemon=True).start()
+        calc_options_dropdown.value = '(Options)'
+
+    def calc_on_mo_plot(_button):
+        mo_indices, err = _calc_mo_plot_parse_indices(calc_mo_plot_input.value)
+        if err:
+            calc_mo_plot_status.value = f'<span style="color:#d32f2f;">{_html.escape(err)}</span>'
+            return
+
+        selected_path = _calc_get_selected_path()
+        _calc_refresh_mo_plot_info()
+        if selected_path is None or selected_path.suffix.lower() != '.out':
+            calc_mo_plot_status.value = '<span style="color:#d32f2f;">Select a .out file first.</span>'
+            return
+
+        gbw_path = _calc_mo_find_gbw(selected_path)
+        if gbw_path is None:
+            calc_mo_plot_status.value = (
+                '<span style="color:#d32f2f;">No suitable .gbw file found for selected job.</span>'
+            )
+            return
+
+        orca_plot_exe = shutil.which('orca_plot') or _orca_plot_binary()
+        if not orca_plot_exe:
+            calc_mo_plot_status.value = (
+                '<span style="color:#d32f2f;">orca_plot not found in PATH or ORCA env variables.</span>'
+            )
+            return
+
+        scheme, _homo_index = _calc_mo_detect_spin(selected_path)
+        scheme = 'UKS' if scheme == 'UKS' else 'RKS'
+        if scheme == 'UKS':
+            spin_choices = []
+            if calc_mo_plot_alpha_cb.value:
+                spin_choices.append(('alpha', 0))
+            if calc_mo_plot_beta_cb.value:
+                spin_choices.append(('beta', 1))
+            if not spin_choices:
+                calc_mo_plot_status.value = (
+                    '<span style="color:#d32f2f;">Select Alpha and/or Beta for UKS jobs.</span>'
+                )
+                return
+        else:
+            spin_choices = [('alpha', 0)]
+
+        jobs = [(mo_idx, spin_name, spin_op) for mo_idx in mo_indices for spin_name, spin_op in spin_choices]
+        gbw_dir = gbw_path.parent
+        project_dir = _calc_mo_project_dir(selected_path) or gbw_dir
+        cube_dir = project_dir / 'MO_CUBES'
+        calc_mo_plot_btn.disabled = True
+        calc_mo_plot_status.value = (
+            f'<span style="color:#1976d2;">Generating {len(jobs)} cube job(s) with '
+            f'<code>{_html.escape(str(orca_plot_exe))}</code> ...</span>'
+        )
+
+        def _run_mo_plot():
+            generated = []
+            failures = []
+            env = os.environ.copy()
+            env['ORCA_SCRDIR'] = str(gbw_dir)
+            env['ORCA_TMPDIR'] = str(gbw_dir)
+            env.setdefault('TMPDIR', str(gbw_dir))
+
+            try:
+                try:
+                    cube_dir.mkdir(parents=True, exist_ok=True)
+                except Exception as exc:
+                    failures.append(f'MO_CUBES folder error: {exc}')
+
+                total = len(jobs)
+                for idx, (mo_idx, spin_name, spin_op) in enumerate(jobs, start=1):
+                    display_spin = spin_name if scheme == 'UKS' else 'RKS'
+                    calc_mo_plot_status.value = (
+                        '<span style="color:#1976d2;">'
+                        f'Generating MO {mo_idx} ({_html.escape(display_spin)}) [{idx}/{total}] ...'
+                        '</span>'
+                    )
+
+                    orca_input = f"1\n1\n2\n{mo_idx}\n3\n{spin_op}\n4\n70\n11\n12\n"
+                    try:
+                        result = subprocess.run(
+                            [orca_plot_exe, gbw_path.name, '-i'],
+                            input=orca_input.encode(),
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            cwd=str(gbw_dir),
+                            env=env,
+                            timeout=120,
+                            check=False,
+                        )
+                    except subprocess.TimeoutExpired:
+                        failures.append(f'MO {mo_idx} ({display_spin}): timeout after 120s')
+                        continue
+                    except Exception as exc:
+                        failures.append(f'MO {mo_idx} ({display_spin}): {exc}')
+                        continue
+
+                    if result.returncode != 0:
+                        stderr_text = (result.stderr or result.stdout or b'').decode(errors='ignore').strip()
+                        stderr_text = stderr_text.replace('\n', ' ')
+                        if len(stderr_text) > 220:
+                            stderr_text = stderr_text[:220] + '...'
+                        failures.append(
+                            f'MO {mo_idx} ({display_spin}): rc={result.returncode} '
+                            f'{stderr_text or "no error output"}'
+                        )
+                        continue
+
+                    try:
+                        cube_files = sorted(gbw_dir.glob('*.cube'), key=lambda p: p.stat().st_mtime_ns)
+                    except Exception:
+                        cube_files = []
+                    if not cube_files:
+                        failures.append(f'MO {mo_idx} ({display_spin}): no cube file generated')
+                        continue
+
+                    cube_source = cube_files[-1]
+                    if scheme == 'UKS':
+                        cube_name = f'MO_{mo_idx}_{spin_name}.cube'
+                    else:
+                        cube_name = f'MO_{mo_idx}.cube'
+                    cube_target = cube_dir / cube_name
+                    try:
+                        shutil.copy2(cube_source, cube_target)
+                        generated.append(cube_target)
+                    except Exception as exc:
+                        failures.append(f'MO {mo_idx} ({display_spin}): copy failed ({exc})')
+
+                if generated:
+                    shown = ', '.join(path.name for path in generated[:6])
+                    if len(generated) > 6:
+                        shown += f', ... (+{len(generated) - 6})'
+                    if failures:
+                        failure_text = '; '.join(failures[:2])
+                        if len(failures) > 2:
+                            failure_text += f' ... (+{len(failures) - 2} more)'
+                        calc_mo_plot_status.value = (
+                            '<span style="color:#ef6c00;">'
+                            f'Generated {len(generated)} cube(s): {_html.escape(shown)}'
+                            f' &nbsp;|&nbsp; Issues: {_html.escape(failure_text)}'
+                            '</span>'
+                        )
+                    else:
+                        calc_mo_plot_status.value = (
+                            '<span style="color:#2e7d32;">'
+                            f'Generated {len(generated)} cube(s): {_html.escape(shown)}'
+                            '</span>'
+                        )
+                else:
+                    failure_text = '; '.join(failures[:2]) if failures else 'No cube files were generated.'
+                    if failures and len(failures) > 2:
+                        failure_text += f' ... (+{len(failures) - 2} more)'
+                    calc_mo_plot_status.value = (
+                        f'<span style="color:#d32f2f;">{_html.escape(failure_text)}</span>'
+                    )
+            finally:
+                calc_mo_plot_btn.disabled = False
+
+        threading.Thread(target=_run_mo_plot, daemon=True).start()
         calc_options_dropdown.value = '(Options)'
 
     def calc_on_xyz_batch_refresh(_button=None):
@@ -4415,6 +5027,7 @@ def create_tab(ctx):
         calc_download_status.value = ''
         calc_xyz_batch_status.value = ''
         calc_print_mode_status.value = ''
+        calc_mo_plot_status.value = ''
         calc_search_result.value = ''
         calc_search_suggest.value = '(Select)'
         calc_search_input.value = ''
@@ -4427,6 +5040,7 @@ def create_tab(ctx):
         calc_download_btn.disabled = True
         _calc_show_xyz_batch_panel(False)
         _calc_show_print_mode_panel(False)
+        _calc_show_mo_plot_panel(False)
         _calc_hide_chunk_controls()
         calc_update_view()
         calc_set_message('Select a file...')
@@ -4506,6 +5120,7 @@ def create_tab(ctx):
         calc_update_path_display()
         calc_update_report_btn()
         calc_update_download_btn()
+        _calc_update_explorer_action_state()
 
     def calc_filter_file_list(change=None):
         query = calc_folder_search.value.strip().lower()
@@ -4704,7 +5319,7 @@ def create_tab(ctx):
             calc_options_dropdown.value = '(Options)'
             calc_options_dropdown.layout.display = 'block'
         elif selected and sel_lower.endswith('.out'):
-            out_options = ['(Options)', 'Print Mode']
+            out_options = ['(Options)', 'Print Mode', 'MO Plot']
             if rmsd_available:
                 out_options.append('RMSD')
             calc_options_dropdown.options = out_options
@@ -4730,17 +5345,20 @@ def create_tab(ctx):
     # -- event handlers -----------------------------------------------------
     def calc_on_back(b):
         if state['current_path']:
+            _calc_hide_rename_prompt()
             parts = state['current_path'].split('/')
             state['current_path'] = '/'.join(parts[:-1])
             calc_list_directory()
             calc_file_list.value = None
 
     def calc_on_home(b):
+        _calc_hide_rename_prompt()
         state['current_path'] = ''
         calc_list_directory()
         calc_file_list.value = None
 
     def calc_on_refresh(b):
+        _calc_hide_rename_prompt()
         calc_list_directory()
         calc_file_list.value = None
 
@@ -5256,6 +5874,8 @@ def create_tab(ctx):
             _calc_show_xyz_batch_panel(False)
         if change['new'] != 'Print Mode':
             _calc_show_print_mode_panel(False)
+        if change['new'] != 'MO Plot':
+            _calc_show_mo_plot_panel(False)
         if change['new'] == 'Override':
             calc_override_input.layout.display = 'block'
             calc_override_time.layout.display = 'block'
@@ -5354,6 +5974,18 @@ def create_tab(ctx):
             _calc_preselect_show(False)
             _calc_show_xyz_batch_panel(False)
             _calc_show_print_mode_panel(True)
+            calc_content_area.layout.display = 'block'
+        elif change['new'] == 'MO Plot':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(False)
+            _calc_show_mo_plot_panel(True)
             calc_content_area.layout.display = 'block'
         elif change['new'] == 'RMSD':
             calc_override_input.layout.display = 'none'
@@ -5650,6 +6282,7 @@ def create_tab(ctx):
 
     def calc_on_select_toggle(button):
         state['select_mode'] = not state['select_mode']
+        _calc_hide_rename_prompt()
         if state['select_mode']:
             calc_select_btn.button_style = 'success'
             calc_file_list.layout.display = 'none'
@@ -5850,6 +6483,278 @@ def create_tab(ctx):
 
     def calc_on_move_archive_no(button):
         calc_move_archive_confirm.layout.display = 'none'
+
+    def _calc_parse_move_target_dir(raw_target):
+        target = str(raw_target or '').strip()
+        if not target:
+            raise ValueError('Provide destination folder path.')
+        if target.startswith('/'):
+            rel = target.lstrip('/')
+            target_path = (_calc_dir() / rel) if rel else _calc_dir()
+        else:
+            target_path = _calc_current_dir() / target
+        target_path = _calc_resolve_within_root(target_path)
+        if not target_path.exists() or not target_path.is_dir():
+            raise ValueError(f'Destination folder not found: {target}')
+        return target_path
+
+    def calc_on_new_folder(button=None):
+        try:
+            raw_name = str(calc_new_folder_input.value or '').strip()
+            folder_name = (
+                _calc_clean_item_name(raw_name)
+                if raw_name
+                else _calc_next_available_folder_name('New Folder')
+            )
+            target = _calc_resolve_within_root(_calc_current_dir() / folder_name)
+            if target.exists():
+                raise ValueError(f'Folder already exists: {folder_name}')
+            target.mkdir(parents=False, exist_ok=False)
+            calc_new_folder_input.value = ''
+            _calc_set_ops_status(
+                f'Folder created: <code>{_html.escape(folder_name)}</code>',
+                color='#2e7d32',
+            )
+            calc_file_list.value = None
+            _calc_refresh_listing_preserve_filter()
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Create folder failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def calc_on_rename(button=None):
+        try:
+            src = _calc_collect_rename_source()
+            src_resolved = _calc_resolve_within_root(src)
+            current_before = _calc_current_dir().resolve()
+            root = _calc_dir().resolve()
+            new_name = _calc_clean_item_name(calc_rename_input.value)
+            if src_resolved.name == new_name:
+                raise ValueError('New name is identical to current name.')
+            dst = _calc_resolve_within_root(src_resolved.parent / new_name)
+            if dst.exists():
+                raise ValueError(f'Target already exists: {new_name}')
+            src_resolved.rename(dst)
+            if state['current_path'] and current_before == src_resolved:
+                state['current_path'] = dst.relative_to(root).as_posix()
+            calc_rename_input.value = ''
+            _calc_set_ops_status(
+                f'Renamed to <code>{_html.escape(new_name)}</code>',
+                color='#2e7d32',
+            )
+            calc_file_list.value = None
+            calc_multi_select.value = ()
+            _calc_refresh_listing_preserve_filter()
+            return True
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Rename failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+            return False
+
+    def calc_on_move_items(button=None):
+        sources = _calc_collect_move_sources()
+        if not sources:
+            _calc_set_ops_status(
+                'No source selected. Use Select mode or navigate into a folder.',
+                color='#d32f2f',
+            )
+            return
+        try:
+            target_dir = _calc_parse_move_target_dir(calc_move_target_input.value)
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Move failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+            return
+
+        current_before = _calc_current_dir().resolve()
+        root = _calc_dir().resolve()
+        moved, errors = [], []
+        moved_current_to = None
+        for src in sources:
+            try:
+                src_resolved = _calc_resolve_within_root(src)
+                if src_resolved == target_dir or _calc_is_relative_to(target_dir, src_resolved):
+                    raise ValueError('Cannot move a folder into itself.')
+                dst = _calc_resolve_within_root(target_dir / src_resolved.name)
+                if dst.exists():
+                    raise ValueError(f'Target already exists: {src_resolved.name}')
+                shutil.move(str(src_resolved), str(dst))
+                moved.append(src_resolved.name)
+                if state['current_path'] and current_before == src_resolved:
+                    moved_current_to = dst
+            except Exception as exc:
+                errors.append(
+                    f'{_html.escape(getattr(src, "name", str(src)))}: {_html.escape(str(exc))}'
+                )
+
+        if moved_current_to is not None:
+            try:
+                state['current_path'] = moved_current_to.resolve().relative_to(root).as_posix()
+            except Exception:
+                state['current_path'] = ''
+
+        try:
+            rel_target = target_dir.resolve().relative_to(root).as_posix()
+            target_label = '/' if not rel_target else f'/{rel_target}'
+        except Exception:
+            target_label = str(target_dir)
+
+        if moved and not errors:
+            _calc_set_ops_status(
+                f'Moved {len(moved)} item(s) to <code>{_html.escape(target_label)}</code>.',
+                color='#2e7d32',
+            )
+        elif moved and errors:
+            _calc_set_ops_status(
+                (
+                    f'Moved {len(moved)} item(s), failed: '
+                    f'{"; ".join(errors)}'
+                ),
+                color='#e65100',
+            )
+        else:
+            _calc_set_ops_status('; '.join(errors), color='#d32f2f')
+        calc_move_target_input.value = ''
+        calc_file_list.value = None
+        calc_multi_select.value = ()
+        _calc_refresh_listing_preserve_filter()
+
+    def calc_on_explorer_new_folder(button=None):
+        _calc_hide_rename_prompt()
+        calc_new_folder_input.value = ''
+        calc_on_new_folder()
+
+    def calc_on_explorer_start_rename(button=None):
+        try:
+            src = _calc_collect_rename_source()
+            src_resolved = _calc_resolve_within_root(src)
+            state['rename_source_path'] = str(src_resolved)
+            calc_rename_prompt_input.value = src_resolved.name
+            calc_rename_prompt_row.layout.display = 'flex'
+            _calc_set_ops_status('Enter new name and confirm with OK.', color='#555')
+        except Exception as exc:
+            _calc_hide_rename_prompt()
+            _calc_set_ops_status(
+                f'Rename failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def calc_on_explorer_rename_ok(button=None):
+        src_raw = str(state.get('rename_source_path') or '').strip()
+        if not src_raw:
+            _calc_set_ops_status('No item prepared for rename.', color='#d32f2f')
+            return
+        try:
+            src_path = _calc_resolve_within_root(Path(src_raw))
+            current_dir = _calc_current_dir().resolve()
+            if src_path.parent.resolve() != current_dir:
+                raise ValueError('Open the source folder before confirming rename.')
+            calc_action_source_input.value = src_path.name
+            calc_rename_input.value = calc_rename_prompt_input.value
+            success = calc_on_rename()
+            if success:
+                _calc_hide_rename_prompt()
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Rename failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def calc_on_explorer_rename_cancel(button=None):
+        _calc_hide_rename_prompt()
+        _calc_set_ops_status('Rename canceled.', color='#555')
+
+    def calc_on_explorer_cut(button=None):
+        _calc_hide_rename_prompt()
+        sources = _calc_collect_selected_sources_only()
+        if not sources:
+            _calc_set_ops_status('Select item(s) first, then click Cut.', color='#d32f2f')
+            return
+        resolved_sources = []
+        errors = []
+        for src in sources:
+            try:
+                resolved_sources.append(_calc_resolve_within_root(src))
+            except Exception as exc:
+                errors.append(_html.escape(str(exc)))
+        if not resolved_sources:
+            _calc_set_ops_status(
+                f'Cut failed: {"; ".join(errors) if errors else "No valid source selected."}',
+                color='#d32f2f',
+            )
+            return
+        state['clipboard_move'] = [str(p) for p in resolved_sources]
+        _calc_update_explorer_action_state()
+        _calc_set_ops_status(
+            f'Cut {len(resolved_sources)} item(s). Open target folder and click Paste.',
+            color='#1976d2',
+        )
+
+    def calc_on_explorer_paste(button=None):
+        _calc_hide_rename_prompt()
+        sources = _calc_clipboard_paths()
+        if not sources:
+            _calc_update_explorer_action_state()
+            _calc_set_ops_status('Clipboard is empty. Use Cut first.', color='#d32f2f')
+            return
+        target_dir = _calc_resolve_within_root(_calc_current_dir())
+        current_before = _calc_current_dir().resolve()
+        root = _calc_dir().resolve()
+        moved, errors = [], []
+        remaining = []
+        moved_current_to = None
+        for src in sources:
+            try:
+                src_resolved = _calc_resolve_within_root(src)
+                if src_resolved == target_dir or _calc_is_relative_to(target_dir, src_resolved):
+                    raise ValueError('Cannot move a folder into itself.')
+                dst = _calc_resolve_within_root(target_dir / src_resolved.name)
+                if dst.exists():
+                    raise ValueError(f'Target already exists: {src_resolved.name}')
+                shutil.move(str(src_resolved), str(dst))
+                moved.append(src_resolved.name)
+                if state['current_path'] and current_before == src_resolved:
+                    moved_current_to = dst
+            except Exception as exc:
+                remaining.append(src)
+                errors.append(
+                    f'{_html.escape(getattr(src, "name", str(src)))}: {_html.escape(str(exc))}'
+                )
+        state['clipboard_move'] = [str(p) for p in remaining]
+        _calc_update_explorer_action_state()
+
+        if moved_current_to is not None:
+            try:
+                state['current_path'] = moved_current_to.resolve().relative_to(root).as_posix()
+            except Exception:
+                state['current_path'] = ''
+
+        try:
+            rel_target = target_dir.resolve().relative_to(root).as_posix()
+            target_label = '/' if not rel_target else f'/{rel_target}'
+        except Exception:
+            target_label = str(target_dir)
+
+        if moved and not errors:
+            _calc_set_ops_status(
+                f'Moved {len(moved)} item(s) to <code>{_html.escape(target_label)}</code>.',
+                color='#2e7d32',
+            )
+        elif moved and errors:
+            _calc_set_ops_status(
+                f'Moved {len(moved)} item(s), failed: {"; ".join(errors)}',
+                color='#e65100',
+            )
+        else:
+            _calc_set_ops_status('; '.join(errors), color='#d32f2f')
+        calc_file_list.value = None
+        calc_multi_select.value = ()
+        _calc_refresh_listing_preserve_filter()
 
     # -- table extraction ---------------------------------------------------
     def _collect_table_col_values():
@@ -6275,6 +7180,7 @@ def create_tab(ctx):
 
         # Navigate into directory
         if full_path.is_dir():
+            _calc_hide_rename_prompt()
             state['current_path'] = (
                 f'{state["current_path"]}/{name}' if state['current_path'] else name
             )
@@ -6311,6 +7217,7 @@ def create_tab(ctx):
         calc_download_status.value = ''
         calc_xyz_batch_status.value = ''
         calc_print_mode_status.value = ''
+        calc_mo_plot_status.value = ''
         state['file_content'] = ''
         state['selected_file_path'] = None
         state['selected_file_size'] = 0
@@ -6325,6 +7232,7 @@ def create_tab(ctx):
         _calc_preselect_show(False)
         _calc_show_xyz_batch_panel(False)
         _calc_show_print_mode_panel(False)
+        _calc_show_mo_plot_panel(False)
 
         # Reset xyz trajectory controls
         state['xyz_frames'].clear()
@@ -6881,6 +7789,30 @@ def create_tab(ctx):
     calc_move_archive_btn.on_click(calc_on_move_archive_click)
     calc_move_archive_yes_btn.on_click(calc_on_move_archive_yes)
     calc_move_archive_no_btn.on_click(calc_on_move_archive_no)
+    calc_explorer_new_btn.on_click(calc_on_explorer_new_folder)
+    calc_explorer_rename_btn.on_click(calc_on_explorer_start_rename)
+    calc_explorer_cut_btn.on_click(calc_on_explorer_cut)
+    calc_explorer_paste_btn.on_click(calc_on_explorer_paste)
+    calc_rename_prompt_ok_btn.on_click(calc_on_explorer_rename_ok)
+    calc_rename_prompt_cancel_btn.on_click(calc_on_explorer_rename_cancel)
+    calc_new_folder_btn.on_click(calc_on_new_folder)
+    calc_rename_btn.on_click(calc_on_rename)
+    calc_move_btn.on_click(calc_on_move_items)
+    for _txt, _handler in (
+        (calc_new_folder_input, calc_on_new_folder),
+        (calc_rename_input, calc_on_rename),
+        (calc_move_target_input, calc_on_move_items),
+    ):
+        if hasattr(_txt, 'on_submit'):
+            try:
+                _txt.on_submit(_handler)
+            except Exception:
+                pass
+    if hasattr(calc_rename_prompt_input, 'on_submit'):
+        try:
+            calc_rename_prompt_input.on_submit(calc_on_explorer_rename_ok)
+        except Exception:
+            pass
     if _is_archive_tab:
         calc_table_btn.on_click(calc_on_table_toggle)
         calc_table_close_btn.on_click(calc_on_table_close)
@@ -6914,6 +7846,7 @@ def create_tab(ctx):
     calc_xyz_batch_build_btn.on_click(calc_on_xyz_batch_build)
     calc_xyz_batch_copy_btn.on_click(calc_on_xyz_batch_copy)
     calc_print_mode_plot_btn.on_click(calc_on_print_mode_plot)
+    calc_mo_plot_btn.on_click(calc_on_mo_plot)
     calc_report_btn.on_click(calc_on_report)
     disable_spellcheck(ctx, class_name='calc-search-input')
     _calc_update_xyz_traj_control_state()
@@ -6954,28 +7887,283 @@ def create_tab(ctx):
         '});}).observe(document.body,{childList:true,subtree:true});'
         '})();'
     )
+    _explorer_interactions_js = r"""
+    (function(){
+        if (window._delfinExplorerInteractionsReady) return;
+        window._delfinExplorerInteractionsReady = true;
+
+        function _labelText(opt){
+            if (!opt) return '';
+            return String(opt.textContent || opt.innerText || '');
+        }
+        function _labelToName(text){
+            var t = String(text || '').trim();
+            var idx = t.indexOf(' ');
+            return idx >= 0 ? t.slice(idx + 1).trim() : t;
+        }
+        function _isFolderLabel(text){
+            var t = String(text || '');
+            return t.indexOf('📂 ') === 0 || t.indexOf('✅ ') === 0;
+        }
+        function _setWidgetInput(root, cls, value){
+            if (!root) return false;
+            var input = root.querySelector('.' + cls + ' input');
+            if (!input) return false;
+            input.value = String(value == null ? '' : value);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+        }
+        function _clickWidgetButton(root, cls){
+            if (!root) return false;
+            var btn = root.querySelector('.' + cls + ' button');
+            if (!btn) return false;
+            btn.click();
+            return true;
+        }
+        function _optionFromEvent(e){
+            return (e && e.target && e.target.tagName === 'OPTION') ? e.target : null;
+        }
+        function _hideCtxMenu(){
+            var menu = document.getElementById('delfin-explorer-ctx-menu');
+            if (menu) menu.style.display = 'none';
+        }
+        function _ensureCtxMenu(){
+            var menu = document.getElementById('delfin-explorer-ctx-menu');
+            if (menu) return menu;
+            menu = document.createElement('div');
+            menu.id = 'delfin-explorer-ctx-menu';
+            menu.style.cssText = [
+                'position:fixed',
+                'z-index:2147483647',
+                'display:none',
+                'min-width:170px',
+                'background:#fff',
+                'border:1px solid #c8c8c8',
+                'box-shadow:0 8px 24px rgba(0,0,0,0.18)',
+                'border-radius:6px',
+                'padding:4px'
+            ].join(';');
+
+            function makeItem(label, onClick){
+                var item = document.createElement('button');
+                item.type = 'button';
+                item.textContent = label;
+                item.style.cssText = [
+                    'display:block',
+                    'width:100%',
+                    'text-align:left',
+                    'padding:7px 10px',
+                    'border:none',
+                    'background:transparent',
+                    'cursor:pointer',
+                    'border-radius:4px',
+                    'font:13px sans-serif'
+                ].join(';');
+                item.addEventListener('mouseenter', function(){ item.style.background = '#f2f6ff'; });
+                item.addEventListener('mouseleave', function(){ item.style.background = 'transparent'; });
+                item.addEventListener('click', function(ev){
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    try { onClick(menu); } finally { _hideCtxMenu(); }
+                });
+                return item;
+            }
+
+            menu.appendChild(makeItem('New Folder', function(menuEl){
+                var root = menuEl._root;
+                _setWidgetInput(root, 'calc-cmd-new-folder-input', '');
+                _clickWidgetButton(root, 'calc-cmd-new-folder-btn');
+            }));
+            menu.appendChild(makeItem('Rename', function(menuEl){
+                var root = menuEl._root;
+                var opt = menuEl._ctxOption;
+                if (!root || !opt) return;
+                var currentName = _labelToName(_labelText(opt));
+                if (!currentName) return;
+                var nextName = window.prompt('Rename to:', currentName);
+                if (nextName === null) return;
+                _setWidgetInput(root, 'calc-cmd-action-source', currentName);
+                _setWidgetInput(root, 'calc-cmd-rename-input', nextName);
+                _clickWidgetButton(root, 'calc-cmd-rename-btn');
+            }));
+            document.body.appendChild(menu);
+            return menu;
+        }
+        function _triggerMove(root, sourceOpt, targetOpt){
+            if (!root || !sourceOpt || !targetOpt || sourceOpt === targetOpt) return;
+            var targetLabel = _labelText(targetOpt);
+            if (!_isFolderLabel(targetLabel)) return;
+            var targetName = _labelToName(targetLabel);
+            if (!targetName) return;
+            var sourceName = _labelToName(_labelText(sourceOpt));
+            if (!sourceName) return;
+            _setWidgetInput(root, 'calc-cmd-action-source', sourceName);
+            _setWidgetInput(root, 'calc-cmd-move-target', targetName);
+            setTimeout(function(){
+                _clickWidgetButton(root, 'calc-cmd-move-btn');
+            }, 20);
+        }
+        function _installExplorerSelect(selectEl){
+            if (!selectEl || selectEl._delfinExplorerReady) return;
+            selectEl._delfinExplorerReady = true;
+            var root = selectEl.closest('.calc-tab');
+            if (!root) return;
+
+            var dragState = { src: null, x: 0, y: 0, moved: false };
+            var ctxOption = null;
+
+            function refreshDraggable(){
+                var opts = Array.prototype.slice.call(selectEl.options || []);
+                opts.forEach(function(opt){
+                    var txt = _labelText(opt);
+                    opt.draggable = txt && txt.charAt(0) !== '(';
+                });
+            }
+
+            selectEl.addEventListener('contextmenu', function(e){
+                var menu = _ensureCtxMenu();
+                var opt = _optionFromEvent(e);
+                e.preventDefault();
+                e.stopPropagation();
+                if (opt) {
+                    ctxOption = opt;
+                } else {
+                    ctxOption = null;
+                }
+                menu._root = root;
+                menu._ctxOption = ctxOption;
+                menu.style.left = (e.clientX + 2) + 'px';
+                menu.style.top = (e.clientY + 2) + 'px';
+                menu.style.display = 'block';
+            }, true);
+
+            selectEl.addEventListener('mousedown', function(e){
+                var opt = _optionFromEvent(e);
+                if (!opt) {
+                    dragState.src = null;
+                    return;
+                }
+                dragState.src = opt;
+                dragState.x = e.clientX || 0;
+                dragState.y = e.clientY || 0;
+                dragState.moved = false;
+            }, true);
+
+            selectEl.addEventListener('mousemove', function(e){
+                if (!dragState.src) return;
+                var dx = Math.abs((e.clientX || 0) - dragState.x);
+                var dy = Math.abs((e.clientY || 0) - dragState.y);
+                if (dx + dy > 8) dragState.moved = true;
+            }, true);
+
+            selectEl.addEventListener('mouseup', function(e){
+                var targetOpt = _optionFromEvent(e);
+                if (!dragState.src || !dragState.moved || !targetOpt) {
+                    dragState.src = null;
+                    dragState.moved = false;
+                    return;
+                }
+                e.preventDefault();
+                _triggerMove(root, dragState.src, targetOpt);
+                dragState.src = null;
+                dragState.moved = false;
+            }, true);
+
+            selectEl.addEventListener('dragstart', function(e){
+                var opt = _optionFromEvent(e);
+                if (!opt) return;
+                selectEl._delfinDragSource = opt;
+                try {
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', _labelText(opt));
+                } catch (_err) {}
+            }, true);
+
+            selectEl.addEventListener('dragover', function(e){
+                var opt = _optionFromEvent(e);
+                if (opt && _isFolderLabel(_labelText(opt))) e.preventDefault();
+            }, true);
+
+            selectEl.addEventListener('drop', function(e){
+                var targetOpt = _optionFromEvent(e);
+                var sourceOpt = selectEl._delfinDragSource || null;
+                if (!sourceOpt || !targetOpt) {
+                    selectEl._delfinDragSource = null;
+                    return;
+                }
+                e.preventDefault();
+                _triggerMove(root, sourceOpt, targetOpt);
+                selectEl._delfinDragSource = null;
+            }, true);
+
+            refreshDraggable();
+            try {
+                new MutationObserver(refreshDraggable).observe(selectEl, {
+                    childList: true,
+                    subtree: true,
+                });
+            } catch (_err) {}
+        }
+        function _scanAndInstall(root){
+            if (!root || !root.querySelectorAll) return;
+            var selects = root.querySelectorAll('.calc-file-list select');
+            Array.prototype.forEach.call(selects, _installExplorerSelect);
+        }
+
+        _scanAndInstall(document.body);
+        new MutationObserver(function(mutations){
+            mutations.forEach(function(m){
+                Array.prototype.forEach.call(m.addedNodes || [], function(node){
+                    if (node && node.nodeType === 1) _scanAndInstall(node);
+                });
+            });
+        }).observe(document.body, { childList: true, subtree: true });
+
+        document.addEventListener('click', _hideCtxMenu, true);
+        document.addEventListener('scroll', _hideCtxMenu, true);
+        document.addEventListener('keydown', function(e){
+            if (e.key === 'Escape') _hideCtxMenu();
+        }, true);
+    })();
+    """
     from IPython.display import Javascript as _Javascript
     with ctx.js_output:
         display(_Javascript(_multi_select_js))
+        display(_Javascript(_explorer_interactions_js))
 
     # -- layout -------------------------------------------------------------
     _archive_row_children = [calc_table_btn] if _is_archive_tab else [calc_move_archive_btn]
     calc_nav_bar = widgets.VBox([
         calc_path_label,
         widgets.HBox(
-            [calc_back_btn, calc_home_btn, calc_refresh_btn, calc_delete_btn, calc_select_btn],
+            [calc_back_btn, calc_home_btn, calc_refresh_btn, calc_delete_btn, *_archive_row_children],
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden',
                 justify_content='flex-start', gap='6px',
             ),
         ),
         widgets.HBox(
-            _archive_row_children,
+            [calc_select_btn],
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden',
                 justify_content='flex-start', gap='6px',
                 display='flex',
             ),
+        ),
+        widgets.HBox(
+            [calc_explorer_new_btn, calc_explorer_rename_btn, calc_explorer_cut_btn, calc_explorer_paste_btn],
+            layout=widgets.Layout(
+                width='100%', overflow_x='hidden',
+                justify_content='flex-start', gap='6px',
+                display='flex', flex_flow='row wrap',
+            ),
+        ),
+        calc_rename_prompt_row,
+        widgets.VBox(
+            [calc_new_folder_input, calc_new_folder_btn, calc_rename_input, calc_rename_btn,
+             calc_move_target_input, calc_action_source_input, calc_move_btn],
+            layout=widgets.Layout(display='none'),
         ),
     ], layout=widgets.Layout(width='100%', overflow_x='hidden'))
 
@@ -7125,6 +8313,7 @@ def create_tab(ctx):
         calc_report_status,
         calc_xyz_batch_panel,
         calc_print_mode_panel,
+        calc_mo_plot_panel,
         calc_mol_container,
         calc_content_label,
         calc_preselect_container,
@@ -7132,6 +8321,7 @@ def create_tab(ctx):
         calc_delete_status,
         calc_move_archive_confirm,
         calc_move_archive_status,
+        calc_ops_status,
     ]
     if _is_archive_tab:
         calc_right_children.append(calc_table_panel)
