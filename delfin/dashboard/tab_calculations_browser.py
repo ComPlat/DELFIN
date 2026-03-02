@@ -5168,19 +5168,173 @@ def create_tab(ctx):
         except Exception:
             return False
 
+    def _calc_job_status_is_running(status):
+        return str(status or '').upper().strip() in {
+            'RUNNING', 'R', 'CG', 'COMPLETING',
+        }
+
+    def _calc_job_status_is_pending(status):
+        return str(status or '').upper().strip() in {
+            'PENDING', 'PD', 'Q', 'QUEUED', 'CF', 'CONFIGURING',
+        }
+
+    def _calc_job_status_activity_rank(status):
+        if _calc_job_status_is_running(status):
+            return 2
+        if _calc_job_status_is_pending(status):
+            return 1
+        return 0
+
+    def calc_collect_slurm_status_dirs(calc_root_resolved):
+        """Collect SLURM statuses using workdir (%Z) for robust folder mapping."""
+        if not shutil.which('squeue'):
+            return []
+        user = os.environ.get('USER')
+        if not user:
+            try:
+                user = os.getlogin()
+            except Exception:
+                return []
+
+        try:
+            result = subprocess.run(
+                ['squeue', '-h', '-u', user, '-o', '%i|%t|%Z'],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except Exception:
+            return []
+        if result.returncode != 0:
+            return []
+
+        items = []
+        for line in (result.stdout or '').splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split('|', 2)
+            if len(parts) < 3:
+                continue
+            raw_job_id, raw_status, raw_dir = parts
+            raw_status = str(raw_status or '').upper().strip()
+            raw_dir = str(raw_dir or '').strip()
+            if not raw_status or not raw_dir:
+                continue
+            if raw_dir in {'N/A', '(null)', '-', 'None'}:
+                continue
+
+            try:
+                job_id = int(str(raw_job_id).strip())
+            except Exception:
+                job_id = 0
+
+            try:
+                job_dir = Path(raw_dir).resolve()
+                rel = job_dir.relative_to(calc_root_resolved)
+            except Exception:
+                continue
+            if not rel.parts:
+                continue
+            folder_path = calc_root_resolved / rel.parts[0]
+            items.append((folder_path, job_id, raw_status))
+        return items
+
+    def calc_collect_running_process_dirs():
+        """Best-effort fallback: detect running DELFIN/ORCA process dirs."""
+        user = os.environ.get('USER')
+        if not user:
+            try:
+                user = os.getlogin()
+            except Exception:
+                return set()
+
+        try:
+            calc_root_resolved = _calc_dir().resolve()
+        except Exception:
+            calc_root_resolved = _calc_dir()
+
+        keywords = ('orca', 'delfin', 'xtb', 'crest')
+        try:
+            result = subprocess.run(
+                ['ps', '-u', user, '-o', 'pid=,command='],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except Exception:
+            return set()
+        if result.returncode != 0:
+            return set()
+
+        running_root_dirs = set()
+        for line in (result.stdout or '').splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            pid, command = parts
+            if not any(keyword in command.lower() for keyword in keywords):
+                continue
+
+            job_dir = ''
+            try:
+                job_dir = os.readlink(f'/proc/{pid}/cwd')
+            except Exception:
+                job_dir = ''
+
+            if not job_dir:
+                match = re.search(r'(/[^\\s]+\\.(?:inp|cisinp\\.tmp|goat|xyz))', command)
+                if match:
+                    try:
+                        job_dir = str(Path(match.group(1)).parent)
+                    except Exception:
+                        job_dir = ''
+
+            if not job_dir:
+                match = re.search(r'(/[^\\s]+)', command)
+                if match:
+                    try:
+                        p = Path(match.group(1))
+                        if p.exists():
+                            job_dir = str(p if p.is_dir() else p.parent)
+                    except Exception:
+                        job_dir = ''
+
+            if not job_dir:
+                continue
+
+            try:
+                resolved = Path(job_dir).resolve()
+            except Exception:
+                continue
+            try:
+                rel = resolved.relative_to(calc_root_resolved)
+            except Exception:
+                continue
+            if not rel.parts:
+                continue
+            running_root_dirs.add(calc_root_resolved / rel.parts[0])
+
+        return running_root_dirs
+
     def calc_collect_local_job_status_dirs():
         """Return latest local queue status per top-level calc folder."""
         backend = getattr(ctx, 'backend', None)
         load_jobs = getattr(backend, '_load_jobs', None)
-        if not callable(load_jobs):
-            return {}
-
-        try:
-            data = load_jobs()
-        except Exception:
-            return {}
-        if not isinstance(data, dict):
-            return {}
+        list_jobs = getattr(backend, 'list_jobs', None)
+        data = {}
+        if callable(load_jobs):
+            try:
+                loaded = load_jobs()
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception:
+                data = {}
 
         calc_root = _calc_dir()
         try:
@@ -5189,6 +5343,21 @@ def create_tab(ctx):
             calc_root_resolved = calc_root
 
         latest_by_folder = {}
+        def _update_latest(folder_path, job_id, raw_status):
+            if folder_path is None:
+                return
+            prev = latest_by_folder.get(folder_path)
+            if prev is None:
+                latest_by_folder[folder_path] = (job_id, raw_status)
+                return
+            prev_id, prev_status = prev
+            prev_rank = _calc_job_status_activity_rank(prev_status)
+            now_rank = _calc_job_status_activity_rank(raw_status)
+            if now_rank > prev_rank:
+                latest_by_folder[folder_path] = (max(prev_id, job_id), raw_status)
+            elif now_rank == prev_rank and job_id >= prev_id:
+                latest_by_folder[folder_path] = (job_id, raw_status)
+
         for job in data.get('jobs', []) or []:
             if not isinstance(job, dict):
                 continue
@@ -5213,9 +5382,68 @@ def create_tab(ctx):
             except Exception:
                 job_id = 0
 
+            _update_latest(folder_path, job_id, raw_status)
+
+        # SLURM source with reliable workdir mapping (incl. PD pending jobs).
+        for folder_path, job_id, raw_status in calc_collect_slurm_status_dirs(calc_root_resolved):
+            _update_latest(folder_path, job_id, raw_status)
+
+        # Also consider live backend jobs (e.g., SLURM list_jobs output),
+        # using job_dir when available and falling back to calc/<job_name>.
+        if callable(list_jobs):
+            try:
+                live_jobs = list_jobs() or []
+            except Exception:
+                live_jobs = []
+            for job in live_jobs:
+                raw_status = str(getattr(job, 'status', '')).upper().strip()
+                if not raw_status:
+                    continue
+
+                folder_path = None
+                raw_dir = str(getattr(job, 'job_dir', '') or '').strip()
+                if raw_dir:
+                    try:
+                        job_dir = Path(raw_dir).resolve()
+                        rel = job_dir.relative_to(calc_root_resolved)
+                        if rel.parts:
+                            folder_path = calc_root_resolved / rel.parts[0]
+                    except Exception:
+                        folder_path = None
+
+                if folder_path is None:
+                    job_name = str(getattr(job, 'name', '') or '').strip()
+                    if job_name:
+                        try:
+                            candidate = (calc_root_resolved / job_name).resolve()
+                        except Exception:
+                            candidate = calc_root_resolved / job_name
+                        try:
+                            candidate.relative_to(calc_root_resolved)
+                        except Exception:
+                            candidate = None
+                        if candidate is not None and candidate.exists() and candidate.is_dir():
+                            folder_path = candidate
+
+                if folder_path is None:
+                    continue
+
+                raw_job_id = getattr(job, 'job_id', 0)
+                try:
+                    job_id = int(str(raw_job_id))
+                except Exception:
+                    job_id = 0
+
+                _update_latest(folder_path, job_id, raw_status)
+
+        # Overlay live process detection so running jobs still get a blue dot
+        # when the queue metadata is temporarily empty/stale.
+        for folder_path in calc_collect_running_process_dirs():
             prev = latest_by_folder.get(folder_path)
-            if prev is None or job_id >= prev[0]:
-                latest_by_folder[folder_path] = (job_id, raw_status)
+            if prev is None:
+                latest_by_folder[folder_path] = (0, 'RUNNING')
+            else:
+                latest_by_folder[folder_path] = (prev[0], 'RUNNING')
 
         return {folder: status for folder, (_job_id, status) in latest_by_folder.items()}
 
@@ -5340,17 +5568,25 @@ def create_tab(ctx):
             for entry in entries:
                 if entry.is_dir():
                     if is_top_level_calc_view:
+                        is_running = False
+                        is_pending = False
                         try:
                             entry_resolved = entry.resolve()
                         except Exception:
                             entry_resolved = entry
                         if entry_resolved in local_status_dirs:
                             status = local_status_dirs.get(entry_resolved, '')
+                            is_running = _calc_job_status_is_running(status)
+                            is_pending = _calc_job_status_is_pending(status)
                             folder_icon = '✅' if status == 'COMPLETED' else '📂'
                         elif calc_folder_has_completed_results(entry):
                             folder_icon = '✅'
                         else:
                             folder_icon = '📂'
+                        if is_running:
+                            folder_icon = '🔵'
+                        elif is_pending:
+                            folder_icon = '🟠'
                     else:
                         folder_icon = '📂'
                     items.append(f'{folder_icon} {entry.name}')
