@@ -160,6 +160,13 @@ def create_tab(ctx):
             display='none' if _is_archive_tab else 'inline-flex',
         ),
     )
+    calc_back_to_calculations_btn = widgets.Button(
+        description='← Calculations', button_style='info',
+        layout=widgets.Layout(
+            width='118px', height='26px',
+            display='inline-flex' if _is_archive_tab else 'none',
+        ),
+    )
     calc_move_archive_yes_btn = widgets.Button(
         description='Yes', button_style='warning',
         layout=widgets.Layout(width='60px', height='26px'),
@@ -5862,6 +5869,36 @@ def create_tab(ctx):
         calc_list_directory()
         calc_file_list.value = None
 
+    def calc_on_back_to_calculations(_button=None):
+        if not _is_archive_tab:
+            return
+        _run_js(
+            """
+            (function() {
+                var labels = ['Calculations', 'Calculation'];
+                var candidates = Array.from(
+                    document.querySelectorAll('[role="tab"], .p-TabBar-tab, .lm-TabBar-tab, .widget-tab > ul > li')
+                );
+                var target = candidates.find(function(el) {
+                    var txt = (el && el.textContent ? el.textContent : '').trim();
+                    return labels.indexOf(txt) !== -1;
+                });
+                if (target) {
+                    target.click();
+                    return;
+                }
+                // Fallback for non-standard DOM wrappers.
+                var fallback = Array.from(document.querySelectorAll('li, button, div')).find(function(el) {
+                    var txt = (el && el.textContent ? el.textContent : '').trim();
+                    return labels.indexOf(txt) !== -1;
+                });
+                if (fallback) {
+                    fallback.click();
+                }
+            })();
+            """
+        )
+
     def calc_go_top(b):
         if not state['file_content']:
             return
@@ -8287,6 +8324,7 @@ def create_tab(ctx):
     calc_delete_no_btn.on_click(calc_on_delete_no)
     calc_select_btn.on_click(calc_on_select_toggle)
     calc_move_archive_btn.on_click(calc_on_move_archive_click)
+    calc_back_to_calculations_btn.on_click(calc_on_back_to_calculations)
     calc_move_archive_yes_btn.on_click(calc_on_move_archive_yes)
     calc_move_archive_no_btn.on_click(calc_on_move_archive_no)
     calc_explorer_new_btn.on_click(calc_on_explorer_new_folder)
@@ -8636,18 +8674,19 @@ def create_tab(ctx):
         display(_Javascript(_explorer_interactions_js))
 
     # -- layout -------------------------------------------------------------
-    _archive_row_children = [calc_table_btn] if _is_archive_tab else [calc_move_archive_btn]
+    _archive_nav_children = [calc_table_btn] if _is_archive_tab else [calc_move_archive_btn]
+    _archive_selection_children = [calc_back_to_calculations_btn] if _is_archive_tab else []
     calc_nav_bar = widgets.VBox([
         calc_path_label,
         widgets.HBox(
-            [calc_back_btn, calc_home_btn, calc_refresh_btn, calc_delete_btn, *_archive_row_children],
+            [calc_back_btn, calc_home_btn, calc_refresh_btn, calc_delete_btn, *_archive_nav_children],
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden',
                 justify_content='flex-start', gap='6px',
             ),
         ),
         widgets.HBox(
-            [calc_select_btn],
+            [calc_select_btn, *_archive_selection_children],
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden',
                 justify_content='flex-start', gap='6px',
