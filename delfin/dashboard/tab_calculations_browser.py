@@ -5870,34 +5870,8 @@ def create_tab(ctx):
         calc_file_list.value = None
 
     def calc_on_back_to_calculations(_button=None):
-        if not _is_archive_tab:
-            return
-        _run_js(
-            """
-            (function() {
-                var labels = ['Calculations', 'Calculation'];
-                var candidates = Array.from(
-                    document.querySelectorAll('[role="tab"], .p-TabBar-tab, .lm-TabBar-tab, .widget-tab > ul > li')
-                );
-                var target = candidates.find(function(el) {
-                    var txt = (el && el.textContent ? el.textContent : '').trim();
-                    return labels.indexOf(txt) !== -1;
-                });
-                if (target) {
-                    target.click();
-                    return;
-                }
-                // Fallback for non-standard DOM wrappers.
-                var fallback = Array.from(document.querySelectorAll('li, button, div')).find(function(el) {
-                    var txt = (el && el.textContent ? el.textContent : '').trim();
-                    return labels.indexOf(txt) !== -1;
-                });
-                if (fallback) {
-                    fallback.click();
-                }
-            })();
-            """
-        )
+        # Archive-tab shortcut: same behavior as move-button, but opposite direction.
+        calc_on_move_archive_click(_button)
 
     def calc_go_top(b):
         if not state['file_content']:
@@ -6952,66 +6926,101 @@ def create_tab(ctx):
     def calc_on_delete_no(button):
         calc_delete_hide_confirm()
 
-    def calc_on_move_archive_click(button):
+    def _calc_collect_archive_toggle_sources():
+        labels = _calc_selected_labels()
+        current_dir = _calc_current_dir()
+        sources = []
+        for label in labels:
+            name = _calc_label_to_name(label)
+            if not name:
+                continue
+            src = current_dir / name
+            if src.exists():
+                sources.append(src)
+        if sources:
+            return sources
+        # Fallback requested by users: when nothing is selected, move current folder.
+        if state['current_path']:
+            cur = _calc_current_dir()
+            if cur.exists() and cur.resolve() != _calc_dir().resolve():
+                return [cur]
+        return []
+
+    def _calc_archive_toggle_destination():
         if _is_archive_tab:
+            calc_root = getattr(ctx, 'primary_calc_dir', None)
+            if not calc_root:
+                calc_root = ctx.archive_dir.parent / 'calc'
+            return Path(calc_root), 'Calculations'
+        return ctx.archive_dir, 'Archive'
+
+    def calc_on_move_archive_click(button):
+        sources = _calc_collect_archive_toggle_sources()
+        if not sources:
+            calc_move_archive_status.value = (
+                '<span style="color:#d32f2f;">No items selected and no current folder to move.</span>'
+            )
             return
-        if state['select_mode']:
-            real = [s for s in calc_multi_select.value if not s.startswith('(')]
-        else:
-            sel = calc_file_list.value
-            real = [sel] if sel and not sel.startswith('(') else []
-        if not real:
-            calc_move_archive_status.value = '<span style="color:#d32f2f;">No items selected.</span>'
-            return
-        names = [_calc_label_to_name(s) for s in real]
+        dest_dir, dest_label = _calc_archive_toggle_destination()
+        names = [src.name for src in sources]
         label_str = ', '.join(f'<code>{_html.escape(n)}</code>' for n in names)
         calc_move_archive_label.value = (
-            f'<b>Move {len(names)} item(s) to Archive?</b> {label_str}'
+            f'<b>Move {len(names)} item(s) to {dest_label}?</b> {label_str}'
         )
         calc_move_archive_confirm.layout.display = 'flex'
 
     def calc_on_move_archive_yes(button):
-        if state['select_mode']:
-            real = [s for s in calc_multi_select.value if not s.startswith('(')]
-        else:
-            sel = calc_file_list.value
-            real = [sel] if sel and not sel.startswith('(') else []
+        sources = _calc_collect_archive_toggle_sources()
         calc_move_archive_confirm.layout.display = 'none'
-        if not real:
-            return
-        dest_dir = ctx.archive_dir
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        errors, moved = [], []
-        for label in real:
-            name = _calc_label_to_name(label)
-            src = (
-                (_calc_dir() / state['current_path'] / name)
-                if state['current_path']
-                else (_calc_dir() / name)
+        if not sources:
+            calc_move_archive_status.value = (
+                '<span style="color:#d32f2f;">No items selected and no current folder to move.</span>'
             )
-            dst = dest_dir / name
+            return
+
+        dest_dir, dest_label = _calc_archive_toggle_destination()
+        dest_dir = Path(dest_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_resolved = dest_dir.resolve()
+
+        errors, moved = [], []
+        current_before = _calc_current_dir().resolve()
+        moved_current_folder = False
+
+        for src in sources:
+            name = src.name
             try:
-                shutil.move(str(src), str(dst))
-                moved.append(name)
+                src_resolved = _calc_resolve_within_root(src)
+                dst = dest_resolved / src_resolved.name
+                if dst.exists():
+                    raise ValueError(f'Target already exists: {src_resolved.name}')
+                shutil.move(str(src_resolved), str(dst))
+                moved.append(src_resolved.name)
+                if src_resolved == current_before:
+                    moved_current_folder = True
             except Exception as exc:
                 errors.append(f'{_html.escape(name)}: {_html.escape(str(exc))}')
+
+        if moved_current_folder:
+            cp = state.get('current_path', '')
+            state['current_path'] = cp.rsplit('/', 1)[0] if '/' in cp else ''
+
         if moved and not errors:
             calc_move_archive_status.value = (
-                f'<span style="color:#2e7d32;">Moved {len(moved)} item(s) to Archive.</span>'
+                f'<span style="color:#2e7d32;">Moved {len(moved)} item(s) to {dest_label}.</span>'
             )
         elif moved and errors:
             calc_move_archive_status.value = (
-                f'<span style="color:#e65100;">Moved {len(moved)}, '
+                f'<span style="color:#e65100;">Moved {len(moved)} to {dest_label}, '
                 f'failed: {"; ".join(errors)}</span>'
             )
         else:
             calc_move_archive_status.value = (
                 f'<span style="color:#d32f2f;">{"; ".join(errors)}</span>'
             )
-        if state['select_mode']:
-            calc_multi_select.value = ()
-        else:
-            calc_file_list.value = None
+
+        calc_multi_select.value = ()
+        calc_file_list.value = None
         saved_filter = calc_folder_search.value
         calc_list_directory()
         if saved_filter:
