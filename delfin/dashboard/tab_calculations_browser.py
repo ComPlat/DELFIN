@@ -2273,9 +2273,13 @@ def create_tab(ctx):
                             }}
                         }}
                         var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
-                        var availW = mv.parentElement
-                            ? mv.parentElement.getBoundingClientRect().width - 4
-                            : mvRect.width;
+                        var row = mv.closest('.calc-mol-view-row');
+                        var rowRect = row ? row.getBoundingClientRect() : rightRect;
+                        var tray = scopeRoot ? scopeRoot.querySelector('.calc-xyz-tray-controls') : null;
+                        var trayStyle = tray ? window.getComputedStyle(tray) : null;
+                        var trayVisible = !!(tray && trayStyle && trayStyle.display !== 'none');
+                        var trayWidth = trayVisible ? tray.getBoundingClientRect().width : 0;
+                        var availW = Math.max(120, rowRect.width - trayWidth - 16);
                         var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
                         var w = Math.floor(Math.min(h * 1.2, availW));
                         if (h >= 80 && w >= 120) {{
@@ -2640,9 +2644,9 @@ def create_tab(ctx):
             if path not in candidates:
                 candidates.append(path)
 
-        _push(base_dir / 'ESD' / 'S0.gbw')
         _push(base_dir / f'{selected_path.stem}.gbw')
         _push(base_dir / 'initial.gbw')
+        _push(base_dir / 'ESD' / 'S0.gbw')
         try:
             for gbw in sorted(base_dir.glob('*.gbw'), key=lambda p: p.name.lower()):
                 _push(gbw)
@@ -2651,9 +2655,9 @@ def create_tab(ctx):
 
         parent_dir = base_dir.parent
         if parent_dir != base_dir:
-            _push(parent_dir / 'ESD' / 'S0.gbw')
             _push(parent_dir / f'{selected_path.stem}.gbw')
             _push(parent_dir / 'initial.gbw')
+            _push(parent_dir / 'ESD' / 'S0.gbw')
             try:
                 for gbw in sorted(parent_dir.glob('*.gbw'), key=lambda p: p.name.lower()):
                     _push(gbw)
@@ -2879,16 +2883,54 @@ def create_tab(ctx):
         def _run_mo_plot():
             generated = []
             failures = []
+            created_temp_files = []
             env = os.environ.copy()
             env['ORCA_SCRDIR'] = str(gbw_dir)
             env['ORCA_TMPDIR'] = str(gbw_dir)
             env.setdefault('TMPDIR', str(gbw_dir))
+
+            def _collect_cube_files():
+                found = []
+                try:
+                    found.extend(gbw_dir.glob('*.cube'))
+                except Exception:
+                    pass
+                try:
+                    found.extend(gbw_dir.glob('*.cub'))
+                except Exception:
+                    pass
+                uniq = []
+                seen = set()
+                for p in found:
+                    key = str(p.resolve())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    uniq.append(p)
+                return sorted(uniq, key=lambda p: p.stat().st_mtime_ns)
 
             try:
                 try:
                     cube_dir.mkdir(parents=True, exist_ok=True)
                 except Exception as exc:
                     failures.append(f'MO_CUBES folder error: {exc}')
+
+                dens_candidates = [
+                    project_dir / f'{gbw_path.stem}.densitiesinfo',
+                    gbw_dir / f'{gbw_path.stem}.densitiesinfo',
+                    project_dir / 'initial.densitiesinfo',
+                    gbw_dir / 'initial.densitiesinfo',
+                ]
+                dens_src = next((p for p in dens_candidates if p.exists()), None)
+                if dens_src is not None:
+                    for dens_dest in {gbw_dir / dens_src.name, gbw_dir / f'{gbw_path.stem}.densitiesinfo'}:
+                        if dens_dest.exists():
+                            continue
+                        try:
+                            shutil.copy2(dens_src, dens_dest)
+                            created_temp_files.append(dens_dest)
+                        except Exception:
+                            pass
 
                 total = len(jobs)
                 for idx, (mo_idx, spin_name, spin_op) in enumerate(jobs, start=1):
@@ -2900,6 +2942,8 @@ def create_tab(ctx):
                     )
 
                     orca_input = f"1\n1\n2\n{mo_idx}\n3\n{spin_op}\n4\n70\n11\n12\n"
+                    cubes_before = _collect_cube_files()
+                    before_keys = {str(p.resolve()) for p in cubes_before}
                     try:
                         result = subprocess.run(
                             [orca_plot_exe, gbw_path.name, '-i'],
@@ -2919,6 +2963,33 @@ def create_tab(ctx):
                         continue
 
                     if result.returncode != 0:
+                        stderr_raw = (result.stderr or result.stdout or b'').decode(errors='ignore').strip()
+                        retry_path = None
+                        match = re.search(r"Filename:\s*(\S+\.densitiesinfo)", stderr_raw)
+                        if match and dens_src is not None:
+                            retry_path = Path(match.group(1)).expanduser()
+                            if not retry_path.is_absolute():
+                                retry_path = gbw_dir / retry_path
+                        if retry_path and dens_src is not None:
+                            try:
+                                retry_path.parent.mkdir(parents=True, exist_ok=True)
+                                if not retry_path.exists():
+                                    shutil.copy2(dens_src, retry_path)
+                                    created_temp_files.append(retry_path)
+                                result = subprocess.run(
+                                    [orca_plot_exe, gbw_path.name, '-i'],
+                                    input=orca_input.encode(),
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    cwd=str(gbw_dir),
+                                    env=env,
+                                    timeout=120,
+                                    check=False,
+                                )
+                                stderr_raw = (result.stderr or result.stdout or b'').decode(errors='ignore').strip()
+                            except Exception:
+                                pass
+                    if result.returncode != 0:
                         stderr_text = (result.stderr or result.stdout or b'').decode(errors='ignore').strip()
                         stderr_text = stderr_text.replace('\n', ' ')
                         if len(stderr_text) > 220:
@@ -2929,19 +3000,20 @@ def create_tab(ctx):
                         )
                         continue
 
-                    try:
-                        cube_files = sorted(gbw_dir.glob('*.cube'), key=lambda p: p.stat().st_mtime_ns)
-                    except Exception:
-                        cube_files = []
-                    if not cube_files:
+                    cube_files = _collect_cube_files()
+                    new_cube_files = [p for p in cube_files if str(p.resolve()) not in before_keys]
+                    if not new_cube_files:
                         failures.append(f'MO {mo_idx} ({display_spin}): no cube file generated')
                         continue
 
-                    cube_source = cube_files[-1]
+                    cube_source = new_cube_files[-1]
+                    cube_ext = cube_source.suffix.lower()
+                    if cube_ext not in ('.cube', '.cub'):
+                        cube_ext = '.cube'
                     if scheme == 'UKS':
-                        cube_name = f'MO_{mo_idx}_{spin_name}.cube'
+                        cube_name = f'MO_{mo_idx}_{spin_name}{cube_ext}'
                     else:
-                        cube_name = f'MO_{mo_idx}.cube'
+                        cube_name = f'MO_{mo_idx}{cube_ext}'
                     cube_target = cube_dir / cube_name
                     try:
                         shutil.copy2(cube_source, cube_target)
@@ -2977,6 +3049,12 @@ def create_tab(ctx):
                         f'<span style="color:#d32f2f;">{_html.escape(failure_text)}</span>'
                     )
             finally:
+                for temp_path in created_temp_files:
+                    try:
+                        if temp_path.exists():
+                            temp_path.unlink()
+                    except Exception:
+                        pass
                 calc_mo_plot_btn.disabled = False
 
         threading.Thread(target=_run_mo_plot, daemon=True).start()
@@ -4624,9 +4702,13 @@ def create_tab(ctx):
                             }}
                         }}
                         var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
-                        var availW = mv.parentElement
-                            ? mv.parentElement.getBoundingClientRect().width - 4
-                            : mvRect.width;
+                        var row = mv.closest('.calc-mol-view-row');
+                        var rowRect = row ? row.getBoundingClientRect() : rightRect;
+                        var tray = scopeRoot ? scopeRoot.querySelector('.calc-xyz-tray-controls') : null;
+                        var trayStyle = tray ? window.getComputedStyle(tray) : null;
+                        var trayVisible = !!(tray && trayStyle && trayStyle.display !== 'none');
+                        var trayWidth = trayVisible ? tray.getBoundingClientRect().width : 0;
+                        var availW = Math.max(120, rowRect.width - trayWidth - 16);
                         var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
                         var w = Math.floor(Math.min(h * 1.2, availW));
                         if (h >= 80 && w >= 120) {{
@@ -4899,9 +4981,13 @@ def create_tab(ctx):
                                         }}
                                     }}
                                     var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
-                                    var availW = mv.parentElement
-                                        ? mv.parentElement.getBoundingClientRect().width - 4
-                                        : mvRect.width;
+                                    var row = mv.closest('.calc-mol-view-row');
+                                    var rowRect = row ? row.getBoundingClientRect() : rightRect;
+                                    var tray = scopeRoot ? scopeRoot.querySelector('.calc-xyz-tray-controls') : null;
+                                    var trayStyle = tray ? window.getComputedStyle(tray) : null;
+                                    var trayVisible = !!(tray && trayStyle && trayStyle.display !== 'none');
+                                    var trayWidth = trayVisible ? tray.getBoundingClientRect().width : 0;
+                                    var availW = Math.max(120, rowRect.width - trayWidth - 16);
                                     var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
                                     var w = Math.floor(Math.min(h * 1.2, availW));
                                     if (h >= 80 && w >= 120) {{
@@ -8586,7 +8672,13 @@ def create_tab(ctx):
                 }}
             }}
             var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
-            var availW = mv.parentElement.getBoundingClientRect().width - 4;
+            var row = mv.closest('.calc-mol-view-row');
+            var rowRect = row ? row.getBoundingClientRect() : rightRect;
+            var tray = scopeRoot ? scopeRoot.querySelector('.calc-xyz-tray-controls') : null;
+            var trayStyle = tray ? window.getComputedStyle(tray) : null;
+            var trayVisible = !!(tray && trayStyle && trayStyle.display !== 'none');
+            var trayWidth = trayVisible ? tray.getBoundingClientRect().width : 0;
+            var availW = Math.max(120, rowRect.width - trayWidth - 16);
             var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
             var w = Math.floor(Math.min(h * 1.2, availW));
             if (h < 80) h = 80;
