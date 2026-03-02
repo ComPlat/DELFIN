@@ -889,21 +889,21 @@ def create_tab(ctx):
         placeholder='e.g. 45 or 45,46,47',
         layout=widgets.Layout(width='180px', min_width='160px', height='26px'),
     )
-    calc_mo_plot_alpha_cb = widgets.Checkbox(
+    calc_mo_plot_alpha_cb = widgets.ToggleButton(
         value=True,
         description='Alpha',
-        layout=widgets.Layout(width='auto'),
-        indent=False,
+        tooltip='Plot alpha orbitals',
+        layout=widgets.Layout(width='86px', min_width='86px', height='26px'),
     )
-    calc_mo_plot_beta_cb = widgets.Checkbox(
+    calc_mo_plot_beta_cb = widgets.ToggleButton(
         value=True,
         description='Beta',
-        layout=widgets.Layout(width='auto'),
-        indent=False,
+        tooltip='Plot beta orbitals',
+        layout=widgets.Layout(width='86px', min_width='86px', height='26px'),
     )
     calc_mo_plot_spin_box = widgets.HBox(
         [calc_mo_plot_alpha_cb, calc_mo_plot_beta_cb],
-        layout=widgets.Layout(display='none', gap='4px'),
+        layout=widgets.Layout(display='none', gap='6px'),
     )
     calc_mo_plot_btn = widgets.Button(
         description='Plot MO',
@@ -2747,9 +2747,14 @@ def create_tab(ctx):
             f'<span style="color:#555;">HOMO:</span> <code>{_html.escape(homo_text)}</code>'
         )
 
+    def _calc_update_mo_spin_button_styles(_change=None):
+        calc_mo_plot_alpha_cb.button_style = 'info' if calc_mo_plot_alpha_cb.value else ''
+        calc_mo_plot_beta_cb.button_style = 'info' if calc_mo_plot_beta_cb.value else ''
+
     def _calc_show_mo_plot_panel(show):
         if show:
             _calc_refresh_mo_plot_info()
+            _calc_update_mo_spin_button_styles()
             calc_mo_plot_panel.layout.display = 'block'
         else:
             calc_mo_plot_panel.layout.display = 'none'
@@ -7939,6 +7944,9 @@ def create_tab(ctx):
     calc_xyz_batch_build_btn.on_click(calc_on_xyz_batch_build)
     calc_xyz_batch_copy_btn.on_click(calc_on_xyz_batch_copy)
     calc_print_mode_plot_btn.on_click(calc_on_print_mode_plot)
+    calc_mo_plot_alpha_cb.observe(_calc_update_mo_spin_button_styles, names='value')
+    calc_mo_plot_beta_cb.observe(_calc_update_mo_spin_button_styles, names='value')
+    _calc_update_mo_spin_button_styles()
     calc_mo_plot_btn.on_click(calc_on_mo_plot)
     calc_report_btn.on_click(calc_on_report)
     disable_spellcheck(ctx, class_name='calc-search-input')
