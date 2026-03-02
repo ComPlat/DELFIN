@@ -46,7 +46,7 @@ def create_tab(ctx):
     """
     # -- layout constants ---------------------------------------------------
     CALC_CONTENT_HEIGHT = 760
-    CALC_MOL_SIZE = 460
+    CALC_MOL_SIZE = 450
     CALC_MOL_DYNAMIC_SCALE = 0.9725
     CALC_MOL_ZOOM = 0.9
     CALC_LEFT_DEFAULT = 375
@@ -2240,19 +2240,45 @@ def create_tab(ctx):
                     if (tries < 80) setTimeout(initViewer, 50);
                     return;
                 }}
-                /* Compute correct size from layout before creating viewer */
-                var lft = scopeRoot ? scopeRoot.querySelector('.calc-left') : null;
-                if (lft) {{
-                    var leftRect = lft.getBoundingClientRect();
+                /* Compute size from actual free space in the right panel */
+                var rightPanel = scopeRoot ? scopeRoot.querySelector('.calc-right') : null;
+                if (rightPanel) {{
                     var mvRect = mv.getBoundingClientRect();
                     if (mvRect.top > 0 || mvRect.height > 0) {{
-                        var availH = leftRect.bottom - mvRect.top - 6;
+                        var rightRect = rightPanel.getBoundingClientRect();
+                        var topChildren = Array.prototype.slice.call(rightPanel.children || []);
+                        var host = null;
+                        for (var i = 0; i < topChildren.length; i++) {{
+                            if (topChildren[i].contains(mv)) {{
+                                host = topChildren[i];
+                                break;
+                            }}
+                        }}
+                        var reservedBelow = 0;
+                        if (host) {{
+                            var passed = false;
+                            for (var j = 0; j < topChildren.length; j++) {{
+                                var child = topChildren[j];
+                                if (child === host) {{
+                                    passed = true;
+                                    continue;
+                                }}
+                                if (!passed) continue;
+                                var style = window.getComputedStyle(child);
+                                if (!style || style.display === 'none' || style.visibility === 'hidden') {{
+                                    continue;
+                                }}
+                                var childRect = child.getBoundingClientRect();
+                                if (childRect.height > 0) reservedBelow += childRect.height;
+                            }}
+                        }}
+                        var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
                         var availW = mv.parentElement
                             ? mv.parentElement.getBoundingClientRect().width - 4
                             : mvRect.width;
                         var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
                         var w = Math.floor(Math.min(h * 1.2, availW));
-                        if (h >= 200 && w >= 240) {{
+                        if (h >= 80 && w >= 120) {{
                             mv.style.width = w + 'px';
                             mv.style.height = h + 'px';
                             el.style.width = w + 'px';
@@ -2510,6 +2536,11 @@ def create_tab(ctx):
             calc_xyz_batch_panel.layout.display = 'block'
         else:
             calc_xyz_batch_panel.layout.display = 'none'
+        _run_js(
+            f"setTimeout(function(){{"
+            f" if(window['{calc_resize_mol_fn}']) window['{calc_resize_mol_fn}']();"
+            f"}}, 80);"
+        )
 
     def _calc_print_mode_parse_modes(raw_modes):
         tokens = [tok.strip() for tok in re.split(r'[\s,]+', str(raw_modes or '').strip()) if tok.strip()]
@@ -2559,6 +2590,11 @@ def create_tab(ctx):
             calc_print_mode_panel.layout.display = 'block'
         else:
             calc_print_mode_panel.layout.display = 'none'
+        _run_js(
+            f"setTimeout(function(){{"
+            f" if(window['{calc_resize_mol_fn}']) window['{calc_resize_mol_fn}']();"
+            f"}}, 80);"
+        )
 
     def _calc_mo_plot_parse_indices(raw):
         tokens = [tok.strip() for tok in re.split(r'[\s,]+', str(raw or '').strip()) if tok.strip()]
@@ -2717,6 +2753,11 @@ def create_tab(ctx):
             calc_mo_plot_panel.layout.display = 'block'
         else:
             calc_mo_plot_panel.layout.display = 'none'
+        _run_js(
+            f"setTimeout(function(){{"
+            f" if(window['{calc_resize_mol_fn}']) window['{calc_resize_mol_fn}']();"
+            f"}}, 80);"
+        )
 
     def calc_on_print_mode_plot(_button):
         modes, err = _calc_print_mode_parse_modes(calc_print_mode_input.value)
@@ -4546,18 +4587,44 @@ def create_tab(ctx):
                     if (tries < 80) setTimeout(initViewer, 50);
                     return;
                 }}
-                var lft = scopeRoot ? scopeRoot.querySelector('.calc-left') : null;
-                if (lft) {{
-                    var leftRect = lft.getBoundingClientRect();
+                var rightPanel = scopeRoot ? scopeRoot.querySelector('.calc-right') : null;
+                if (rightPanel) {{
                     var mvRect = mv.getBoundingClientRect();
                     if (mvRect.top > 0 || mvRect.height > 0) {{
-                        var availH = leftRect.bottom - mvRect.top - 6;
+                        var rightRect = rightPanel.getBoundingClientRect();
+                        var topChildren = Array.prototype.slice.call(rightPanel.children || []);
+                        var host = null;
+                        for (var i = 0; i < topChildren.length; i++) {{
+                            if (topChildren[i].contains(mv)) {{
+                                host = topChildren[i];
+                                break;
+                            }}
+                        }}
+                        var reservedBelow = 0;
+                        if (host) {{
+                            var passed = false;
+                            for (var j = 0; j < topChildren.length; j++) {{
+                                var child = topChildren[j];
+                                if (child === host) {{
+                                    passed = true;
+                                    continue;
+                                }}
+                                if (!passed) continue;
+                                var style = window.getComputedStyle(child);
+                                if (!style || style.display === 'none' || style.visibility === 'hidden') {{
+                                    continue;
+                                }}
+                                var childRect = child.getBoundingClientRect();
+                                if (childRect.height > 0) reservedBelow += childRect.height;
+                            }}
+                        }}
+                        var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
                         var availW = mv.parentElement
                             ? mv.parentElement.getBoundingClientRect().width - 4
                             : mvRect.width;
                         var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
                         var w = Math.floor(Math.min(h * 1.2, availW));
-                        if (h >= 200 && w >= 240) {{
+                        if (h >= 80 && w >= 120) {{
                             mv.style.width = w + 'px';
                             mv.style.height = h + 'px';
                             el.style.width = w + 'px';
@@ -4794,19 +4861,45 @@ def create_tab(ctx):
                                 if (tries < 80) setTimeout(initViewer, 50);
                                 return;
                             }}
-                            /* Pre-size to correct dimensions */
-                            var lft = scopeRoot ? scopeRoot.querySelector('.calc-left') : null;
-                            if (lft) {{
-                                var leftRect = lft.getBoundingClientRect();
+                            /* Pre-size to actual free space in right panel */
+                            var rightPanel = scopeRoot ? scopeRoot.querySelector('.calc-right') : null;
+                            if (rightPanel) {{
                                 var mvRect = mv.getBoundingClientRect();
                                 if (mvRect.top > 0 || mvRect.height > 0) {{
-                                    var availH = leftRect.bottom - mvRect.top - 6;
+                                    var rightRect = rightPanel.getBoundingClientRect();
+                                    var topChildren = Array.prototype.slice.call(rightPanel.children || []);
+                                    var host = null;
+                                    for (var i = 0; i < topChildren.length; i++) {{
+                                        if (topChildren[i].contains(mv)) {{
+                                            host = topChildren[i];
+                                            break;
+                                        }}
+                                    }}
+                                    var reservedBelow = 0;
+                                    if (host) {{
+                                        var passed = false;
+                                        for (var j = 0; j < topChildren.length; j++) {{
+                                            var child = topChildren[j];
+                                            if (child === host) {{
+                                                passed = true;
+                                                continue;
+                                            }}
+                                            if (!passed) continue;
+                                            var style = window.getComputedStyle(child);
+                                            if (!style || style.display === 'none' || style.visibility === 'hidden') {{
+                                                continue;
+                                            }}
+                                            var childRect = child.getBoundingClientRect();
+                                            if (childRect.height > 0) reservedBelow += childRect.height;
+                                        }}
+                                    }}
+                                    var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
                                     var availW = mv.parentElement
                                         ? mv.parentElement.getBoundingClientRect().width - 4
                                         : mvRect.width;
                                     var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
                                     var w = Math.floor(Math.min(h * 1.2, availW));
-                                    if (h >= 200 && w >= 240) {{
+                                    if (h >= 80 && w >= 120) {{
                                         mv.style.width = w + 'px';
                                         mv.style.height = h + 'px';
                                         el.style.width = w + 'px';
@@ -8450,20 +8543,46 @@ def create_tab(ctx):
         window["{calc_resize_mol_fn}"] = function() {{
             var scopeRoot = document.querySelector('.{calc_scope_id}');
             if (!scopeRoot || scopeRoot.offsetParent === null) return;
-            var lft = scopeRoot.querySelector('.calc-left');
+            var rightPanel = scopeRoot.querySelector('.calc-right');
             var mv = scopeRoot.querySelector('.calc-mol-viewer');
-            if (!lft || !mv || mv.offsetParent === null) return;
+            if (!rightPanel || !mv || mv.offsetParent === null) return;
             var container = mv.closest('.widget-vbox');
             if (!container || container.style.display === 'none') return;
-            var leftRect = lft.getBoundingClientRect();
             var mvRect = mv.getBoundingClientRect();
             if (mvRect.top === 0 && mvRect.height === 0) return;
-            var availH = leftRect.bottom - mvRect.top - 6;
+            var rightRect = rightPanel.getBoundingClientRect();
+            var topChildren = Array.prototype.slice.call(rightPanel.children || []);
+            var host = null;
+            for (var i = 0; i < topChildren.length; i++) {{
+                if (topChildren[i].contains(mv)) {{
+                    host = topChildren[i];
+                    break;
+                }}
+            }}
+            var reservedBelow = 0;
+            if (host) {{
+                var passed = false;
+                for (var j = 0; j < topChildren.length; j++) {{
+                    var child = topChildren[j];
+                    if (child === host) {{
+                        passed = true;
+                        continue;
+                    }}
+                    if (!passed) continue;
+                    var style = window.getComputedStyle(child);
+                    if (!style || style.display === 'none' || style.visibility === 'hidden') {{
+                        continue;
+                    }}
+                    var childRect = child.getBoundingClientRect();
+                    if (childRect.height > 0) reservedBelow += childRect.height;
+                }}
+            }}
+            var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
             var availW = mv.parentElement.getBoundingClientRect().width - 4;
             var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
             var w = Math.floor(Math.min(h * 1.2, availW));
-            if (h < 200) h = 200;
-            if (w < 240) w = 240;
+            if (h < 80) h = 80;
+            if (w < 120) w = 120;
             mv.style.width = w + 'px';
             mv.style.height = h + 'px';
             var inner = mv.querySelector('[id^="3dmolviewer"], [id^="calc_trj"]');
