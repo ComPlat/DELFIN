@@ -8,15 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Auto OCCUPIER deep3 tree mode**: Recursive tree structure with true depth (paths: 0→±1→±2→±3) for enhanced spin-state exploration
-- **Tree visualization**: ASCII diagrams in `deep_auto_tree.py` and `deep2_auto_tree.py` showing complete branch structure
-- **Auto OCCUPIER own mode**: Rule-based generation driven by the previous winner when `OCCUPIER_tree=own` (no prebuilt `own_auto_tree.json`)
+- _No unreleased entries yet._
+
+## [1.1.0] - 2026-03-03
+
+### Added
+- Dashboard/GUI expansion across Submit/Recalc/ORCA Builder/TURBOMOLE Builder/Calculations/Archive tabs, including improved archive-to-calculations workflows and MO plotting controls.
+- Explicit SMILES conversion modes in the Submit tab (`CONVERT SMILES`, `QUICK CONVERT SMILES`, `CONVERT SMILES + UFF`) with improved handling of metal complexes.
+- `delfin-guppy` workflow improvements: quick conversion as additional start geometry and post-XTB topology validation.
+- Extended coordination-chemistry support in SMILES conversion (including additional coordination numbers and improved topology/isomer enumeration robustness).
+- `ESD_T1_opt` toggle support for controlling UKS vs TDDFT T1 optimization behavior.
+- Smart recalc controls and fingerprint-based skip logic for avoiding unnecessary ORCA reruns.
 
 ### Changed
-- **Auto OCCUPIER navigation**: Enhanced to support recursive tree structures via `_navigate_recursive_tree()`
-- **Tree synchronization**: `generate_deep2_tree.py` now auto-syncs with flat sequences
+- Isomer deduplication logic was tightened and then made workflow-aware: dashboard and GUPPY now preserve broader labeled variant diversity for SMILES isomer sets.
+- Dashboard molecule viewer and trajectory UX refined (layout stability, playback reliability, print mode controls, cube/MO interaction refinements).
+- Cleanup/copy-back behavior around `.orca_iso*` and GOAT/XTB side products hardened for better restart safety.
+- HPC runtime I/O overhead reduced via caching and scratch/runtime optimizations.
 
-## [1.0.4]
+### Fixed
+- Multiple SMILES conversion regressions affecting metal complexes (fragment topology, ring-count checks, hydrogen handling, and fallback strategy behavior).
+- Archive/statistics browser issues (path extraction, folder navigation toggles, and clipboard/export actions).
+- Several ORCA input/output propagation issues in submit/recalc flows (including missing copied `.inp` and timeout/abort recovery paths).
+- Additional CO2 coordinator input-generation edge cases (basis assignment and convergence keyword handling).
+
+## [1.0.4] - 2025-02-XX
 
 ### IMAG improvements
 - CLI: add `delfin --imag` entry point to rerun the IMAG workflow on existing results and regenerate DELFIN.txt.
@@ -24,7 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `%pal` and `%maxcore` are inherited from the source frequency job so IMAG iterations use the same resource allocation.
 - Classic, manually, and OCCUPIER pipelines call the refactored IMAG routine for initial and redox steps, copying original inputs/outputs for traceability.
 - README updated with `--imag` documentation and CONTROL option `IMAG_scope` (initial/all).
- - 2025-02-XX
 
 ### Added
 - Optional excited-state dynamics (ESD) module with standalone or post-redox execution, including S0/S1/T1/T2 optimisations plus ISC/IC scheduling in a dedicated `ESD/` directory.

@@ -13,9 +13,10 @@ This repository contains DELFIN, a comprehensive workflow tool for automated qua
 **PyPI Package**: https://pypi.org/project/delfin-complat/
 
 ### Requirements
-- **Python 3.10+**
+- **Python 3.10 or 3.11**
 - **ORCA 6.1.1** in your `PATH` (`orca` and `orca_pltvib`) — [free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal)
 - **Optional:** `crest` and `xtb` (for CREST/xTB workflows)
+- **Optional (Dashboard):** JupyterLab/Notebook or Voila for interactive UI usage
 
 ### Install Methods
 
@@ -38,7 +39,7 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-All Python dependencies (e.g., `mendeleev` for covalent radii) are installed automatically. Using a virtual environment keeps the scientific software stack reproducible and avoids system-wide modifications.
+All Python dependencies (e.g., RDKit/OpenBabel for SMILES workflows, ipywidgets/py3Dmol for dashboard visualisation) are installed automatically. Using a virtual environment keeps the scientific software stack reproducible and avoids system-wide modifications.
 
 This exposes the console command **`delfin`** and enables `python -m delfin`.
 
@@ -49,8 +50,10 @@ This exposes the console command **`delfin`** and enables `python -m delfin`.
 Create a working directory with at least these two files:
 
 * `CONTROL.txt` — your control/config file
-* `input.txt` — the starting geometry (XYZ body without the first two header lines)
-* starting from a `XYZ` file is optional
+* `input.txt` — either
+  * XYZ body (without the first two header lines), or
+  * a single-line SMILES string
+* starting from a full `.xyz` file is optional (`delfin --define=input.xyz` auto-converts)
 
 Then run:
 
@@ -73,6 +76,45 @@ e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 
 ---
 
+## 🧪 Dashboard Quick Start
+
+Start in Jupyter/Voila and create the dashboard from Python:
+
+```python
+from delfin.dashboard import create_dashboard
+ctx = create_dashboard(backend="auto")
+```
+
+`backend="auto"` selects SLURM if available, otherwise local execution.
+
+Main tabs include:
+- Submit Job (SMILES/XYZ conversion, `CONVERT SMILES`, `QUICK CONVERT SMILES`, `CONVERT SMILES + UFF`, `BUILD COMPLEX`, `SUBMIT GUPPY`)
+- Recalc
+- ORCA Builder
+- TURBOMOLE Builder (SLURM backends)
+- ChemDarwin (if available)
+- Job Status
+- Calculations
+- Archive
+
+### GUI mit Voila
+
+DELFIN kann als browserbasierte GUI ohne klassisches Jupyter-Notebook-Interface betrieben werden:
+
+```bash
+voila delfin_dashboard.ipynb
+```
+
+oder mit festen Parametern (z. B. für Server-Umgebungen):
+
+```bash
+voila delfin_dashboard.ipynb --no-browser --port=8866
+```
+
+Damit wird das Dashboard als reine Weboberfläche ausgeliefert (geeignet für lokale Nutzung und HPC-Jupyter/Voila-Setups).
+
+---
+
 ## 📋 CLI Reference
 
 ### Basic Commands
@@ -80,6 +122,14 @@ e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 - `delfin` — Run DELFIN workflow in current directory (requires `CONTROL.txt` and `input.txt`)
 - `delfin /path/to/project` — Run DELFIN workflow in specified directory
 - `python -m delfin` — Alternative way to run DELFIN
+
+### Companion CLI Tools
+
+- `delfin-build [input.txt]` — Build metal complexes stepwise from SMILES using ORCA/XTB Docker workflow
+- `delfin-guppy [input.txt]` — Multi-start SMILES sampling workflow with repeated XTB optimization and ranked trajectories
+- `delfin-json` — Collect DELFIN project outputs into JSON
+- `delfin_ESD` — Build/report ESD-focused summaries
+- `delfin_IR` — Build/report IR-focused summaries
 
 ### Setup & Configuration
 
@@ -118,6 +168,8 @@ e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 
 - `delfin co2 ...` — CO2 Coordinator helper workflow for CO2 placement and scan generation/runs
 - `delfin ESD` — Run excited-state dynamics workflow (requires `ESD_modul=yes` in CONTROL)
+- `delfin-guppy --runs N --parallel-jobs M --pal P` — broadened start-structure sampling from SMILES for robust pre-optimization
+- `delfin-build --goat [--no-ligand-goat]` — ligand docking/build-up with optional GOAT optimization steps
 
 ---
 
@@ -191,6 +243,23 @@ ESD/
   S1_T1_ISC.inp/.out
   ...
 ```
+
+### SMILES Conversion, Isomer Sampling, and UFF
+
+DELFIN supports robust SMILES-to-3D conversion for organic and metal-containing systems:
+
+- **`CONVERT SMILES`**: full isomer/conformer search
+- **`QUICK CONVERT SMILES`**: single fast start structure
+- **`CONVERT SMILES + UFF`**: full search plus UFF-refined geometries and a quick fallback structure
+
+For coordination complexes, DELFIN combines:
+
+- Open Babel conformer pools (including multiple restarts)
+- RDKit multi-seed embedding
+- topological isomer enumeration and linkage/binding-mode exploration
+- topology and fragment sanity checks before accepting structures
+
+`delfin-guppy` reuses the same SMILES engine for multi-start XTB sampling and writes ranked trajectory outputs (`GUPPY_try.xyz`, `GUPPY_try_isomer.xyz`, `GUPPY_try_random.xyz`) plus `best_coordniation.xyz`.
 
 ---
 
@@ -457,7 +526,7 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 
 If you use DELFIN in a scientific publication, please cite:
 
-- Hartmann, M. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.0.4). Zenodo. https://doi.org/10.5281/zenodo.17208145
+- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.1.0). Zenodo. https://doi.org/10.5281/zenodo.17208145
 - Hartmann, M. (2025). *DELFIN: Automated prediction of preferred spin states and redox potentials*. ChemRxiv. https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
 
 ### BibTeX
@@ -465,8 +534,8 @@ If you use DELFIN in a scientific publication, please cite:
 @software{hartmann2025delfin,
   author  = {Hartmann, Maximilian},
   title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
-  version = {v1.0.9},
-  year    = {2025},
+  version = {v1.1.0},
+  year    = {2026},
   publisher = {Zenodo},
   doi     = {10.5281/zenodo.17208145},
   url     = {https://doi.org/10.5281/zenodo.17208145}
@@ -516,17 +585,25 @@ delfin/
   occupier_auto.py  # Auto OCCUPIER sequence management and tree navigation
   deep_auto_tree.py # Deep tree: adaptive BS evolution (reduction: BS(m-1,1) or BS(M±1,N); oxidation: pure only)
   deep2_auto_tree.py # Deep2 tree: only pure states (no BS), simple 3×3 branching
+  deep3_auto_tree.py # Deep3 tree: recursive depth expansion up to ±3
   generate_deep2_tree.py # Generator for deep2 (pure states only)
   generate_deep_tree.py # Generator for deep tree with adaptive BS evolution
   copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
   thread_safe_helpers.py  # thread-safe workflow execution with PAL management
   global_manager.py       # singleton global job manager for resource coordination
+  global_scheduler.py     # scheduler helpers for dynamic shared resource usage
   dynamic_pool.py         # dynamic core pool for job scheduling
   parallel_classic_manually.py     # parallel execution for classic/manually modes
   parallel_occupier.py  # parallel OCCUPIER workflow integration
+  smart_recalc.py       # smart recalc fingerprint checks for existing job outputs
+  guppy_sampling.py     # delfin-guppy CLI (SMILES multi-start sampling + ranking)
+  build_up_complex.py   # delfin-build CLI (stepwise metal-complex assembly)
   verify_global_manager.py  # smoke tests for the global resource orchestration
   cluster_utils.py        # cluster resource detection (SLURM/PBS/LSF)
   api.py            # programmatic API (e.g. `delfin.api.run(...)` for notebooks/workflows)
+  dashboard/        # Jupyter/Voila dashboard tabs and backends
+  co2/              # CO2 coordinator helper workflows
+  tests/            # test modules
   common/           # shared utilities
     __init__.py     # exposes common helpers
     banners.py      # CLI banner art + static strings
@@ -542,7 +619,8 @@ delfin/
 
 ### Development Notes
 
-* Update CLI entry point via `pyproject.toml`: `"[project.scripts] delfin = \"delfin.cli:main\""`
+* CLI entry point is defined in `pyproject.toml`: `"[project.scripts] delfin = \"delfin.main:main\""`
+* Additional script entry points are also defined there (`delfin-guppy`, `delfin-build`, `delfin-json`, `delfin_ESD`, `delfin_IR`)
 * Build a wheel: `pip wheel .` (inside `delfin/`)
 * Run tests/workflow locally using a fresh virtual environment to catch missing deps
 * Install development tools: `pip install -e '.[dev]'`

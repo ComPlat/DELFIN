@@ -8,7 +8,7 @@ DELFIN (DFT-based automated prediction of preferred spin states and associated r
 
 ### 1. Density Functional Theory Framework
 
-DELFIN employs density functional theory (DFT) as implemented in ORCA 6.1.0 for all electronic structure calculations. The choice of exchange-correlation functional, basis sets, and computational parameters is systematically determined based on the molecular composition and user-defined requirements.
+DELFIN employs density functional theory (DFT) as implemented in ORCA 6.1.1 for all electronic structure calculations. The choice of exchange-correlation functional, basis sets, and computational parameters is systematically determined based on the molecular composition and user-defined requirements.
 
 ### 2. Spin State Prediction
 
@@ -78,6 +78,33 @@ DELFIN implements three primary calculation modes:
 - `delfin.common.paths.resolve_path` normalises all filesystem paths (user expansion plus absolute paths) so CONTROL and geometry assets remain reproducible across runs.
 - `convert_xyz_to_input_txt` and `create_control_file` emit paired console messages and log records so that batch experiments retain a human-readable audit trail without changing existing behaviour.
 - `normalize_input_file` converts CONTROL-referenced `.xyz` inputs into ORCA-ready `.txt` geometries prior to starting the pipeline.
+
+### Dashboard GUI and Voila Deployment
+
+DELFIN provides an interactive dashboard (`delfin.dashboard.create_dashboard`) for
+submission, recalc, ORCA/TURBOMOLE builder workflows, monitoring, and archive
+inspection. The same GUI can be delivered in two modes:
+
+- **Jupyter mode** (Notebook/Lab) for interactive exploratory operation
+- **Voila mode** for a notebook-free browser interface suitable for shared or HPC setups
+
+Dashboard tabs reuse the same backend execution code paths (local/SLURM) and do
+not define a separate computational model; they are an orchestration/UI layer on
+top of DELFIN's existing CLI and workflow modules.
+
+### SMILES Isomer Workflow and GUPPY Sampling
+
+SMILES processing for coordination complexes combines RDKit and Open Babel:
+
+1. Multi-seed conformer embedding and Open Babel conformer pools
+2. Coordination fingerprinting plus geometry/topology filters
+3. Topological/linkage/binding-mode enumeration for missed arrangements
+4. Optional UFF refinement and final sanity checks
+
+The dashboard exposes this via `CONVERT SMILES`, `QUICK CONVERT SMILES`, and
+`CONVERT SMILES + UFF`.  
+`delfin-guppy` reuses the same conversion core to generate multiple chemically
+distinct start structures for repeated XTB optimization and energy ranking.
 
 ### 2. Basis Set Selection Policy
 
@@ -395,8 +422,7 @@ For closed-shell species, DELFIN computes S₁/T₁ optimizations and E₀₀ tr
 ## Scope and Limitations
 
 ### System Requirements
-- **Software dependencies**: ORCA 6.1.0+, optional xTB 6.7.1+ and CREST 3.0.2
-- **Hardware requirements**: Minimum 4 GB RAM, multicore CPU recommended
+- **Software dependencies**: ORCA 6.1.1+, optional xTB 6.7.1+ and CREST 3.0.2
 - **Operating systems**: Linux, macOS, Windows (with appropriate ORCA installation)
 
 ### Methodological Scope
