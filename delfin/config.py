@@ -557,11 +557,14 @@ def get_esd_hints(control_text: str) -> List[str]:
                 f"define if needed (e.g. {field}={example[1:-1]}), or clear with {field}= or {field}=[]"
             )
 
-    t1_opt = config.get('ESD_T1_opt')
-    if t1_opt is None or _is_placeholder_value(t1_opt):
-        hints.append(
-            "ESD_modul=yes: ESD_T1_opt not set — set ESD_T1_opt=uks or ESD_T1_opt=tddft."
-        )
+    states_upper = {s.upper() for s in _esd_parse_transitions(config.get('states'))}
+    if "T1" in states_upper:
+        t1_opt = config.get('ESD_T1_opt')
+        if t1_opt is None or _is_placeholder_value(t1_opt):
+            hints.append(
+                "ESD_modul=yes with states containing T1: ESD_T1_opt not set — "
+                "set ESD_T1_opt=uks or ESD_T1_opt=tddft."
+            )
 
     # Warn if ISCs contain same-spin transitions (those belong in ICs)
     for trans in _esd_parse_transitions(config.get('ISCs')):

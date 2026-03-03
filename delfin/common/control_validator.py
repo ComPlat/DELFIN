@@ -1361,6 +1361,19 @@ def _as_states(value: Any) -> list[str] | str:
     return normalized
 
 
+def _states_include_t1(value: Any) -> bool:
+    """Return True if states contain T1; tolerate unset/invalid inputs."""
+    if value is None or value == "":
+        return False
+    try:
+        parsed = _as_states(value)
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(parsed, list):
+        return False
+    return any(str(item).upper() == "T1" for item in parsed)
+
+
 def _as_occupier_method(value: Any) -> str:
     text = str(value or "auto").strip().lower()
     if text in {"manual", "manually"}:
@@ -1496,6 +1509,7 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     # Check if ESD_modul is enabled
     esd_modul_raw = config.get("ESD_modul", "no")
     esd_modul_enabled = str(esd_modul_raw).strip().lower() == "yes"
+    esd_states_have_t1 = _states_include_t1(config.get("states", ""))
 
     for spec in CONTROL_FIELD_SPECS:
         # Skip OCCUPIER_tree validation if OCCUPIER_method is 'manually'
@@ -1504,8 +1518,13 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
             validated[spec.name] = "deep"
             continue
 
-        # Skip ESD-specific mode switches if ESD_modul is not enabled
-        if spec.name in {"ESD_modus", "ESD_T1_opt"} and not esd_modul_enabled:
+        # Skip ESD mode selection when ESD is disabled.
+        if spec.name == "ESD_modus" and not esd_modul_enabled:
+            validated[spec.name] = spec.default
+            continue
+
+        # Only require/validate ESD_T1_opt when ESD is enabled and T1 is requested.
+        if spec.name == "ESD_T1_opt" and (not esd_modul_enabled or not esd_states_have_t1):
             validated[spec.name] = spec.default
             continue
 
