@@ -4549,6 +4549,21 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
             mol = Chem.MolFromSmiles(smiles_try, sanitize=False)
         if mol is None:
             return None, "Failed to parse SMILES (no sanitize)"
+
+        # Save explicit H counts and original NoImplicit state, then zero out
+        # H and set NoImplicit=True to prevent valence errors during embedding
+        # (e.g. [CH+] with 3 bonds = valence 4 > permitted 3 for C+).
+        saved_explicit_h = {}
+        originally_no_implicit = set()
+        for atom in mol.GetAtoms():
+            if atom.GetNoImplicit():
+                originally_no_implicit.add(atom.GetIdx())
+            eh = atom.GetNumExplicitHs()
+            if eh > 0:
+                saved_explicit_h[atom.GetIdx()] = eh
+                atom.SetNumExplicitHs(0)
+            atom.SetNoImplicit(True)
+
         try:
             mol.UpdatePropertyCache(strict=False)
         except Exception:
@@ -4564,29 +4579,45 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
 
         try:
             result = AllChem.EmbedMolecule(mol, params, maxAttempts=200)
-        except TypeError:
-            result = AllChem.EmbedMolecule(mol, params)
+        except (TypeError, Exception):
+            result = -1
 
         if result != 0:
+            # Relaxed embedding for complex metal geometries (ferrocene,
+            # multi-center Pd complexes) where ETKDG distance bounds fail.
+            relaxed = AllChem.EmbedParameters()
+            relaxed.randomSeed = 42
+            relaxed.useRandomCoords = True
+            relaxed.useExpTorsionAnglePrefs = False
+            relaxed.useBasicKnowledge = False
+            relaxed.enforceChirality = False
             try:
-                result = AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
-            except TypeError:
-                result = AllChem.EmbedMolecule(mol, useRandomCoords=True)
+                relaxed.ignoreSmoothingFailures = True
+            except Exception:
+                pass
+            result = AllChem.EmbedMolecule(mol, relaxed)
 
         if result != 0:
             return None, "Failed to generate 3D coordinates (unsanitized)"
 
-        # Try to add hydrogens after embedding unless this is a neutral Ni/Co+[N] case
+        # Restore explicit H and add hydrogens with coordinates
         if not _prefer_no_sanitize(smiles):
             try:
-                mol_h = Chem.AddHs(mol)
-                # Re-embed to place H coordinates
-                try:
-                    result_h = AllChem.EmbedMolecule(mol_h, useRandomCoords=True, randomSeed=42)
-                except TypeError:
-                    result_h = AllChem.EmbedMolecule(mol_h, useRandomCoords=True)
-                if result_h == 0:
-                    mol = mol_h
+                # Restore saved explicit H counts
+                for idx, eh in saved_explicit_h.items():
+                    mol.GetAtomWithIdx(idx).SetNumExplicitHs(eh)
+                # Allow implicit H calculation only for organic subset atoms
+                # (originally NoImplicit=False, e.g. bare C in phenyl rings).
+                # Bracket atoms like [C], [CH+], [C@@] keep NoImplicit=True
+                # to respect the SMILES-specified H count.
+                for atom in mol.GetAtoms():
+                    if (atom.GetIdx() not in originally_no_implicit
+                            and atom.GetSymbol() not in _METAL_SET):
+                        atom.SetNoImplicit(False)
+                        atom.SetNumExplicitHs(0)
+                mol.UpdatePropertyCache(strict=False)
+                mol = Chem.AddHs(mol, addCoords=True)
+                mol = _fix_zero_coord_hydrogens(mol)
             except Exception:
                 pass
 
@@ -4615,6 +4646,54 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
             except Exception:
                 pass
         return None, f"Unsanitized fallback error: {e}"
+
+
+def _fix_zero_coord_hydrogens(mol):
+    """Fix H atoms stuck at (0,0,0) after AddHs(addCoords=True).
+
+    When RDKit cannot compute coordinates for some H atoms, it places them
+    at the origin.  This function detects those H atoms and places them at
+    a reasonable position (~1.09 A from the parent atom) using the parent's
+    existing neighbors to determine the correct direction.
+    """
+    if mol.GetNumConformers() == 0:
+        return mol
+    conf = mol.GetConformer()
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() != 'H':
+            continue
+        pos = conf.GetAtomPosition(atom.GetIdx())
+        if abs(pos.x) > 0.01 or abs(pos.y) > 0.01 or abs(pos.z) > 0.01:
+            continue
+        # This H is at (0,0,0) - fix it
+        parent = atom.GetNeighbors()[0]
+        p_pos = conf.GetAtomPosition(parent.GetIdx())
+        # Compute direction away from other neighbors
+        import numpy as np
+        p = np.array([p_pos.x, p_pos.y, p_pos.z])
+        neighbor_vecs = []
+        for nbr in parent.GetNeighbors():
+            if nbr.GetIdx() == atom.GetIdx():
+                continue
+            n_pos = conf.GetAtomPosition(nbr.GetIdx())
+            v = np.array([n_pos.x, n_pos.y, n_pos.z]) - p
+            norm = np.linalg.norm(v)
+            if norm > 0.01:
+                neighbor_vecs.append(v / norm)
+        if neighbor_vecs:
+            # Place H opposite to the average neighbor direction
+            avg_dir = np.mean(neighbor_vecs, axis=0)
+            norm = np.linalg.norm(avg_dir)
+            if norm > 0.01:
+                h_dir = -avg_dir / norm
+            else:
+                h_dir = np.array([0.0, 0.0, 1.0])
+        else:
+            h_dir = np.array([0.0, 0.0, 1.0])
+        h_pos = p + h_dir * 1.09  # C-H bond length
+        from rdkit.Geometry import Point3D
+        conf.SetAtomPosition(atom.GetIdx(), Point3D(*h_pos.tolist()))
+    return mol
 
 
 def _mol_to_xyz(mol) -> str:
