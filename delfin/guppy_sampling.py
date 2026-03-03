@@ -33,7 +33,15 @@ from delfin.common.logging import get_logger
 from delfin.dynamic_pool import JobPriority, PoolJob
 from delfin.global_manager import get_global_manager
 from delfin.orca import run_orca
-from delfin.smiles_converter import RDKIT_AVAILABLE, smiles_to_xyz, smiles_to_xyz_isomers, smiles_to_xyz_quick
+from delfin.smiles_converter import (
+    RDKIT_AVAILABLE,
+    _fragment_topology_ok,
+    _no_spurious_bonds,
+    _roundtrip_ring_count_ok,
+    smiles_to_xyz,
+    smiles_to_xyz_isomers,
+    smiles_to_xyz_quick,
+)
 
 if RDKIT_AVAILABLE:
     from rdkit import Chem
@@ -399,6 +407,7 @@ def _execute_single_sampling_run(
     maxcore: int,
     method: str,
     workdir: Path,
+    smiles: str = "",
 ) -> Tuple[bool, Optional[RunResult], Optional[str]]:
     """Execute one SMILES->XTB2 run and return (ok, result, error)."""
     run_dir = workdir / f"run_{run_idx:02d}"
@@ -447,6 +456,16 @@ def _execute_single_sampling_run(
         natoms, opt_coords = _read_xyz_coordinates(xyz_path)
     except Exception as exc:  # noqa: BLE001
         return False, None, f"Could not read optimized XYZ: {exc}"
+
+    # Topology check: detect broken/formed bonds after XTB optimization
+    if smiles:
+        xyz_delfin = "\n".join(opt_coords[:natoms])
+        if not _fragment_topology_ok(xyz_delfin, smiles):
+            return False, None, "Topology changed: fragment mismatch after XTB"
+        if not _roundtrip_ring_count_ok(xyz_delfin, smiles):
+            return False, None, "Topology changed: ring count mismatch after XTB"
+        if not _no_spurious_bonds(xyz_delfin, smiles):
+            return False, None, "Topology changed: spurious bonds after XTB"
 
     return True, (energy, natoms, opt_coords, run_idx, start_label, start_source), None
 
@@ -523,6 +542,7 @@ def run_sampling(
                 maxcore=maxcore,
                 method=method,
                 workdir=workdir,
+                smiles=smiles,
             )
             with results_lock:
                 if ok and result is not None:
