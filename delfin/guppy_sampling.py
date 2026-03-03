@@ -33,7 +33,7 @@ from delfin.common.logging import get_logger
 from delfin.dynamic_pool import JobPriority, PoolJob
 from delfin.global_manager import get_global_manager
 from delfin.orca import run_orca
-from delfin.smiles_converter import RDKIT_AVAILABLE, smiles_to_xyz, smiles_to_xyz_isomers
+from delfin.smiles_converter import RDKIT_AVAILABLE, smiles_to_xyz, smiles_to_xyz_isomers, smiles_to_xyz_quick
 
 if RDKIT_AVAILABLE:
     from rdkit import Chem
@@ -165,6 +165,17 @@ def _collect_start_geometries(
     max_isomers = max(1000, runs)
     starts: List[StartGeometry] = []
     next_idx = 1
+
+    # Quick single-conformer conversion as first start geometry.
+    try:
+        quick_xyz, quick_err = smiles_to_xyz_quick(smiles)
+        if quick_xyz and not quick_err:
+            coords_lines = [ln.rstrip() for ln in quick_xyz.splitlines() if ln.strip()]
+            if coords_lines:
+                starts.append((next_idx, coords_lines, "quick", "quick"))
+                next_idx += 1
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Quick conversion failed: %s", exc)
 
     try:
         iso_results, iso_error = smiles_to_xyz_isomers(
