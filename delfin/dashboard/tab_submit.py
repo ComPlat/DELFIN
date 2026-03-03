@@ -320,7 +320,11 @@ def create_tab(ctx):
                 print('Input is not a SMILES string.')
             return
 
-        isomers, error = smiles_to_xyz_isomers(cleaned_data, apply_uff=apply_uff)
+        isomers, error = smiles_to_xyz_isomers(
+            cleaned_data,
+            apply_uff=apply_uff,
+            collapse_label_variants=False,
+        )
         if error or not isomers:
             with mol_output:
                 clear_output()

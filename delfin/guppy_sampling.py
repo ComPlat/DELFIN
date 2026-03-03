@@ -190,6 +190,7 @@ def _collect_start_geometries(
             smiles,
             num_confs=target_confs,
             max_isomers=max_isomers,
+            collapse_label_variants=False,
         )
         if iso_results and not iso_error:
             for idx, (xyz_text, label) in enumerate(iso_results, start=1):

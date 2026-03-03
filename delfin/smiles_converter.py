@@ -3686,6 +3686,7 @@ def smiles_to_xyz_isomers(
     num_confs: int = 200,
     max_isomers: int = 50,
     apply_uff: bool = True,
+    collapse_label_variants: bool = True,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -3695,6 +3696,11 @@ def smiles_to_xyz_isomers(
     representative per unique fingerprint is returned.
 
     Returns ``([(xyz_string, label), ...], error)``.
+
+    When ``collapse_label_variants`` is ``True`` (default), additional cleanup
+    merges numbered variants with the same base label (e.g. ``trans-1`` and
+    ``trans-2``). Set it to ``False`` to keep these variants for workflows
+    that prefer broader structural diversity.
     """
     if not RDKIT_AVAILABLE:
         return [], "RDKit is not installed"
@@ -3985,7 +3991,7 @@ def smiles_to_xyz_isomers(
                 # Fingerprint comparison alone fails here because OB-distorted
                 # sampling geometries have slightly different angles than the
                 # ideal topo geometry.
-                if norm:
+                if collapse_label_variants and norm:
                     _existing_base_labels = {
                         re.sub(r'-\d+$', '', d) for d in existing_displays if d
                     }
@@ -4055,7 +4061,7 @@ def smiles_to_xyz_isomers(
     # occurrence (best score from sampling or first topo result) and rename it
     # to the bare base label so the user sees "trans" not "trans-1".
     # "Isomer N" labels use spaces not dashes, so they are never collapsed.
-    if results:
+    if collapse_label_variants and results:
         _seen_base: Dict[str, int] = {}
         _keep: List[bool] = [True] * len(results)
         for _idx, (_, _lbl) in enumerate(results):

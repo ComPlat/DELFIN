@@ -36,12 +36,16 @@ def smiles_to_xyz_quick(smiles):
     return xyz_string, num_atoms, 'quick', None
 
 
-def smiles_to_xyz_isomers(smiles, apply_uff=True):
+def smiles_to_xyz_isomers(smiles, apply_uff=True, collapse_label_variants=True):
     """Generate distinct coordination isomers for a SMILES string.
 
     Returns ``([(xyz_string, num_atoms, label), ...], error)``.
     """
-    results, error = _delfin_smiles_to_xyz_isomers(smiles, apply_uff=apply_uff)
+    results, error = _delfin_smiles_to_xyz_isomers(
+        smiles,
+        apply_uff=apply_uff,
+        collapse_label_variants=collapse_label_variants,
+    )
     if error:
         return [], error
     out = []
