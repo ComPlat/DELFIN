@@ -15,7 +15,6 @@ keywords = ["quantum-chemistry", "orca", "xtb", "redox", "spin-state", "workflow
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -34,7 +33,13 @@ dependencies = [
     "ipywidgets>=8.0",
     "py3Dmol>=2.0.4",
     "python-docx>=0.8.11",
-    "pymol-open-source"
+    "pymol-open-source",
+    "voila>=0.5",
+    "Pillow",
+    "mammoth",
+    "pexpect",
+    "umap-learn",
+    "scikit-learn"
 ]
 
 [project.optional-dependencies]
@@ -53,10 +58,14 @@ delfin_IR = "delfin.cli_ir_report:main"
 delfin-json = "delfin.cli_delfin_collect:main"
 delfin-build = "delfin.build_up_complex:main"
 delfin-guppy = "delfin.guppy_sampling:main"
+delfin-voila = "delfin.cli_voila:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["delfin*"]
+
+[tool.setuptools.package-data]
+"delfin.notebooks" = ["*.ipynb"]
 
 [tool.black]
 line-length = 88

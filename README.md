@@ -99,13 +99,19 @@ Main tabs include:
 
 ### GUI mit Voila
 
-DELFIN kann als browserbasierte GUI ohne klassisches Jupyter-Notebook-Interface betrieben werden:
+DELFIN kann als browserbasierte GUI ohne klassisches Jupyter-Notebook-Interface betrieben werden.
+
+**Empfohlen: `delfin-voila` CLI** (Notebook ist im Package enthalten):
 
 ```bash
-voila delfin_dashboard.ipynb
+pip install delfin-complat[dashboard]   # einmalig (installiert voila)
+delfin-voila                            # startet auf Port 8866
+delfin-voila --port 9000                # anderer Port
+delfin-voila --no-browser               # kein Browser, nur URL im Terminal
+delfin-voila --dark                     # Dark Theme
 ```
 
-oder mit festen Parametern (z. B. für Server-Umgebungen):
+Alternativ direkt mit voila und eigenem Notebook:
 
 ```bash
 voila delfin_dashboard.ipynb --no-browser --port=8866
@@ -127,6 +133,7 @@ Damit wird das Dashboard als reine Weboberfläche ausgeliefert (geeignet für lo
 
 - `delfin-build [input.txt]` — Build metal complexes stepwise from SMILES using ORCA/XTB Docker workflow
 - `delfin-guppy [input.txt]` — Multi-start SMILES sampling workflow with repeated XTB optimization and ranked trajectories
+- `delfin-voila` — Launch the DELFIN Dashboard as a standalone web app via Voila (requires `pip install delfin-complat[dashboard]`)
 - `delfin-json` — Collect DELFIN project outputs into JSON
 - `delfin_ESD` — Build/report ESD-focused summaries
 - `delfin_IR` — Build/report IR-focused summaries
@@ -620,7 +627,7 @@ delfin/
 ### Development Notes
 
 * CLI entry point is defined in `pyproject.toml`: `"[project.scripts] delfin = \"delfin.main:main\""`
-* Additional script entry points are also defined there (`delfin-guppy`, `delfin-build`, `delfin-json`, `delfin_ESD`, `delfin_IR`)
+* Additional script entry points are also defined there (`delfin-guppy`, `delfin-build`, `delfin-voila`, `delfin-json`, `delfin_ESD`, `delfin_IR`)
 * Build a wheel: `pip wheel .` (inside `delfin/`)
 * Run tests/workflow locally using a fresh virtual environment to catch missing deps
 * Install development tools: `pip install -e '.[dev]'`
