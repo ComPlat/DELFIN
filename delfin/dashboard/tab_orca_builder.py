@@ -20,7 +20,10 @@ from .molecule_viewer import (
     DEFAULT_3DMOL_STYLE_JS, DEFAULT_3DMOL_ZOOM,
     patch_viewer_mouse_controls_js,
 )
-from .input_processing import parse_inp_resources, sanitize_orca_input
+from .input_processing import (
+    parse_inp_resources, sanitize_orca_input, clean_input_data,
+    smiles_to_xyz_quick,
+)
 
 
 def create_tab(ctx):
@@ -45,7 +48,9 @@ def create_tab(ctx):
     orca_coords = widgets.Textarea(
         value='',
         placeholder=(
-            'Paste XYZ coordinates or use named file blocks:\n\n'
+            'Paste XYZ coordinates, SMILES, or use named file blocks:\n\n'
+            'SMILES example:  [Fe+2]([NH3])([NH3])([NH3])([NH3])([NH3])[NH3]\n'
+            'Use CONVERT SMILES button to generate 3D coordinates.\n\n'
             'name1.xyz;\n6\nComment\nC  0.0  0.0  0.0\n...\n*\n\n'
             'name2.xyz;\nFe  0.0  0.0  0.0\nC   1.5  0.0  0.0\n*\n\n'
             'Named blocks write .xyz files to the job directory and use\n'
@@ -56,6 +61,10 @@ def create_tab(ctx):
         ),
         description='Coordinates:',
         layout=widgets.Layout(width='100%', height='600px', box_sizing='border-box'), style=ws,
+    )
+    orca_convert_smiles_btn = widgets.Button(
+        description='CONVERT SMILES', button_style='info',
+        layout=widgets.Layout(width='200px'),
     )
     orca_charge = widgets.IntText(value=0, description='Charge:',
                                   layout=widgets.Layout(width='200px'), style=ws)
@@ -461,6 +470,36 @@ def create_tab(ctx):
         _update_nav_label()
         _refresh_mol_view(reset_view=False)  # keep orientation
 
+    def handle_orca_convert_smiles(button):
+        raw_input = orca_coords.value.strip()
+        if not raw_input:
+            with orca_output:
+                clear_output()
+                print('Please enter a SMILES string in the Coordinates box.')
+            return
+        cleaned_data, input_type = clean_input_data(raw_input)
+        if input_type != 'smiles':
+            with orca_output:
+                clear_output()
+                print('Input is not a SMILES string. Please enter a SMILES.')
+            return
+        with orca_output:
+            clear_output()
+            print('Converting SMILES to 3D coordinates...')
+        xyz_string, num_atoms, _method, error = smiles_to_xyz_quick(cleaned_data)
+        if error or not xyz_string:
+            with orca_output:
+                clear_output()
+                print(f'Error: {error or "Conversion failed"}')
+            return
+        # Replace SMILES with XYZ coordinates
+        orca_coords.value = xyz_string
+        with orca_output:
+            clear_output()
+            print(f'Converted SMILES to {num_atoms} atoms.')
+
+    orca_convert_smiles_btn.on_click(handle_orca_convert_smiles)
+
     def update_orca_preview(change=None):
         if state.get('is_resetting'):
             return
@@ -657,6 +696,7 @@ def create_tab(ctx):
     orca_left = widgets.VBox([
         _row([orca_job_name], wrap=False),
         _row([orca_coords], wrap=False),
+        _row([orca_convert_smiles_btn]),
         _row([orca_charge, orca_multiplicity]),
         _row([orca_method, orca_job_type]),
         _row([orca_basis, orca_dispersion]),
