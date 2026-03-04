@@ -97,27 +97,27 @@ Main tabs include:
 - Calculations
 - Archive
 
-### GUI mit Voila
+### GUI with Voila
 
-DELFIN kann als browserbasierte GUI ohne klassisches Jupyter-Notebook-Interface betrieben werden.
+DELFIN can be used as a browser-based GUI without the classic Jupyter Notebook interface.
 
-**Empfohlen: `delfin-voila` CLI** (Notebook ist im Package enthalten):
+**Recommended: `delfin-voila` CLI** (notebook is bundled with the package):
 
 ```bash
-pip install delfin-complat[dashboard]   # einmalig (installiert voila)
-delfin-voila                            # startet auf Port 8866
-delfin-voila --port 9000                # anderer Port
-delfin-voila --no-browser               # kein Browser, nur URL im Terminal
-delfin-voila --dark                     # Dark Theme
+pip install delfin-complat   # one-time setup (includes voila)
+delfin-voila                 # starts on port 8866
+delfin-voila --port 9000     # custom port
+delfin-voila --no-browser    # don't open browser, just print URL
+delfin-voila --dark          # dark theme
 ```
 
-Alternativ direkt mit voila und eigenem Notebook:
+Alternatively, run voila directly with your own notebook:
 
 ```bash
 voila delfin_dashboard.ipynb --no-browser --port=8866
 ```
 
-Damit wird das Dashboard als reine Weboberfläche ausgeliefert (geeignet für lokale Nutzung und HPC-Jupyter/Voila-Setups).
+This serves the dashboard as a pure web application (suitable for local use and HPC Jupyter/Voila setups).
 
 ---
 
