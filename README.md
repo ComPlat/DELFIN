@@ -325,6 +325,10 @@ For coordination complexes, DELFIN combines:
   - `slurm_submit_example.sh` (SLURM)
   - `pbs_submit_example.sh` (PBS/Torque)
   - `lsf_submit_example.sh` (LSF)
+* **BwUniCluster install scripts:** see `scripts/` for automated setup:
+  - `install_delfin_bwu.sh` — full install (OpenMPI, ORCA, venv, DELFIN)
+  - `verify_delfin_bwu.sh` — verify and repair existing installation
+  - `check_delfin_orca.sh` — quick health check (read-only)
 * **Auto-resource detection:** DELFIN automatically detects available CPUs and memory on SLURM/PBS/LSF clusters and configures PAL/maxcore accordingly if not explicitly set in CONTROL.txt.
 
 ### Global Resource Management

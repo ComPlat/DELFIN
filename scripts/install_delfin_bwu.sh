@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================================
+# DELFIN install script for BwUniCluster 3.0
+#
+# What this script does:
+#   1. Compile OpenMPI 4.1.8 (required by ORCA 6.1.1)
+#   2. Extract ORCA 6.1.1 from tarball
+#   3. Create a single Python venv with all dependencies
+#   4. Create working directories (~/calc, ~/archive)
+#   5. Set up shell environment (~/.delfin_env.sh)
+#
+# Prerequisites:
+#   - BwUniCluster login node with 'module' command
+#   - ORCA 6.1.1 tarball downloaded to $HOME
+#     (download from https://orcaforum.kofo.mpg.de - free for academics)
+#
+# Usage:
+#   bash install_delfin_bwu.sh
+#
+# After installation:
+#   delfin --version          # verify CLI
+#   delfin-voila --port 9000  # launch dashboard
+# ============================================================================
+
+# ---- User-configurable variables (override via environment) ----
+DELFIN_REPO="${DELFIN_REPO:-$HOME/software/delfin}"
+DELFIN_REPO_URL="${DELFIN_REPO_URL:-https://github.com/ComPlat/DELFIN.git}"
+ORCA_TARBALL="${ORCA_TARBALL:-$HOME/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2.tar.xz}"
+ORCA_DIR="${ORCA_DIR:-$HOME/software/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2}"
+OPENMPI_PREFIX="${OPENMPI_PREFIX:-$HOME/software/openmpi-4.1.8}"
+OPENMPI_URL="${OPENMPI_URL:-https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-4.1.8.tar.gz}"
+MAKE_JOBS="${MAKE_JOBS:-8}"
+DELFIN_AUTO_ACTIVATE_VENV="${DELFIN_AUTO_ACTIVATE_VENV:-1}"
+REQUIRE_ORCA_PLOT="${REQUIRE_ORCA_PLOT:-1}"
+
+log() { printf "[install] %s\n" "$*"; }
+err() { printf "[install][error] %s\n" "$*" >&2; }
+
+find_orca_dir() {
+  if [ -x "$ORCA_DIR/orca" ]; then
+    return 0
+  fi
+  local detected
+  detected="$(find "$HOME/software" -maxdepth 3 -type f -name orca 2>/dev/null | head -n1 || true)"
+  if [ -n "$detected" ]; then
+    ORCA_DIR="$(dirname "$detected")"
+    log "Detected ORCA directory: $ORCA_DIR"
+  fi
+  [ -x "$ORCA_DIR/orca" ]
+}
+
+ensure_delfin_env_sourced() {
+  local target="$1"
+  local source_line='source "$HOME/.delfin_env.sh"'
+  if [ ! -f "$target" ]; then
+    touch "$target"
+  fi
+  if ! grep -Fq "$source_line" "$target" 2>/dev/null; then
+    printf "\n# DELFIN environment\n%s\n" "$source_line" >> "$target"
+    log "Added source \$HOME/.delfin_env.sh to $target"
+  else
+    log "$target already sources ~/.delfin_env.sh"
+  fi
+}
+
+if ! command -v module >/dev/null 2>&1; then
+  err "'module' command not found. Run this on BwUniCluster login node."
+  exit 1
+fi
+
+# ================================================================
+# Step 1: OpenMPI 4.1.8
+# ================================================================
+log "Step 1/4: OpenMPI 4.1.8"
+if [ -x "$OPENMPI_PREFIX/bin/mpirun" ]; then
+  log "OpenMPI already installed at $OPENMPI_PREFIX"
+else
+  module purge
+  module load compiler/gnu/14.2
+
+  mkdir -p "$HOME/software"
+  cd "$HOME/software"
+
+  if [ ! -f openmpi-4.1.8.tar.gz ]; then
+    log "Downloading OpenMPI 4.1.8"
+    if command -v wget >/dev/null 2>&1; then
+      wget "$OPENMPI_URL"
+    else
+      curl -L -O "$OPENMPI_URL"
+    fi
+  fi
+
+  if [ ! -d openmpi-4.1.8 ]; then
+    tar xzf openmpi-4.1.8.tar.gz
+  fi
+
+  cd openmpi-4.1.8
+  ./configure --prefix="$OPENMPI_PREFIX" \
+              --enable-mpi-cxx \
+              --enable-mca-no-build=fs-gpfs \
+              --disable-oshmem
+  make -j "$MAKE_JOBS"
+  make install
+
+  log "OpenMPI installed: $OPENMPI_PREFIX"
+  "$OPENMPI_PREFIX/bin/mpirun" --version | head -1
+fi
+
+# ================================================================
+# Step 2: ORCA 6.1.1
+# ================================================================
+log "Step 2/4: ORCA 6.1.1"
+if [ -x "$ORCA_DIR/orca" ]; then
+  log "ORCA already present at $ORCA_DIR"
+else
+  if [ -f "$ORCA_TARBALL" ]; then
+    log "Extracting ORCA from $ORCA_TARBALL into $HOME/software"
+    mkdir -p "$HOME/software"
+    tar xf "$ORCA_TARBALL" -C "$HOME/software"
+  else
+    err "ORCA tarball not found. Please download it manually (license required)."
+    err "Expected: $ORCA_TARBALL"
+    err "After download, re-run this script."
+    exit 2
+  fi
+fi
+
+if ! find_orca_dir; then
+  err "ORCA binary not found after extraction."
+  err "Set ORCA_DIR correctly or provide a tarball containing the ORCA binaries."
+  exit 3
+fi
+
+if [ "$REQUIRE_ORCA_PLOT" = "1" ] && [ ! -x "$ORCA_DIR/orca_plot" ]; then
+  err "orca_plot not found at $ORCA_DIR/orca_plot"
+  err "MO/ESP cube generation needs orca_plot. Install full ORCA package with orca_plot."
+  exit 4
+fi
+
+# ================================================================
+# Step 3: Python venv + DELFIN (single venv)
+# ================================================================
+log "Step 3/4: Python venv + DELFIN"
+module purge
+module load devel/python/3.11.7-gnu-14.2
+
+# Create working directories
+mkdir -p "$HOME/software"
+mkdir -p "$HOME/calc"
+mkdir -p "$HOME/archive"
+
+# Clone or update DELFIN repo
+if [ ! -d "$DELFIN_REPO" ]; then
+  log "Cloning DELFIN into $DELFIN_REPO"
+  git clone "$DELFIN_REPO_URL" "$DELFIN_REPO"
+else
+  log "DELFIN repo already exists at $DELFIN_REPO"
+fi
+
+# Create single venv
+if [ ! -d "$DELFIN_REPO/.venv" ]; then
+  log "Creating venv at $DELFIN_REPO/.venv"
+  python3 -m venv "$DELFIN_REPO/.venv"
+fi
+
+# shellcheck disable=SC1090
+source "$DELFIN_REPO/.venv/bin/activate"
+python -m pip install --upgrade pip wheel
+
+# Install DELFIN with all dependencies (including voila, ipywidgets, etc.)
+log "Installing DELFIN (pip install -e .)"
+python -m pip install -e "$DELFIN_REPO"
+
+log "DELFIN check"
+delfin --version || true
+
+# ================================================================
+# Step 4: Shell environment
+# ================================================================
+log "Step 4/4: Shell environment"
+ENV_FILE="$HOME/.delfin_env.sh"
+cat > "$ENV_FILE" <<EOF
+# Auto-generated by install_delfin_bwu.sh
+export DELFIN_REPO="$DELFIN_REPO"
+export OPENMPI_PREFIX="$OPENMPI_PREFIX"
+export ORCA_DIR="$ORCA_DIR"
+export ORCA_BASE="$ORCA_DIR"
+export ORCA_PLOT="$ORCA_DIR/orca_plot"
+export PATH="$OPENMPI_PREFIX/bin:$ORCA_DIR:\$PATH"
+export LD_LIBRARY_PATH="$OPENMPI_PREFIX/lib:$ORCA_DIR:\${LD_LIBRARY_PATH:-}"
+export DELFIN_AUTO_ACTIVATE_VENV="\${DELFIN_AUTO_ACTIVATE_VENV:-$DELFIN_AUTO_ACTIVATE_VENV}"
+if [ "\${DELFIN_AUTO_ACTIVATE_VENV}" = "1" ] \
+   && [ -z "\${VIRTUAL_ENV:-}" ] \
+   && [ -d "$DELFIN_REPO/.venv" ] \
+   && [ -z "\${VSCODE_PID:-}" ] \
+   && [ "\${TERM_PROGRAM:-}" != "vscode" ]; then
+  source "$DELFIN_REPO/.venv/bin/activate"
+fi
+EOF
+
+ensure_delfin_env_sourced "$HOME/.bashrc"
+ensure_delfin_env_sourced "$HOME/.profile"
+
+log "orca_plot check"
+if [ -x "$ORCA_DIR/orca_plot" ]; then
+  log "orca_plot available at $ORCA_DIR/orca_plot"
+else
+  log "orca_plot not found (check ORCA install)"
+fi
+
+# Apply env for current shell
+# shellcheck disable=SC1090
+source "$HOME/.delfin_env.sh"
+
+log ""
+log "============================================"
+log "  DELFIN installation complete!"
+log "============================================"
+log ""
+log "Directories created:"
+log "  ~/calc       - working directory for calculations"
+log "  ~/archive    - archive for completed calculations"
+log ""
+log "Next steps:"
+log "  source ~/.bashrc        # reload shell environment"
+log "  delfin --version        # verify installation"
+log "  delfin-voila --port 9000  # launch dashboard (open URL in browser)"
+log ""
+log "Notes:"
+log "  - ORCA download is manual (license required)."
+log "  - Set DELFIN_AUTO_ACTIVATE_VENV=0 to disable auto-activation."
+log "  - VS Code terminals are excluded from auto-activation."
