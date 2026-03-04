@@ -732,7 +732,9 @@ def create_tab(ctx):
         widgets.HTML('<h3>ORCA Input Builder</h3>'),
         widgets.HTML(
             '<a href="https://orca-manual.mpi-muelheim.mpg.de/" '
-            'target="_blank">ORCA User Manual</a>'
+            'target="_blank" rel="noopener noreferrer" '
+            'style="color:#1a73e8; text-decoration:underline; cursor:pointer;">'
+            'ORCA User Manual</a>'
         ),
         orca_css,
         split,

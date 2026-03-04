@@ -731,9 +731,13 @@ def create_tab(ctx):
         widgets.HTML('<h3>TURBOMOLE Builder</h3>'),
         widgets.HTML(
             '<a href="https://wiki.bwhpc.de/e/Turbomole" target="_blank" '
-            'rel="noopener noreferrer">bwHPC Wiki</a> | '
+            'rel="noopener noreferrer" '
+            'style="color:#1a73e8; text-decoration:underline; cursor:pointer;">'
+            'bwHPC Wiki</a> | '
             '<a href="https://www.turbomole.org/turbomole/turbomole-documentation/" '
-            'target="_blank" rel="noopener noreferrer">TURBOMOLE Manuals</a>'
+            'target="_blank" rel="noopener noreferrer" '
+            'style="color:#1a73e8; text-decoration:underline; cursor:pointer;">'
+            'TURBOMOLE Manuals</a>'
         ),
         widgets.HBox([tm_left, tm_right]),
     ], layout=widgets.Layout(padding='10px'))
