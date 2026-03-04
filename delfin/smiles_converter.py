@@ -3827,7 +3827,6 @@ def _generate_topological_isomers(
     smiles: str,
     apply_uff: bool = True,
     max_isomers: int = 50,
-    include_all_topologies: bool = False,
 ) -> List[Tuple[str, str]]:
     """Guarantee-complete isomer enumeration via topological permutation.
 
@@ -3958,11 +3957,10 @@ def _generate_topological_isomers(
             if len(results) >= max_isomers:
                 return results
             geom_name = canonical_form[0]  # 'OH', 'SQ', 'TH', 'LIN', 'TP', 'TS', …
-            if not include_all_topologies:
-                if not _passes_chelate_distance_feasibility(
-                    mol, metal_idx, donor_indices, perm, geom_name, chelate_ps
-                ):
-                    continue
+            if not _passes_chelate_distance_feasibility(
+                mol, metal_idx, donor_indices, perm, geom_name, chelate_ps
+            ):
+                continue
             try:
                 xyz = _build_topology_xyz(
                     mol, metal_idx, donor_indices, perm, geom_name, apply_uff
@@ -3987,17 +3985,16 @@ def _generate_topological_isomers(
                     # places donors at ideal geometry positions, so angle-
                     # based rejection would discard valid structures
                     # (especially TH with 109.5° angles).
-                    if not include_all_topologies:
-                        if _has_atom_clash(mol_tmp.GetMol(), cid, min_dist=0.3):
-                            continue
-                        if _has_unphysical_metal_nonbonded_contact(mol_tmp.GetMol(), cid):
-                            continue
-                        if _has_unphysical_oco_geometry(mol_tmp.GetMol(), cid):
-                            continue
-                        if _has_pi_ring_nonplanarity(mol_tmp.GetMol(), cid):
-                            continue
-                        if _has_severe_covalent_distortion(mol_tmp.GetMol(), cid):
-                            continue
+                    if _has_atom_clash(mol_tmp.GetMol(), cid, min_dist=0.3):
+                        continue
+                    if _has_unphysical_metal_nonbonded_contact(mol_tmp.GetMol(), cid):
+                        continue
+                    if _has_unphysical_oco_geometry(mol_tmp.GetMol(), cid):
+                        continue
+                    if _has_pi_ring_nonplanarity(mol_tmp.GetMol(), cid):
+                        continue
+                    if _has_severe_covalent_distortion(mol_tmp.GetMol(), cid):
+                        continue
                 except Exception:
                     pass
                 fp = _compute_coordination_fingerprint(
@@ -5612,15 +5609,6 @@ def _optimize_xyz_openbabel_safe(
                 logger.debug("Discarding UFF geometry: atom mapping failed.")
                 return xyz_delfin
             cid = mol_tmp.AddConformer(conf, assignId=True)
-            if _has_unphysical_metal_nonbonded_contact(mol_tmp.GetMol(), cid):
-                logger.debug("Discarding UFF geometry: unphysical metal non-bonded contact.")
-                return xyz_delfin
-            if _has_unphysical_oco_geometry(mol_tmp.GetMol(), cid):
-                logger.debug("Discarding UFF geometry: unphysical O-C-O geometry.")
-                return xyz_delfin
-            if _has_pi_ring_nonplanarity(mol_tmp.GetMol(), cid):
-                logger.debug("Discarding UFF geometry: pi-ring nonplanarity.")
-                return xyz_delfin
             if _has_bad_geometry(mol_tmp.GetMol(), cid):
                 logger.debug("Discarding UFF geometry: bad metal-ligand geometry.")
                 return xyz_delfin
