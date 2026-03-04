@@ -36,7 +36,12 @@ def smiles_to_xyz_quick(smiles):
     return xyz_string, num_atoms, 'quick', None
 
 
-def smiles_to_xyz_isomers(smiles, apply_uff=True, collapse_label_variants=True):
+def smiles_to_xyz_isomers(
+    smiles,
+    apply_uff=True,
+    collapse_label_variants=True,
+    include_binding_mode_isomers=False,
+):
     """Generate distinct coordination isomers for a SMILES string.
 
     Returns ``([(xyz_string, num_atoms, label), ...], error)``.
@@ -45,6 +50,7 @@ def smiles_to_xyz_isomers(smiles, apply_uff=True, collapse_label_variants=True):
         smiles,
         apply_uff=apply_uff,
         collapse_label_variants=collapse_label_variants,
+        include_binding_mode_isomers=include_binding_mode_isomers,
     )
     if error:
         return [], error

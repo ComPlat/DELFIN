@@ -1381,6 +1381,96 @@ def _prepare_mol_for_embedding(smiles: str):
     return mol
 
 
+def _dearomatized_embedding_copy(mol):
+    """Return a temporary de-aromatized copy suitable for ETKDG fallback.
+
+    Some charged aromatic metal complexes fail RDKit's internal kekulization
+    step during conformer embedding. For those cases we generate conformers on
+    a temporary copy where aromatic flags/bonds are cleared, then transfer only
+    coordinates back to the original molecule.
+    """
+    if not RDKIT_AVAILABLE:
+        return None
+    try:
+        tmp = Chem.Mol(mol)
+        tmp.RemoveAllConformers()
+        rw = Chem.RWMol(tmp)
+        for atom in rw.GetAtoms():
+            if atom.GetIsAromatic():
+                atom.SetIsAromatic(False)
+        for bond in rw.GetBonds():
+            if bond.GetIsAromatic() or bond.GetBondType() == Chem.BondType.AROMATIC:
+                bond.SetIsAromatic(False)
+                bond.SetBondType(Chem.BondType.SINGLE)
+        tmp = rw.GetMol()
+        try:
+            tmp.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        return tmp
+    except Exception:
+        return None
+
+
+def _embed_multiple_confs_robust(
+    mol,
+    num_confs: int,
+    seed: int,
+) -> List[int]:
+    """Embed conformers with dearomatized fallback for kekulization failures."""
+    if not RDKIT_AVAILABLE or num_confs <= 0:
+        return []
+
+    def _params_for_seed(_seed: int):
+        p = AllChem.ETKDGv3()
+        p.useRandomCoords = True
+        p.randomSeed = int(_seed)
+        p.enforceChirality = False
+        try:
+            p.clearConfs = False
+        except Exception:
+            pass
+        return p
+
+    # Primary embedding on the original molecule.
+    primary_ids: List[int] = []
+    try:
+        primary_ids = list(
+            AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=_params_for_seed(seed))
+        )
+    except Exception as emb_exc:
+        logger.debug("Primary ETKDG embedding failed (seed=%s): %s", seed, emb_exc)
+    if primary_ids:
+        return primary_ids
+
+    # Fallback: embed on a temporary de-aromatized copy and transfer coords.
+    tmp = _dearomatized_embedding_copy(mol)
+    if tmp is None:
+        return []
+    try:
+        tmp_ids = list(
+            AllChem.EmbedMultipleConfs(tmp, numConfs=num_confs, params=_params_for_seed(seed))
+        )
+    except Exception as emb_exc:
+        logger.debug("Fallback ETKDG embedding failed (seed=%s): %s", seed, emb_exc)
+        return []
+
+    transferred: List[int] = []
+    for tid in tmp_ids:
+        try:
+            conf = Chem.Conformer(tmp.GetConformer(tid))
+            cid = mol.AddConformer(conf, assignId=True)
+            transferred.append(cid)
+        except Exception:
+            continue
+    if transferred:
+        logger.debug(
+            "Embedded %d conformers via dearomatized fallback (seed=%s).",
+            len(transferred), seed,
+        )
+    return transferred
+
+
 def _xyz_to_canonical_smiles(xyz_delfin: str) -> Optional[str]:
     """Convert DELFIN-format XYZ to a canonical SMILES via OpenBabel.
 
@@ -1569,16 +1659,61 @@ def _no_spurious_bonds(xyz_delfin: str, original_smiles: str) -> bool:
         return True
 
 
-def _organic_fragment_signature(smiles: str) -> "frozenset | None":
-    """Return a frozenset-of-frozensets describing the multiset of organic fragments.
+def _organic_graph_signature(
+    symbol_by_idx: Dict[int, str],
+    adj: Dict[int, set],
+    wl_rounds: int = 3,
+) -> "frozenset | None":
+    """Return a WL-like multiset signature for disconnected organic graphs.
 
-    Each fragment is represented as a frozenset of ``(element_symbol, count)``
-    pairs (metals excluded).  The outer collection is a frozenset of
-    ``(fragment_signature, multiplicity)`` tuples so that, e.g., three identical
-    ppy ligands produce one entry with multiplicity 3.
-
-    Returns None on any error so callers can be permissive.
+    The signature is atom-order independent and captures connectivity pattern
+    per component much stronger than plain element-count fragment signatures.
+    Bond order is intentionally ignored (distance-perception ambiguity in XYZ);
+    connectivity preservation is the primary target.
     """
+    try:
+        comp_mult: Dict[tuple, int] = {}
+        visited: set = set()
+        for start in sorted(adj.keys()):
+            if start in visited:
+                continue
+            comp: List[int] = []
+            stack = [start]
+            while stack:
+                node = stack.pop()
+                if node in visited:
+                    continue
+                visited.add(node)
+                comp.append(node)
+                stack.extend(adj.get(node, set()) - visited)
+
+            labels: Dict[int, str] = {
+                i: str(symbol_by_idx.get(i, '?')) for i in comp
+            }
+            for _ in range(max(1, int(wl_rounds))):
+                new_labels: Dict[int, str] = {}
+                for i in comp:
+                    neigh = sorted(
+                        labels.get(j, '?') for j in adj.get(i, set()) if j in labels
+                    )
+                    new_labels[i] = labels[i] + "|" + ",".join(neigh)
+                labels = new_labels
+
+            comp_sig = (
+                len(comp),
+                tuple(sorted(symbol_by_idx.get(i, '?') for i in comp)),
+                tuple(sorted(len(adj.get(i, set())) for i in comp)),
+                tuple(sorted(labels[i] for i in comp)),
+            )
+            comp_mult[comp_sig] = comp_mult.get(comp_sig, 0) + 1
+
+        return frozenset(comp_mult.items())
+    except Exception:
+        return None
+
+
+def _organic_fragment_signature(smiles: str) -> "frozenset | None":
+    """Return an order-independent connectivity signature for organic fragments."""
     if not RDKIT_AVAILABLE:
         return None
     try:
@@ -1589,35 +1724,28 @@ def _organic_fragment_signature(smiles: str) -> "frozenset | None":
             mol.UpdatePropertyCache(strict=False)
         except Exception:
             pass
-        # Remove metal atoms to get pure organic connectivity
-        rw = Chem.RWMol(mol)
-        metal_indices = sorted(
-            [a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET],
-            reverse=True,
-        )
-        for idx in metal_indices:
-            rw.RemoveAtom(idx)
-        org_mol = rw.GetMol()
-        frags = Chem.GetMolFrags(org_mol, asMols=False)
-        frag_sigs: dict = {}
-        atoms = list(org_mol.GetAtoms())
-        for frag in frags:
-            counts: dict = {}
-            for aidx in frag:
-                sym = atoms[aidx].GetSymbol()
-                counts[sym] = counts.get(sym, 0) + 1
-            sig = frozenset(counts.items())
-            frag_sigs[sig] = frag_sigs.get(sig, 0) + 1
-        return frozenset(frag_sigs.items())
+
+        keep = [
+            a.GetIdx() for a in mol.GetAtoms()
+            if a.GetAtomicNum() > 1 and a.GetSymbol() not in _METAL_SET
+        ]
+        symbol_by_idx: Dict[int, str] = {
+            idx: mol.GetAtomWithIdx(idx).GetSymbol() for idx in keep
+        }
+        adj: Dict[int, set] = {idx: set() for idx in keep}
+        for bond in mol.GetBonds():
+            bi = bond.GetBeginAtomIdx()
+            bj = bond.GetEndAtomIdx()
+            if bi in adj and bj in adj:
+                adj[bi].add(bj)
+                adj[bj].add(bi)
+        return _organic_graph_signature(symbol_by_idx, adj)
     except Exception:
         return None
 
 
 def _organic_fragment_signature_xyz(xyz_delfin: str) -> "frozenset | None":
-    """Return the organic fragment signature for a delfin-format XYZ string.
-
-    Uses OpenBabel bond perception.  Returns None on any error.
-    """
+    """Return organic connectivity signature for DELFIN XYZ (via OB perception)."""
     if not OPENBABEL_AVAILABLE:
         return None
     try:
@@ -1634,13 +1762,18 @@ def _organic_fragment_signature_xyz(xyz_delfin: str) -> "frozenset | None":
         metal_ob_idx = {a.GetIdx() for a in _ob.OBMolAtomIter(ob_mol)
                         if a.GetAtomicNum() in _METAL_ATOMICNUMS}
 
-        # Build adjacency list excluding metal atoms and hydrogen.
-        # Hydrogen is excluded so the signature matches _organic_fragment_signature
-        # (which uses RDKit SMILES without implicit H), enabling exact comparison.
+        # Build heavy-atom adjacency excluding metals.
         n_atoms = ob_mol.NumAtoms()
         adj: dict = {i: set() for i in range(1, n_atoms + 1)
                      if ob_mol.GetAtom(i).GetAtomicNum() not in _METAL_ATOMICNUMS
                      and ob_mol.GetAtom(i).GetAtomicNum() not in (0, 1)}
+        symbol_by_idx: Dict[int, str] = {
+            i: (
+                Chem.GetPeriodicTable().GetElementSymbol(ob_mol.GetAtom(i).GetAtomicNum())
+                if RDKIT_AVAILABLE else str(ob_mol.GetAtom(i).GetAtomicNum())
+            )
+            for i in adj
+        }
 
         for bond in _ob.OBMolBondIter(ob_mol):
             i1 = bond.GetBeginAtomIdx()
@@ -1649,44 +1782,13 @@ def _organic_fragment_signature_xyz(xyz_delfin: str) -> "frozenset | None":
                 adj[i1].add(i2)
                 adj[i2].add(i1)
 
-        # BFS to find connected heavy-atom components (organic fragments)
-        visited: set = set()
-        frag_sigs: dict = {}
-        for start in list(adj.keys()):
-            if start in visited:
-                continue
-            component = []
-            queue = [start]
-            while queue:
-                node = queue.pop()
-                if node in visited:
-                    continue
-                visited.add(node)
-                component.append(node)
-                queue.extend(adj[node] - visited)
-            counts: dict = {}
-            for aidx in component:
-                sym = Chem.GetPeriodicTable().GetElementSymbol(
-                    ob_mol.GetAtom(aidx).GetAtomicNum()
-                ) if RDKIT_AVAILABLE else str(ob_mol.GetAtom(aidx).GetAtomicNum())
-                counts[sym] = counts.get(sym, 0) + 1
-            sig = frozenset(counts.items())
-            frag_sigs[sig] = frag_sigs.get(sig, 0) + 1
-        return frozenset(frag_sigs.items())
+        return _organic_graph_signature(symbol_by_idx, adj)
     except Exception:
         return None
 
 
 def _fragment_topology_ok(xyz_delfin: str, original_smiles: str) -> bool:
-    """Return True if the organic heavy-atom fragment topology of the XYZ matches the SMILES.
-
-    Both signatures count only heavy atoms (no H, no metals), so they can be
-    compared exactly.  This catches corrupted geometries where ligands have
-    broken apart or fused together, while accepting fac/mer isomers (identical
-    fragment sets, different geometry).
-
-    Returns True (permissive) on any error or if required libraries are absent.
-    """
+    """Return True if organic heavy-atom connectivity matches original SMILES."""
     orig_sig = _organic_fragment_signature(original_smiles)
     if orig_sig is None:
         return True
@@ -1701,7 +1803,7 @@ def _fragment_topology_ok(xyz_delfin: str, original_smiles: str) -> bool:
         return sum(mult for _, mult in sig)
 
     logger.debug(
-        "Fragment topology mismatch: SMILES has %d organic fragments, XYZ has %d",
+        "Organic graph mismatch: SMILES has %d fragment(s), XYZ has %d",
         _total_frags(orig_sig), _total_frags(xyz_sig),
     )
     return False
@@ -1733,6 +1835,232 @@ def _has_atom_clash(mol, conf_id: int, min_dist: float = 0.5) -> bool:
     return False
 
 
+def _has_unphysical_metal_nonbonded_contact(
+    mol,
+    conf_id: int,
+    min_abs_dist: float = 1.10,
+    rel_ml_scale: float = 0.55,
+) -> bool:
+    """Return True for unrealistically short non-bonded metal-heavy contacts.
+
+    Some generated conformers place a non-coordinating heavy atom extremely
+    close to a metal center (e.g. <1.0 A) while no bond exists in the graph.
+    These geometries are physically implausible and should be rejected.
+    """
+    if not RDKIT_AVAILABLE:
+        return False
+    try:
+        conf = mol.GetConformer(conf_id)
+        for m_atom in mol.GetAtoms():
+            if m_atom.GetSymbol() not in _METAL_SET:
+                continue
+            m_idx = m_atom.GetIdx()
+            m_pos = conf.GetAtomPosition(m_idx)
+            m_sym = m_atom.GetSymbol()
+            for atom in mol.GetAtoms():
+                a_idx = atom.GetIdx()
+                if a_idx == m_idx:
+                    continue
+                if atom.GetAtomicNum() <= 1:
+                    continue
+                if atom.GetSymbol() in _METAL_SET:
+                    continue
+                if mol.GetBondBetweenAtoms(m_idx, a_idx) is not None:
+                    continue
+
+                a_pos = conf.GetAtomPosition(a_idx)
+                d = math.sqrt(
+                    (m_pos.x - a_pos.x) ** 2
+                    + (m_pos.y - a_pos.y) ** 2
+                    + (m_pos.z - a_pos.z) ** 2
+                )
+                expected_ml = _get_ml_bond_length(m_sym, atom.GetSymbol())
+                min_d = max(float(min_abs_dist), float(rel_ml_scale) * float(expected_ml))
+                if d < min_d:
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _has_unphysical_oco_geometry(
+    mol,
+    conf_id: int,
+    min_oco_angle: float = 100.0,
+    max_oco_angle: float = 145.0,
+    min_co_dist: float = 1.05,
+    max_co_dist: float = 1.45,
+) -> bool:
+    """Return True if a carboxyl-like O-C-O unit is unrealistically distorted.
+
+    For carbon atoms bound to exactly two oxygen atoms (typical carboxyl/carbonyl
+    motif), the O-C-O angle should be trigonal-planar-like (~120 deg), not
+    linear like free CO2. Distances are also checked against broad covalent
+    ranges to catch collapsed or stretched C-O bonds.
+    """
+    if not RDKIT_AVAILABLE:
+        return False
+    try:
+        conf = mol.GetConformer(conf_id)
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            if atom.GetSymbol() in _METAL_SET:
+                continue
+
+            o_neighbors = [
+                n for n in atom.GetNeighbors()
+                if n.GetAtomicNum() == 8 and n.GetSymbol() not in _METAL_SET
+            ]
+            if len(o_neighbors) != 2:
+                continue
+
+            c_idx = atom.GetIdx()
+            c_pos = conf.GetAtomPosition(c_idx)
+            o1_idx = o_neighbors[0].GetIdx()
+            o2_idx = o_neighbors[1].GetIdx()
+            o1_pos = conf.GetAtomPosition(o1_idx)
+            o2_pos = conf.GetAtomPosition(o2_idx)
+
+            d1 = math.sqrt(
+                (c_pos.x - o1_pos.x) ** 2
+                + (c_pos.y - o1_pos.y) ** 2
+                + (c_pos.z - o1_pos.z) ** 2
+            )
+            d2 = math.sqrt(
+                (c_pos.x - o2_pos.x) ** 2
+                + (c_pos.y - o2_pos.y) ** 2
+                + (c_pos.z - o2_pos.z) ** 2
+            )
+            if d1 < min_co_dist or d1 > max_co_dist or d2 < min_co_dist or d2 > max_co_dist:
+                return True
+
+            v1 = (o1_pos.x - c_pos.x, o1_pos.y - c_pos.y, o1_pos.z - c_pos.z)
+            v2 = (o2_pos.x - c_pos.x, o2_pos.y - c_pos.y, o2_pos.z - c_pos.z)
+            m1 = math.sqrt(v1[0] ** 2 + v1[1] ** 2 + v1[2] ** 2)
+            m2 = math.sqrt(v2[0] ** 2 + v2[1] ** 2 + v2[2] ** 2)
+            if m1 < 1e-10 or m2 < 1e-10:
+                return True
+            cos_a = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / (m1 * m2)))
+            angle = math.degrees(math.acos(cos_a))
+            if angle < min_oco_angle or angle > max_oco_angle:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _has_pi_ring_nonplanarity(
+    mol,
+    conf_id: int,
+    max_ring_rms: float = 0.35,
+) -> bool:
+    """Return True if unsaturated 5-7 membered rings are strongly non-planar."""
+    if not RDKIT_AVAILABLE:
+        return False
+    try:
+        import numpy as np
+    except Exception:
+        return False
+    try:
+        conf = mol.GetConformer(conf_id)
+        try:
+            Chem.GetSymmSSSR(mol)
+        except Exception:
+            pass
+        ri = mol.GetRingInfo()
+        if ri is None:
+            return False
+
+        for ring in ri.AtomRings():
+            if len(ring) < 5 or len(ring) > 7:
+                continue
+            if any(
+                mol.GetAtomWithIdx(i).GetAtomicNum() <= 1
+                or mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET
+                for i in ring
+            ):
+                continue
+
+            unsat = 0
+            valid_edges = 0
+            for i in range(len(ring)):
+                a = ring[i]
+                b = ring[(i + 1) % len(ring)]
+                bond = mol.GetBondBetweenAtoms(a, b)
+                if bond is None:
+                    continue
+                valid_edges += 1
+                if bond.GetBondType() != Chem.BondType.SINGLE or bond.GetIsAromatic():
+                    unsat += 1
+            if valid_edges < max(3, len(ring) - 1):
+                continue
+            if unsat < 2:
+                continue
+
+            pts = np.array([
+                [
+                    conf.GetAtomPosition(a).x,
+                    conf.GetAtomPosition(a).y,
+                    conf.GetAtomPosition(a).z,
+                ]
+                for a in ring
+            ], dtype=float)
+            ctr = pts.mean(axis=0)
+            q = pts - ctr
+            _u, _s, vh = np.linalg.svd(q, full_matrices=False)
+            n = vh[-1]
+            n_norm = float(np.linalg.norm(n))
+            if n_norm < 1e-12:
+                continue
+            n = n / n_norm
+            d = np.abs(q @ n)
+            rms = float(np.sqrt(np.mean(d * d)))
+            if rms > max_ring_rms:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _has_severe_covalent_distortion(
+    mol,
+    conf_id: int,
+    max_abs_bond: float = 2.4,
+    max_covalent_scale: float = 1.8,
+) -> bool:
+    """Return True if non-metal covalent bonds are unrealistically stretched."""
+    if not RDKIT_AVAILABLE:
+        return False
+    try:
+        conf = mol.GetConformer(conf_id)
+        pt = Chem.GetPeriodicTable()
+        for bond in mol.GetBonds():
+            a1 = bond.GetBeginAtom()
+            a2 = bond.GetEndAtom()
+            if a1.GetSymbol() in _METAL_SET or a2.GetSymbol() in _METAL_SET:
+                continue
+
+            p1 = conf.GetAtomPosition(a1.GetIdx())
+            p2 = conf.GetAtomPosition(a2.GetIdx())
+            d = math.sqrt(
+                (p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2 + (p1.z - p2.z) ** 2
+            )
+            if d > max_abs_bond:
+                return True
+
+            try:
+                rc1 = float(pt.GetRcovalent(a1.GetAtomicNum()))
+                rc2 = float(pt.GetRcovalent(a2.GetAtomicNum()))
+                if rc1 > 0 and rc2 > 0 and d > max_covalent_scale * (rc1 + rc2):
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        return False
+    return False
+
+
 def _ml_distance_range(metal_symbol: str, donor_symbol: str) -> Tuple[float, float]:
     """Return (min_dist, max_dist) in Å for a metal-donor pair.
 
@@ -1761,6 +2089,12 @@ def _has_bad_geometry(mol, conf_id: int) -> bool:
        (~55-70°) while still rejecting collapsed non-chelate geometries.
     """
     conf = mol.GetConformer(conf_id)
+    if _has_unphysical_metal_nonbonded_contact(mol, conf_id):
+        return True
+    if _has_unphysical_oco_geometry(mol, conf_id):
+        return True
+    if _has_pi_ring_nonplanarity(mol, conf_id):
+        return True
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
             continue
@@ -2915,9 +3249,35 @@ def _embed_fragment_procrustes(
     params = AllChem.ETKDGv3()
     params.useRandomCoords = True
     params.randomSeed = 42
-    cid = AllChem.EmbedMolecule(frag_mol, params)
+    try:
+        cid = AllChem.EmbedMolecule(frag_mol, params)
+    except Exception:
+        cid = -1
     if cid < 0:
-        return False
+        # Fallback for problematic aromatic/charged fragments where ETKDG
+        # fails in kekulization preprocessing. We only need a geometric
+        # scaffold here, so a temporarily dearomatized embedding is fine.
+        try:
+            rw2 = Chem.RWMol(frag_mol)
+            for atom in rw2.GetAtoms():
+                if atom.GetIsAromatic():
+                    atom.SetIsAromatic(False)
+            for bond in rw2.GetBonds():
+                if bond.GetIsAromatic() or bond.GetBondType() == Chem.BondType.AROMATIC:
+                    bond.SetIsAromatic(False)
+                    bond.SetBondType(Chem.BondType.SINGLE)
+            frag_mol2 = rw2.GetMol()
+            try:
+                frag_mol2.UpdatePropertyCache(strict=False)
+            except Exception:
+                pass
+            cid2 = AllChem.EmbedMolecule(frag_mol2, params)
+            if cid2 < 0:
+                return False
+            frag_mol = frag_mol2
+            cid = cid2
+        except Exception:
+            return False
 
     # Extract fragment coordinates
     frag_conf = frag_mol.GetConformer(cid)
@@ -3009,6 +3369,16 @@ def _build_topology_xyz(
         DELFIN-format XYZ string, or None on failure.
     """
     try:
+        # If a template conformer is available, place whole ligand fragments
+        # as rigid bodies onto the target donor geometry. This preserves
+        # intraligand structure much better than de-novo fragment embedding.
+        if mol.GetNumConformers() > 0:
+            xyz_from_template = _build_topology_xyz_from_template(
+                mol, metal_idx, donor_atom_indices, perm, geometry, apply_uff
+            )
+            if xyz_from_template is not None:
+                return xyz_from_template
+
         vectors = _TOPO_GEOMETRY_VECTORS[geometry]
         n_atoms = mol.GetNumAtoms()
         coords: List[Tuple[float, float, float]] = [(0.0, 0.0, 0.0)] * n_atoms
@@ -3077,9 +3447,16 @@ def _build_topology_xyz(
                                  if d in donor_target_map]
                 if not tgt_positions:
                     continue
-                ok = _embed_fragment_procrustes(
-                    mol, metal_idx, frag, frag_donors, tgt_positions, coords
-                )
+                try:
+                    ok = _embed_fragment_procrustes(
+                        mol, metal_idx, frag, frag_donors, tgt_positions, coords
+                    )
+                except Exception as frag_exc:
+                    logger.debug(
+                        "Fragment embedding failed for one fragment (size=%d, donors=%d): %s",
+                        len(frag), len(frag_donors), frag_exc,
+                    )
+                    continue
                 if ok:
                     frag_embed_placed.update(frag)
                     placed.update(frag)
@@ -3160,7 +3537,10 @@ def _build_topology_xyz(
                 # The constraint API in _optimize_xyz_openbabel is available
                 # for callers that need it, but the topology builder relies
                 # on unconstrained relaxation for best results.
-                xyz = _optimize_xyz_openbabel(xyz)
+                xyz = _optimize_xyz_openbabel_safe(
+                    xyz,
+                    mol_template=mol,
+                )
             except Exception as uff_exc:
                 # Keep the generated topology geometry when UFF fails.
                 # Dropping the isomer here can hide valid alternatives.
@@ -3172,11 +3552,282 @@ def _build_topology_xyz(
         return None
 
 
+def _build_topology_xyz_from_template(
+    mol,
+    metal_idx: int,
+    donor_atom_indices: List[int],
+    perm: List[int],
+    geometry: str,
+    apply_uff: bool,
+) -> Optional[str]:
+    """Rigid-fragment topology builder using an existing template conformer.
+
+    The ligand fragments are transformed as rigid bodies so their internal
+    geometry remains close to the template. This is especially useful for
+    aromatic/charged chelating ligands where ETKDG fragment embedding can fail.
+    """
+    if not RDKIT_AVAILABLE:
+        return None
+    if mol.GetNumConformers() == 0:
+        return None
+
+    try:
+        import numpy as np
+    except Exception:
+        return None
+
+    try:
+        conf = mol.GetConformer(0)
+        vectors = _TOPO_GEOMETRY_VECTORS[geometry]
+        n_atoms = mol.GetNumAtoms()
+
+        # Original coordinates translated so the metal sits at origin.
+        mpos = conf.GetAtomPosition(metal_idx)
+        orig = np.zeros((n_atoms, 3), dtype=float)
+        for i in range(n_atoms):
+            p = conf.GetAtomPosition(i)
+            orig[i, 0] = p.x - mpos.x
+            orig[i, 1] = p.y - mpos.y
+            orig[i, 2] = p.z - mpos.z
+
+        metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+        donor_target_map: Dict[int, np.ndarray] = {}
+        for pos_idx, donor_list_idx in enumerate(perm):
+            donor_atom_idx = donor_atom_indices[donor_list_idx]
+            donor_sym = mol.GetAtomWithIdx(donor_atom_idx).GetSymbol()
+            bl = _get_ml_bond_length(metal_sym, donor_sym)
+            vx, vy, vz = vectors[pos_idx]
+            mag = math.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
+            if mag > 1e-8:
+                vx = vx / mag * bl
+                vy = vy / mag * bl
+                vz = vz / mag * bl
+            donor_target_map[donor_atom_idx] = np.array([vx, vy, vz], dtype=float)
+
+        # Build non-metal fragments.
+        non_metal = {
+            a.GetIdx() for a in mol.GetAtoms()
+            if a.GetSymbol() not in _METAL_SET
+        }
+        adj: Dict[int, set] = {i: set() for i in non_metal}
+        for bond in mol.GetBonds():
+            bi, bj = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+            if bi in non_metal and bj in non_metal:
+                adj[bi].add(bj)
+                adj[bj].add(bi)
+
+        visited: set = set()
+        fragments: List[set] = []
+        for start in sorted(non_metal):
+            if start in visited:
+                continue
+            frag: set = set()
+            stack = [start]
+            while stack:
+                node = stack.pop()
+                if node in visited:
+                    continue
+                visited.add(node)
+                frag.add(node)
+                for nbr in adj.get(node, ()):
+                    if nbr not in visited:
+                        stack.append(nbr)
+            fragments.append(frag)
+
+        coords = np.array(orig, copy=True)
+        coords[metal_idx] = np.array([0.0, 0.0, 0.0], dtype=float)
+        placed = {metal_idx}
+
+        def _rotation_from_vectors(v_from: np.ndarray, v_to: np.ndarray) -> np.ndarray:
+            nf = np.linalg.norm(v_from)
+            nt = np.linalg.norm(v_to)
+            if nf < 1e-10 or nt < 1e-10:
+                return np.eye(3)
+            a = v_from / nf
+            b = v_to / nt
+            v = np.cross(a, b)
+            s = np.linalg.norm(v)
+            c = float(np.clip(np.dot(a, b), -1.0, 1.0))
+            if s < 1e-10:
+                if c > 0:
+                    return np.eye(3)
+                # 180° rotation around any axis perpendicular to a
+                axis = np.array([1.0, 0.0, 0.0])
+                if abs(a[0]) > 0.9:
+                    axis = np.array([0.0, 1.0, 0.0])
+                axis = axis - np.dot(axis, a) * a
+                axis = axis / max(np.linalg.norm(axis), 1e-10)
+                K = np.array([
+                    [0, -axis[2], axis[1]],
+                    [axis[2], 0, -axis[0]],
+                    [-axis[1], axis[0], 0],
+                ])
+                return np.eye(3) + 2.0 * (K @ K)
+            K = np.array([
+                [0, -v[2], v[1]],
+                [v[2], 0, -v[0]],
+                [-v[1], v[0], 0],
+            ])
+            return np.eye(3) + K + K @ K * ((1.0 - c) / (s ** 2))
+
+        def _metal_proximity_penalty(
+            xyz_frag: np.ndarray,
+            frag_atoms: List[int],
+            donor_atoms: List[int],
+        ) -> float:
+            """Penalty for non-donor heavy atoms placed too close to the metal."""
+            donor_set = set(donor_atoms)
+            pen = 0.0
+            for li, atom_idx in enumerate(frag_atoms):
+                if atom_idx in donor_set:
+                    continue
+                atom = mol.GetAtomWithIdx(atom_idx)
+                if atom.GetAtomicNum() <= 1:
+                    continue
+                if atom.GetSymbol() in _METAL_SET:
+                    continue
+                d = float(np.linalg.norm(xyz_frag[li]))
+                sym = atom.GetSymbol()
+                # Keep non-donor atoms clearly outside the first coordination shell.
+                ml_ref = float(_get_ml_bond_length(metal_sym, sym))
+                min_allowed = max(1.15, 0.65 * ml_ref)
+                if d < min_allowed:
+                    dd = (min_allowed - d)
+                    pen += dd * dd
+                if d < 1.0:
+                    pen += 5.0
+            return pen
+
+        for frag in fragments:
+            frag_list = sorted(frag)
+            frag_donors = [d for d in donor_atom_indices if d in frag]
+            if not frag_donors:
+                continue
+
+            frag_xyz = orig[frag_list, :]
+            donor_local = [frag_list.index(d) for d in frag_donors]
+            src = frag_xyz[donor_local, :]
+            tgt = np.array([donor_target_map[d] for d in frag_donors], dtype=float)
+            if len(src) != len(tgt) or len(src) == 0:
+                continue
+
+            if len(src) >= 2:
+                src_center = src.mean(axis=0)
+                tgt_center = tgt.mean(axis=0)
+                X = src - src_center
+                Y = tgt - tgt_center
+                H = X.T @ Y
+                U, S, Vt = np.linalg.svd(H)
+                R = Vt.T @ U.T
+                if np.linalg.det(R) < 0:
+                    Vt[-1, :] *= -1
+                    R = Vt.T @ U.T
+                transformed = (frag_xyz - src_center) @ R.T + tgt_center
+
+                # Bidentate/multidentate fragments can be mirrored around the
+                # donor-donor axis, yielding two plausible orientations with
+                # identical donor placement. Pick the orientation that keeps
+                # non-donor atoms farther from the metal center.
+                try:
+                    if len(frag_donors) >= 2:
+                        d0 = donor_target_map[frag_donors[0]]
+                        d1 = donor_target_map[frag_donors[1]]
+                        axis = d1 - d0
+                        axis_norm = float(np.linalg.norm(axis))
+                        if axis_norm > 1e-10:
+                            u = axis / axis_norm
+                            pivot = 0.5 * (d0 + d1)
+                            v = transformed - pivot
+                            # 180° rotation around donor-donor axis:
+                            # v' = -v + 2*(u·v)*u
+                            v_rot = -v + 2.0 * np.outer(v @ u, u)
+                            transformed_flip = v_rot + pivot
+
+                            p0 = _metal_proximity_penalty(transformed, frag_list, frag_donors)
+                            p1 = _metal_proximity_penalty(transformed_flip, frag_list, frag_donors)
+                            if p1 < p0:
+                                transformed = transformed_flip
+                except Exception:
+                    pass
+            else:
+                src_d = src[0]
+                tgt_d = tgt[0]
+                src_com = frag_xyz.mean(axis=0)
+                # Keep the fragment extending away from the metal.
+                v_from = src_com - src_d
+                v_to = tgt_d
+                R = _rotation_from_vectors(v_from, v_to)
+                transformed = (frag_xyz - src_d) @ R.T + tgt_d
+
+            for li, atom_idx in enumerate(frag_list):
+                coords[atom_idx] = transformed[li]
+                placed.add(atom_idx)
+
+        # Any atom not touched by fragment placement keeps template-relative coords.
+        for i in range(n_atoms):
+            if i not in placed:
+                coords[i] = orig[i]
+
+        lines = []
+        for i in range(n_atoms):
+            atom = mol.GetAtomWithIdx(i)
+            x, y, z = coords[i]
+            lines.append(f"{atom.GetSymbol():4s} {float(x):12.6f} {float(y):12.6f} {float(z):12.6f}")
+        xyz = '\n'.join(lines) + '\n'
+
+        if apply_uff:
+            try:
+                xyz = _optimize_xyz_openbabel_safe(
+                    xyz,
+                    mol_template=mol,
+                )
+            except Exception as uff_exc:
+                logger.debug(
+                    "Template-topology UFF optimization failed, keeping unoptimized XYZ: %s",
+                    uff_exc,
+                )
+        return xyz
+    except Exception as e:
+        logger.debug("_build_topology_xyz_from_template failed: %s", e)
+        return None
+
+
+def _build_topology_template_mol(smiles: str):
+    """Create a topology-template RDKit Mol with a mapped 3D conformer.
+
+    Uses the quick conversion XYZ as the geometry source and reconstructs a
+    matching RDKit molecule via ``mol_from_smiles_rdkit + AddHs`` so atom
+    order/length stays consistent for conformer injection.
+    """
+    if not RDKIT_AVAILABLE:
+        return None
+    try:
+        xyz, err = smiles_to_xyz_quick(smiles)
+        if err or not xyz:
+            return None
+        mol, _note = mol_from_smiles_rdkit(smiles, allow_metal=True)
+        if mol is None:
+            return None
+        try:
+            mol = Chem.AddHs(mol, addCoords=True)
+        except Exception:
+            pass
+        conf = _xyz_to_rdkit_conformer(mol, xyz)
+        if conf is None:
+            return None
+        mol.RemoveAllConformers()
+        mol.AddConformer(conf, assignId=True)
+        return mol
+    except Exception:
+        return None
+
+
 def _generate_topological_isomers(
     mol,
     smiles: str,
     apply_uff: bool = True,
     max_isomers: int = 50,
+    include_all_topologies: bool = False,
 ) -> List[Tuple[str, str]]:
     """Guarantee-complete isomer enumeration via topological permutation.
 
@@ -3188,6 +3839,71 @@ def _generate_topological_isomers(
     """
     results: List[Tuple[str, str]] = []
     dtype_map = _donor_type_map(mol)
+
+    def _passes_chelate_distance_feasibility(
+        _mol,
+        _metal_idx: int,
+        _donor_indices: List[int],
+        _perm: List[int],
+        _geom_name: str,
+        _chelate_atom_pairs: List[FrozenSet],
+        abs_tol: float = 0.7,
+        rel_tol: float = 0.35,
+    ) -> bool:
+        """Reject geometrically impossible chelate placements.
+
+        For each chelate pair, compare donor-donor distance in the template
+        conformer to the idealized target distance implied by geometry+perm.
+        If they differ too much, this arrangement is likely non-physical for
+        the ligand bite and tends to collapse into unrealistic structures.
+        """
+        try:
+            if _mol.GetNumConformers() == 0:
+                return True
+            conf = _mol.GetConformer(0)
+            vectors = _TOPO_GEOMETRY_VECTORS.get(_geom_name)
+            if not vectors:
+                return True
+
+            m_sym = _mol.GetAtomWithIdx(_metal_idx).GetSymbol()
+            target_by_donor: Dict[int, Tuple[float, float, float]] = {}
+            for pos_idx, donor_list_idx in enumerate(_perm):
+                d_atom = _donor_indices[donor_list_idx]
+                d_sym = _mol.GetAtomWithIdx(d_atom).GetSymbol()
+                bl = _get_ml_bond_length(m_sym, d_sym)
+                vx, vy, vz = vectors[pos_idx]
+                mag = math.sqrt(vx * vx + vy * vy + vz * vz)
+                if mag > 1e-8:
+                    vx = vx / mag * bl
+                    vy = vy / mag * bl
+                    vz = vz / mag * bl
+                target_by_donor[d_atom] = (vx, vy, vz)
+
+            for cp in _chelate_atom_pairs:
+                pair = sorted(cp)
+                if len(pair) != 2:
+                    continue
+                a, b = pair
+                if a not in target_by_donor or b not in target_by_donor:
+                    continue
+
+                pa = conf.GetAtomPosition(a)
+                pb = conf.GetAtomPosition(b)
+                d_src = math.sqrt(
+                    (pa.x - pb.x) ** 2 + (pa.y - pb.y) ** 2 + (pa.z - pb.z) ** 2
+                )
+                ta = target_by_donor[a]
+                tb = target_by_donor[b]
+                d_tgt = math.sqrt(
+                    (ta[0] - tb[0]) ** 2 + (ta[1] - tb[1]) ** 2 + (ta[2] - tb[2]) ** 2
+                )
+
+                tol = max(abs_tol, rel_tol * max(d_src, 1e-8))
+                if abs(d_tgt - d_src) > tol:
+                    return False
+            return True
+        except Exception:
+            return True
 
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
@@ -3242,6 +3958,11 @@ def _generate_topological_isomers(
             if len(results) >= max_isomers:
                 return results
             geom_name = canonical_form[0]  # 'OH', 'SQ', 'TH', 'LIN', 'TP', 'TS', …
+            if not include_all_topologies:
+                if not _passes_chelate_distance_feasibility(
+                    mol, metal_idx, donor_indices, perm, geom_name, chelate_ps
+                ):
+                    continue
             try:
                 xyz = _build_topology_xyz(
                     mol, metal_idx, donor_indices, perm, geom_name, apply_uff
@@ -3266,8 +3987,17 @@ def _generate_topological_isomers(
                     # places donors at ideal geometry positions, so angle-
                     # based rejection would discard valid structures
                     # (especially TH with 109.5° angles).
-                    if _has_atom_clash(mol_tmp.GetMol(), cid, min_dist=0.3):
-                        continue
+                    if not include_all_topologies:
+                        if _has_atom_clash(mol_tmp.GetMol(), cid, min_dist=0.3):
+                            continue
+                        if _has_unphysical_metal_nonbonded_contact(mol_tmp.GetMol(), cid):
+                            continue
+                        if _has_unphysical_oco_geometry(mol_tmp.GetMol(), cid):
+                            continue
+                        if _has_pi_ring_nonplanarity(mol_tmp.GetMol(), cid):
+                            continue
+                        if _has_severe_covalent_distortion(mol_tmp.GetMol(), cid):
+                            continue
                 except Exception:
                     pass
                 fp = _compute_coordination_fingerprint(
@@ -3687,6 +4417,7 @@ def smiles_to_xyz_isomers(
     max_isomers: int = 50,
     apply_uff: bool = True,
     collapse_label_variants: bool = True,
+    include_binding_mode_isomers: bool = True,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -3772,17 +4503,7 @@ def smiles_to_xyz_isomers(
         n_rounds = len(seeds)
         per_round = max(1, int(math.ceil(num_confs / n_rounds)))
         for seed in seeds:
-            params = AllChem.ETKDGv3()
-            params.useRandomCoords = True
-            params.randomSeed = seed
-            params.enforceChirality = False
-            try:
-                params.clearConfs = False
-            except Exception:
-                pass
-            conf_ids.extend(
-                list(AllChem.EmbedMultipleConfs(mol, numConfs=per_round, params=params))
-            )
+            conf_ids.extend(_embed_multiple_confs_robust(mol, per_round, seed))
     except Exception as e:
         logger.warning("Multi-conformer embedding failed: %s", e)
         # Do not abort here: keep already injected OB conformers if available.
@@ -3811,6 +4532,12 @@ def smiles_to_xyz_isomers(
             # Hard-reject only truly collapsed structures (< 0.3 Å clash
             # or M-L < 1.2 Å); borderline issues become score penalties.
             if _has_atom_clash(mol, cid, min_dist=0.3):
+                continue
+            if _has_unphysical_metal_nonbonded_contact(mol, cid):
+                continue
+            if _has_unphysical_oco_geometry(mol, cid):
+                continue
+            if _has_pi_ring_nonplanarity(mol, cid):
                 continue
             penalty = 0.0
             if _has_atom_clash(mol, cid):
@@ -3903,7 +4630,11 @@ def smiles_to_xyz_isomers(
                 xyz = _mol_to_xyz_conformer(mol, cid)
                 if apply_uff:
                     try:
-                        xyz = _optimize_xyz_openbabel(xyz)
+                        xyz = _optimize_xyz_openbabel_safe(
+                            xyz,
+                            mol_template=mol,
+                            smiles=smiles,
+                        )
                     except Exception as uff_exc:
                         # Preserve the isomer if UFF cannot optimize this geometry.
                         logger.debug(
@@ -3945,10 +4676,11 @@ def smiles_to_xyz_isomers(
         try:
             # Collect fingerprints from sampling results
             existing_fps: set = set()
-            dtype_map_topo = _donor_type_map(mol)
+            topo_mol = _build_topology_template_mol(smiles) or mol
+            dtype_map_topo = _donor_type_map(topo_mol)
             for existing_xyz, _existing_display in results:
                 try:
-                    mol_tmp = Chem.RWMol(mol)
+                    mol_tmp = Chem.RWMol(topo_mol)
                     mol_tmp.RemoveAllConformers()
                     conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), existing_xyz)
                     if conf is not None:
@@ -3963,14 +4695,14 @@ def smiles_to_xyz_isomers(
             existing_displays = {display for _, display in results}
 
             topo_results = _generate_topological_isomers(
-                mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
+                topo_mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
             )
 
             for topo_xyz, topo_label in topo_results:
                 # Compute fingerprint of topo structure for dedup
                 topo_fp = None
                 try:
-                    mol_tmp = Chem.RWMol(mol)
+                    mol_tmp = Chem.RWMol(topo_mol)
                     mol_tmp.RemoveAllConformers()
                     conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), topo_xyz)
                     if conf is not None:
@@ -3983,7 +4715,16 @@ def smiles_to_xyz_isomers(
 
                 # Skip if this fingerprint was already seen
                 if topo_fp is not None and topo_fp in existing_fps:
-                    continue
+                    _base_existing = {
+                        re.sub(r'-\d+$', '', d) for d in existing_displays if d
+                    }
+                    _norm_try = re.sub(r'-\d+$', '', topo_label) if topo_label else ''
+                    # Keep geometry-diverse labels even if coarse fingerprint
+                    # collides (e.g. homogeneous donor sets where SQ/TH can
+                    # hash similarly). Only skip when label space is already
+                    # covered as well.
+                    if not _norm_try or _norm_try in _base_existing:
+                        continue
 
                 norm = topo_label or ''
                 # Skip if sampling already produced an isomer with the same
@@ -4015,18 +4756,26 @@ def smiles_to_xyz_isomers(
                         display = f'{norm}-{suffix}'
                     else:
                         display = norm
-                existing_displays.add(display)
-                if topo_fp is not None:
-                    existing_fps.add(topo_fp)
+                # Keep only topology-consistent, chemically plausible
+                # candidates; broken XYZ roundtrips are excluded here.
+                if not _roundtrip_ring_count_ok(topo_xyz, smiles):
+                    logger.debug("Skipping topo isomer %s: ring-count mismatch", display)
+                    continue
+                if not _no_spurious_bonds(topo_xyz, smiles):
+                    logger.debug("Skipping topo isomer %s: spurious bonds", display)
+                    continue
                 if not _fragment_topology_ok(topo_xyz, smiles):
                     logger.debug("Skipping topo isomer %s: fragment topology mismatch", display)
                     continue
+                existing_displays.add(display)
+                if topo_fp is not None:
+                    existing_fps.add(topo_fp)
                 results.append((topo_xyz, display))
         except Exception as _topo_exc:
             logger.debug("Topological isomer generation failed: %s", _topo_exc)
 
     # --- Linkage isomers ---
-    if has_metal:
+    if has_metal and include_binding_mode_isomers:
         try:
             link_results = _generate_linkage_isomers(mol, smiles, apply_uff=apply_uff)
             for _lxyz, _llabel in link_results:
@@ -4038,7 +4787,7 @@ def smiles_to_xyz_isomers(
             logger.debug("Linkage isomer generation failed: %s", _link_exc)
 
     # --- Alternative binding-site exploration ---
-    if has_metal:
+    if has_metal and include_binding_mode_isomers:
         try:
             existing_displays = {display for _, display in results}
             existing_base = {re.sub(r'-\d+$', '', d) for d in existing_displays}
@@ -4835,6 +5584,68 @@ def _optimize_xyz_openbabel(
     except Exception as e:
         logger.debug("Open Babel UFF optimization failed: %s", e)
         return xyz_delfin
+
+
+def _optimize_xyz_openbabel_safe(
+    xyz_delfin: str,
+    mol_template=None,
+    smiles: Optional[str] = None,
+    steps: int = 500,
+) -> str:
+    """Run OB-UFF, but keep original XYZ if optimization breaks topology.
+
+    OB force fields operate on perceived connectivity from XYZ and can
+    occasionally stretch/break covalent bonds for charged metal complexes.
+    This wrapper accepts the optimized geometry only if it passes structural
+    sanity checks against the original molecular graph.
+    """
+    xyz_opt = _optimize_xyz_openbabel(xyz_delfin, steps=steps)
+    if not xyz_opt or xyz_opt == xyz_delfin:
+        return xyz_delfin
+
+    if mol_template is not None and RDKIT_AVAILABLE:
+        try:
+            mol_tmp = Chem.RWMol(mol_template)
+            mol_tmp.RemoveAllConformers()
+            conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_opt)
+            if conf is None:
+                logger.debug("Discarding UFF geometry: atom mapping failed.")
+                return xyz_delfin
+            cid = mol_tmp.AddConformer(conf, assignId=True)
+            if _has_unphysical_metal_nonbonded_contact(mol_tmp.GetMol(), cid):
+                logger.debug("Discarding UFF geometry: unphysical metal non-bonded contact.")
+                return xyz_delfin
+            if _has_unphysical_oco_geometry(mol_tmp.GetMol(), cid):
+                logger.debug("Discarding UFF geometry: unphysical O-C-O geometry.")
+                return xyz_delfin
+            if _has_pi_ring_nonplanarity(mol_tmp.GetMol(), cid):
+                logger.debug("Discarding UFF geometry: pi-ring nonplanarity.")
+                return xyz_delfin
+            if _has_bad_geometry(mol_tmp.GetMol(), cid):
+                logger.debug("Discarding UFF geometry: bad metal-ligand geometry.")
+                return xyz_delfin
+            if _has_severe_covalent_distortion(mol_tmp.GetMol(), cid):
+                logger.debug("Discarding UFF geometry: severe covalent distortion.")
+                return xyz_delfin
+        except Exception as e:
+            logger.debug("Discarding UFF geometry: post-check failed (%s).", e)
+            return xyz_delfin
+
+    if smiles:
+        try:
+            if not _roundtrip_ring_count_ok(xyz_opt, smiles):
+                logger.debug("Discarding UFF geometry: ring-count mismatch.")
+                return xyz_delfin
+            if not _no_spurious_bonds(xyz_opt, smiles):
+                logger.debug("Discarding UFF geometry: spurious bonds.")
+                return xyz_delfin
+            if not _fragment_topology_ok(xyz_opt, smiles):
+                logger.debug("Discarding UFF geometry: fragment topology mismatch.")
+                return xyz_delfin
+        except Exception:
+            pass
+
+    return xyz_opt
 
 
 def convert_input_if_smiles(input_path: Path) -> Tuple[bool, Optional[str]]:
