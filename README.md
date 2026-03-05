@@ -267,6 +267,7 @@ For coordination complexes, DELFIN combines:
 - topology and fragment sanity checks before accepting structures
 
 `delfin-guppy` reuses the same SMILES engine for multi-start XTB sampling and writes ranked trajectory outputs (`GUPPY_try.xyz`, `GUPPY_try_isomer.xyz`, `GUPPY_try_random.xyz`) plus `best_coordniation.xyz`.
+When GOAT refinement is enabled (`--goat-topk` or pipeline `GUPPY=yes` + `XTB_GOAT=yes`), the top-k XTB candidates are refined in parallel, compared by final GOAT energy, and the global winner is persisted as `best_coordniation.xyz` (with `best_coordniation_pre_goat.xyz`, `GUPPY_try_goat.xyz`, and `guppy_goat_summary.json` as trace artifacts).
 
 ---
 

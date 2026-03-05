@@ -22,6 +22,7 @@ so the energy is the second column as requested.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import threading
@@ -302,6 +303,42 @@ def _write_xtb_input(
     inp_path.write_text("\n".join(blocks) + "\n", encoding="utf-8")
 
 
+def _write_xyz_frame(
+    xyz_path: Path,
+    *,
+    natoms: int,
+    coords: List[str],
+    comment: str,
+) -> None:
+    """Write one XYZ frame with header."""
+    with xyz_path.open("w", encoding="utf-8") as handle:
+        handle.write(f"{natoms}\n")
+        handle.write(f"{comment}\n")
+        for line in coords[:natoms]:
+            handle.write(f"{line}\n")
+
+
+def _write_goat_input(
+    inp_path: Path,
+    *,
+    xyz_file: Path,
+    charge: int,
+    multiplicity: int,
+    pal: int,
+    maxcore: int,
+    method: str,
+) -> None:
+    """Write ORCA GOAT input for an XYZ file."""
+    method_token = (method or "XTB2").strip() or "XTB2"
+    content = (
+        f"!{method_token} GOAT ALPB(DMF)\n\n"
+        f"%maxcore {maxcore}\n"
+        f"%pal nprocs {pal} end\n\n"
+        f"*xyzfile {charge} {multiplicity} {xyz_file.name}\n"
+    )
+    inp_path.write_text(content, encoding="utf-8")
+
+
 def _extract_total_energy_eh(output_path: Path) -> Optional[float]:
     """Extract last energy value from ORCA output.
 
@@ -471,6 +508,202 @@ def _execute_single_sampling_run(
     return True, (energy, natoms, opt_coords, run_idx, start_label, start_source), None
 
 
+def _execute_single_goat_run(
+    *,
+    candidate_rank: int,
+    candidate: RunResult,
+    resolved_charge: int,
+    multiplicity: int,
+    pal: int,
+    maxcore: int,
+    method: str,
+    workdir: Path,
+    smiles: str = "",
+) -> Tuple[bool, Optional[RunResult], Optional[str]]:
+    """Run GOAT on one candidate and return refined geometry + energy."""
+    xtb_energy, natoms, coords, run_idx, start_label, start_source = candidate
+    goat_dir = workdir / "GOAT" / f"candidate_{candidate_rank:02d}_run_{run_idx:02d}"
+    goat_dir.mkdir(parents=True, exist_ok=True)
+
+    candidate_xyz = goat_dir / "candidate.xyz"
+    _write_xyz_frame(
+        candidate_xyz,
+        natoms=natoms,
+        coords=coords,
+        comment=f"run_{run_idx:02d} xtb_energy={xtb_energy:.12f}",
+    )
+
+    goat_inp = goat_dir / "goat.inp"
+    goat_out = goat_dir / "goat.out"
+    goat_xyz = goat_dir / "goat.globalminimum.xyz"
+    _write_goat_input(
+        goat_inp,
+        xyz_file=candidate_xyz,
+        charge=resolved_charge,
+        multiplicity=multiplicity,
+        pal=pal,
+        maxcore=maxcore,
+        method=method,
+    )
+
+    ok = run_orca(
+        str(goat_inp),
+        str(goat_out),
+        working_dir=goat_dir,
+        isolate=True,
+    )
+    if not ok:
+        return False, None, "ORCA GOAT run failed"
+
+    if not goat_xyz.exists():
+        return False, None, f"GOAT result file missing: {goat_xyz.name}"
+
+    energy = _extract_total_energy_eh(goat_out)
+    if energy is None:
+        return False, None, f"Could not extract GOAT energy from {goat_out.name}"
+
+    try:
+        goat_natoms, goat_coords = _read_xyz_coordinates(goat_xyz)
+    except Exception as exc:  # noqa: BLE001
+        return False, None, f"Could not read GOAT geometry: {exc}"
+
+    if smiles:
+        xyz_delfin = "\n".join(goat_coords[:goat_natoms])
+        if not _fragment_topology_ok(xyz_delfin, smiles):
+            return False, None, "Topology changed: fragment mismatch after GOAT"
+        if not _roundtrip_ring_count_ok(xyz_delfin, smiles):
+            return False, None, "Topology changed: ring count mismatch after GOAT"
+        if not _no_spurious_bonds(xyz_delfin, smiles):
+            return False, None, "Topology changed: spurious bonds after GOAT"
+
+    base_label = start_label or start_source
+    goat_label = f"{base_label} goat".strip() if base_label else "goat"
+    return True, (energy, goat_natoms, goat_coords, run_idx, goat_label, "goat"), None
+
+
+def _run_topk_goat_refinement(
+    *,
+    ranked_results: List[RunResult],
+    resolved_charge: int,
+    multiplicity: int,
+    pal: int,
+    maxcore: int,
+    method: str,
+    workdir: Path,
+    smiles: str,
+    topk: int,
+    parallel_jobs: int,
+) -> Tuple[List[RunResult], List[str]]:
+    """Run GOAT for top-k ranked GUPPY candidates, in parallel where possible."""
+    candidate_count = max(1, min(int(topk), len(ranked_results)))
+    candidates = ranked_results[:candidate_count]
+    resolved_parallel_jobs = max(1, min(int(parallel_jobs), candidate_count, pal))
+    per_job_pal = max(1, pal // resolved_parallel_jobs)
+
+    logger.info("GOAT refinement candidates: top %d", candidate_count)
+    logger.info("GOAT parallel jobs: %d", resolved_parallel_jobs)
+    logger.info("GOAT target PAL per run: %d", per_job_pal)
+
+    goat_results: List[RunResult] = []
+    goat_failed_runs: List[str] = []
+    results_lock = threading.Lock()
+
+    def _record_goat(candidate_rank: int, candidate: RunResult, assigned_pal: int) -> None:
+        run_idx = candidate[3]
+        try:
+            ok, result, error = _execute_single_goat_run(
+                candidate_rank=candidate_rank,
+                candidate=candidate,
+                resolved_charge=resolved_charge,
+                multiplicity=multiplicity,
+                pal=max(1, assigned_pal),
+                maxcore=maxcore,
+                method=method,
+                workdir=workdir,
+                smiles=smiles,
+            )
+            with results_lock:
+                if ok and result is not None:
+                    logger.info(
+                        "[goat run %02d] energy = %.12f Eh (PAL=%d)",
+                        run_idx,
+                        result[0],
+                        max(1, assigned_pal),
+                    )
+                    goat_results.append(result)
+                else:
+                    logger.error("[goat run %02d] %s", run_idx, error or "Unknown GOAT failure")
+                    goat_failed_runs.append(f"{run_idx:02d}")
+        except Exception as exc:  # noqa: BLE001
+            with results_lock:
+                logger.error("[goat run %02d] Unexpected error: %s", run_idx, exc)
+                goat_failed_runs.append(f"{run_idx:02d}")
+
+    use_pool = False
+    pool = None
+    try:
+        manager = get_global_manager()
+        manager.ensure_initialized(
+            {
+                "PAL": pal,
+                "maxcore": maxcore,
+                "pal_jobs": resolved_parallel_jobs,
+                "parallel_workflows": "enable",
+            }
+        )
+        pool = manager.get_pool()
+        use_pool = True
+        logger.info("Using global manager pool scheduling for GUPPY GOAT refinement.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Global manager unavailable for GUPPY GOAT refinement (%s). Falling back to sequential runs.",
+            exc,
+        )
+
+    if use_pool and pool is not None:
+        estimated_runtime = float(max(300, int(os.environ.get("GUPPY_GOAT_EST_RUNTIME_S", "2400"))))
+        for rank, candidate in enumerate(candidates, start=1):
+            run_idx = candidate[3]
+            candidate_dir = workdir / "GOAT" / f"candidate_{rank:02d}_run_{run_idx:02d}"
+
+            def runner(
+                *_args,
+                cur_rank=rank,
+                cur_candidate=candidate,
+                **kwargs,
+            ) -> None:
+                allocated = kwargs.get("cores", per_job_pal)
+                try:
+                    assigned = max(1, int(allocated))
+                except (TypeError, ValueError):
+                    assigned = per_job_pal
+                _record_goat(cur_rank, cur_candidate, assigned)
+
+            pool_job = PoolJob(
+                job_id=f"GUPPY_GOAT_C{rank:02d}_R{run_idx:02d}",
+                cores_min=1,
+                cores_optimal=per_job_pal,
+                cores_max=per_job_pal,
+                memory_mb=max(256, per_job_pal * maxcore),
+                priority=JobPriority.NORMAL,
+                execute_func=runner,
+                args=(),
+                kwargs={},
+                estimated_duration=estimated_runtime,
+                working_dir=candidate_dir,
+            )
+            pool_job.suppress_pool_logs = True
+            pool.submit_job(pool_job)
+
+        pool.wait_for_completion()
+    else:
+        for rank, candidate in enumerate(candidates, start=1):
+            _record_goat(rank, candidate, per_job_pal)
+
+    goat_results.sort(key=lambda item: (item[0], item[3]))
+    return goat_results, goat_failed_runs
+
+
 def run_sampling(
     *,
     input_file: Path,
@@ -484,10 +717,19 @@ def run_sampling(
     workdir: Path,
     seed: int,
     allow_partial: bool,
+    goat_topk: int = 0,
+    goat_parallel_jobs: Optional[int] = None,
 ) -> int:
     """Execute repeated SMILES->XTB2 workflow and write ranked trajectory."""
     smiles = _read_first_smiles_line(input_file)
-    resolved_charge = charge if charge is not None else _derive_charge_from_smiles(smiles)
+    derived_charge = _derive_charge_from_smiles(smiles)
+    if charge is not None and int(charge) != derived_charge:
+        logger.warning(
+            "Ignoring provided charge override (%d); using charge derived from SMILES (%d).",
+            int(charge),
+            derived_charge,
+        )
+    resolved_charge = derived_charge
     prephase_parallel_jobs = max(1, min(parallel_jobs, pal))
     start_geometries = _collect_start_geometries(
         smiles,
@@ -512,8 +754,7 @@ def run_sampling(
     logger.info("Prephase parallel jobs: %d", prephase_parallel_jobs)
     logger.info("Parallel jobs: %d", resolved_parallel_jobs)
     logger.info("Target PAL per run: %d", per_job_pal)
-    if charge is None:
-        logger.info("Charge was auto-derived from whole SMILES formal charges.")
+    logger.info("Charge was auto-derived from whole SMILES formal charges.")
 
     workdir.mkdir(parents=True, exist_ok=True)
     results: List[RunResult] = []
@@ -632,8 +873,82 @@ def run_sampling(
 
     results.sort(key=lambda item: (item[0], item[3]))
     best_structure_path = output_file.with_name("best_coordniation.xyz")
-    _write_best_structure(best_structure_path, results[0])
+    best_pre_goat_path = output_file.with_name("best_coordniation_pre_goat.xyz")
+    _write_best_structure(best_pre_goat_path, results[0])
     _write_ranked_trajectory(output_file, results)
+
+    winner_result = results[0]
+    winner_source = "xtb"
+    goat_results: List[RunResult] = []
+    goat_failed_runs: List[str] = []
+    goat_topk_resolved = max(0, int(goat_topk))
+    if goat_topk_resolved > 0:
+        goat_parallel = int(goat_parallel_jobs) if goat_parallel_jobs is not None else parallel_jobs
+        goat_results, goat_failed_runs = _run_topk_goat_refinement(
+            ranked_results=results,
+            resolved_charge=resolved_charge,
+            multiplicity=multiplicity,
+            pal=pal,
+            maxcore=maxcore,
+            method=method,
+            workdir=workdir,
+            smiles=smiles,
+            topk=goat_topk_resolved,
+            parallel_jobs=goat_parallel,
+        )
+        if goat_results:
+            winner_result = goat_results[0]
+            winner_source = "goat"
+            goat_output = _derived_output_path(output_file, "goat")
+            _write_ranked_trajectory(goat_output, goat_results)
+            logger.info("Wrote GOAT-ranked trajectory: %s", goat_output)
+            logger.info(
+                "Selected GOAT winner from top-%d candidates: run_%02d %.12f Eh",
+                max(1, min(goat_topk_resolved, len(results))),
+                winner_result[3],
+                winner_result[0],
+            )
+        else:
+            logger.warning("GOAT refinement produced no successful candidates; using XTB winner.")
+
+        summary_path = workdir / "guppy_goat_summary.json"
+        summary = {
+            "smiles": smiles,
+            "resolved_charge": resolved_charge,
+            "goat_topk_requested": goat_topk_resolved,
+            "winner_source": winner_source,
+            "winner": {
+                "run_idx": winner_result[3],
+                "energy_eh": winner_result[0],
+                "label": winner_result[4],
+                "source": winner_result[5],
+            },
+            "xtb_candidates": [
+                {
+                    "rank": idx,
+                    "run_idx": item[3],
+                    "energy_eh": item[0],
+                    "label": item[4],
+                    "source": item[5],
+                }
+                for idx, item in enumerate(results[: max(1, min(goat_topk_resolved, len(results)))], start=1)
+            ],
+            "goat_candidates": [
+                {
+                    "rank": idx,
+                    "run_idx": item[3],
+                    "energy_eh": item[0],
+                    "label": item[4],
+                    "source": item[5],
+                }
+                for idx, item in enumerate(goat_results, start=1)
+            ],
+            "goat_failed_runs": goat_failed_runs,
+        }
+        summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        logger.info("Wrote GOAT summary: %s", summary_path)
+
+    _write_best_structure(best_structure_path, winner_result)
     isomer_results = [item for item in results if item[5] == "isomer"]
     random_results = [item for item in results if item[5] == "random"]
     if isomer_results:
@@ -645,6 +960,7 @@ def run_sampling(
         _write_ranked_trajectory(random_output, random_results)
         logger.info("Wrote random-only trajectory: %s", random_output)
 
+    logger.info("Wrote pre-GOAT best structure: %s", best_pre_goat_path)
     logger.info("Wrote best structure: %s", best_structure_path)
     logger.info("Wrote ranked trajectory: %s", output_file)
     logger.info("Successful runs: %d / %d", len(results), total_jobs)
@@ -678,7 +994,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--charge",
         type=int,
         default=(int(os.environ["GUPPY_CHARGE"]) if "GUPPY_CHARGE" in os.environ else None),
-        help="Total charge override. If omitted, net charge is derived from full SMILES (metal + ligands).",
+        help="Deprecated compatibility option; charge is always derived from full SMILES (metal + ligands).",
     )
     parser.add_argument(
         "--pal",
@@ -703,6 +1019,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workdir", default="GUPPY")
     parser.add_argument("--seed", type=int, default=int(os.environ.get("GUPPY_SEED", "31")))
     parser.add_argument(
+        "--goat-topk",
+        type=int,
+        default=int(os.environ.get("GUPPY_GOAT_TOPK", "0")),
+        help="Run GOAT refinement for top-k ranked XTB candidates (default: 0 = disabled)",
+    )
+    parser.add_argument(
+        "--goat-parallel-jobs",
+        type=int,
+        default=int(os.environ.get("GUPPY_GOAT_PARALLEL_JOBS", os.environ.get("GUPPY_PARALLEL_JOBS", "4"))),
+        help="Maximum number of parallel GOAT jobs for top-k refinement (default: $GUPPY_GOAT_PARALLEL_JOBS or $GUPPY_PARALLEL_JOBS or 4)",
+    )
+    parser.add_argument(
         "--allow-partial",
         action="store_true",
         help="Return success even if some of the runs fail.",
@@ -722,6 +1050,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error("--maxcore must be > 0")
     if args.parallel_jobs <= 0:
         parser.error("--parallel-jobs must be > 0")
+    if args.goat_topk < 0:
+        parser.error("--goat-topk must be >= 0")
+    if args.goat_parallel_jobs <= 0:
+        parser.error("--goat-parallel-jobs must be > 0")
 
     return run_sampling(
         input_file=Path(args.input_file),
@@ -735,6 +1067,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         workdir=Path(args.workdir),
         seed=args.seed,
         allow_partial=args.allow_partial,
+        goat_topk=args.goat_topk,
+        goat_parallel_jobs=args.goat_parallel_jobs,
     )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import re
 import shutil
 import time
@@ -120,7 +121,10 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
         XTB(multiplicity, charge, config)
 
     if config['XTB_GOAT'] == "yes":
-        XTB_GOAT(multiplicity, charge, config)
+        if _skip_xtb_goat_after_guppy(config):
+            logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
+        else:
+            XTB_GOAT(multiplicity, charge, config)
 
     if config['CREST'] == "yes":
         run_crest_workflow(ctx.PAL, ctx.solvent, charge, multiplicity, ctx.config.get('input_file'))
@@ -402,7 +406,10 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
         XTB(multiplicity, charge, config)
 
     if config['XTB_GOAT'] == "yes":
-        XTB_GOAT(multiplicity, charge, config)
+        if _skip_xtb_goat_after_guppy(config):
+            logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
+        else:
+            XTB_GOAT(multiplicity, charge, config)
 
     if config['CREST'] == "yes":
         run_crest_workflow(ctx.PAL, ctx.solvent, charge, multiplicity, ctx.config.get('input_file'))
@@ -546,7 +553,10 @@ def run_manual_phase(ctx: PipelineContext) -> Dict[str, Any]:
         XTB(multiplicity, ctx.charge, config)
 
     if config['XTB_GOAT'] == "yes":
-        XTB_GOAT(multiplicity, ctx.charge, config)
+        if _skip_xtb_goat_after_guppy(config):
+            logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
+        else:
+            XTB_GOAT(multiplicity, ctx.charge, config)
 
     if config['CREST'] == "yes":
         run_crest_workflow(ctx.PAL, ctx.solvent, ctx.charge, multiplicity, ctx.config.get('input_file'))
@@ -849,6 +859,14 @@ def interpret_method_alias(raw_method: str) -> Tuple[str, Optional[str]]:
     return canonical_method, None
 
 
+def _is_truthy_token(value: Any) -> bool:
+    return str(value).strip().lower() in {"yes", "true", "1", "on"}
+
+
+def _skip_xtb_goat_after_guppy(config: Dict[str, Any]) -> bool:
+    return _is_truthy_token(config.get("_guppy_goat_completed", "no"))
+
+
 def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any]) -> None:
     """Run GUPPY sampling for a SMILES string and write best geometry to start_path.
 
@@ -879,20 +897,16 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         maxcore = 6000
 
     method = str(config.get('xTB_method') or 'XTB2').strip() or 'XTB2'
-
-    charge_raw = config.get('charge', None)
-    charge: Optional[int] = None
-    if charge_raw is not None and str(charge_raw).strip():
-        try:
-            charge = int(str(charge_raw).strip())
-        except (ValueError, TypeError):
-            pass
+    use_goat_refinement = _is_truthy_token(config.get('XTB_GOAT', 'no'))
+    goat_topk = int(os.environ.get('GUPPY_GOAT_TOPK', '3')) if use_goat_refinement else 0
+    goat_parallel_jobs = int(os.environ.get('GUPPY_GOAT_PARALLEL_JOBS', os.environ.get('GUPPY_PARALLEL_JOBS', '4')))
+    config['_guppy_goat_completed'] = 'no'
 
     logger.info("GUPPY=yes: starting GUPPY sampling for SMILES → %s", start_path.name)
     ret = run_sampling(
         input_file=guppy_input,
         runs=int(os.environ.get('GUPPY_RUNS', '20')),
-        charge=charge,
+        charge=None,
         pal=pal,
         maxcore=maxcore,
         parallel_jobs=int(os.environ.get('GUPPY_PARALLEL_JOBS', '4')),
@@ -901,7 +915,21 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         workdir=workdir,
         seed=int(os.environ.get('GUPPY_SEED', '31')),
         allow_partial=True,
+        goat_topk=goat_topk,
+        goat_parallel_jobs=goat_parallel_jobs,
     )
+    if ret != 0:
+        raise RuntimeError("GUPPY sampling returned non-zero status")
+
+    summary_path = workdir / "guppy_goat_summary.json"
+    if summary_path.exists():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            if str(summary.get("winner_source", "")).strip().lower() == "goat":
+                config['_guppy_goat_completed'] = 'yes'
+                logger.info("GUPPY GOAT refinement selected final winner; downstream XTB_GOAT will be skipped.")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to parse GUPPY GOAT summary (%s): %s", summary_path, exc)
 
     if not best_coord.exists():
         raise RuntimeError(
