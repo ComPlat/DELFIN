@@ -2228,6 +2228,31 @@ def _fragment_topology_relaxed_fallback_ok(
         return False
 
 
+def _xyz_passes_final_geometry_checks(xyz_delfin: str, mol_template) -> bool:
+    """Final geometry sanity check for accepted XYZ outputs.
+
+    Intended for relaxed-fallback candidates: keep only structures that still
+    pass hard geometric plausibility checks when mapped back to the template
+    molecular graph.
+    """
+    if not RDKIT_AVAILABLE or mol_template is None:
+        return True
+    try:
+        mol_tmp = Chem.RWMol(mol_template)
+        mol_tmp.RemoveAllConformers()
+        conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_delfin)
+        if conf is None:
+            return False
+        cid = mol_tmp.AddConformer(conf, assignId=True)
+        if _has_severe_covalent_distortion(mol_tmp.GetMol(), cid):
+            return False
+        if _has_bad_geometry(mol_tmp.GetMol(), cid):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def _fragment_topology_ok(xyz_delfin: str, original_smiles: str) -> bool:
     """Return True if topology is consistent with the original SMILES."""
     orig_sig = _organic_fragment_signature(original_smiles)
@@ -5142,7 +5167,10 @@ def smiles_to_xyz_isomers(
             # fac/mer isomers which have identical fragment sets).
             if not _fragment_topology_ok(xyz, smiles):
                 logger.debug("Skipping conformer %d: fragment topology mismatch", cid)
-                if _fragment_topology_relaxed_fallback_ok(xyz, smiles):
+                if (
+                    _fragment_topology_relaxed_fallback_ok(xyz, smiles)
+                    and _xyz_passes_final_geometry_checks(xyz, mol)
+                ):
                     relaxed_fragment_results.append((xyz, display))
                 continue
             results.append((xyz, display))
@@ -5265,6 +5293,9 @@ def smiles_to_xyz_isomers(
                 if not _fragment_topology_ok(topo_xyz, smiles):
                     if not _fragment_topology_relaxed_fallback_ok(topo_xyz, smiles):
                         logger.debug("Skipping topo isomer %s: fragment topology mismatch", display)
+                        continue
+                    if not _xyz_passes_final_geometry_checks(topo_xyz, topo_mol):
+                        logger.debug("Skipping topo isomer %s: failed final geometry checks", display)
                         continue
                     logger.debug(
                         "Keeping topo isomer %s via relaxed fragment fallback",
