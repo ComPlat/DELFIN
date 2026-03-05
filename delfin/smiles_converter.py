@@ -4353,11 +4353,20 @@ def _generate_topological_isomers(
         if n_coord < 2 or n_coord > 8:
             continue
 
-        # Use element symbols as donor labels for canonical form comparison
-        donor_labels = [
-            dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset()))[0]
+        # Use donor environment classes (element + Morgan environment) instead
+        # of plain element symbols. This preserves chemically meaningful
+        # distinctions like aqua-O vs carboxylate-O, which are essential for
+        # CN=7/8 trans-pattern completeness.
+        donor_keys = [
+            dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset()))
             for d in donor_indices
         ]
+        uniq_keys = sorted(
+            set(donor_keys),
+            key=lambda k: (k[0], tuple(sorted(k[1]))),
+        )
+        key_to_class = {k: i for i, k in enumerate(uniq_keys)}
+        donor_labels = [f"{k[0]}{key_to_class[k]}" for k in donor_keys]
 
         chelate_ps = _chelate_pairs(mol, metal_idx, donor_indices)
 
@@ -4392,14 +4401,29 @@ def _generate_topological_isomers(
             metal_symbol=atom.GetSymbol(),
         )
 
+        # Chelate-distance feasibility is a useful guard, but can over-prune
+        # higher-coordination systems (notably CN=7) when idealized vectors and
+        # template distances differ systematically. If it rejects everything,
+        # fall back to the unfiltered topological set.
+        feasible_isomers: List[Tuple[tuple, List[int]]] = []
         for canonical_form, perm in isomers:
+            geom_name = canonical_form[0]
+            if _passes_chelate_distance_feasibility(
+                mol, metal_idx, donor_indices, perm, geom_name, chelate_ps
+            ):
+                feasible_isomers.append((canonical_form, perm))
+        if not feasible_isomers and isomers:
+            logger.debug(
+                "Chelate-distance feasibility rejected all %d topo isomer(s) "
+                "for CN=%d; using unfiltered set.",
+                len(isomers), n_coord,
+            )
+            feasible_isomers = isomers
+
+        for canonical_form, perm in feasible_isomers:
             if len(results) >= max_isomers:
                 return results
             geom_name = canonical_form[0]  # 'OH', 'SQ', 'TH', 'LIN', 'TP', 'TS', …
-            if not _passes_chelate_distance_feasibility(
-                mol, metal_idx, donor_indices, perm, geom_name, chelate_ps
-            ):
-                continue
             try:
                 xyz = _build_topology_xyz(
                     mol, metal_idx, donor_indices, perm, geom_name, apply_uff
@@ -5163,6 +5187,10 @@ def smiles_to_xyz_isomers(
                     pass
 
             existing_displays = {display for _, display in results}
+            existing_xyz_keys = {
+                "\n".join(l.strip() for l in xyz.splitlines() if l.strip())
+                for xyz, _d in results
+            }
 
             topo_results = _generate_topological_isomers(
                 topo_mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
@@ -5193,7 +5221,7 @@ def smiles_to_xyz_isomers(
                     # collides (e.g. homogeneous donor sets where SQ/TH can
                     # hash similarly). Only skip when label space is already
                     # covered as well.
-                    if not _norm_try or _norm_try in _base_existing:
+                    if collapse_label_variants and (not _norm_try or _norm_try in _base_existing):
                         continue
 
                 norm = topo_label or ''
@@ -5235,9 +5263,19 @@ def smiles_to_xyz_isomers(
                     logger.debug("Skipping topo isomer %s: spurious bonds", display)
                     continue
                 if not _fragment_topology_ok(topo_xyz, smiles):
-                    logger.debug("Skipping topo isomer %s: fragment topology mismatch", display)
+                    if not _fragment_topology_relaxed_fallback_ok(topo_xyz, smiles):
+                        logger.debug("Skipping topo isomer %s: fragment topology mismatch", display)
+                        continue
+                    logger.debug(
+                        "Keeping topo isomer %s via relaxed fragment fallback",
+                        display,
+                    )
+                topo_key = "\n".join(l.strip() for l in topo_xyz.splitlines() if l.strip())
+                if topo_key in existing_xyz_keys:
+                    logger.debug("Skipping topo isomer %s: duplicate XYZ", display)
                     continue
                 existing_displays.add(display)
+                existing_xyz_keys.add(topo_key)
                 if topo_fp is not None:
                     existing_fps.add(topo_fp)
                 results.append((topo_xyz, display))
