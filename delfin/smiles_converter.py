@@ -4523,32 +4523,50 @@ def smiles_to_xyz_isomers(
     # arrangements even when they share a coarse textual label.
     # Pre-compute donor types once (Morgan-based) to avoid repeated calls.
     dtype_map = _donor_type_map(mol)
-    fp_label_pairs: List[Tuple[tuple, str, int, float]] = []
-    for cid in conf_ids:
-        try:
-            # Hard-reject only truly collapsed structures (< 0.3 Å clash
-            # or M-L < 1.2 Å); borderline issues become score penalties.
-            if _has_atom_clash(mol, cid, min_dist=0.3):
+
+    def _collect_fp_label_pairs(relax_hard_chem_filters: bool = False) -> List[Tuple[tuple, str, int, float]]:
+        pairs: List[Tuple[tuple, str, int, float]] = []
+        for cid in conf_ids:
+            try:
+                # Hard-reject only truly collapsed structures. For difficult
+                # high-CN metal complexes, optionally downgrade selected
+                # chemistry checks to penalties instead of hard rejection.
+                if _has_atom_clash(mol, cid, min_dist=0.3):
+                    continue
+                if _has_pi_ring_nonplanarity(mol, cid):
+                    continue
+                penalty = 0.0
+                if _has_unphysical_metal_nonbonded_contact(mol, cid):
+                    if not relax_hard_chem_filters:
+                        continue
+                    penalty += 350.0
+                if _has_unphysical_oco_geometry(mol, cid):
+                    if not relax_hard_chem_filters:
+                        continue
+                    penalty += 250.0
+                if _has_atom_clash(mol, cid):
+                    penalty += 500.0
+                if _has_bad_geometry(mol, cid):
+                    penalty += 300.0
+                if _has_ligand_intertwining(mol, cid):
+                    penalty += 200.0
+                fp = _compute_coordination_fingerprint(mol, cid, dtype_map=dtype_map)
+                score = _geometry_quality_score(mol, cid) + penalty
+            except Exception:
                 continue
-            if _has_unphysical_metal_nonbonded_contact(mol, cid):
-                continue
-            if _has_unphysical_oco_geometry(mol, cid):
-                continue
-            if _has_pi_ring_nonplanarity(mol, cid):
-                continue
-            penalty = 0.0
-            if _has_atom_clash(mol, cid):
-                penalty += 500.0
-            if _has_bad_geometry(mol, cid):
-                penalty += 300.0
-            if _has_ligand_intertwining(mol, cid):
-                penalty += 200.0
-            fp = _compute_coordination_fingerprint(mol, cid, dtype_map=dtype_map)
-            score = _geometry_quality_score(mol, cid) + penalty
-        except Exception:
-            continue
-        label = _classify_isomer_label(fp, mol)
-        fp_label_pairs.append((fp, label, cid, score))
+            label = _classify_isomer_label(fp, mol)
+            pairs.append((fp, label, cid, score))
+        return pairs
+
+    fp_label_pairs: List[Tuple[tuple, str, int, float]] = _collect_fp_label_pairs(
+        relax_hard_chem_filters=False
+    )
+    if not fp_label_pairs and conf_ids and has_metal:
+        logger.debug(
+            "Strict conformer filters rejected all sampled structures; "
+            "retrying with relaxed OCO/nonbonded penalties."
+        )
+        fp_label_pairs = _collect_fp_label_pairs(relax_hard_chem_filters=True)
 
     # Second pass: deduplicate, keeping the best-scoring conformer per group.
     # fp -> (label, conf_id, score)
@@ -4614,6 +4632,7 @@ def smiles_to_xyz_isomers(
             lbl = seen_fps[fp][0] or ''
             label_counts[lbl] = label_counts.get(lbl, 0) + 1
         label_seen: Dict[str, int] = {}
+        relaxed_fragment_results: List[Tuple[str, str]] = []
         for fp, (label, cid, _score) in seen_fps.items():
             if not label:
                 unknown_counter += 1
@@ -4655,14 +4674,23 @@ def smiles_to_xyz_isomers(
             # fac/mer isomers which have identical fragment sets).
             if not _fragment_topology_ok(xyz, smiles):
                 logger.debug("Skipping conformer %d: fragment topology mismatch", cid)
+                relaxed_fragment_results.append((xyz, display))
                 continue
             results.append((xyz, display))
 
         if not results:
-            _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff)
-            if _fb_err:
-                return [], _fb_err
-            results = [(_fb_xyz, '')]
+            if relaxed_fragment_results:
+                logger.debug(
+                    "Using %d conformer(s) despite fragment-topology mismatch "
+                    "after stricter checks.",
+                    len(relaxed_fragment_results),
+                )
+                results = relaxed_fragment_results
+            else:
+                _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+                if _fb_err:
+                    return [], _fb_err
+                results = [(_fb_xyz, '')]
 
     # --- Topological enumerator: guarantee completeness ---
     # Runs after sampling-based dedup; adds any isomers not found by sampling.
