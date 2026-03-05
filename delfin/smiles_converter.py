@@ -1982,6 +1982,34 @@ def _organic_graph_signature(
         return None
 
 
+def _component_stats_from_adj(adj: Dict[int, set]) -> Optional[Tuple[int, int, int]]:
+    """Return ``(n_components, largest_component_size, n_nodes)`` for adjacency map."""
+    try:
+        if not adj:
+            return 0, 0, 0
+        visited: set = set()
+        n_comp = 0
+        largest = 0
+        for start in adj.keys():
+            if start in visited:
+                continue
+            n_comp += 1
+            stack = [start]
+            size = 0
+            while stack:
+                node = stack.pop()
+                if node in visited:
+                    continue
+                visited.add(node)
+                size += 1
+                stack.extend(adj.get(node, set()) - visited)
+            if size > largest:
+                largest = size
+        return n_comp, largest, len(adj)
+    except Exception:
+        return None
+
+
 def _organic_fragment_signature(smiles: str) -> "frozenset | None":
     """Return an order-independent connectivity signature for organic fragments."""
     if not RDKIT_AVAILABLE:
@@ -2010,6 +2038,31 @@ def _organic_fragment_signature(smiles: str) -> "frozenset | None":
                 adj[bi].add(bj)
                 adj[bj].add(bi)
         return _organic_graph_signature(symbol_by_idx, adj)
+    except Exception:
+        return None
+
+
+def _heavy_component_stats_smiles(smiles: str) -> Optional[Tuple[int, int, int]]:
+    """Return heavy-atom component stats for SMILES, including metal atoms."""
+    if not RDKIT_AVAILABLE:
+        return None
+    try:
+        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        if mol is None:
+            return None
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        keep = [a.GetIdx() for a in mol.GetAtoms() if a.GetAtomicNum() > 1]
+        adj: Dict[int, set] = {idx: set() for idx in keep}
+        for bond in mol.GetBonds():
+            bi = bond.GetBeginAtomIdx()
+            bj = bond.GetEndAtomIdx()
+            if bi in adj and bj in adj:
+                adj[bi].add(bj)
+                adj[bj].add(bi)
+        return _component_stats_from_adj(adj)
     except Exception:
         return None
 
@@ -2057,26 +2110,97 @@ def _organic_fragment_signature_xyz(xyz_delfin: str) -> "frozenset | None":
         return None
 
 
+def _heavy_component_stats_xyz(xyz_delfin: str) -> Optional[Tuple[int, int, int]]:
+    """Return heavy-atom component stats for XYZ via Open Babel, incl. metals."""
+    if not OPENBABEL_AVAILABLE:
+        return None
+    try:
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        if not lines:
+            return None
+        std_xyz = f"{len(lines)}\n\n" + "\n".join(lines) + "\n"
+        ob_mol = pybel.readstring('xyz', std_xyz).OBMol
+        try:
+            from openbabel import openbabel as _ob
+        except ImportError:
+            return None
+
+        n_atoms = ob_mol.NumAtoms()
+        adj: Dict[int, set] = {
+            i: set()
+            for i in range(1, n_atoms + 1)
+            if ob_mol.GetAtom(i).GetAtomicNum() not in (0, 1)
+        }
+        for bond in _ob.OBMolBondIter(ob_mol):
+            i1 = bond.GetBeginAtomIdx()
+            i2 = bond.GetEndAtomIdx()
+            if i1 in adj and i2 in adj:
+                adj[i1].add(i2)
+                adj[i2].add(i1)
+        return _component_stats_from_adj(adj)
+    except Exception:
+        return None
+
+
+def _global_heavy_connectivity_ok(
+    xyz_delfin: str,
+    original_smiles: str,
+    max_extra_components: int = 1,
+    min_largest_frac: float = 0.70,
+) -> bool:
+    """Reject severely fragmented heavy-atom graphs vs original SMILES.
+
+    Complements ``_fragment_topology_ok``: the organic-only signature can miss
+    cases where metal-ligand connectivity collapses while organic fragments stay
+    internally intact.
+    """
+    orig_stats = _heavy_component_stats_smiles(original_smiles)
+    xyz_stats = _heavy_component_stats_xyz(xyz_delfin)
+    if orig_stats is None or xyz_stats is None:
+        return True
+
+    o_comp, o_largest, o_total = orig_stats
+    x_comp, x_largest, _x_total = xyz_stats
+
+    if x_comp > o_comp + int(max_extra_components):
+        logger.debug(
+            "Heavy-graph fragmentation: SMILES has %d component(s), XYZ has %d",
+            o_comp, x_comp,
+        )
+        return False
+
+    # If original is mostly one connected heavy graph, demand that XYZ keeps
+    # a comparably large main component.
+    if o_total > 0 and o_largest >= max(3, int(math.ceil(0.80 * o_total))):
+        min_keep = max(2, int(math.floor(float(min_largest_frac) * float(o_largest))))
+        if x_largest < min_keep:
+            logger.debug(
+                "Heavy-graph largest component collapsed: SMILES=%d, XYZ=%d (min=%d)",
+                o_largest, x_largest, min_keep,
+            )
+            return False
+
+    return True
+
+
 def _fragment_topology_ok(xyz_delfin: str, original_smiles: str) -> bool:
-    """Return True if organic heavy-atom connectivity matches original SMILES."""
+    """Return True if topology is consistent with the original SMILES."""
     orig_sig = _organic_fragment_signature(original_smiles)
-    if orig_sig is None:
-        return True
     xyz_sig = _organic_fragment_signature_xyz(xyz_delfin)
-    if xyz_sig is None:
-        return True
+    if orig_sig is not None and xyz_sig is not None and orig_sig != xyz_sig:
+        def _total_frags(sig):
+            return sum(mult for _, mult in sig)
 
-    if orig_sig == xyz_sig:
-        return True
+        logger.debug(
+            "Organic graph mismatch: SMILES has %d fragment(s), XYZ has %d",
+            _total_frags(orig_sig), _total_frags(xyz_sig),
+        )
+        return False
 
-    def _total_frags(sig):
-        return sum(mult for _, mult in sig)
+    if not _global_heavy_connectivity_ok(xyz_delfin, original_smiles):
+        return False
 
-    logger.debug(
-        "Organic graph mismatch: SMILES has %d fragment(s), XYZ has %d",
-        _total_frags(orig_sig), _total_frags(xyz_sig),
-    )
-    return False
+    return True
 
 
 def _has_atom_clash(mol, conf_id: int, min_dist: float = 0.5) -> bool:
