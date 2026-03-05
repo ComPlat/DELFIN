@@ -2237,6 +2237,39 @@ def _xyz_passes_final_geometry_checks(xyz_delfin: str, mol_template) -> bool:
     """
     if not RDKIT_AVAILABLE or mol_template is None:
         return True
+
+    def _cn7_axial_sanity_ok(_mol, _cid: int, min_trans_angle: float = 165.0) -> bool:
+        """Require a clear axial pair for CN=7 centers (PBP-like sanity)."""
+        conf = _mol.GetConformer(_cid)
+        for atom in _mol.GetAtoms():
+            if atom.GetSymbol() not in _METAL_SET:
+                continue
+            neighbors = list(atom.GetNeighbors())
+            if len(neighbors) != 7:
+                continue
+            mpos = conf.GetAtomPosition(atom.GetIdx())
+            max_angle = 0.0
+            for i in range(len(neighbors)):
+                for j in range(i + 1, len(neighbors)):
+                    pa = conf.GetAtomPosition(neighbors[i].GetIdx())
+                    pb = conf.GetAtomPosition(neighbors[j].GetIdx())
+                    v1 = (pa.x - mpos.x, pa.y - mpos.y, pa.z - mpos.z)
+                    v2 = (pb.x - mpos.x, pb.y - mpos.y, pb.z - mpos.z)
+                    m1 = math.sqrt(v1[0] * v1[0] + v1[1] * v1[1] + v1[2] * v1[2])
+                    m2 = math.sqrt(v2[0] * v2[0] + v2[1] * v2[1] + v2[2] * v2[2])
+                    if m1 < 1e-8 or m2 < 1e-8:
+                        continue
+                    cos_a = max(
+                        -1.0,
+                        min(1.0, (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / (m1 * m2)),
+                    )
+                    ang = math.degrees(math.acos(cos_a))
+                    if ang > max_angle:
+                        max_angle = ang
+            if max_angle < float(min_trans_angle):
+                return False
+        return True
+
     try:
         mol_tmp = Chem.RWMol(mol_template)
         mol_tmp.RemoveAllConformers()
@@ -2247,6 +2280,8 @@ def _xyz_passes_final_geometry_checks(xyz_delfin: str, mol_template) -> bool:
         if _has_severe_covalent_distortion(mol_tmp.GetMol(), cid):
             return False
         if _has_bad_geometry(mol_tmp.GetMol(), cid):
+            return False
+        if not _cn7_axial_sanity_ok(mol_tmp.GetMol(), cid):
             return False
         return True
     except Exception:
@@ -5366,6 +5401,19 @@ def smiles_to_xyz_isomers(
             (xyz, re.sub(r'-\d+$', '', lbl))
             for (xyz, lbl), keep in zip(results, _keep) if keep
         ]
+
+    # Final hard sanity gate for metal complexes (including fallback entries):
+    # ensure no geometrically implausible candidate survives to the UI.
+    if has_metal and results:
+        final_template = _build_topology_template_mol(smiles) or mol
+        final_filtered: List[Tuple[str, str]] = []
+        for xyz, lbl in results:
+            if _xyz_passes_final_geometry_checks(xyz, final_template):
+                final_filtered.append((xyz, lbl))
+            else:
+                logger.debug("Dropping final isomer %s: failed final geometry checks", lbl)
+        if final_filtered:
+            results = final_filtered
 
     return results, None
 
