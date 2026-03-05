@@ -21,10 +21,11 @@
 #   delfin | delfin-recalc | delfin-recalc-classic | orca | build | guppy | delfin-co2-chain | auto (default: auto)
 #   BUILD_MULTIPLICITY: Spin multiplicity for build mode (default: 1)
 #   GUPPY_RUNS: Number of GUPPY sampling runs (default: 20)
-#   GUPPY_CHARGE: Optional charge override for GUPPY (default: auto from SMILES)
 #   GUPPY_PAL: Total PAL budget for GUPPY (default: DELFIN_PAL or SLURM_CPUS_PER_TASK)
 #   GUPPY_MAXCORE: Maxcore per core in MB for GUPPY scheduler (default: DELFIN_MAXCORE or 6000)
 #   GUPPY_PARALLEL_JOBS: Number of parallel GUPPY runs sharing resources (default: 4)
+#   GUPPY_GOAT_TOPK: Number of top-ranked GUPPY candidates refined with GOAT (default: 3)
+#   GUPPY_GOAT_PARALLEL_JOBS: Number of parallel GOAT refinement jobs (default: GUPPY_PARALLEL_JOBS)
 #   DELFIN_CO2_SPECIES_DELTA: Redox species delta for delfin-co2-chain mode (default: 0)
 #   DELFIN_INP_FILE: Specific .inp file for ORCA mode
 #   DELFIN_JOB_NAME: Job name for display (optional)
@@ -585,32 +586,30 @@ case "$MODE" in
         ;;
     guppy)
         GUPPY_RUNS="${GUPPY_RUNS:-20}"
-        GUPPY_CHARGE="${GUPPY_CHARGE:-}"
         GUPPY_PAL="${GUPPY_PAL:-${DELFIN_PAL:-${SLURM_CPUS_PER_TASK:-40}}}"
         GUPPY_MAXCORE="${GUPPY_MAXCORE:-${DELFIN_MAXCORE:-6000}}"
         GUPPY_PARALLEL_JOBS="${GUPPY_PARALLEL_JOBS:-4}"
+        GUPPY_GOAT_TOPK="${GUPPY_GOAT_TOPK:-3}"
+        GUPPY_GOAT_PARALLEL_JOBS="${GUPPY_GOAT_PARALLEL_JOBS:-$GUPPY_PARALLEL_JOBS}"
         echo "Starting GUPPY SMILES sampling..."
         echo "  Runs:         $GUPPY_RUNS"
-        if [ -n "$GUPPY_CHARGE" ]; then
-            echo "  Charge:       $GUPPY_CHARGE (override)"
-        else
-            echo "  Charge:       auto (derived from SMILES)"
-        fi
+        echo "  Charge:       auto (derived from SMILES)"
         echo "  Multiplicity: 1 (fixed closed-shell)"
         echo "  PAL total:    $GUPPY_PAL"
         echo "  Maxcore:      $GUPPY_MAXCORE"
         echo "  Parallel:     $GUPPY_PARALLEL_JOBS runs"
+        echo "  GOAT top-k:   $GUPPY_GOAT_TOPK"
+        echo "  GOAT parallel:$GUPPY_GOAT_PARALLEL_JOBS runs"
         GUPPY_CMD=(
             "$DELFIN_PYTHON" -m delfin.guppy_sampling input.txt
             --runs "$GUPPY_RUNS" \
             --pal "$GUPPY_PAL" \
             --maxcore "$GUPPY_MAXCORE" \
             --parallel-jobs "$GUPPY_PARALLEL_JOBS" \
+            --goat-topk "$GUPPY_GOAT_TOPK" \
+            --goat-parallel-jobs "$GUPPY_GOAT_PARALLEL_JOBS" \
             --output GUPPY_try.xyz
         )
-        if [ -n "$GUPPY_CHARGE" ]; then
-            GUPPY_CMD+=( --charge "$GUPPY_CHARGE" )
-        fi
         "${GUPPY_CMD[@]}"
         EXIT_CODE=$?
         ;;
