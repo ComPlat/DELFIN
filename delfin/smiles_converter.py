@@ -2159,7 +2159,7 @@ def _heavy_component_stats_xyz(xyz_delfin: str) -> Optional[Tuple[int, int, int]
 def _global_heavy_connectivity_ok(
     xyz_delfin: str,
     original_smiles: str,
-    max_extra_components: int = 3,
+    max_extra_components: int = 1,
     min_largest_frac: float = 0.70,
 ) -> bool:
     """Reject severely fragmented heavy-atom graphs vs original SMILES.
@@ -2195,6 +2195,31 @@ def _global_heavy_connectivity_ok(
             return False
 
     return True
+
+
+def _fragment_topology_relaxed_fallback_ok(
+    xyz_delfin: str,
+    original_smiles: str,
+) -> bool:
+    """Allow only mildly fragmented fallback candidates.
+
+    Used when strict fragment-topology checks reject all sampling conformers:
+    keep only structures where the organic fragment signature is unchanged and
+    heavy-atom connectivity degradation is limited.
+    """
+    try:
+        orig_sig = _organic_fragment_signature(original_smiles)
+        xyz_sig = _organic_fragment_signature_xyz(xyz_delfin)
+        if orig_sig is None or xyz_sig is None or orig_sig != xyz_sig:
+            return False
+        return _global_heavy_connectivity_ok(
+            xyz_delfin,
+            original_smiles,
+            max_extra_components=3,
+            min_largest_frac=0.85,
+        )
+    except Exception:
+        return False
 
 
 def _fragment_topology_ok(xyz_delfin: str, original_smiles: str) -> bool:
@@ -5083,7 +5108,8 @@ def smiles_to_xyz_isomers(
             # fac/mer isomers which have identical fragment sets).
             if not _fragment_topology_ok(xyz, smiles):
                 logger.debug("Skipping conformer %d: fragment topology mismatch", cid)
-                relaxed_fragment_results.append((xyz, display))
+                if _fragment_topology_relaxed_fallback_ok(xyz, smiles):
+                    relaxed_fragment_results.append((xyz, display))
                 continue
             results.append((xyz, display))
 
