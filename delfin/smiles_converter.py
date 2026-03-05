@@ -7,6 +7,7 @@ GOAT/xTB before running ORCA calculations.
 
 from __future__ import annotations
 
+from collections import Counter
 import math
 import re
 from pathlib import Path
@@ -856,6 +857,263 @@ def _xyz_to_rdkit_conformer(mol, xyz_delfin: str):
     return conf
 
 
+def _xyz_to_rdkit_conformer_via_ob_mapping(mol, xyz_delfin: str):
+    """Build an RDKit conformer from XYZ by graph-based OB↔RDKit atom mapping.
+
+    This is a fallback for Open Babel conformers where atom order in XYZ does
+    not match the RDKit molecule order.  It reconstructs an OB-perceived graph
+    from XYZ, then maps atoms to *mol* by element/topology.
+    """
+    if not (RDKIT_AVAILABLE and OPENBABEL_AVAILABLE):
+        return None
+
+    lines = [ln.strip() for ln in xyz_delfin.splitlines() if ln.strip()]
+    n_atoms = mol.GetNumAtoms()
+    if len(lines) < n_atoms:
+        return None
+
+    # Parse XYZ symbols once; coordinates for the mapped conformer are taken
+    # from the OB-derived RDKit molecule (which keeps a consistent atom order
+    # with its own graph representation).
+    xyz_symbols: List[str] = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 4:
+            return None
+        xyz_symbols.append(parts[0])
+
+    rd_symbols = [mol.GetAtomWithIdx(i).GetSymbol() for i in range(n_atoms)]
+    xyz_counts = Counter(xyz_symbols)
+    rd_counts = Counter(rd_symbols)
+    if any(xyz_counts.get(sym, 0) < cnt for sym, cnt in rd_counts.items()):
+        return None
+
+    # Build standard XYZ and let Open Babel perceive connectivity.
+    try:
+        std_xyz = f"{n_atoms}\n\n" + "\n".join(
+            f"{ln.split()[0]}  {ln.split()[1]}  {ln.split()[2]}  {ln.split()[3]}"
+            for ln in lines
+        ) + "\n"
+        ob_py = pybel.readstring("xyz", std_xyz)
+        conv = pybel.ob.OBConversion()
+        if not conv.SetOutFormat("mol"):
+            return None
+        mol_block = conv.WriteString(ob_py.OBMol)
+        if not mol_block:
+            return None
+        ob_rd = Chem.MolFromMolBlock(mol_block, sanitize=False, removeHs=False)
+        if ob_rd is None or ob_rd.GetNumAtoms() < n_atoms:
+            return None
+        try:
+            ob_rd.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+    except Exception:
+        return None
+
+    ob_symbols = [ob_rd.GetAtomWithIdx(i).GetSymbol() for i in range(ob_rd.GetNumAtoms())]
+    ob_counts = Counter(ob_symbols)
+    if any(ob_counts.get(sym, 0) < cnt for sym, cnt in rd_counts.items()):
+        return None
+
+    def _build_topology_submol(src_mol, keep_indices: List[int]):
+        """Create a single-bond topology-only submol; return (submol, old_order)."""
+        rw = Chem.RWMol()
+        old_order: List[int] = []
+        old_to_new: Dict[int, int] = {}
+        for old_idx in keep_indices:
+            at = src_mol.GetAtomWithIdx(old_idx)
+            nat = Chem.Atom(int(at.GetAtomicNum()))
+            nat.SetFormalCharge(0)
+            nat.SetNoImplicit(True)
+            old_to_new[old_idx] = rw.AddAtom(nat)
+            old_order.append(old_idx)
+        keep_set = set(keep_indices)
+        for bond in src_mol.GetBonds():
+            i = bond.GetBeginAtomIdx()
+            j = bond.GetEndAtomIdx()
+            if i in keep_set and j in keep_set:
+                ni = old_to_new[i]
+                nj = old_to_new[j]
+                if rw.GetBondBetweenAtoms(ni, nj) is None:
+                    rw.AddBond(ni, nj, Chem.BondType.SINGLE)
+        sub = rw.GetMol()
+        try:
+            sub.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        return sub, old_order
+
+    # 1) Match non-metal heavy-atom skeleton (most robust anchor).
+    rd_core = [
+        i for i in range(n_atoms)
+        if mol.GetAtomWithIdx(i).GetAtomicNum() > 1
+        and mol.GetAtomWithIdx(i).GetSymbol() not in _METAL_SET
+    ]
+    ob_core = [
+        i for i in range(ob_rd.GetNumAtoms())
+        if ob_rd.GetAtomWithIdx(i).GetAtomicNum() > 1
+        and ob_rd.GetAtomWithIdx(i).GetSymbol() not in _METAL_SET
+    ]
+    if len(rd_core) != len(ob_core):
+        return None
+    if Counter(mol.GetAtomWithIdx(i).GetSymbol() for i in rd_core) != Counter(
+        ob_rd.GetAtomWithIdx(i).GetSymbol() for i in ob_core
+    ):
+        return None
+
+    rd_sub, rd_order = _build_topology_submol(mol, rd_core)
+    ob_sub, ob_order = _build_topology_submol(ob_rd, ob_core)
+
+    matches = ()
+    if rd_sub.GetNumAtoms() > 0:
+        try:
+            matches = ob_sub.GetSubstructMatches(
+                rd_sub, uniquify=False, useChirality=False, maxMatches=256
+            )
+        except Exception:
+            matches = ()
+        if not matches:
+            return None
+
+    # Pick the match with best heavy-neighbor-degree consistency.
+    def _core_deg(src_mol, idx: int) -> int:
+        atom = src_mol.GetAtomWithIdx(idx)
+        return sum(
+            1
+            for nb in atom.GetNeighbors()
+            if nb.GetAtomicNum() > 1 and nb.GetSymbol() not in _METAL_SET
+        )
+
+    best_match = ()
+    if matches:
+        best_score = float("inf")
+        for cand in matches:
+            score = 0.0
+            for q_new, t_new in enumerate(cand):
+                rd_old = rd_order[q_new]
+                ob_old = ob_order[t_new]
+                score += abs(_core_deg(mol, rd_old) - _core_deg(ob_rd, ob_old))
+            if score < best_score:
+                best_score = score
+                best_match = cand
+        if not best_match:
+            best_match = matches[0]
+
+    mapping: Dict[int, int] = {}
+    if rd_sub.GetNumAtoms() > 0:
+        for q_new, t_new in enumerate(best_match):
+            mapping[rd_order[q_new]] = ob_order[t_new]
+
+    used_ob = set(mapping.values())
+
+    # 2) Match metal atoms by element symbol.
+    metal_symbols = sorted({
+        mol.GetAtomWithIdx(i).GetSymbol()
+        for i in range(n_atoms)
+        if mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET
+    })
+    for sym in metal_symbols:
+        rd_m = sorted(
+            i for i in range(n_atoms)
+            if mol.GetAtomWithIdx(i).GetSymbol() == sym
+        )
+        ob_m = sorted(
+            i for i in range(ob_rd.GetNumAtoms())
+            if ob_rd.GetAtomWithIdx(i).GetSymbol() == sym and i not in used_ob
+        )
+        if len(ob_m) < len(rd_m):
+            return None
+        for ri, oi in zip(rd_m, ob_m[:len(rd_m)]):
+            mapping[ri] = oi
+            used_ob.add(oi)
+
+    # 3) Map H atoms via the mapped heavy-atom neighbour if possible.
+    ob_conf = ob_rd.GetConformer()
+
+    def _dist_sq(i: int, j: int) -> float:
+        pi = ob_conf.GetAtomPosition(i)
+        pj = ob_conf.GetAtomPosition(j)
+        dx = pi.x - pj.x
+        dy = pi.y - pj.y
+        dz = pi.z - pj.z
+        return dx * dx + dy * dy + dz * dz
+
+    rd_h = sorted(
+        i for i in range(n_atoms)
+        if mol.GetAtomWithIdx(i).GetAtomicNum() == 1
+    )
+    ob_h_all = {
+        i for i in range(ob_rd.GetNumAtoms())
+        if ob_rd.GetAtomWithIdx(i).GetAtomicNum() == 1 and i not in used_ob
+    }
+    for h_idx in rd_h:
+        if h_idx in mapping:
+            continue
+        h_atom = mol.GetAtomWithIdx(h_idx)
+        anchor_rd = None
+        for nb in h_atom.GetNeighbors():
+            if nb.GetAtomicNum() > 1:
+                anchor_rd = nb.GetIdx()
+                break
+
+        candidates: List[int] = []
+        if anchor_rd is not None and anchor_rd in mapping:
+            anchor_ob = mapping[anchor_rd]
+            anchor_atom_ob = ob_rd.GetAtomWithIdx(anchor_ob)
+            candidates = [
+                nb.GetIdx()
+                for nb in anchor_atom_ob.GetNeighbors()
+                if nb.GetAtomicNum() == 1 and nb.GetIdx() in ob_h_all
+            ]
+            if not candidates:
+                candidates = sorted(ob_h_all, key=lambda j: _dist_sq(anchor_ob, j))
+        else:
+            candidates = sorted(ob_h_all)
+
+        if not candidates:
+            return None
+        chosen = candidates[0]
+        mapping[h_idx] = chosen
+        used_ob.add(chosen)
+        ob_h_all.discard(chosen)
+
+    # 4) Map any remaining atoms by symbol (rare fallback).
+    remaining_rd = [i for i in range(n_atoms) if i not in mapping]
+    remaining_ob = [i for i in range(ob_rd.GetNumAtoms()) if i not in used_ob]
+    if remaining_rd:
+        by_sym_rd: Dict[str, List[int]] = {}
+        by_sym_ob: Dict[str, List[int]] = {}
+        for i in remaining_rd:
+            by_sym_rd.setdefault(mol.GetAtomWithIdx(i).GetSymbol(), []).append(i)
+        for i in remaining_ob:
+            by_sym_ob.setdefault(ob_rd.GetAtomWithIdx(i).GetSymbol(), []).append(i)
+        if set(by_sym_rd) != set(by_sym_ob):
+            return None
+        for sym in sorted(by_sym_rd):
+            r_list = sorted(by_sym_rd[sym])
+            o_list = sorted(by_sym_ob[sym])
+            if len(o_list) < len(r_list):
+                return None
+            for ri, oi in zip(r_list, o_list[:len(r_list)]):
+                mapping[ri] = oi
+                used_ob.add(oi)
+
+    if len(mapping) != n_atoms:
+        return None
+
+    conf = Chem.Conformer(n_atoms)
+    for rd_idx in range(n_atoms):
+        ob_idx = mapping.get(rd_idx)
+        if ob_idx is None:
+            return None
+        if mol.GetAtomWithIdx(rd_idx).GetSymbol() != ob_rd.GetAtomWithIdx(ob_idx).GetSymbol():
+            return None
+        pos = ob_conf.GetAtomPosition(ob_idx)
+        conf.SetAtomPosition(rd_idx, (pos.x, pos.y, pos.z))
+    return conf
+
+
 def _inject_openbabel_conformers_into_mol(mol, xyz_blocks: List[str]) -> List[int]:
     """Populate *mol* with conformers parsed from Open Babel XYZ blocks.
 
@@ -869,11 +1127,23 @@ def _inject_openbabel_conformers_into_mol(mol, xyz_blocks: List[str]) -> List[in
         return []
     mol.RemoveAllConformers()
     conf_ids: List[int] = []
+    n_mapped_fallback = 0
     for xyz_text in xyz_blocks:
         conf = _xyz_to_rdkit_conformer(mol, xyz_text)
+        used_fallback = False
+        if conf is None:
+            conf = _xyz_to_rdkit_conformer_via_ob_mapping(mol, xyz_text)
+            used_fallback = conf is not None
         if conf is None:
             continue
         conf_ids.append(int(mol.AddConformer(conf, assignId=True)))
+        if used_fallback:
+            n_mapped_fallback += 1
+    if n_mapped_fallback:
+        logger.debug(
+            "OB conformer mapping fallback succeeded for %d block(s).",
+            n_mapped_fallback,
+        )
     return conf_ids
 
 

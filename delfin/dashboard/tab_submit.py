@@ -324,6 +324,7 @@ def create_tab(ctx):
             cleaned_data,
             apply_uff=apply_uff,
             collapse_label_variants=False,
+            include_binding_mode_isomers=True,
         )
         if error or not isomers:
             with mol_output:
