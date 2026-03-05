@@ -706,12 +706,15 @@ def _openbabel_generate_conformer_xyz(
     rotor_steps: int = 120,
     localopt_steps: int = 250,
     optimize: bool = True,
+    deterministic: bool = True,
 ) -> Tuple[List[str], Optional[str]]:
     """Generate 3D conformers using Open Babel in an Avogadro-like workflow.
 
     Pipeline (mirrors Avogadro's ``gen3d`` quality):
     1. Fragment-based 3D initialization via ``make3D`` (uses CSD crystal data)
-    2. ``WeightedRotorSearch`` — generates a pool of ``num_confs`` conformers
+    2. Rotor search for conformer pool generation:
+       - deterministic mode: ``SystematicRotorSearch``
+       - non-deterministic mode: ``WeightedRotorSearch``
     3. Per-conformer ``ConjugateGradients`` local optimization
 
     Tries multiple SMILES variants (original / normalized / denormalized) for
@@ -783,7 +786,10 @@ def _openbabel_generate_conformer_xyz(
             continue
 
         try:
-            ff.WeightedRotorSearch(target, max(25, int(rotor_steps)))
+            if deterministic:
+                ff.SystematicRotorSearch(target)
+            else:
+                ff.WeightedRotorSearch(target, max(25, int(rotor_steps)))
             ff.GetConformers(ob_mol.OBMol)
         except Exception as exc:
             logger.debug("Open Babel conformer search failed, using initial 3D geometry: %s", exc)
@@ -4848,6 +4854,7 @@ def smiles_to_xyz_isomers(
     apply_uff: bool = True,
     collapse_label_variants: bool = True,
     include_binding_mode_isomers: bool = True,
+    deterministic: bool = True,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -4862,6 +4869,10 @@ def smiles_to_xyz_isomers(
     merges numbered variants with the same base label (e.g. ``trans-1`` and
     ``trans-2``). Set it to ``False`` to keep these variants for workflows
     that prefer broader structural diversity.
+
+    When ``deterministic`` is ``True`` (default), the metal-isomer path avoids
+    Open Babel conformer injection (its ``make3D``/rotor pipeline is not fully
+    reproducible across runs) and relies on seeded RDKit embedding only.
     """
     if not RDKIT_AVAILABLE:
         return [], "RDKit is not installed"
@@ -4886,11 +4897,10 @@ def smiles_to_xyz_isomers(
     # Avogadro-quality geometries are always considered during isomer search.
     has_metal = contains_metal(smiles)
     conf_ids: List[int] = []
-    if has_metal and OPENBABEL_AVAILABLE:
+    if has_metal and OPENBABEL_AVAILABLE and not deterministic:
         try:
-            # Run OB conformer search in 3 independent restarts.
-            # WeightedRotorSearch is non-deterministic (global PRNG); separate
-            # calls from fresh OBMol instances give complementary pools.
+            # Non-deterministic enrichment path: augment RDKit pool with OB
+            # conformers to increase diversity.
             _n_ob_restarts = 3
             _per_ob = max(10, int(num_confs) // _n_ob_restarts)
             ob_xyz_blocks: List[str] = []
@@ -4898,7 +4908,7 @@ def smiles_to_xyz_isomers(
             ob_error: Optional[str] = None
             for _restart in range(_n_ob_restarts):
                 _blocks, _err = _openbabel_generate_conformer_xyz(
-                    smiles, num_confs=_per_ob
+                    smiles, num_confs=_per_ob, deterministic=True
                 )
                 if _blocks:
                     for _b in _blocks:
@@ -4914,7 +4924,7 @@ def smiles_to_xyz_isomers(
                 ob_ids = _inject_openbabel_conformers_into_mol(mol, ob_xyz_blocks)
                 conf_ids.extend(ob_ids)
                 logger.debug(
-                    "OB conformers injected for isomer search: %d (3 restarts)",
+                    "OB conformers injected for isomer search: %d",
                     len(ob_ids),
                 )
             elif ob_error:
