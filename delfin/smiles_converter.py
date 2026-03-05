@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 import math
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -21,6 +22,7 @@ logger = get_logger(__name__)
 try:
     from rdkit import Chem
     from rdkit.Chem import AllChem
+    from rdkit.Geometry import Point3D
     RDKIT_AVAILABLE = True
 except ImportError:
     RDKIT_AVAILABLE = False
@@ -1308,6 +1310,105 @@ def _fix_organometallic_carbon_h(mol):
     return rwmol.GetMol()
 
 
+def _fix_hapto_donor_h(mol):
+    """Adjust H on hapto donor carbons to satisfy a valence-4 model.
+
+    For eta-bound carbon donors, estimate occupied valence from:
+    - non-hydrogen bond orders,
+    - one effective bond order to the metal (if coordinated),
+    - optional pi-bonus to reach one "double-bond equivalent" in eta systems.
+
+    Then add/remove explicit H so each donor C trends toward valence 4.
+    """
+    if not RDKIT_AVAILABLE or mol is None:
+        return mol
+    try:
+        hapto_groups = _find_hapto_groups(mol)
+    except Exception:
+        return mol
+    if not hapto_groups:
+        return mol
+
+    def _bond_order_value(bond) -> float:
+        if bond is None:
+            return 1.0
+        bt = bond.GetBondType()
+        if bt == Chem.BondType.SINGLE:
+            return 1.0
+        if bt == Chem.BondType.DOUBLE:
+            return 2.0
+        if bt == Chem.BondType.TRIPLE:
+            return 3.0
+        if bt == Chem.BondType.AROMATIC:
+            return 1.5
+        if bt == Chem.BondType.DATIVE:
+            return 1.0
+        return 1.0
+
+    rwmol = Chem.RWMol(mol)
+    to_remove = []
+    to_add: List[int] = []
+    for _metal_idx, grp in hapto_groups:
+        eta = len(grp)
+        if eta < 3:
+            continue
+        for c_idx in grp:
+            atom = rwmol.GetAtomWithIdx(c_idx)
+            if atom.GetSymbol() != 'C':
+                continue
+            nbrs = list(atom.GetNeighbors())
+            h_nbrs = [n for n in nbrs if n.GetSymbol() == 'H']
+            non_h_valence = 0.0
+            cc_valence = 0.0
+            has_metal_contact = False
+            for nbr in nbrs:
+                ns = nbr.GetSymbol()
+                if ns == 'H':
+                    continue
+                if ns in _METAL_SET:
+                    has_metal_contact = True
+                    continue
+                bond = rwmol.GetBondBetweenAtoms(c_idx, nbr.GetIdx())
+                bo = _bond_order_value(bond)
+                non_h_valence += bo
+                if ns == 'C':
+                    cc_valence += bo
+
+            # Eta systems should retain one "double-bond equivalent" in the
+            # donor carbon framework if the explicit graph underrepresents pi
+            # delocalization (common after robust metal parsing).
+            pi_bonus = 0.0
+            if eta >= 3 and cc_valence < 2.0:
+                pi_bonus = min(1.0, 2.0 - cc_valence)
+
+            metal_valence = 1.0 if has_metal_contact else 0.0
+            used_valence = non_h_valence + metal_valence + pi_bonus
+            remaining = 4.0 - used_valence
+            desired_h = int(max(0.0, round(remaining)))
+            desired_h = max(0, min(3, desired_h))
+
+            if len(h_nbrs) > desired_h:
+                remove_count = len(h_nbrs) - desired_h
+                for h in sorted(h_nbrs, key=lambda a: a.GetIdx())[:remove_count]:
+                    to_remove.append(h.GetIdx())
+            elif len(h_nbrs) < desired_h:
+                to_add.extend([c_idx] * (desired_h - len(h_nbrs)))
+
+    for idx in sorted(set(to_remove), reverse=True):
+        rwmol.RemoveAtom(idx)
+    for c_idx in to_add:
+        if c_idx < 0 or c_idx >= rwmol.GetNumAtoms():
+            continue
+        h_idx = rwmol.AddAtom(Chem.Atom('H'))
+        rwmol.AddBond(c_idx, h_idx, Chem.BondType.SINGLE)
+    out = rwmol.GetMol()
+    try:
+        out.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+    return out
+
+
 def _convert_metal_bonds_to_dative(mol, only_elements=None):
     """Convert single bonds from NEUTRAL atoms to metals to dative bonds.
 
@@ -1344,6 +1445,21 @@ def _convert_metal_bonds_to_dative(mol, only_elements=None):
         a.GetIdx(): bool(a.GetNoImplicit()) for a in rwmol.GetAtoms()
     }
 
+    # Track dative donors that already exist in the input graph.
+    # Needed for hapto approximation where some M-C contacts are pre-marked
+    # as dative before this function runs.
+    dative_donor_indices = set()
+    for bond in rwmol.GetBonds():
+        if bond.GetBondType() != Chem.BondType.DATIVE:
+            continue
+        b = bond.GetBeginAtom()
+        e = bond.GetEndAtom()
+        sb, se = b.GetSymbol(), e.GetSymbol()
+        if sb in _METAL_SET and se not in _METAL_SET:
+            dative_donor_indices.add(e.GetIdx())
+        elif se in _METAL_SET and sb not in _METAL_SET:
+            dative_donor_indices.add(b.GetIdx())
+
     # Find all single bonds between metals and NEUTRAL non-metals
     bonds_to_convert = []
     for bond in rwmol.GetBonds():
@@ -1374,12 +1490,8 @@ def _convert_metal_bonds_to_dative(mol, only_elements=None):
                     is_metal_1  # True if atom1 is the metal
                 ))
 
-    if not bonds_to_convert:
+    if not bonds_to_convert and not dative_donor_indices:
         return mol
-
-    # Track which atoms are dative donors (coordinating atoms whose H
-    # count should be preserved from the SMILES, not recalculated).
-    dative_donor_indices = set()
 
     # Convert bonds to dative (ligand -> metal direction)
     for idx1, idx2, atom1_is_metal in bonds_to_convert:
@@ -1395,6 +1507,20 @@ def _convert_metal_bonds_to_dative(mol, only_elements=None):
 
     result_mol = rwmol.GetMol()
 
+    # Map hapto donor carbons to eta group size so H handling can be tuned:
+    # eta>=4 (Cp-like) should not gain implicit H; eta3 should still be able
+    # to carry H where valence allows (e.g., allyl/propenyl motifs).
+    hapto_group_size_by_atom: Dict[int, int] = {}
+    try:
+        for _midx, _grp in _find_hapto_groups(result_mol):
+            _sz = len(_grp)
+            for _aidx in _grp:
+                _prev = hapto_group_size_by_atom.get(_aidx, 0)
+                if _sz > _prev:
+                    hapto_group_size_by_atom[_aidx] = _sz
+    except Exception:
+        hapto_group_size_by_atom = {}
+
     # Reset atom properties to allow recalculation of implicit hydrogens.
     # Dative donors: set NoImplicit=True so AddHs() won't add spurious H
     # (trust the H count from the original SMILES).
@@ -1402,7 +1528,12 @@ def _convert_metal_bonds_to_dative(mol, only_elements=None):
     for atom in result_mol.GetAtoms():
         if atom.GetFormalCharge() == 0 and atom.GetSymbol() not in _METAL_SET:
             if atom.GetIdx() in dative_donor_indices:
-                atom.SetNoImplicit(True)
+                hapto_sz = hapto_group_size_by_atom.get(atom.GetIdx(), 0)
+                if atom.GetSymbol() == 'C' and hapto_sz == 3:
+                    atom.SetNoImplicit(False)
+                    atom.SetNumExplicitHs(0)
+                else:
+                    atom.SetNoImplicit(True)
             else:
                 atom.SetNoImplicit(False)
                 # Preserve explicit H on atoms where RDKit's implicit H
@@ -1432,6 +1563,478 @@ def contains_metal(smiles: str) -> bool:
         if re.search(rf'\[{metal}\]', smiles, re.IGNORECASE):
             return True
     return False
+
+
+def _hapto_approx_enabled(flag: Optional[bool] = None) -> bool:
+    """Return True when the experimental hapto approximation is enabled."""
+    if flag is not None:
+        return bool(flag)
+    env = os.environ.get("DELFIN_HAPTO_APPROX", "").strip().lower()
+    return env in {"1", "true", "yes", "on"}
+
+
+def _find_hapto_groups(mol) -> List[Tuple[int, List[int]]]:
+    """Detect likely eta/hapto groups as contiguous metal-bound carbon sets."""
+    if not RDKIT_AVAILABLE or mol is None:
+        return []
+
+    groups: List[Tuple[int, List[int]]] = []
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+        metal_idx = atom.GetIdx()
+        c_neighbors = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 6]
+        if len(c_neighbors) < 2:
+            continue
+
+        c_set = set(c_neighbors)
+        seen: set = set()
+        for start in c_neighbors:
+            if start in seen:
+                continue
+            comp: List[int] = []
+            stack = [start]
+            seen.add(start)
+            while stack:
+                cur = stack.pop()
+                comp.append(cur)
+                cur_atom = mol.GetAtomWithIdx(cur)
+                for nbr in cur_atom.GetNeighbors():
+                    ni = nbr.GetIdx()
+                    if ni not in c_set or ni in seen:
+                        continue
+                    seen.add(ni)
+                    stack.append(ni)
+
+            if len(comp) < 2:
+                continue
+            # Avoid false positives for ordinary C,C chelation: classify as hapto
+            # when the contiguous donor block is ring-like or has >=3 atoms.
+            ring_like = any(mol.GetAtomWithIdx(i).IsInRing() for i in comp)
+            if len(comp) >= 3 or ring_like:
+                groups.append((metal_idx, sorted(comp)))
+
+    return groups
+
+
+def _probe_hapto_groups_from_smiles(smiles: str) -> List[Tuple[int, List[int]]]:
+    """Parse SMILES quickly and report likely hapto groups."""
+    if not RDKIT_AVAILABLE or not contains_metal(smiles):
+        return []
+
+    mol, _note = mol_from_smiles_rdkit(smiles, allow_metal=True)
+    if mol is None:
+        try:
+            p = Chem.SmilesParserParams()
+            p.sanitize = False
+            p.removeHs = False
+            p.strictParsing = False
+            mol = Chem.MolFromSmiles(smiles, p)
+        except Exception:
+            try:
+                mol = Chem.MolFromSmiles(smiles, sanitize=False)
+            except Exception:
+                mol = None
+    return _find_hapto_groups(mol)
+
+
+def _hapto_failfast_error(hapto_groups: List[Tuple[int, List[int]]]) -> str:
+    """Build a concise user-facing error for unsupported hapto coordination."""
+    if not hapto_groups:
+        return (
+            "Hapto (eta) coordination detected. "
+            "Enable DELFIN_HAPTO_APPROX=1 for experimental approximation mode."
+        )
+    max_group = max(len(g[1]) for g in hapto_groups)
+    return (
+        "Hapto (eta) coordination detected "
+        f"({len(hapto_groups)} group(s), max eta~{max_group}). "
+        "Standard conversion does not support this reliably. "
+        "Set DELFIN_HAPTO_APPROX=1 to enable experimental approximation mode."
+    )
+
+
+def _hapto_approx_supported(hapto_groups: List[Tuple[int, List[int]]]) -> Tuple[bool, str]:
+    """Return whether the current experimental approximation is considered safe."""
+    if not hapto_groups:
+        return True, ""
+    by_metal: Dict[int, int] = {}
+    for metal_idx, grp in hapto_groups:
+        if len(grp) >= 2:
+            by_metal[metal_idx] = by_metal.get(metal_idx, 0) + 1
+    max_groups = max(by_metal.values()) if by_metal else 0
+    if max_groups > 1:
+        return (
+            False,
+            "Experimental hapto approximation is currently limited to one eta-fragment "
+            "per metal center. Multi-hapto systems are blocked to avoid broken structures.",
+        )
+    return True, ""
+
+
+def _apply_hapto_approximation(
+    mol,
+    hapto_groups: Optional[List[Tuple[int, List[int]]]] = None,
+):
+    """Experimental eta→anchor approximation for embedding/optimization.
+
+    For each contiguous metal-bound carbon block, keep one representative
+    metal-carbon bond as a normal bond and convert the other M-C contacts to
+    dative bonds (C->M). This preserves multi-contact hapticity information
+    while reducing valence pressure during embedding.
+    """
+    if not RDKIT_AVAILABLE or mol is None:
+        return mol, 0
+
+    groups = hapto_groups if hapto_groups is not None else _find_hapto_groups(mol)
+    if not groups:
+        return mol, 0
+
+    rw = Chem.RWMol(mol)
+    converted = 0
+    for metal_idx, grp in groups:
+        if len(grp) < 2:
+            continue
+        grp_set = set(grp)
+
+        def _anchor_key(idx: int) -> Tuple[int, int, int, int]:
+            a = rw.GetAtomWithIdx(idx)
+            aromatic = 1 if a.GetIsAromatic() else 0
+            in_ring = 1 if a.IsInRing() else 0
+            c_in_grp = sum(
+                1 for n in a.GetNeighbors() if n.GetAtomicNum() == 6 and n.GetIdx() in grp_set
+            )
+            return (aromatic, in_ring, c_in_grp, -idx)
+
+        anchor = max(grp, key=_anchor_key)
+        for c_idx in grp:
+            c_atom = rw.GetAtomWithIdx(c_idx)
+            # Let downstream dative/H logic decide H treatment by eta size.
+            c_atom.SetNoImplicit(False)
+            if c_idx == anchor:
+                continue
+            bond = rw.GetBondBetweenAtoms(metal_idx, c_idx)
+            if bond is None:
+                continue
+            if bond.GetBondType() == Chem.BondType.DATIVE:
+                continue
+            rw.RemoveBond(metal_idx, c_idx)
+            rw.AddBond(c_idx, metal_idx, Chem.BondType.DATIVE)
+            converted += 1
+
+    out = rw.GetMol()
+    try:
+        out.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+    return out, converted
+
+
+def _apply_hapto_centroid_bias(
+    mol,
+    conf_id: int,
+    hapto_groups: List[Tuple[int, List[int]]],
+    min_centroid_sep: float = 2.5,
+) -> bool:
+    """Conservative eta-group regularization without aggressive expansion.
+
+    Applies only rigid group translations (no internal ring distortion):
+    1) enforce a minimum metal-centroid distance for each eta-group,
+    2) apply a light anti-collapse repulsion only when groups are too close.
+    """
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
+        return False
+    try:
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return False
+
+    def _centroid(indices: List[int]) -> Tuple[float, float, float]:
+        pts = [conf.GetAtomPosition(i) for i in indices]
+        return (
+            sum(p.x for p in pts) / len(pts),
+            sum(p.y for p in pts) / len(pts),
+            sum(p.z for p in pts) / len(pts),
+        )
+
+    def _norm(vx: float, vy: float, vz: float) -> float:
+        return math.sqrt(vx * vx + vy * vy + vz * vz)
+
+    def _translate(indices: List[int], dx: float, dy: float, dz: float) -> None:
+        for idx in indices:
+            p = conf.GetAtomPosition(idx)
+            conf.SetAtomPosition(idx, Point3D(p.x + dx, p.y + dy, p.z + dz))
+
+    def _target_mc_dist(metal_sym: str, eta: int) -> float:
+        # Conservative M-centroid target derived from M-C with tight clamps.
+        try:
+            base_mc = float(_get_ml_bond_length(metal_sym, 'C'))
+        except Exception:
+            base_mc = 2.35
+        if not math.isfinite(base_mc):
+            base_mc = 2.35
+        dist = max(1.80, min(2.10, 0.76 * base_mc))
+        if eta >= 5:
+            dist = max(dist, 1.92)
+        elif eta == 4:
+            dist = max(dist, 1.88)
+        elif eta == 3:
+            dist = max(dist, 1.84)
+        return dist
+
+    def _group_min_distance(a: List[int], b: List[int]) -> float:
+        out = float("inf")
+        for ai in a:
+            pa = conf.GetAtomPosition(ai)
+            for bi in b:
+                pb = conf.GetAtomPosition(bi)
+                d = _norm(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z)
+                if d < out:
+                    out = d
+        return out if math.isfinite(out) else 999.0
+
+    # Normalize/validate groups once.
+    group_entries: List[Dict[str, object]] = []
+    for metal_idx, grp in hapto_groups:
+        if metal_idx < 0 or metal_idx >= mol.GetNumAtoms():
+            continue
+        grp_valid = sorted(set(i for i in grp if 0 <= i < mol.GetNumAtoms()))
+        if len(grp_valid) < 2:
+            continue
+        group_entries.append({
+            "metal": metal_idx,
+            "atoms": grp_valid,
+        })
+    if not group_entries:
+        return False
+
+    by_metal: Dict[int, List[int]] = {}
+    for gi, ge in enumerate(group_entries):
+        by_metal.setdefault(int(ge["metal"]), []).append(gi)
+
+    moved = False
+
+    # Step 1: enforce minimal metal-centroid distance by rigidly pushing groups.
+    for metal_idx, gidxs in by_metal.items():
+        mpos = conf.GetAtomPosition(metal_idx)
+        msym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+        for gi in gidxs:
+            atoms = list(group_entries[gi]["atoms"])
+            cx, cy, cz = _centroid(atoms)
+            vx, vy, vz = (cx - mpos.x, cy - mpos.y, cz - mpos.z)
+            dist = _norm(vx, vy, vz)
+            min_mc = _target_mc_dist(msym, len(atoms))
+
+            if dist < min_mc:
+                if dist < 1e-8:
+                    ux, uy, uz = (1.0, 0.0, 0.0)
+                else:
+                    ux, uy, uz = (vx / dist, vy / dist, vz / dist)
+                shift = float(min_mc - dist)
+                _translate(atoms, ux * shift, uy * shift, uz * shift)
+                moved = True
+
+    # Step 2: light anti-collapse guard: only separate groups that are too close.
+    safe_min_cc = max(1.85, min(2.20, float(min_centroid_sep)))
+    for metal_idx, gidxs in by_metal.items():
+        if len(gidxs) < 2:
+            continue
+        for _iter in range(4):
+            changed = False
+            centroids: Dict[int, Tuple[float, float, float]] = {}
+            for gi in gidxs:
+                atoms = list(group_entries[gi]["atoms"])
+                centroids[gi] = _centroid(atoms)
+
+            for ii in range(len(gidxs)):
+                gi = gidxs[ii]
+                ai = set(group_entries[gi]["atoms"])
+                ci = centroids[gi]
+                for jj in range(ii + 1, len(gidxs)):
+                    gj = gidxs[jj]
+                    aj = set(group_entries[gj]["atoms"])
+                    if ai.intersection(aj):
+                        continue
+
+                    cj = centroids[gj]
+                    dx, dy, dz = (cj[0] - ci[0], cj[1] - ci[1], cj[2] - ci[2])
+                    dcc = _norm(dx, dy, dz)
+                    eta_i = len(group_entries[gi]["atoms"])
+                    eta_j = len(group_entries[gj]["atoms"])
+                    pair_min_cc = safe_min_cc
+                    if eta_i >= 4 and eta_j >= 4:
+                        pair_min_cc = max(pair_min_cc, 3.00)
+                    elif eta_i >= 4 or eta_j >= 4:
+                        pair_min_cc = max(pair_min_cc, 2.60)
+                    else:  # eta3/eta3
+                        pair_min_cc = max(pair_min_cc, 2.30)
+                    min_cc = _group_min_distance(
+                        list(group_entries[gi]["atoms"]),
+                        list(group_entries[gj]["atoms"]),
+                    )
+                    if min_cc >= pair_min_cc:
+                        continue
+
+                    if dcc < 1e-8:
+                        ux, uy, uz = (1.0, 0.0, 0.0)
+                    else:
+                        ux, uy, uz = (dx / dcc, dy / dcc, dz / dcc)
+
+                    shift = min(0.45, 0.5 * float(pair_min_cc - min_cc))
+                    _translate(list(group_entries[gi]["atoms"]), -ux * shift, -uy * shift, -uz * shift)
+                    _translate(list(group_entries[gj]["atoms"]), ux * shift, uy * shift, uz * shift)
+                    changed = True
+                    moved = True
+
+            if not changed:
+                break
+
+    return moved
+
+
+def _apply_hapto_centroid_bias_to_xyz(
+    xyz_delfin: str,
+    mol_template,
+    hapto_groups: List[Tuple[int, List[int]]],
+    min_centroid_sep: float = 2.2,
+) -> str:
+    """Apply centroid bias on XYZ using a template graph/atom order."""
+    if not RDKIT_AVAILABLE or mol_template is None or not hapto_groups:
+        return xyz_delfin
+    try:
+        mol_tmp = Chem.RWMol(mol_template)
+        mol_tmp.RemoveAllConformers()
+        conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_delfin)
+        if conf is None:
+            return xyz_delfin
+        cid = mol_tmp.AddConformer(conf, assignId=True)
+        if not _apply_hapto_centroid_bias(
+            mol_tmp.GetMol(), cid, hapto_groups, min_centroid_sep=min_centroid_sep
+        ):
+            return xyz_delfin
+        return _mol_to_xyz_conformer(mol_tmp.GetMol(), cid)
+    except Exception:
+        return xyz_delfin
+
+
+def _hapto_geometry_penalty(
+    mol,
+    conf_id: int,
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> float:
+    """Penalty for collapsed/implausible eta-group arrangements (lower better)."""
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
+        return 0.0
+    try:
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return 0.0
+
+    def _norm(vx: float, vy: float, vz: float) -> float:
+        return math.sqrt(vx * vx + vy * vy + vz * vz)
+
+    def _centroid(indices: List[int]) -> Tuple[float, float, float]:
+        pts = [conf.GetAtomPosition(i) for i in indices]
+        return (
+            sum(p.x for p in pts) / len(pts),
+            sum(p.y for p in pts) / len(pts),
+            sum(p.z for p in pts) / len(pts),
+        )
+
+    def _group_min_distance(a: List[int], b: List[int]) -> float:
+        out = float("inf")
+        for ai in a:
+            pa = conf.GetAtomPosition(ai)
+            for bi in b:
+                pb = conf.GetAtomPosition(bi)
+                d = _norm(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z)
+                if d < out:
+                    out = d
+        return out if math.isfinite(out) else 999.0
+
+    def _planarity_rms(indices: List[int]) -> float:
+        if len(indices) < 3:
+            return 0.0
+        pts = [conf.GetAtomPosition(i) for i in indices]
+        cx = sum(p.x for p in pts) / len(pts)
+        cy = sum(p.y for p in pts) / len(pts)
+        cz = sum(p.z for p in pts) / len(pts)
+        vecs = [(p.x - cx, p.y - cy, p.z - cz) for p in pts]
+        nx = ny = nz = 0.0
+        n = len(vecs)
+        for vi in range(n):
+            a = vecs[vi]
+            b = vecs[(vi + 1) % n]
+            nx += a[1] * b[2] - a[2] * b[1]
+            ny += a[2] * b[0] - a[0] * b[2]
+            nz += a[0] * b[1] - a[1] * b[0]
+        nm = _norm(nx, ny, nz)
+        if nm < 1e-8:
+            return 0.0
+        nx, ny, nz = (nx / nm, ny / nm, nz / nm)
+        dev = [abs(v[0] * nx + v[1] * ny + v[2] * nz) for v in vecs]
+        return math.sqrt(sum(d * d for d in dev) / len(dev))
+
+    group_entries: List[Dict[str, object]] = []
+    for metal_idx, grp in hapto_groups:
+        if metal_idx < 0 or metal_idx >= mol.GetNumAtoms():
+            continue
+        atoms = sorted(set(i for i in grp if 0 <= i < mol.GetNumAtoms()))
+        if len(atoms) < 2:
+            continue
+        group_entries.append({"metal": metal_idx, "atoms": atoms})
+    if not group_entries:
+        return 0.0
+
+    by_metal: Dict[int, List[int]] = {}
+    for gi, ge in enumerate(group_entries):
+        by_metal.setdefault(int(ge["metal"]), []).append(gi)
+
+    penalty = 0.0
+    for ge in group_entries:
+        metal_idx = int(ge["metal"])
+        atoms = list(ge["atoms"])
+        m = conf.GetAtomPosition(metal_idx)
+        cx, cy, cz = _centroid(atoms)
+        d_mc = _norm(cx - m.x, cy - m.y, cz - m.z)
+        if d_mc < 1.88:
+            penalty += (1.88 - d_mc) * 900.0
+        elif d_mc > 2.45:
+            penalty += (d_mc - 2.45) * 120.0
+        if len(atoms) >= 4:
+            rms = _planarity_rms(atoms)
+            if rms > 0.22:
+                penalty += (rms - 0.22) * 180.0
+
+    for _metal_idx, gidxs in by_metal.items():
+        for ii in range(len(gidxs)):
+            gi = gidxs[ii]
+            ai = list(group_entries[gi]["atoms"])
+            ci = _centroid(ai)
+            for jj in range(ii + 1, len(gidxs)):
+                gj = gidxs[jj]
+                aj = list(group_entries[gj]["atoms"])
+                if set(ai).intersection(aj):
+                    continue
+                cj = _centroid(aj)
+                eta_i = len(ai)
+                eta_j = len(aj)
+                pair_min_cc = 2.20
+                pair_min_cent = 2.85
+                if eta_i >= 4 and eta_j >= 4:
+                    pair_min_cc = 3.00
+                    pair_min_cent = 3.35
+                elif eta_i >= 4 or eta_j >= 4:
+                    pair_min_cc = 2.60
+                    pair_min_cent = 3.00
+                d_cent = _norm(cj[0] - ci[0], cj[1] - ci[1], cj[2] - ci[2])
+                min_cc = _group_min_distance(ai, aj)
+                if min_cc < pair_min_cc:
+                    penalty += (pair_min_cc - min_cc) * 1500.0
+                if d_cent < pair_min_cent:
+                    penalty += (pair_min_cent - d_cent) * 260.0
+
+    return penalty
 
 
 def mol_from_smiles_rdkit(smiles: str, allow_metal: bool = False):
@@ -1541,7 +2144,7 @@ def is_smiles_string(content: str) -> bool:
     return (has_smiles_chars or has_aromatic or has_ring_numbers or simple_token) and (has_organic or has_metal)
 
 
-def _prepare_mol_for_embedding(smiles: str):
+def _prepare_mol_for_embedding(smiles: str, hapto_approx: bool = False):
     """Parse SMILES and prepare an RDKit Mol for conformer embedding.
 
     Tries the same strategies as ``smiles_to_xyz`` /
@@ -1612,6 +2215,21 @@ def _prepare_mol_for_embedding(smiles: str):
     if mol is None:
         return None
 
+    # Optional eta/hapto approximation: collapse contiguous metal-bound carbon
+    # donor blocks to a single representative anchor bond per block.
+    if has_metal and hapto_approx:
+        try:
+            hapto_groups = _find_hapto_groups(mol)
+            if hapto_groups:
+                mol, n_removed = _apply_hapto_approximation(mol, hapto_groups)
+                logger.info(
+                    "Applied experimental hapto approximation in embedding prep: "
+                    "%d group(s), %d bond(s) converted to dative.",
+                    len(hapto_groups), n_removed,
+                )
+        except Exception as e:
+            logger.debug("Hapto approximation in embedding prep failed: %s", e)
+
     # Hydrogen handling depends on the complex type.
     # Metal-nitrogen complexes: keep N/C-metal bonds as SINGLE (required
     # for successful embedding) but convert S/O/P-metal bonds to dative
@@ -1628,9 +2246,13 @@ def _prepare_mol_for_embedding(smiles: str):
                 mol = _fix_organometallic_carbon_h(mol)
             else:
                 mol = Chem.AddHs(mol, addCoords=False)
+            if hapto_approx:
+                mol = _fix_hapto_donor_h(mol)
         except Exception:
             try:
                 mol = Chem.AddHs(mol, addCoords=False)
+                if hapto_approx:
+                    mol = _fix_hapto_donor_h(mol)
             except Exception:
                 pass
     elif has_metal:
@@ -1658,6 +2280,8 @@ def _prepare_mol_for_embedding(smiles: str):
             pass
         try:
             mol = Chem.AddHs(mol, addCoords=False)
+            if hapto_approx:
+                mol = _fix_hapto_donor_h(mol)
         except Exception:
             pass
     else:
@@ -2237,39 +2861,6 @@ def _xyz_passes_final_geometry_checks(xyz_delfin: str, mol_template) -> bool:
     """
     if not RDKIT_AVAILABLE or mol_template is None:
         return True
-
-    def _cn7_axial_sanity_ok(_mol, _cid: int, min_trans_angle: float = 165.0) -> bool:
-        """Require a clear axial pair for CN=7 centers (PBP-like sanity)."""
-        conf = _mol.GetConformer(_cid)
-        for atom in _mol.GetAtoms():
-            if atom.GetSymbol() not in _METAL_SET:
-                continue
-            neighbors = list(atom.GetNeighbors())
-            if len(neighbors) != 7:
-                continue
-            mpos = conf.GetAtomPosition(atom.GetIdx())
-            max_angle = 0.0
-            for i in range(len(neighbors)):
-                for j in range(i + 1, len(neighbors)):
-                    pa = conf.GetAtomPosition(neighbors[i].GetIdx())
-                    pb = conf.GetAtomPosition(neighbors[j].GetIdx())
-                    v1 = (pa.x - mpos.x, pa.y - mpos.y, pa.z - mpos.z)
-                    v2 = (pb.x - mpos.x, pb.y - mpos.y, pb.z - mpos.z)
-                    m1 = math.sqrt(v1[0] * v1[0] + v1[1] * v1[1] + v1[2] * v1[2])
-                    m2 = math.sqrt(v2[0] * v2[0] + v2[1] * v2[1] + v2[2] * v2[2])
-                    if m1 < 1e-8 or m2 < 1e-8:
-                        continue
-                    cos_a = max(
-                        -1.0,
-                        min(1.0, (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / (m1 * m2)),
-                    )
-                    ang = math.degrees(math.acos(cos_a))
-                    if ang > max_angle:
-                        max_angle = ang
-            if max_angle < float(min_trans_angle):
-                return False
-        return True
-
     try:
         mol_tmp = Chem.RWMol(mol_template)
         mol_tmp.RemoveAllConformers()
@@ -2280,8 +2871,6 @@ def _xyz_passes_final_geometry_checks(xyz_delfin: str, mol_template) -> bool:
         if _has_severe_covalent_distortion(mol_tmp.GetMol(), cid):
             return False
         if _has_bad_geometry(mol_tmp.GetMol(), cid):
-            return False
-        if not _cn7_axial_sanity_ok(mol_tmp.GetMol(), cid):
             return False
         return True
     except Exception:
@@ -4939,6 +5528,7 @@ def smiles_to_xyz_isomers(
     collapse_label_variants: bool = True,
     include_binding_mode_isomers: bool = True,
     deterministic: bool = True,
+    hapto_approx: Optional[bool] = None,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -4961,25 +5551,41 @@ def smiles_to_xyz_isomers(
     if not RDKIT_AVAILABLE:
         return [], "RDKit is not installed"
 
+    has_metal = contains_metal(smiles)
+    hapto_mode = _hapto_approx_enabled(hapto_approx)
+    hapto_groups: List[Tuple[int, List[int]]] = []
+    if has_metal:
+        hapto_groups = _probe_hapto_groups_from_smiles(smiles)
+        if hapto_groups and not hapto_mode:
+            return [], _hapto_failfast_error(hapto_groups)
+        if hapto_groups and hapto_mode:
+            xyz, err = smiles_to_xyz(
+                smiles,
+                apply_uff=apply_uff,
+                hapto_approx=True,
+            )
+            if err:
+                return [], err
+            return [(xyz, 'hapto-approx')], None
+
     # Non-metal molecules: single geometry
-    if not contains_metal(smiles):
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+    if not has_metal:
+        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
         if err:
             return [], err
         return [(xyz, '')], None
 
     # Prepare molecule for embedding
-    mol = _prepare_mol_for_embedding(smiles)
+    mol = _prepare_mol_for_embedding(smiles, hapto_approx=hapto_mode)
     if mol is None:
         # Fall back to single-conformer conversion
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
         if err:
             return [], err
         return [(xyz, '')], None
 
     # For metal complexes: prepend OB conformers to the pool so that
     # Avogadro-quality geometries are always considered during isomer search.
-    has_metal = contains_metal(smiles)
     conf_ids: List[int] = []
     if has_metal and OPENBABEL_AVAILABLE and not deterministic:
         try:
@@ -5148,7 +5754,7 @@ def smiles_to_xyz_isomers(
     if not seen_fps:
         # Sampling failed — get a single fallback geometry and still allow
         # the topological enumerator / linkage detector to augment it below.
-        _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+        _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
         if _fb_err:
             return [], _fb_err
         results = [(_fb_xyz, '')]
@@ -5219,7 +5825,7 @@ def smiles_to_xyz_isomers(
                 )
                 results = relaxed_fragment_results
             else:
-                _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff)
+                _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
                 if _fb_err:
                     return [], _fb_err
                 results = [(_fb_xyz, '')]
@@ -5402,23 +6008,13 @@ def smiles_to_xyz_isomers(
             for (xyz, lbl), keep in zip(results, _keep) if keep
         ]
 
-    # Final hard sanity gate for metal complexes (including fallback entries):
-    # ensure no geometrically implausible candidate survives to the UI.
-    if has_metal and results:
-        final_template = _build_topology_template_mol(smiles) or mol
-        final_filtered: List[Tuple[str, str]] = []
-        for xyz, lbl in results:
-            if _xyz_passes_final_geometry_checks(xyz, final_template):
-                final_filtered.append((xyz, lbl))
-            else:
-                logger.debug("Dropping final isomer %s: failed final geometry checks", lbl)
-        if final_filtered:
-            results = final_filtered
-
     return results, None
 
 
-def smiles_to_xyz_quick(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+def smiles_to_xyz_quick(
+    smiles: str,
+    hapto_approx: Optional[bool] = None,
+) -> Tuple[Optional[str], Optional[str]]:
     """Fast single-conformer SMILES → XYZ (DELFIN format, no header).
 
     Uses the same strategy as the pre-Avogadro smiles_to_xyz: single
@@ -5431,8 +6027,16 @@ def smiles_to_xyz_quick(smiles: str) -> Tuple[Optional[str], Optional[str]]:
         return None, "RDKit not available"
 
     has_metal = contains_metal(smiles)
+    hapto_mode = _hapto_approx_enabled(hapto_approx)
 
     if has_metal:
+        hapto_groups = _probe_hapto_groups_from_smiles(smiles)
+        if hapto_groups:
+            if not hapto_mode:
+                return None, _hapto_failfast_error(hapto_groups)
+            # Experimental eta/hapto fallback: reuse the main converter with
+            # approximation enabled and no UFF to keep quick-mode behavior.
+            return smiles_to_xyz(smiles, apply_uff=False, hapto_approx=True)
         return _try_multiple_strategies(smiles)
 
     # Non-metal: single ETKDG embedding
@@ -5458,6 +6062,7 @@ def smiles_to_xyz(
     smiles: str,
     output_path: Optional[str] = None,
     apply_uff: bool = True,
+    hapto_approx: Optional[bool] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Convert SMILES string to XYZ coordinates using RDKit.
 
@@ -5484,11 +6089,28 @@ def smiles_to_xyz(
 
     try:
         has_metal = contains_metal(smiles)
+        hapto_mode = _hapto_approx_enabled(hapto_approx)
+        hapto_groups = _probe_hapto_groups_from_smiles(smiles) if has_metal else []
+        if hapto_groups and not hapto_mode:
+            error = _hapto_failfast_error(hapto_groups)
+            logger.warning(error)
+            return None, error
+        if has_metal and hapto_mode and hapto_groups:
+            # Prefer the pre-hapto legacy path first. This preserves behavior
+            # that already worked for some polyhapto systems and only falls
+            # back to experimental approximation when legacy generation fails.
+            legacy_xyz, legacy_err = _try_multiple_strategies(smiles, output_path)
+            if legacy_err is None and legacy_xyz:
+                logger.info(
+                    "Hapto detected: legacy multi-strategy succeeded; "
+                    "skipping experimental approximation."
+                )
+                return legacy_xyz, None
         method = None
 
         # For metal-nitrogen coordination complexes (both neutral and charged notation),
         # use the multi-strategy approach that tries multiple parsing methods
-        if _is_metal_nitrogen_complex(smiles):
+        if _is_metal_nitrogen_complex(smiles) and not hapto_groups:
             logger.info("Detected metal-nitrogen complex, using multi-strategy approach")
             return _try_multiple_strategies(smiles, output_path)
 
@@ -5543,11 +6165,31 @@ def smiles_to_xyz(
                         return legacy_xyz, None
                 # Last resort: try multi-strategy approach for metal complexes
                 if has_metal:
+                    if hapto_groups and hapto_mode:
+                        error = (
+                            "Failed to parse hapto complex for experimental approximation. "
+                            "Try simplifying the SMILES around eta-coordination."
+                        )
+                        logger.error(error)
+                        return None, error
                     logger.info("Trying multi-strategy fallback for unparseable metal SMILES")
                     return _try_multiple_strategies(smiles, output_path)
                 error = f"Failed to parse SMILES string: {rdkit_note}"
                 logger.error(error)
                 return None, error
+
+        if has_metal and hapto_mode:
+            try:
+                parsed_hapto = _find_hapto_groups(mol)
+                if parsed_hapto:
+                    mol, n_removed = _apply_hapto_approximation(mol, parsed_hapto)
+                    logger.info(
+                        "Applied experimental hapto approximation: "
+                        "%d group(s), %d bond(s) converted to dative.",
+                        len(parsed_hapto), n_removed,
+                    )
+            except Exception as e:
+                logger.debug("Hapto approximation failed, continuing with original graph: %s", e)
 
         # For metal complexes: convert bonds to dative and recalculate hydrogens
         # This fixes the issue where metal coordination bonds are counted towards ligand valence
@@ -5575,6 +6217,8 @@ def smiles_to_xyz(
                     mol = _fix_organometallic_carbon_h(mol)
                 else:
                     mol = Chem.AddHs(mol, addCoords=True)
+                if hapto_mode:
+                    mol = _fix_hapto_donor_h(mol)
             except Exception as e:
                 logger.warning(f"Could not add hydrogens to metal complex: {e}")
                 # Fallback for valence errors: try unsanitized path
@@ -5608,6 +6252,72 @@ def smiles_to_xyz(
                             logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
                         return legacy_xyz, None
                 pass
+
+        # Experimental fast path for eta/hapto approximation: avoid the costly
+        # metal multi-conformer search and build a deterministic best-of-seeds
+        # start structure from the adjusted (anchor+dative) coordination graph.
+        if has_metal and hapto_mode and hapto_groups:
+            seed_candidates = [42, 1337, 2027, 31415, 271828, 1618033]
+            best_mol = None
+            best_score = float("inf")
+
+            for seed in seed_candidates:
+                try:
+                    mol_try = Chem.Mol(mol)
+                    params = AllChem.ETKDGv3()
+                    params.randomSeed = int(seed)
+                    params.useRandomCoords = True
+                    params.enforceChirality = False
+                    result = AllChem.EmbedMolecule(mol_try, params)
+                    if result != 0:
+                        result = AllChem.EmbedMolecule(
+                            mol_try, useRandomCoords=True, randomSeed=int(seed)
+                        )
+                    if result != 0:
+                        continue
+                    cid = int(result)
+                    try:
+                        _apply_hapto_centroid_bias(
+                            mol_try, cid, hapto_groups, min_centroid_sep=2.2
+                        )
+                    except Exception:
+                        pass
+
+                    score = _geometry_quality_score(mol_try, cid)
+                    score += _hapto_geometry_penalty(mol_try, cid, hapto_groups)
+                    try:
+                        if _has_ligand_intertwining(mol_try, cid, threshold=0.35):
+                            score += 800.0
+                    except Exception:
+                        pass
+
+                    if score < best_score:
+                        best_score = score
+                        best_mol = mol_try
+                except Exception:
+                    continue
+
+            if best_mol is None:
+                return None, "Hapto-approx embedding failed"
+            mol = best_mol
+            xyz_content = _mol_to_xyz(mol)
+            if apply_uff:
+                try:
+                    xyz_content = _optimize_xyz_openbabel_safe(
+                        xyz_content,
+                        mol_template=mol,
+                        smiles=smiles,
+                    )
+                except Exception:
+                    pass
+            # Final Cp-like post-correction: bias metal toward eta-group
+            # centroid(s), i.e. coordination to ring middle instead of one C.
+            xyz_content = _apply_hapto_centroid_bias_to_xyz(
+                xyz_content, mol, hapto_groups, min_centroid_sep=2.2
+            )
+            if output_path:
+                Path(output_path).write_text(xyz_content, encoding='utf-8')
+            return xyz_content, None
 
         # Generate 3D coordinates using a hybrid OB+RDKit conformer pool.
         # For metal complexes: OB WeightedRotorSearch in 3 independent restarts

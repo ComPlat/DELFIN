@@ -10,13 +10,25 @@ from delfin.smiles_converter import (
     contains_metal,
 )
 
+_HAPTO_FAILFAST_TOKEN = "Hapto (eta) coordination detected"
 
-def smiles_to_xyz(smiles, apply_uff=True):
+
+def _is_hapto_failfast(error: str) -> bool:
+    return bool(error) and _HAPTO_FAILFAST_TOKEN in error
+
+
+def smiles_to_xyz(smiles, apply_uff=True, hapto_approx=None):
     """Convert a SMILES string to XYZ coordinates.
 
     Returns ``(xyz_string, num_atoms, method, error)``.
     """
-    xyz_string, error = _delfin_smiles_to_xyz(smiles, apply_uff=apply_uff)
+    xyz_string, error = _delfin_smiles_to_xyz(
+        smiles, apply_uff=apply_uff, hapto_approx=hapto_approx
+    )
+    if error and hapto_approx is None and _is_hapto_failfast(error):
+        xyz_string, error = _delfin_smiles_to_xyz(
+            smiles, apply_uff=apply_uff, hapto_approx=True
+        )
     if error:
         return None, 0, None, error
     num_atoms = sum(1 for line in xyz_string.splitlines() if line.strip())
@@ -24,12 +36,18 @@ def smiles_to_xyz(smiles, apply_uff=True):
     return xyz_string, num_atoms, method, None
 
 
-def smiles_to_xyz_quick(smiles):
+def smiles_to_xyz_quick(smiles, hapto_approx=None):
     """Fast single-conformer conversion, no OB, no multi-seed, no UFF.
 
     Returns ``(xyz_string, num_atoms, method, error)``.
     """
-    xyz_string, error = _delfin_smiles_to_xyz_quick(smiles)
+    xyz_string, error = _delfin_smiles_to_xyz_quick(
+        smiles, hapto_approx=hapto_approx
+    )
+    if error and hapto_approx is None and _is_hapto_failfast(error):
+        xyz_string, error = _delfin_smiles_to_xyz_quick(
+            smiles, hapto_approx=True
+        )
     if error:
         return None, 0, None, error
     num_atoms = sum(1 for line in xyz_string.splitlines() if line.strip())
@@ -41,6 +59,7 @@ def smiles_to_xyz_isomers(
     apply_uff=True,
     collapse_label_variants=True,
     include_binding_mode_isomers=False,
+    hapto_approx=None,
 ):
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -51,7 +70,16 @@ def smiles_to_xyz_isomers(
         apply_uff=apply_uff,
         collapse_label_variants=collapse_label_variants,
         include_binding_mode_isomers=include_binding_mode_isomers,
+        hapto_approx=hapto_approx,
     )
+    if error and hapto_approx is None and _is_hapto_failfast(error):
+        results, error = _delfin_smiles_to_xyz_isomers(
+            smiles,
+            apply_uff=apply_uff,
+            collapse_label_variants=collapse_label_variants,
+            include_binding_mode_isomers=include_binding_mode_isomers,
+            hapto_approx=True,
+        )
     if error:
         return [], error
     out = []
