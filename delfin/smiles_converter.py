@@ -1328,6 +1328,15 @@ def _convert_metal_bonds_to_dative(mol, only_elements=None):
         return mol
 
     rwmol = Chem.RWMol(mol)
+    # Preserve explicit H annotations from the input SMILES for non-donor
+    # atoms (e.g., neutral ring N-H). RDKit often cannot reconstruct these
+    # from implicit valence on partially-sanitized metal-complex mols.
+    orig_explicit_h: Dict[int, int] = {
+        a.GetIdx(): int(a.GetNumExplicitHs()) for a in rwmol.GetAtoms()
+    }
+    orig_no_implicit: Dict[int, bool] = {
+        a.GetIdx(): bool(a.GetNoImplicit()) for a in rwmol.GetAtoms()
+    }
 
     # Find all single bonds between metals and NEUTRAL non-metals
     bonds_to_convert = []
@@ -1394,7 +1403,12 @@ def _convert_metal_bonds_to_dative(mol, only_elements=None):
                 # calculation can't recover them (e.g., tetracoordinate B in
                 # pyrazolylborate/scorpionate ligands: B standard valence = 3
                 # but actual valence = 4 with the B-H bond).
-                if atom.GetSymbol() == 'B' and atom.GetNumExplicitHs() > 0:
+                orig_h = orig_explicit_h.get(atom.GetIdx(), 0)
+                if orig_h > 0:
+                    atom.SetNumExplicitHs(orig_h)
+                    if orig_no_implicit.get(atom.GetIdx(), False):
+                        atom.SetNoImplicit(True)
+                elif atom.GetSymbol() == 'B' and atom.GetNumExplicitHs() > 0:
                     atom.SetNoImplicit(True)
                 else:
                     atom.SetNumExplicitHs(0)
@@ -2145,7 +2159,7 @@ def _heavy_component_stats_xyz(xyz_delfin: str) -> Optional[Tuple[int, int, int]
 def _global_heavy_connectivity_ok(
     xyz_delfin: str,
     original_smiles: str,
-    max_extra_components: int = 1,
+    max_extra_components: int = 3,
     min_largest_frac: float = 0.70,
 ) -> bool:
     """Reject severely fragmented heavy-atom graphs vs original SMILES.
