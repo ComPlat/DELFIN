@@ -331,7 +331,7 @@ def _write_goat_input(
     """Write ORCA GOAT input for an XYZ file."""
     method_token = (method or "XTB2").strip() or "XTB2"
     content = (
-        f"!{method_token} GOAT ALPB(DMF)\n\n"
+        f"!{method_token} GOAT\n\n"
         f"%maxcore {maxcore}\n"
         f"%pal nprocs {pal} end\n\n"
         f"*xyzfile {charge} {multiplicity} {xyz_file.name}\n"
