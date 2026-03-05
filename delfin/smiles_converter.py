@@ -4650,6 +4650,7 @@ def smiles_to_xyz_isomers(
                             xyz,
                             mol_template=mol,
                             smiles=smiles,
+                            apply_template_constraints=True,
                         )
                     except Exception as uff_exc:
                         # Preserve the isomer if UFF cannot optimize this geometry.
@@ -5522,6 +5523,197 @@ def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
     return '\n'.join(lines) + '\n'
 
 
+def _build_uff_constraints_from_template(
+    mol_template,
+    xyz_delfin: Optional[str] = None,
+) -> Optional[Dict]:
+    """Build conservative OB-UFF constraints from the RDKit template graph.
+
+    The goal is not to freeze the structure, but to keep fragile motifs
+    chemically reasonable during UFF relaxation:
+    - carboxyl-like O-C-O groups near trigonal-planar geometry
+    - aromatic ring torsions near planarity
+    """
+    if not RDKIT_AVAILABLE or mol_template is None:
+        return None
+
+    constraints: Dict[str, list] = {
+        "fix_atoms": [],
+        "distances": [],
+        "angles": [],
+        "torsions": [],
+    }
+    seen_dist: set = set()
+    seen_angle: set = set()
+    seen_tors: set = set()
+
+    # Optional source coordinates (same atom ordering as mol_template) to pick
+    # the closest planar torsion target (0 or 180 deg).
+    coords: Optional[List[Tuple[float, float, float]]] = None
+    if xyz_delfin:
+        try:
+            lines = [l for l in xyz_delfin.splitlines() if l.strip()]
+            if len(lines) == mol_template.GetNumAtoms():
+                parsed: List[Tuple[float, float, float]] = []
+                for line in lines:
+                    parts = line.split()
+                    if len(parts) < 4:
+                        parsed = []
+                        break
+                    parsed.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                if len(parsed) == mol_template.GetNumAtoms():
+                    coords = parsed
+        except Exception:
+            coords = None
+
+    def _nearest_planar_target(a: int, b: int, c: int, d: int) -> float:
+        if coords is None:
+            return 0.0
+        try:
+            p1 = coords[a]
+            p2 = coords[b]
+            p3 = coords[c]
+            p4 = coords[d]
+            b1 = (p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2])
+            b2 = (p3[0] - p2[0], p3[1] - p2[1], p3[2] - p2[2])
+            b3 = (p4[0] - p3[0], p4[1] - p3[1], p4[2] - p3[2])
+
+            n1 = (
+                b1[1] * b2[2] - b1[2] * b2[1],
+                b1[2] * b2[0] - b1[0] * b2[2],
+                b1[0] * b2[1] - b1[1] * b2[0],
+            )
+            n2 = (
+                b2[1] * b3[2] - b2[2] * b3[1],
+                b2[2] * b3[0] - b2[0] * b3[2],
+                b2[0] * b3[1] - b2[1] * b3[0],
+            )
+            n1m = math.sqrt(n1[0] * n1[0] + n1[1] * n1[1] + n1[2] * n1[2])
+            n2m = math.sqrt(n2[0] * n2[0] + n2[1] * n2[1] + n2[2] * n2[2])
+            if n1m < 1e-10 or n2m < 1e-10:
+                return 0.0
+            n1u = (n1[0] / n1m, n1[1] / n1m, n1[2] / n1m)
+            n2u = (n2[0] / n2m, n2[1] / n2m, n2[2] / n2m)
+            dot = max(-1.0, min(1.0, n1u[0] * n2u[0] + n1u[1] * n2u[1] + n1u[2] * n2u[2]))
+            dihedral = math.degrees(math.acos(dot))
+            # Planar torsions are near 0 or 180.
+            return 180.0 if abs(dihedral - 180.0) < abs(dihedral - 0.0) else 0.0
+        except Exception:
+            return 0.0
+
+    try:
+        # Carboxyl/carbonyl-like O-C-O units: keep broad C-O distances and ~120 deg angle.
+        for atom in mol_template.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            if atom.GetSymbol() in _METAL_SET:
+                continue
+            o_neighbors = [
+                n for n in atom.GetNeighbors()
+                if n.GetAtomicNum() == 8 and n.GetSymbol() not in _METAL_SET
+            ]
+            if len(o_neighbors) != 2:
+                continue
+
+            c_idx = atom.GetIdx()
+            o1_idx, o2_idx = sorted([o_neighbors[0].GetIdx(), o_neighbors[1].GetIdx()])
+
+            angle_key = (o1_idx, c_idx, o2_idx)
+            if angle_key not in seen_angle:
+                seen_angle.add(angle_key)
+                constraints["angles"].append((o1_idx, c_idx, o2_idx, 120.0))
+
+            for o_idx in (o1_idx, o2_idx):
+                dist_key = tuple(sorted((c_idx, o_idx)))
+                if dist_key in seen_dist:
+                    continue
+                seen_dist.add(dist_key)
+                bond = mol_template.GetBondBetweenAtoms(c_idx, o_idx)
+                target = 1.27
+                if bond is not None:
+                    btype = bond.GetBondType()
+                    if btype == Chem.BondType.DOUBLE:
+                        target = 1.22
+                    elif btype == Chem.BondType.SINGLE:
+                        target = 1.31
+                    elif btype == Chem.BondType.AROMATIC:
+                        target = 1.27
+                constraints["distances"].append((c_idx, o_idx, target))
+
+            # Keep carboxyl group coplanar with its carbon backbone when possible.
+            x_neighbors = sorted(
+                n.GetIdx()
+                for n in atom.GetNeighbors()
+                if n.GetIdx() not in (o1_idx, o2_idx)
+                and n.GetAtomicNum() > 1
+                and n.GetSymbol() not in _METAL_SET
+            )
+            for x_idx in x_neighbors:
+                x_atom = mol_template.GetAtomWithIdx(x_idx)
+                anchor_candidates = sorted(
+                    n.GetIdx()
+                    for n in x_atom.GetNeighbors()
+                    if n.GetIdx() != c_idx
+                    and n.GetAtomicNum() > 1
+                    and n.GetSymbol() not in _METAL_SET
+                )
+                if not anchor_candidates:
+                    continue
+                a_idx = anchor_candidates[0]
+                for o_idx in (o1_idx, o2_idx):
+                    key = (a_idx, x_idx, c_idx, o_idx)
+                    rev = (o_idx, c_idx, x_idx, a_idx)
+                    tors_key = key if key <= rev else rev
+                    if tors_key in seen_tors:
+                        continue
+                    seen_tors.add(tors_key)
+                    constraints["torsions"].append(
+                        (a_idx, x_idx, c_idx, o_idx, _nearest_planar_target(a_idx, x_idx, c_idx, o_idx))
+                    )
+
+        # Aromatic ring planarity via torsion constraints on consecutive ring quartets.
+        try:
+            Chem.GetSymmSSSR(mol_template)
+        except Exception:
+            pass
+        ring_info = mol_template.GetRingInfo()
+        if ring_info is not None:
+            for ring in ring_info.AtomRings():
+                if len(ring) < 5 or len(ring) > 7:
+                    continue
+                if not all(mol_template.GetAtomWithIdx(i).GetIsAromatic() for i in ring):
+                    continue
+                if any(mol_template.GetAtomWithIdx(i).GetSymbol() in _METAL_SET for i in ring):
+                    continue
+
+                n = len(ring)
+                for i in range(n):
+                    a = ring[(i - 1) % n]
+                    b = ring[i]
+                    c = ring[(i + 1) % n]
+                    d = ring[(i + 2) % n]
+                    if len({a, b, c, d}) < 4:
+                        continue
+                    key = (a, b, c, d)
+                    rev = (d, c, b, a)
+                    tors_key = key if key <= rev else rev
+                    if tors_key in seen_tors:
+                        continue
+                    seen_tors.add(tors_key)
+                    constraints["torsions"].append((a, b, c, d, _nearest_planar_target(a, b, c, d)))
+    except Exception:
+        return None
+
+    if not (
+        constraints["fix_atoms"]
+        or constraints["distances"]
+        or constraints["angles"]
+        or constraints["torsions"]
+    ):
+        return None
+    return constraints
+
+
 def _optimize_xyz_openbabel(
     xyz_delfin: str,
     steps: int = 500,
@@ -5541,6 +5733,7 @@ def _optimize_xyz_openbabel(
             - ``'fix_atoms'``: list of 0-based atom indices to freeze in place
             - ``'distances'``: list of ``(idx_a, idx_b, target_dist)``
             - ``'angles'``: list of ``(idx_a, idx_b, idx_c, target_angle_deg)``
+            - ``'torsions'``: list of ``(idx_a, idx_b, idx_c, idx_d, target_deg)``
 
     Returns:
         Optimized DELFIN-format XYZ string, or the original string if
@@ -5589,6 +5782,11 @@ def _optimize_xyz_openbabel(
                     ob_constraints.AddAngleConstraint(
                         idx_a + 1, idx_b + 1, idx_c + 1, target
                     )
+                # Torsion constraints
+                for idx_a, idx_b, idx_c, idx_d, target in constraints.get('torsions', []):
+                    ob_constraints.AddTorsionConstraint(
+                        idx_a + 1, idx_b + 1, idx_c + 1, idx_d + 1, target
+                    )
                 ff.SetConstraints(ob_constraints)
             except Exception as e:
                 logger.debug("OB UFF constraint setup failed, running unconstrained: %s", e)
@@ -5616,6 +5814,7 @@ def _optimize_xyz_openbabel_safe(
     mol_template=None,
     smiles: Optional[str] = None,
     steps: int = 500,
+    apply_template_constraints: bool = False,
 ) -> str:
     """Run OB-UFF, but keep original XYZ if optimization breaks topology.
 
@@ -5623,13 +5822,42 @@ def _optimize_xyz_openbabel_safe(
     occasionally stretch/break covalent bonds for charged metal complexes.
     This wrapper accepts the optimized geometry only if it passes structural
     sanity checks against the original molecular graph.
+
+    When ``apply_template_constraints`` is True and a ``mol_template`` is
+    available, mild OCO/aromatic planarity constraints are passed to OB-UFF.
     """
-    xyz_opt = _optimize_xyz_openbabel(xyz_delfin, steps=steps)
+    constraints = None
+    if apply_template_constraints and mol_template is not None:
+        try:
+            constraints = _build_uff_constraints_from_template(
+                mol_template, xyz_delfin=xyz_delfin
+            )
+        except Exception as exc:
+            logger.debug("Constraint generation failed, running unconstrained UFF: %s", exc)
+            constraints = None
+
+    xyz_opt = _optimize_xyz_openbabel(xyz_delfin, steps=steps, constraints=constraints)
     if not xyz_opt or xyz_opt == xyz_delfin:
         return xyz_delfin
 
     if mol_template is not None and RDKIT_AVAILABLE:
         try:
+            # Build baseline quality from the pre-UFF geometry so we can keep
+            # constrained UFF structures that are improved even if still not
+            # fully "good" by strict thresholds.
+            orig_bad = False
+            orig_score = float("inf")
+            mol_orig = Chem.RWMol(mol_template)
+            mol_orig.RemoveAllConformers()
+            conf_orig = _xyz_to_rdkit_conformer(mol_orig.GetMol(), xyz_delfin)
+            if conf_orig is not None:
+                cid_orig = mol_orig.AddConformer(conf_orig, assignId=True)
+                orig_bad = _has_bad_geometry(mol_orig.GetMol(), cid_orig)
+                try:
+                    orig_score = _geometry_quality_score(mol_orig.GetMol(), cid_orig)
+                except Exception:
+                    orig_score = float("inf")
+
             mol_tmp = Chem.RWMol(mol_template)
             mol_tmp.RemoveAllConformers()
             conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_opt)
@@ -5637,17 +5865,32 @@ def _optimize_xyz_openbabel_safe(
                 logger.debug("Discarding UFF geometry: atom mapping failed.")
                 return xyz_delfin
             cid = mol_tmp.AddConformer(conf, assignId=True)
-            if _has_bad_geometry(mol_tmp.GetMol(), cid):
-                logger.debug("Discarding UFF geometry: bad metal-ligand geometry.")
-                return xyz_delfin
             if _has_severe_covalent_distortion(mol_tmp.GetMol(), cid):
                 logger.debug("Discarding UFF geometry: severe covalent distortion.")
                 return xyz_delfin
+            opt_bad = _has_bad_geometry(mol_tmp.GetMol(), cid)
+            if opt_bad:
+                # Keep constrained UFF if it improves relative to the original
+                # geometry; otherwise fall back to the unoptimized structure.
+                try:
+                    opt_score = _geometry_quality_score(mol_tmp.GetMol(), cid)
+                except Exception:
+                    opt_score = float("inf")
+                if (not orig_bad) or (opt_score >= orig_score - 1e-6):
+                    logger.debug(
+                        "Discarding UFF geometry: no bad-geometry improvement "
+                        "(orig_bad=%s orig_score=%.3f opt_score=%.3f).",
+                        orig_bad, orig_score, opt_score,
+                    )
+                    return xyz_delfin
         except Exception as e:
             logger.debug("Discarding UFF geometry: post-check failed (%s).", e)
             return xyz_delfin
 
-    if smiles:
+    # For constrained, template-guided UFF in the isomer path we defer
+    # topology/spurious checks to the caller (which applies the same checks
+    # afterwards) to avoid double-rejecting all optimized geometries.
+    if smiles and not apply_template_constraints:
         try:
             if not _roundtrip_ring_count_ok(xyz_opt, smiles):
                 logger.debug("Discarding UFF geometry: ring-count mismatch.")
