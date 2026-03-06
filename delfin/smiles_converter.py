@@ -1314,9 +1314,9 @@ def _fix_hapto_donor_h(mol):
     """Adjust H on hapto donor carbons to satisfy a valence-4 model.
 
     For eta-bound carbon donors, estimate occupied valence from:
-    - non-hydrogen bond orders,
-    - one effective bond order to the metal (if coordinated),
-    - optional pi-bonus to reach one "double-bond equivalent" in eta systems.
+    - non-hydrogen bond orders excluding metal coordination,
+    - optional odd-eta conjugation bonus when the parsed graph
+      underrepresents delocalized pi bonding.
 
     Then add/remove explicit H so each donor C trends toward valence 4.
     """
@@ -1360,13 +1360,11 @@ def _fix_hapto_donor_h(mol):
             h_nbrs = [n for n in nbrs if n.GetSymbol() == 'H']
             non_h_valence = 0.0
             cc_valence = 0.0
-            has_metal_contact = False
             for nbr in nbrs:
                 ns = nbr.GetSymbol()
                 if ns == 'H':
                     continue
                 if ns in _METAL_SET:
-                    has_metal_contact = True
                     continue
                 bond = rwmol.GetBondBetweenAtoms(c_idx, nbr.GetIdx())
                 bo = _bond_order_value(bond)
@@ -1374,18 +1372,19 @@ def _fix_hapto_donor_h(mol):
                 if ns == 'C':
                     cc_valence += bo
 
-            # Eta systems should retain one "double-bond equivalent" in the
-            # donor carbon framework if the explicit graph underrepresents pi
-            # delocalization (common after robust metal parsing).
-            pi_bonus = 0.0
-            if eta >= 3 and cc_valence < 2.0:
-                pi_bonus = min(1.0, 2.0 - cc_valence)
-
-            metal_valence = 1.0 if has_metal_contact else 0.0
-            used_valence = non_h_valence + metal_valence + pi_bonus
-            remaining = 4.0 - used_valence
-            desired_h = int(max(0.0, round(remaining)))
-            desired_h = max(0, min(3, desired_h))
+            if eta >= 4:
+                # Keep higher-hapticity Cp-like donor carbons H-free to avoid
+                # over-hydrogenation in bridged/multihapto systems.
+                desired_h = 0
+            else:
+                # Eta3 allyl/propenyl-like donor: treat as conjugated anionic
+                # system. Metal coordination itself does not consume sigma
+                # valence for H counting; add one pi-equivalent if needed.
+                pi_bonus = 1.0 if cc_valence < 2.5 else 0.0
+                used_valence = non_h_valence + pi_bonus
+                remaining = 4.0 - used_valence
+                desired_h = int(max(0.0, round(remaining)))
+                desired_h = max(0, min(3, desired_h))
 
             if len(h_nbrs) > desired_h:
                 remove_count = len(h_nbrs) - desired_h
@@ -6420,7 +6419,7 @@ def smiles_to_xyz(
 
         # Generate 3D coordinates using a hybrid OB+RDKit conformer pool.
         # For metal complexes: OB WeightedRotorSearch in 3 independent restarts
-        # (Avogadro-quality, non-deterministic diversity) + RDKit ETKDG with
+        # (non-deterministic diversity) + RDKit ETKDG with
         # 12 diverse fixed seeds → up to ~500 conformers total.
         # Best geometry is selected by _geometry_quality_score.
         result = -1
