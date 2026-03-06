@@ -7,12 +7,14 @@ and their transitions (ISCs and ICs) in a separate ESD directory.
 from __future__ import annotations
 
 import shutil
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 import threading
 
 from delfin.common.logging import get_logger
 from delfin.common.paths import ensure_relative_link
+from delfin import smart_recalc
 from delfin.esd_input_generator import (
     create_fluor_input,
     create_ic_input,
@@ -32,6 +34,42 @@ logger = get_logger(__name__)
 
 # Thread lock for input file generation to avoid race conditions
 _input_generation_lock = threading.Lock()
+
+
+def _recalc_mode_enabled() -> bool:
+    return str(os.environ.get("DELFIN_RECALC", "0")).strip().lower() in (
+        "1", "true", "yes", "on", "y"
+    )
+
+
+def _precomplete_recalc_job_if_possible(
+    manager: _WorkflowManager,
+    job_id: str,
+    out_file: Path,
+) -> bool:
+    """Mark a job as completed before scheduling when classic recalc can skip it.
+
+    This avoids dispatching trivially skippable jobs that would otherwise reserve
+    PAL temporarily before the recalc wrapper short-circuits.
+    """
+    if not _recalc_mode_enabled():
+        return False
+
+    # Keep smart recalc conservative here: some jobs generate their inputs only at
+    # execution time, so a pre-skip could be wrong without fingerprint validation.
+    if smart_recalc.smart_mode_enabled():
+        return False
+
+    if not smart_recalc.has_ok_marker(out_file):
+        return False
+
+    manager._completed.add(job_id)
+    logger.info(
+        "[recalc] pre-marking %s as completed; %s output complete (classic mode).",
+        job_id,
+        out_file.name,
+    )
+    return True
 
 
 def _run_orca_esd(
@@ -237,16 +275,18 @@ def _populate_state_jobs(
 
     for state in states:
         state_upper = state.upper()
+        job_id = f"esd_{state_upper}"
+        state_out = esd_dir / f"{state_upper}.out"
+
+        if _precomplete_recalc_job_if_possible(manager, job_id, state_out):
+            continue
 
         # Check if this state should be calculated
         # In normal mode: skip if both .out and .hess exist
         # In recalc mode: let the recalc wrapper decide (it checks TERMINATED NORMALLY)
-        import os
-        recalc_mode = os.environ.get("DELFIN_RECALC", "0") == "1"
+        recalc_mode = _recalc_mode_enabled()
 
         if not recalc_mode:
-            state_out = esd_dir / f"{state_upper}.out"
-
             # Check if output is complete (TERMINATED NORMALLY)
             is_complete = False
             if state_out.exists():
@@ -518,7 +558,7 @@ def _populate_state_jobs(
 
         manager.add_job(
             WorkflowJob(
-                job_id=f"esd_{state_upper}",
+                job_id=job_id,
                 work=make_state_work(state_upper),
                 description=f"ESD {state_upper} optimization",
                 dependencies=deps,
@@ -529,9 +569,13 @@ def _populate_state_jobs(
         )
 
         if esd_modus == "deltascf" and state_upper.startswith("S") and state_upper != "S0":
+            tddft_job_id = f"esd_{state_upper}_tddft"
+            tddft_output = esd_dir / f"{state_upper}_TDDFT.out"
+            if _precomplete_recalc_job_if_possible(manager, tddft_job_id, tddft_output):
+                continue
             manager.add_job(
                 WorkflowJob(
-                    job_id=f"esd_{state_upper}_tddft",
+                    job_id=tddft_job_id,
                     work=make_tddft_check_work(state_upper),
                     description=f"TDDFT check {state_upper}",
                     dependencies={f"esd_{state_upper}"},
@@ -595,6 +639,9 @@ def _populate_isc_jobs(
         for trootssl in trootssl_values:
             ms_suffix = _format_ms_suffix(trootssl)
             job_id = f"esd_isc_{initial_state}_{final_state}_{ms_suffix}"
+            isc_out = esd_dir / f"{initial_state}_{final_state}_ISC_{ms_suffix}.out"
+            if _precomplete_recalc_job_if_possible(manager, job_id, isc_out):
+                continue
 
             def make_isc_work(isc_pair: str, trootssl_val: int) -> Callable[[int], None]:
                 """Create work function for ISC calculation."""
@@ -725,6 +772,9 @@ def _populate_ic_jobs(
         deps = {f"esd_{initial_state}", f"esd_{final_state}"}
 
         job_id = f"esd_ic_{initial_state}_{final_state}"
+        ic_out = esd_dir / f"{initial_state}_{final_state}_IC.out"
+        if _precomplete_recalc_job_if_possible(manager, job_id, ic_out):
+            continue
 
         def make_ic_work(ic_pair: str) -> Callable[[int], None]:
             """Create work function for IC calculation."""
@@ -816,6 +866,9 @@ def _populate_fluor_jobs(
     """Add fluorescence (S1→S0) ESD(FLUOR) job when requested via emission_rates=f."""
     deps = {"esd_S0", "esd_S1"}
     job_id = "esd_fluor_S1_S0"
+    fluor_out = esd_dir / "S1_S0_FLUOR.out"
+    if _precomplete_recalc_job_if_possible(manager, job_id, fluor_out):
+        return
 
     def work(cores: int) -> None:
         input_file = create_fluor_input(
@@ -887,6 +940,9 @@ def _populate_phosp_jobs(
     """
     deps = {"esd_S0", "esd_T1"}
     job_id = "esd_phosp_T1_S0"
+    phosp_out = esd_dir / "T1_S0_PHOSP.out"
+    if _precomplete_recalc_job_if_possible(manager, job_id, phosp_out):
+        return
 
     def work(cores: int) -> None:
         input_file = create_phosp_input(
