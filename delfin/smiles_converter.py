@@ -2074,6 +2074,8 @@ def _score_hapto_xyz_candidate(
         mol_tmp.RemoveAllConformers()
         conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_delfin)
         if conf is None:
+            conf = _xyz_to_rdkit_conformer_via_ob_mapping(mol_tmp.GetMol(), xyz_delfin)
+        if conf is None:
             return score + 1000.0
         cid = mol_tmp.AddConformer(conf, assignId=True)
         score += _geometry_quality_score(mol_tmp.GetMol(), cid)
@@ -6384,14 +6386,10 @@ def smiles_to_xyz(
             mol = best_mol
             xyz_content = _mol_to_xyz(mol)
             if apply_uff:
-                try:
-                    xyz_content = _optimize_xyz_openbabel_safe(
-                        xyz_content,
-                        mol_template=mol,
-                        smiles=smiles,
-                    )
-                except Exception:
-                    pass
+                logger.info(
+                    "Skipping OB-UFF for hapto candidate generation; "
+                    "using hapto-specific geometry guards to preserve ligand bonding."
+                )
             # Final Cp-like post-correction: bias metal toward eta-group
             # centroid(s), i.e. coordination to ring middle instead of one C.
             xyz_content = _apply_hapto_centroid_bias_to_xyz(
@@ -6413,6 +6411,11 @@ def smiles_to_xyz(
                     sel_label or "unknown",
                     float(sel_score) if sel_score is not None else float("nan"),
                 )
+            # Final universal hapto geometry guard on the selected candidate
+            # (including cases where legacy candidate wins).
+            xyz_content = _apply_hapto_centroid_bias_to_xyz(
+                xyz_content, mol, hapto_groups, min_centroid_sep=2.2
+            )
             if output_path:
                 Path(output_path).write_text(xyz_content, encoding='utf-8')
             return xyz_content, None
