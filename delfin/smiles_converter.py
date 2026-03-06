@@ -2037,6 +2037,84 @@ def _hapto_geometry_penalty(
     return penalty
 
 
+def _score_hapto_xyz_candidate(
+    xyz_delfin: str,
+    smiles: str,
+    mol_template,
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> float:
+    """Score a hapto XYZ candidate (lower is better)."""
+    if not xyz_delfin:
+        return float("inf")
+
+    score = 0.0
+
+    strict_topology = _fragment_topology_ok(xyz_delfin, smiles)
+    if not strict_topology:
+        if _fragment_topology_relaxed_fallback_ok(xyz_delfin, smiles):
+            score += 2500.0
+        else:
+            return float("inf")
+
+    if mol_template is None or not RDKIT_AVAILABLE:
+        return score
+
+    try:
+        expected_atoms = mol_template.GetNumAtoms()
+        got_atoms = sum(1 for ln in xyz_delfin.splitlines() if ln.strip())
+        if got_atoms != expected_atoms:
+            score += 1800.0 + 10.0 * abs(got_atoms - expected_atoms)
+    except Exception:
+        pass
+
+    if not _xyz_passes_final_geometry_checks(xyz_delfin, mol_template):
+        score += 1500.0
+
+    try:
+        mol_tmp = Chem.RWMol(mol_template)
+        mol_tmp.RemoveAllConformers()
+        conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_delfin)
+        if conf is None:
+            return score + 1000.0
+        cid = mol_tmp.AddConformer(conf, assignId=True)
+        score += _geometry_quality_score(mol_tmp.GetMol(), cid)
+        score += _hapto_geometry_penalty(mol_tmp.GetMol(), cid, hapto_groups)
+        if _has_ligand_intertwining(mol_tmp.GetMol(), cid, threshold=0.35):
+            score += 900.0
+    except Exception:
+        score += 1000.0
+
+    return score
+
+
+def _select_best_hapto_xyz(
+    smiles: str,
+    mol_template,
+    hapto_groups: List[Tuple[int, List[int]]],
+    candidates: List[Tuple[str, str]],
+) -> Tuple[Optional[str], Optional[str], Optional[float]]:
+    """Pick the best valid hapto XYZ candidate from labeled candidates."""
+    best_xyz: Optional[str] = None
+    best_label: Optional[str] = None
+    best_score: Optional[float] = None
+    for label, xyz in candidates:
+        if not xyz:
+            continue
+        score = _score_hapto_xyz_candidate(
+            xyz_delfin=xyz,
+            smiles=smiles,
+            mol_template=mol_template,
+            hapto_groups=hapto_groups,
+        )
+        if not math.isfinite(score):
+            continue
+        if best_score is None or score < best_score:
+            best_xyz = xyz
+            best_label = label
+            best_score = score
+    return best_xyz, best_label, best_score
+
+
 def mol_from_smiles_rdkit(smiles: str, allow_metal: bool = False):
     """Create RDKit Mol, with relaxed sanitizing for metal complexes."""
     try:
@@ -6091,6 +6169,7 @@ def smiles_to_xyz(
         has_metal = contains_metal(smiles)
         hapto_mode = _hapto_approx_enabled(hapto_approx)
         hapto_groups = _probe_hapto_groups_from_smiles(smiles) if has_metal else []
+        legacy_hapto_xyz: Optional[str] = None
         if hapto_groups and not hapto_mode:
             error = _hapto_failfast_error(hapto_groups)
             logger.warning(error)
@@ -6099,13 +6178,13 @@ def smiles_to_xyz(
             # Prefer the pre-hapto legacy path first. This preserves behavior
             # that already worked for some polyhapto systems and only falls
             # back to experimental approximation when legacy generation fails.
-            legacy_xyz, legacy_err = _try_multiple_strategies(smiles, output_path)
+            legacy_xyz, legacy_err = _try_multiple_strategies(smiles)
             if legacy_err is None and legacy_xyz:
+                legacy_hapto_xyz = legacy_xyz
                 logger.info(
-                    "Hapto detected: legacy multi-strategy succeeded; "
-                    "skipping experimental approximation."
+                    "Hapto detected: collected legacy multi-strategy candidate "
+                    "for universal candidate selection."
                 )
-                return legacy_xyz, None
         method = None
 
         # For metal-nitrogen coordination complexes (both neutral and charged notation),
@@ -6298,6 +6377,10 @@ def smiles_to_xyz(
                     continue
 
             if best_mol is None:
+                if legacy_hapto_xyz:
+                    if output_path:
+                        Path(output_path).write_text(legacy_hapto_xyz, encoding='utf-8')
+                    return legacy_hapto_xyz, None
                 return None, "Hapto-approx embedding failed"
             mol = best_mol
             xyz_content = _mol_to_xyz(mol)
@@ -6315,6 +6398,22 @@ def smiles_to_xyz(
             xyz_content = _apply_hapto_centroid_bias_to_xyz(
                 xyz_content, mol, hapto_groups, min_centroid_sep=2.2
             )
+            candidates: List[Tuple[str, str]] = [("hapto-approx", xyz_content)]
+            if legacy_hapto_xyz:
+                candidates.append(("legacy", legacy_hapto_xyz))
+            sel_xyz, sel_label, sel_score = _select_best_hapto_xyz(
+                smiles=smiles,
+                mol_template=mol,
+                hapto_groups=hapto_groups,
+                candidates=candidates,
+            )
+            if sel_xyz:
+                xyz_content = sel_xyz
+                logger.info(
+                    "Hapto candidate selected: %s (score=%.2f)",
+                    sel_label or "unknown",
+                    float(sel_score) if sel_score is not None else float("nan"),
+                )
             if output_path:
                 Path(output_path).write_text(xyz_content, encoding='utf-8')
             return xyz_content, None
