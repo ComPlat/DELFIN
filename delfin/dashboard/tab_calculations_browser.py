@@ -281,6 +281,12 @@ def create_tab(ctx):
         ('ORCA Nr. Basis Fns',        'Basis',    'regex', r'Number of basis functions\s*\.\.\.\s*(\d+)',             'first'),
         ('TM SCF Energy (Eh)',        'E(TM)',    'regex', r'SCF energy\s+:\s+(-?[\d.]+)',                           'last'),
         ('TM HOMO (eV)',              'HOMO(TM)', 'regex', r'HOMO.*?(-?[\d.]+)\s*eV',                                'last'),
+        ('DELFIN TDDFT to_state',     'to_state', 'json',  'tddft_absorption.transitions[*].to_state',                'all'),
+        ('DELFIN TDDFT energy_eV',    'energy_eV','json',  'tddft_absorption.transitions[*].energy_eV',               'all'),
+        ('DELFIN TDDFT wavelength',   'nm',       'json',  'tddft_absorption.transitions[*].wavelength_nm',           'all'),
+        ('DELFIN TDDFT fosc',         'fosc',     'json',  'tddft_absorption.transitions[*].oscillator_strength',     'all'),
+        ('DELFIN S0→S1 wavelength',   'S0S1_nm',  'json',  'tddft_absorption.transitions[?(@.from_state=="S0" && @.to_state=="S1")].wavelength_nm', 'first'),
+        ('DELFIN S0→S1 energy_eV',    'S0S1_eV',  'json',  'tddft_absorption.transitions[?(@.from_state=="S0" && @.to_state=="S1")].energy_eV', 'first'),
         ('JSON key path',             'JSON',     'json',  'results.energy.final',                                     'last'),
     ]
     _tp_labels = [p[0] for p in _TABLE_PRESETS]
@@ -7362,6 +7368,8 @@ def create_tab(ctx):
                     'pattern': _tp_pats[pi],
                     'occ': _tp_occs[pi],
                 })
+                if _tp_types[pi] == 'json' and not calc_table_file_input.value.strip():
+                    calc_table_file_input.value = 'DELFIN_Data.json'
                 _rebuild_table_col_rows()
 
             def _on_remove(b, idx=i):
@@ -7400,44 +7408,214 @@ def create_tab(ctx):
                     stack.append(item)
         return matches
 
+    def _normalize_json_path(path):
+        """Normalize common JSONPath-like prefixes to the local dot syntax."""
+        normalized = str(path or '').strip()
+        if not normalized:
+            return ''
+        if normalized.startswith('$'):
+            normalized = normalized[1:]
+        return normalized.lstrip('.')
+
+    def _json_split_path(path):
+        """Split JSON path by dots while preserving bracket expressions."""
+        parts = []
+        buf = []
+        bracket_depth = 0
+        quote = None
+        escaped = False
+        for ch in path:
+            if quote is not None:
+                buf.append(ch)
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == '\\':
+                    escaped = True
+                elif ch == quote:
+                    quote = None
+                continue
+            if ch in ("'", '"') and bracket_depth > 0:
+                quote = ch
+                buf.append(ch)
+                continue
+            if ch == '[':
+                bracket_depth += 1
+                buf.append(ch)
+                continue
+            if ch == ']':
+                if bracket_depth > 0:
+                    bracket_depth -= 1
+                buf.append(ch)
+                continue
+            if ch == '.' and bracket_depth == 0:
+                token = ''.join(buf).strip()
+                if token:
+                    parts.append(token)
+                buf = []
+                continue
+            buf.append(ch)
+        tail = ''.join(buf).strip()
+        if tail:
+            parts.append(tail)
+        return parts
+
+    def _json_parse_value(raw):
+        token = str(raw).strip()
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in ('"', "'"):
+            return token[1:-1]
+        low = token.lower()
+        if low == 'true':
+            return True
+        if low == 'false':
+            return False
+        if low == 'null':
+            return None
+        try:
+            if any(ch in token for ch in ('.', 'e', 'E')):
+                return float(token)
+            return int(token)
+        except Exception:
+            return token
+
+    def _json_compare_values(lhs, op, rhs):
+        if op in ('==', '!='):
+            equal = (lhs == rhs)
+            if not equal:
+                try:
+                    equal = (float(lhs) == float(rhs))
+                except Exception:
+                    equal = (str(lhs) == str(rhs))
+            return equal if op == '==' else (not equal)
+        try:
+            lval = float(lhs)
+            rval = float(rhs)
+        except Exception:
+            lval = str(lhs)
+            rval = str(rhs)
+        if op == '>':
+            return lval > rval
+        if op == '>=':
+            return lval >= rval
+        if op == '<':
+            return lval < rval
+        if op == '<=':
+            return lval <= rval
+        return False
+
+    def _json_item_matches_filter(item, expression):
+        if not isinstance(item, dict):
+            return False
+        clauses = [
+            c.strip()
+            for c in re.split(r'\s*(?:&&|\band\b)\s*', expression)
+            if c.strip()
+        ]
+        if not clauses:
+            return False
+        for clause in clauses:
+            m = re.match(r'^@\.(\w+)\s*(==|!=|>=|<=|>|<)\s*(.+)$', clause)
+            if not m:
+                return False
+            key, op, raw_rhs = m.groups()
+            rhs = _json_parse_value(raw_rhs)
+            lhs = item.get(key)
+            if not _json_compare_values(lhs, op, rhs):
+                return False
+        return True
+
+    def _json_parse_part(part):
+        """
+        Parse one path part and return (key, selector_kind, selector_value).
+        Supported selectors: [*], [index], [?(...)].
+        """
+        text = part.strip()
+        if not text:
+            return '', None, None
+        if '[' not in text or not text.endswith(']'):
+            return text, None, None
+        bracket_pos = text.find('[')
+        key = text[:bracket_pos].strip()
+        selector = text[bracket_pos + 1:-1].strip()
+        if selector == '*':
+            return key, 'wildcard', None
+        if re.fullmatch(r'-?\d+', selector):
+            return key, 'index', int(selector)
+        if selector.startswith('?(') and selector.endswith(')'):
+            return key, 'filter', selector[2:-1].strip()
+        return key, None, None
+
+    def _json_apply_selector(values, selector_kind, selector_value):
+        if selector_kind is None:
+            return values
+        selected = []
+        for value in values:
+            if selector_kind == 'wildcard':
+                if isinstance(value, list):
+                    selected.extend(value)
+                elif isinstance(value, dict):
+                    selected.extend(value.values())
+            elif selector_kind == 'index':
+                if isinstance(value, list):
+                    try:
+                        selected.append(value[selector_value])
+                    except Exception:
+                        pass
+            elif selector_kind == 'filter':
+                if isinstance(value, list):
+                    for item in value:
+                        if _json_item_matches_filter(item, selector_value):
+                            selected.append(item)
+                elif _json_item_matches_filter(value, selector_value):
+                    selected.append(value)
+        return selected
+
+    def _json_step(node, part):
+        key, selector_kind, selector_value = _json_parse_part(part)
+        lower_key = key.lower()
+        if isinstance(node, dict):
+            if key == '*':
+                matches = list(node.values())
+            elif key in node:
+                matches = [node[key]]
+            else:
+                # Convenience fallback: search this key recursively.
+                matches = _json_collect_key_values(node, key)
+            return _json_apply_selector(matches, selector_kind, selector_value)
+        if isinstance(node, list):
+            if key in ('*', '[]'):
+                matches = list(node)
+            elif lower_key == 'last':
+                matches = [node[-1]] if node else []
+            elif lower_key == 'first':
+                matches = [node[0]] if node else []
+            elif key == '':
+                matches = [node]
+            else:
+                try:
+                    matches = [node[int(key)]]
+                except Exception:
+                    matches = []
+                    for item in node:
+                        if isinstance(item, dict) and key in item:
+                            matches.append(item[key])
+                    if not matches:
+                        for item in node:
+                            if isinstance(item, (dict, list)):
+                                matches.extend(_json_step(item, key))
+            return _json_apply_selector(matches, selector_kind, selector_value)
+        return []
+
     def _json_extract_path_values(json_data, path):
-        parts = [part.strip() for part in path.split('.') if part.strip()]
+        path = _normalize_json_path(path)
+        parts = _json_split_path(path)
         if not parts:
             return []
         nodes = [json_data]
         for part in parts:
             next_nodes = []
-            lower_part = part.lower()
             for node in nodes:
-                node_matches = []
-                if isinstance(node, dict):
-                    if part == '*':
-                        node_matches.extend(node.values())
-                    elif part in node:
-                        node_matches.append(node[part])
-                    else:
-                        # Convenience fallback: search this key recursively.
-                        node_matches.extend(_json_collect_key_values(node, part))
-                elif isinstance(node, list):
-                    if part in ('*', '[]'):
-                        node_matches.extend(node)
-                    elif lower_part == 'last':
-                        if node:
-                            node_matches.append(node[-1])
-                    elif lower_part == 'first':
-                        if node:
-                            node_matches.append(node[0])
-                    else:
-                        try:
-                            node_matches.append(node[int(part)])
-                        except (ValueError, IndexError):
-                            for item in node:
-                                if isinstance(item, dict) and part in item:
-                                    node_matches.append(item[part])
-                            if not node_matches:
-                                for item in node:
-                                    node_matches.extend(_json_collect_key_values(item, part))
-                next_nodes.extend(node_matches)
+                next_nodes.extend(_json_step(node, part))
             if not next_nodes:
                 return []
             nodes = next_nodes
