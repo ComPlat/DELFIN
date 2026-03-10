@@ -15,6 +15,7 @@ This module parses:
 
 from __future__ import annotations
 
+import io
 import json
 import re
 from pathlib import Path
@@ -32,6 +33,129 @@ logger = get_logger(__name__)
 
 HARTREE_TO_EV = 27.211386245988
 HARTREE_TO_KJ_MOL = 2625.499639
+_ORCA_JOB_MARKER_RE = re.compile(
+    r"^\s*\$+\s+JOB\s+NUMBER\s+(\d+)\s+\$+\s*$",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+_ORCA_NEW_JOB_RE = re.compile(r"^\s*\$new_job\s*$", flags=re.IGNORECASE | re.MULTILINE)
+_ORCA_BASE_RE = re.compile(r'^\s*%base\s+"?([^"\n]+)"?\s*$', flags=re.IGNORECASE | re.MULTILINE)
+_ORCA_COORD_RE = re.compile(r"\*\s+xyz(?:file)?\s+(-?\d+)\s+(\d+)", flags=re.IGNORECASE)
+
+
+def _read_text_file(path: Path) -> Optional[str]:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to read %s: %s", path, exc)
+        return None
+
+
+def _split_orca_output_jobs(content: str) -> dict[int, str]:
+    markers = list(_ORCA_JOB_MARKER_RE.finditer(content))
+    if not markers:
+        return {1: content}
+
+    jobs: dict[int, str] = {}
+    first_marker = markers[0]
+    first_job_number = int(first_marker.group(1))
+    if first_job_number != 1 and first_marker.start() > 0:
+        jobs[1] = content[:first_marker.start()]
+
+    for idx, marker in enumerate(markers):
+        job_number = int(marker.group(1))
+        start = 0 if idx == 0 and job_number == 1 else marker.start()
+        end = markers[idx + 1].start() if idx + 1 < len(markers) else len(content)
+        jobs[job_number] = content[start:end]
+
+    return jobs
+
+
+def _split_orca_input_jobs(content: str) -> dict[int, str]:
+    blocks = _ORCA_NEW_JOB_RE.split(content)
+    return {idx + 1: block for idx, block in enumerate(blocks) if block.strip()}
+
+
+def _parse_orca_input_job_bases(inp_file: Path) -> dict[int, str]:
+    content = _read_text_file(inp_file)
+    if content is None:
+        return {}
+
+    bases: dict[int, str] = {}
+    for job_number, block in _split_orca_input_jobs(content).items():
+        match = _ORCA_BASE_RE.search(block)
+        if match:
+            bases[job_number] = match.group(1).strip()
+        elif job_number == 1:
+            bases[job_number] = inp_file.stem
+    return bases
+
+
+def _resolve_orca_job_number(
+    *,
+    inp_file: Optional[Path] = None,
+    job_base: Optional[str] = None,
+    job_number: Optional[int] = None,
+) -> Optional[int]:
+    if job_number is not None:
+        return job_number
+    if not job_base:
+        return None
+    if inp_file is None or not inp_file.exists():
+        return None
+
+    for current_job, base_name in _parse_orca_input_job_bases(inp_file).items():
+        if base_name.casefold() == job_base.casefold():
+            return current_job
+    return None
+
+
+def _extract_orca_output_job_text(
+    output_file: Path,
+    *,
+    inp_file: Optional[Path] = None,
+    job_base: Optional[str] = None,
+    job_number: Optional[int] = None,
+) -> tuple[Optional[str], Optional[int]]:
+    content = _read_text_file(output_file)
+    if content is None:
+        return None, None
+
+    if job_number is None and job_base is None:
+        return content, None
+
+    resolved_job = _resolve_orca_job_number(
+        inp_file=inp_file,
+        job_base=job_base,
+        job_number=job_number,
+    )
+    if resolved_job is None:
+        return None, None
+
+    return _split_orca_output_jobs(content).get(resolved_job), resolved_job
+
+
+def _extract_orca_input_job_text(
+    inp_file: Path,
+    *,
+    job_base: Optional[str] = None,
+    job_number: Optional[int] = None,
+) -> tuple[Optional[str], Optional[int]]:
+    content = _read_text_file(inp_file)
+    if content is None:
+        return None, None
+
+    if job_number is None and job_base is None:
+        return content, None
+
+    resolved_job = _resolve_orca_job_number(
+        inp_file=inp_file,
+        job_base=job_base,
+        job_number=job_number,
+    )
+    if resolved_job is None:
+        return None, None
+
+    return _split_orca_input_jobs(content).get(resolved_job), resolved_job
 
 
 def parse_delfin_txt(project_dir: Path) -> Dict[str, Any]:
@@ -412,16 +536,26 @@ def parse_tddft_settings(inp_file: Path) -> Dict[str, Any]:
     return settings
 
 
-def parse_charge_multiplicity(inp_file: Path) -> Optional[Dict[str, int]]:
+def parse_charge_multiplicity(
+    inp_file: Path,
+    *,
+    job_base: Optional[str] = None,
+    job_number: Optional[int] = None,
+) -> Optional[Dict[str, int]]:
     """Parse charge and multiplicity from an ORCA input file."""
     if not inp_file.exists():
         return None
 
     try:
-        with open(inp_file, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+        content, _ = _extract_orca_input_job_text(
+            inp_file,
+            job_base=job_base,
+            job_number=job_number,
+        )
+        if content is None:
+            return None
 
-        coord_match = re.search(r'\*\s+xyz\s+(-?\d+)\s+(\d+)', content)
+        coord_match = _ORCA_COORD_RE.search(content)
         if coord_match:
             return {
                 "charge": int(coord_match.group(1)),
@@ -438,7 +572,13 @@ def parse_orbitals_from_occuper(out_file: Path) -> Optional[Dict[str, Any]]:
     return parse_orbitals(out_file) if out_file.exists() else None
 
 
-def parse_scf_energy(output_file: Path) -> Optional[Dict[str, Any]]:
+def parse_scf_energy(
+    output_file: Path,
+    *,
+    inp_file: Optional[Path] = None,
+    job_base: Optional[str] = None,
+    job_number: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
     """Parse SCF energy from ORCA output file.
 
     Uses the last FINAL SINGLE POINT ENERGY before 'OPTIMIZATION RUN DONE'.
@@ -448,8 +588,14 @@ def parse_scf_energy(output_file: Path) -> Optional[Dict[str, Any]]:
         return None
 
     try:
-        with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+        content, _ = _extract_orca_output_job_text(
+            output_file,
+            inp_file=inp_file,
+            job_base=job_base,
+            job_number=job_number,
+        )
+        if content is None:
+            return None
 
         # Find position of optimization completion marker
         opt_done_match = re.search(r'\*\*\* OPTIMIZATION RUN DONE \*\*\*', content)
@@ -477,14 +623,26 @@ def parse_scf_energy(output_file: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
-def parse_thermochemistry(output_file: Path) -> Optional[Dict[str, Any]]:
+def parse_thermochemistry(
+    output_file: Path,
+    *,
+    inp_file: Optional[Path] = None,
+    job_base: Optional[str] = None,
+    job_number: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
     """Parse thermochemistry data from frequency calculation."""
     if not output_file.exists():
         return None
 
     try:
-        with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+        content, _ = _extract_orca_output_job_text(
+            output_file,
+            inp_file=inp_file,
+            job_base=job_base,
+            job_number=job_number,
+        )
+        if content is None:
+            return None
 
         thermo = {}
 
@@ -536,14 +694,26 @@ def parse_thermochemistry(output_file: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
-def parse_dipole_moment(output_file: Path) -> Optional[Dict[str, Any]]:
+def parse_dipole_moment(
+    output_file: Path,
+    *,
+    inp_file: Optional[Path] = None,
+    job_base: Optional[str] = None,
+    job_number: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
     """Parse permanent dipole moment from ORCA output."""
     if not output_file.exists():
         return None
 
     try:
-        with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+        content, _ = _extract_orca_output_job_text(
+            output_file,
+            inp_file=inp_file,
+            job_base=job_base,
+            job_number=job_number,
+        )
+        if content is None:
+            return None
 
         # Find the LAST dipole moment (after optimization)
         # Pattern matches:
@@ -576,14 +746,28 @@ def parse_dipole_moment(output_file: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
-def parse_orbitals(output_file: Path) -> Optional[Dict[str, Any]]:
+def parse_orbitals(
+    output_file: Path,
+    *,
+    inp_file: Optional[Path] = None,
+    job_base: Optional[str] = None,
+    job_number: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
     """Parse HOMO/LUMO energies from ORCA output (uses last orbital block)."""
     if not output_file.exists():
         return None
 
     try:
-        with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()
+        content, _ = _extract_orca_output_job_text(
+            output_file,
+            inp_file=inp_file,
+            job_base=job_base,
+            job_number=job_number,
+        )
+        if content is None:
+            return None
+
+        lines = content.splitlines(keepends=True)
 
         orbital_line_re = re.compile(
             r'^\s*(\d+)\s+([\d.]+)\s+([+\-]?\d*\.?\d+(?:[Ee][+\-]?\d+)?)\s+([+\-]?\d*\.?\d+(?:[Ee][+\-]?\d+)?)'
@@ -750,6 +934,74 @@ def parse_orbitals(output_file: Path) -> Optional[Dict[str, Any]]:
         logger.error(f"Error parsing orbitals from {output_file}: {e}")
 
     return None
+
+
+def parse_properties_of_interest_jobs(
+    output_file: Path,
+    inp_file: Path,
+    *,
+    reference_energy_hartree: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Parse IP/EA jobs appended to an ORCA input/output via ``$new_job``."""
+    if not output_file.exists() or not inp_file.exists():
+        return {}
+
+    properties: Dict[str, Any] = {}
+    for job_number, base_name in sorted(_parse_orca_input_job_bases(inp_file).items()):
+        base_upper = base_name.upper()
+        if base_upper.endswith("_IP"):
+            prop_name = "IP"
+        elif base_upper.endswith("_EA"):
+            prop_name = "EA"
+        else:
+            continue
+
+        entry: Dict[str, Any] = {
+            "job_number": job_number,
+            "base_name": base_name,
+            "source_output_file": output_file.name,
+            "source_input_file": inp_file.name,
+        }
+
+        cm_data = parse_charge_multiplicity(inp_file, job_number=job_number)
+        if cm_data:
+            entry["charge_multiplicity"] = cm_data
+
+        scf_data = parse_scf_energy(output_file, job_number=job_number)
+        if scf_data:
+            entry["scf_energy"] = scf_data
+
+        dipole = parse_dipole_moment(output_file, job_number=job_number)
+        if dipole:
+            entry["dipole_moment"] = dipole
+
+        orbitals = parse_orbitals(output_file, job_number=job_number)
+        if orbitals:
+            entry["orbitals"] = orbitals
+
+        if reference_energy_hartree is not None and scf_data:
+            if prop_name == "IP":
+                delta = scf_data["hartree"] - reference_energy_hartree
+                properties["IP_hartree"] = delta
+                properties["IP_eV"] = delta * HARTREE_TO_EV
+                entry["vertical_ionization_potential"] = {
+                    "hartree": delta,
+                    "eV": delta * HARTREE_TO_EV,
+                    "kJ_mol": delta * HARTREE_TO_KJ_MOL,
+                }
+            else:
+                delta = reference_energy_hartree - scf_data["hartree"]
+                properties["EA_hartree"] = delta
+                properties["EA_eV"] = delta * HARTREE_TO_EV
+                entry["vertical_electron_affinity"] = {
+                    "hartree": delta,
+                    "eV": delta * HARTREE_TO_EV,
+                    "kJ_mol": delta * HARTREE_TO_KJ_MOL,
+                }
+
+        properties[prop_name] = entry
+
+    return properties
 
 
 def parse_occupier_folder(folder: Path) -> Optional[Dict[str, Any]]:
@@ -1205,6 +1457,7 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         "internal_conversion": {},
         "fluorescence_rates": {},
         "phosphorescence_rates": {},
+        "properties_of_interest": {},
         "occupier": {},
         "photophysical_rates": {},
         "delfin_summary": delfin_summary,
@@ -1246,27 +1499,40 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
             "geometry_file": geometry_file,
         }
 
-        cm_data = parse_charge_multiplicity(s0_inp)
+        cm_data = parse_charge_multiplicity(s0_inp, job_number=1)
         if cm_data:
             data["ground_state_S0"]["optimization"].update(cm_data)
 
-        scf_data = parse_scf_energy(s0_out)
+        scf_data = parse_scf_energy(s0_out, job_number=1)
         if scf_data:
             data["ground_state_S0"]["optimization"].update(scf_data)
 
-        data["ground_state_S0"]["thermochemistry"] = parse_thermochemistry(s0_out)
-        data["ground_state_S0"]["orbitals"] = parse_orbitals(s0_out)
-        data["ground_state_S0"]["dipole_moment"] = parse_dipole_moment(s0_out)
+        data["ground_state_S0"]["thermochemistry"] = parse_thermochemistry(s0_out, job_number=1)
+        data["ground_state_S0"]["orbitals"] = parse_orbitals(s0_out, job_number=1)
+        data["ground_state_S0"]["dipole_moment"] = parse_dipole_moment(s0_out, job_number=1)
+
+        properties = parse_properties_of_interest_jobs(
+            s0_out,
+            s0_inp,
+            reference_energy_hartree=scf_data.get("hartree") if scf_data else None,
+        )
+        if properties:
+            data["properties_of_interest"]["S0"] = properties
 
         # Parse polarizability if available
         from delfin.parser import parse_polarizability
-        polarizability = parse_polarizability(s0_out)
+        s0_job_text, _ = _extract_orca_output_job_text(s0_out, job_number=1)
+        polarizability = None
+        if s0_job_text is not None:
+            polarizability = parse_polarizability(io.StringIO(s0_job_text))
         if polarizability:
             data["ground_state_S0"]["polarizability"] = polarizability
 
         # Parse hyperpolarizability if available
         from delfin.parser import parse_hyperpolarizability, calculate_beta_properties
-        beta_tensor = parse_hyperpolarizability(s0_out)
+        beta_tensor = None
+        if s0_job_text is not None:
+            beta_tensor = parse_hyperpolarizability(io.StringIO(s0_job_text))
         if beta_tensor:
             dipole = data["ground_state_S0"]["dipole_moment"] or {}
             dipole_x = dipole.get("x_au", 0.0)
@@ -1312,25 +1578,34 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
                 continue
 
             logger.info(f"Parsing {prefix} state step {step}")
+            inp_file = project_dir / f"{base}.inp"
             entry = {
                 "optimization": {
                     "converged": True,
                     "geometry_file": f"{base}.xyz"
                 },
-                "thermochemistry": parse_thermochemistry(out_file),
-                "orbitals": parse_orbitals(out_file),
-                "dipole_moment": parse_dipole_moment(out_file)
+                "thermochemistry": parse_thermochemistry(out_file, job_number=1),
+                "orbitals": parse_orbitals(out_file, job_number=1),
+                "dipole_moment": parse_dipole_moment(out_file, job_number=1)
             }
 
-            cm_data = parse_charge_multiplicity(project_dir / f"{base}.inp")
+            cm_data = parse_charge_multiplicity(inp_file, job_number=1)
             if cm_data:
                 entry["optimization"].update(cm_data)
 
-            scf_data = parse_scf_energy(out_file)
+            scf_data = parse_scf_energy(out_file, job_number=1)
             if scf_data:
                 entry["optimization"].update(scf_data)
 
             target_states[base] = entry
+
+            properties = parse_properties_of_interest_jobs(
+                out_file,
+                inp_file,
+                reference_energy_hartree=scf_data.get("hartree") if scf_data else None,
+            )
+            if properties:
+                data["properties_of_interest"][base] = properties
 
         # Legacy single-key exposure for step 1
         step1_key = f"{prefix}_step_1"

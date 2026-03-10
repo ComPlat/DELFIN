@@ -3702,8 +3702,7 @@ def create_tab(ctx):
         calc_back_btn.disabled = (state['current_path'] == '')
 
     def calc_update_report_btn():
-        current_dir = _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
-        calc_report_btn.disabled = not (current_dir / 'CONTROL.txt').exists()
+        calc_report_btn.disabled = not bool(calc_collect_report_targets(limit=1))
 
     def calc_update_download_btn():
         target = _calc_download_target_path()
@@ -5700,6 +5699,76 @@ def create_tab(ctx):
         # Fallback: still use the outermost CONTROL-bearing directory.
         return candidates[0]
 
+    def _calc_is_report_workspace(path):
+        if not path.is_dir() or not (path / 'CONTROL.txt').exists():
+            return False
+        return any(
+            (path / name).exists()
+            for name in (
+                'input.txt',
+                'start.txt',
+                'DELFIN.txt',
+                'DELFIN_Data.json',
+                'DELFIN.docx',
+                'report.docx',
+            )
+        )
+
+    def _calc_report_target_label(path):
+        try:
+            return str(path.relative_to(_calc_dir()))
+        except Exception:
+            return path.name or str(path)
+
+    def calc_collect_report_targets(limit=None):
+        current_dir = _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
+        workspace_root = calc_find_workspace_root(state['current_path']) if state['current_path'] else None
+        if workspace_root:
+            workspace_dir = _calc_dir() / workspace_root
+            if _calc_is_report_workspace(workspace_dir):
+                return [workspace_dir]
+
+        targets = []
+        seen = set()
+
+        def _add_target(path):
+            try:
+                resolved = path.resolve()
+            except Exception:
+                resolved = path
+            if resolved in seen:
+                return False
+            seen.add(resolved)
+            targets.append(path)
+            return True
+
+        if _calc_is_report_workspace(current_dir):
+            _add_target(current_dir)
+            if limit is not None and len(targets) >= limit:
+                return targets
+
+        try:
+            for control_path in current_dir.rglob('CONTROL.txt'):
+                candidate = control_path.parent
+                if not _calc_is_report_workspace(candidate):
+                    continue
+                if _add_target(candidate) and limit is not None and len(targets) >= limit:
+                    break
+        except Exception:
+            pass
+
+        try:
+            targets.sort(
+                key=lambda path: (
+                    len(path.relative_to(current_dir).parts),
+                    str(path).lower(),
+                )
+            )
+        except Exception:
+            targets.sort(key=lambda path: str(path).lower())
+
+        return targets
+
     # -- delete helpers -----------------------------------------------------
     def calc_delete_hide_confirm():
         state['delete_current'] = False
@@ -6354,6 +6423,13 @@ def create_tab(ctx):
 
     def calc_on_report(button):
         current_dir = _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
+        report_targets = calc_collect_report_targets()
+        if not report_targets:
+            calc_report_status.value = (
+                '<span style="color:#d32f2f;">No reportable DELFIN folders found here.</span>'
+            )
+            return
+
         dir_key = str(current_dir)
 
         if dir_key in state['report_running']:
@@ -6361,26 +6437,79 @@ def create_tab(ctx):
             return
 
         state['report_running'][dir_key] = True
-        calc_report_status.value = f'<span style="color:blue;">Generating report in {current_dir.name}...</span>'
+        if len(report_targets) == 1:
+            target_label = _calc_report_target_label(report_targets[0])
+            calc_report_status.value = (
+                f'<span style="color:blue;">Generating report in {target_label}...</span>'
+            )
+        else:
+            calc_report_status.value = (
+                f'<span style="color:blue;">Generating reports in {len(report_targets)} folders...</span>'
+            )
 
         def run_report():
+            successes = []
+            failures = []
+            timeouts = []
             try:
-                result = subprocess.run(
-                    ['delfin', '--report', 'docx'],
-                    cwd=str(current_dir),
-                    capture_output=True, text=True, timeout=600,
-                )
-                if result.returncode == 0:
-                    calc_report_status.value = f'<span style="color:green;">Report generated in {current_dir.name}!</span>'
-                else:
+                for idx, target_dir in enumerate(report_targets, start=1):
+                    target_label = _calc_report_target_label(target_dir)
+                    if len(report_targets) == 1:
+                        calc_report_status.value = (
+                            f'<span style="color:blue;">Generating report in {target_label}...</span>'
+                        )
+                    else:
+                        calc_report_status.value = (
+                            f'<span style="color:blue;">Generating report {idx}/{len(report_targets)} '
+                            f'in {target_label}...</span>'
+                        )
+
+                    try:
+                        result = subprocess.run(
+                            ['delfin', '--report', 'docx'],
+                            cwd=str(target_dir),
+                            capture_output=True, text=True, timeout=600,
+                        )
+                        if result.returncode == 0:
+                            successes.append(target_label)
+                        else:
+                            msg = (result.stderr or result.stdout or 'Unknown error').strip()
+                            failures.append((target_label, msg[:160]))
+                    except subprocess.TimeoutExpired:
+                        timeouts.append(target_label)
+                    except Exception as exc:
+                        failures.append((target_label, str(exc)[:160]))
+
+                if failures or timeouts:
+                    parts = []
+                    if successes:
+                        parts.append(f'{len(successes)} ok')
+                    if failures:
+                        parts.append(f'{len(failures)} failed')
+                    if timeouts:
+                        parts.append(f'{len(timeouts)} timeout')
+                    detail = ''
+                    if failures:
+                        detail = f' First error in {failures[0][0]}: {_html.escape(failures[0][1])}'
+                    elif timeouts:
+                        detail = f' Timeout in {timeouts[0]}.'
                     calc_report_status.value = (
-                        f'<span style="color:red;">Error in {current_dir.name}: '
-                        f'{_html.escape(result.stderr[:100])}</span>'
+                        f'<span style="color:#d32f2f;">Report run finished: {", ".join(parts)}.'
+                        f'{detail}</span>'
                     )
-            except subprocess.TimeoutExpired:
-                calc_report_status.value = f'<span style="color:red;">Timeout in {current_dir.name}</span>'
+                else:
+                    if len(successes) == 1:
+                        calc_report_status.value = (
+                            f'<span style="color:green;">Report generated in {successes[0]}!</span>'
+                        )
+                    else:
+                        calc_report_status.value = (
+                            f'<span style="color:green;">Reports generated in {len(successes)} folders!</span>'
+                        )
             except Exception as e:
-                calc_report_status.value = f'<span style="color:red;">Error: {_html.escape(str(e)[:100])}</span>'
+                calc_report_status.value = (
+                    f'<span style="color:red;">Error: {_html.escape(str(e)[:100])}</span>'
+                )
             finally:
                 state['report_running'].pop(dir_key, None)
 
