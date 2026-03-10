@@ -11,7 +11,10 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.copy_helpers import read_occupier_file, copy_preferred_files_with_names
-from delfin.esd_input_generator import append_reorganisation_energy_jobs
+from delfin.esd_input_generator import (
+    append_properties_of_interest_jobs,
+    append_reorganisation_energy_jobs,
+)
 from delfin.occupier_sequences import resolve_sequences_for_delta
 from delfin.imag import run_IMAG
 from delfin.orca import run_orca
@@ -694,9 +697,29 @@ def build_occupier_jobs(
     base_charge = context.charge
     neutral_multiplicity = _control_multiplicity("initial")
     functional = config.get('functional', 'ORCA')
+    esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
 
     # Cache OCCUPIER outcomes (multiplicity/broken_sym/index) for reuse by post-jobs
     occ_results: Dict[str, Dict[str, Any]] = config.setdefault('_occ_results_runtime', {})
+
+    def _filtered_neutral_properties() -> str:
+        calc_prop = str(config.get('calc_prop_of_interest', 'no')).strip().lower()
+        properties = config.get('properties_of_interest', '')
+        if calc_prop not in ('yes', 'true', '1', 'on') or not properties or esd_enabled:
+            return ''
+
+        ox_steps = _parse_step_list(config.get('oxidation_steps'))
+        red_steps = _parse_step_list(config.get('reduction_steps'))
+        prop_tokens = str(properties).strip()
+        prop_tokens = prop_tokens.strip('[]').replace("'", "").replace('"', '')
+        prop_set = {p.strip().upper() for p in prop_tokens.split(',') if p.strip()}
+
+        filtered_props = []
+        if 'IP' in prop_set and (not ox_steps or 1 in ox_steps):
+            filtered_props.append('IP')
+        if 'EA' in prop_set and (not red_steps or 1 in red_steps):
+            filtered_props.append('EA')
+        return ",".join(filtered_props)
 
     calc_initial_flag = str(config.get('calc_initial', 'yes')).strip().lower()
     xtb_solvator_enabled = str(config.get('XTB_SOLVATOR', 'no')).strip().lower() == 'yes'
@@ -768,6 +791,20 @@ def build_occupier_jobs(
                         broken_sym_val,
                     )
                     _update_pal_block(str(inp_initial), cores)
+                    neutral_properties = _filtered_neutral_properties()
+                    if neutral_properties:
+                        append_properties_of_interest_jobs(
+                            inp_file=str(inp_initial),
+                            xyz_file='initial.xyz',
+                            base_charge=base_charge,
+                            base_multiplicity=mult_val,
+                            properties=neutral_properties,
+                            config=config,
+                            solvent=solvent,
+                            metals=metals,
+                            main_basisset=main_basis,
+                            metal_basisset=metal_basis,
+                        )
 
                     # Add %moinp block to reuse OCCUPIER wavefunction
                     if not xtb_solvator_enabled and gbw_initial.exists():

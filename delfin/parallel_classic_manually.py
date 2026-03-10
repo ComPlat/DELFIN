@@ -1764,8 +1764,28 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
 
     base_charge = _parse_int(config.get('charge'))
     base_multiplicity = _parse_int(kwargs.get('ground_multiplicity'), fallback=1)
+    esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
 
     initial_job_id: Optional[str] = None
+
+    def _filtered_neutral_properties() -> str:
+        calc_prop = str(config.get('calc_prop_of_interest', 'no')).strip().lower()
+        properties = config.get('properties_of_interest', '')
+        if calc_prop not in ('yes', 'true', '1', 'on') or not properties or esd_enabled:
+            return ''
+
+        ox_steps = _parse_step_set(config.get('oxidation_steps'))
+        red_steps = _parse_step_set(config.get('reduction_steps'))
+        prop_tokens = str(properties).strip()
+        prop_tokens = prop_tokens.strip('[]').replace("'", "").replace('"', '')
+        prop_set = {p.strip().upper() for p in prop_tokens.split(',') if p.strip()}
+
+        filtered_props = []
+        if 'IP' in prop_set and (not ox_steps or 1 in ox_steps):
+            filtered_props.append('IP')
+        if 'EA' in prop_set and (not red_steps or 1 in red_steps):
+            filtered_props.append('EA')
+        return ",".join(filtered_props)
 
     def _add_job(job_id: str, description: str, work: Callable[[int], None],
                  dependencies: Optional[Set[str]] = None,
@@ -1803,6 +1823,20 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 broken_sym,
             )
             _update_pal_block(output_initial, cores)
+            neutral_properties = _filtered_neutral_properties()
+            if neutral_properties:
+                append_properties_of_interest_jobs(
+                    inp_file=output_initial,
+                    xyz_file='initial.xyz',
+                    base_charge=base_charge,
+                    base_multiplicity=base_multiplicity,
+                    properties=neutral_properties,
+                    config=config,
+                    solvent=solvents,
+                    metals=metals,
+                    main_basisset=main_basis,
+                    metal_basisset=metal_basis,
+                )
             if not run_orca(output_initial, 'initial.out', isolate=True):
                 raise RuntimeError('ORCA terminated abnormally for initial.out')
             run_IMAG(
@@ -2052,8 +2086,28 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
     include_excited = bool(kwargs.get('include_excited_jobs', False))
     base_charge = _parse_int(config.get('charge'))
     base_multiplicity = _parse_int(kwargs.get('ground_multiplicity'), fallback=1)
+    esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
     ground_broken_sym = kwargs.get('ground_broken_sym', '')
     initial_job_id: Optional[str] = None
+
+    def _filtered_neutral_properties() -> str:
+        calc_prop = str(config.get('calc_prop_of_interest', 'no')).strip().lower()
+        properties = config.get('properties_of_interest', '')
+        if calc_prop not in ('yes', 'true', '1', 'on') or not properties or esd_enabled:
+            return ''
+
+        ox_steps = _parse_step_set(config.get('oxidation_steps'))
+        red_steps = _parse_step_set(config.get('reduction_steps'))
+        prop_tokens = str(properties).strip()
+        prop_tokens = prop_tokens.strip('[]').replace("'", "").replace('"', '')
+        prop_set = {p.strip().upper() for p in prop_tokens.split(',') if p.strip()}
+
+        filtered_props = []
+        if 'IP' in prop_set and (not ox_steps or 1 in ox_steps):
+            filtered_props.append('IP')
+        if 'EA' in prop_set and (not red_steps or 1 in red_steps):
+            filtered_props.append('EA')
+        return ",".join(filtered_props)
 
     def _add_job(job_id: str, description: str, work: Callable[[int], None],
                  dependencies: Optional[Set[str]] = None,
@@ -2091,6 +2145,20 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 ground_broken_sym,
             )
             _update_pal_block(output_initial, cores)
+            neutral_properties = _filtered_neutral_properties()
+            if neutral_properties:
+                append_properties_of_interest_jobs(
+                    inp_file=output_initial,
+                    xyz_file='initial.xyz',
+                    base_charge=base_charge,
+                    base_multiplicity=base_multiplicity,
+                    properties=neutral_properties,
+                    config=config,
+                    solvent=solvents,
+                    metals=metals,
+                    main_basisset=main_basis,
+                    metal_basisset=metal_basis,
+                )
             if not run_orca(output_initial, 'initial.out', isolate=True):
                 raise RuntimeError('ORCA terminated abnormally for initial.out')
             run_IMAG(
