@@ -2685,3 +2685,81 @@ def append_properties_of_interest_jobs(
             f.write(f"\n* xyzfile {charge} {mult} {xyz_filename}\n")
 
     logger.info(f"Added {len(jobs_to_add)} properties_of_interest job(s) to {inp_file}")
+
+
+def append_reorganisation_energy_jobs(
+    inp_file: str,
+    neutral_charge: int,
+    neutral_multiplicity: int,
+    reorganisation_energy: Any,
+    config: Dict[str, Any],
+    solvent: str,
+    metals: List[str],
+    main_basisset: str,
+    metal_basisset: str,
+    mode: str,
+) -> None:
+    """Append a neutral single-point job for lambda_p or lambda_m to an existing input file."""
+    if not reorganisation_energy:
+        return
+
+    if isinstance(reorganisation_energy, (list, tuple)):
+        requested = [str(item).strip().upper() for item in reorganisation_energy if str(item).strip()]
+    else:
+        reorg_str = str(reorganisation_energy).strip()
+        reorg_str = reorg_str.strip('[]').replace("'", "").replace('"', '')
+        requested = [item.strip().upper() for item in reorg_str.split(',') if item.strip()]
+
+    aliases = {
+        "LAMDA_P": "LAMBDA_P",
+        "LAMDA_M": "LAMBDA_M",
+        "LAMBDA+": "LAMBDA_P",
+        "LAMBDA-": "LAMBDA_M",
+        "LAMDA+": "LAMBDA_P",
+        "LAMDA-": "LAMBDA_M",
+    }
+    requested_set = {aliases.get(item, item) for item in requested}
+
+    mode_key = str(mode or "").strip().upper()
+    if mode_key not in {"LAMBDA_P", "LAMBDA_M"} or mode_key not in requested_set:
+        return
+
+    functional = config.get('functional', 'PBE0')
+    disp_corr = config.get('disp_corr', 'D4')
+    ri_jkx = config.get('ri_jkx', 'RIJCOSX')
+    implicit_solvation = config.get('implicit_solvation_model', '')
+    pal = config.get('PAL', 6)
+    maxcore = config.get('maxcore', 6000)
+    maxiter = config.get('maxiter', 125)
+
+    solvation_kw = _build_solvation_keyword(implicit_solvation, solvent)
+    main_basis, metal_basis, rel_token, aux_jk = resolve_level_of_theory(
+        metals, config, main_basisset, metal_basisset
+    )
+
+    job_base = "E_n_cation" if mode_key == "LAMBDA_P" else "E_n_anion"
+    xyz_filename = f"{Path(inp_file).stem}.xyz"
+
+    logger.info("Adding reorganisation_energy job %s to %s", job_base, inp_file)
+
+    with open(inp_file, 'a', encoding='utf-8') as handle:
+        handle.write("\n$new_job\n")
+
+        keywords = [functional, rel_token, main_basis, disp_corr, ri_jkx, aux_jk]
+        if solvation_kw:
+            keywords.append(solvation_kw)
+        handle.write("! " + " ".join(k for k in keywords if str(k).strip()) + "\n")
+        handle.write(f'%base "{job_base}"\n')
+        handle.write(f"%pal nprocs {pal} end\n")
+        handle.write(f"%maxcore {maxcore}\n")
+        handle.write(f"%scf maxiter {maxiter} end\n")
+
+        if metals and metal_basis:
+            handle.write("\n%basis\n")
+            for metal in metals:
+                handle.write(f'  NewGTO {metal} "{metal_basis}" end\n')
+            handle.write("end\n")
+
+        handle.write(f"\n* xyzfile {neutral_charge} {neutral_multiplicity} {xyz_filename}\n")
+
+    logger.info("Added reorganisation_energy job %s to %s", job_base, inp_file)

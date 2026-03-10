@@ -1319,6 +1319,40 @@ def _as_properties_of_interest(value: Any) -> list[str] | str:
     return unique
 
 
+def _as_reorganisation_energy(value: Any) -> list[str] | str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, (list, tuple)):
+        items = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        text = str(value).strip()
+        if not text:
+            return ""
+        text = text.strip("[]").replace("'", "").replace('"', '')
+        items = [item.strip() for item in text.split(",") if item.strip()]
+
+    aliases = {
+        "LAMDA_P": "LAMBDA_P",
+        "LAMDA_M": "LAMBDA_M",
+        "LAMBDA+": "LAMBDA_P",
+        "LAMBDA-": "LAMBDA_M",
+        "LAMDA+": "LAMBDA_P",
+        "LAMDA-": "LAMBDA_M",
+    }
+    normalized = [aliases.get(item.upper(), item.upper()) for item in items]
+    for item in normalized:
+        if item not in {"LAMBDA_P", "LAMBDA_M"}:
+            raise ValueError("must be lambda_p, lambda_m, both, or empty")
+    seen = set()
+    unique = []
+    for item in normalized:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return unique
+
+
 def _as_ics(value: Any) -> list[str] | str:
     if value is None or value == "":
         return ""
@@ -1484,6 +1518,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("ESD_maxdim", _as_int, default=None, allow_none=True),
     FieldSpec("ESD_SOC", _as_yes_no, default="false"),
     FieldSpec("properties_of_interest", _as_properties_of_interest, default=""),
+    FieldSpec("reorganisation_energy", _as_reorganisation_energy, default=""),
     FieldSpec("ICs", _as_ics, default=""),
     FieldSpec("states", _as_states, default=""),
 )

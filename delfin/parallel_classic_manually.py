@@ -15,7 +15,10 @@ from typing import Any, Callable, Dict, Iterable, Optional, Set, List
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import PoolJob, JobPriority
-from delfin.esd_input_generator import append_properties_of_interest_jobs
+from delfin.esd_input_generator import (
+    append_properties_of_interest_jobs,
+    append_reorganisation_energy_jobs,
+)
 from delfin.global_manager import get_global_manager
 from delfin.orca import run_orca
 from delfin.imag import run_IMAG
@@ -1898,6 +1901,19 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                             main_basisset=main_basis,
                             metal_basisset=metal_basis,
                         )
+                    if calc_prop in ('yes', 'true', '1', 'on'):
+                        append_reorganisation_energy_jobs(
+                            inp_file=ox_inputs[idx],
+                            neutral_charge=base_charge,
+                            neutral_multiplicity=base_multiplicity,
+                            reorganisation_energy=config.get('reorganisation_energy', ''),
+                            config=config,
+                            solvent=solvents,
+                            metals=metals,
+                            main_basisset=main_basis,
+                            metal_basisset=metal_basis,
+                            mode='lambda_p',
+                        )
 
                 if not run_orca(ox_inputs[idx], ox_outputs[idx], isolate=True):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
@@ -1980,6 +1996,19 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                             metals=metals,
                             main_basisset=main_basis,
                             metal_basisset=metal_basis,
+                        )
+                    if calc_prop in ('yes', 'true', '1', 'on'):
+                        append_reorganisation_energy_jobs(
+                            inp_file=red_inputs[idx],
+                            neutral_charge=base_charge,
+                            neutral_multiplicity=base_multiplicity,
+                            reorganisation_energy=config.get('reorganisation_energy', ''),
+                            config=config,
+                            solvent=solvents,
+                            metals=metals,
+                            main_basisset=main_basis,
+                            metal_basisset=metal_basis,
+                            mode='lambda_m',
                         )
 
                 if not run_orca(red_inputs[idx], red_outputs[idx], isolate=True):
@@ -2160,6 +2189,19 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                             main_basisset=main_basis,
                             metal_basisset=metal_basis,
                         )
+                    if calc_prop in ('yes', 'true', '1', 'on'):
+                        append_reorganisation_energy_jobs(
+                            inp_file=ox_inputs[idx],
+                            neutral_charge=base_charge,
+                            neutral_multiplicity=base_multiplicity,
+                            reorganisation_energy=config.get('reorganisation_energy', ''),
+                            config=config,
+                            solvent=solvents,
+                            metals=metals,
+                            main_basisset=main_basis,
+                            metal_basisset=metal_basis,
+                            mode='lambda_p',
+                        )
 
                 if not run_orca(ox_inputs[idx], ox_outputs[idx], isolate=True):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
@@ -2242,6 +2284,19 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                             metals=metals,
                             main_basisset=main_basis,
                             metal_basisset=metal_basis,
+                        )
+                    if calc_prop in ('yes', 'true', '1', 'on'):
+                        append_reorganisation_energy_jobs(
+                            inp_file=red_inputs[idx],
+                            neutral_charge=base_charge,
+                            neutral_multiplicity=base_multiplicity,
+                            reorganisation_energy=config.get('reorganisation_energy', ''),
+                            config=config,
+                            solvent=solvents,
+                            metals=metals,
+                            main_basisset=main_basis,
+                            metal_basisset=metal_basis,
+                            mode='lambda_m',
                         )
 
                 if not run_orca(red_inputs[idx], red_outputs[idx], isolate=True):

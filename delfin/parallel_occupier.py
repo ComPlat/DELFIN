@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.copy_helpers import read_occupier_file, copy_preferred_files_with_names
+from delfin.esd_input_generator import append_reorganisation_energy_jobs
 from delfin.occupier_sequences import resolve_sequences_for_delta
 from delfin.imag import run_IMAG
 from delfin.orca import run_orca
@@ -691,6 +692,7 @@ def build_occupier_jobs(
     metal_basis = context.metal_basisset
     main_basis = context.main_basisset
     base_charge = context.charge
+    neutral_multiplicity = _control_multiplicity("initial")
     functional = config.get('functional', 'ORCA')
 
     # Cache OCCUPIER outcomes (multiplicity/broken_sym/index) for reuse by post-jobs
@@ -945,6 +947,21 @@ def build_occupier_jobs(
                         elif xtb_solvator_enabled and gbw_ox.exists():
                             logger.debug("[occupier_ox%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
 
+                        calc_prop = str(config.get('calc_prop_of_interest', 'no')).strip().lower()
+                        if idx == 1 and calc_prop in ('yes', 'true', '1', 'on'):
+                            append_reorganisation_energy_jobs(
+                                inp_file=str(inp_abs),
+                                neutral_charge=base_charge,
+                                neutral_multiplicity=neutral_multiplicity,
+                                reorganisation_energy=config.get('reorganisation_energy', ''),
+                                config=config,
+                                solvent=solvent,
+                                metals=metals,
+                                main_basisset=main_basis,
+                                metal_basisset=metal_basis,
+                                mode='lambda_p',
+                            )
+
                     # Collect dependency files for isolation
                     ox_deps = None
                     if gbw_ox.exists() and not xtb_solvator_enabled:
@@ -1112,6 +1129,21 @@ def build_occupier_jobs(
                             logger.info("[occupier_red%d] Using GBW from OCCUPIER: %s", idx, gbw_red)
                         elif xtb_solvator_enabled and gbw_red.exists():
                             logger.debug("[occupier_red%d] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled", idx)
+
+                        calc_prop = str(config.get('calc_prop_of_interest', 'no')).strip().lower()
+                        if idx == 1 and calc_prop in ('yes', 'true', '1', 'on'):
+                            append_reorganisation_energy_jobs(
+                                inp_file=str(inp_abs),
+                                neutral_charge=base_charge,
+                                neutral_multiplicity=neutral_multiplicity,
+                                reorganisation_energy=config.get('reorganisation_energy', ''),
+                                config=config,
+                                solvent=solvent,
+                                metals=metals,
+                                main_basisset=main_basis,
+                                metal_basisset=metal_basis,
+                                mode='lambda_m',
+                            )
 
                     red_deps = None
                     if gbw_red.exists() and not xtb_solvator_enabled:

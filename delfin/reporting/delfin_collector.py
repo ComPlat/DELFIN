@@ -42,6 +42,20 @@ _ORCA_BASE_RE = re.compile(r'^\s*%base\s+"?([^"\n]+)"?\s*$', flags=re.IGNORECASE
 _ORCA_COORD_RE = re.compile(r"\*\s+xyz(?:file)?\s+(-?\d+)\s+(\d+)", flags=re.IGNORECASE)
 
 
+def _energy_payload(energy_hartree: float) -> Dict[str, float]:
+    return {
+        "hartree": energy_hartree,
+        "eV": energy_hartree * HARTREE_TO_EV,
+        "kJ_mol": energy_hartree * HARTREE_TO_KJ_MOL,
+    }
+
+
+def _scf_energies_from_job_content(content: str) -> list[float]:
+    opt_done_match = re.search(r'\*\*\* OPTIMIZATION RUN DONE \*\*\*', content)
+    search_content = content[:opt_done_match.start()] if opt_done_match else content
+    return [float(match) for match in re.findall(r'FINAL SINGLE POINT ENERGY\s+([-\d.]+)', search_content)]
+
+
 def _read_text_file(path: Path) -> Optional[str]:
     try:
         return path.read_text(encoding="utf-8", errors="ignore")
@@ -597,28 +611,41 @@ def parse_scf_energy(
         if content is None:
             return None
 
-        # Find position of optimization completion marker
-        opt_done_match = re.search(r'\*\*\* OPTIMIZATION RUN DONE \*\*\*', content)
-        if opt_done_match:
-            # Only consider energies before optimization completion
-            search_content = content[:opt_done_match.start()]
-        else:
-            # No optimization marker - use entire file
-            search_content = content
-
-        # Find all FINAL SINGLE POINT ENERGY entries in search region
-        energy_matches = re.findall(r'FINAL SINGLE POINT ENERGY\s+([-\d.]+)', search_content)
-
+        energy_matches = _scf_energies_from_job_content(content)
         if energy_matches:
-            # Use last FSPE before OPTIMIZATION RUN DONE
-            energy_hartree = float(energy_matches[-1])
-            return {
-                "hartree": energy_hartree,
-                "eV": energy_hartree * HARTREE_TO_EV,
-                "kJ_mol": energy_hartree * HARTREE_TO_KJ_MOL
-            }
+            return _energy_payload(energy_matches[-1])
     except Exception as e:
         logger.error(f"Error parsing SCF energy from {output_file}: {e}")
+
+    return None
+
+
+def parse_first_scf_energy(
+    output_file: Path,
+    *,
+    inp_file: Optional[Path] = None,
+    job_base: Optional[str] = None,
+    job_number: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Parse the first FINAL SINGLE POINT ENERGY of an ORCA job."""
+    if not output_file.exists():
+        return None
+
+    try:
+        content, _ = _extract_orca_output_job_text(
+            output_file,
+            inp_file=inp_file,
+            job_base=job_base,
+            job_number=job_number,
+        )
+        if content is None:
+            return None
+
+        energy_matches = _scf_energies_from_job_content(content)
+        if energy_matches:
+            return _energy_payload(energy_matches[0])
+    except Exception as e:
+        logger.error(f"Error parsing first SCF energy from {output_file}: {e}")
 
     return None
 
@@ -1002,6 +1029,81 @@ def parse_properties_of_interest_jobs(
         properties[prop_name] = entry
 
     return properties
+
+
+def parse_reorganisation_energy_jobs(
+    output_file: Path,
+    inp_file: Path,
+    *,
+    neutral_reference_energy_hartree: Optional[float] = None,
+    neutral_reference_output_file: Optional[str] = None,
+    neutral_reference_input_file: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Parse lambda_p/lambda_m jobs appended to red_step_1/ox_step_1 inputs."""
+    if not output_file.exists() or not inp_file.exists():
+        return {}
+
+    modes = {
+        "E_N_CATION": ("lambda_p", "cation"),
+        "E_N_ANION": ("lambda_m", "anion"),
+    }
+
+    reorganisation: Dict[str, Any] = {}
+    for job_number, base_name in sorted(_parse_orca_input_job_bases(inp_file).items()):
+        mode_info = modes.get(base_name.upper())
+        if mode_info is None:
+            continue
+
+        lambda_key, charged_label = mode_info
+        charged_at_neutral = parse_first_scf_energy(output_file, job_number=1)
+        charged_optimized = parse_scf_energy(output_file, job_number=1)
+        neutral_at_charged = parse_scf_energy(output_file, job_number=job_number)
+
+        entry: Dict[str, Any] = {
+            "job_number": job_number,
+            "base_name": base_name,
+            "source_output_file": output_file.name,
+            "source_input_file": inp_file.name,
+            "charged_geometry_file": f"{inp_file.stem}.xyz",
+        }
+
+        cm_data = parse_charge_multiplicity(inp_file, job_number=job_number)
+        if cm_data:
+            entry["charge_multiplicity"] = cm_data
+
+        if neutral_reference_output_file:
+            entry["neutral_reference_output_file"] = neutral_reference_output_file
+        if neutral_reference_input_file:
+            entry["neutral_reference_input_file"] = neutral_reference_input_file
+
+        if charged_at_neutral:
+            entry[f"{charged_label}_at_neutral_geometry"] = charged_at_neutral
+        if charged_optimized:
+            entry[f"{charged_label}_optimized"] = charged_optimized
+        if neutral_at_charged:
+            entry[f"neutral_at_{charged_label}_geometry"] = neutral_at_charged
+        if neutral_reference_energy_hartree is not None:
+            entry["neutral_optimized"] = _energy_payload(neutral_reference_energy_hartree)
+
+        charged_term = None
+        if charged_at_neutral and charged_optimized:
+            charged_term = charged_at_neutral["hartree"] - charged_optimized["hartree"]
+            entry["charged_relaxation_term"] = _energy_payload(charged_term)
+
+        neutral_term = None
+        if neutral_at_charged and neutral_reference_energy_hartree is not None:
+            neutral_term = neutral_at_charged["hartree"] - neutral_reference_energy_hartree
+            entry["neutral_relaxation_term"] = _energy_payload(neutral_term)
+
+        if charged_term is not None and neutral_term is not None:
+            total = charged_term + neutral_term
+            reorganisation[f"{lambda_key}_hartree"] = total
+            reorganisation[f"{lambda_key}_eV"] = total * HARTREE_TO_EV
+            entry["total"] = _energy_payload(total)
+
+        reorganisation[lambda_key] = entry
+
+    return reorganisation
 
 
 def parse_occupier_folder(folder: Path) -> Optional[Dict[str, Any]]:
@@ -1458,6 +1560,7 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         "fluorescence_rates": {},
         "phosphorescence_rates": {},
         "properties_of_interest": {},
+        "reorganisation_energy": {},
         "occupier": {},
         "photophysical_rates": {},
         "delfin_summary": delfin_summary,
@@ -1476,6 +1579,10 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     ir_data = parse_ir_spectrum_data(project_dir)
     if ir_data:
         data["vibrational_frequencies"] = ir_data
+
+    neutral_reference_energy_hartree: Optional[float] = None
+    neutral_reference_output_file: Optional[str] = None
+    neutral_reference_input_file: Optional[str] = None
 
     # Parse S0 (fallback to initial.out if S0.out is missing)
     s0_candidates = [
@@ -1506,6 +1613,9 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         scf_data = parse_scf_energy(s0_out, job_number=1)
         if scf_data:
             data["ground_state_S0"]["optimization"].update(scf_data)
+            neutral_reference_energy_hartree = scf_data.get("hartree")
+            neutral_reference_output_file = s0_out.name
+            neutral_reference_input_file = s0_inp.name
 
         data["ground_state_S0"]["thermochemistry"] = parse_thermochemistry(s0_out, job_number=1)
         data["ground_state_S0"]["orbitals"] = parse_orbitals(s0_out, job_number=1)
@@ -1614,6 +1724,19 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
 
     parse_charged_series("ox", data["oxidized_states"], "oxidized_state")
     parse_charged_series("red", data["reduced_states"], "reduced_state")
+
+    for step1_base in ("ox_step_1", "red_step_1"):
+        out_file = project_dir / f"{step1_base}.out"
+        inp_file = project_dir / f"{step1_base}.inp"
+        reorganisation = parse_reorganisation_energy_jobs(
+            out_file,
+            inp_file,
+            neutral_reference_energy_hartree=neutral_reference_energy_hartree,
+            neutral_reference_output_file=neutral_reference_output_file,
+            neutral_reference_input_file=neutral_reference_input_file,
+        )
+        if reorganisation:
+            data["reorganisation_energy"].update(reorganisation)
 
     # Compute redox potentials from Gibbs energies (if possible)
     gibbs_energies = collect_gibbs_energies(project_dir)

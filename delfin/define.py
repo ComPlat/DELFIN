@@ -33,6 +33,7 @@ IMAG_optimize_candidates=no
 ------------------------------------
 calc_prop_of_interest=no
 properties_of_interest=IP,EA
+reorganisation_energy=lambda_p,lambda_m
 ------------------------------------
 Redox steps:
 calc_initial=yes
