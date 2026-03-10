@@ -106,6 +106,7 @@ def create_tab(ctx):
         'rmsd_saved_display': {},
         'clipboard_move': [],
         'rename_source_path': '',
+        'duplicate_source_path': '',
         'preselect': {
             'active': False,
             'entries': [],
@@ -147,6 +148,10 @@ def create_tab(ctx):
     calc_select_btn = widgets.Button(
         description='☑ Select',
         layout=widgets.Layout(width='76px', height='26px'),
+    )
+    calc_duplicate_btn = widgets.Button(
+        description='Duplicate',
+        layout=widgets.Layout(width='96px', height='26px'),
     )
 
     # Detect whether we are inside the Archive tab (calc_dir == archiv_dir)
@@ -252,6 +257,29 @@ def create_tab(ctx):
             calc_rename_prompt_input,
             calc_rename_prompt_ok_btn,
             calc_rename_prompt_cancel_btn,
+        ],
+        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+    )
+    calc_duplicate_prompt_label = widgets.HTML('<b>Duplicate:</b>')
+    calc_duplicate_prompt_input = widgets.Text(
+        placeholder='Duplicate folder name',
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
+    )
+    calc_duplicate_prompt_yes_btn = widgets.Button(
+        description='Yes',
+        button_style='primary',
+        layout=widgets.Layout(width='56px', height='26px'),
+    )
+    calc_duplicate_prompt_cancel_btn = widgets.Button(
+        description='Cancel',
+        layout=widgets.Layout(width='78px', height='26px'),
+    )
+    calc_duplicate_prompt_row = widgets.HBox(
+        [
+            calc_duplicate_prompt_label,
+            calc_duplicate_prompt_input,
+            calc_duplicate_prompt_yes_btn,
+            calc_duplicate_prompt_cancel_btn,
         ],
         layout=widgets.Layout(display='none', gap='6px', align_items='center'),
     )
@@ -1344,6 +1372,32 @@ def create_tab(ctx):
                 return src
         raise ValueError('Select one item or navigate into a folder to rename it.')
 
+    def _calc_collect_duplicate_source():
+        forced_src = _calc_take_forced_action_source()
+        if forced_src is not None:
+            src = forced_src
+        else:
+            labels = _calc_selected_labels()
+            if len(labels) > 1:
+                raise ValueError('Select exactly one folder to duplicate.')
+            if labels:
+                name = _calc_label_to_name(labels[0])
+                if not name:
+                    raise ValueError('Invalid selection.')
+                src = _calc_current_dir() / name
+                if not src.exists():
+                    raise ValueError('Selected folder not found.')
+            elif (not state['select_mode']) and state['current_path']:
+                src = _calc_current_dir()
+                if not src.exists() or src.resolve() == _calc_dir().resolve():
+                    raise ValueError('Select one folder or open a folder to duplicate it.')
+            else:
+                raise ValueError('Select one folder or open a folder to duplicate it.')
+        src_resolved = _calc_resolve_within_root(src)
+        if not src_resolved.is_dir():
+            raise ValueError('Duplicate works only for folders.')
+        return src_resolved
+
     def _calc_refresh_listing_preserve_filter():
         saved_filter = calc_folder_search.value
         calc_list_directory()
@@ -1355,6 +1409,9 @@ def create_tab(ctx):
         state['rename_source_path'] = ''
         calc_rename_prompt_input.value = ''
         calc_rename_prompt_row.layout.display = 'none'
+        state['duplicate_source_path'] = ''
+        calc_duplicate_prompt_input.value = ''
+        calc_duplicate_prompt_row.layout.display = 'none'
 
     def _calc_clipboard_paths():
         raw_paths = state.get('clipboard_move') or []
@@ -7312,6 +7369,7 @@ def create_tab(ctx):
 
     def calc_on_explorer_start_rename(button=None):
         try:
+            _calc_hide_rename_prompt()
             src = _calc_collect_rename_source()
             src_resolved = _calc_resolve_within_root(src)
             state['rename_source_path'] = str(src_resolved)
@@ -7325,6 +7383,21 @@ def create_tab(ctx):
                 color='#d32f2f',
             )
 
+    def calc_on_explorer_start_duplicate(button=None):
+        try:
+            _calc_hide_rename_prompt()
+            src_resolved = _calc_collect_duplicate_source()
+            state['duplicate_source_path'] = str(src_resolved)
+            calc_duplicate_prompt_input.value = src_resolved.name
+            calc_duplicate_prompt_row.layout.display = 'flex'
+            _calc_set_ops_status('Adjust folder name and confirm with Yes.', color='#555')
+        except Exception as exc:
+            _calc_hide_rename_prompt()
+            _calc_set_ops_status(
+                f'Duplicate failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
     def calc_on_explorer_rename_ok(button=None):
         src_raw = str(state.get('rename_source_path') or '').strip()
         if not src_raw:
@@ -7333,7 +7406,9 @@ def create_tab(ctx):
         try:
             src_path = _calc_resolve_within_root(Path(src_raw))
             current_dir = _calc_current_dir().resolve()
-            if src_path.parent.resolve() != current_dir:
+            source_parent = src_path.parent.resolve()
+            source_is_current_dir = src_path.resolve() == current_dir
+            if source_parent != current_dir and not source_is_current_dir:
                 raise ValueError('Open the source folder before confirming rename.')
             calc_action_source_input.value = src_path.name
             calc_rename_input.value = calc_rename_prompt_input.value
@@ -7345,6 +7420,47 @@ def create_tab(ctx):
                 f'Rename failed: {_html.escape(str(exc))}',
                 color='#d32f2f',
             )
+
+    def calc_on_explorer_duplicate_yes(button=None):
+        src_raw = str(state.get('duplicate_source_path') or '').strip()
+        if not src_raw:
+            _calc_set_ops_status('No folder prepared for duplicate.', color='#d32f2f')
+            return
+        try:
+            src_path = _calc_resolve_within_root(Path(src_raw))
+            if not src_path.is_dir():
+                raise ValueError('Duplicate works only for folders.')
+            current_dir = _calc_current_dir().resolve()
+            source_parent = src_path.parent.resolve()
+            source_is_current_dir = src_path.resolve() == current_dir
+            if source_parent != current_dir and not source_is_current_dir:
+                raise ValueError('Open the source folder before confirming duplicate.')
+            new_name = _calc_clean_item_name(calc_duplicate_prompt_input.value)
+            dst = _calc_resolve_within_root(src_path.parent / new_name)
+            if dst.exists():
+                raise ValueError(f'Target already exists: {new_name}')
+            shutil.copytree(str(src_path), str(dst))
+            calc_file_list.value = None
+            calc_multi_select.value = ()
+            _calc_hide_rename_prompt()
+            if source_is_current_dir:
+                message = (
+                    f'Duplicated to <code>{_html.escape(new_name)}</code>. '
+                    'Go up one level to see it.'
+                )
+            else:
+                message = f'Duplicated to <code>{_html.escape(new_name)}</code>.'
+            _calc_set_ops_status(message, color='#2e7d32')
+            _calc_refresh_listing_preserve_filter()
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Duplicate failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def calc_on_explorer_duplicate_cancel(button=None):
+        _calc_hide_rename_prompt()
+        _calc_set_ops_status('Duplicate canceled.', color='#555')
 
     def calc_on_explorer_rename_cancel(button=None):
         _calc_hide_rename_prompt()
@@ -8645,10 +8761,13 @@ def create_tab(ctx):
     calc_move_archive_no_btn.on_click(calc_on_move_archive_no)
     calc_explorer_new_btn.on_click(calc_on_explorer_new_folder)
     calc_explorer_rename_btn.on_click(calc_on_explorer_start_rename)
+    calc_duplicate_btn.on_click(calc_on_explorer_start_duplicate)
     calc_explorer_cut_btn.on_click(calc_on_explorer_cut)
     calc_explorer_paste_btn.on_click(calc_on_explorer_paste)
     calc_rename_prompt_ok_btn.on_click(calc_on_explorer_rename_ok)
     calc_rename_prompt_cancel_btn.on_click(calc_on_explorer_rename_cancel)
+    calc_duplicate_prompt_yes_btn.on_click(calc_on_explorer_duplicate_yes)
+    calc_duplicate_prompt_cancel_btn.on_click(calc_on_explorer_duplicate_cancel)
     calc_new_folder_btn.on_click(calc_on_new_folder)
     calc_rename_btn.on_click(calc_on_rename)
     calc_move_btn.on_click(calc_on_move_items)
@@ -8665,6 +8784,11 @@ def create_tab(ctx):
     if hasattr(calc_rename_prompt_input, 'on_submit'):
         try:
             calc_rename_prompt_input.on_submit(calc_on_explorer_rename_ok)
+        except Exception:
+            pass
+    if hasattr(calc_duplicate_prompt_input, 'on_submit'):
+        try:
+            calc_duplicate_prompt_input.on_submit(calc_on_explorer_duplicate_yes)
         except Exception:
             pass
     if _is_archive_tab:
@@ -9002,7 +9126,7 @@ def create_tab(ctx):
             ),
         ),
         widgets.HBox(
-            [calc_select_btn, *_archive_selection_children],
+            [calc_select_btn, calc_duplicate_btn, *_archive_selection_children],
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden',
                 justify_content='flex-start', gap='6px',
@@ -9018,6 +9142,7 @@ def create_tab(ctx):
             ),
         ),
         calc_rename_prompt_row,
+        calc_duplicate_prompt_row,
         widgets.VBox(
             [calc_new_folder_input, calc_new_folder_btn, calc_rename_input, calc_rename_btn,
              calc_move_target_input, calc_action_source_input, calc_move_btn],
