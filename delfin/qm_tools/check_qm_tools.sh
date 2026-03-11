@@ -22,25 +22,25 @@ check_prog() {
 
   case "${prog}" in
     xtb)
-      "${path}" --version 2>/dev/null | sed -n '1,10p'
+      "${path}" --version 2>/dev/null | sed -n '1,10p' || true
       ;;
     crest)
-      "${path}" --version 2>/dev/null | sed -n '1,12p'
+      "${path}" --version 2>/dev/null | sed -n '1,12p' || true
       ;;
     orca)
       strings "${path}" | rg -m 1 "Program Version" || true
       ;;
     std2)
-      "${path}" 2>&1 | sed -n '1,18p'
+      "${path}" 2>&1 | sed -n '1,18p' || true
       ;;
     stda)
-      "${path}" 2>&1 | sed -n '1,18p'
+      "${path}" 2>&1 | sed -n '1,18p' || true
       ;;
     xtb4stda)
-      "${path}" 2>&1 | sed -n '1,20p'
+      "${path}" 2>&1 | sed -n '1,20p' || true
       ;;
     dftb+)
-      "${path}" --version 2>&1 | sed -n '1,16p'
+      "${path}" --version 2>&1 | sed -n '1,16p' || true
       ;;
     *)
       ;;
