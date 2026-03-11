@@ -1673,6 +1673,8 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
     # Plot ISC and rISC arrows
     isc_data = data.get("intersystem_crossing", {}) or {}
     ic_data = data.get("internal_conversion", {}) or {}
+    fluor_data = data.get("fluorescence_rates", {}) or {}
+    phosp_data = data.get("phosphorescence_rates", {}) or {}
 
     def _parse_transition(key: str):
         """Parse transition key like 'S1_T1', 'S1>T1', or 'S1>T1(Ms=0)'."""
@@ -1691,7 +1693,7 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
 
     def _get_rate_value(rec: Dict[str, Any]) -> Optional[float]:
         """Best-effort extraction of a transition rate for labeling."""
-        for k in ("total_rate_s1", "rate_s1", "rate"):
+        for k in ("total_rate_s1", "rate_s1", "rate_mean_s1", "rate"):
             val = rec.get(k)
             if val is not None:
                 try:
@@ -1721,6 +1723,10 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
     for trans_key, trans_data in isc_data.items():
         init_state, final_state = _parse_transition(trans_key)
         if not init_state or not final_state:
+            continue
+
+        rate = _get_rate_value(trans_data)
+        if rate is None:
             continue
 
         # IMPORTANT: Only draw arrows between states that actually exist in the diagram
@@ -1794,11 +1800,9 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
                        arrowprops=dict(arrowstyle='->', color=color, lw=1.5, alpha=0.6))
 
         # Collect rate label for top-right display
-        rate = _get_rate_value(trans_data)
-        if rate is not None:
-            # Format: k(ISC, S1→T1) = 5.2e+06 s⁻¹
-            label_text = f"$k$({trans_type}, ${init_state}$→${final_state}$) = {rate:.1e} s$^{{-1}}$"
-            rate_labels.append((label_text, color))
+        # Format: k(ISC, S1→T1) = 5.2e+06 s⁻¹
+        label_text = f"$k$({trans_type}, ${init_state}$→${final_state}$) = {rate:.1e} s$^{{-1}}$"
+        rate_labels.append((label_text, color))
 
     # Plot IC (internal conversion) connectors within the same multiplicity lane (S->S, T->T)
     ic_bidirectional = set()
@@ -1813,6 +1817,10 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
     for trans_key, trans_data in ic_data.items():
         init_state, final_state = _parse_transition(trans_key)
         if not init_state or not final_state:
+            continue
+
+        rate = _get_rate_value(trans_data)
+        if rate is None:
             continue
 
         # Only draw arrows between states that exist in the diagram
@@ -1864,10 +1872,103 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
         )
 
         # Collect rate label for top-right display (append under ISC/rISC)
+        label_text = f"$k$(IC, ${init_state}$→${final_state}$) = {rate:.1e} s$^{{-1}}$"
+        rate_labels.append((label_text, color))
+
+    # Plot fluorescence (radiative) as dashed arrows within the singlet lane.
+    for trans_key, trans_data in fluor_data.items():
+        init_state, final_state = _parse_transition(trans_key)
+        if not init_state or not final_state:
+            continue
+
         rate = _get_rate_value(trans_data)
-        if rate is not None:
-            label_text = f"$k$(IC, ${init_state}$→${final_state}$) = {rate:.1e} s$^{{-1}}$"
-            rate_labels.append((label_text, color))
+        if rate is None:
+            continue
+
+        init_energy = state_energy_map.get(init_state)
+        final_energy = state_energy_map.get(final_state)
+        if init_energy is None or final_energy is None:
+            logger.warning(
+                "Skipping fluorescence %s: state not in diagram (init=%s exists=%s, final=%s exists=%s)",
+                trans_key,
+                init_state,
+                init_energy is not None,
+                final_state,
+                final_energy is not None,
+            )
+            continue
+
+        if not (init_state.startswith("S") and final_state.startswith("S")):
+            continue
+        if "S" not in lane_positions:
+            continue
+
+        arrow_key = f"FLUOR_{init_state}_{final_state}"
+        if arrow_key in drawn_arrows:
+            continue
+        drawn_arrows.add(arrow_key)
+
+        color = transition_colors[color_idx % len(transition_colors)]
+        color_idx += 1
+
+        x_mid = lane_positions["S"]
+        ax.annotate(
+            '',
+            xy=(x_mid, final_energy),
+            xytext=(x_mid, init_energy),
+            arrowprops=dict(arrowstyle='->', color=color, lw=1.7, alpha=0.7, linestyle='--'),
+        )
+
+        label_text = f"$k$(Fluor, ${init_state}$→${final_state}$) = {rate:.1e} s$^{{-1}}$"
+        rate_labels.append((label_text, color))
+
+    # Plot phosphorescence (radiative) as dashed arrows from triplet to singlet.
+    for trans_key, trans_data in phosp_data.items():
+        init_state, final_state = _parse_transition(trans_key)
+        if not init_state or not final_state:
+            continue
+
+        rate = _get_rate_value(trans_data)
+        if rate is None:
+            continue
+
+        init_energy = state_energy_map.get(init_state)
+        final_energy = state_energy_map.get(final_state)
+        if init_energy is None or final_energy is None:
+            logger.warning(
+                "Skipping phosphorescence %s: state not in diagram (init=%s exists=%s, final=%s exists=%s)",
+                trans_key,
+                init_state,
+                init_energy is not None,
+                final_state,
+                final_energy is not None,
+            )
+            continue
+
+        if not (init_state.startswith("T") and final_state.startswith("S")):
+            continue
+        if "S" not in lane_positions or "T" not in lane_positions:
+            continue
+
+        arrow_key = f"PHOSP_{init_state}_{final_state}"
+        if arrow_key in drawn_arrows:
+            continue
+        drawn_arrows.add(arrow_key)
+
+        color = transition_colors[color_idx % len(transition_colors)]
+        color_idx += 1
+
+        x_s = lane_positions["S"] + line_width
+        x_t = lane_positions["T"] - line_width
+        ax.annotate(
+            '',
+            xy=(x_s, final_energy),
+            xytext=(x_t, init_energy),
+            arrowprops=dict(arrowstyle='->', color=color, lw=1.7, alpha=0.7, linestyle='--'),
+        )
+
+        label_text = f"$k$(Phosp, ${init_state}$→${final_state}$) = {rate:.1e} s$^{{-1}}$"
+        rate_labels.append((label_text, color))
 
     # Display rate constants in top-right corner (in axes coordinates to avoid overlap)
     if rate_labels:
@@ -1899,7 +2000,7 @@ def _create_energy_level_plot(data: Dict[str, Any], output_path: Path) -> Option
     # Legend removed - each ISC/rISC transition has its own color and label
 
     ax.set_title(
-        "Energy Level Diagram (Optimized State Energies with ISC/rISC/IC rates)",
+        "Energy Level Diagram (Optimized State Energies with ISC/rISC/IC/radiative rates)",
         fontsize=14,
         fontweight='bold',
         pad=24,
