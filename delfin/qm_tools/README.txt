@@ -12,6 +12,11 @@ What is inside
   - xtb4stda
   - stda_v1.6.1
   - stda -> stda_v1.6.1
+- Runtime support files downloaded into qm_tools/share/xtb4stda:
+  - .xtb4stdarc
+  - .param_stda1.xtb
+  - .param_stda2.xtb
+  - GBSA parameter files used by xtb4stda
 - Local entry points to already verified system tools:
   - xtb
   - crest
@@ -25,6 +30,8 @@ Why some tools are symlinked instead of copied
 
 Activation
 - source delfin/qm_tools/env.sh
+- env.sh may create/use a short compatibility link at ~/.delfin_xtb4stda
+  because xtb4stda can fail with very long runtime paths.
 
 Installer
 - delfin/qm_tools/install_qm_tools.sh

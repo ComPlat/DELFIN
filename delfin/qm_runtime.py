@@ -182,6 +182,34 @@ def check_tools(names: Optional[Sequence[str]] = None) -> list[tuple[str, Option
     return results
 
 
+def _resolve_xtb4stda_home(root: Path) -> str:
+    existing = os.environ.get("XTB4STDAHOME")
+    if existing:
+        return existing
+
+    default_home = root / "share" / "xtb4stda"
+    if not default_home.exists():
+        return str(default_home)
+
+    default_str = str(default_home)
+    if len(default_str) <= 60:
+        return default_str
+
+    short_home = Path.home() / ".delfin_xtb4stda"
+    try:
+        if short_home.is_dir() and (short_home / ".param_stda1.xtb").exists():
+            return str(short_home)
+        if not short_home.exists() or short_home.is_symlink():
+            if short_home.is_symlink() or short_home.exists():
+                short_home.unlink()
+            short_home.symlink_to(default_home)
+            return str(short_home)
+    except OSError as exc:
+        logger.debug("Failed to prepare short xtb4stda runtime path: %s", exc)
+
+    return default_str
+
+
 def _prepare_tool_environment(extra_env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
     env = os.environ.copy()
     root = get_qm_tools_root()
@@ -190,7 +218,7 @@ def _prepare_tool_environment(extra_env: Optional[Mapping[str, str]] = None) -> 
     env["PATH"] = bin_dir if not current_path else f"{bin_dir}{os.pathsep}{current_path}"
     share_xtb4stda = root / "share" / "xtb4stda"
     if share_xtb4stda.exists():
-        env.setdefault("XTB4STDAHOME", str(share_xtb4stda))
+        env.setdefault("XTB4STDAHOME", _resolve_xtb4stda_home(root))
     env.setdefault("STD2HOME", str(root))
     env.setdefault("OMP_STACKSIZE", "4G")
     if extra_env:
@@ -209,15 +237,17 @@ def run_tool(
     text: bool = True,
     stdout=None,
     stderr=None,
+    track_process: bool = False,
 ) -> subprocess.CompletedProcess:
     resolved = resolve_tool(name)
     if resolved is None:
         raise FileNotFoundError(f"QM tool not found: {name}")
 
     cmd = [resolved.path, *[str(arg) for arg in args]]
+    env_map = _prepare_tool_environment(env)
     run_kwargs = {
         "cwd": str(cwd) if cwd is not None else None,
-        "env": _prepare_tool_environment(env),
+        "env": env_map,
         "check": check,
         "text": text,
     }
@@ -228,4 +258,62 @@ def run_tool(
         run_kwargs["stderr"] = stderr
 
     logger.info("Running QM tool %s from %s: %s", resolved.canonical_name, resolved.source, cmd)
-    return subprocess.run(cmd, **run_kwargs)
+    if not track_process:
+        return subprocess.run(cmd, **run_kwargs)
+
+    popen_kwargs = {
+        "cwd": run_kwargs["cwd"],
+        "env": env_map,
+        "text": text,
+        "start_new_session": True,
+    }
+    if capture_output:
+        popen_kwargs["stdout"] = subprocess.PIPE
+        popen_kwargs["stderr"] = subprocess.PIPE
+    else:
+        popen_kwargs["stdout"] = stdout
+        popen_kwargs["stderr"] = stderr
+
+    manager = None
+    registration_token = None
+    try:
+        from delfin.global_manager import get_global_manager
+
+        manager = get_global_manager()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to acquire global manager for %s: %s", resolved.canonical_name, exc)
+
+    process = subprocess.Popen(cmd, **popen_kwargs)
+    if manager is not None:
+        try:
+            registration_token = manager.register_subprocess(
+                process,
+                label=" ".join(cmd[:2]),
+                cwd=run_kwargs["cwd"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to register QM tool subprocess %s: %s", resolved.canonical_name, exc)
+
+    try:
+        stdout_data, stderr_data = process.communicate()
+    finally:
+        if manager is not None:
+            try:
+                manager.unregister_subprocess(registration_token)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Failed to unregister QM tool subprocess %s: %s", resolved.canonical_name, exc)
+
+    result = subprocess.CompletedProcess(
+        cmd,
+        process.returncode,
+        stdout_data if capture_output else None,
+        stderr_data if capture_output else None,
+    )
+    if check and process.returncode != 0:
+        raise subprocess.CalledProcessError(
+            process.returncode,
+            cmd,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result

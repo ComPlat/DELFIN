@@ -257,6 +257,12 @@ def _run_qm_run_subcommand(argv: list[str]) -> int:
     return int(result.returncode)
 
 
+def _run_tadf_xtb_subcommand(argv: list[str]) -> int:
+    from .tadf_xtb import run_cli as run_tadf_xtb_cli
+
+    return run_tadf_xtb_cli(argv)
+
+
 _SAFE_FILE_NAMES: set[str] = {
     "DELFIN.txt",
     "OCCUPIER.txt",
@@ -1076,6 +1082,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_qm_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "qm_run":
         return _run_qm_run_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "tadf_xtb":
+        return _run_tadf_xtb_subcommand(arg_list[1:])
 
     _load_full_cli_dependencies()
 

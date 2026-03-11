@@ -6,11 +6,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${ROOT}/bin"
 DOWNLOAD_DIR="${ROOT}/downloads"
 BUILD_DIR="${ROOT}/build"
+SHARE_DIR="${ROOT}/share"
+XTB4STDA_SHARE_DIR="${SHARE_DIR}/xtb4stda"
 MAMBA_ENV="${ROOT}/.mamba_env"
 ORCA_LOCAL_DIR="${ROOT}/third_party/orca"
 
 XTB4STDA_URL="${XTB4STDA_URL:-https://github.com/grimme-lab/xtb4stda/releases/download/v1.0/xtb4stda}"
 STDA_URL="${STDA_URL:-https://github.com/grimme-lab/xtb4stda/releases/download/v1.0/stda_v1.6.1}"
+XTB4STDA_RUNTIME_BASE_URL="${XTB4STDA_RUNTIME_BASE_URL:-https://raw.githubusercontent.com/grimme-lab/xtb4stda/master}"
 STD2_TAG="${STD2_TAG:-v2.0.1}"
 STD2_SRC_URL="${STD2_SRC_URL:-https://github.com/grimme-lab/std2/archive/refs/tags/${STD2_TAG}.tar.gz}"
 
@@ -37,7 +40,7 @@ have() {
 }
 
 ensure_dirs() {
-  mkdir -p "${BIN_DIR}" "${DOWNLOAD_DIR}" "${BUILD_DIR}" "${ROOT}/third_party" "${ROOT}/docs" "${ROOT}/logs"
+  mkdir -p "${BIN_DIR}" "${DOWNLOAD_DIR}" "${BUILD_DIR}" "${SHARE_DIR}" "${XTB4STDA_SHARE_DIR}" "${ROOT}/third_party" "${ROOT}/docs" "${ROOT}/logs"
 }
 
 download_file() {
@@ -141,9 +144,30 @@ install_dftbplus() {
 install_xtb4stda_bundle() {
   local xtb4stda_dl="${DOWNLOAD_DIR}/xtb4stda"
   local stda_dl="${DOWNLOAD_DIR}/stda_v1.6.1"
+  local runtime_files=(
+    ".xtb4stdarc"
+    ".param_stda1.xtb"
+    ".param_stda2.xtb"
+    ".param_gbsa_acetone"
+    ".param_gbsa_acetonitrile"
+    ".param_gbsa_benzene"
+    ".param_gbsa_ch2cl2"
+    ".param_gbsa_chcl3"
+    ".param_gbsa_cs2"
+    ".param_gbsa_dmso"
+    ".param_gbsa_ether"
+    ".param_gbsa_h2o"
+    ".param_gbsa_methanol"
+    ".param_gbsa_thf"
+    ".param_gbsa_toluene"
+  )
+  local runtime_file
 
   download_file "${XTB4STDA_URL}" "${xtb4stda_dl}"
   download_file "${STDA_URL}" "${stda_dl}"
+  for runtime_file in "${runtime_files[@]}"; do
+    download_file "${XTB4STDA_RUNTIME_BASE_URL}/${runtime_file}" "${XTB4STDA_SHARE_DIR}/${runtime_file}"
+  done
 
   install_file_into_bin "${xtb4stda_dl}" xtb4stda
   install_file_into_bin "${stda_dl}" stda_v1.6.1
@@ -209,6 +233,7 @@ summary() {
       printf "  %-12s %s\n" "${prog}" "missing"
     fi
   done
+  printf "  %-12s %s\n" "xtb4stda-data" "${XTB4STDA_SHARE_DIR}"
   printf "  %-12s %s\n" "orca" "not managed by this installer"
   printf "\n"
   printf "Activate with:\n"

@@ -4,6 +4,25 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="${ROOT}/bin"
+XTB4STDA_RUNTIME_ROOT="${XTB4STDAHOME:-${ROOT}/share/xtb4stda}"
+
+check_xtb4stda_runtime() {
+  local required=(
+    ".xtb4stdarc"
+    ".param_stda1.xtb"
+    ".param_stda2.xtb"
+  )
+  local file
+
+  for file in "${required[@]}"; do
+    if [[ ! -f "${XTB4STDA_RUNTIME_ROOT}/${file}" ]]; then
+      printf "%-12s MISSING %s\n" "xtb4stda-data" "${XTB4STDA_RUNTIME_ROOT}/${file}"
+      return 1
+    fi
+  done
+
+  printf "%-12s OK      %s\n" "xtb4stda-data" "${XTB4STDA_RUNTIME_ROOT}"
+}
 
 print_header() {
   printf "\n== %s ==\n" "$1"
@@ -37,6 +56,7 @@ check_prog() {
       "${path}" 2>&1 | sed -n '1,18p' || true
       ;;
     xtb4stda)
+      check_xtb4stda_runtime
       "${path}" 2>&1 | sed -n '1,20p' || true
       ;;
     dftb+)
