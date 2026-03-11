@@ -7,6 +7,7 @@ Usage::
 """
 
 import importlib
+import html
 import shutil
 import subprocess
 import sys
@@ -213,9 +214,23 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         description='PULL DELFIN', button_style='info',
         layout=widgets.Layout(width='150px'),
     )
+    rollback_delfin_btn = widgets.Button(
+        description='HEAD -1', button_style='warning',
+        layout=widgets.Layout(width='110px'),
+    )
+    git_status_label = widgets.HTML(value='')
     pull_delfin_output = widgets.Output()
 
     orca_version_label = _build_orca_version_widget(orca_base, orca_candidates)
+
+    def refresh_git_status_label():
+        rd = ctx.repo_dir
+        if not rd or not Path(rd).exists():
+            git_status_label.value = '<span style="color:#666;">git: repo n/a</span>'
+            return
+        git_status_label.value = _format_git_status_html(rd)
+
+    refresh_git_status_label()
 
     def handle_pull_delfin(button):
         with pull_delfin_output:
@@ -236,9 +251,66 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             except Exception as e:
                 print(f'Error: {e}')
             finally:
+                refresh_git_status_label()
                 ctx.set_busy(False)
 
     pull_delfin_btn.on_click(handle_pull_delfin)
+
+    def handle_rollback_delfin(button):
+        with pull_delfin_output:
+            clear_output()
+            rd = ctx.repo_dir
+            if not rd or not Path(rd).exists():
+                print(f'Repo path not found: {rd}')
+                return
+            ctx.set_busy(True)
+            try:
+                status_result = subprocess.run(
+                    ['git', '-C', str(rd), 'status', '--porcelain'],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, check=False,
+                )
+                if status_result.returncode != 0:
+                    print(status_result.stdout.strip() or 'git status failed')
+                    return
+                if status_result.stdout.strip():
+                    print('Rollback aborted: working tree is not clean.')
+                    print('Please commit, stash, or discard local changes first.')
+                    return
+
+                old_head = subprocess.run(
+                    ['git', '-C', str(rd), 'rev-parse', '--short', 'HEAD'],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, check=False,
+                )
+                target_head = subprocess.run(
+                    ['git', '-C', str(rd), 'rev-parse', '--short', 'HEAD~1'],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, check=False,
+                )
+                if target_head.returncode != 0:
+                    print(target_head.stdout.strip() or 'No previous commit available.')
+                    return
+
+                print(
+                    'Rolling DELFIN back one commit: '
+                    f"{old_head.stdout.strip() or 'HEAD'} -> {target_head.stdout.strip()}"
+                )
+                result = subprocess.run(
+                    ['git', '-C', str(rd), 'reset', '--hard', 'HEAD~1'],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, check=False,
+                )
+                print(result.stdout.strip() or '(no output)')
+                if result.returncode == 0:
+                    _force_reload_delfin()
+            except Exception as e:
+                print(f'Error: {e}')
+            finally:
+                refresh_git_status_label()
+                ctx.set_busy(False)
+
+    rollback_delfin_btn.on_click(handle_rollback_delfin)
 
     # -- display -----------------------------------------------------------
     display(widgets.VBox([
@@ -249,7 +321,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 f'DELFIN Dashboard ({backend_label})</h2>'
             ),
             widgets.HBox(
-                [busy_indicator, pull_delfin_btn, orca_version_label],
+                [busy_indicator, git_status_label, pull_delfin_btn, rollback_delfin_btn, orca_version_label],
                 layout=widgets.Layout(
                     margin='0 0 0 12px', align_items='center', gap='8px',
                 ),
@@ -312,6 +384,67 @@ def _force_reload_delfin():
         importlib.reload(delfin.config)
     except Exception:
         pass
+
+
+def _run_git_capture(repo_dir, *args):
+    """Run git in the given repo and return the completed process."""
+    return subprocess.run(
+        ['git', '-C', str(repo_dir), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+
+
+def _format_git_status_html(repo_dir):
+    """Build a compact HTML summary of the current repo position."""
+    result = _run_git_capture(repo_dir, 'status', '--porcelain=2', '--branch')
+    if result.returncode != 0:
+        message = result.stdout.strip() or 'git status failed'
+        return f'<span style="color:#b71c1c;">git: {html.escape(message)}</span>'
+
+    branch = '?'
+    head_short = '?'
+    ahead = 0
+    behind = 0
+
+    for line in result.stdout.splitlines():
+        if line.startswith('# branch.head '):
+            branch = line.removeprefix('# branch.head ').strip()
+        elif line.startswith('# branch.ab '):
+            parts = line.removeprefix('# branch.ab ').strip().split()
+            for part in parts:
+                if part.startswith('+'):
+                    try:
+                        ahead = int(part[1:])
+                    except ValueError:
+                        ahead = 0
+                elif part.startswith('-'):
+                    try:
+                        behind = int(part[1:])
+                    except ValueError:
+                        behind = 0
+
+    head_result = _run_git_capture(repo_dir, 'rev-parse', '--short', 'HEAD')
+    if head_result.returncode == 0 and head_result.stdout.strip():
+        head_short = head_result.stdout.strip()
+
+    parts = [f'{branch} @{head_short}']
+    if ahead:
+        parts.append(f'ahead {ahead}')
+    if behind:
+        parts.append(f'behind {behind}')
+    if not ahead and not behind:
+        parts.append('synced')
+
+    color = '#455a64'
+    text = ' | '.join(parts)
+    return (
+        f'<span style="font-family:monospace; color:{color}; '
+        f'padding:2px 6px; border:1px solid #cfd8dc; border-radius:4px;">'
+        f'{html.escape(text)}</span>'
+    )
 
 
 def _find_submit_templates_dir(notebook_dir):
