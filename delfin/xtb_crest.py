@@ -5,6 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from .orca import run_orca
+from .qm_runtime import find_tool_executable, run_tool
 from .xyz_io import modify_file2
 from . import smart_recalc
 
@@ -166,11 +167,25 @@ def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="start.txt
         # CREST laufen lassen
         env = os.environ.copy()
         env["OMP_NUM_THREADS"] = str(PAL)
+        crest_executable = find_tool_executable("crest")
+        if not crest_executable:
+            logging.error("CREST executable not found via DELFIN QM runtime.")
+            return
         try:
             with crest_out.open("w", encoding="utf-8") as log_file:
-                subprocess.run(
-                    ["crest", "initial_opt.xyz", "--chrg", str(charge), "--uhf", str(max(0, multiplicity - 1)), "--gbsa", solvent],
-                    check=True, env=env, cwd=str(work), stdout=log_file, stderr=subprocess.STDOUT
+                run_tool(
+                    "crest",
+                    [
+                        "initial_opt.xyz",
+                        "--chrg", str(charge),
+                        "--uhf", str(max(0, multiplicity - 1)),
+                        "--gbsa", solvent,
+                    ],
+                    check=True,
+                    env=env,
+                    cwd=str(work),
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
                 )
         except subprocess.CalledProcessError as e:
             logging.error("CREST failed: %s", e)

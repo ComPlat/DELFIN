@@ -7,42 +7,117 @@ import shutil
 import signal
 import sys
 import time
+from functools import lru_cache
 from pathlib import Path
 
 from dataclasses import asdict
 from typing import Optional
-from delfin.common.logging import configure_logging, get_logger, add_file_handler
-from delfin.common.paths import get_runtime_dir, resolve_path
-from delfin.cluster_utils import auto_configure_resources
-from delfin.global_manager import get_global_manager
-from .define import create_control_file
-from .cleanup import cleanup_all, cleanup_orca
-from .config import read_control_file, get_E_ref
-from .utils import search_transition_metals, resolve_level_of_theory, calculate_total_electrons_txt, get_git_commit_info
-from .orca import run_orca, cleanup_orca_scratch_dir
-from .xtb_crest import XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
-from .reporting import (
-    generate_summary_report_DELFIN as generate_summary_report,
-    generate_esd_report,
-)
-from .reporting.delfin_collector import save_esd_data_json
-from .cli_helpers import _build_parser
-from .cli_recalc import setup_recalc_mode, patch_modules_for_recalc
-from .cli_banner import print_delfin_banner, validate_required_files
-from .pipeline import (
-    FileBundle,
-    PipelineContext,
-    compute_summary,
-    interpret_method_alias,
-    normalize_input_file,
-    run_classic_phase,
-    run_manual_phase,
-    run_occuper_phase,
-    run_esd_phase,
-)
-from .copy_helpers import extract_preferred_spin, read_occupier_file
+from delfin.common.logging import configure_logging, get_logger
+from delfin.common.paths import resolve_path
+from .qm_runtime import check_tools as check_qm_tools, get_qm_tools_root, run_tool as run_qm_tool
 
 logger = get_logger(__name__)
+
+_FULL_CLI_IMPORTS_LOADED = False
+
+
+def _load_full_cli_dependencies() -> None:
+    global _FULL_CLI_IMPORTS_LOADED
+    global add_file_handler, get_runtime_dir
+    global auto_configure_resources, get_global_manager
+    global create_control_file, cleanup_all, cleanup_orca
+    global read_control_file, get_E_ref
+    global search_transition_metals, resolve_level_of_theory, calculate_total_electrons_txt, get_git_commit_info
+    global run_orca, cleanup_orca_scratch_dir
+    global XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
+    global generate_summary_report, generate_esd_report, save_esd_data_json
+    global _build_parser, setup_recalc_mode, patch_modules_for_recalc
+    global print_delfin_banner, validate_required_files
+    global PipelineContext, compute_summary, interpret_method_alias
+    global normalize_input_file, run_classic_phase, run_manual_phase, run_occuper_phase, run_esd_phase
+    global extract_preferred_spin, read_occupier_file
+
+    if _FULL_CLI_IMPORTS_LOADED:
+        return
+
+    from delfin.common.logging import add_file_handler as _add_file_handler
+    from delfin.common.paths import get_runtime_dir as _get_runtime_dir
+    from delfin.cluster_utils import auto_configure_resources as _auto_configure_resources
+    from delfin.global_manager import get_global_manager as _get_global_manager
+    from .define import create_control_file as _create_control_file
+    from .cleanup import cleanup_all as _cleanup_all, cleanup_orca as _cleanup_orca
+    from .config import read_control_file as _read_control_file, get_E_ref as _get_E_ref
+    from .utils import (
+        search_transition_metals as _search_transition_metals,
+        resolve_level_of_theory as _resolve_level_of_theory,
+        calculate_total_electrons_txt as _calculate_total_electrons_txt,
+        get_git_commit_info as _get_git_commit_info,
+    )
+    from .orca import run_orca as _run_orca, cleanup_orca_scratch_dir as _cleanup_orca_scratch_dir
+    from .xtb_crest import (
+        XTB as _XTB,
+        XTB_GOAT as _XTB_GOAT,
+        run_crest_workflow as _run_crest_workflow,
+        XTB_SOLVATOR as _XTB_SOLVATOR,
+    )
+    from .reporting import (
+        generate_summary_report_DELFIN as _generate_summary_report,
+        generate_esd_report as _generate_esd_report,
+    )
+    from .reporting.delfin_collector import save_esd_data_json as _save_esd_data_json
+    from .cli_helpers import _build_parser as __build_parser
+    from .cli_recalc import setup_recalc_mode as _setup_recalc_mode, patch_modules_for_recalc as _patch_modules_for_recalc
+    from .cli_banner import print_delfin_banner as _print_delfin_banner, validate_required_files as _validate_required_files
+    from .pipeline import (
+        PipelineContext as _PipelineContext,
+        compute_summary as _compute_summary,
+        interpret_method_alias as _interpret_method_alias,
+        normalize_input_file as _normalize_input_file,
+        run_classic_phase as _run_classic_phase,
+        run_manual_phase as _run_manual_phase,
+        run_occuper_phase as _run_occuper_phase,
+        run_esd_phase as _run_esd_phase,
+    )
+    from .copy_helpers import extract_preferred_spin as _extract_preferred_spin, read_occupier_file as _read_occupier_file
+
+    add_file_handler = _add_file_handler
+    get_runtime_dir = _get_runtime_dir
+    auto_configure_resources = _auto_configure_resources
+    get_global_manager = _get_global_manager
+    create_control_file = _create_control_file
+    cleanup_all = _cleanup_all
+    cleanup_orca = _cleanup_orca
+    read_control_file = _read_control_file
+    get_E_ref = _get_E_ref
+    search_transition_metals = _search_transition_metals
+    resolve_level_of_theory = _resolve_level_of_theory
+    calculate_total_electrons_txt = _calculate_total_electrons_txt
+    get_git_commit_info = _get_git_commit_info
+    run_orca = _run_orca
+    cleanup_orca_scratch_dir = _cleanup_orca_scratch_dir
+    XTB = _XTB
+    XTB_GOAT = _XTB_GOAT
+    run_crest_workflow = _run_crest_workflow
+    XTB_SOLVATOR = _XTB_SOLVATOR
+    generate_summary_report = _generate_summary_report
+    generate_esd_report = _generate_esd_report
+    save_esd_data_json = _save_esd_data_json
+    _build_parser = __build_parser
+    setup_recalc_mode = _setup_recalc_mode
+    patch_modules_for_recalc = _patch_modules_for_recalc
+    print_delfin_banner = _print_delfin_banner
+    validate_required_files = _validate_required_files
+    PipelineContext = _PipelineContext
+    compute_summary = _compute_summary
+    interpret_method_alias = _interpret_method_alias
+    normalize_input_file = _normalize_input_file
+    run_classic_phase = _run_classic_phase
+    run_manual_phase = _run_manual_phase
+    run_occuper_phase = _run_occuper_phase
+    run_esd_phase = _run_esd_phase
+    extract_preferred_spin = _extract_preferred_spin
+    read_occupier_file = _read_occupier_file
+    _FULL_CLI_IMPORTS_LOADED = True
 
 _STEP_FILE_SUFFIXES: tuple[str, ...] = (
     ".inp",
@@ -71,8 +146,11 @@ _STEP_FILE_SUFFIXES: tuple[str, ...] = (
 )
 
 
-def _build_step_bases() -> set[str]:
+@lru_cache(maxsize=1)
+def _get_step_file_patterns() -> tuple[set[str], set[str]]:
     """Collect base filenames that DELFIN routinely generates."""
+    from .pipeline import FileBundle
+
     bundle = asdict(FileBundle())
     bases: set[str] = {Path(value).stem for value in bundle.values()}
     # Additional artifacts not covered by FileBundle
@@ -82,29 +160,102 @@ def _build_step_bases() -> set[str]:
     occ_steps.extend(f"red_step_{idx}" for idx in range(1, 4))
     for token in occ_steps:
         bases.add(f"input_{token}_OCCUPIER")
-    return bases
+    step_file_names = {
+        f"{base}{suffix}" for base in bases for suffix in _STEP_FILE_SUFFIXES
+    }
+    step_file_glob_patterns = {
+        pattern.format(base=base)
+        for base in bases
+        for pattern in (
+            "{base}.bibtex",
+            "{base}.densities",
+            "{base}.property.txt",
+            "{base}.property",
+            "{base}.hess*",
+            "{base}_trj.xyz",
+            "{base}_trj*.xyz",
+            "{base}.*.*",        # Catches files like red_step_1.B.24.tmp, red_step_1.gpot0.tmp, etc.
+            "{base}.bas*",       # ORCA basis set files (bas0, bas1, bas2, etc.)
+        )
+    }
+    return step_file_names, step_file_glob_patterns
 
 
-_STEP_FILE_BASES = _build_step_bases()
-_STEP_FILE_NAMES = {
-    f"{base}{suffix}" for base in _STEP_FILE_BASES for suffix in _STEP_FILE_SUFFIXES
-}
-
-_STEP_FILE_GLOB_PATTERNS = {
-    pattern.format(base=base)
-    for base in _STEP_FILE_BASES
-    for pattern in (
-        "{base}.bibtex",
-        "{base}.densities",
-        "{base}.property.txt",
-        "{base}.property",
-        "{base}.hess*",
-        "{base}_trj.xyz",
-        "{base}_trj*.xyz",
-        "{base}.*.*",        # Catches files like red_step_1.B.24.tmp, red_step_1.gpot0.tmp, etc.
-        "{base}.bas*",       # ORCA basis set files (bas0, bas1, bas2, etc.)
+def _run_qm_check_subcommand(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="delfin qm_check",
+        description="Inspect DELFIN QM tool resolution for qm_tools and PATH.",
     )
-}
+    parser.add_argument(
+        "tools",
+        nargs="*",
+        default=[],
+        help="Optional subset of tools to check.",
+    )
+    args = parser.parse_args(argv)
+
+    names = args.tools or None
+    print(f"qm_tools root: {get_qm_tools_root()}")
+    for name, resolved in check_qm_tools(names):
+        if resolved is None:
+            print(f"{name}: MISSING")
+        else:
+            print(f"{name}: {resolved.path} [{resolved.source}]")
+    return 0
+
+
+def _run_qm_run_subcommand(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="delfin qm_run",
+        description="Run one QM tool through DELFIN's shared qm_tools/PATH resolver.",
+    )
+    parser.add_argument("tool", help="Tool name, e.g. xtb, crest, xtb4stda, std2, stda, dftb+.")
+    parser.add_argument(
+        "--cwd",
+        default=".",
+        help="Working directory for the tool process (default: current directory).",
+    )
+    parser.add_argument(
+        "--capture",
+        action="store_true",
+        help="Capture stdout/stderr and print them after completion.",
+    )
+    parser.add_argument(
+        "tool_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments passed to the tool. Prefix with -- to separate from DELFIN flags.",
+    )
+    args = parser.parse_args(argv)
+
+    tool_args = list(args.tool_args)
+    if tool_args and tool_args[0] == "--":
+        tool_args = tool_args[1:]
+
+    try:
+        result = run_qm_tool(
+            args.tool,
+            tool_args,
+            cwd=resolve_path(args.cwd),
+            capture_output=args.capture,
+            check=False,
+        )
+    except ValueError as exc:
+        print(f"Unsupported tool: {exc}")
+        return 2
+    except FileNotFoundError as exc:
+        print(str(exc))
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        print(f"Tool execution failed before launch: {exc}")
+        return 1
+
+    if args.capture:
+        if result.stdout:
+            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        if result.stderr:
+            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr)
+    return int(result.returncode)
+
 
 _SAFE_FILE_NAMES: set[str] = {
     "DELFIN.txt",
@@ -296,6 +447,7 @@ def _dir_has_known_signature(path: Path) -> bool:
 def _is_workspace_artifact(entry: Path) -> bool:
     """Return True if the given filesystem entry looks like a DELFIN artifact."""
     name = entry.name
+    step_file_names, step_file_glob_patterns = _get_step_file_patterns()
     if entry.is_dir():
         if name in _SAFE_DIR_NAMES:
             return True
@@ -309,9 +461,9 @@ def _is_workspace_artifact(entry: Path) -> bool:
         return True
     if any(fnmatch.fnmatch(name, pattern) for pattern in _SAFE_FILE_GLOBS):
         return True
-    if name in _STEP_FILE_NAMES:
+    if name in step_file_names:
         return True
-    if any(fnmatch.fnmatch(name, pattern) for pattern in _STEP_FILE_GLOB_PATTERNS):
+    if any(fnmatch.fnmatch(name, pattern) for pattern in step_file_glob_patterns):
         return True
     return False
 
@@ -920,6 +1072,13 @@ def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
     arg_list = list(argv if argv is not None else sys.argv[1:])
+    if arg_list and arg_list[0] == "qm_check":
+        return _run_qm_check_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "qm_run":
+        return _run_qm_run_subcommand(arg_list[1:])
+
+    _load_full_cli_dependencies()
+
     if arg_list and arg_list[0] == "cleanup":
         return _run_cleanup_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "stop":

@@ -22,6 +22,7 @@ except ImportError:
 from delfin.common.logging import get_logger
 from delfin.common.progress_display import ProgressDisplay
 from delfin.global_manager import get_global_manager
+from .qm_runtime import find_tool_executable
 from delfin.orca_recovery import (
     OrcaErrorDetector,
     OrcaErrorType,
@@ -570,14 +571,10 @@ def _iter_orca_candidates() -> Iterable[str]:
 
 
 def find_orca_executable() -> Optional[str]:
-    """Locate a valid ORCA executable by validating several candidate sources."""
-    for candidate in _iter_orca_candidates():
-        valid_path = _validate_candidate(candidate)
-        if valid_path:
-            return valid_path
-
-        logger.debug(f"Discarding invalid ORCA candidate path: {candidate!r}")
-
+    """Locate ORCA using the shared DELFIN QM runtime resolver."""
+    valid_path = find_tool_executable("orca")
+    if valid_path:
+        return valid_path
     logger.error("ORCA executable not found. Please ensure ORCA is installed and in your PATH.")
     return None
 

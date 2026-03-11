@@ -1,11 +1,15 @@
 """Cluster utilities for automatic resource detection and configuration."""
 
 import os
-import psutil
 from typing import Optional, Dict, Any
 from delfin.common.logging import get_logger
 
 logger = get_logger(__name__)
+
+try:
+    import psutil  # type: ignore
+except ImportError:
+    psutil = None  # type: ignore
 
 
 def detect_cluster_environment() -> Dict[str, Any]:
@@ -77,6 +81,12 @@ def _detect_lsf_resources() -> Dict[str, Any]:
 
 def _detect_system_resources() -> Dict[str, Any]:
     """Fallback system resource detection."""
+    if psutil is None:
+        return {
+            'scheduler': 'system',
+            'cpus_available': os.cpu_count(),
+            'memory_available_mb': None,
+        }
     return {
         'scheduler': 'system',
         'cpus_available': psutil.cpu_count(),

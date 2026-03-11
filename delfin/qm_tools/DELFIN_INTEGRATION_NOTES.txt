@@ -1,0 +1,64 @@
+DELFIN Integration Notes for qm_tools
+Date: 2026-03-11
+
+Goal
+- Make DELFIN use the unified QM toolchain from:
+  /home/qmchem_max/ComPlat/DELFIN/delfin/qm_tools/bin
+- Keep ORCA outside qm_tools as a separate system dependency.
+
+Immediate practical approach
+1. Source qm_tools/env.sh before running DELFIN CLI or dashboard sessions.
+2. Let DELFIN discover xtb/crest/std2/stda/xtb4stda/dftb+ via PATH from qm_tools.
+3. Let DELFIN discover ORCA independently from the system PATH.
+4. Add small wrappers only where DELFIN needs special calling conventions or output parsing.
+
+Expected DELFIN touch points
+- delfin/orca.py
+  - should continue discovering ORCA from the system PATH
+  - not part of qm_tools
+- delfin/xtb_crest.py
+  - already calls xtb and crest
+  - should work immediately after sourcing env.sh
+- new hyperpolarizability wrapper
+  - proposed file:
+    delfin/tadf/hyperpol.py
+  - responsibility:
+    - run xtb or crest if required
+    - run xtb4stda on xyz
+    - run std2 or stda with nonlinear-response input
+    - parse beta_HRS / beta tensor data
+    - write structured json/csv output
+
+Suggested config additions
+- qm_tools_root = /home/qmchem_max/ComPlat/DELFIN/delfin/qm_tools
+- use_local_qm_tools = true
+- hyperpol_engine = std2 | stda
+- hyperpol_preopt = xtb | crest | none
+
+Suggested integration order
+1. Keep xTB/CREST/std2/stda on PATH through env.sh and verify DELFIN end-to-end.
+2. Keep ORCA as an independent system dependency and verify DELFIN still finds it.
+3. Add a standalone helper script for hyperpolarizability outside core DELFIN flow.
+4. Once parsing is stable, expose it in DELFIN CLI.
+5. Only then add dashboard controls.
+
+Why this order
+- xTB/CREST integration already exists in DELFIN.
+- ORCA discovery already exists and should stay separate.
+- Hyperpolarizability is the new piece and should be isolated first.
+- This avoids mixing parser/debug work with the existing ESD and OCCUPIER paths.
+
+Minimal next code unit
+- one callable helper, for example:
+  delfin/tadf/hyperpol.py
+- API sketch:
+  run_hyperpol(xyz_path: str, charge: int = 0, uhf: int = 0, engine: str = "std2") -> dict
+
+Return fields should include
+- input_xyz
+- optimized_xyz
+- engine
+- beta_hrs
+- beta_tensor_components
+- working_directory
+- raw_output_paths

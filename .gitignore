@@ -19,3 +19,14 @@ pyproject_qmserver.toml
 
 # ChemDarwin tab (optional, local only)
 delfin/dashboard/tab_chemdarwin.py
+
+# Local QM tool bundle inside the package directory
+# Keep scripts/docs in git, ignore only local installs and build artifacts.
+delfin/qm_tools/bin/
+delfin/qm_tools/build/
+delfin/qm_tools/downloads/
+delfin/qm_tools/logs/
+delfin/qm_tools/.mamba_env/
+delfin/qm_tools/share/
+delfin/qm_tools/third_party/
+delfin/qm_tools/HYPERPOLARIZABILITY_SETUP.txt
