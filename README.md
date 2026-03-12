@@ -16,6 +16,7 @@ This repository contains DELFIN, a comprehensive workflow tool for automated qua
 - **Python 3.10 or 3.11**
 - **ORCA 6.1.1** in your `PATH` (`orca` and `orca_pltvib`) — [free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal)
 - **Optional:** `crest` and `xtb` (for CREST/xTB workflows)
+- **Optional:** `xtb4stda`, `stda`, and `std2` plus the required `xtb4stda` runtime files (for xTB-based response/screening workflows)
 - **Optional (Dashboard):** JupyterLab/Notebook or Voila for interactive UI usage
 
 ### Install Methods
@@ -42,6 +43,18 @@ pip install -e .
 All Python dependencies (e.g., RDKit/OpenBabel for SMILES workflows, ipywidgets/py3Dmol for dashboard visualisation) are installed automatically. Using a virtual environment keeps the scientific software stack reproducible and avoids system-wide modifications.
 
 This exposes the console command **`delfin`** and enables `python -m delfin`.
+
+External QM binaries are not installed automatically by `pip`. For the local binary-based setup of `xtb`, `crest`, `xtb4stda`, `stda`, `std2`, and the `xtb4stda` runtime bundle, see `delfin/qm_tools/README.txt`.
+
+### External QM Tool Setup
+
+After installing the Python package, initialise the bundled QM tool wrapper and validate the external binaries:
+
+```bash
+source delfin/qm_tools/env.sh
+USE_SYSTEM_TOOLS=1 bash delfin/qm_tools/install_qm_tools.sh
+bash delfin/qm_tools/check_qm_tools.sh
+```
 
 ---
 
