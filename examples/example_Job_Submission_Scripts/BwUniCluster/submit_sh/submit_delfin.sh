@@ -265,6 +265,51 @@ export MPLBACKEND=Agg
 # Reduce HOME filesystem I/O: avoid writing .pyc files and user site-packages
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
+if [ -z "${TMPDIR:-}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
+    export TMPDIR="$SLURM_TMPDIR"
+fi
+
+STAGE_BASE="${TMPDIR:-${BEEOND_MOUNTPOINT:-}}"
+if [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
+    export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$STAGE_BASE/.cache_${SLURM_JOB_ID}}"
+    export MPLCONFIGDIR="${MPLCONFIGDIR:-$STAGE_BASE/.mplconfig_${SLURM_JOB_ID}}"
+fi
+
+# If DELFIN was installed with "pip install -e", the local venv still points to
+# the source tree on HOME. Stage the Python package to local SSD and prepend it
+# to PYTHONPATH so imports stay off HOME during the job. Optional optimization:
+# create "$DELFIN_DIR/delfin_src.tar" once with "tar -cf delfin_src.tar delfin".
+stage_delfin_python_source() {
+    local stage_base="${STAGE_BASE:-}"
+    if [ -z "${stage_base}" ] || [ ! -d "${stage_base}" ]; then
+        return 0
+    fi
+
+    LOCAL_DELFIN_ROOT="$stage_base/delfin_runtime_${SLURM_JOB_ID}"
+    LOCAL_DELFIN_SRC="$LOCAL_DELFIN_ROOT/src"
+    LOCAL_DELFIN_TAR="$DELFIN_DIR/delfin_src.tar"
+
+    mkdir -p "$LOCAL_DELFIN_SRC"
+
+    if [ -f "$LOCAL_DELFIN_TAR" ]; then
+        echo "Unpacking DELFIN source snapshot to local SSD ($LOCAL_DELFIN_SRC)..."
+        tar -xf "$LOCAL_DELFIN_TAR" -C "$LOCAL_DELFIN_SRC"
+    else
+        echo "Staging DELFIN Python package to local SSD ($LOCAL_DELFIN_SRC)..."
+        rsync -a --delete \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='*.pyo' \
+            --exclude='*.safe_*' \
+            "$DELFIN_DIR/delfin"/ "$LOCAL_DELFIN_SRC/delfin"/
+    fi
+
+    export PYTHONPATH="$LOCAL_DELFIN_SRC${PYTHONPATH:+:$PYTHONPATH}"
+    export DELFIN_LOCAL_SOURCE_ROOT="$LOCAL_DELFIN_SRC"
+    echo "DELFIN Python imports redirected to local SSD."
+}
+
+stage_delfin_python_source
 
 # Scratch directory setup
 # Priority: 1) BeeOND (for multi-node), 2) $TMPDIR (local SSD), 3) /scratch (network, last resort)
@@ -318,6 +363,64 @@ write_slurm_reason() {
 
 write_slurm_reason
 
+# Auto-detect mode before copying files so fresh runs can avoid mirroring the
+# complete HOME workspace into scratch.
+if [ "$MODE" = "auto" ]; then
+    if [ -f "$SLURM_SUBMIT_DIR/CONTROL.txt" ] && [ -f "$SLURM_SUBMIT_DIR/input.txt" ]; then
+        MODE="delfin"
+        echo "Auto-detected mode: DELFIN (CONTROL.txt + input.txt found)"
+    elif ls "$SLURM_SUBMIT_DIR"/*.inp 1>/dev/null 2>&1; then
+        MODE="orca"
+        echo "Auto-detected mode: ORCA (*.inp files found, no CONTROL.txt)"
+    else
+        echo "ERROR: No valid input files found in $SLURM_SUBMIT_DIR"
+        echo "       Expected either: CONTROL.txt + input.txt (DELFIN mode)"
+        echo "       Or: *.inp files (ORCA-only mode)"
+        exit 1
+    fi
+fi
+
+copy_workspace_to_scratch() {
+    local copy_profile="${1:-full}"
+    echo "Copying files to scratch (profile: ${copy_profile})..."
+
+    if [ "$copy_profile" = "fresh" ]; then
+        rsync -a \
+            --exclude='.git/' \
+            --exclude='.venv/' \
+            --exclude='__pycache__/' \
+            --exclude='.ipynb_checkpoints/' \
+            --exclude='.orca_iso*' \
+            --exclude='delfin_*.out' \
+            --exclude='delfin_*.err' \
+            --exclude='*.out' \
+            --exclude='*.gbw' \
+            --exclude='*.hess' \
+            --exclude='*.cube' \
+            --exclude='*.densitiesinfo' \
+            --exclude='*.property.txt' \
+            --exclude='*.png' \
+            --exclude='*.svg' \
+            --exclude='*.pdf' \
+            --exclude='*.docx' \
+            --exclude='*.json' \
+            --exclude='*.fprint' \
+            --exclude='*.tmp' \
+            --exclude='*_OCCUPIER/' \
+            --exclude='ESD/' \
+            --exclude='builder/' \
+            "$SLURM_SUBMIT_DIR"/ "$RUN_DIR"/ 2>/dev/null || true
+    else
+        rsync -a \
+            --exclude='.git/' \
+            --exclude='.venv/' \
+            --exclude='__pycache__/' \
+            --exclude='.ipynb_checkpoints/' \
+            --exclude='.orca_iso*' \
+            "$SLURM_SUBMIT_DIR"/ "$RUN_DIR"/ 2>/dev/null || true
+    fi
+}
+
 # Rescue files from any active .orca_iso* dirs into their parent directory.
 # Non-.inp files are overwritten (latest ORCA state), .inp files are never
 # overwritten (cp -n) so the original input is preserved.
@@ -342,6 +445,53 @@ purge_xtb_goat_out_files() {
     find "$RUN_DIR" -type f -name 'XTB_GOAT.goat.*.out' -delete 2>/dev/null || true
 }
 
+SYNC_STAMP="$DELFIN_SCRATCH/.last_result_sync"
+
+collect_changed_results() {
+    local list_file="$1"
+    if [ -f "$SYNC_STAMP" ]; then
+        find "$RUN_DIR" \
+            \( -type f -o -type l \) \
+            ! -path '*/.orca_iso*/*' \
+            ! -name '*.tmp' \
+            ! -name 'XTB_GOAT.goat.*.out' \
+            -newer "$SYNC_STAMP" \
+            -printf '%P\n' | sort -u > "$list_file"
+    else
+        find "$RUN_DIR" \
+            \( -type f -o -type l \) \
+            ! -path '*/.orca_iso*/*' \
+            ! -name '*.tmp' \
+            ! -name 'XTB_GOAT.goat.*.out' \
+            -printf '%P\n' | sort -u > "$list_file"
+    fi
+}
+
+sync_results_back() {
+    local sync_label="${1:-sync}"
+    local list_file="$DELFIN_SCRATCH/.sync_files.txt"
+    local file_count
+
+    if [ ! -d "$RUN_DIR" ]; then
+        echo "WARNING: RUN_DIR not found, nothing to copy."
+        return 0
+    fi
+
+    purge_xtb_goat_out_files
+    collect_changed_results "$list_file"
+
+    if [ ! -s "$list_file" ]; then
+        echo "No updated result files to copy (${sync_label})."
+        touch "$SYNC_STAMP" 2>/dev/null || true
+        return 0
+    fi
+
+    file_count="$(wc -l < "$list_file" 2>/dev/null || echo 0)"
+    rsync -a --files-from="$list_file" "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+    touch "$SYNC_STAMP" 2>/dev/null || true
+    echo "Copied ${file_count} changed result files (${sync_label})."
+}
+
 # Cleanup function for trap (handles SIGTERM from timeout, SIGINT, etc.)
 cleanup() {
     local signal_name="${1:-UNKNOWN}"
@@ -358,19 +508,13 @@ cleanup() {
 
     # Rescue files from any active iso dirs (ORCA was killed mid-run)
     rescue_iso_files
-    purge_xtb_goat_out_files
 
-    # CRITICAL: Copy ALL results back before cleanup
+    # CRITICAL: Copy updated results back before cleanup
     echo "Copying results back to $SLURM_SUBMIT_DIR..."
-    if [ -d "$RUN_DIR" ]; then
-        rsync -a --exclude='*.tmp' --exclude='.orca_iso*' --exclude='XTB_GOAT.goat.*.out' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
-        echo "Results copied successfully."
-    else
-        echo "WARNING: RUN_DIR not found, nothing to copy."
-    fi
+    sync_results_back "signal-${signal_name}"
 
     # Cleanup scratch (only after successful copy)
-    rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" 2>/dev/null || true
+    rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${LOCAL_DELFIN_ROOT:-}" 2>/dev/null || true
     echo "Cleanup completed at $(date)"
     exit 1
 }
@@ -380,8 +524,7 @@ periodic_copy() {
     while true; do
         sleep 7200
         if [ -d "$RUN_DIR" ]; then
-            purge_xtb_goat_out_files
-            rsync -a --exclude='*.tmp' --exclude='.orca_iso*' --exclude='XTB_GOAT.goat.*.out' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+            sync_results_back "periodic"
         fi
     done
 }
@@ -425,8 +568,7 @@ schedule_final_backup() {
     echo "========================================"
     if [ -d "$RUN_DIR" ]; then
         rescue_iso_files
-        purge_xtb_goat_out_files
-        rsync -a --exclude='*.tmp' --exclude='.orca_iso*' --exclude='XTB_GOAT.goat.*.out' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
+        sync_results_back "final-backup"
         echo "Final backup completed."
     fi
 }
@@ -488,37 +630,30 @@ fi
 echo ""
 
 # Check DELFIN version
-cd "$DELFIN_DIR"
 echo "DELFIN Version: $(delfin --version 2>&1 || echo 'unknown')"
-echo "Git Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'N/A')"
-echo "Git Commit: $(git rev-parse --short HEAD 2>/dev/null || echo 'N/A')"
+if [ "${DELFIN_SHOW_GIT_INFO:-0}" = "1" ] && [ -d "$DELFIN_DIR/.git" ]; then
+    cd "$DELFIN_DIR"
+    echo "Git Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'N/A')"
+    echo "Git Commit: $(git rev-parse --short HEAD 2>/dev/null || echo 'N/A')"
+    cd - > /dev/null
+fi
 echo ""
-cd - > /dev/null
 
-# Copy ALL input files to scratch (exclude leftover iso dirs from previous runs)
-echo "Copying input files to scratch..."
-rsync -a --exclude='.orca_iso*' "$SLURM_SUBMIT_DIR"/ "$RUN_DIR"/ 2>/dev/null || true
+# Fresh DELFIN/BUILD/GUPPY/CO2 runs only need current inputs; recalc and raw ORCA
+# runs keep the full workspace copy because they may depend on existing outputs.
+COPY_PROFILE="full"
+case "$MODE" in
+    delfin|build|guppy|delfin-co2-chain)
+        COPY_PROFILE="fresh"
+        ;;
+esac
+copy_workspace_to_scratch "$COPY_PROFILE"
 # Remove output files from previous runs (if any)
 rm -f "$RUN_DIR"/delfin_*.out "$RUN_DIR"/delfin_*.err 2>/dev/null || true
 
 cd "$RUN_DIR"
 purge_xtb_goat_out_files
-
-# Auto-detect mode if set to "auto"
-if [ "$MODE" = "auto" ]; then
-    if [ -f "$SLURM_SUBMIT_DIR/CONTROL.txt" ] && [ -f "$SLURM_SUBMIT_DIR/input.txt" ]; then
-        MODE="delfin"
-        echo "Auto-detected mode: DELFIN (CONTROL.txt + input.txt found)"
-    elif ls "$SLURM_SUBMIT_DIR"/*.inp 1>/dev/null 2>&1; then
-        MODE="orca"
-        echo "Auto-detected mode: ORCA (*.inp files found, no CONTROL.txt)"
-    else
-        echo "ERROR: No valid input files found in $SLURM_SUBMIT_DIR"
-        echo "       Expected either: CONTROL.txt + input.txt (DELFIN mode)"
-        echo "       Or: *.inp files (ORCA-only mode)"
-        exit 1
-    fi
-fi
+touch "$SYNC_STAMP" 2>/dev/null || true
 
 # Resolve the Python that belongs to the delfin installation
 # (bare `python` may point to a different conda/mamba env)
@@ -657,10 +792,9 @@ echo "========================================"
 
 # Copy results back
 rescue_iso_files
-purge_xtb_goat_out_files
-rsync -a --exclude='*.tmp' --exclude='.orca_iso*' --exclude='XTB_GOAT.goat.*.out' "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/
+sync_results_back "job-end"
 
 # Cleanup scratch
-rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}"
+rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}" "${LOCAL_DELFIN_ROOT:-}"
 
 exit $EXIT_CODE
