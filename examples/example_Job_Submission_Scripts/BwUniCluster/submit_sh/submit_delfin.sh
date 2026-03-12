@@ -276,9 +276,41 @@ if [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
 fi
 
 # If DELFIN was installed with "pip install -e", the local venv still points to
-# the source tree on HOME. Stage the Python package to local SSD and prepend it
-# to PYTHONPATH so imports stay off HOME during the job. Optional optimization:
-# create "$DELFIN_DIR/delfin_src.tar" once with "tar -cf delfin_src.tar delfin".
+# the source tree on HOME. Keep a tar snapshot of the Python package on HOME
+# and refresh it only when the repository HEAD changes. Normal submits then read
+# one tarball instead of many small source files from HOME.
+refresh_delfin_source_tar() {
+    DELFIN_SRC_TAR="$DELFIN_DIR/delfin_src.tar"
+    DELFIN_SRC_HEAD_FILE="$DELFIN_DIR/delfin_src.tar.head"
+    local current_head=""
+    local stored_head=""
+    local local_changes=""
+    local tmp_tar=""
+
+    if [ -d "$DELFIN_DIR/.git" ]; then
+        current_head="$(git -C "$DELFIN_DIR" rev-parse HEAD 2>/dev/null || true)"
+        local_changes="$(git -C "$DELFIN_DIR" status --porcelain=v1 --untracked-files=all -- delfin 2>/dev/null || true)"
+    fi
+    if [ -f "$DELFIN_SRC_HEAD_FILE" ]; then
+        stored_head="$(cat "$DELFIN_SRC_HEAD_FILE" 2>/dev/null || true)"
+    fi
+
+    if [ -f "$DELFIN_SRC_TAR" ] && [ -n "$current_head" ] && [ "$current_head" = "$stored_head" ] && [ -z "$local_changes" ]; then
+        return 0
+    fi
+
+    echo "Refreshing DELFIN source tarball..."
+    tmp_tar="$DELFIN_SRC_TAR.tmp.$$"
+    rm -f "$tmp_tar"
+    tar -cf "$tmp_tar" -C "$DELFIN_DIR" delfin
+    mv "$tmp_tar" "$DELFIN_SRC_TAR"
+    if [ -n "$current_head" ]; then
+        printf '%s\n' "$current_head" > "$DELFIN_SRC_HEAD_FILE"
+    else
+        rm -f "$DELFIN_SRC_HEAD_FILE"
+    fi
+}
+
 stage_delfin_python_source() {
     local stage_base="${STAGE_BASE:-}"
     if [ -z "${stage_base}" ] || [ ! -d "${stage_base}" ]; then
@@ -287,22 +319,11 @@ stage_delfin_python_source() {
 
     LOCAL_DELFIN_ROOT="$stage_base/delfin_runtime_${SLURM_JOB_ID}"
     LOCAL_DELFIN_SRC="$LOCAL_DELFIN_ROOT/src"
-    LOCAL_DELFIN_TAR="$DELFIN_DIR/delfin_src.tar"
 
     mkdir -p "$LOCAL_DELFIN_SRC"
-
-    if [ -f "$LOCAL_DELFIN_TAR" ]; then
-        echo "Unpacking DELFIN source snapshot to local SSD ($LOCAL_DELFIN_SRC)..."
-        tar -xf "$LOCAL_DELFIN_TAR" -C "$LOCAL_DELFIN_SRC"
-    else
-        echo "Staging DELFIN Python package to local SSD ($LOCAL_DELFIN_SRC)..."
-        rsync -a --delete \
-            --exclude='__pycache__' \
-            --exclude='*.pyc' \
-            --exclude='*.pyo' \
-            --exclude='*.safe_*' \
-            "$DELFIN_DIR/delfin"/ "$LOCAL_DELFIN_SRC/delfin"/
-    fi
+    refresh_delfin_source_tar
+    echo "Unpacking DELFIN source snapshot to local SSD ($LOCAL_DELFIN_SRC)..."
+    tar -xf "$DELFIN_SRC_TAR" -C "$LOCAL_DELFIN_SRC"
 
     export PYTHONPATH="$LOCAL_DELFIN_SRC${PYTHONPATH:+:$PYTHONPATH}"
     export DELFIN_LOCAL_SOURCE_ROOT="$LOCAL_DELFIN_SRC"
