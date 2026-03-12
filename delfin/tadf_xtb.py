@@ -36,16 +36,19 @@ _HC_EV_NM = 1239.8419843320026
 @dataclass(frozen=True)
 class WorkflowEntry:
     label: str
-    smiles: str
+    smiles: Optional[str] = None
+    xyz_text: Optional[str] = None
+    xyz_path: Optional[str] = None
 
 
 @dataclass
 class TadfXtbResult:
     label: str
-    smiles: str
+    smiles: Optional[str]
     charge: int
     multiplicity: int
     xtb_method: str
+    excited_method: str
     workdir: str
     initial_xyz: str
     s0_xyz: str
@@ -109,24 +112,27 @@ def _rdkit_available() -> bool:
 
 def _collect_preflight_checks(
     *,
+    need_rdkit: bool,
     need_xtb: bool,
     need_crest: bool,
     need_orca: bool,
+    excited_method: str,
 ) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
 
-    if _rdkit_available():
-        checks.append(PreflightCheck("rdkit", True, sys.executable))
-    else:
-        checks.append(
-            PreflightCheck(
-                "rdkit",
-                False,
-                f"missing in {sys.executable}; install project Python dependencies",
+    if need_rdkit:
+        if _rdkit_available():
+            checks.append(PreflightCheck("rdkit", True, sys.executable))
+        else:
+            checks.append(
+                PreflightCheck(
+                    "rdkit",
+                    False,
+                    f"missing in {sys.executable}; install project Python dependencies",
+                )
             )
-        )
 
-    tool_names = ["xtb4stda", "stda"]
+    tool_names = ["xtb4stda", excited_method]
     if need_xtb:
         tool_names.insert(0, "xtb")
     if need_crest:
@@ -187,6 +193,56 @@ def _write_smiles_inputs(smiles: str, label: str, workdir: Path) -> tuple[Path, 
         f"{len(coord_lines)}\n{label}\n" + "\n".join(coord_lines) + "\n",
         encoding="utf-8",
     )
+    return start_path, xyz_path
+
+
+def _write_xyz_inputs(input_xyz: str, label: str, workdir: Path) -> tuple[Path, Path]:
+    source_xyz = resolve_path(input_xyz)
+    if not source_xyz.is_file():
+        raise RuntimeError(f"XYZ file not found: {source_xyz}")
+
+    coord_block = _xyz_coord_block(source_xyz)
+    coord_lines = [line.rstrip() for line in coord_block.splitlines() if line.strip()]
+    if not coord_lines:
+        raise RuntimeError(f"XYZ file contains no coordinates: {source_xyz}")
+
+    start_path = workdir / "start.txt"
+    start_path.write_text("\n".join(coord_lines) + "\n", encoding="utf-8")
+
+    xyz_path = workdir / f"{label}.xyz"
+    source_lines = source_xyz.read_text(encoding="utf-8", errors="ignore").splitlines()
+    if len(source_lines) < 2:
+        raise RuntimeError(f"XYZ file is incomplete: {source_xyz}")
+    xyz_path.write_text("\n".join(source_lines).rstrip() + "\n", encoding="utf-8")
+    return start_path, xyz_path
+
+
+def _write_xyz_text_inputs(xyz_text: str, label: str, workdir: Path) -> tuple[Path, Path]:
+    raw_lines = [line.rstrip() for line in str(xyz_text).splitlines()]
+    content_lines = [line for line in raw_lines if line.strip()]
+    if not content_lines:
+        raise RuntimeError("XYZ input text is empty")
+
+    coord_lines: list[str]
+    xyz_lines: list[str]
+    try:
+        atom_count = int(content_lines[0].strip())
+    except ValueError:
+        coord_lines = content_lines
+        xyz_lines = [str(len(coord_lines)), label, *coord_lines]
+    else:
+        if atom_count < 1:
+            raise RuntimeError("XYZ atom count must be positive")
+        if len(content_lines) < atom_count + 2:
+            raise RuntimeError("XYZ input text is incomplete")
+        xyz_lines = content_lines[: atom_count + 2]
+        coord_lines = xyz_lines[2:]
+
+    start_path = workdir / "start.txt"
+    start_path.write_text("\n".join(coord_lines) + "\n", encoding="utf-8")
+
+    xyz_path = workdir / f"{label}.xyz"
+    xyz_path.write_text("\n".join(xyz_lines).rstrip() + "\n", encoding="utf-8")
     return start_path, xyz_path
 
 
@@ -434,20 +490,22 @@ def _run_xtb4stda(
     return output_path
 
 
-def _run_stda(
+def _run_excited_method(
     workdir: Path,
     *,
+    method: str,
     triplet: bool,
     energy_window: float,
     cores: int,
 ) -> tuple[Path, Optional[Path]]:
-    output_path = workdir / ("stda_triplet.out" if triplet else "stda_singlet.out")
+    output_stem = f"{method}_{'triplet' if triplet else 'singlet'}"
+    output_path = workdir / f"{output_stem}.out"
     args = ["-xtb", "-e", str(energy_window)]
     if triplet:
         args.insert(1, "-t")
     with output_path.open("w", encoding="utf-8") as log_file:
         run_tool(
-            "stda",
+            method,
             args,
             cwd=workdir,
             env=_tool_env(cores),
@@ -525,6 +583,7 @@ def run_single_tadf_xtb(
     charge: int,
     multiplicity: int,
     xtb_method: str,
+    excited_method: str,
     energy_window: float,
     cores: int,
     maxcore: int,
@@ -535,7 +594,14 @@ def run_single_tadf_xtb(
     t1_multiplicity: int,
 ) -> TadfXtbResult:
     workdir.mkdir(parents=True, exist_ok=True)
-    _start_path, initial_xyz = _write_smiles_inputs(entry.smiles, entry.label, workdir)
+    if entry.xyz_path:
+        _start_path, initial_xyz = _write_xyz_inputs(entry.xyz_path, entry.label, workdir)
+    elif entry.xyz_text:
+        _start_path, initial_xyz = _write_xyz_text_inputs(entry.xyz_text, entry.label, workdir)
+    elif entry.smiles:
+        _start_path, initial_xyz = _write_smiles_inputs(entry.smiles, entry.label, workdir)
+    else:
+        raise RuntimeError("workflow entry has neither SMILES nor XYZ input")
 
     current_xyz = initial_xyz
     crest_xyz: Optional[Path] = None
@@ -597,14 +663,16 @@ def run_single_tadf_xtb(
         multiplicity=multiplicity,
         cores=cores,
     )
-    singlet_out, tda_singlet = _run_stda(
+    singlet_out, tda_singlet = _run_excited_method(
         workdir,
+        method=excited_method,
         triplet=False,
         energy_window=energy_window,
         cores=cores,
     )
-    triplet_out, tda_triplet = _run_stda(
+    triplet_out, tda_triplet = _run_excited_method(
         workdir,
+        method=excited_method,
         triplet=True,
         energy_window=energy_window,
         cores=cores,
@@ -667,6 +735,7 @@ def run_single_tadf_xtb(
         charge=charge,
         multiplicity=multiplicity,
         xtb_method=xtb_method,
+        excited_method=excited_method,
         workdir=str(workdir),
         initial_xyz=str(initial_xyz),
         s0_xyz=str(current_xyz),
@@ -713,11 +782,43 @@ def run_single_tadf_xtb(
     )
 
 
-def _load_entries(smiles_values: list[str], smiles_file: Optional[str], label: Optional[str]) -> list[WorkflowEntry]:
+def _load_entries(
+    smiles_values: list[str],
+    smiles_file: Optional[str],
+    xyz_values: list[str],
+    xyz_file_values: list[str],
+    label: Optional[str],
+) -> list[WorkflowEntry]:
     entries: list[WorkflowEntry] = []
     for idx, smiles in enumerate(smiles_values, start=1):
         fallback = f"mol_{idx:03d}"
         entries.append(WorkflowEntry(label=_safe_label(label or fallback, fallback), smiles=smiles.strip()))
+
+    single_xyz_label = (
+        len(xyz_values) + len(xyz_file_values) == 1
+        and not smiles_values
+        and not smiles_file
+    )
+    for idx, xyz_value in enumerate(xyz_values, start=1):
+        fallback = f"xyz_{idx:03d}"
+        requested = label if single_xyz_label else fallback
+        entries.append(
+            WorkflowEntry(
+                label=_safe_label(requested, fallback),
+                xyz_text=xyz_value,
+            )
+        )
+
+    for idx, xyz_value in enumerate(xyz_file_values, start=1):
+        source_path = resolve_path(xyz_value)
+        fallback = _safe_label(source_path.stem, f"xyz_{idx:03d}")
+        requested = label if single_xyz_label else fallback
+        entries.append(
+            WorkflowEntry(
+                label=_safe_label(requested, fallback),
+                xyz_path=str(source_path),
+            )
+        )
 
     if smiles_file:
         path = resolve_path(smiles_file)
@@ -746,7 +847,14 @@ def _load_entries(smiles_values: list[str], smiles_file: Optional[str], label: O
         if count == 1:
             unique_entries.append(entry)
             continue
-        unique_entries.append(WorkflowEntry(label=f"{entry.label}_{count:02d}", smiles=entry.smiles))
+        unique_entries.append(
+            WorkflowEntry(
+                label=f"{entry.label}_{count:02d}",
+                smiles=entry.smiles,
+                xyz_text=entry.xyz_text,
+                xyz_path=entry.xyz_path,
+            )
+        )
     return unique_entries
 
 
@@ -757,6 +865,7 @@ def _print_result(result: TadfXtbResult) -> None:
         return f"{value:.{digits}f}"
 
     parts = [
+        f"method={result.excited_method}",
         f"S1(v)={_fmt(result.s1_ev, 3)} eV ({_fmt(result.s1_nm, 1)} nm, f={_fmt(result.s1_f_osc, 4)})",
         f"T1={_fmt(result.t1_ev, 3)} eV ({_fmt(result.t1_nm, 1)} nm)",
         f"lambda_abs(S0->S1)={_fmt(result.lambda_abs_nm, 1)} nm",
@@ -799,8 +908,8 @@ def run_cli(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="delfin tadf_xtb",
         description=(
-            "SMILES -> optional CREST -> GOAT or xTB S0 optimization "
-            "-> xtb4stda -> stda(singlet/triplet) TADF screening workflow."
+            "SMILES/XYZ -> optional CREST -> GOAT or xTB S0 optimization "
+            "-> xtb4stda -> stda/std2(singlet/triplet) TADF screening workflow."
         ),
     )
     parser.add_argument(
@@ -810,12 +919,20 @@ def run_cli(argv: list[str]) -> int:
     )
     parser.add_argument("--smiles", action="append", default=[], help="SMILES string. Repeatable.")
     parser.add_argument("--smiles-file", help="Optional file with one SMILES per line, optionally prefixed by label.")
-    parser.add_argument("--label", help="Optional label for a single --smiles input.")
+    parser.add_argument("--xyz", action="append", default=[], help="Inline XYZ text. Repeatable.")
+    parser.add_argument("--xyz-file", action="append", default=[], help="Input XYZ file path. Repeatable.")
+    parser.add_argument("--label", help="Optional label for a single direct input (--smiles, --xyz, or --xyz-file).")
     parser.add_argument("--workdir", default="tadf_xtb_runs", help="Base output directory.")
     parser.add_argument("--charge", type=int, default=0, help="Molecular charge.")
     parser.add_argument("--multiplicity", type=int, default=1, help="Ground-state multiplicity.")
     parser.add_argument("--xtb-method", default="XTB2", help="ORCA xTB keyword for optional GOAT, e.g. XTB2.")
-    parser.add_argument("--crest", action="store_true", help="Run CREST conformer search before xTB/stda.")
+    parser.add_argument(
+        "--excited-method",
+        choices=("stda", "std2"),
+        default="stda",
+        help="Excited-state engine: stda = sTDA-xTB, std2 = sTD-DFT-xTB.",
+    )
+    parser.add_argument("--crest", action="store_true", help="Run CREST conformer search before the excited-state step.")
     parser.add_argument("--goat", action="store_true", help="Use ORCA GOAT instead of plain xTB S0 optimization.")
     parser.add_argument("--t1-opt", action="store_true", help="Run an additional xTB triplet optimization after stda.")
     parser.add_argument("--t1-multiplicity", type=int, default=3, help="Multiplicity for optional T1 xTB optimization.")
@@ -832,9 +949,11 @@ def run_cli(argv: list[str]) -> int:
         parser.error("--t1-multiplicity must be >= 1")
 
     preflight_checks = _collect_preflight_checks(
+        need_rdkit=bool(args.smiles or args.smiles_file) or not bool(args.xyz or args.xyz_file),
         need_xtb=(not args.goat) or args.t1_opt or args.crest,
         need_crest=args.crest,
         need_orca=args.goat,
+        excited_method=args.excited_method,
     )
     if args.check:
         _print_preflight_checks(preflight_checks)
@@ -846,9 +965,9 @@ def run_cli(argv: list[str]) -> int:
         print("tadf_xtb preflight failed. Run `delfin tadf_xtb --check` after fixing the missing items.")
         return 1
 
-    entries = _load_entries(args.smiles, args.smiles_file, args.label)
+    entries = _load_entries(args.smiles, args.smiles_file, args.xyz, args.xyz_file, args.label)
     if not entries:
-        parser.error("provide --smiles and/or --smiles-file")
+        parser.error("provide --smiles, --smiles-file, --xyz, and/or --xyz-file")
 
     base_workdir = resolve_path(args.workdir)
     base_workdir.mkdir(parents=True, exist_ok=True)
@@ -864,6 +983,7 @@ def run_cli(argv: list[str]) -> int:
                     charge=args.charge,
                     multiplicity=args.multiplicity,
                     xtb_method=args.xtb_method,
+                    excited_method=args.excited_method,
                     energy_window=args.energy_window,
                     cores=args.pal,
                     maxcore=args.maxcore,
@@ -903,6 +1023,7 @@ def run_cli(argv: list[str]) -> int:
                         charge=args.charge,
                         multiplicity=args.multiplicity,
                         xtb_method=args.xtb_method,
+                        excited_method=args.excited_method,
                         energy_window=args.energy_window,
                         cores=max(1, int(allocated)),
                         maxcore=args.maxcore,
