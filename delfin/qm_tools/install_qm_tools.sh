@@ -39,6 +39,25 @@ have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+detect_python() {
+  if have python; then
+    command -v python
+    return 0
+  fi
+  if have python3; then
+    command -v python3
+    return 0
+  fi
+  return 1
+}
+
+python_has_module() {
+  local python_bin="$1"
+  local module="$2"
+
+  "${python_bin}" -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('${module}') else 1)" >/dev/null 2>&1
+}
+
 ensure_dirs() {
   mkdir -p "${BIN_DIR}" "${DOWNLOAD_DIR}" "${BUILD_DIR}" "${SHARE_DIR}" "${XTB4STDA_SHARE_DIR}" "${ROOT}/third_party" "${ROOT}/docs" "${ROOT}/logs"
 }
@@ -76,9 +95,21 @@ install_file_into_bin() {
 
 detect_existing_tool() {
   local prog="$1"
+  local detected="" resolved=""
   if [[ "${USE_SYSTEM_TOOLS}" == "1" ]] && have "${prog}"; then
-    command -v "${prog}"
-    return 0
+    detected="$(command -v "${prog}")"
+    if [[ -n "${detected}" ]]; then
+      if resolved="$(readlink -f "${detected}" 2>/dev/null)"; then
+        if [[ -n "${resolved}" && -x "${resolved}" && "${resolved}" != "${BIN_DIR}/${prog}" ]]; then
+          printf "%s\n" "${resolved}"
+          return 0
+        fi
+      fi
+      if [[ "${detected}" != "${BIN_DIR}/${prog}" && -x "${detected}" ]]; then
+        printf "%s\n" "${detected}"
+        return 0
+      fi
+    fi
   fi
   return 1
 }
@@ -172,6 +203,10 @@ install_xtb4stda_bundle() {
   install_file_into_bin "${xtb4stda_dl}" xtb4stda
   install_file_into_bin "${stda_dl}" stda_v1.6.1
   link_into_bin "${BIN_DIR}/stda_v1.6.1" stda
+
+  [[ -f "${XTB4STDA_SHARE_DIR}/.xtb4stdarc" ]] || die "xtb4stda runtime incomplete: missing .xtb4stdarc"
+  [[ -f "${XTB4STDA_SHARE_DIR}/.param_stda1.xtb" ]] || die "xtb4stda runtime incomplete: missing .param_stda1.xtb"
+  [[ -f "${XTB4STDA_SHARE_DIR}/.param_stda2.xtb" ]] || die "xtb4stda runtime incomplete: missing .param_stda2.xtb"
 }
 
 build_std2_from_source() {
@@ -225,6 +260,8 @@ install_std2() {
 }
 
 summary() {
+  local python_bin=""
+
   log "installation summary"
   for prog in xtb crest std2 stda xtb4stda dftb+; do
     if [[ -x "${BIN_DIR}/${prog}" ]]; then
@@ -240,6 +277,16 @@ summary() {
   printf "  source %s/env.sh\n" "${ROOT}"
   printf "Verify with:\n"
   printf "  %s/check_qm_tools.sh\n" "${ROOT}"
+  printf "Workflow preflight:\n"
+  printf "  python -m delfin.cli tadf_xtb --check\n"
+
+  if python_bin="$(detect_python)"; then
+    if ! python_has_module "${python_bin}" "rdkit"; then
+      warn "RDKit is missing in ${python_bin}; 'delfin tadf_xtb --smiles ...' will fail until project Python dependencies are installed"
+    fi
+  else
+    warn "python/python3 not found in PATH; cannot validate RDKit for the tadf_xtb workflow"
+  fi
 }
 
 main() {

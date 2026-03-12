@@ -32,6 +32,8 @@ Activation
 - source delfin/qm_tools/env.sh
 - env.sh may create/use a short compatibility link at ~/.delfin_xtb4stda
   because xtb4stda can fail with very long runtime paths.
+- The sTDA-xTB workflow also needs the Python package dependencies from DELFIN
+  itself in the active interpreter, especially RDKit.
 
 Installer
 - delfin/qm_tools/install_qm_tools.sh
@@ -45,6 +47,10 @@ Installer
 
 Health check
 - delfin/qm_tools/check_qm_tools.sh
+- This check validates both the binary bundle and the active Python
+  interpreter for `rdkit`.
+- For the full TADF workflow preflight, run:
+  python -m delfin.cli tadf_xtb --check
 
 Relevant notes
 - DELFIN integration notes:

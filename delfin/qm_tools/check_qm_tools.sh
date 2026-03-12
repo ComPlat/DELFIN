@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="${ROOT}/bin"
 XTB4STDA_RUNTIME_ROOT="${XTB4STDAHOME:-${ROOT}/share/xtb4stda}"
+PYTHON_BIN="${PYTHON_BIN:-${PYTHON:-python}}"
 
 check_xtb4stda_runtime() {
   local required=(
@@ -24,6 +25,26 @@ check_xtb4stda_runtime() {
   printf "%-12s OK      %s\n" "xtb4stda-data" "${XTB4STDA_RUNTIME_ROOT}"
 }
 
+check_python_module() {
+  local label="$1"
+  local module="$2"
+  local python_path
+
+  if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+    printf "%-12s MISSING %s\n" "${label}" "${PYTHON_BIN}"
+    return 1
+  fi
+
+  python_path="$("${PYTHON_BIN}" -c 'import sys; print(sys.executable)' 2>/dev/null || true)"
+  if "${PYTHON_BIN}" -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('${module}') else 1)" >/dev/null 2>&1; then
+    printf "%-12s OK      %s (%s)\n" "${label}" "${module}" "${python_path:-${PYTHON_BIN}}"
+    return 0
+  fi
+
+  printf "%-12s MISSING %s in %s\n" "${label}" "${module}" "${python_path:-${PYTHON_BIN}}"
+  return 1
+}
+
 print_header() {
   printf "\n== %s ==\n" "$1"
 }
@@ -31,10 +52,11 @@ print_header() {
 check_prog() {
   local prog="$1"
   local path="${BIN}/${prog}"
+  local status=0
 
   if [[ ! -x "${path}" ]]; then
     printf "%-12s MISSING\n" "${prog}"
-    return
+    return 1
   fi
 
   printf "%-12s OK      %s\n" "${prog}" "${path}"
@@ -56,7 +78,9 @@ check_prog() {
       "${path}" 2>&1 | sed -n '1,18p' || true
       ;;
     xtb4stda)
-      check_xtb4stda_runtime
+      if ! check_xtb4stda_runtime; then
+        status=1
+      fi
       "${path}" 2>&1 | sed -n '1,20p' || true
       ;;
     dftb+)
@@ -65,12 +89,25 @@ check_prog() {
     *)
       ;;
   esac
+
+  return "${status}"
 }
+
+failures=0
 
 print_header "Activation"
 printf "source %s/env.sh\n" "${ROOT}"
 
+print_header "Python"
+if ! check_python_module "rdkit" "rdkit"; then
+  failures=$((failures + 1))
+fi
+
 print_header "Programs"
 for prog in xtb crest std2 stda xtb4stda dftb+; do
-  check_prog "${prog}"
+  if ! check_prog "${prog}"; then
+    failures=$((failures + 1))
+  fi
 done
+
+exit $(( failures > 0 ))

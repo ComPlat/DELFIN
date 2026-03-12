@@ -51,6 +51,11 @@ _SPEC_BY_CANONICAL = {spec.name: spec for spec in _TOOL_SPECS}
 _ALIAS_TO_CANONICAL = {
     alias: spec.name for spec in _TOOL_SPECS for alias in (spec.name,) + spec.aliases
 }
+_XTB4STDA_RUNTIME_FILES: tuple[str, ...] = (
+    ".xtb4stdarc",
+    ".param_stda1.xtb",
+    ".param_stda2.xtb",
+)
 
 
 def get_qm_tools_root() -> Path:
@@ -62,6 +67,27 @@ def get_qm_tools_root() -> Path:
 
 def get_qm_tools_bin_dir() -> Path:
     return get_qm_tools_root() / "bin"
+
+
+def get_xtb4stda_runtime_root(*, env: Optional[Mapping[str, str]] = None) -> Path:
+    env_map = env if env is not None else os.environ
+    configured = env_map.get("XTB4STDAHOME")
+    if configured:
+        return Path(configured).expanduser()
+    return get_qm_tools_root() / "share" / "xtb4stda"
+
+
+def get_xtb4stda_runtime_status(
+    *,
+    env: Optional[Mapping[str, str]] = None,
+) -> tuple[Path, list[str]]:
+    runtime_root = get_xtb4stda_runtime_root(env=env)
+    missing = [
+        filename
+        for filename in _XTB4STDA_RUNTIME_FILES
+        if not (runtime_root / filename).is_file()
+    ]
+    return runtime_root, missing
 
 
 def canonical_tool_name(name: str) -> str:
