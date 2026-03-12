@@ -446,6 +446,13 @@ def _parse_step_set(raw: Any) -> Set[int]:
     return steps
 
 
+def _redox_steps_requested(config: Dict[str, Any]) -> bool:
+    """Return True when oxidation or reduction steps are configured."""
+    return bool(_parse_step_set(config.get("oxidation_steps"))) or bool(
+        _parse_step_set(config.get("reduction_steps"))
+    )
+
+
 def _parse_iroot_spec(raw: Any, *, default: List[int]) -> List[int]:
     """Parse an IROOT specification from CONTROL.
 
@@ -817,9 +824,17 @@ def _create_state_input_delta_scf(
     if geom_token:
         keywords.append(geom_token)
 
-    # Only add FREQ/numFREQ if frequency calculations are enabled
-    # S0 always uses FREQ, all other states use freq_type (typically numFREQ)
-    if esd_frequency_enabled:
+    # For redox workflows, the first S0 job must always run with FREQ so
+    # thermochemistry is available even when ESD_frequency=no.
+    s0_first_job_with_freq = state_upper == "S0" and (
+        esd_frequency_enabled or _redox_steps_requested(config)
+    )
+
+    # Only add FREQ/numFREQ if frequency calculations are enabled,
+    # except for the first S0 job in redox workflows.
+    if s0_first_job_with_freq:
+        keywords.append("FREQ")
+    elif esd_frequency_enabled:
         if state_upper == "S0":
             keywords.append("FREQ")
         else:
@@ -1613,7 +1628,8 @@ def _create_state_input_tddft(
                 keywords.append(solvation_kw)
             if geom_token:
                 keywords.append(geom_token)
-            if esd_frequency_enabled:
+            s0_first_job_with_freq = esd_frequency_enabled or _redox_steps_requested(config)
+            if s0_first_job_with_freq:
                 keywords.append("FREQ")
             f.write("! " + " ".join(k for k in keywords if str(k).strip()) + "\n")
             f.write('%base "S0"\n')
