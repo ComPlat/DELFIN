@@ -263,6 +263,12 @@ def _run_tadf_xtb_subcommand(argv: list[str]) -> int:
     return run_tadf_xtb_cli(argv)
 
 
+def _run_hyperpol_subcommand(argv: list[str]) -> int:
+    from .hyperpol import run_cli as run_hyperpol_cli
+
+    return run_hyperpol_cli(argv)
+
+
 _SAFE_FILE_NAMES: set[str] = {
     "DELFIN.txt",
     "OCCUPIER.txt",
@@ -1084,6 +1090,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_qm_run_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "tadf_xtb":
         return _run_tadf_xtb_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] in {"hyperpol", "hyperpol_xtb"}:
+        return _run_hyperpol_subcommand(arg_list[1:])
 
     _load_full_cli_dependencies()
 
