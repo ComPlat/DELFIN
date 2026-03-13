@@ -9774,7 +9774,18 @@ def create_tab(ctx):
         }
         function _clickWidgetButton(root, cls){
             if (!root) return false;
-            var btn = root.querySelector('.' + cls + ' button');
+            var node = root.querySelector('.' + cls);
+            if (!node) return false;
+            var btn = null;
+            if (node.tagName === 'BUTTON') {
+                btn = node;
+            } else if (node.querySelector) {
+                btn = node.querySelector('button');
+            }
+            if (!btn && typeof node.click === 'function') {
+                node.click();
+                return true;
+            }
             if (!btn) return false;
             btn.click();
             return true;
@@ -9855,6 +9866,66 @@ def create_tab(ctx):
                 merged = merged.concat(_normalizeRelParts(segment));
             }
             return merged;
+        }
+        function _basename(path){
+            var parts = _normalizeRelParts(path);
+            return parts.length ? parts[parts.length - 1] : '';
+        }
+        function _widgetText(root, cls){
+            if (!root) return '';
+            var node = root.querySelector('.' + cls);
+            return node ? String(node.textContent || node.innerText || '').trim() : '';
+        }
+        function _currentUploadAck(root){
+            return _getWidgetFieldValue(root, 'calc-upload-ack') || _widgetText(root, 'calc-upload-ack-label');
+        }
+        function _sleep(ms){
+            return new Promise(function(resolve){ setTimeout(resolve, ms); });
+        }
+        function _waitForUploadAck(root, previousAck, timeoutMs){
+            return new Promise(function(resolve, reject){
+                var start = Date.now();
+                var prev = String(previousAck == null ? '' : previousAck);
+                function check(){
+                    var cur = _currentUploadAck(root);
+                    if (cur && cur !== prev) {
+                        resolve(cur);
+                        return true;
+                    }
+                    if ((Date.now() - start) >= timeoutMs) {
+                        reject(new Error('Explorer upload bridge timed out.'));
+                        return true;
+                    }
+                    return false;
+                }
+                if (check()) return;
+                var timer = setInterval(function(){
+                    if (check()) clearInterval(timer);
+                }, 40);
+            });
+        }
+        async function _sendUploadChunk(root, meta, chunkData){
+            var prevAck = _currentUploadAck(root);
+            if (!_setWidgetInput(root, 'calc-upload-meta', JSON.stringify(meta))) {
+                throw new Error('Upload meta widget not found');
+            }
+            if (!_setWidgetInput(root, 'calc-upload-chunk', chunkData)) {
+                throw new Error('Upload chunk widget not found');
+            }
+            if (_clickWidgetButton(root, 'calc-upload-trigger-btn')) {
+                await _waitForUploadAck(root, prevAck, 20000);
+                await _sleep(5);
+                return;
+            }
+            root._delfinUploadSeq = Math.max(
+                Number(root._delfinUploadSeq) || 0,
+                parseInt(String(_currentUploadAck(root) || '0'), 10) || 0
+            ) + 1;
+            if (!_setWidgetInput(root, 'calc-upload-seq', String(root._delfinUploadSeq))) {
+                throw new Error('Upload trigger controls not found');
+            }
+            await _waitForUploadAck(root, prevAck, 20000);
+            await _sleep(5);
         }
         async function _putContentsModel(relPath, model){
             var url = _baseUrl().replace(/\/?$/, '/') + 'api/contents/' + _encodeContentsPath(relPath);
@@ -10070,40 +10141,30 @@ def create_tab(ctx):
             console.log('[DELFIN] _uploadBrowserFiles called, files:', browserFiles.length, 'targetName:', targetName);
             if (!root || !browserFiles || !browserFiles.length) return false;
             _setOpsStatus(root, 'Uploading ' + browserFiles.length + ' file(s)...', '#555');
-            var uploadBtn = root.querySelector('.calc-hidden-upload') || document.querySelector('.calc-hidden-upload');
-            if (!uploadBtn) {
-                throw new Error('FileUpload widget not found in DOM');
-            }
-            var dt = new DataTransfer();
+            var chunkChars = 350000;
+            var batchId = String(batchPrefix || 'drop') + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+            var target = String(targetName || '');
             for (var i = 0; i < browserFiles.length; i++) {
-                var f = browserFiles[i].file;
-                if (f) dt.items.add(f);
-            }
-            if (!dt.files.length) {
-                throw new Error('No valid files to upload');
-            }
-            var capturedInput = null;
-            var origInputClick = HTMLInputElement.prototype.click;
-            HTMLInputElement.prototype.click = function(){
-                if (this.type === 'file') {
-                    capturedInput = this;
-                    console.log('[DELFIN] Intercepted file input .click(), preventing dialog');
-                    return;
+                var browserEntry = browserFiles[i];
+                var fileObj = browserEntry && browserEntry.file ? browserEntry.file : null;
+                if (!fileObj) continue;
+                var relativePath = String(browserEntry.relativePath || fileObj.webkitRelativePath || fileObj.name || ('upload_' + i));
+                var payload = await _readFileAsBase64(fileObj);
+                var totalChunks = Math.max(1, Math.ceil(payload.length / chunkChars));
+                for (var chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                    var chunkData = payload.slice(chunkIndex * chunkChars, (chunkIndex + 1) * chunkChars);
+                    await _sendUploadChunk(root, {
+                        batch_id: batchId,
+                        upload_id: batchId + ':' + i,
+                        batch_total: browserFiles.length,
+                        chunk_index: chunkIndex,
+                        chunk_total: totalChunks,
+                        target: target,
+                        name: _basename(relativePath) || (fileObj.name || ('upload_' + i)),
+                        relative_path: relativePath,
+                    }, chunkData);
                 }
-                return origInputClick.call(this);
-            };
-            try {
-                uploadBtn.click();
-            } finally {
-                HTMLInputElement.prototype.click = origInputClick;
             }
-            if (!capturedInput) {
-                console.error('[DELFIN] Failed to capture file input from FileUpload button click');
-                throw new Error('Could not intercept FileUpload file input');
-            }
-            capturedInput.files = dt.files;
-            console.log('[DELFIN] Dispatching change on captured input, files:', capturedInput.files.length);
-            capturedInput.dispatchEvent(new Event('change', { bubbles: true }));
             _setOpsStatus(root, 'Upload sent. Processing...', '#2e7d32');
             return true;
         }
