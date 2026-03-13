@@ -592,6 +592,7 @@ def run_single_tadf_xtb(
     use_goat: bool,
     run_t1_opt: bool,
     t1_multiplicity: int,
+    optimize_s0: bool = True,
 ) -> TadfXtbResult:
     workdir.mkdir(parents=True, exist_ok=True)
     if entry.xyz_path:
@@ -645,7 +646,7 @@ def run_single_tadf_xtb(
             maxcore=maxcore,
         )
         current_xyz = goat_xyz
-    else:
+    elif optimize_s0:
         s0_opt_output, current_xyz, s0_xtb_energy_eh = _run_xtb_opt(
             current_xyz,
             workdir,

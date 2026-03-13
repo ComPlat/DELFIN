@@ -4,14 +4,16 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | delfin-recalc-classic | delfin-recalc-override | orca | build | guppy | delfin-co2-chain | auto
+#   delfin | delfin-recalc | delfin-recalc-classic | delfin-recalc-override | orca | build | guppy | hyperpol_xtb | tadf_xtb | delfin-co2-chain | auto
 #
 # ENVIRONMENT VARIABLES:
 #   DELFIN_MODE          : Run mode (default: auto)
 #   DELFIN_JOB_NAME      : Display name
 #   DELFIN_INP_FILE      : Specific .inp file for ORCA mode
+#   DELFIN_XYZ_FILE      : Specific .xyz file for browser-launched hyperpol_xtb/tadf_xtb modes
 #   DELFIN_OVERRIDE      : Override value for delfin-recalc-override
 #   DELFIN_JOB_ID        : Job ID for status tracking
+#   DELFIN_WORKFLOW_LABEL: Workflow label for browser-launched hyperpol_xtb/tadf_xtb modes
 #   BUILD_MULTIPLICITY   : Spin multiplicity for build mode (default: 1)
 #   GUPPY_RUNS           : Number of GUPPY sampling runs (default: 20)
 #   GUPPY_PAL            : Total PAL budget for GUPPY (default: DELFIN_PAL or local nproc)
@@ -260,6 +262,66 @@ case "$MODE" in
         )
         "${GUPPY_CMD[@]}"
         EXIT_CODE=$?
+        ;;
+    hyperpol_xtb)
+        XYZ_FILE="${DELFIN_XYZ_FILE:-}"
+        WORKFLOW_LABEL="${DELFIN_WORKFLOW_LABEL:-hyperpol_xtb}"
+        TARGET_WORKDIR="$PWD"
+        if [ -z "$XYZ_FILE" ]; then
+            echo "ERROR: DELFIN_XYZ_FILE not set for hyperpol_xtb mode"
+            EXIT_CODE=1
+        elif [ ! -f "$XYZ_FILE" ]; then
+            echo "ERROR: XYZ file not found for hyperpol_xtb mode: $XYZ_FILE"
+            EXIT_CODE=1
+        else
+            echo "Starting browser hyperpol_xtb workflow..."
+            echo "  XYZ:          $XYZ_FILE"
+            echo "  Label:        $WORKFLOW_LABEL"
+            echo "  PAL:          ${DELFIN_PAL:-4}"
+            echo "  Maxcore:      ${DELFIN_MAXCORE:-1000}"
+            echo "  Time limit:   handled by backend queue"
+            "$DELFIN_PYTHON" -m delfin.dashboard.browser_workflows hyperpol_xtb \
+                --xyz-file "$XYZ_FILE" \
+                --label "$WORKFLOW_LABEL" \
+                --workdir "$TARGET_WORKDIR" \
+                --engine std2 \
+                --preopt none \
+                --static-only \
+                --energy-window 15 \
+                --pal "${DELFIN_PAL:-4}" \
+                --maxcore "${DELFIN_MAXCORE:-1000}" \
+                --json-out "$TARGET_WORKDIR/hyperpol_xtb_summary.json" \
+                | tee "$TARGET_WORKDIR/hyperpol_xtb.output"
+            EXIT_CODE=${PIPESTATUS[0]}
+        fi
+        ;;
+    tadf_xtb)
+        XYZ_FILE="${DELFIN_XYZ_FILE:-}"
+        WORKFLOW_LABEL="${DELFIN_WORKFLOW_LABEL:-tadf_xtb}"
+        TARGET_WORKDIR="$PWD"
+        if [ -z "$XYZ_FILE" ]; then
+            echo "ERROR: DELFIN_XYZ_FILE not set for tadf_xtb mode"
+            EXIT_CODE=1
+        elif [ ! -f "$XYZ_FILE" ]; then
+            echo "ERROR: XYZ file not found for tadf_xtb mode: $XYZ_FILE"
+            EXIT_CODE=1
+        else
+            echo "Starting browser tadf_xtb workflow..."
+            echo "  XYZ:          $XYZ_FILE"
+            echo "  Label:        $WORKFLOW_LABEL"
+            echo "  PAL:          ${DELFIN_PAL:-4}"
+            echo "  Maxcore:      ${DELFIN_MAXCORE:-1000}"
+            echo "  Time limit:   handled by backend queue"
+            "$DELFIN_PYTHON" -m delfin.dashboard.browser_workflows tadf_xtb \
+                --xyz-file "$XYZ_FILE" \
+                --label "$WORKFLOW_LABEL" \
+                --workdir "$TARGET_WORKDIR" \
+                --pal "${DELFIN_PAL:-4}" \
+                --maxcore "${DELFIN_MAXCORE:-1000}" \
+                --json-out "$TARGET_WORKDIR/tadf_xtb_summary.json" \
+                | tee "$TARGET_WORKDIR/tadf_xtb.output"
+            EXIT_CODE=${PIPESTATUS[0]}
+        fi
         ;;
     delfin-co2-chain)
         CO2_SPECIES_DELTA="${DELFIN_CO2_SPECIES_DELTA:-0}"

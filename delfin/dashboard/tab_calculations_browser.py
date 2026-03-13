@@ -68,6 +68,9 @@ def create_tab(ctx):
     CALC_XYZ_PLAY_FPS_DEFAULT = 10
     CALC_XYZ_PLAY_FPS_MIN = 1
     CALC_XYZ_PLAY_FPS_MAX = 60
+    CALC_BROWSER_WORKFLOW_PAL = 4
+    CALC_BROWSER_WORKFLOW_MAXCORE = 1000
+    CALC_BROWSER_WORKFLOW_TIMELIMIT = '00:10:00'
     # -- state (closure-captured) -------------------------------------------
     state = {
         'current_path': '',
@@ -1255,6 +1258,140 @@ def create_tab(ctx):
 
     def _calc_current_dir():
         return _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
+
+    def _calc_safe_job_token(text, fallback):
+        cleaned = re.sub(r'[^A-Za-z0-9._-]+', '_', str(text or '').strip()).strip('._-')
+        return cleaned or fallback
+
+    def _calc_count_xyz_frames(path, stop_after=2):
+        frames = 0
+        try:
+            with Path(path).open('r', encoding='utf-8', errors='ignore') as handle:
+                while frames < max(1, int(stop_after)):
+                    atom_line = None
+                    for raw_line in handle:
+                        stripped = raw_line.strip()
+                        if stripped:
+                            atom_line = stripped
+                            break
+                    if atom_line is None:
+                        break
+                    try:
+                        atom_count = int(atom_line)
+                    except ValueError:
+                        return 0
+                    if atom_count <= 0:
+                        return 0
+                    if next(handle, None) is None:
+                        return 0
+                    for _ in range(atom_count):
+                        if next(handle, None) is None:
+                            return 0
+                    frames += 1
+        except OSError:
+            return 0
+        return frames
+
+    def _calc_is_single_structure_xyz(path):
+        candidate = Path(path)
+        return (
+            candidate.is_file()
+            and candidate.suffix.lower() == '.xyz'
+            and _calc_count_xyz_frames(candidate, stop_after=2) == 1
+        )
+
+    def _calc_next_available_dir(parent_dir, folder_name):
+        candidate = Path(parent_dir) / folder_name
+        if not candidate.exists():
+            return candidate
+        index = 2
+        while True:
+            numbered = Path(parent_dir) / f'{folder_name}_{index}'
+            if not numbered.exists():
+                return numbered
+            index += 1
+
+    def _calc_reset_options_dropdown():
+        try:
+            calc_options_dropdown.unobserve(calc_on_options_change, names='value')
+        except Exception:
+            pass
+        calc_options_dropdown.value = '(Options)'
+        calc_options_dropdown.observe(calc_on_options_change, names='value')
+
+    def _calc_submit_xyz_browser_workflow(mode):
+        selected_path = _calc_selected_item_path()
+        if selected_path is None or selected_path.suffix.lower() != '.xyz':
+            _calc_set_ops_status('Select a single-structure .xyz file first.', '#d32f2f')
+            return
+        if not _calc_is_single_structure_xyz(selected_path):
+            _calc_set_ops_status('This action is only available for .xyz files with exactly one structure.', '#d32f2f')
+            return
+
+        base_token = _calc_safe_job_token(selected_path.stem, 'xyz_job')
+        if mode == 'hyperpol_xtb':
+            folder_name = f'{base_token}_hyperpol_xtb'
+            workflow_label = f'{base_token}_beta'
+            submit_fn = ctx.backend.submit_hyperpol_xtb
+        elif mode == 'tadf_xtb':
+            folder_name = f'{base_token}_tadf_xtb'
+            workflow_label = f'{base_token}_tadf'
+            submit_fn = ctx.backend.submit_tadf_xtb
+        else:
+            _calc_set_ops_status(f'Unknown workflow mode: {_html.escape(str(mode))}', '#d32f2f')
+            return
+
+        target_dir = _calc_next_available_dir(selected_path.parent, folder_name)
+        copied_xyz_name = f'{base_token}.xyz'
+        copied_xyz_path = target_dir / copied_xyz_name
+        try:
+            target_dir.mkdir(parents=True, exist_ok=False)
+            shutil.copy2(selected_path, copied_xyz_path)
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Failed to prepare workflow folder <code>{_html.escape(target_dir.name)}</code>: '
+                f'{_html.escape(str(exc))}',
+                '#d32f2f',
+            )
+            return
+
+        _calc_set_ops_status(
+            f'Submitting <code>{_html.escape(mode)}</code> from '
+            f'<code>{_html.escape(target_dir.name)}</code>...',
+            '#1976d2',
+        )
+        try:
+            result = submit_fn(
+                job_dir=target_dir,
+                job_name=target_dir.name,
+                xyz_file=copied_xyz_name,
+                label=workflow_label,
+                time_limit=CALC_BROWSER_WORKFLOW_TIMELIMIT,
+                pal=CALC_BROWSER_WORKFLOW_PAL,
+                maxcore=CALC_BROWSER_WORKFLOW_MAXCORE,
+            )
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Error submitting <code>{_html.escape(mode)}</code>: {_html.escape(str(exc))}',
+                '#d32f2f',
+            )
+            return
+
+        calc_list_directory()
+        if result.returncode == 0:
+            submit_msg = (result.stdout or '').strip() or 'Submitted'
+            _calc_set_ops_status(
+                f'Submitted <code>{_html.escape(mode)}</code> in '
+                f'<code>{_html.escape(target_dir.name)}</code>: {_html.escape(submit_msg)}',
+                '#2e7d32',
+            )
+        else:
+            submit_msg = (result.stderr or result.stdout or 'Unknown error').strip()
+            _calc_set_ops_status(
+                f'Failed to submit <code>{_html.escape(mode)}</code> in '
+                f'<code>{_html.escape(target_dir.name)}</code>: {_html.escape(submit_msg)}',
+                '#d32f2f',
+            )
 
     def _calc_resolve_within_root(path):
         root = _calc_dir().resolve()
@@ -5939,6 +6076,9 @@ def create_tab(ctx):
                 return
         if selected and sel_lower.endswith('.xyz'):
             xyz_options = ['(Options)', 'Build Batch from XYZ']
+            selected_path = _calc_selected_item_path()
+            if selected_path and _calc_is_single_structure_xyz(selected_path):
+                xyz_options.extend(['hyperpol_xtb', 'tadf_xtb'])
             if rmsd_available:
                 xyz_options.append('RMSD')
             calc_options_dropdown.options = xyz_options
@@ -6667,6 +6807,18 @@ def create_tab(ctx):
                 return
             calc_xyz_batch_filename.value = _calc_xyz_batch_default_filename()
             _calc_show_xyz_batch_panel(True)
+        elif change['new'] in ('hyperpol_xtb', 'tadf_xtb'):
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            calc_content_area.layout.display = 'block'
+            _calc_submit_xyz_browser_workflow(change['new'])
+            _calc_reset_options_dropdown()
         elif change['new'] == 'Print Mode':
             calc_override_input.layout.display = 'none'
             calc_override_time.layout.display = 'none'

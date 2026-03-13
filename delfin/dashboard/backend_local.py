@@ -121,6 +121,10 @@ class LocalJobBackend(JobBackend):
             env['DELFIN_PAL'] = str(job['pal'])
         if job.get('maxcore') is not None:
             env['DELFIN_MAXCORE'] = str(job['maxcore'])
+        if job.get('xyz_file'):
+            env['DELFIN_XYZ_FILE'] = str(job['xyz_file'])
+        if job.get('workflow_label'):
+            env['DELFIN_WORKFLOW_LABEL'] = str(job['workflow_label'])
 
         try:
             log_file = Path(job['job_dir']) / f'delfin_{job["job_id"]}.out'
@@ -189,7 +193,8 @@ class LocalJobBackend(JobBackend):
     # ------------------------------------------------------------------
     def _enqueue(self, job_dir, mode, job_name, inp_file=None,
                  time_limit='48:00:00', override=None, build_mult=None,
-                 pal=40, maxcore=6000, co2_species_delta=None):
+                 pal=40, maxcore=6000, co2_species_delta=None,
+                 xyz_file=None, workflow_label=None):
         if not self.run_script.exists():
             return SubmitResult(1, stderr=f'Run script not found: {self.run_script}')
 
@@ -215,6 +220,8 @@ class LocalJobBackend(JobBackend):
                 'override': override,
                 'build_mult': build_mult,
                 'co2_species_delta': co2_species_delta,
+                'xyz_file': xyz_file,
+                'workflow_label': workflow_label,
                 'log_file': None,
             }
             data['jobs'].append(job_entry)
@@ -242,6 +249,22 @@ class LocalJobBackend(JobBackend):
         return self._enqueue(
             job_dir, 'orca', job_name, inp_file=inp_file,
             time_limit=time_limit, pal=pal, maxcore=maxcore,
+        )
+
+    def submit_hyperpol_xtb(self, job_dir, job_name, xyz_file, label,
+                            time_limit='48:00:00', pal=4, maxcore=1000) -> SubmitResult:
+        return self._enqueue(
+            job_dir, 'hyperpol_xtb', job_name,
+            time_limit=time_limit, pal=pal, maxcore=maxcore,
+            xyz_file=xyz_file, workflow_label=label,
+        )
+
+    def submit_tadf_xtb(self, job_dir, job_name, xyz_file, label,
+                        time_limit='48:00:00', pal=4, maxcore=1000) -> SubmitResult:
+        return self._enqueue(
+            job_dir, 'tadf_xtb', job_name,
+            time_limit=time_limit, pal=pal, maxcore=maxcore,
+            xyz_file=xyz_file, workflow_label=label,
         )
 
     def list_jobs(self) -> List[JobInfo]:

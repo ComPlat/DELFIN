@@ -122,6 +122,42 @@ class SlurmJobBackend(JobBackend):
         )
         return SubmitResult(result.returncode, result.stdout, result.stderr)
 
+    def submit_hyperpol_xtb(self, job_dir, job_name, xyz_file, label,
+                            time_limit='48:00:00', pal=4, maxcore=1000) -> SubmitResult:
+        pal_used = max(1, int(pal))
+        maxcore_used = max(1, int(maxcore))
+        mem_used = pal_used * maxcore_used
+        env_vars = (
+            f'DELFIN_MODE=hyperpol_xtb,DELFIN_JOB_NAME={job_name},'
+            f'DELFIN_XYZ_FILE={xyz_file},DELFIN_WORKFLOW_LABEL={label},'
+            f'DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
+        )
+        if self.orca_base:
+            env_vars += f',DELFIN_ORCA_BASE={self.orca_base}'
+        result = self._sbatch(
+            job_dir, env_vars, time_limit, pal_used, mem_used,
+            job_name, self.submit_templates_dir / 'submit_delfin.sh',
+        )
+        return SubmitResult(result.returncode, result.stdout, result.stderr)
+
+    def submit_tadf_xtb(self, job_dir, job_name, xyz_file, label,
+                        time_limit='48:00:00', pal=4, maxcore=1000) -> SubmitResult:
+        pal_used = max(1, int(pal))
+        maxcore_used = max(1, int(maxcore))
+        mem_used = pal_used * maxcore_used
+        env_vars = (
+            f'DELFIN_MODE=tadf_xtb,DELFIN_JOB_NAME={job_name},'
+            f'DELFIN_XYZ_FILE={xyz_file},DELFIN_WORKFLOW_LABEL={label},'
+            f'DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
+        )
+        if self.orca_base:
+            env_vars += f',DELFIN_ORCA_BASE={self.orca_base}'
+        result = self._sbatch(
+            job_dir, env_vars, time_limit, pal_used, mem_used,
+            job_name, self.submit_templates_dir / 'submit_delfin.sh',
+        )
+        return SubmitResult(result.returncode, result.stdout, result.stderr)
+
     def submit_turbomole(self, job_dir, job_name, module='ridft',
                          time_limit='48:00:00', nprocs=40, mem_per_cpu=6000,
                          para_arch='SMP') -> SubmitResult:

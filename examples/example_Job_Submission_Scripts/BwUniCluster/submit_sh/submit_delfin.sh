@@ -18,7 +18,7 @@
 # ========================================================================
 #
 # MODES (set via DELFIN_MODE environment variable):
-#   delfin | delfin-recalc | delfin-recalc-classic | orca | build | guppy | delfin-co2-chain | auto (default: auto)
+#   delfin | delfin-recalc | delfin-recalc-classic | orca | build | guppy | hyperpol_xtb | tadf_xtb | delfin-co2-chain | auto (default: auto)
 #   BUILD_MULTIPLICITY: Spin multiplicity for build mode (default: 1)
 #   GUPPY_RUNS: Number of GUPPY sampling runs (default: 20)
 #   GUPPY_PAL: Total PAL budget for GUPPY (default: DELFIN_PAL or SLURM_CPUS_PER_TASK)
@@ -29,6 +29,8 @@
 #   DELFIN_CO2_SPECIES_DELTA: Redox species delta for delfin-co2-chain mode (default: 0)
 #   DELFIN_INP_FILE: Specific .inp file for ORCA mode
 #   DELFIN_JOB_NAME: Job name for display (optional)
+#   DELFIN_XYZ_FILE: Specific .xyz file for browser-launched hyperpol_xtb/tadf_xtb modes
+#   DELFIN_WORKFLOW_LABEL: Workflow label for browser-launched hyperpol_xtb/tadf_xtb modes
 #
 # RESOURCE PARAMETERS (via sbatch command-line overrides):
 #   --time, --ntasks, --cpus-per-task, --mem, --job-name
@@ -664,7 +666,7 @@ echo ""
 # runs keep the full workspace copy because they may depend on existing outputs.
 COPY_PROFILE="full"
 case "$MODE" in
-    delfin|build|guppy|delfin-co2-chain)
+    delfin|build|guppy|hyperpol_xtb|tadf_xtb|delfin-co2-chain)
         COPY_PROFILE="fresh"
         ;;
 esac
@@ -769,6 +771,66 @@ case "$MODE" in
         "${GUPPY_CMD[@]}"
         EXIT_CODE=$?
         ;;
+    hyperpol_xtb)
+        XYZ_FILE="${DELFIN_XYZ_FILE:-}"
+        WORKFLOW_LABEL="${DELFIN_WORKFLOW_LABEL:-hyperpol_xtb}"
+        TARGET_WORKDIR="${SLURM_SUBMIT_DIR:-$PWD}"
+        if [ -z "$XYZ_FILE" ]; then
+            echo "ERROR: DELFIN_XYZ_FILE not set for hyperpol_xtb mode"
+            EXIT_CODE=1
+        elif [ ! -f "$XYZ_FILE" ]; then
+            echo "ERROR: XYZ file not found for hyperpol_xtb mode: $XYZ_FILE"
+            EXIT_CODE=1
+        else
+            echo "Starting browser hyperpol_xtb workflow..."
+            echo "  XYZ:          $XYZ_FILE"
+            echo "  Label:        $WORKFLOW_LABEL"
+            echo "  PAL:          ${DELFIN_PAL:-4}"
+            echo "  Maxcore:      ${DELFIN_MAXCORE:-1000}"
+            echo "  Target Dir:   $TARGET_WORKDIR"
+            "$DELFIN_PYTHON" -m delfin.dashboard.browser_workflows hyperpol_xtb \
+                --xyz-file "$XYZ_FILE" \
+                --label "$WORKFLOW_LABEL" \
+                --workdir "$TARGET_WORKDIR" \
+                --engine std2 \
+                --preopt none \
+                --static-only \
+                --energy-window 15 \
+                --pal "${DELFIN_PAL:-4}" \
+                --maxcore "${DELFIN_MAXCORE:-1000}" \
+                --json-out "$TARGET_WORKDIR/hyperpol_xtb_summary.json" \
+                | tee "$TARGET_WORKDIR/hyperpol_xtb.output"
+            EXIT_CODE=${PIPESTATUS[0]}
+        fi
+        ;;
+    tadf_xtb)
+        XYZ_FILE="${DELFIN_XYZ_FILE:-}"
+        WORKFLOW_LABEL="${DELFIN_WORKFLOW_LABEL:-tadf_xtb}"
+        TARGET_WORKDIR="${SLURM_SUBMIT_DIR:-$PWD}"
+        if [ -z "$XYZ_FILE" ]; then
+            echo "ERROR: DELFIN_XYZ_FILE not set for tadf_xtb mode"
+            EXIT_CODE=1
+        elif [ ! -f "$XYZ_FILE" ]; then
+            echo "ERROR: XYZ file not found for tadf_xtb mode: $XYZ_FILE"
+            EXIT_CODE=1
+        else
+            echo "Starting browser tadf_xtb workflow..."
+            echo "  XYZ:          $XYZ_FILE"
+            echo "  Label:        $WORKFLOW_LABEL"
+            echo "  PAL:          ${DELFIN_PAL:-4}"
+            echo "  Maxcore:      ${DELFIN_MAXCORE:-1000}"
+            echo "  Target Dir:   $TARGET_WORKDIR"
+            "$DELFIN_PYTHON" -m delfin.dashboard.browser_workflows tadf_xtb \
+                --xyz-file "$XYZ_FILE" \
+                --label "$WORKFLOW_LABEL" \
+                --workdir "$TARGET_WORKDIR" \
+                --pal "${DELFIN_PAL:-4}" \
+                --maxcore "${DELFIN_MAXCORE:-1000}" \
+                --json-out "$TARGET_WORKDIR/tadf_xtb_summary.json" \
+                | tee "$TARGET_WORKDIR/tadf_xtb.output"
+            EXIT_CODE=${PIPESTATUS[0]}
+        fi
+        ;;
     delfin-co2-chain)
         CO2_SPECIES_DELTA="${DELFIN_CO2_SPECIES_DELTA:-0}"
         echo "Starting DELFIN + CO2 Coordinator chain..."
@@ -799,7 +861,7 @@ case "$MODE" in
         ;;
     *)
         echo "ERROR: Unknown mode: $MODE"
-        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-classic, delfin-recalc-override, orca, build, guppy, delfin-co2-chain, auto"
+        echo "       Valid modes: delfin, delfin-recalc, delfin-recalc-classic, delfin-recalc-override, orca, build, guppy, hyperpol_xtb, tadf_xtb, delfin-co2-chain, auto"
         EXIT_CODE=1
         ;;
 esac
