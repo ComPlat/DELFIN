@@ -2087,8 +2087,23 @@ def create_tab(ctx):
         calc_duplicate_prompt_input.value = ''
         calc_duplicate_prompt_row.layout.display = 'none'
 
+    def _calc_clipboard_store():
+        store = getattr(ctx, 'shared_clipboard', None)
+        if not isinstance(store, dict):
+            store = {
+                'paths': list(getattr(ctx, 'clipboard_paths', []) or []),
+                'mode': str(getattr(ctx, 'clipboard_mode', '') or ''),
+            }
+            ctx.shared_clipboard = store
+        if 'paths' not in store:
+            store['paths'] = []
+        if 'mode' not in store:
+            store['mode'] = ''
+        return store
+
     def _calc_clipboard_paths():
-        raw_paths = ctx.clipboard_paths or []
+        store = _calc_clipboard_store()
+        raw_paths = store.get('paths', []) or []
         valid = []
         for raw in raw_paths:
             try:
@@ -2097,8 +2112,16 @@ def create_tab(ctx):
                 continue
             if p.exists():
                 valid.append(p)
-        ctx.clipboard_paths = [str(p) for p in valid]
+        normalized = [str(p) for p in valid]
+        store['paths'] = normalized
+        ctx.clipboard_paths = normalized
         return valid
+
+    def _calc_clipboard_mode():
+        store = _calc_clipboard_store()
+        mode = str(store.get('mode', '') or '')
+        ctx.clipboard_mode = mode
+        return mode
 
     def _calc_update_explorer_action_state():
         _calc_clipboard_paths()
@@ -8131,12 +8154,16 @@ def create_tab(ctx):
                 color='#d32f2f',
             )
             return
-        ctx.clipboard_paths = [str(p) for p in resolved_sources]
+        normalized = [str(p) for p in resolved_sources]
+        store = _calc_clipboard_store()
+        store['paths'] = normalized
+        store['mode'] = mode
+        ctx.clipboard_paths = normalized
         ctx.clipboard_mode = mode
         _calc_update_explorer_action_state()
         verb = 'Cut' if mode == 'cut' else 'Copied'
         _calc_set_ops_status(
-            f'{verb} {len(resolved_sources)} item(s). Open target folder and press Ctrl+V or click Paste.',
+            f'{verb} {len(resolved_sources)} item(s). Open target folder and press Ctrl+V.',
             color='#1976d2',
         )
 
@@ -8163,7 +8190,7 @@ def create_tab(ctx):
             _calc_update_explorer_action_state()
             _calc_set_ops_status('Clipboard is empty. Use Ctrl+X or Ctrl+C first.', color='#d32f2f')
             return
-        mode = ctx.clipboard_mode or 'cut'
+        mode = _calc_clipboard_mode() or 'cut'
         target_dir = _calc_current_dir().resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
         root = _calc_dir().resolve()
@@ -8201,7 +8228,10 @@ def create_tab(ctx):
                     f'{_html.escape(getattr(src, "name", str(src)))}: {_html.escape(str(exc))}'
                 )
         if mode == 'cut':
-            ctx.clipboard_paths = [str(p) for p in remaining]
+            normalized = [str(p) for p in remaining]
+            store = _calc_clipboard_store()
+            store['paths'] = normalized
+            ctx.clipboard_paths = normalized
         # copy keeps clipboard intact
         _calc_update_explorer_action_state()
 

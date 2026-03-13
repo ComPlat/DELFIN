@@ -51,6 +51,9 @@ class DashboardContext:
     # Shared clipboard for cross-tab cut/copy/paste
     clipboard_paths: list = field(default_factory=list)
     clipboard_mode: str = ''  # 'cut' or 'copy'
+    shared_clipboard: dict = field(
+        default_factory=lambda: {'paths': [], 'mode': ''}
+    )
 
     # Templates
     default_control: str = ''
