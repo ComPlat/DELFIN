@@ -95,7 +95,6 @@ def create_tab(ctx):
         'selected_inp_base': '',
         'recalc_active': False,
         'delete_current': False,
-        'select_mode': False,
         'table_col_defs': [
             {'name': 'Value 1', 'type': 'text', 'pattern': '', 'occ': 'last'},
         ],
@@ -117,7 +116,6 @@ def create_tab(ctx):
         'rmsd_available': False,
         'rmsd_mode_active': False,
         'rmsd_saved_display': {},
-        'clipboard_move': [],
         'rename_source_path': '',
         'duplicate_source_path': '',
         'preselect': {
@@ -163,9 +161,9 @@ def create_tab(ctx):
         description='🗑 Delete', button_style='danger',
         layout=widgets.Layout(width='80px', height='26px'),
     )
-    calc_select_btn = widgets.Button(
-        description='☑ Select',
-        layout=widgets.Layout(width='76px', height='26px'),
+    calc_explorer_copy_btn = widgets.Button(
+        description='📄 Copy',
+        layout=widgets.Layout(width='72px', height='26px'),
     )
     calc_duplicate_btn = widgets.Button(
         description='Duplicate',
@@ -278,6 +276,17 @@ def create_tab(ctx):
         value='0',
         layout=widgets.Layout(width='1px', height='1px', display='none'),
     )
+    # Bridge widgets for JS → Python double-click and keyboard actions
+    calc_dblclick_input = widgets.Text(
+        value='',
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
+    )
+    calc_dblclick_input.add_class('calc-cmd-dblclick')
+    calc_keyboard_action_input = widgets.Text(
+        value='',
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
+    )
+    calc_keyboard_action_input.add_class('calc-cmd-keyboard-action')
     calc_explorer_new_btn = widgets.Button(
         description='New Folder',
         button_style='success',
@@ -526,24 +535,14 @@ def create_tab(ctx):
     )
     calc_filter_sort_row.add_class('calc-filter-row')
 
-    # File list
-    calc_file_list = widgets.Select(
+    # File list (always multi-select; JS handles click semantics)
+    calc_file_list = widgets.SelectMultiple(
         options=[], rows=22,
         layout=widgets.Layout(
             width='100%', flex='1 1 0', min_height='0', margin='-4px 0 0 0'
         ),
     )
     calc_file_list.add_class('calc-file-list')
-
-    # Multi-select list (shown only in Select mode)
-    calc_multi_select = widgets.SelectMultiple(
-        options=[], rows=22,
-        layout=widgets.Layout(
-            width='100%', flex='1 1 0', min_height='0', margin='-4px 0 0 0',
-            display='none',
-        ),
-    )
-    calc_multi_select.add_class('delfin-multi-select')
 
     # Content area
     calc_content_area = widgets.HTML(
@@ -1307,11 +1306,8 @@ def create_tab(ctx):
             return tail.strip()
         return head.strip()
 
-    def _calc_get_selected_path():
-        selected = calc_file_list.value
-        if not selected or selected.startswith('('):
-            return None
-        name = _calc_label_to_name(selected)
+    def _calc_path_for_label(label):
+        name = _calc_label_to_name(label)
         if not name:
             return None
         return (
@@ -1319,6 +1315,32 @@ def create_tab(ctx):
             if state['current_path']
             else (_calc_dir() / name)
         )
+
+    def _calc_resolve_active_label(preferred_label=''):
+        candidates = []
+        selected_labels = _calc_selected_labels()
+        if len(selected_labels) == 1:
+            candidates.append(selected_labels[0])
+        if preferred_label and preferred_label not in candidates:
+            candidates.append(preferred_label)
+
+        for label in candidates:
+            path = _calc_path_for_label(label)
+            if path is not None and path.exists():
+                return label, path
+
+        for label in candidates:
+            path = _calc_path_for_label(label)
+            if path is not None:
+                return label, path
+
+        return '', None
+
+    def _calc_get_selected_path():
+        labels = _calc_selected_labels()
+        if not labels:
+            return None
+        return _calc_path_for_label(labels[0])
 
     def _calc_set_ops_status(message, color='#555'):
         calc_ops_status.value = f'<span style="color:{color};">{message}</span>'
@@ -1965,12 +1987,7 @@ def create_tab(ctx):
             idx += 1
 
     def _calc_selected_labels():
-        if state['select_mode']:
-            return [label for label in calc_multi_select.value if label and not label.startswith('(')]
-        selected = calc_file_list.value
-        if selected and not selected.startswith('('):
-            return [selected]
-        return []
+        return [label for label in calc_file_list.value if label and not label.startswith('(')]
 
     def _calc_take_forced_action_source():
         forced = str(calc_action_source_input.value or '').strip()
@@ -2001,7 +2018,7 @@ def create_tab(ctx):
         if sources:
             return sources
         # Fallback: allow moving current folder when nothing is selected.
-        if (not state['select_mode']) and state['current_path']:
+        if state['current_path']:
             cur = _calc_current_dir()
             if cur.exists() and cur.resolve() != _calc_dir().resolve():
                 return [cur]
@@ -2036,7 +2053,7 @@ def create_tab(ctx):
                 raise ValueError('Selected item not found.')
             return src
         # Fallback: rename current folder when nothing is selected.
-        if (not state['select_mode']) and state['current_path']:
+        if state['current_path']:
             src = _calc_current_dir()
             if src.exists() and src.resolve() != _calc_dir().resolve():
                 return src
@@ -2057,7 +2074,7 @@ def create_tab(ctx):
                 src = _calc_current_dir() / name
                 if not src.exists():
                     raise ValueError('Selected folder not found.')
-            elif (not state['select_mode']) and state['current_path']:
+            elif state['current_path']:
                 src = _calc_current_dir()
                 if not src.exists() or src.resolve() == _calc_dir().resolve():
                     raise ValueError('Select one folder or open a folder to duplicate it.')
@@ -2084,16 +2101,16 @@ def create_tab(ctx):
         calc_duplicate_prompt_row.layout.display = 'none'
 
     def _calc_clipboard_paths():
-        raw_paths = state.get('clipboard_move') or []
+        raw_paths = ctx.clipboard_paths or []
         valid = []
         for raw in raw_paths:
             try:
-                p = _calc_resolve_within_root(Path(raw))
+                p = Path(raw).resolve()
             except Exception:
                 continue
             if p.exists():
                 valid.append(p)
-        state['clipboard_move'] = [str(p) for p in valid]
+        ctx.clipboard_paths = [str(p) for p in valid]
         return valid
 
     def _calc_update_explorer_action_state():
@@ -3100,10 +3117,10 @@ def create_tab(ctx):
         calc_view_toggle.observe(_on_view_toggle, names='value')
 
     def _calc_open_mutation_visualize_from_selected():
-        selected = calc_file_list.value
-        if not selected or selected.startswith('('):
+        labels = _calc_selected_labels()
+        if not labels:
             return False
-        name = _calc_label_to_name(selected)
+        name = _calc_label_to_name(labels[0])
         mode = _calc_mode_for_mutation_csv_name(name)
         if not mode:
             if name.lower() != 'input.txt':
@@ -3157,10 +3174,10 @@ def create_tab(ctx):
         return ctx.calc_dir
 
     def _calc_selected_item_path():
-        selected = calc_file_list.value
-        if not selected or selected.startswith('('):
+        labels = _calc_selected_labels()
+        if not labels:
             return None
-        name = _calc_label_to_name(selected)
+        name = _calc_label_to_name(labels[0])
         if not name:
             return None
         full_path = (
@@ -3259,12 +3276,13 @@ def create_tab(ctx):
         previous_selection = set(calc_xyz_batch_select.value or ())
         calc_xyz_batch_select.options = candidates
         kept = tuple(label for label in candidates if label in previous_selection)
-        selected_label = calc_file_list.value
+        cur_labels = _calc_selected_labels()
+        selected_label = cur_labels[0] if cur_labels else ''
         if kept:
             calc_xyz_batch_select.value = kept
         elif state.get('current_path'):
             calc_xyz_batch_select.value = ()
-        elif selected_label in candidates:
+        elif selected_label and selected_label in candidates:
             calc_xyz_batch_select.value = (selected_label,)
         else:
             calc_xyz_batch_select.value = ()
@@ -6356,7 +6374,6 @@ def create_tab(ctx):
 
         state['all_items'] = items if items else ['(Empty folder)']
         calc_file_list.options = state['all_items']
-        calc_multi_select.options = state['all_items']
         calc_update_path_display()
         calc_update_report_btn()
         calc_update_download_btn()
@@ -6366,12 +6383,10 @@ def create_tab(ctx):
         query = calc_folder_search.value.strip().lower()
         if not query:
             calc_file_list.options = state['all_items']
-            calc_multi_select.options = state['all_items']
         else:
             filtered = [item for item in state['all_items'] if query in item.lower()]
             result = filtered if filtered else ['(No matches)']
             calc_file_list.options = result
-            calc_multi_select.options = result
 
     # -- recalc helpers -----------------------------------------------------
     def calc_reset_recalc_state():
@@ -6593,7 +6608,8 @@ def create_tab(ctx):
 
     # -- options dropdown ---------------------------------------------------
     def calc_update_options_dropdown():
-        selected = calc_file_list.value
+        labels = _calc_selected_labels()
+        selected = labels[0] if labels else ''
         sel_lower = selected.lower() if selected else ''
         rmsd_available = bool(state.get('rmsd_available'))
         if selected:
@@ -6662,18 +6678,18 @@ def create_tab(ctx):
             parts = state['current_path'].split('/')
             state['current_path'] = '/'.join(parts[:-1])
             calc_list_directory()
-            calc_file_list.value = None
+            calc_file_list.value = ()
 
     def calc_on_home(b):
         _calc_hide_rename_prompt()
         state['current_path'] = ''
         calc_list_directory()
-        calc_file_list.value = None
+        calc_file_list.value = ()
 
     def calc_on_refresh(b):
         _calc_hide_rename_prompt()
         calc_list_directory()
-        calc_file_list.value = None
+        calc_file_list.value = ()
 
     def calc_on_back_to_calculations(_button=None):
         # Archive-tab shortcut: same behavior as move-button, but opposite direction.
@@ -7262,9 +7278,9 @@ def create_tab(ctx):
             calc_edit_area.layout.display = 'none'
             _calc_preselect_show(False)
             calc_content_area.layout.display = 'block'
-            selected = calc_file_list.value
-            if selected:
-                name = _calc_label_to_name(selected)
+            cur_labels = _calc_selected_labels()
+            if cur_labels:
+                name = _calc_label_to_name(cur_labels[0])
                 stage_name = name.replace('_OCCUPIER.txt', '').replace('OCCUPIER.txt', '')
                 calc_override_input.value = f'{stage_name}=' if stage_name else ''
         elif change['new'] in ('Recalc', 'Smart Recalc'):
@@ -7419,8 +7435,8 @@ def create_tab(ctx):
         selected_option = calc_options_dropdown.value
         is_recalc = selected_option in ('Recalc', 'Smart Recalc')
         is_smart_recalc = selected_option == 'Smart Recalc'
-        selected = calc_file_list.value
-        selected_name = _calc_label_to_name(selected) if selected else ''
+        _ovr_labels = _calc_selected_labels()
+        selected_name = _calc_label_to_name(_ovr_labels[0]) if _ovr_labels else ''
         is_inp_recalc = bool(is_recalc and selected_name.lower().endswith('.inp'))
 
         if not is_recalc:
@@ -7669,53 +7685,28 @@ def create_tab(ctx):
             msg = result.stderr or result.stdout or 'Unknown error'
             calc_recalc_status.value = f'<span style="color:#d32f2f;">{_html.escape(msg)}</span>'
 
-    def calc_on_select_toggle(button):
-        state['select_mode'] = not state['select_mode']
-        _calc_hide_rename_prompt()
-        if state['select_mode']:
-            calc_select_btn.button_style = 'success'
-            calc_file_list.layout.display = 'none'
-            calc_multi_select.layout.display = ''
-            calc_multi_select.value = ()
-        else:
-            calc_select_btn.button_style = ''
-            calc_multi_select.layout.display = 'none'
-            calc_file_list.layout.display = ''
-            calc_multi_select.value = ()
-            calc_file_list.value = None
-            calc_delete_confirm.layout.display = 'none'
-            calc_move_archive_confirm.layout.display = 'none'
-
-    def calc_on_delete_click(button):
-        if state['select_mode']:
-            real = [s for s in calc_multi_select.value if not s.startswith('(')]
-            if not real:
-                calc_delete_status.value = '<span style="color:#d32f2f;">No items selected.</span>'
-                return
+    def calc_on_delete_click(button=None):
+        real = _calc_selected_labels()
+        if real:
             names = [_calc_label_to_name(s) for s in real]
             label_str = ', '.join(f'<code>{_html.escape(n)}</code>' for n in names)
             calc_delete_label.value = f'<b>Delete {len(names)} item(s)?</b> {label_str}'
             state['delete_current'] = False
             calc_delete_confirm.layout.display = 'flex'
             return
-        if not calc_file_list.value or calc_file_list.value.startswith('('):
-            if state['current_path']:
-                calc_delete_label.value = (
-                    f'<b>Delete current folder?</b> '
-                    f'<code>{_html.escape(state["current_path"])}</code>'
-                )
-                state['delete_current'] = True
-                calc_delete_confirm.layout.display = 'flex'
-            else:
-                calc_delete_status.value = '<span style="color:#d32f2f;">No item selected.</span>'
-            return
-        calc_delete_label.value = '<b>Delete selected item?</b>'
-        state['delete_current'] = False
-        calc_delete_confirm.layout.display = 'flex'
+        if state['current_path']:
+            calc_delete_label.value = (
+                f'<b>Delete current folder?</b> '
+                f'<code>{_html.escape(state["current_path"])}</code>'
+            )
+            state['delete_current'] = True
+            calc_delete_confirm.layout.display = 'flex'
+        else:
+            calc_delete_status.value = '<span style="color:#d32f2f;">No item selected.</span>'
 
     def calc_on_delete_yes(button):
-        if state['select_mode']:
-            real = [s for s in calc_multi_select.value if not s.startswith('(')]
+        if not state.get('delete_current', False):
+            real = _calc_selected_labels()
             if not real:
                 calc_delete_status.value = '<span style="color:#d32f2f;">Nothing to delete.</span>'
                 calc_delete_confirm.layout.display = 'none'
@@ -7750,35 +7741,21 @@ def create_tab(ctx):
                 calc_delete_status.value = (
                     f'<span style="color:#d32f2f;">{"; ".join(errors)}</span>'
                 )
-            calc_multi_select.value = ()
+            calc_file_list.value = ()
             saved_filter = calc_folder_search.value
             calc_list_directory()
             if saved_filter:
                 calc_folder_search.value = saved_filter
                 calc_filter_file_list()
             return
-        delete_current = state['delete_current']
-        if delete_current:
-            if not state['current_path']:
-                calc_delete_status.value = '<span style="color:#d32f2f;">No current folder.</span>'
-                calc_delete_confirm.layout.display = 'none'
-                state['delete_current'] = False
-                return
-            full_path = _calc_dir() / state['current_path']
-            name = state['current_path']
-        else:
-            selected = calc_file_list.value
-            if not selected or selected.startswith('('):
-                calc_delete_status.value = '<span style="color:#d32f2f;">No item selected.</span>'
-                calc_delete_confirm.layout.display = 'none'
-                state['delete_current'] = False
-                return
-            name = _calc_label_to_name(selected)
-            full_path = (
-                (_calc_dir() / state['current_path'] / name)
-                if state['current_path']
-                else (_calc_dir() / name)
-            )
+        # delete_current fallback (delete the folder we are inside)
+        if not state['current_path']:
+            calc_delete_status.value = '<span style="color:#d32f2f;">No current folder.</span>'
+            calc_delete_confirm.layout.display = 'none'
+            state['delete_current'] = False
+            return
+        full_path = _calc_dir() / state['current_path']
+        name = state['current_path']
         try:
             if full_path.is_dir():
                 shutil.rmtree(full_path)
@@ -7799,7 +7776,7 @@ def create_tab(ctx):
         if saved_filter:
             calc_folder_search.value = saved_filter
             calc_filter_file_list()
-        calc_file_list.value = None
+        calc_file_list.value = ()
 
     def calc_on_delete_no(button):
         calc_delete_hide_confirm()
@@ -7897,8 +7874,8 @@ def create_tab(ctx):
                 f'<span style="color:#d32f2f;">{"; ".join(errors)}</span>'
             )
 
-        calc_multi_select.value = ()
-        calc_file_list.value = None
+        calc_file_list.value = ()
+        calc_file_list.value = ()
         saved_filter = calc_folder_search.value
         calc_list_directory()
         if saved_filter:
@@ -7939,7 +7916,7 @@ def create_tab(ctx):
                 f'Folder created: <code>{_html.escape(folder_name)}</code>',
                 color='#2e7d32',
             )
-            calc_file_list.value = None
+            calc_file_list.value = ()
             _calc_refresh_listing_preserve_filter()
         except Exception as exc:
             _calc_set_ops_status(
@@ -7967,8 +7944,8 @@ def create_tab(ctx):
                 f'Renamed to <code>{_html.escape(new_name)}</code>',
                 color='#2e7d32',
             )
-            calc_file_list.value = None
-            calc_multi_select.value = ()
+            calc_file_list.value = ()
+            calc_file_list.value = ()
             _calc_refresh_listing_preserve_filter()
             return True
         except Exception as exc:
@@ -8044,8 +8021,8 @@ def create_tab(ctx):
         else:
             _calc_set_ops_status('; '.join(errors), color='#d32f2f')
         calc_move_target_input.value = ''
-        calc_file_list.value = None
-        calc_multi_select.value = ()
+        calc_file_list.value = ()
+        calc_file_list.value = ()
         _calc_refresh_listing_preserve_filter()
 
     def calc_on_explorer_new_folder(button=None):
@@ -8126,8 +8103,8 @@ def create_tab(ctx):
             if dst.exists():
                 raise ValueError(f'Target already exists: {new_name}')
             shutil.copytree(str(src_path), str(dst))
-            calc_file_list.value = None
-            calc_multi_select.value = ()
+            calc_file_list.value = ()
+            calc_file_list.value = ()
             _calc_hide_rename_prompt()
             if source_is_current_dir:
                 message = (
@@ -8152,63 +8129,93 @@ def create_tab(ctx):
         _calc_hide_rename_prompt()
         _calc_set_ops_status('Rename canceled.', color='#555')
 
-    def calc_on_explorer_cut(button=None):
-        _calc_hide_rename_prompt()
-        sources = _calc_collect_selected_sources_only()
-        if not sources:
-            _calc_set_ops_status('Select item(s) first, then click Cut.', color='#d32f2f')
-            return
+    def _calc_clipboard_set(sources, mode):
+        """Put *sources* on the shared clipboard with the given *mode* ('cut'/'copy')."""
         resolved_sources = []
         errors = []
         for src in sources:
             try:
-                resolved_sources.append(_calc_resolve_within_root(src))
+                resolved_sources.append(src.resolve())
             except Exception as exc:
                 errors.append(_html.escape(str(exc)))
         if not resolved_sources:
             _calc_set_ops_status(
-                f'Cut failed: {"; ".join(errors) if errors else "No valid source selected."}',
+                f'{mode.title()} failed: {"; ".join(errors) if errors else "No valid source selected."}',
                 color='#d32f2f',
             )
             return
-        state['clipboard_move'] = [str(p) for p in resolved_sources]
+        ctx.clipboard_paths = [str(p) for p in resolved_sources]
+        ctx.clipboard_mode = mode
         _calc_update_explorer_action_state()
+        verb = 'Cut' if mode == 'cut' else 'Copied'
         _calc_set_ops_status(
-            f'Cut {len(resolved_sources)} item(s). Open target folder and click Paste.',
+            f'{verb} {len(resolved_sources)} item(s). Open target folder and press Ctrl+V or click Paste.',
             color='#1976d2',
         )
+
+    def calc_on_explorer_cut(button=None):
+        _calc_hide_rename_prompt()
+        sources = _calc_collect_selected_sources_only()
+        if not sources:
+            _calc_set_ops_status('Select item(s) first.', color='#d32f2f')
+            return
+        _calc_clipboard_set(sources, 'cut')
+
+    def calc_on_explorer_copy(button=None):
+        _calc_hide_rename_prompt()
+        sources = _calc_collect_selected_sources_only()
+        if not sources:
+            _calc_set_ops_status('Select item(s) first.', color='#d32f2f')
+            return
+        _calc_clipboard_set(sources, 'copy')
 
     def calc_on_explorer_paste(button=None):
         _calc_hide_rename_prompt()
         sources = _calc_clipboard_paths()
         if not sources:
             _calc_update_explorer_action_state()
-            _calc_set_ops_status('Clipboard is empty. Use Cut first.', color='#d32f2f')
+            _calc_set_ops_status('Clipboard is empty. Use Ctrl+X or Ctrl+C first.', color='#d32f2f')
             return
-        target_dir = _calc_resolve_within_root(_calc_current_dir())
-        current_before = _calc_current_dir().resolve()
+        mode = ctx.clipboard_mode or 'cut'
+        target_dir = _calc_current_dir().resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
         root = _calc_dir().resolve()
-        moved, errors = [], []
+        done, errors = [], []
         remaining = []
         moved_current_to = None
+        current_before = _calc_current_dir().resolve()
         for src in sources:
             try:
-                src_resolved = _calc_resolve_within_root(src)
+                src_resolved = src.resolve()
                 if src_resolved == target_dir or _calc_is_relative_to(target_dir, src_resolved):
-                    raise ValueError('Cannot move a folder into itself.')
-                dst = _calc_resolve_within_root(target_dir / src_resolved.name)
+                    raise ValueError('Cannot paste a folder into itself.')
+                dst = target_dir / src_resolved.name
                 if dst.exists():
-                    raise ValueError(f'Target already exists: {src_resolved.name}')
-                shutil.move(str(src_resolved), str(dst))
-                moved.append(src_resolved.name)
-                if state['current_path'] and current_before == src_resolved:
-                    moved_current_to = dst
+                    # Auto-number: name_2, name_3, ...
+                    stem = dst.stem
+                    suffix = dst.suffix
+                    counter = 2
+                    while dst.exists():
+                        dst = target_dir / f'{stem}_{counter}{suffix}'
+                        counter += 1
+                if mode == 'copy':
+                    if src_resolved.is_dir():
+                        shutil.copytree(str(src_resolved), str(dst))
+                    else:
+                        shutil.copy2(str(src_resolved), str(dst))
+                else:
+                    shutil.move(str(src_resolved), str(dst))
+                    if state['current_path'] and current_before == src_resolved:
+                        moved_current_to = dst
+                done.append(src_resolved.name)
             except Exception as exc:
                 remaining.append(src)
                 errors.append(
                     f'{_html.escape(getattr(src, "name", str(src)))}: {_html.escape(str(exc))}'
                 )
-        state['clipboard_move'] = [str(p) for p in remaining]
+        if mode == 'cut':
+            ctx.clipboard_paths = [str(p) for p in remaining]
+        # copy keeps clipboard intact
         _calc_update_explorer_action_state()
 
         if moved_current_to is not None:
@@ -8223,20 +8230,21 @@ def create_tab(ctx):
         except Exception:
             target_label = str(target_dir)
 
-        if moved and not errors:
+        verb = 'Moved' if mode == 'cut' else 'Copied'
+        if done and not errors:
             _calc_set_ops_status(
-                f'Moved {len(moved)} item(s) to <code>{_html.escape(target_label)}</code>.',
+                f'{verb} {len(done)} item(s) to <code>{_html.escape(target_label)}</code>.',
                 color='#2e7d32',
             )
-        elif moved and errors:
+        elif done and errors:
             _calc_set_ops_status(
-                f'Moved {len(moved)} item(s), failed: {"; ".join(errors)}',
+                f'{verb} {len(done)} item(s), failed: {"; ".join(errors)}',
                 color='#e65100',
             )
         else:
             _calc_set_ops_status('; '.join(errors), color='#d32f2f')
-        calc_file_list.value = None
-        calc_multi_select.value = ()
+        calc_file_list.value = ()
+        calc_file_list.value = ()
         _calc_refresh_listing_preserve_filter()
 
     # -- table extraction ---------------------------------------------------
@@ -8688,13 +8696,7 @@ def create_tab(ctx):
         )
         scope = calc_table_scope_dd.value
         if scope == 'selected':
-            if not state['select_mode']:
-                calc_table_status.value = (
-                    '<span style="color:#d32f2f;">'
-                    'Selection only requires Select mode.</span>'
-                )
-                return
-            real = [s for s in calc_multi_select.value if not s.startswith('(')]
+            real = _calc_selected_labels()
             if not real:
                 calc_table_status.value = (
                     '<span style="color:#d32f2f;">No folders selected.</span>'
@@ -8820,9 +8822,9 @@ def create_tab(ctx):
             calc_folder_search.value = saved_filter
             calc_filter_file_list()
 
-    # -- file selection handler (main) --------------------------------------
-    def calc_on_select(change):
-        selected = change['new']
+    # -- item open logic (shared by dblclick and single-click on files) ------
+    def _calc_open_item(selected):
+        """Open/display a single item given its label string."""
         if not selected or selected.startswith('('):
             return
 
@@ -8833,14 +8835,8 @@ def create_tab(ctx):
             else (_calc_dir() / name)
         )
 
-        # Navigate into directory
+        # Directories are only navigated via dblclick, not here.
         if full_path.is_dir():
-            _calc_hide_rename_prompt()
-            state['current_path'] = (
-                f'{state["current_path"]}/{name}' if state['current_path'] else name
-            )
-            calc_list_directory()
-            calc_file_list.value = None
             return
 
         # Reset search state
@@ -9414,6 +9410,61 @@ def create_tab(ctx):
         except Exception as e:
             calc_set_message(f'Error: {e}')
 
+    # -- double-click handler (navigate into dir, or open file) ---------------
+    def calc_on_dblclick(change):
+        raw = (change['new'] or '').strip()
+        calc_dblclick_input.value = ''
+        chosen_label, full_path = _calc_resolve_active_label(raw)
+        if not chosen_label or full_path is None:
+            return
+        name = _calc_label_to_name(chosen_label)
+        if full_path.is_dir():
+            _calc_hide_rename_prompt()
+            state['current_path'] = (
+                f'{state["current_path"]}/{name}' if state['current_path'] else name
+            )
+            calc_list_directory()
+            calc_file_list.value = ()
+            return
+        if full_path.is_file():
+            _calc_open_item(chosen_label)
+
+    # -- selection-change handler (show file content on single-click) --------
+    def calc_on_selection_change(change):
+        labels = [label for label in (change['new'] or ()) if label and not label.startswith('(')]
+        if len(labels) == 1:
+            name = _calc_label_to_name(labels[0])
+            full_path = (
+                (_calc_dir() / state['current_path'] / name)
+                if state['current_path']
+                else (_calc_dir() / name)
+            )
+            if full_path.is_file():
+                _calc_open_item(labels[0])
+
+    # -- keyboard action handler (from JS bridge) ----------------------------
+    def calc_on_keyboard_action(change):
+        action = (change['new'] or '').strip()
+        calc_keyboard_action_input.value = ''
+        if not action:
+            return
+        if action == 'copy':
+            calc_on_explorer_copy()
+        elif action == 'cut':
+            calc_on_explorer_cut()
+        elif action == 'paste':
+            calc_on_explorer_paste()
+        elif action == 'delete':
+            calc_on_delete_click()
+        elif action == 'rename':
+            calc_on_explorer_start_rename()
+        elif action == 'open':
+            labels = _calc_selected_labels()
+            if len(labels) == 1:
+                calc_on_dblclick({'new': labels[0]})
+        elif action == 'deselect':
+            calc_file_list.value = ()
+
     # -- wiring -------------------------------------------------------------
     calc_back_btn.on_click(calc_on_back)
     calc_home_btn.on_click(calc_on_home)
@@ -9440,7 +9491,7 @@ def create_tab(ctx):
     calc_delete_btn.on_click(calc_on_delete_click)
     calc_delete_yes_btn.on_click(calc_on_delete_yes)
     calc_delete_no_btn.on_click(calc_on_delete_no)
-    calc_select_btn.on_click(calc_on_select_toggle)
+    calc_explorer_copy_btn.on_click(calc_on_explorer_copy)
     calc_move_archive_btn.on_click(calc_on_move_archive_click)
     calc_back_to_calculations_btn.on_click(calc_on_back_to_calculations)
     calc_move_archive_yes_btn.on_click(calc_on_move_archive_yes)
@@ -9486,7 +9537,9 @@ def create_tab(ctx):
         calc_table_add_col_btn.on_click(calc_on_table_add_col)
         calc_table_run_btn.on_click(calc_on_table_run)
         calc_table_csv_btn.on_click(calc_on_table_csv_download)
-    calc_file_list.observe(calc_on_select, names='value')
+    calc_file_list.observe(calc_on_selection_change, names='value')
+    calc_dblclick_input.observe(calc_on_dblclick, names='value')
+    calc_keyboard_action_input.observe(calc_on_keyboard_action, names='value')
     calc_folder_search.observe(calc_filter_file_list, names='value')
     calc_options_dropdown.observe(calc_on_options_change, names='value')
     calc_override_btn.on_click(calc_on_override_start)
@@ -9527,36 +9580,6 @@ def create_tab(ctx):
     else:
         calc_file_list.options = ['(calc folder not found)']
 
-    # Inject JS once: single-click toggles selection, Shift+click selects range.
-    # A global flag prevents re-installation on every tab re-render.
-    _multi_select_js = (
-        '(function(){'
-        'if(window._delfinMultiSelectReady)return;'
-        'window._delfinMultiSelectReady=true;'
-        'var lastIdx=-1;'
-        'function install(sel){'
-        'if(sel._delfinToggle)return;sel._delfinToggle=true;'
-        'sel.addEventListener("mousedown",function(e){'
-        'if(e.target.tagName!=="OPTION")return;'
-        'e.preventDefault();'
-        'var opts=Array.from(sel.options);'
-        'var idx=opts.indexOf(e.target);'
-        'if(e.shiftKey&&lastIdx>=0){'
-        'var lo=Math.min(lastIdx,idx),hi=Math.max(lastIdx,idx);'
-        'for(var i=lo;i<=hi;i++)opts[i].selected=true;'
-        '}else{e.target.selected=!e.target.selected;lastIdx=idx;}'
-        'sel.dispatchEvent(new Event("change",{bubbles:true}));'
-        'sel.focus();'
-        '},true);}'
-        'function scanAndInstall(root){'
-        '(root.querySelectorAll?root.querySelectorAll(".delfin-multi-select select"):[]).forEach(install);}'
-        'scanAndInstall(document.body);'
-        'new MutationObserver(function(ms){'
-        'ms.forEach(function(m){'
-        'm.addedNodes.forEach(function(n){if(n.nodeType===1)scanAndInstall(n);});'
-        '});}).observe(document.body,{childList:true,subtree:true});'
-        '})();'
-    )
     _explorer_interactions_js = r"""
     (function(){
         if (window._delfinExplorerInteractionsReady) return;
@@ -9583,13 +9606,57 @@ def create_tab(ctx):
             }
             return e && e.target ? e.target : null;
         }
-        function _optionAtPoint(selectEl, e){
-            var node = _eventPointNode(e);
-            if (node && node.tagName === 'OPTION') return node;
-            if (selectEl && selectEl.selectedOptions && selectEl.selectedOptions.length) {
+        function _optionIndex(selectEl, opt){
+            if (!selectEl || !opt || !selectEl.options) return -1;
+            return Array.prototype.indexOf.call(selectEl.options, opt);
+        }
+        function _optionFromIndex(selectEl, idx){
+            if (!selectEl || !selectEl.options || idx < 0 || idx >= selectEl.options.length) return null;
+            return selectEl.options[idx];
+        }
+        function _selectedOption(selectEl){
+            if (!selectEl || !selectEl.options || !selectEl.options.length) return null;
+            if (selectEl.selectedOptions && selectEl.selectedOptions.length) {
                 return selectEl.selectedOptions[0];
             }
+            if (typeof selectEl.selectedIndex === 'number' && selectEl.selectedIndex >= 0) {
+                return _optionFromIndex(selectEl, selectEl.selectedIndex);
+            }
             return null;
+        }
+        function _optionIndexAtPoint(selectEl, e){
+            if (!selectEl || !selectEl.options || !selectEl.options.length) return -1;
+            var node = _eventPointNode(e);
+            if (node && node.tagName === 'OPTION') return _optionIndex(selectEl, node);
+            if (node && node.closest) {
+                var optNode = node.closest('option');
+                if (optNode) return _optionIndex(selectEl, optNode);
+            }
+            if (!e || typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return -1;
+            var rect = selectEl.getBoundingClientRect();
+            if (
+                e.clientX < rect.left || e.clientX > rect.right ||
+                e.clientY < rect.top || e.clientY > rect.bottom
+            ) {
+                return -1;
+            }
+            var optionCount = selectEl.options.length;
+            var visibleRows = Math.max(1, Math.min(optionCount, Number(selectEl.size) || optionCount));
+            var optionHeight = rect.height / visibleRows;
+            if ((!optionHeight || !isFinite(optionHeight)) && selectEl.scrollHeight) {
+                optionHeight = selectEl.scrollHeight / optionCount;
+            }
+            if (!optionHeight || !isFinite(optionHeight)) return -1;
+            var rawIdx = Math.floor(((e.clientY - rect.top) + (selectEl.scrollTop || 0)) / optionHeight);
+            if (rawIdx < 0) rawIdx = 0;
+            if (rawIdx >= optionCount) rawIdx = optionCount - 1;
+            return rawIdx;
+        }
+        function _optionAtPoint(selectEl, e){
+            return _optionFromIndex(selectEl, _optionIndexAtPoint(selectEl, e));
+        }
+        function _activeOptionForEvent(selectEl, e){
+            return _optionAtPoint(selectEl, e) || _selectedOption(selectEl);
         }
         function _selectAtPoint(e){
             var node = _eventPointNode(e);
@@ -9759,9 +9826,6 @@ def create_tab(ctx):
                 current.push(parts[i]);
                 await _putContentsModel(_joinRelParts(current), { type: 'directory' });
             }
-        }
-        function _optionFromEvent(e){
-            return (e && e.target && e.target.tagName === 'OPTION') ? e.target : null;
         }
         function _hideCtxMenu(){
             var menu = document.getElementById('delfin-explorer-ctx-menu');
@@ -10009,6 +10073,18 @@ def create_tab(ctx):
 
             var dragState = { src: null, x: 0, y: 0, moved: false };
             var ctxOption = null;
+            function _armExplorerDblClick(opt, e){
+                var label = _labelText(opt);
+                if (!label || label.charAt(0) === '(') {
+                    root._dblLastTime = 0;
+                    root._dblLastLabel = '';
+                    return;
+                }
+                root._dblLastTime = Date.now();
+                root._dblLastLabel = label;
+                root._dblLastX = (e && typeof e.clientX === 'number') ? e.clientX : 0;
+                root._dblLastY = (e && typeof e.clientY === 'number') ? e.clientY : 0;
+            }
 
             function refreshDraggable(){
                 var opts = Array.prototype.slice.call(selectEl.options || []);
@@ -10020,7 +10096,7 @@ def create_tab(ctx):
 
             selectEl.addEventListener('contextmenu', function(e){
                 var menu = _ensureCtxMenu();
-                var opt = _optionFromEvent(e);
+                var opt = _optionAtPoint(selectEl, e);
                 e.preventDefault();
                 e.stopPropagation();
                 if (opt) {
@@ -10035,16 +10111,51 @@ def create_tab(ctx):
                 menu.style.display = 'block';
             }, true);
 
+            /* --- Click selection + drag tracking --- */
+            var lastIdx = -1;
+
             selectEl.addEventListener('mousedown', function(e){
-                var opt = _optionFromEvent(e);
+                if (e.button != null && e.button !== 0) return;
+                var opt = _activeOptionForEvent(selectEl, e);
                 if (!opt) {
                     dragState.src = null;
                     return;
                 }
+                /* Track drag start */
                 dragState.src = opt;
                 dragState.x = e.clientX || 0;
                 dragState.y = e.clientY || 0;
                 dragState.moved = false;
+
+                /* Prevent native select behavior – we manage selection ourselves */
+                e.preventDefault();
+
+                var opts = Array.from(selectEl.options);
+                var idx = _optionIndex(selectEl, opt);
+                if (idx < 0) {
+                    dragState.src = null;
+                    return;
+                }
+
+                /* Selection logic */
+                if (e.shiftKey && lastIdx >= 0) {
+                    var lo = Math.min(lastIdx, idx);
+                    var hi = Math.max(lastIdx, idx);
+                    if (!e.ctrlKey && !e.metaKey) {
+                        for (var i = 0; i < opts.length; i++) opts[i].selected = false;
+                    }
+                    for (var j = lo; j <= hi; j++) opts[j].selected = true;
+                } else if (e.ctrlKey || e.metaKey) {
+                    opt.selected = !opt.selected;
+                } else {
+                    for (var k = 0; k < opts.length; k++) opts[k].selected = false;
+                    opt.selected = true;
+                }
+                lastIdx = idx;
+                _armExplorerDblClick(opt, e);
+
+                selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+                selectEl.focus();
             }, true);
 
             selectEl.addEventListener('mousemove', function(e){
@@ -10055,7 +10166,7 @@ def create_tab(ctx):
             }, true);
 
             selectEl.addEventListener('mouseup', function(e){
-                var targetOpt = _optionFromEvent(e);
+                var targetOpt = _activeOptionForEvent(selectEl, e);
                 if (!dragState.src || !dragState.moved || !targetOpt) {
                     dragState.src = null;
                     dragState.moved = false;
@@ -10067,8 +10178,25 @@ def create_tab(ctx):
                 dragState.moved = false;
             }, true);
 
+            /* --- Keyboard shortcuts --- */
+            selectEl.addEventListener('keydown', function(e){
+                var action = '';
+                if ((e.ctrlKey || e.metaKey) && e.key === 'c') action = 'copy';
+                else if ((e.ctrlKey || e.metaKey) && e.key === 'x') action = 'cut';
+                else if ((e.ctrlKey || e.metaKey) && e.key === 'v') action = 'paste';
+                else if (e.key === 'Delete' || e.key === 'Backspace') action = 'delete';
+                else if (e.key === 'Enter') action = 'open';
+                else if (e.key === 'Escape') action = 'deselect';
+                else if (e.key === 'F2') action = 'rename';
+                if (action) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    _setWidgetInput(root, 'calc-cmd-keyboard-action', action);
+                }
+            }, true);
+
             selectEl.addEventListener('dragstart', function(e){
-                var opt = _optionFromEvent(e);
+                var opt = _activeOptionForEvent(selectEl, e);
                 if (!opt) return;
                 selectEl._delfinDragSource = opt;
                 try {
@@ -10090,7 +10218,7 @@ def create_tab(ctx):
                     try { e.dataTransfer.dropEffect = 'copy'; } catch (_err) {}
                     return;
                 }
-                var opt = _optionFromEvent(e);
+                var opt = _optionAtPoint(selectEl, e);
                 if (opt && _isFolderLabel(_labelText(opt))) e.preventDefault();
             }, true);
 
@@ -10111,7 +10239,7 @@ def create_tab(ctx):
                     });
                     return;
                 }
-                var targetOpt = _optionFromEvent(e);
+                var targetOpt = _optionAtPoint(selectEl, e);
                 var sourceOpt = selectEl._delfinDragSource || null;
                 _setDropActive(selectEl, false);
                 if (!sourceOpt || !targetOpt) {
@@ -10136,6 +10264,35 @@ def create_tab(ctx):
             console.log('[DELFIN] _installExternalFileDrop on', root.className);
             root._delfinExternalDropReady = true;
             root._delfinPasteArmed = false;
+
+            /* --- Double-click via delegated mousedown on stable root ---
+             * ipywidgets may re-create the <select> between clicks, so native
+             * dblclick never fires.  We therefore remember the first click on
+             * the stable root and only use the second click to confirm timing
+             * and pointer position. */
+            root._dblLastTime = 0;
+            root._dblLastLabel = '';
+            root._dblLastX = 0;
+            root._dblLastY = 0;
+            root.addEventListener('mousedown', function(e){
+                if (e.button != null && e.button !== 0) return;
+                var sel = _selectAtPoint(e);
+                if (!sel || !sel.closest('.calc-file-list')) return;
+                var label = String(root._dblLastLabel || '');
+                if (!label || label.charAt(0) === '(') return;
+                var now = Date.now();
+                var dx = Math.abs((typeof e.clientX === 'number' ? e.clientX : 0) - (Number(root._dblLastX) || 0));
+                var dy = Math.abs((typeof e.clientY === 'number' ? e.clientY : 0) - (Number(root._dblLastY) || 0));
+                if ((now - root._dblLastTime) < 500 && dx <= 20 && dy <= 20) {
+                    root._dblLastTime = 0;
+                    root._dblLastLabel = '';
+                    root._dblLastX = 0;
+                    root._dblLastY = 0;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    _setWidgetInput(root, 'calc-cmd-dblclick', label);
+                }
+            }, true);
 
             function activeSelectFromEvent(e){
                 return _selectAtPoint(e) || root.querySelector('.calc-file-list select');
@@ -10278,7 +10435,7 @@ def create_tab(ctx):
             ),
         ),
         widgets.HBox(
-            [calc_select_btn, calc_duplicate_btn, *_archive_selection_children],
+            [calc_explorer_copy_btn, calc_duplicate_btn, *_archive_selection_children],
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden',
                 justify_content='flex-start', gap='6px',
@@ -10302,7 +10459,8 @@ def create_tab(ctx):
              calc_action_source_input, calc_move_btn,
              calc_upload_meta_input, calc_upload_chunk_input,
              calc_upload_seq_input, calc_upload_ack_input,
-             calc_upload_trigger_btn, calc_upload_ack_label],
+             calc_upload_trigger_btn, calc_upload_ack_label,
+             calc_dblclick_input, calc_keyboard_action_input],
             layout=widgets.Layout(display='none'),
         ),
     ], layout=widgets.Layout(width='100%', overflow_x='hidden'))
@@ -10311,7 +10469,6 @@ def create_tab(ctx):
         calc_nav_bar,
         calc_filter_sort_row,
         calc_file_list,
-        calc_multi_select,
     ], layout=widgets.Layout(
         flex=f'0 0 {CALC_LEFT_DEFAULT}px',
         min_width=f'{CALC_LEFT_MIN}px',
@@ -10517,9 +10674,7 @@ def create_tab(ctx):
     # runs ALL tab init scripts in one ctx.run_js() call so that no tab's
     # clear_output() wipes another tab's init JS.
     _init_js = (
-        _multi_select_js
-        + "\n"
-        + _explorer_interactions_js
+        _explorer_interactions_js
         + "\n"
         + f"""
     (function() {{

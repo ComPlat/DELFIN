@@ -48,6 +48,10 @@ class DashboardContext:
     orca_pal_widget: Any = None
     orca_maxcore_widget: Any = None
 
+    # Shared clipboard for cross-tab cut/copy/paste
+    clipboard_paths: list = field(default_factory=list)
+    clipboard_mode: str = ''  # 'cut' or 'copy'
+
     # Templates
     default_control: str = ''
     only_goat_template: str = ''
