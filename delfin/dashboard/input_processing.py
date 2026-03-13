@@ -6,6 +6,7 @@ from delfin.smiles_converter import (
     smiles_to_xyz as _delfin_smiles_to_xyz,
     smiles_to_xyz_isomers as _delfin_smiles_to_xyz_isomers,
     smiles_to_xyz_quick as _delfin_smiles_to_xyz_quick,
+    smiles_to_xyz_quick_hapto_previews as _delfin_smiles_to_xyz_quick_hapto_previews,
     is_smiles_string as _delfin_is_smiles_string,
     contains_metal,
 )
@@ -52,6 +53,67 @@ def smiles_to_xyz_quick(smiles, hapto_approx=None):
         return None, 0, None, error
     num_atoms = sum(1 for line in xyz_string.splitlines() if line.strip())
     return xyz_string, num_atoms, 'quick', None
+
+
+def smiles_to_xyz_quick_with_previews(smiles, hapto_approx=None):
+    """Fast single-conformer conversion plus hapto-specific preview structures."""
+    xyz_string, num_atoms, method, error = smiles_to_xyz_quick(
+        smiles,
+        hapto_approx=hapto_approx,
+    )
+    if error or not xyz_string:
+        return xyz_string, num_atoms, method, [], error
+
+    previews = _delfin_smiles_to_xyz_quick_hapto_previews(
+        smiles,
+        hapto_approx=hapto_approx,
+    )
+    preview_items = []
+    seen_keys = {
+        "\n".join(line.strip() for line in xyz_string.splitlines() if line.strip())
+    }
+    for preview_xyz, label in previews:
+        key = "\n".join(line.strip() for line in preview_xyz.splitlines() if line.strip())
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        preview_num_atoms = sum(1 for line in preview_xyz.splitlines() if line.strip())
+        preview_items.append((preview_xyz, preview_num_atoms, label))
+    return xyz_string, num_atoms, method, preview_items, None
+
+
+def append_hapto_previews_to_isomers(
+    isomers,
+    smiles,
+    *,
+    include_quick=False,
+    hapto_approx=None,
+):
+    """Append cached hapto preview structures to an isomer list without duplicates."""
+    merged = list(isomers)
+    seen_keys = {
+        "\n".join(line.strip() for line in xyz_string.splitlines() if line.strip())
+        for xyz_string, _num_atoms, _label in merged
+    }
+
+    xyz_string, num_atoms, _method, preview_items, error = smiles_to_xyz_quick_with_previews(
+        smiles,
+        hapto_approx=hapto_approx,
+    )
+    if error or not xyz_string:
+        return merged
+
+    extra_items = list(preview_items)
+    if include_quick:
+        extra_items.insert(0, (xyz_string, num_atoms, 'quick'))
+
+    for preview_xyz, preview_num_atoms, label in extra_items:
+        key = "\n".join(line.strip() for line in preview_xyz.splitlines() if line.strip())
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        merged.append((preview_xyz, preview_num_atoms, label))
+    return merged
 
 
 def smiles_to_xyz_isomers(

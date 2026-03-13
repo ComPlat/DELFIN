@@ -13,7 +13,9 @@ from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck
 from .molecule_viewer import apply_molecule_view_style
 from .input_processing import (
-    smiles_to_xyz, smiles_to_xyz_quick, smiles_to_xyz_isomers, is_smiles,
+    smiles_to_xyz, smiles_to_xyz_quick, smiles_to_xyz_quick_with_previews,
+    append_hapto_previews_to_isomers,
+    smiles_to_xyz_isomers, is_smiles,
     clean_input_data, parse_resource_settings,
 )
 
@@ -336,11 +338,11 @@ def create_tab(ctx):
             isomer_nav_row.layout.display = 'none'
             return
 
-        # For +UFF: also append a quick single-structure result
-        if apply_uff:
-            _q_xyz, _q_num, _q_method, _q_err = smiles_to_xyz_quick(cleaned_data)
-            if not _q_err and _q_xyz:
-                isomers = isomers + [(_q_xyz, _q_num, 'quick')]
+        isomers = append_hapto_previews_to_isomers(
+            isomers,
+            cleaned_data,
+            include_quick=apply_uff,
+        )
 
         state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
         state['isomers'] = isomers
@@ -368,14 +370,14 @@ def create_tab(ctx):
         with mol_output:
             clear_output()
             print('Quick convert (single structure)...')
-        xyz_string, num_atoms, _method, error = smiles_to_xyz_quick(cleaned_data)
+        xyz_string, num_atoms, _method, preview_items, error = smiles_to_xyz_quick_with_previews(cleaned_data)
         if error or not xyz_string:
             with mol_output:
                 clear_output()
                 print(f'Error: {error or "Conversion failed"}')
             return
         state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
-        state['isomers'] = [(xyz_string, num_atoms, 'quick')]
+        state['isomers'] = [(xyz_string, num_atoms, 'quick')] + preview_items
         _show_isomer_at_index(0)
 
     def handle_convert_smiles_uff(button):

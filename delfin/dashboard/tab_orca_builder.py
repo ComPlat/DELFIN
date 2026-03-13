@@ -22,7 +22,7 @@ from .molecule_viewer import (
 )
 from .input_processing import (
     parse_inp_resources, sanitize_orca_input, clean_input_data,
-    smiles_to_xyz_quick,
+    smiles_to_xyz_quick_with_previews,
 )
 
 
@@ -486,14 +486,27 @@ def create_tab(ctx):
         with orca_output:
             clear_output()
             print('Converting SMILES to 3D coordinates...')
-        xyz_string, num_atoms, _method, error = smiles_to_xyz_quick(cleaned_data)
+        xyz_string, num_atoms, _method, preview_items, error = smiles_to_xyz_quick_with_previews(
+            cleaned_data
+        )
         if error or not xyz_string:
             with orca_output:
                 clear_output()
                 print(f'Error: {error or "Conversion failed"}')
             return
-        # Replace SMILES with XYZ coordinates
-        orca_coords.value = xyz_string
+        xyz_blocks = [('quick.xyz', xyz_string)]
+        for _idx, (preview_xyz, _preview_num_atoms, label) in enumerate(preview_items, start=1):
+            safe_label = re.sub(r'[^A-Za-z0-9_.-]+', '-', label or f'preview-{_idx}').strip('-')
+            if not safe_label:
+                safe_label = f'preview-{_idx}'
+            xyz_blocks.append((f'{safe_label}.xyz', preview_xyz))
+        if len(xyz_blocks) == 1:
+            orca_coords.value = xyz_string
+        else:
+            block_text = []
+            for filename, block_xyz in xyz_blocks:
+                block_text.append(f'{filename};\n{block_xyz}\n*')
+            orca_coords.value = '\n\n'.join(block_text)
         with orca_output:
             clear_output()
             print(f'Converted SMILES to {num_atoms} atoms.')
