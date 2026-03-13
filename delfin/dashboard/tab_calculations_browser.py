@@ -1582,7 +1582,7 @@ def create_tab(ctx):
                 f'{"; ".join(summary_parts)}.',
                 color='#2e7d32',
             )
-            _calc_refresh_listing_preserve_filter()
+            _calc_refresh_related_explorers()
         except Exception as exc:
             _calc_set_ops_status(
                 f'Explorer upload failed: {_html.escape(str(exc))}',
@@ -1757,6 +1757,8 @@ def create_tab(ctx):
             f'Explorer upload complete{target_html}: {"; ".join(summary_parts)}.',
             color='#2e7d32' if not errors else '#d32f2f',
         )
+        if processed_batches:
+            _calc_refresh_related_explorers(include_self=False)
 
     def _calc_finalize_upload_batch(batch_id, target_dir):
         batch = upload_bridge_state['batches'].get(batch_id)
@@ -1777,7 +1779,7 @@ def create_tab(ctx):
             f'{"; ".join(summary_parts)}.',
             color=status_color,
         )
-        _calc_refresh_listing_preserve_filter()
+        _calc_refresh_related_explorers()
         upload_bridge_state['batches'].pop(batch_id, None)
 
     def calc_on_upload_bridge_seq(change):
@@ -2078,6 +2080,40 @@ def create_tab(ctx):
         if saved_filter:
             calc_folder_search.value = saved_filter
             calc_filter_file_list()
+
+    def _calc_shared_explorer_state():
+        shared = getattr(ctx, 'shared_explorer_state', None)
+        if not isinstance(shared, dict):
+            shared = {'refresh_hooks': {}, 'refresh_running': False}
+            ctx.shared_explorer_state = shared
+        hooks = shared.get('refresh_hooks')
+        if not isinstance(hooks, dict):
+            hooks = {}
+            shared['refresh_hooks'] = hooks
+        if 'refresh_running' not in shared:
+            shared['refresh_running'] = False
+        return shared
+
+    def _calc_register_explorer_refresh():
+        shared = _calc_shared_explorer_state()
+        shared['refresh_hooks'][calc_scope_id] = _calc_refresh_listing_preserve_filter
+
+    def _calc_refresh_related_explorers(include_self=True):
+        shared = _calc_shared_explorer_state()
+        if shared.get('refresh_running'):
+            return
+        shared['refresh_running'] = True
+        try:
+            hooks = list((shared.get('refresh_hooks') or {}).items())
+            for scope_key, callback in hooks:
+                if not include_self and scope_key == calc_scope_id:
+                    continue
+                try:
+                    callback()
+                except Exception:
+                    continue
+        finally:
+            shared['refresh_running'] = False
 
     def _calc_hide_rename_prompt():
         state['rename_source_path'] = ''
@@ -7752,11 +7788,7 @@ def create_tab(ctx):
                     f'<span style="color:#d32f2f;">{"; ".join(errors)}</span>'
                 )
             calc_file_list.value = ()
-            saved_filter = calc_folder_search.value
-            calc_list_directory()
-            if saved_filter:
-                calc_folder_search.value = saved_filter
-                calc_filter_file_list()
+            _calc_refresh_related_explorers()
             return
         # delete_current fallback (delete the folder we are inside)
         if not state['current_path']:
@@ -7781,12 +7813,8 @@ def create_tab(ctx):
         if delete_current:
             cp = state['current_path']
             state['current_path'] = cp.rsplit('/', 1)[0] if '/' in cp else ''
-        saved_filter = calc_folder_search.value
-        calc_list_directory()
-        if saved_filter:
-            calc_folder_search.value = saved_filter
-            calc_filter_file_list()
         calc_file_list.value = ()
+        _calc_refresh_related_explorers()
 
     def calc_on_delete_no(button):
         calc_delete_hide_confirm()
@@ -7886,11 +7914,7 @@ def create_tab(ctx):
 
         calc_file_list.value = ()
         calc_file_list.value = ()
-        saved_filter = calc_folder_search.value
-        calc_list_directory()
-        if saved_filter:
-            calc_folder_search.value = saved_filter
-            calc_filter_file_list()
+        _calc_refresh_related_explorers()
 
     def calc_on_move_archive_no(button):
         calc_move_archive_confirm.layout.display = 'none'
@@ -7927,7 +7951,7 @@ def create_tab(ctx):
                 color='#2e7d32',
             )
             calc_file_list.value = ()
-            _calc_refresh_listing_preserve_filter()
+            _calc_refresh_related_explorers()
         except Exception as exc:
             _calc_set_ops_status(
                 f'Create folder failed: {_html.escape(str(exc))}',
@@ -7956,7 +7980,7 @@ def create_tab(ctx):
             )
             calc_file_list.value = ()
             calc_file_list.value = ()
-            _calc_refresh_listing_preserve_filter()
+            _calc_refresh_related_explorers()
             return True
         except Exception as exc:
             _calc_set_ops_status(
@@ -8033,7 +8057,7 @@ def create_tab(ctx):
         calc_move_target_input.value = ''
         calc_file_list.value = ()
         calc_file_list.value = ()
-        _calc_refresh_listing_preserve_filter()
+        _calc_refresh_related_explorers()
 
     def calc_on_explorer_new_folder(button=None):
         _calc_hide_rename_prompt()
@@ -8124,7 +8148,7 @@ def create_tab(ctx):
             else:
                 message = f'Duplicated to <code>{_html.escape(new_name)}</code>.'
             _calc_set_ops_status(message, color='#2e7d32')
-            _calc_refresh_listing_preserve_filter()
+            _calc_refresh_related_explorers()
         except Exception as exc:
             _calc_set_ops_status(
                 f'Duplicate failed: {_html.escape(str(exc))}',
@@ -8262,7 +8286,7 @@ def create_tab(ctx):
             _calc_set_ops_status('; '.join(errors), color='#d32f2f')
         calc_file_list.value = ()
         calc_file_list.value = ()
-        _calc_refresh_listing_preserve_filter()
+        _calc_refresh_related_explorers()
 
     # -- table extraction ---------------------------------------------------
     def _collect_table_col_values():
@@ -9589,6 +9613,8 @@ def create_tab(ctx):
     _calc_update_xyz_traj_control_state()
 
     # -- initialise ---------------------------------------------------------
+    _calc_register_explorer_refresh()
+
     if ctx.calc_dir.exists():
         calc_list_directory()
     else:

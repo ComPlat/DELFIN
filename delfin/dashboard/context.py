@@ -54,6 +54,9 @@ class DashboardContext:
     shared_clipboard: dict = field(
         default_factory=lambda: {'paths': [], 'mode': ''}
     )
+    shared_explorer_state: dict = field(
+        default_factory=lambda: {'refresh_hooks': {}, 'refresh_running': False}
+    )
 
     # Templates
     default_control: str = ''
