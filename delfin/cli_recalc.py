@@ -21,6 +21,45 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
     from .orca import run_orca as _run_orca_real
     from .xtb_crest import XTB as _XTB_real, XTB_GOAT as _XTB_GOAT_real, run_crest_workflow as _CREST_real, XTB_SOLVATOR as _SOLV_real
 
+    def _normalize_extra_deps(inp_path: Path, copy_files):
+        deps = []
+        for dep in copy_files or ():
+            try:
+                dep_path = Path(dep)
+                if not dep_path.is_absolute():
+                    dep_path = inp_path.parent / dep_path
+                deps.append(dep_path.resolve())
+            except Exception:
+                continue
+        return deps
+
+    def _bootstrap_required_outputs(inp_path: Path):
+        expected = {
+            "XTB.inp": ("XTB.xyz",),
+            "XTB_GOAT.inp": ("XTB_GOAT.globalminimum.xyz",),
+            "XTB_SOLVATOR.inp": ("XTB_SOLVATOR.solvator.xyz",),
+        }.get(inp_path.name, ())
+        return [inp_path.parent / name for name in expected]
+
+    def _maybe_bootstrap_fingerprint(inp_path: Path, out_path: Path, extra_deps, smart_mode: bool):
+        if not smart_mode:
+            return False
+        if inp_path.with_suffix(inp_path.suffix + ".fprint").exists():
+            return False
+        if not smart_recalc.has_ok_marker(out_path):
+            return False
+
+        required_outputs = _bootstrap_required_outputs(inp_path)
+        if required_outputs and not all(path.exists() for path in required_outputs):
+            return False
+
+        smart_recalc.store_fingerprint(inp_path, extra_deps=extra_deps)
+        logger.info(
+            "[smart_recalc] skipping ORCA; %s output complete and missing fingerprint bootstrapped.",
+            out_path.name,
+        )
+        return True
+
     def _run_orca_wrapper(inp_file, out_file, *args, **kwargs):
         force_targets = {resolve_path(p).resolve() for p in (force_outputs or set())}
 
@@ -29,14 +68,17 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
         out_resolved = out_path.resolve()
         force_run = out_resolved in force_targets
         smart_mode = smart_recalc.smart_mode_enabled()
+        extra_deps = _normalize_extra_deps(inp_path, kwargs.get("copy_files"))
 
         # First check
-        if not force_run and smart_recalc.should_skip(inp_path, out_path):
+        if not force_run and smart_recalc.should_skip(inp_path, out_path, extra_deps=extra_deps):
             if smart_mode:
                 logger.info("[smart_recalc] skipping ORCA; %s inp+deps unchanged and output complete.", out_file)
             else:
                 logger.info("[recalc] skipping ORCA; %s output complete (classic mode).", out_file)
             return True  # Already complete = success
+        if not force_run and _maybe_bootstrap_fingerprint(inp_path, out_path, extra_deps, smart_mode):
+            return True
 
         if force_run:
             logger.info("[recalc] forcing ORCA rerun for %s (--occupier-override)", out_file)
@@ -52,12 +94,14 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
             logger.info("[recalc] (re)running ORCA for %s", out_file)
 
         # Second check right before execution (race condition protection)
-        if not force_run and smart_recalc.should_skip(inp_path, out_path):
+        if not force_run and smart_recalc.should_skip(inp_path, out_path, extra_deps=extra_deps):
             if smart_mode:
                 logger.info("[smart_recalc] skipping ORCA; %s completed by another process.", out_file)
             else:
                 logger.info("[recalc] skipping ORCA; %s completed by another process (classic mode).", out_file)
             return True  # Already complete = success
+        if not force_run and _maybe_bootstrap_fingerprint(inp_path, out_path, extra_deps, smart_mode):
+            return True
 
         return _run_orca_real(inp_file, out_file, *args, **kwargs)
 

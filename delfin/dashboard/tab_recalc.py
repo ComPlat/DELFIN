@@ -106,7 +106,7 @@ def create_tab(ctx):
             result = ctx.backend.submit_delfin(
                 job_dir=job_dir,
                 job_name=job_dir.name,
-                mode='delfin-recalc',
+                mode='delfin-recalc-classic',
                 time_limit=time_limit,
                 pal=pal,
                 maxcore=maxcore,

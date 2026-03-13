@@ -49,6 +49,35 @@ def _strip_xyz_header(src_path: str | Path, dst_path: str | Path):
     with dst.open("w", encoding="utf-8") as f:
         f.writelines(lines[2:])
 
+
+def _bootstrap_fingerprint_from_complete_output(
+    inp: Path,
+    out: Path,
+    result_path: Path,
+    label: str,
+) -> bool:
+    """Reuse legacy completed outputs once by creating the missing fingerprint.
+
+    Older workspaces can contain a fully completed GOAT/XTB run without the
+    ``.fprint`` sidecar introduced for smart recalc. In that case we bootstrap
+    the fingerprint once so future smart recalc runs can skip deterministically.
+    """
+    if not _recalc_on() or not smart_recalc.smart_mode_enabled():
+        return False
+    if inp.with_suffix(inp.suffix + ".fprint").exists():
+        return False
+    if not result_path.exists() or not smart_recalc.has_ok_marker(out):
+        return False
+
+    smart_recalc.store_fingerprint(inp)
+    logging.info(
+        "[smart_recalc] skipping %s; complete output found without fingerprint, "
+        "bootstrapped %s.",
+        label,
+        inp.with_suffix(inp.suffix + ".fprint").name,
+    )
+    return True
+
 def XTB(multiplicity, charge, config):
     print("\nstarting xTB\n")
     folder_name = config['xTB_method']
@@ -119,6 +148,8 @@ def XTB_GOAT(multiplicity, charge, config):
         os.chdir(work)
         if smart_recalc.should_skip(inp, out) and Path("XTB_GOAT.globalminimum.xyz").exists():
             logging.info("[smart_recalc] skipping GOAT; inp+deps unchanged and output complete.")
+        elif _bootstrap_fingerprint_from_complete_output(inp, out, xyz, "GOAT"):
+            pass
         else:
             run_orca("XTB_GOAT.inp", "output_XTB_GOAT.out")
         if not Path("XTB_GOAT.globalminimum.xyz").exists():
