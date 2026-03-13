@@ -2,6 +2,7 @@
 
 import base64
 import html as _html
+import io
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import zipfile
 from collections import Counter
 from itertools import permutations, product
 from pathlib import Path
@@ -71,6 +73,14 @@ def create_tab(ctx):
     CALC_BROWSER_WORKFLOW_PAL = 4
     CALC_BROWSER_WORKFLOW_MAXCORE = 1000
     CALC_BROWSER_WORKFLOW_TIMELIMIT = '00:10:00'
+    try:
+        _calc_browser_root_hint = Path(
+            os.environ.get('DELFIN_VOILA_ROOT_DIR') or str(Path.cwd())
+        ).expanduser().resolve()
+    except Exception:
+        _calc_browser_root_hint = Path.cwd()
+    CALC_BROWSER_UPLOAD_STAGING_REL = '.delfin_dashboard_uploads'
+    CALC_BROWSER_UPLOAD_STAGING_DIR = _calc_browser_root_hint / CALC_BROWSER_UPLOAD_STAGING_REL
     # -- state (closure-captured) -------------------------------------------
     state = {
         'current_path': '',
@@ -122,6 +132,11 @@ def create_tab(ctx):
             'regen_seed_counter': 0,
         },
     }
+    upload_bridge_state = {
+        'last_seq': 0,
+        'files': {},
+        'batches': {},
+    }
     calc_scope_id = f'calc-scope-{abs(id(state))}'
     calc_resize_mol_fn = f'calcResizeMolViewer_{abs(id(state))}'
     calc_resize_pre_fn = f'calcResizePreselect3D_{abs(id(state))}'
@@ -159,6 +174,13 @@ def create_tab(ctx):
 
     # Detect whether we are inside the Archive tab (calc_dir == archiv_dir)
     _is_archive_tab = ctx.calc_dir.resolve() == ctx.archive_dir.resolve()
+    CALC_BROWSER_UPLOAD_SCOPE = 'archive' if _is_archive_tab else 'calculations'
+    CALC_BROWSER_UPLOAD_STAGING_SCOPE_REL = (
+        f'{CALC_BROWSER_UPLOAD_STAGING_REL}/{CALC_BROWSER_UPLOAD_SCOPE}'
+    )
+    CALC_BROWSER_UPLOAD_STAGING_SCOPE_DIR = (
+        CALC_BROWSER_UPLOAD_STAGING_DIR / CALC_BROWSER_UPLOAD_SCOPE
+    )
 
     # Move-to-Archive button (hidden when we are already inside the Archive)
     calc_move_archive_btn = widgets.Button(
@@ -214,6 +236,10 @@ def create_tab(ctx):
         placeholder='Move target (relative or /from-root)',
         layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px', display='none'),
     )
+    calc_upload_target_input = widgets.Text(
+        placeholder='Upload target (relative or /from-root)',
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px', display='none'),
+    )
     calc_action_source_input = widgets.Text(
         placeholder='Action source item (internal)',
         layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px', display='none'),
@@ -221,6 +247,28 @@ def create_tab(ctx):
     calc_move_btn = widgets.Button(
         description='Move',
         layout=widgets.Layout(width='90px', height='26px', display='none'),
+    )
+    calc_hidden_upload = widgets.FileUpload(
+        accept='',
+        multiple=True,
+        description='',
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
+    )
+    calc_upload_meta_input = widgets.Textarea(
+        value='',
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
+    )
+    calc_upload_chunk_input = widgets.Textarea(
+        value='',
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
+    )
+    calc_upload_seq_input = widgets.IntText(
+        value=0,
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
+    )
+    calc_upload_ack_input = widgets.IntText(
+        value=0,
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
     )
     calc_explorer_new_btn = widgets.Button(
         description='New Folder',
@@ -290,13 +338,22 @@ def create_tab(ctx):
         value='',
         layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+    calc_path_label.add_class('calc-path-label')
+    calc_refresh_btn.add_class('calc-cmd-refresh-btn')
     calc_new_folder_input.add_class('calc-cmd-new-folder-input')
     calc_new_folder_btn.add_class('calc-cmd-new-folder-btn')
     calc_rename_input.add_class('calc-cmd-rename-input')
     calc_rename_btn.add_class('calc-cmd-rename-btn')
     calc_move_target_input.add_class('calc-cmd-move-target')
+    calc_upload_target_input.add_class('calc-cmd-upload-target')
     calc_action_source_input.add_class('calc-cmd-action-source')
     calc_move_btn.add_class('calc-cmd-move-btn')
+    calc_hidden_upload.add_class('calc-hidden-upload')
+    calc_ops_status.add_class('calc-ops-status')
+    calc_upload_meta_input.add_class('calc-upload-meta')
+    calc_upload_chunk_input.add_class('calc-upload-chunk')
+    calc_upload_seq_input.add_class('calc-upload-seq')
+    calc_upload_ack_input.add_class('calc-upload-ack')
 
     # ---- Table extraction panel (Archive tab only) -------------------------
     _TABLE_PRESETS = [
@@ -1311,6 +1368,22 @@ def create_tab(ctx):
                 return numbered
             index += 1
 
+    def _calc_next_available_path(parent_dir, filename):
+        base_name = str(filename or '').replace('\\', '/').split('/')[-1]
+        base_name = _calc_clean_item_name(base_name)
+        candidate = Path(parent_dir) / base_name
+        if not candidate.exists():
+            return candidate
+        suffix = ''.join(Path(base_name).suffixes)
+        stem = base_name[:-len(suffix)] if suffix else base_name
+        index = 2
+        while True:
+            numbered_name = f'{stem}_{index}{suffix}'
+            numbered = Path(parent_dir) / numbered_name
+            if not numbered.exists():
+                return numbered
+            index += 1
+
     def _calc_reset_options_dropdown():
         try:
             calc_options_dropdown.unobserve(calc_on_options_change, names='value')
@@ -1401,6 +1474,376 @@ def create_tab(ctx):
         except ValueError as exc:
             raise ValueError('Path must remain inside explorer root.') from exc
         return resolved
+
+    def _calc_extract_uploaded_zip(target_dir, filename, content):
+        archive_name = str(filename or '').replace('\\', '/').split('/')[-1]
+        archive_stem = Path(archive_name).stem or 'upload'
+        extract_root = _calc_next_available_dir(target_dir, archive_stem)
+        extract_root = _calc_resolve_within_root(extract_root)
+        extract_root.mkdir(parents=False, exist_ok=False)
+
+        extracted_files = []
+        payload = bytes(content)
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            file_entries = [info for info in archive.infolist() if not info.is_dir()]
+            part_lists = []
+            for info in file_entries:
+                raw_name = str(info.filename or '').replace('\\', '/')
+                if raw_name.startswith('/') or re.match(r'^[A-Za-z]:', raw_name):
+                    raise ValueError(f'Unsafe ZIP entry: {info.filename}')
+                parts = [part for part in raw_name.split('/') if part not in ('', '.')]
+                if not parts or any(part == '..' for part in parts):
+                    raise ValueError(f'Unsafe ZIP entry: {info.filename}')
+                part_lists.append(parts)
+
+            common_root = None
+            if part_lists:
+                first_root = part_lists[0][0]
+                if all(parts and parts[0] == first_root for parts in part_lists):
+                    common_root = first_root
+            strip_common_root = bool(common_root) and any(len(parts) > 1 for parts in part_lists)
+
+            for info, parts in zip(file_entries, part_lists):
+                rel_parts = parts[1:] if strip_common_root and len(parts) > 1 else parts
+                if not rel_parts:
+                    rel_parts = [parts[-1]]
+                destination = _calc_resolve_within_root(extract_root.joinpath(*rel_parts))
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination = _calc_next_available_path(destination.parent, destination.name)
+                with archive.open(info, 'r') as src, destination.open('wb') as dst:
+                    shutil.copyfileobj(src, dst)
+                extracted_files.append(destination)
+
+        return extract_root, extracted_files
+
+    def _calc_save_uploaded_entries(upload_entries, target_dir):
+        saved_files = []
+        extracted_archives = []
+        for entry in upload_entries or ():
+            name = entry['name'] if isinstance(entry, dict) else getattr(entry, 'name', '')
+            content = entry['content'] if isinstance(entry, dict) else getattr(entry, 'content', b'')
+            if not name:
+                continue
+            if str(name).lower().endswith('.zip'):
+                extract_root, extracted_files = _calc_extract_uploaded_zip(target_dir, name, content)
+                extracted_archives.append((extract_root, extracted_files))
+                continue
+            destination = _calc_next_available_path(target_dir, name)
+            destination = _calc_resolve_within_root(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(bytes(content))
+            saved_files.append(destination)
+        return saved_files, extracted_archives
+
+    def _calc_display_path(path):
+        try:
+            rel = Path(path).resolve().relative_to(_calc_dir().resolve())
+        except Exception:
+            return _html.escape(Path(path).name)
+        rel_text = rel.as_posix()
+        return '/' if rel_text in {'', '.'} else f'/{_html.escape(rel_text)}'
+
+    def calc_on_hidden_upload(change):
+        upload_entries = tuple(change.get('new') or ())
+        if not upload_entries:
+            return
+        raw_target = str(calc_upload_target_input.value or '').strip()
+        try:
+            target_dir = _calc_current_dir() if not raw_target else _calc_parse_move_target_dir(raw_target)
+            saved_files, extracted_archives = _calc_save_uploaded_entries(upload_entries, target_dir)
+            summary_parts = []
+            if saved_files:
+                summary_parts.append(f'uploaded {len(saved_files)} file(s)')
+            if extracted_archives:
+                summary_parts.append(f'unpacked {len(extracted_archives)} ZIP archive(s)')
+            if not summary_parts:
+                summary_parts.append('no files received')
+            _calc_set_ops_status(
+                f'Explorer upload complete in <code>{_calc_display_path(target_dir)}</code>: '
+                f'{"; ".join(summary_parts)}.',
+                color='#2e7d32',
+            )
+            _calc_refresh_listing_preserve_filter()
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Explorer upload failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+        finally:
+            calc_upload_target_input.value = ''
+            try:
+                calc_hidden_upload.value = ()
+            except Exception:
+                pass
+
+    def _calc_normalize_upload_parts(raw_path):
+        raw = str(raw_path or '').replace('\\', '/').strip('/')
+        parts = []
+        for part in raw.split('/'):
+            piece = str(part or '').strip()
+            if not piece or piece == '.':
+                continue
+            if piece == '..':
+                raise ValueError('Upload path cannot contain "..".')
+            parts.append(_calc_clean_item_name(piece))
+        if not parts:
+            raise ValueError('Upload path is empty.')
+        return parts
+
+    def _calc_store_uploaded_payload(target_dir, rel_parts, payload):
+        parent_dir = target_dir
+        if len(rel_parts) > 1:
+            parent_dir = _calc_resolve_within_root(target_dir.joinpath(*rel_parts[:-1]))
+            parent_dir.mkdir(parents=True, exist_ok=True)
+        filename = rel_parts[-1]
+        if filename.lower().endswith('.zip'):
+            extract_root, extracted_files = _calc_extract_uploaded_zip(parent_dir, filename, payload)
+            return {'kind': 'zip', 'path': extract_root, 'count': len(extracted_files)}
+        destination = _calc_next_available_path(parent_dir, filename)
+        destination = _calc_resolve_within_root(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        return {'kind': 'file', 'path': destination, 'count': 1}
+
+    def _calc_parse_staged_upload_target_dir(raw_target_rel):
+        root_dir = _calc_dir().resolve()
+        raw = str(raw_target_rel or '').replace('\\', '/').strip('/')
+        if not raw:
+            return root_dir
+
+        rel_parts = []
+        for part in raw.split('/'):
+            piece = str(part or '').strip()
+            if not piece or piece == '.':
+                continue
+            if piece == '..':
+                raise ValueError('Upload target cannot contain "..".')
+            rel_parts.append(_calc_clean_item_name(piece))
+
+        if not rel_parts:
+            return root_dir
+        return _calc_resolve_within_root(root_dir.joinpath(*rel_parts))
+
+    def _calc_load_staged_upload_manifest(batch_dir):
+        manifest_path = Path(batch_dir) / 'manifest.json'
+        if not manifest_path.is_file():
+            return None
+        return json.loads(manifest_path.read_text(encoding='utf-8'))
+
+    def _calc_read_staged_upload_payload(batch_dir, staged_path):
+        batch_path = Path(batch_dir).resolve()
+        raw = str(staged_path or '').replace('\\', '/').strip('/')
+        if not raw:
+            raise ValueError('Staged upload path is empty.')
+        payload_path = (batch_path / raw).resolve()
+        try:
+            payload_path.relative_to(batch_path)
+        except Exception as exc:
+            raise ValueError('Staged upload path escapes batch directory.') from exc
+        if not payload_path.is_file():
+            raise FileNotFoundError(f'Staged upload file not found: {payload_path.name}')
+        return payload_path.read_bytes()
+
+    def _calc_consume_staged_upload_batch(batch_dir):
+        manifest = _calc_load_staged_upload_manifest(batch_dir)
+        if not manifest:
+            return None
+
+        target_dir = _calc_parse_staged_upload_target_dir(manifest.get('target_dir_rel'))
+        file_entries = manifest.get('files') or []
+        if not file_entries:
+            raise ValueError('Upload manifest does not contain any files.')
+
+        saved_files = []
+        unzipped_archives = []
+        for item in file_entries:
+            rel_parts = _calc_normalize_upload_parts(item.get('relative_path'))
+            staged_path = item.get('staged_path') or (
+                Path('payload').joinpath(*rel_parts).as_posix()
+            )
+            payload = _calc_read_staged_upload_payload(batch_dir, staged_path)
+            saved = _calc_store_uploaded_payload(target_dir, rel_parts, payload)
+            if saved['kind'] == 'zip':
+                unzipped_archives.append(saved['path'])
+            else:
+                saved_files.append(saved['path'])
+
+        return {
+            'target_dir': target_dir,
+            'saved_files': saved_files,
+            'unzipped_archives': unzipped_archives,
+        }
+
+    def _calc_process_staged_uploads():
+        staging_root = CALC_BROWSER_UPLOAD_STAGING_SCOPE_DIR
+        if not staging_root.exists():
+            return
+
+        processed_batches = 0
+        processed_files = 0
+        processed_archives = 0
+        last_target_dir = None
+        errors = []
+
+        try:
+            batch_dirs = sorted(
+                [
+                    entry for entry in staging_root.iterdir()
+                    if entry.is_dir() and not entry.name.endswith('.failed')
+                ],
+                key=lambda entry: entry.name,
+            )
+        except Exception:
+            return
+
+        for batch_dir in batch_dirs:
+            if not (batch_dir / 'manifest.json').is_file():
+                continue
+            try:
+                consumed = _calc_consume_staged_upload_batch(batch_dir)
+                if not consumed:
+                    continue
+                processed_batches += 1
+                processed_files += len(consumed['saved_files'])
+                processed_archives += len(consumed['unzipped_archives'])
+                last_target_dir = consumed['target_dir']
+                shutil.rmtree(batch_dir, ignore_errors=True)
+            except Exception as exc:
+                errors.append(f'{batch_dir.name}: {exc}')
+                try:
+                    failed_dir = batch_dir.with_name(f'{batch_dir.name}.failed')
+                    if not failed_dir.exists():
+                        batch_dir.rename(failed_dir)
+                except Exception:
+                    pass
+
+        if not processed_batches and not errors:
+            return
+
+        summary_parts = []
+        if processed_files:
+            summary_parts.append(f'uploaded {processed_files} file(s)')
+        if processed_archives:
+            summary_parts.append(f'unpacked {processed_archives} ZIP archive(s)')
+        if errors:
+            summary_parts.append(f'{len(errors)} batch error(s)')
+        if not summary_parts:
+            summary_parts.append('no files received')
+
+        target_html = (
+            f' in <code>{_calc_display_path(last_target_dir)}</code>'
+            if last_target_dir is not None else ''
+        )
+        _calc_set_ops_status(
+            f'Explorer upload complete{target_html}: {"; ".join(summary_parts)}.',
+            color='#2e7d32' if not errors else '#d32f2f',
+        )
+
+    def _calc_finalize_upload_batch(batch_id, target_dir):
+        batch = upload_bridge_state['batches'].get(batch_id)
+        if not batch:
+            return
+        summary_parts = []
+        if batch['saved_files']:
+            summary_parts.append(f'uploaded {len(batch["saved_files"])} file(s)')
+        if batch['unzipped_archives']:
+            summary_parts.append(f'unpacked {len(batch["unzipped_archives"])} ZIP archive(s)')
+        if batch['errors']:
+            summary_parts.append(f'{len(batch["errors"])} error(s)')
+        if not summary_parts:
+            summary_parts.append('no files received')
+        status_color = '#2e7d32' if not batch['errors'] else '#d32f2f'
+        _calc_set_ops_status(
+            f'Explorer upload complete in <code>{_calc_display_path(target_dir)}</code>: '
+            f'{"; ".join(summary_parts)}.',
+            color=status_color,
+        )
+        _calc_refresh_listing_preserve_filter()
+        upload_bridge_state['batches'].pop(batch_id, None)
+
+    def calc_on_upload_bridge_seq(change):
+        try:
+            seq = int(change.get('new') or 0)
+        except Exception:
+            return
+        if seq <= 0 or seq <= upload_bridge_state['last_seq']:
+            return
+        upload_bridge_state['last_seq'] = seq
+        batch_id = ''
+        try:
+            meta = json.loads(calc_upload_meta_input.value or '{}')
+            chunk_data = str(calc_upload_chunk_input.value or '')
+            batch_id = str(meta.get('batch_id') or '').strip() or f'batch_{seq}'
+            upload_id = str(meta.get('upload_id') or '').strip() or f'{batch_id}:file'
+            batch_total = max(1, int(meta.get('batch_total') or 1))
+            chunk_index = int(meta.get('chunk_index') or 0)
+            chunk_total = max(1, int(meta.get('chunk_total') or 1))
+            raw_target = str(meta.get('target') or '').strip()
+            rel_parts = _calc_normalize_upload_parts(meta.get('relative_path') or meta.get('name'))
+            target_dir = _calc_current_dir() if not raw_target else _calc_parse_move_target_dir(raw_target)
+
+            batch = upload_bridge_state['batches'].setdefault(
+                batch_id,
+                {
+                    'expected_files': batch_total,
+                    'completed': set(),
+                    'saved_files': [],
+                    'unzipped_archives': [],
+                    'errors': [],
+                    'target_dir': target_dir,
+                },
+            )
+            batch['expected_files'] = max(batch['expected_files'], batch_total)
+            batch['target_dir'] = target_dir
+
+            file_state = upload_bridge_state['files'].setdefault(
+                upload_id,
+                {
+                    'batch_id': batch_id,
+                    'target': raw_target,
+                    'rel_parts': rel_parts,
+                    'chunk_total': chunk_total,
+                    'chunks': [None] * chunk_total,
+                },
+            )
+            if file_state['chunk_total'] != chunk_total:
+                raise ValueError('Upload chunk count changed during transfer.')
+            if chunk_index < 0 or chunk_index >= chunk_total:
+                raise ValueError('Invalid upload chunk index.')
+            file_state['chunks'][chunk_index] = chunk_data
+
+            if all(part is not None for part in file_state['chunks']):
+                payload = base64.b64decode(''.join(file_state['chunks']))
+                saved = _calc_store_uploaded_payload(target_dir, file_state['rel_parts'], payload)
+                if saved['kind'] == 'zip':
+                    batch['unzipped_archives'].append(saved['path'])
+                else:
+                    batch['saved_files'].append(saved['path'])
+                batch['completed'].add(upload_id)
+                upload_bridge_state['files'].pop(upload_id, None)
+                if len(batch['completed']) >= batch['expected_files']:
+                    _calc_finalize_upload_batch(batch_id, target_dir)
+        except Exception as exc:
+            if batch_id:
+                batch = upload_bridge_state['batches'].setdefault(
+                    batch_id,
+                    {
+                        'expected_files': 1,
+                        'completed': set(),
+                        'saved_files': [],
+                        'unzipped_archives': [],
+                        'errors': [],
+                        'target_dir': _calc_current_dir(),
+                    },
+                )
+                batch['errors'].append(str(exc))
+            _calc_set_ops_status(
+                f'Explorer upload failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+        finally:
+            calc_upload_ack_input.value = seq
+            calc_upload_chunk_input.value = ''
 
     def _calc_is_relative_to(path, parent):
         try:
@@ -5742,6 +6185,7 @@ def create_tab(ctx):
         _calc_hide_chunk_controls()
         calc_update_view()
         calc_set_message('Select a file...')
+        _calc_process_staged_uploads()
 
         current_dir = _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
         if not current_dir.exists():
@@ -8923,6 +9367,8 @@ def create_tab(ctx):
     calc_new_folder_btn.on_click(calc_on_new_folder)
     calc_rename_btn.on_click(calc_on_rename)
     calc_move_btn.on_click(calc_on_move_items)
+    calc_hidden_upload.observe(calc_on_hidden_upload, names='value')
+    calc_upload_seq_input.observe(calc_on_upload_bridge_seq, names='value')
     for _txt, _handler in (
         (calc_new_folder_input, calc_on_new_folder),
         (calc_rename_input, calc_on_rename),
@@ -9038,14 +9484,71 @@ def create_tab(ctx):
             var t = String(text || '');
             return t.indexOf('📂 ') === 0 || t.indexOf('✅ ') === 0;
         }
-        function _setWidgetInput(root, cls, value){
-            if (!root) return false;
-            var input = root.querySelector('.' + cls + ' input');
-            if (!input) return false;
-            input.value = String(value == null ? '' : value);
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            input.dispatchEvent(new Event('change', { bubbles: true }));
+        function _eventPointNode(e){
+            if (document.elementFromPoint && e && typeof e.clientX === 'number' && typeof e.clientY === 'number') {
+                var pointed = document.elementFromPoint(e.clientX, e.clientY);
+                if (pointed) return pointed;
+            }
+            return e && e.target ? e.target : null;
+        }
+        function _optionAtPoint(selectEl, e){
+            var node = _eventPointNode(e);
+            if (node && node.tagName === 'OPTION') return node;
+            if (selectEl && selectEl.selectedOptions && selectEl.selectedOptions.length) {
+                return selectEl.selectedOptions[0];
+            }
+            return null;
+        }
+        function _selectAtPoint(e){
+            var node = _eventPointNode(e);
+            if (!node || !node.closest) return null;
+            return node.closest('.calc-file-list select');
+        }
+        function _leftPaneAtPoint(e){
+            var node = _eventPointNode(e);
+            if (!node || !node.closest) return null;
+            return node.closest('.calc-left');
+        }
+        function _pointInsideElement(el, e){
+            if (!el || !e || typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return false;
+            var rect = el.getBoundingClientRect();
+            return (
+                e.clientX >= rect.left &&
+                e.clientX <= rect.right &&
+                e.clientY >= rect.top &&
+                e.clientY <= rect.bottom
+            );
+        }
+        function _hasExternalFiles(e){
+            var dt = e && e.dataTransfer;
+            if (!dt) return false;
+            if (dt.files && dt.files.length) return true;
+            var types = Array.prototype.slice.call(dt.types || []);
+            return types.indexOf('Files') >= 0;
+        }
+        function _setDropActive(selectEl, active){
+            if (!selectEl || !selectEl.classList) return;
+            if (active) selectEl.classList.add('calc-drop-active');
+            else selectEl.classList.remove('calc-drop-active');
+        }
+        function _widgetField(root, cls){
+            if (!root) return null;
+            return root.querySelector('.' + cls + ' textarea, .' + cls + ' input');
+        }
+        function _getWidgetFieldValue(root, cls){
+            var field = _widgetField(root, cls);
+            return field ? String(field.value == null ? '' : field.value) : '';
+        }
+        function _setWidgetField(root, cls, value){
+            var field = _widgetField(root, cls);
+            if (!field) return false;
+            field.value = String(value == null ? '' : value);
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+            field.dispatchEvent(new Event('change', { bubbles: true }));
             return true;
+        }
+        function _setWidgetInput(root, cls, value){
+            return _setWidgetField(root, cls, value);
         }
         function _clickWidgetButton(root, cls){
             if (!root) return false;
@@ -9053,6 +9556,108 @@ def create_tab(ctx):
             if (!btn) return false;
             btn.click();
             return true;
+        }
+        function _cookieValue(name){
+            var parts = document.cookie ? document.cookie.split(';') : [];
+            for (var i = 0; i < parts.length; i++) {
+                var raw = String(parts[i] || '').trim();
+                if (raw.indexOf(name + '=') === 0) {
+                    return decodeURIComponent(raw.slice(name.length + 1));
+                }
+            }
+            return '';
+        }
+        function _pageConfig(){
+            try {
+                var node = document.getElementById('jupyter-config-data');
+                return node ? JSON.parse(node.textContent || '{}') : {};
+            } catch (_err) {
+                return {};
+            }
+        }
+        function _baseUrl(){
+            var cfg = _pageConfig();
+            return String(cfg.baseUrl || '/');
+        }
+        function _uploadStagingRootRel(root){
+            if (!root || !window.__delfinCalcUploadStagingRoots) return '';
+            var classes = Array.prototype.slice.call(root.classList || []);
+            for (var i = 0; i < classes.length; i++) {
+                var cls = classes[i];
+                if (cls.indexOf('calc-scope-') === 0 && window.__delfinCalcUploadStagingRoots[cls]) {
+                    return String(window.__delfinCalcUploadStagingRoots[cls] || '');
+                }
+            }
+            return '';
+        }
+        function _currentExplorerRelPath(root){
+            if (!root) return '';
+            var label = root.querySelector('.calc-path-label');
+            var text = label ? String(label.textContent || label.innerText || '') : '';
+            var idx = text.indexOf('Path:');
+            if (idx >= 0) text = text.slice(idx + 5);
+            text = text.replace(/\u00a0/g, ' ').trim();
+            if (!text || text === '/') return '';
+            return text.replace(/^\/+/, '').replace(/\/+$/, '');
+        }
+        function _setOpsStatus(root, message, color){
+            if (!root) return;
+            var node = root.querySelector('.calc-ops-status .widget-html-content') || root.querySelector('.calc-ops-status');
+            if (!node) return;
+            node.innerHTML = '<span style="color:' + String(color || '#555') + ';">' + String(message || '') + '</span>';
+        }
+        function _encodeContentsPath(path){
+            return String(path || '')
+                .split('/')
+                .filter(function(part){ return !!part; })
+                .map(function(part){ return encodeURIComponent(part); })
+                .join('/');
+        }
+        function _normalizeRelParts(path){
+            var raw = String(path || '').replace(/\\/g, '/');
+            var parts = raw.split('/').filter(function(part){ return !!part && part !== '.'; });
+            if (!parts.length) return [];
+            for (var i = 0; i < parts.length; i++) {
+                if (parts[i] === '..') throw new Error('Upload path cannot contain ".."');
+            }
+            return parts;
+        }
+        function _joinRelParts(parts){
+            return parts.filter(function(part){ return !!part; }).join('/');
+        }
+        function _mergeRelParts(){
+            var merged = [];
+            for (var i = 0; i < arguments.length; i++) {
+                var segment = arguments[i];
+                if (!segment) continue;
+                merged = merged.concat(_normalizeRelParts(segment));
+            }
+            return merged;
+        }
+        async function _putContentsModel(relPath, model){
+            var url = _baseUrl().replace(/\/?$/, '/') + 'api/contents/' + _encodeContentsPath(relPath);
+            var headers = { 'Content-Type': 'application/json' };
+            var xsrf = _cookieValue('_xsrf');
+            if (xsrf) headers['X-XSRFToken'] = xsrf;
+            var response = await fetch(url, {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: headers,
+                body: JSON.stringify(model)
+            });
+            if (!response.ok) {
+                var body = await response.text();
+                throw new Error('Upload failed (' + response.status + '): ' + body.slice(0, 240));
+            }
+            return response;
+        }
+        async function _ensureContentsDirectory(relDir){
+            var parts = _normalizeRelParts(relDir);
+            var current = [];
+            for (var i = 0; i < parts.length; i++) {
+                current.push(parts[i]);
+                await _putContentsModel(_joinRelParts(current), { type: 'directory' });
+            }
         }
         function _optionFromEvent(e){
             return (e && e.target && e.target.tagName === 'OPTION') ? e.target : null;
@@ -9137,6 +9742,185 @@ def create_tab(ctx):
                 _clickWidgetButton(root, 'calc-cmd-move-btn');
             }, 20);
         }
+        function _entryFile(entry){
+            return new Promise(function(resolve, reject){
+                try { entry.file(resolve, reject); }
+                catch (err) { reject(err); }
+            });
+        }
+        function _readDirEntries(reader){
+            return new Promise(function(resolve, reject){
+                try { reader.readEntries(resolve, reject); }
+                catch (err) { reject(err); }
+            });
+        }
+        async function _walkDroppedEntry(entry, prefix, files){
+            if (!entry) return;
+            if (entry.isFile) {
+                var file = await _entryFile(entry);
+                files.push({
+                    file: file,
+                    relativePath: String(prefix || '') + String(file.name || 'upload.bin'),
+                });
+                return;
+            }
+            if (!entry.isDirectory) return;
+            var nextPrefix = String(prefix || '') + String(entry.name || 'folder') + '/';
+            var reader = entry.createReader();
+            while (true) {
+                var entries = await _readDirEntries(reader);
+                if (!entries || !entries.length) break;
+                for (var i = 0; i < entries.length; i++) {
+                    await _walkDroppedEntry(entries[i], nextPrefix, files);
+                }
+            }
+        }
+        async function _collectDroppedFiles(e){
+            var dt = e && e.dataTransfer;
+            if (!dt) return [];
+            var files = [];
+            var items = Array.prototype.slice.call(dt.items || []);
+            var usedEntries = false;
+            for (var i = 0; i < items.length; i++) {
+                var item = items[i];
+                if (!item || typeof item.webkitGetAsEntry !== 'function') continue;
+                var entry = item.webkitGetAsEntry();
+                if (!entry) continue;
+                usedEntries = true;
+                await _walkDroppedEntry(entry, '', files);
+            }
+            if (!usedEntries) {
+                Array.prototype.forEach.call(dt.files || [], function(file){
+                    if (!file) return;
+                    files.push({
+                        file: file,
+                        relativePath: file.webkitRelativePath || file.name || 'upload.bin',
+                    });
+                });
+            }
+            return files;
+        }
+        function _readFileAsBase64(file){
+            return new Promise(function(resolve, reject){
+                var reader = new FileReader();
+                reader.onload = function(){
+                    var result = String(reader.result || '');
+                    var comma = result.indexOf(',');
+                    resolve(comma >= 0 ? result.slice(comma + 1) : result);
+                };
+                reader.onerror = function(){
+                    reject(reader.error || new Error('Failed to read dropped file'));
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+        function _clipboardFiles(e){
+            var cd = e && e.clipboardData;
+            if (!cd) return [];
+            var files = [];
+            var items = Array.prototype.slice.call(cd.items || []);
+            items.forEach(function(item){
+                if (!item || item.kind !== 'file') return;
+                var file = typeof item.getAsFile === 'function' ? item.getAsFile() : null;
+                if (!file) return;
+                files.push({
+                    file: file,
+                    relativePath: file.name || 'upload.bin',
+                });
+            });
+            if (!files.length) {
+                Array.prototype.forEach.call(cd.files || [], function(file){
+                    if (!file) return;
+                    files.push({
+                        file: file,
+                        relativePath: file.name || 'upload.bin',
+                    });
+                });
+            }
+            return files;
+        }
+        function _targetFolderName(selectEl, e, preferSelected){
+            var targetOpt = e ? _optionAtPoint(selectEl, e) : null;
+            if (!targetOpt && preferSelected && selectEl && selectEl.selectedOptions && selectEl.selectedOptions.length) {
+                targetOpt = selectEl.selectedOptions[0];
+            }
+            var targetLabel = _labelText(targetOpt);
+            return _isFolderLabel(targetLabel) ? _labelToName(targetLabel) : '';
+        }
+        async function _uploadBrowserFiles(root, browserFiles, targetName, batchPrefix){
+            if (!root || !browserFiles || !browserFiles.length) return false;
+            var stagingRootRel = _uploadStagingRootRel(root);
+            if (!stagingRootRel) {
+                throw new Error('Upload staging directory is unavailable');
+            }
+            var batchId = String(batchPrefix || 'upload') + '_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+            var batchDirRel = _joinRelParts([stagingRootRel, batchId]);
+            var targetDirRel = _joinRelParts(
+                _mergeRelParts(_currentExplorerRelPath(root), targetName)
+            );
+            var manifestFiles = [];
+            _setOpsStatus(root, 'Uploading ' + browserFiles.length + ' file(s)...', '#555');
+            await _ensureContentsDirectory(_joinRelParts([batchDirRel, 'payload']));
+            for (var fileIndex = 0; fileIndex < browserFiles.length; fileIndex++) {
+                var dropped = browserFiles[fileIndex];
+                var relPath = _joinRelParts(
+                    _normalizeRelParts(
+                        dropped.relativePath || (dropped.file && dropped.file.name) || 'upload.bin'
+                    )
+                );
+                var payloadRel = _joinRelParts([batchDirRel, 'payload', relPath]);
+                var payloadParent = _joinRelParts(
+                    [batchDirRel, 'payload'].concat(_normalizeRelParts(relPath).slice(0, -1))
+                );
+                if (payloadParent) {
+                    await _ensureContentsDirectory(payloadParent);
+                }
+                var data = await _readFileAsBase64(dropped.file);
+                await _putContentsModel(payloadRel, {
+                    type: 'file',
+                    format: 'base64',
+                    content: data
+                });
+                manifestFiles.push({
+                    relative_path: relPath,
+                    staged_path: _joinRelParts(['payload', relPath]),
+                    size: dropped.file && typeof dropped.file.size === 'number' ? dropped.file.size : null
+                });
+                _setOpsStatus(
+                    root,
+                    'Uploaded ' + (fileIndex + 1) + ' / ' + browserFiles.length + ' file(s)...',
+                    '#555'
+                );
+            }
+            await _putContentsModel(_joinRelParts([batchDirRel, 'manifest.json']), {
+                type: 'file',
+                format: 'text',
+                content: JSON.stringify({
+                    version: 1,
+                    batch_id: batchId,
+                    target_dir_rel: targetDirRel,
+                    files: manifestFiles,
+                    created_at: new Date().toISOString()
+                }, null, 2)
+            });
+            _setOpsStatus(root, 'Upload queued. Refreshing explorer...', '#2e7d32');
+            setTimeout(function(){
+                _clickWidgetButton(root, 'calc-cmd-refresh-btn');
+            }, 40);
+            return true;
+        }
+        async function _uploadDroppedFiles(root, selectEl, e){
+            if (!root || !selectEl || !_hasExternalFiles(e)) return false;
+            var droppedFiles = await _collectDroppedFiles(e);
+            if (!droppedFiles.length) return false;
+            return _uploadBrowserFiles(root, droppedFiles, _targetFolderName(selectEl, e, false), 'drop');
+        }
+        async function _uploadPastedFiles(root, selectEl, e){
+            if (!root || !selectEl) return false;
+            var pastedFiles = _clipboardFiles(e);
+            if (!pastedFiles.length) return false;
+            return _uploadBrowserFiles(root, pastedFiles, _targetFolderName(selectEl, null, true), 'paste');
+        }
         function _installExplorerSelect(selectEl){
             if (!selectEl || selectEl._delfinExplorerReady) return;
             selectEl._delfinExplorerReady = true;
@@ -9213,14 +9997,43 @@ def create_tab(ctx):
                 } catch (_err) {}
             }, true);
 
+            selectEl.addEventListener('dragenter', function(e){
+                if (!_hasExternalFiles(e)) return;
+                e.preventDefault();
+                _setDropActive(selectEl, true);
+            }, true);
+
             selectEl.addEventListener('dragover', function(e){
+                if (_hasExternalFiles(e)) {
+                    e.preventDefault();
+                    _setDropActive(selectEl, true);
+                    try { e.dataTransfer.dropEffect = 'copy'; } catch (_err) {}
+                    return;
+                }
                 var opt = _optionFromEvent(e);
                 if (opt && _isFolderLabel(_labelText(opt))) e.preventDefault();
             }, true);
 
+            selectEl.addEventListener('dragleave', function(e){
+                if (!_hasExternalFiles(e)) return;
+                setTimeout(function(){ _setDropActive(selectEl, false); }, 0);
+            }, true);
+
             selectEl.addEventListener('drop', function(e){
+                if (_hasExternalFiles(e)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    _setDropActive(selectEl, false);
+                    selectEl._delfinDragSource = null;
+                    _uploadDroppedFiles(root, selectEl, e).catch(function(err){
+                        _setOpsStatus(root, 'Explorer upload failed: ' + String(err && err.message ? err.message : err), '#d32f2f');
+                        console.error('Explorer upload failed', err);
+                    });
+                    return;
+                }
                 var targetOpt = _optionFromEvent(e);
                 var sourceOpt = selectEl._delfinDragSource || null;
+                _setDropActive(selectEl, false);
                 if (!sourceOpt || !targetOpt) {
                     selectEl._delfinDragSource = null;
                     return;
@@ -9238,10 +10051,99 @@ def create_tab(ctx):
                 });
             } catch (_err) {}
         }
+        function _installExternalFileDrop(root){
+            if (!root || root._delfinExternalDropReady) return;
+            root._delfinExternalDropReady = true;
+            root._delfinPasteArmed = false;
+
+            function activeSelectFromEvent(e){
+                return _selectAtPoint(e) || root.querySelector('.calc-file-list select');
+            }
+            function activeSelectForPaste(){
+                return root.querySelector('.calc-file-list select');
+            }
+            function pointerInsideExplorer(e){
+                var leftPane = root.querySelector('.calc-left');
+                if (!leftPane) return false;
+                return !!_leftPaneAtPoint(e) || _pointInsideElement(leftPane, e);
+            }
+            function clearHighlight(){
+                var active = root.querySelector('.calc-file-list select.calc-drop-active');
+                if (active) _setDropActive(active, false);
+            }
+            function handleExternalDrag(e){
+                if (!_hasExternalFiles(e)) return false;
+                if (!pointerInsideExplorer(e)) return false;
+                var selectEl = activeSelectFromEvent(e);
+                e.preventDefault();
+                e.stopPropagation();
+                if (selectEl) _setDropActive(selectEl, true);
+                return true;
+            }
+
+            document.addEventListener('dragenter', function(e){
+                handleExternalDrag(e);
+            }, true);
+            document.addEventListener('dragover', function(e){
+                if (!handleExternalDrag(e)) clearHighlight();
+            }, true);
+            document.addEventListener('drop', function(e){
+                if (!_hasExternalFiles(e)) return;
+                if (!pointerInsideExplorer(e)) return;
+                var selectEl = activeSelectFromEvent(e);
+                e.preventDefault();
+                e.stopPropagation();
+                clearHighlight();
+                if (selectEl) {
+                    _uploadDroppedFiles(root, selectEl, e).catch(function(err){
+                        _setOpsStatus(root, 'Explorer upload failed: ' + String(err && err.message ? err.message : err), '#d32f2f');
+                        console.error('Explorer upload failed', err);
+                    });
+                }
+            }, true);
+            root.addEventListener('mousedown', function(){
+                root._delfinPasteArmed = true;
+            }, true);
+            root.addEventListener('focusin', function(){
+                root._delfinPasteArmed = true;
+            }, true);
+            document.addEventListener('mousedown', function(e){
+                if (!root.contains(e.target)) root._delfinPasteArmed = false;
+            }, true);
+            document.addEventListener('paste', function(e){
+                var selectEl = activeSelectForPaste();
+                if (!selectEl) return;
+                var files = _clipboardFiles(e);
+                if (!files.length) return;
+                var activeInside = root._delfinPasteArmed || root.contains(document.activeElement);
+                if (!activeInside) return;
+                e.preventDefault();
+                e.stopPropagation();
+                _uploadPastedFiles(root, selectEl, e).catch(function(err){
+                    _setOpsStatus(root, 'Explorer paste upload failed: ' + String(err && err.message ? err.message : err), '#d32f2f');
+                    console.error('Explorer paste upload failed', err);
+                });
+            }, true);
+            document.addEventListener('dragleave', function(_e){
+                setTimeout(clearHighlight, 0);
+            }, true);
+            document.addEventListener('dragend', clearHighlight, true);
+        }
         function _scanAndInstall(root){
             if (!root || !root.querySelectorAll) return;
-            var selects = root.querySelectorAll('.calc-file-list select');
+            var selects = [];
+            if (root.matches && root.matches('.calc-file-list select')) selects.push(root);
+            Array.prototype.forEach.call(root.querySelectorAll('.calc-file-list select'), function(sel){
+                selects.push(sel);
+            });
             Array.prototype.forEach.call(selects, _installExplorerSelect);
+
+            var tabs = [];
+            if (root.matches && root.matches('.calc-tab')) tabs.push(root);
+            Array.prototype.forEach.call(root.querySelectorAll('.calc-tab'), function(tab){
+                tabs.push(tab);
+            });
+            Array.prototype.forEach.call(tabs, _installExternalFileDrop);
         }
 
         _scanAndInstall(document.body);
@@ -9260,11 +10162,6 @@ def create_tab(ctx):
         }, true);
     })();
     """
-    from IPython.display import Javascript as _Javascript
-    with ctx.js_output:
-        display(_Javascript(_multi_select_js))
-        display(_Javascript(_explorer_interactions_js))
-
     # -- layout -------------------------------------------------------------
     _archive_nav_children = [calc_table_btn] if _is_archive_tab else [calc_move_archive_btn]
     _archive_selection_children = [calc_back_to_calculations_btn] if _is_archive_tab else []
@@ -9295,9 +10192,13 @@ def create_tab(ctx):
         ),
         calc_rename_prompt_row,
         calc_duplicate_prompt_row,
+        calc_hidden_upload,
         widgets.VBox(
             [calc_new_folder_input, calc_new_folder_btn, calc_rename_input, calc_rename_btn,
-             calc_move_target_input, calc_action_source_input, calc_move_btn],
+             calc_move_target_input, calc_upload_target_input,
+             calc_action_source_input, calc_move_btn,
+             calc_upload_meta_input, calc_upload_chunk_input,
+             calc_upload_seq_input, calc_upload_ack_input],
             layout=widgets.Layout(display='none'),
         ),
     ], layout=widgets.Layout(width='100%', overflow_x='hidden'))
@@ -9353,6 +10254,12 @@ def create_tab(ctx):
         '.calc-right * { max-width:100% !important; }'
         '.calc-left .widget-select, .calc-left .widget-select select'
         ' { overflow-x:hidden !important; }'
+        '.calc-hidden-upload { position:absolute !important; width:1px !important; height:1px !important;'
+        ' opacity:0 !important; overflow:hidden !important; pointer-events:none !important; }'
+        '.calc-hidden-upload input, .calc-hidden-upload button'
+        ' { width:1px !important; height:1px !important; opacity:0 !important; pointer-events:none !important; }'
+        '.calc-left .calc-file-list select.calc-drop-active'
+        ' { border:2px dashed #1976d2 !important; background:#edf4ff !important; }'
         '.calc-left .widget-select select'
         ' { text-overflow: ellipsis; white-space: nowrap; }'
         '.calc-left .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
@@ -9505,7 +10412,12 @@ def create_tab(ctx):
     # Stored as a plain string; the CALLER (create_dashboard in __init__.py)
     # runs ALL tab init scripts in one ctx.run_js() call so that no tab's
     # clear_output() wipes another tab's init JS.
-    _init_js = f"""
+    _init_js = (
+        _multi_select_js
+        + "\n"
+        + _explorer_interactions_js
+        + "\n"
+        + f"""
     (function() {{
         function initCalcScopeBind(attempt) {{
             var scopeKey = {json.dumps(calc_scope_id)};
@@ -9521,6 +10433,8 @@ def create_tab(ctx):
                 root = document.querySelector('.calc-tab');
                 if (!root) return;
             }}
+            window.__delfinCalcUploadStagingRoots = window.__delfinCalcUploadStagingRoots || {{}};
+            window.__delfinCalcUploadStagingRoots[scopeKey] = {json.dumps(CALC_BROWSER_UPLOAD_STAGING_SCOPE_REL)};
 
         /* --- Splitter drag logic --- */
         var left = root.querySelector('.calc-left');
@@ -9688,6 +10602,7 @@ def create_tab(ctx):
         initCalcScopeBind(0);
     }})();
     """
+    )
 
     def calc_set_root(root_dir):
         """Switch browser root directory and reset to top level."""
