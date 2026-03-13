@@ -154,9 +154,7 @@ def create_tab(ctx):
         disabled=False,
     )
 
-    orca_generate_btn = widgets.Button(description='GENERATE INP', button_style='info',
-                                       layout=widgets.Layout(width='150px'))
-    orca_save_btn = widgets.Button(description='SAVE INP + SH', button_style='warning',
+    orca_save_btn = widgets.Button(description='SAVE', button_style='warning',
                                    layout=widgets.Layout(width='150px'))
     orca_submit_btn = widgets.Button(description='SUBMIT ORCA JOB', button_style='success',
                                      layout=widgets.Layout(width='150px'))
@@ -593,52 +591,69 @@ def create_tab(ctx):
         text = new_text
         orca_preview.value = sanitize_orca_input(text)
 
-    def handle_orca_generate(button):
-        orca_preview.value = sanitize_orca_input(generate_orca_input())
-        state['last_auto_keywords'] = _build_keyword_line()
+    def _save_orca_job():
+        """Save .inp, XYZ files, and extra files to the job directory.
+
+        Returns ``(job_dir, safe_job_name, inp_content, saved_files)`` on
+        success, or ``None`` if validation failed (error already printed).
+        """
+        job_name = orca_job_name.value.strip()
+        if not job_name:
+            print('Error: Job name cannot be empty!')
+            return None
+
+        safe_job_name = ''.join(c for c in job_name if c.isalnum() or c in ('_', '-'))
+        if not safe_job_name:
+            print('Error: Job name contains only invalid characters!')
+            return None
+
+        preview_content = orca_preview.value.strip()
+        if preview_content:
+            inp_content = preview_content
+        else:
+            coords = strip_xyz_header(orca_coords.value)
+            if not coords:
+                print('Error: Coordinates or INP preview cannot be empty!')
+                return None
+            inp_content = generate_orca_input()
+
+        inp_content = sanitize_orca_input(inp_content)
+
+        job_dir = ctx.calc_dir / safe_job_name
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        inp_path = job_dir / f'{safe_job_name}.inp'
+        inp_path.write_text(inp_content)
+
+        # Write named XYZ files (from name.xyz;...* blocks) to job dir
+        xyz_blocks = parse_xyz_blocks(orca_coords.value)
+        if xyz_blocks:
+            for filename, xyz_content in xyz_blocks:
+                (job_dir / filename).write_text(xyz_content)
+
+        saved_files = save_uploaded_files(job_dir)
+        return job_dir, safe_job_name, inp_content, saved_files
+
+    def handle_orca_save(button):
         with orca_output:
             clear_output()
-            print('ORCA input regenerated. You can edit the preview if needed.')
+            result = _save_orca_job()
+            if result is None:
+                return
+            job_dir, safe_job_name, inp_content, saved_files = result
+            print(f'Saved to {job_dir}')
+            print(f'  {safe_job_name}.inp')
+            if saved_files:
+                for fn in saved_files:
+                    print(f'  {fn}')
 
-    def _submit_orca_job():
-        """Shared logic for save+submit and direct submit."""
+    def handle_orca_submit(button):
         with orca_output:
             clear_output()
-            job_name = orca_job_name.value.strip()
-            if not job_name:
-                print('Error: Job name cannot be empty!')
+            result = _save_orca_job()
+            if result is None:
                 return
-
-            safe_job_name = ''.join(c for c in job_name if c.isalnum() or c in ('_', '-'))
-            if not safe_job_name:
-                print('Error: Job name contains only invalid characters!')
-                return
-
-            preview_content = orca_preview.value.strip()
-            if preview_content:
-                inp_content = preview_content
-            else:
-                coords = strip_xyz_header(orca_coords.value)
-                if not coords:
-                    print('Error: Coordinates or INP preview cannot be empty!')
-                    return
-                inp_content = generate_orca_input()
-
-            inp_content = sanitize_orca_input(inp_content)
-
-            job_dir = ctx.calc_dir / safe_job_name
-            job_dir.mkdir(parents=True, exist_ok=True)
-
-            inp_path = job_dir / f'{safe_job_name}.inp'
-            inp_path.write_text(inp_content)
-
-            # Write named XYZ files (from name.xyz;...* blocks) to job dir
-            xyz_blocks = parse_xyz_blocks(orca_coords.value)
-            if xyz_blocks:
-                for filename, xyz_content in xyz_blocks:
-                    (job_dir / filename).write_text(xyz_content)
-
-            saved_files = save_uploaded_files(job_dir)
+            job_dir, safe_job_name, inp_content, saved_files = result
 
             pal_used, maxcore_used = parse_inp_resources(inp_content)
             if pal_used is None:
@@ -646,15 +661,15 @@ def create_tab(ctx):
             if maxcore_used is None:
                 maxcore_used = orca_maxcore.value
 
-            result = ctx.backend.submit_orca(
+            submit_result = ctx.backend.submit_orca(
                 job_dir=job_dir, job_name=safe_job_name,
                 inp_file=f'{safe_job_name}.inp',
                 time_limit=orca_slurm_time.value,
                 pal=pal_used, maxcore=maxcore_used,
             )
 
-            if result.returncode == 0:
-                job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+            if submit_result.returncode == 0:
+                job_id = submit_result.stdout.strip().split()[-1] if submit_result.stdout.strip() else '(unknown)'
                 print('ORCA job successfully submitted!')
                 print(f'Job ID: {job_id}')
                 print(f'Job Name: {safe_job_name}')
@@ -670,13 +685,7 @@ def create_tab(ctx):
                 reset_orca_builder()
             else:
                 print('Error submitting job:')
-                print(result.stderr or result.stdout)
-
-    def handle_orca_save(button):
-        _submit_orca_job()
-
-    def handle_orca_submit(button):
-        _submit_orca_job()
+                print(submit_result.stderr or submit_result.stdout)
 
     def update_uploaded_files_label(change=None):
         if orca_file_upload.value:
@@ -691,7 +700,6 @@ def create_tab(ctx):
             orca_uploaded_files_label.value = '<i>Drag & drop files here (e.g. .gbw, .xyz, .hess)</i>'
 
     # -- wiring ---------------------------------------------------------
-    orca_generate_btn.on_click(handle_orca_generate)
     orca_save_btn.on_click(handle_orca_save)
     orca_submit_btn.on_click(handle_orca_submit)
     orca_file_upload.observe(update_uploaded_files_label, names='value')
@@ -739,7 +747,7 @@ def create_tab(ctx):
         widgets.VBox([orca_drop_zone, orca_file_upload, orca_uploaded_files_label],
                      layout=widgets.Layout(width='100%', min_width='0', overflow='hidden')),
         _row([orca_path_files], wrap=False),
-        _row([orca_generate_btn, orca_save_btn, orca_submit_btn]),
+        _row([orca_save_btn, orca_submit_btn]),
         orca_output,
     ], layout=widgets.Layout(
         flex='1 1 0', min_width='0', padding='10px',
