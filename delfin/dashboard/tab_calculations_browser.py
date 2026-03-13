@@ -161,10 +161,6 @@ def create_tab(ctx):
         description='🗑 Delete', button_style='danger',
         layout=widgets.Layout(width='80px', height='26px'),
     )
-    calc_explorer_copy_btn = widgets.Button(
-        description='📄 Copy',
-        layout=widgets.Layout(width='72px', height='26px'),
-    )
     calc_duplicate_btn = widgets.Button(
         description='Duplicate',
         layout=widgets.Layout(width='96px', height='26px'),
@@ -295,15 +291,6 @@ def create_tab(ctx):
     calc_explorer_rename_btn = widgets.Button(
         description='✏ Rename',
         layout=widgets.Layout(width='92px', height='26px'),
-    )
-    calc_explorer_cut_btn = widgets.Button(
-        description='✂ Cut',
-        layout=widgets.Layout(width='72px', height='26px'),
-    )
-    calc_explorer_paste_btn = widgets.Button(
-        description='📋 Paste',
-        layout=widgets.Layout(width='82px', height='26px'),
-        disabled=True,
     )
     calc_rename_prompt_label = widgets.HTML('<b>Rename:</b>')
     calc_rename_prompt_input = widgets.Text(
@@ -2114,7 +2101,7 @@ def create_tab(ctx):
         return valid
 
     def _calc_update_explorer_action_state():
-        calc_explorer_paste_btn.disabled = (len(_calc_clipboard_paths()) == 0)
+        _calc_clipboard_paths()
 
     def _calc_parse_mutation_csv(csv_path):
         entries = []
@@ -9491,7 +9478,6 @@ def create_tab(ctx):
     calc_delete_btn.on_click(calc_on_delete_click)
     calc_delete_yes_btn.on_click(calc_on_delete_yes)
     calc_delete_no_btn.on_click(calc_on_delete_no)
-    calc_explorer_copy_btn.on_click(calc_on_explorer_copy)
     calc_move_archive_btn.on_click(calc_on_move_archive_click)
     calc_back_to_calculations_btn.on_click(calc_on_back_to_calculations)
     calc_move_archive_yes_btn.on_click(calc_on_move_archive_yes)
@@ -9499,8 +9485,6 @@ def create_tab(ctx):
     calc_explorer_new_btn.on_click(calc_on_explorer_new_folder)
     calc_explorer_rename_btn.on_click(calc_on_explorer_start_rename)
     calc_duplicate_btn.on_click(calc_on_explorer_start_duplicate)
-    calc_explorer_cut_btn.on_click(calc_on_explorer_cut)
-    calc_explorer_paste_btn.on_click(calc_on_explorer_paste)
     calc_rename_prompt_ok_btn.on_click(calc_on_explorer_rename_ok)
     calc_rename_prompt_cancel_btn.on_click(calc_on_explorer_rename_cancel)
     calc_duplicate_prompt_yes_btn.on_click(calc_on_explorer_duplicate_yes)
@@ -9614,6 +9598,14 @@ def create_tab(ctx):
             if (!selectEl || !selectEl.options || idx < 0 || idx >= selectEl.options.length) return null;
             return selectEl.options[idx];
         }
+        function _optionVisualHeight(selectEl){
+            if (!selectEl || !selectEl.options || !selectEl.options.length) return 0;
+            for (var i = 0; i < selectEl.options.length; i++) {
+                var rect = selectEl.options[i].getBoundingClientRect ? selectEl.options[i].getBoundingClientRect() : null;
+                if (rect && rect.height > 0) return rect.height;
+            }
+            return 0;
+        }
         function _selectedOption(selectEl){
             if (!selectEl || !selectEl.options || !selectEl.options.length) return null;
             if (selectEl.selectedOptions && selectEl.selectedOptions.length) {
@@ -9641,13 +9633,19 @@ def create_tab(ctx):
                 return -1;
             }
             var optionCount = selectEl.options.length;
-            var visibleRows = Math.max(1, Math.min(optionCount, Number(selectEl.size) || optionCount));
-            var optionHeight = rect.height / visibleRows;
-            if ((!optionHeight || !isFinite(optionHeight)) && selectEl.scrollHeight) {
+            var optionHeight = _optionVisualHeight(selectEl);
+            if ((!optionHeight || !isFinite(optionHeight)) && selectEl.scrollHeight && selectEl.scrollHeight > 0) {
                 optionHeight = selectEl.scrollHeight / optionCount;
             }
+            if ((!optionHeight || !isFinite(optionHeight)) && rect.height > 0) {
+                var visibleRows = Math.max(1, Math.min(optionCount, Number(selectEl.size) || optionCount));
+                optionHeight = rect.height / visibleRows;
+            }
             if (!optionHeight || !isFinite(optionHeight)) return -1;
-            var rawIdx = Math.floor(((e.clientY - rect.top) + (selectEl.scrollTop || 0)) / optionHeight);
+            var localY = (e.clientY - rect.top) + (selectEl.scrollTop || 0);
+            var contentHeight = optionHeight * optionCount;
+            if (localY < 0 || localY >= contentHeight) return -1;
+            var rawIdx = Math.floor(localY / optionHeight);
             if (rawIdx < 0) rawIdx = 0;
             if (rawIdx >= optionCount) rawIdx = optionCount - 1;
             return rawIdx;
@@ -10116,9 +10114,20 @@ def create_tab(ctx):
 
             selectEl.addEventListener('mousedown', function(e){
                 if (e.button != null && e.button !== 0) return;
-                var opt = _activeOptionForEvent(selectEl, e);
+                var opt = _optionAtPoint(selectEl, e);
                 if (!opt) {
                     dragState.src = null;
+                    dragState.moved = false;
+                    root._dblLastTime = 0;
+                    root._dblLastLabel = '';
+                    root._dblLastX = 0;
+                    root._dblLastY = 0;
+                    e.preventDefault();
+                    Array.prototype.forEach.call(selectEl.options || [], function(item){
+                        item.selected = false;
+                    });
+                    selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    selectEl.focus();
                     return;
                 }
                 /* Track drag start */
@@ -10166,7 +10175,7 @@ def create_tab(ctx):
             }, true);
 
             selectEl.addEventListener('mouseup', function(e){
-                var targetOpt = _activeOptionForEvent(selectEl, e);
+                var targetOpt = _optionAtPoint(selectEl, e);
                 if (!dragState.src || !dragState.moved || !targetOpt) {
                     dragState.src = null;
                     dragState.moved = false;
@@ -10278,12 +10287,15 @@ def create_tab(ctx):
                 if (e.button != null && e.button !== 0) return;
                 var sel = _selectAtPoint(e);
                 if (!sel || !sel.closest('.calc-file-list')) return;
+                var currentOpt = _optionAtPoint(sel, e);
+                if (!currentOpt) return;
+                var currentLabel = _labelText(currentOpt);
                 var label = String(root._dblLastLabel || '');
                 if (!label || label.charAt(0) === '(') return;
                 var now = Date.now();
                 var dx = Math.abs((typeof e.clientX === 'number' ? e.clientX : 0) - (Number(root._dblLastX) || 0));
                 var dy = Math.abs((typeof e.clientY === 'number' ? e.clientY : 0) - (Number(root._dblLastY) || 0));
-                if ((now - root._dblLastTime) < 500 && dx <= 20 && dy <= 20) {
+                if (currentLabel === label && (now - root._dblLastTime) < 500 && dx <= 20 && dy <= 20) {
                     root._dblLastTime = 0;
                     root._dblLastLabel = '';
                     root._dblLastX = 0;
@@ -10435,15 +10447,7 @@ def create_tab(ctx):
             ),
         ),
         widgets.HBox(
-            [calc_explorer_copy_btn, calc_duplicate_btn, *_archive_selection_children],
-            layout=widgets.Layout(
-                width='100%', overflow_x='hidden',
-                justify_content='flex-start', gap='6px',
-                display='flex',
-            ),
-        ),
-        widgets.HBox(
-            [calc_explorer_new_btn, calc_explorer_rename_btn, calc_explorer_cut_btn, calc_explorer_paste_btn],
+            [calc_explorer_new_btn, calc_explorer_rename_btn, calc_duplicate_btn, *_archive_selection_children],
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden',
                 justify_content='flex-start', gap='6px',
