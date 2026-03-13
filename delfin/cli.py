@@ -36,6 +36,7 @@ def _load_full_cli_dependencies() -> None:
     global PipelineContext, compute_summary, interpret_method_alias
     global normalize_input_file, run_classic_phase, run_manual_phase, run_occuper_phase, run_esd_phase
     global extract_preferred_spin, read_occupier_file
+    global FileBundle
 
     if _FULL_CLI_IMPORTS_LOADED:
         return
@@ -69,6 +70,7 @@ def _load_full_cli_dependencies() -> None:
     from .cli_recalc import setup_recalc_mode as _setup_recalc_mode, patch_modules_for_recalc as _patch_modules_for_recalc
     from .cli_banner import print_delfin_banner as _print_delfin_banner, validate_required_files as _validate_required_files
     from .pipeline import (
+        FileBundle as _FileBundle,
         PipelineContext as _PipelineContext,
         compute_summary as _compute_summary,
         interpret_method_alias as _interpret_method_alias,
@@ -107,6 +109,7 @@ def _load_full_cli_dependencies() -> None:
     patch_modules_for_recalc = _patch_modules_for_recalc
     print_delfin_banner = _print_delfin_banner
     validate_required_files = _validate_required_files
+    FileBundle = _FileBundle
     PipelineContext = _PipelineContext
     compute_summary = _compute_summary
     interpret_method_alias = _interpret_method_alias
