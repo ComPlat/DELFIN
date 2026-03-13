@@ -320,7 +320,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         widgets.HBox([
             widgets.HTML(
                 f'<h2 style="color:#1976d2; margin:0;">'
-                f'DELFIN Dashboard ({backend_label})</h2>'
+                f'DELFIN ({backend_label})</h2>'
             ),
             widgets.HBox(
                 [busy_indicator, git_status_label, pull_delfin_btn, rollback_delfin_btn, orca_version_label],

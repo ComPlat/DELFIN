@@ -10454,7 +10454,10 @@ def create_tab(ctx):
             }, true);
 
             function activeSelectFromEvent(e){
-                return _selectAtPoint(e) || root.querySelector('.calc-file-list select');
+                if (!pointerInsideExplorer(e)) return null;
+                var selectEl = _selectAtPoint(e);
+                if (selectEl && root.contains(selectEl)) return selectEl;
+                return root.querySelector('.calc-file-list select');
             }
             function activeSelectForPaste(){
                 return root.querySelector('.calc-file-list select');
@@ -10462,7 +10465,9 @@ def create_tab(ctx):
             function pointerInsideExplorer(e){
                 var leftPane = root.querySelector('.calc-left');
                 if (!leftPane) return false;
-                return !!_leftPaneAtPoint(e) || _pointInsideElement(leftPane, e);
+                var leftPaneAtPoint = _leftPaneAtPoint(e);
+                if (leftPaneAtPoint) return root.contains(leftPaneAtPoint);
+                return _pointInsideElement(leftPane, e);
             }
             function clearHighlight(){
                 var active = root.querySelector('.calc-file-list select.calc-drop-active');
@@ -10496,10 +10501,12 @@ def create_tab(ctx):
             document.addEventListener('drop', function(e){
                 console.log('[DELFIN] drop event', '_hasExternalFiles=', _hasExternalFiles(e), 'types=', e.dataTransfer ? Array.from(e.dataTransfer.types) : 'none');
                 if (!_hasExternalFiles(e)) return;
+                if (!pointerInsideExplorer(e)) return;
                 e.preventDefault();
-                e.stopPropagation();
+                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                else e.stopPropagation();
                 clearHighlight();
-                var selectEl = activeSelectFromEvent(e) || root.querySelector('.calc-file-list select');
+                var selectEl = activeSelectFromEvent(e);
                 console.log('[DELFIN] drop selectEl found:', !!selectEl, 'root:', !!root);
                 if (selectEl) {
                     _uploadDroppedFiles(root, selectEl, e).catch(function(err){
