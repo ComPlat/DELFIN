@@ -252,7 +252,7 @@ def create_tab(ctx):
         accept='',
         multiple=True,
         description='',
-        layout=widgets.Layout(width='1px', height='1px', display='none'),
+        layout=widgets.Layout(width='1px', height='1px', overflow='hidden'),
     )
     calc_upload_meta_input = widgets.Textarea(
         value='',
@@ -268,6 +268,14 @@ def create_tab(ctx):
     )
     calc_upload_ack_input = widgets.IntText(
         value=0,
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
+    )
+    calc_upload_trigger_btn = widgets.Button(
+        description='',
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
+    )
+    calc_upload_ack_label = widgets.Label(
+        value='0',
         layout=widgets.Layout(width='1px', height='1px', display='none'),
     )
     calc_explorer_new_btn = widgets.Button(
@@ -354,6 +362,8 @@ def create_tab(ctx):
     calc_upload_chunk_input.add_class('calc-upload-chunk')
     calc_upload_seq_input.add_class('calc-upload-seq')
     calc_upload_ack_input.add_class('calc-upload-ack')
+    calc_upload_trigger_btn.add_class('calc-upload-trigger-btn')
+    calc_upload_ack_label.add_class('calc-upload-ack-label')
 
     # ---- Table extraction panel (Archive tab only) -------------------------
     _TABLE_PRESETS = [
@@ -1843,6 +1853,86 @@ def create_tab(ctx):
             )
         finally:
             calc_upload_ack_input.value = seq
+            calc_upload_chunk_input.value = ''
+
+    def calc_on_upload_trigger_click(_btn):
+        """Handle upload chunk via button click (works in Voilà)."""
+        upload_bridge_state['last_seq'] += 1
+        seq = upload_bridge_state['last_seq']
+        batch_id = ''
+        try:
+            meta = json.loads(calc_upload_meta_input.value or '{}')
+            chunk_data = str(calc_upload_chunk_input.value or '')
+            batch_id = str(meta.get('batch_id') or '').strip() or f'batch_{seq}'
+            upload_id = str(meta.get('upload_id') or '').strip() or f'{batch_id}:file'
+            batch_total = max(1, int(meta.get('batch_total') or 1))
+            chunk_index = int(meta.get('chunk_index') or 0)
+            chunk_total = max(1, int(meta.get('chunk_total') or 1))
+            raw_target = str(meta.get('target') or '').strip()
+            rel_parts = _calc_normalize_upload_parts(meta.get('relative_path') or meta.get('name'))
+            target_dir = _calc_current_dir() if not raw_target else _calc_parse_move_target_dir(raw_target)
+
+            batch = upload_bridge_state['batches'].setdefault(
+                batch_id,
+                {
+                    'expected_files': batch_total,
+                    'completed': set(),
+                    'saved_files': [],
+                    'unzipped_archives': [],
+                    'errors': [],
+                    'target_dir': target_dir,
+                },
+            )
+            batch['expected_files'] = max(batch['expected_files'], batch_total)
+            batch['target_dir'] = target_dir
+
+            file_state = upload_bridge_state['files'].setdefault(
+                upload_id,
+                {
+                    'batch_id': batch_id,
+                    'target': raw_target,
+                    'rel_parts': rel_parts,
+                    'chunk_total': chunk_total,
+                    'chunks': [None] * chunk_total,
+                },
+            )
+            if file_state['chunk_total'] != chunk_total:
+                raise ValueError('Upload chunk count changed during transfer.')
+            if chunk_index < 0 or chunk_index >= chunk_total:
+                raise ValueError('Invalid upload chunk index.')
+            file_state['chunks'][chunk_index] = chunk_data
+
+            if all(part is not None for part in file_state['chunks']):
+                payload = base64.b64decode(''.join(file_state['chunks']))
+                saved = _calc_store_uploaded_payload(target_dir, file_state['rel_parts'], payload)
+                if saved['kind'] == 'zip':
+                    batch['unzipped_archives'].append(saved['path'])
+                else:
+                    batch['saved_files'].append(saved['path'])
+                batch['completed'].add(upload_id)
+                upload_bridge_state['files'].pop(upload_id, None)
+                if len(batch['completed']) >= batch['expected_files']:
+                    _calc_finalize_upload_batch(batch_id, target_dir)
+        except Exception as exc:
+            if batch_id:
+                batch = upload_bridge_state['batches'].setdefault(
+                    batch_id,
+                    {
+                        'expected_files': 1,
+                        'completed': set(),
+                        'saved_files': [],
+                        'unzipped_archives': [],
+                        'errors': [],
+                        'target_dir': _calc_current_dir(),
+                    },
+                )
+                batch['errors'].append(str(exc))
+            _calc_set_ops_status(
+                f'Explorer upload failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+        finally:
+            calc_upload_ack_label.value = str(seq)
             calc_upload_chunk_input.value = ''
 
     def _calc_is_relative_to(path, parent):
@@ -9369,6 +9459,7 @@ def create_tab(ctx):
     calc_move_btn.on_click(calc_on_move_items)
     calc_hidden_upload.observe(calc_on_hidden_upload, names='value')
     calc_upload_seq_input.observe(calc_on_upload_bridge_seq, names='value')
+    calc_upload_trigger_btn.on_click(calc_on_upload_trigger_click)
     for _txt, _handler in (
         (calc_new_folder_input, calc_on_new_folder),
         (calc_rename_input, calc_on_rename),
@@ -9470,6 +9561,7 @@ def create_tab(ctx):
     (function(){
         if (window._delfinExplorerInteractionsReady) return;
         window._delfinExplorerInteractionsReady = true;
+        console.log('[DELFIN] Explorer interactions JS loaded');
 
         function _labelText(opt){
             if (!opt) return '';
@@ -9542,7 +9634,16 @@ def create_tab(ctx):
         function _setWidgetField(root, cls, value){
             var field = _widgetField(root, cls);
             if (!field) return false;
-            field.value = String(value == null ? '' : value);
+            var strVal = String(value == null ? '' : value);
+            var nativeSet = Object.getOwnPropertyDescriptor(
+                Object.getPrototypeOf(field), 'value'
+            ) || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
+              || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+            if (nativeSet && nativeSet.set) {
+                nativeSet.set.call(field, strVal);
+            } else {
+                field.value = strVal;
+            }
             field.dispatchEvent(new Event('input', { bubbles: true }));
             field.dispatchEvent(new Event('change', { bubbles: true }));
             return true;
@@ -9848,65 +9949,44 @@ def create_tab(ctx):
             return _isFolderLabel(targetLabel) ? _labelToName(targetLabel) : '';
         }
         async function _uploadBrowserFiles(root, browserFiles, targetName, batchPrefix){
+            console.log('[DELFIN] _uploadBrowserFiles called, files:', browserFiles.length, 'targetName:', targetName);
             if (!root || !browserFiles || !browserFiles.length) return false;
-            var stagingRootRel = _uploadStagingRootRel(root);
-            if (!stagingRootRel) {
-                throw new Error('Upload staging directory is unavailable');
-            }
-            var batchId = String(batchPrefix || 'upload') + '_' + Date.now() + '_' + Math.random().toString(36).slice(2);
-            var batchDirRel = _joinRelParts([stagingRootRel, batchId]);
-            var targetDirRel = _joinRelParts(
-                _mergeRelParts(_currentExplorerRelPath(root), targetName)
-            );
-            var manifestFiles = [];
             _setOpsStatus(root, 'Uploading ' + browserFiles.length + ' file(s)...', '#555');
-            await _ensureContentsDirectory(_joinRelParts([batchDirRel, 'payload']));
-            for (var fileIndex = 0; fileIndex < browserFiles.length; fileIndex++) {
-                var dropped = browserFiles[fileIndex];
-                var relPath = _joinRelParts(
-                    _normalizeRelParts(
-                        dropped.relativePath || (dropped.file && dropped.file.name) || 'upload.bin'
-                    )
-                );
-                var payloadRel = _joinRelParts([batchDirRel, 'payload', relPath]);
-                var payloadParent = _joinRelParts(
-                    [batchDirRel, 'payload'].concat(_normalizeRelParts(relPath).slice(0, -1))
-                );
-                if (payloadParent) {
-                    await _ensureContentsDirectory(payloadParent);
-                }
-                var data = await _readFileAsBase64(dropped.file);
-                await _putContentsModel(payloadRel, {
-                    type: 'file',
-                    format: 'base64',
-                    content: data
-                });
-                manifestFiles.push({
-                    relative_path: relPath,
-                    staged_path: _joinRelParts(['payload', relPath]),
-                    size: dropped.file && typeof dropped.file.size === 'number' ? dropped.file.size : null
-                });
-                _setOpsStatus(
-                    root,
-                    'Uploaded ' + (fileIndex + 1) + ' / ' + browserFiles.length + ' file(s)...',
-                    '#555'
-                );
+            var uploadBtn = root.querySelector('.calc-hidden-upload') || document.querySelector('.calc-hidden-upload');
+            if (!uploadBtn) {
+                throw new Error('FileUpload widget not found in DOM');
             }
-            await _putContentsModel(_joinRelParts([batchDirRel, 'manifest.json']), {
-                type: 'file',
-                format: 'text',
-                content: JSON.stringify({
-                    version: 1,
-                    batch_id: batchId,
-                    target_dir_rel: targetDirRel,
-                    files: manifestFiles,
-                    created_at: new Date().toISOString()
-                }, null, 2)
-            });
-            _setOpsStatus(root, 'Upload queued. Refreshing explorer...', '#2e7d32');
-            setTimeout(function(){
-                _clickWidgetButton(root, 'calc-cmd-refresh-btn');
-            }, 40);
+            var dt = new DataTransfer();
+            for (var i = 0; i < browserFiles.length; i++) {
+                var f = browserFiles[i].file;
+                if (f) dt.items.add(f);
+            }
+            if (!dt.files.length) {
+                throw new Error('No valid files to upload');
+            }
+            var capturedInput = null;
+            var origInputClick = HTMLInputElement.prototype.click;
+            HTMLInputElement.prototype.click = function(){
+                if (this.type === 'file') {
+                    capturedInput = this;
+                    console.log('[DELFIN] Intercepted file input .click(), preventing dialog');
+                    return;
+                }
+                return origInputClick.call(this);
+            };
+            try {
+                uploadBtn.click();
+            } finally {
+                HTMLInputElement.prototype.click = origInputClick;
+            }
+            if (!capturedInput) {
+                console.error('[DELFIN] Failed to capture file input from FileUpload button click');
+                throw new Error('Could not intercept FileUpload file input');
+            }
+            capturedInput.files = dt.files;
+            console.log('[DELFIN] Dispatching change on captured input, files:', capturedInput.files.length);
+            capturedInput.dispatchEvent(new Event('change', { bubbles: true }));
+            _setOpsStatus(root, 'Upload sent. Processing...', '#2e7d32');
             return true;
         }
         async function _uploadDroppedFiles(root, selectEl, e){
@@ -10053,6 +10133,7 @@ def create_tab(ctx):
         }
         function _installExternalFileDrop(root){
             if (!root || root._delfinExternalDropReady) return;
+            console.log('[DELFIN] _installExternalFileDrop on', root.className);
             root._delfinExternalDropReady = true;
             root._delfinPasteArmed = false;
 
@@ -10082,23 +10163,35 @@ def create_tab(ctx):
             }
 
             document.addEventListener('dragenter', function(e){
+                if (_hasExternalFiles(e)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
                 handleExternalDrag(e);
             }, true);
             document.addEventListener('dragover', function(e){
+                if (_hasExternalFiles(e)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    try { e.dataTransfer.dropEffect = 'copy'; } catch (_err) {}
+                }
                 if (!handleExternalDrag(e)) clearHighlight();
             }, true);
             document.addEventListener('drop', function(e){
+                console.log('[DELFIN] drop event', '_hasExternalFiles=', _hasExternalFiles(e), 'types=', e.dataTransfer ? Array.from(e.dataTransfer.types) : 'none');
                 if (!_hasExternalFiles(e)) return;
-                if (!pointerInsideExplorer(e)) return;
-                var selectEl = activeSelectFromEvent(e);
                 e.preventDefault();
                 e.stopPropagation();
                 clearHighlight();
+                var selectEl = activeSelectFromEvent(e) || root.querySelector('.calc-file-list select');
+                console.log('[DELFIN] drop selectEl found:', !!selectEl, 'root:', !!root);
                 if (selectEl) {
                     _uploadDroppedFiles(root, selectEl, e).catch(function(err){
                         _setOpsStatus(root, 'Explorer upload failed: ' + String(err && err.message ? err.message : err), '#d32f2f');
-                        console.error('Explorer upload failed', err);
+                        console.error('[DELFIN] Explorer upload failed', err);
                     });
+                } else {
+                    console.warn('[DELFIN] No selectEl found for drop upload');
                 }
             }, true);
             root.addEventListener('mousedown', function(){
@@ -10147,12 +10240,22 @@ def create_tab(ctx):
         }
 
         _scanAndInstall(document.body);
+        var _scanRetryCount = 0;
+        function _retryScan(){
+            _scanAndInstall(document.body);
+            _scanRetryCount++;
+            if (_scanRetryCount < 30) {
+                setTimeout(_retryScan, 500);
+            }
+        }
+        setTimeout(_retryScan, 300);
         new MutationObserver(function(mutations){
             mutations.forEach(function(m){
                 Array.prototype.forEach.call(m.addedNodes || [], function(node){
                     if (node && node.nodeType === 1) _scanAndInstall(node);
                 });
             });
+            _scanAndInstall(document.body);
         }).observe(document.body, { childList: true, subtree: true });
 
         document.addEventListener('click', _hideCtxMenu, true);
@@ -10198,7 +10301,8 @@ def create_tab(ctx):
              calc_move_target_input, calc_upload_target_input,
              calc_action_source_input, calc_move_btn,
              calc_upload_meta_input, calc_upload_chunk_input,
-             calc_upload_seq_input, calc_upload_ack_input],
+             calc_upload_seq_input, calc_upload_ack_input,
+             calc_upload_trigger_btn, calc_upload_ack_label],
             layout=widgets.Layout(display='none'),
         ),
     ], layout=widgets.Layout(width='100%', overflow_x='hidden'))
