@@ -10573,22 +10573,33 @@ def create_tab(ctx):
 
         /* --- Monkey-patch $3Dmol.createViewer to trigger all scoped resizers --- */
         function patchCreateViewer() {{
-            if (typeof $3Dmol !== 'undefined' && !$3Dmol._calcResizePatched) {{
-                var orig = $3Dmol.createViewer;
-                $3Dmol.createViewer = function() {{
-                    var v = orig.apply(this, arguments);
-                    setTimeout(function() {{
-                        try {{
-                            var fns = window._calcResizeMolViewerFns || {{}};
-                            Object.keys(fns).forEach(function(k) {{
-                                var fn = fns[k];
-                                if (typeof fn === 'function') fn();
-                            }});
-                        }} catch (_e) {{}}
-                    }}, 300);
-                    return v;
-                }};
+            if (typeof $3Dmol === 'undefined' || $3Dmol._calcResizePatched) return;
+            var orig = $3Dmol.createViewer;
+            var wrapper = function() {{
+                var v = orig.apply(this, arguments);
+                setTimeout(function() {{
+                    try {{
+                        var fns = window._calcResizeMolViewerFns || {{}};
+                        Object.keys(fns).forEach(function(k) {{
+                            var fn = fns[k];
+                            if (typeof fn === 'function') fn();
+                        }});
+                    }} catch (_e) {{}}
+                }}, 300);
+                return v;
+            }};
+            try {{
+                $3Dmol.createViewer = wrapper;
                 $3Dmol._calcResizePatched = true;
+            }} catch (_e1) {{
+                try {{
+                    Object.defineProperty($3Dmol, 'createViewer', {{
+                        value: wrapper, writable: true, configurable: true
+                    }});
+                    $3Dmol._calcResizePatched = true;
+                }} catch (_e2) {{
+                    $3Dmol._calcResizePatched = true;
+                }}
             }}
         }}
         patchCreateViewer();
