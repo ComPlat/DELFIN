@@ -10188,6 +10188,28 @@ def create_tab(ctx):
 
             var dragState = { src: null, x: 0, y: 0, moved: false };
             var ctxOption = null;
+            function _rememberExplorerScroll(){
+                root._delfinExplorerScrollTop = selectEl.scrollTop || 0;
+                root._delfinExplorerKeepScroll = true;
+            }
+            function _restoreExplorerScroll(){
+                if (!root._delfinExplorerKeepScroll) return;
+                var top = Number(root._delfinExplorerScrollTop) || 0;
+                function apply(){
+                    if (!selectEl || !selectEl.isConnected) return;
+                    if (root.querySelector('.calc-file-list select') !== selectEl) return;
+                    selectEl.scrollTop = top;
+                }
+                apply();
+                requestAnimationFrame(apply);
+                setTimeout(apply, 0);
+                setTimeout(function(){
+                    apply();
+                    if (selectEl && selectEl.isConnected && root.querySelector('.calc-file-list select') === selectEl) {
+                        root._delfinExplorerKeepScroll = false;
+                    }
+                }, 120);
+            }
             function _armExplorerDblClick(opt, e){
                 var label = _labelText(opt);
                 if (!label || label.charAt(0) === '(') {
@@ -10208,6 +10230,10 @@ def create_tab(ctx):
                     opt.draggable = txt && txt.charAt(0) !== '(';
                 });
             }
+            _restoreExplorerScroll();
+            selectEl.addEventListener('scroll', function(){
+                root._delfinExplorerScrollTop = selectEl.scrollTop || 0;
+            }, true);
 
             selectEl.addEventListener('contextmenu', function(e){
                 var menu = _ensureCtxMenu();
@@ -10239,12 +10265,14 @@ def create_tab(ctx):
                     root._dblLastLabel = '';
                     root._dblLastX = 0;
                     root._dblLastY = 0;
+                    _rememberExplorerScroll();
                     e.preventDefault();
                     Array.prototype.forEach.call(selectEl.options || [], function(item){
                         item.selected = false;
                     });
                     selectEl.dispatchEvent(new Event('change', { bubbles: true }));
                     selectEl.focus();
+                    _restoreExplorerScroll();
                     return;
                 }
                 /* Track drag start */
@@ -10279,9 +10307,11 @@ def create_tab(ctx):
                 }
                 lastIdx = idx;
                 _armExplorerDblClick(opt, e);
+                _rememberExplorerScroll();
 
                 selectEl.dispatchEvent(new Event('change', { bubbles: true }));
                 selectEl.focus();
+                _restoreExplorerScroll();
             }, true);
 
             selectEl.addEventListener('mousemove', function(e){
