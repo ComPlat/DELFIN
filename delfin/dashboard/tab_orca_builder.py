@@ -118,13 +118,29 @@ def create_tab(ctx):
                                    layout=widgets.Layout(width='250px'), style=ws)
 
     orca_file_upload = widgets.FileUpload(
-        accept='', multiple=True, description='Extra Files:',
-        layout=widgets.Layout(width='100%', height='30px'), style=ws,
+        accept='', multiple=True, description='',
+        layout=widgets.Layout(width='1px', height='1px', overflow='hidden'),
     )
+    orca_file_upload.add_class('orca-hidden-upload')
     orca_uploaded_files_label = widgets.HTML(
-        value='<i>Drag & drop files here (e.g. .gbw, .xyz, .hess)</i>',
+        value='<i>Drag & drop files here or click to browse (e.g. .gbw, .xyz, .hess)</i>',
         layout=widgets.Layout(width='100%'),
     )
+    orca_drop_zone = widgets.HTML(
+        value=(
+            '<div class="orca-drop-zone" style="'
+            'border:2px dashed #aaa; border-radius:8px; padding:18px 12px;'
+            'text-align:center; cursor:pointer; color:#666;'
+            'min-height:80px; display:flex; align-items:center; justify-content:center;'
+            'transition: border-color 0.2s, background 0.2s;'
+            '">'
+            '<span style="font-size:14px;">📁 Drop files here or click to upload<br>'
+            '<small style="color:#999;">.gbw, .xyz, .hess, etc.</small></span>'
+            '</div>'
+        ),
+        layout=widgets.Layout(width='100%'),
+    )
+    orca_drop_zone.add_class('orca-drop-zone-wrap')
     orca_path_files = widgets.Textarea(
         value='',
         placeholder='Paste file paths (one per line):\n/path/to/file.gbw\n/path/to/file.xyz',
@@ -720,7 +736,7 @@ def create_tab(ctx):
         _row([orca_additional], wrap=False),
         _row([orca_pal, orca_maxcore]),
         _row([orca_slurm_time]),
-        widgets.VBox([orca_file_upload, orca_uploaded_files_label],
+        widgets.VBox([orca_drop_zone, orca_file_upload, orca_uploaded_files_label],
                      layout=widgets.Layout(width='100%', min_width='0', overflow='hidden')),
         _row([orca_path_files], wrap=False),
         _row([orca_generate_btn, orca_save_btn, orca_submit_btn]),
@@ -792,5 +808,123 @@ def create_tab(ctx):
         orca_css,
         split,
     ], layout=widgets.Layout(width='100%', padding='10px', box_sizing='border-box'))
+
+    # -- Drag-and-drop / click JS for the ORCA drop zone --------------------
+    _orca_drop_js = r"""
+    (function(){
+        if (window._delfinOrcaDropReady) return;
+        window._delfinOrcaDropReady = true;
+
+        function injectFiles(uploadBtn, files) {
+            if (!uploadBtn || !files || !files.length) return false;
+            var dt = new DataTransfer();
+            for (var i = 0; i < files.length; i++) {
+                if (files[i]) dt.items.add(files[i]);
+            }
+            if (!dt.files.length) return false;
+            var capturedInput = null;
+            var origClick = HTMLInputElement.prototype.click;
+            HTMLInputElement.prototype.click = function(){
+                if (this.type === 'file') {
+                    capturedInput = this;
+                    return;
+                }
+                return origClick.call(this);
+            };
+            try { uploadBtn.click(); } finally {
+                HTMLInputElement.prototype.click = origClick;
+            }
+            if (!capturedInput) return false;
+            capturedInput.files = dt.files;
+            capturedInput.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+        }
+
+        function install(dropZone) {
+            if (!dropZone || dropZone._delfinDropReady) return;
+            dropZone._delfinDropReady = true;
+            var root = dropZone.closest('.jupyter-widgets') || dropZone.parentElement;
+            function findUploadBtn() {
+                var p = dropZone.closest('.widget-vbox, .widget-box') || (root && root.parentElement);
+                return p ? (p.querySelector('.orca-hidden-upload') || document.querySelector('.orca-hidden-upload')) : null;
+            }
+
+            dropZone.addEventListener('click', function(e) {
+                e.preventDefault();
+                var btn = findUploadBtn();
+                if (btn) btn.click();
+            });
+
+            dropZone.addEventListener('dragover', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                dropZone.style.borderColor = '#1a73e8';
+                dropZone.style.background = '#e8f0fe';
+                try { e.dataTransfer.dropEffect = 'copy'; } catch(_){}
+            });
+            dropZone.addEventListener('dragleave', function(e) {
+                dropZone.style.borderColor = '#aaa';
+                dropZone.style.background = '';
+            });
+            dropZone.addEventListener('drop', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                dropZone.style.borderColor = '#aaa';
+                dropZone.style.background = '';
+                var files = Array.from(e.dataTransfer.files || []);
+                if (!files.length) return;
+                var btn = findUploadBtn();
+                if (btn) {
+                    var ok = injectFiles(btn, files);
+                    console.log('[DELFIN] ORCA drop inject:', ok, files.length, 'files');
+                }
+            });
+        }
+
+        function scan(root) {
+            if (!root || !root.querySelectorAll) return;
+            root.querySelectorAll('.orca-drop-zone').forEach(install);
+        }
+        scan(document.body);
+        new MutationObserver(function(ms) {
+            ms.forEach(function(m) {
+                m.addedNodes.forEach(function(n) {
+                    if (n && n.nodeType === 1) scan(n);
+                });
+            });
+            scan(document.body);
+        }).observe(document.body, { childList: true, subtree: true });
+
+        document.addEventListener('dragover', function(e) {
+            var dt = e.dataTransfer;
+            if (!dt) return;
+            var types = Array.from(dt.types || []);
+            if (types.indexOf('Files') < 0) return;
+            var zone = document.querySelector('.orca-drop-zone');
+            if (!zone) return;
+            var rect = zone.getBoundingClientRect();
+            var inside = e.clientX >= rect.left && e.clientX <= rect.right &&
+                         e.clientY >= rect.top && e.clientY <= rect.bottom;
+            if (inside) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        }, true);
+        document.addEventListener('drop', function(e) {
+            var dt = e.dataTransfer;
+            if (!dt || !dt.files || !dt.files.length) return;
+            var zone = document.querySelector('.orca-drop-zone');
+            if (!zone) return;
+            var rect = zone.getBoundingClientRect();
+            var inside = e.clientX >= rect.left && e.clientX <= rect.right &&
+                         e.clientY >= rect.top && e.clientY <= rect.bottom;
+            if (inside) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        }, true);
+    })();
+    """
+    ctx.run_js(_orca_drop_js)
 
     return tab_widget, {'orca_pal': orca_pal, 'orca_maxcore': orca_maxcore}

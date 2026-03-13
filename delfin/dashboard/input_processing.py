@@ -6,10 +6,15 @@ from delfin.smiles_converter import (
     smiles_to_xyz as _delfin_smiles_to_xyz,
     smiles_to_xyz_isomers as _delfin_smiles_to_xyz_isomers,
     smiles_to_xyz_quick as _delfin_smiles_to_xyz_quick,
-    smiles_to_xyz_quick_hapto_previews as _delfin_smiles_to_xyz_quick_hapto_previews,
     is_smiles_string as _delfin_is_smiles_string,
     contains_metal,
 )
+try:
+    from delfin.smiles_converter import (
+        smiles_to_xyz_quick_hapto_previews as _delfin_smiles_to_xyz_quick_hapto_previews,
+    )
+except ImportError:
+    _delfin_smiles_to_xyz_quick_hapto_previews = None
 
 _HAPTO_FAILFAST_TOKEN = "Hapto (eta) coordination detected"
 
@@ -64,6 +69,8 @@ def smiles_to_xyz_quick_with_previews(smiles, hapto_approx=None):
     if error or not xyz_string:
         return xyz_string, num_atoms, method, [], error
 
+    if _delfin_smiles_to_xyz_quick_hapto_previews is None:
+        return xyz_string, num_atoms, method, [], None
     previews = _delfin_smiles_to_xyz_quick_hapto_previews(
         smiles,
         hapto_approx=hapto_approx,
