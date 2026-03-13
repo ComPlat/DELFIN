@@ -156,6 +156,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     _calc_init = (
         RIGHT_MOUSE_TRANSLATE_PATCH_JS
         + '\n'
+        + refs4.get('init_js', '')
+        + '\n'
         + refs5.get('init_js', '')
         + '\n'
         + refs6.get('init_js', '')

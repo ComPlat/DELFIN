@@ -895,36 +895,37 @@ def create_tab(ctx):
             scan(document.body);
         }).observe(document.body, { childList: true, subtree: true });
 
+        function _hasExternalFiles(e) {
+            var dt = e && e.dataTransfer;
+            if (!dt) return false;
+            if (dt.files && dt.files.length) return true;
+            var types = Array.prototype.slice.call(dt.types || []);
+            return types.indexOf('Files') >= 0;
+        }
+        document.addEventListener('dragenter', function(e) {
+            if (_hasExternalFiles(e)) { e.preventDefault(); e.stopPropagation(); }
+        }, true);
         document.addEventListener('dragover', function(e) {
-            var dt = e.dataTransfer;
-            if (!dt) return;
-            var types = Array.from(dt.types || []);
-            if (types.indexOf('Files') < 0) return;
-            var zone = document.querySelector('.orca-drop-zone');
-            if (!zone) return;
-            var rect = zone.getBoundingClientRect();
-            var inside = e.clientX >= rect.left && e.clientX <= rect.right &&
-                         e.clientY >= rect.top && e.clientY <= rect.bottom;
-            if (inside) {
+            if (_hasExternalFiles(e)) {
                 e.preventDefault();
                 e.stopPropagation();
+                try { e.dataTransfer.dropEffect = 'copy'; } catch(_){}
             }
         }, true);
         document.addEventListener('drop', function(e) {
-            var dt = e.dataTransfer;
-            if (!dt || !dt.files || !dt.files.length) return;
+            if (!_hasExternalFiles(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
             var zone = document.querySelector('.orca-drop-zone');
             if (!zone) return;
-            var rect = zone.getBoundingClientRect();
-            var inside = e.clientX >= rect.left && e.clientX <= rect.right &&
-                         e.clientY >= rect.top && e.clientY <= rect.bottom;
-            if (inside) {
-                e.preventDefault();
-                e.stopPropagation();
+            var files = Array.from(e.dataTransfer.files || []);
+            if (!files.length) return;
+            var btn = document.querySelector('.orca-hidden-upload');
+            if (btn) {
+                var ok = injectFiles(btn, files);
+                console.log('[DELFIN] ORCA document drop inject:', ok, files.length, 'files');
             }
         }, true);
     })();
     """
-    ctx.run_js(_orca_drop_js)
-
-    return tab_widget, {'orca_pal': orca_pal, 'orca_maxcore': orca_maxcore}
+    return tab_widget, {'orca_pal': orca_pal, 'orca_maxcore': orca_maxcore, 'init_js': _orca_drop_js}
