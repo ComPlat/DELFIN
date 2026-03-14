@@ -25,9 +25,12 @@ from delfin.user_settings import load_transfer_settings
 from .helpers import disable_spellcheck
 from .input_processing import is_smiles, smiles_to_xyz_quick
 from .molecule_viewer import (
+    DEFAULT_3DMOL_STYLE_JS,
+    DEFAULT_3DMOL_ZOOM,
     apply_molecule_view_style,
     coord_to_xyz,
     parse_xyz_frames,
+    patch_viewer_mouse_controls_js,
 )
 
 REMOTE_FULL_FETCH_MAX_BYTES = 128 * 1024 * 1024
@@ -37,6 +40,10 @@ REMOTE_VIEWER_HEIGHT = 420
 REMOTE_LEFT_DEFAULT = 375
 REMOTE_LEFT_MIN = 375
 REMOTE_LEFT_MAX = 520
+REMOTE_XYZ_LARGE_TRAJ_FRAMES = 2000
+REMOTE_XYZ_PLAY_FPS_DEFAULT = 10
+REMOTE_XYZ_PLAY_FPS_MIN = 1
+REMOTE_XYZ_PLAY_FPS_MAX = 60
 
 
 def create_tab(ctx):
@@ -48,10 +55,20 @@ def create_tab(ctx):
         "filtered_entries": [],
         "selected_entry": None,
         "selected_remote_path": "",
+        "file_content": "",
+        "file_preview_note": "",
+        "visualize_kind": "",
+        "visualize_payload": "",
+        "visualize_enabled": False,
         "current_xyz_frames": [],
         "current_xyz_index": 0,
+        "traj_playing": False,
+        "traj_play_toggle_guard": False,
+        "traj_viewer_ready": False,
     }
     scope_id = f"remote-archive-scope-{abs(id(state))}"
+    viewer_mouse_patch_js = patch_viewer_mouse_controls_js("viewer", "el")
+    mol3d_counter = [0]
 
     title = widgets.HTML("<h3>📂 Remote Archive</h3>")
     info_html = widgets.HTML(value="")
@@ -76,6 +93,11 @@ def create_tab(ctx):
         description="🔄",
         layout=widgets.Layout(width="62px", height="28px"),
     )
+    open_btn = widgets.Button(
+        description="Open",
+        button_style="primary",
+        layout=widgets.Layout(width="88px", height="28px"),
+    )
     filter_input = widgets.Text(
         placeholder="Filter remote files...",
         layout=widgets.Layout(flex="1 1 auto", min_width="160px", height="28px"),
@@ -92,16 +114,29 @@ def create_tab(ctx):
         layout=widgets.Layout(width="100%", flex="1 1 0", min_height="0", margin="-4px 0 0 0"),
     )
     file_list.add_class("remote-file-list")
-    remote_dblclick_input = widgets.Text(
-        value="",
-        layout=widgets.Layout(width="1px", height="1px", display="none"),
-    )
-    remote_dblclick_input.add_class("remote-archive-cmd-dblclick")
     file_info_html = widgets.HTML(value="")
     selected_path_html = widgets.HTML(value="")
+    copy_path_btn = widgets.Button(
+        description="PATH",
+        layout=widgets.Layout(width="70px", min_width="70px", height="26px"),
+        disabled=True,
+    )
+    copy_btn = widgets.Button(
+        description="Copy",
+        button_style="info",
+        layout=widgets.Layout(width="80px", min_width="80px", height="26px"),
+        disabled=True,
+    )
+    view_toggle = widgets.ToggleButton(
+        description="Visualize",
+        value=False,
+        disabled=True,
+        button_style="warning",
+        layout=widgets.Layout(width="110px", min_width="110px", height="26px"),
+    )
     content_label = widgets.HTML(
         "<div style='height:26px; line-height:26px; margin:0 0 8px 0;'>"
-        "<b>📄 File Preview:</b></div>"
+        "<b>📄 File Content:</b></div>"
     )
     viewer_label = widgets.HTML(
         "<div style='height:26px; line-height:26px; margin:0 0 8px 0;'>"
@@ -115,7 +150,34 @@ def create_tab(ctx):
         step=1,
         layout=widgets.Layout(width="74px", height="28px", display="none"),
     )
+    frame_input.add_class("remote-xyz-frame-input")
     frame_total_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
+    xyz_loop_checkbox = widgets.ToggleButton(
+        value=True,
+        description="Loop",
+        button_style="info",
+        layout=widgets.Layout(width="82px", height="32px"),
+    )
+    xyz_fps_input = widgets.BoundedIntText(
+        value=REMOTE_XYZ_PLAY_FPS_DEFAULT,
+        min=REMOTE_XYZ_PLAY_FPS_MIN,
+        max=REMOTE_XYZ_PLAY_FPS_MAX,
+        step=1,
+        layout=widgets.Layout(width="72px", height="28px"),
+    )
+    xyz_play_btn = widgets.ToggleButton(
+        value=False,
+        description="Play",
+        icon="play",
+        button_style="success",
+        layout=widgets.Layout(width="86px", height="32px"),
+    )
+    xyz_play_btn.add_class("remote-xyz-play-btn")
+    xyz_copy_btn = widgets.Button(
+        description="📋 Copy Coordinates",
+        button_style="success",
+        layout=widgets.Layout(width="176px", min_width="176px", height="32px"),
+    )
     viewer_output = widgets.Output(
         layout=widgets.Layout(
             width="100%",
@@ -124,6 +186,7 @@ def create_tab(ctx):
             overflow="hidden",
         )
     )
+    viewer_output.add_class("remote-mol-viewer")
     preview_html = widgets.HTML(
         value="",
         layout=widgets.Layout(width="100%", flex="1 1 0", min_height="0", overflow="auto"),
@@ -131,6 +194,107 @@ def create_tab(ctx):
 
     def _set_status(message, color="#455a64"):
         status_html.value = f'<span style="color:{color};">{message}</span>'
+
+    def _run_js(script):
+        ctx.run_js(script)
+
+    def _copy_to_clipboard(text, label="content"):
+        text_payload = json.dumps(str(text or ""))
+        label_payload = json.dumps(str(label or "content"))
+        _run_js(
+            "(function(){"
+            f"const text={text_payload};"
+            f"const label={label_payload};"
+            "function _manualPrompt(){"
+            "try{window.prompt('Copy to clipboard (Cmd+C/Ctrl+C, Enter):', text);}catch(_e){}"
+            "}"
+            "function _legacyCopy(){"
+            "try{"
+            "const ta=document.createElement('textarea');"
+            "ta.value=text;"
+            "ta.setAttribute('readonly','readonly');"
+            "ta.style.position='fixed';"
+            "ta.style.top='-1000px';"
+            "ta.style.left='-1000px';"
+            "ta.style.opacity='0';"
+            "document.body.appendChild(ta);"
+            "ta.focus();"
+            "ta.select();"
+            "ta.setSelectionRange(0, ta.value.length);"
+            "const ok=document.execCommand('copy');"
+            "document.body.removeChild(ta);"
+            "return !!ok;"
+            "}catch(_e){return false;}"
+            "}"
+            "if(navigator.clipboard && navigator.clipboard.writeText){"
+            "navigator.clipboard.writeText(text).catch(function(){"
+            "if(!_legacyCopy()) _manualPrompt();"
+            "});"
+            "}else{"
+            "if(!_legacyCopy()) _manualPrompt();"
+            "}"
+            "})();"
+        )
+
+    def _traj_can_play():
+        frame_count = len(state.get("current_xyz_frames") or [])
+        return 1 < frame_count <= REMOTE_XYZ_LARGE_TRAJ_FRAMES
+
+    def _update_loop_button_style():
+        xyz_loop_checkbox.button_style = "info" if xyz_loop_checkbox.value else ""
+
+    def _set_play_button_state(active, sync_value=True):
+        active = bool(active)
+        state["traj_playing"] = active
+        xyz_play_btn.description = "Stop" if active else "Play"
+        xyz_play_btn.icon = "stop" if active else "play"
+        xyz_play_btn.button_style = "danger" if active else "success"
+        if sync_value and xyz_play_btn.value != active:
+            state["traj_play_toggle_guard"] = True
+            try:
+                xyz_play_btn.value = active
+            finally:
+                state["traj_play_toggle_guard"] = False
+
+    def _stop_xyz_playback(update_button=True):
+        scope_key_json = json.dumps(scope_id)
+        _run_js(
+            f"""
+            (function() {{
+                var scopeKey = {scope_key_json};
+                if (window._remoteTrajPlayTimerByScope && window._remoteTrajPlayTimerByScope[scopeKey]) {{
+                    clearInterval(window._remoteTrajPlayTimerByScope[scopeKey]);
+                    delete window._remoteTrajPlayTimerByScope[scopeKey];
+                }}
+            }})();
+            """
+        )
+        if update_button:
+            _set_play_button_state(False, sync_value=True)
+
+    def _update_traj_control_state():
+        frames = state.get("current_xyz_frames") or []
+        has_xyz = bool(frames) and view_toggle.value and state.get("visualize_kind") == "xyz"
+        xyz_controls.layout.display = "flex" if has_xyz else "none"
+        xyz_playback_row.layout.display = "flex" if has_xyz else "none"
+        can_play = has_xyz and _traj_can_play()
+        xyz_loop_checkbox.disabled = not can_play
+        xyz_fps_input.disabled = not can_play
+        xyz_play_btn.disabled = not can_play
+        xyz_copy_btn.disabled = not has_xyz
+        _update_loop_button_style()
+        if not can_play:
+            _stop_xyz_playback(update_button=True)
+
+    def _set_view_toggle(value, disabled=None):
+        try:
+            view_toggle.unobserve(_on_view_toggle, names="value")
+        except Exception:
+            pass
+        if disabled is not None:
+            view_toggle.disabled = disabled
+        view_toggle.value = value
+        view_toggle.observe(_on_view_toggle, names="value")
 
     def _settings_summary(config):
         if not config:
@@ -208,13 +372,36 @@ def create_tab(ctx):
     def _set_viewer_visible(is_visible):
         viewer_container.layout.display = "flex" if is_visible else "none"
 
+    def _set_selected_path_display(path_value):
+        path = str(path_value or "").strip()
+        if not path:
+            selected_path_html.value = ""
+            return
+        selected_path_html.value = (
+            f'<input type="text" value="{html.escape(path)}" onclick="this.select()" '
+            f'style="width:100%;font-family:monospace;font-size:12px;border:1px solid #aaa;'
+            f'padding:2px;background:#f8f8f8" readonly>'
+        )
+
     def _clear_viewer():
         viewer_output.clear_output()
         _set_viewer_visible(False)
+        state["traj_viewer_ready"] = False
+        scope_key_json = json.dumps(scope_id)
+        _run_js(
+            f"""
+            (function() {{
+                var scopeKey = {scope_key_json};
+                if (window._remoteMolViewerByScope) delete window._remoteMolViewerByScope[scopeKey];
+                if (window._remoteTrajViewerByScope) delete window._remoteTrajViewerByScope[scopeKey];
+            }})();
+            """
+        )
 
     def _hide_frame_controls():
         state["current_xyz_frames"] = []
         state["current_xyz_index"] = 0
+        state["traj_viewer_ready"] = False
         frame_label_html.layout.display = "none"
         frame_input.layout.display = "none"
         frame_total_html.layout.display = "none"
@@ -222,17 +409,43 @@ def create_tab(ctx):
         frame_total_html.value = ""
         frame_input.max = 1
         frame_input.value = 1
+        _update_traj_control_state()
+
+    def _reset_visualization_state():
+        state["visualize_kind"] = ""
+        state["visualize_payload"] = ""
+        state["visualize_enabled"] = False
+        _set_view_toggle(False, disabled=True)
+        _clear_viewer()
+        _hide_frame_controls()
+
+    def _set_visualization(kind="", payload="", frames=None):
+        state["visualize_kind"] = str(kind or "")
+        state["visualize_payload"] = str(payload or "")
+        state["visualize_enabled"] = bool(kind)
+        state["current_xyz_frames"] = list(frames or [])
+        state["current_xyz_index"] = 0
+        state["traj_viewer_ready"] = False
+        if state["visualize_enabled"]:
+            _set_view_toggle(bool(view_toggle.value), disabled=False)
+        else:
+            _set_view_toggle(False, disabled=True)
+            _clear_viewer()
+        _update_traj_control_state()
 
     def _clear_preview(message="Select a remote file to preview."):
         file_info_html.value = ""
         selected_path_html.value = ""
+        state["file_content"] = ""
+        state["file_preview_note"] = ""
         preview_html.value = (
             "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
             "padding:12px; background:#fafafa;'>"
             f"{html.escape(message)}</div>"
         )
-        _clear_viewer()
-        _hide_frame_controls()
+        copy_btn.disabled = True
+        copy_path_btn.disabled = True
+        _reset_visualization_state()
 
     def _render_text_preview(text, *, note=""):
         content = str(text or "")
@@ -313,6 +526,84 @@ def create_tab(ctx):
             apply_molecule_view_style(view)
             view.show()
 
+    def _render_xyz_trajectory_viewer(initial_load=False):
+        frames = state.get("current_xyz_frames") or []
+        if not frames:
+            return
+        idx = max(0, min(len(frames) - 1, int(state.get("current_xyz_index", 0))))
+        state["current_xyz_index"] = idx
+        if len(frames) > REMOTE_XYZ_LARGE_TRAJ_FRAMES:
+            _render_xyz_in_viewer(_frame_to_xyz(frames[idx]))
+            return
+        if not initial_load and state.get("traj_viewer_ready"):
+            scope_key_json = json.dumps(scope_id)
+            _run_js(
+                f"""
+                setTimeout(function(){{
+                    var scopeKey = {scope_key_json};
+                    var viewer = window._remoteTrajViewerByScope
+                        ? window._remoteTrajViewerByScope[scopeKey]
+                        : null;
+                    if (viewer) {{
+                        viewer.setFrame({idx});
+                        viewer.render();
+                    }}
+                }}, 0);
+                """
+            )
+            return
+
+        full_xyz = "".join(_frame_to_xyz(frame) for frame in frames)
+        mol3d_counter[0] += 1
+        viewer_id = f"remote_trj_viewer_{mol3d_counter[0]}"
+        wrapper_id = f"remote_mol_wrap_{mol3d_counter[0]}"
+        scope_key_json = json.dumps(scope_id)
+        with viewer_output:
+            clear_output()
+            display(
+                HTML(
+                    f"""
+                    <div id="{wrapper_id}" class="remote-mol-stage-wrapper" style="width:100%;">
+                        <div id="{viewer_id}" style="width:100%;height:{REMOTE_VIEWER_HEIGHT}px;position:relative;"></div>
+                    </div>
+                    <script>
+                    if (typeof $3Dmol === "undefined") {{
+                        var _s = document.createElement("script");
+                        _s.src = "https://3Dmol.org/build/3Dmol-min.js";
+                        document.head.appendChild(_s);
+                    }}
+                    (function() {{
+                        var tries = 0;
+                        function initViewer() {{
+                            var el = document.getElementById("{viewer_id}");
+                            if (!el || typeof $3Dmol === "undefined") {{
+                                tries += 1;
+                                if (tries < 80) setTimeout(initViewer, 50);
+                                return;
+                            }}
+                            var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                            {viewer_mouse_patch_js}
+                            viewer.addModelsAsFrames(`{full_xyz}`, "xyz");
+                            viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
+                            viewer.zoomTo();
+                            viewer.center();
+                            viewer.zoom({DEFAULT_3DMOL_ZOOM});
+                            viewer.setFrame({idx});
+                            viewer.render();
+                            window._remoteTrajViewerByScope = window._remoteTrajViewerByScope || {{}};
+                            window._remoteMolViewerByScope = window._remoteMolViewerByScope || {{}};
+                            window._remoteTrajViewerByScope[{scope_key_json}] = viewer;
+                            window._remoteMolViewerByScope[{scope_key_json}] = viewer;
+                        }}
+                        setTimeout(initViewer, 0);
+                    }})();
+                    </script>
+                    """
+                )
+            )
+        state["traj_viewer_ready"] = True
+        _set_viewer_visible(True)
+
     def _render_cube_in_viewer(cube_text):
         _set_viewer_visible(True)
         with viewer_output:
@@ -337,9 +628,29 @@ def create_tab(ctx):
             return
         index = max(0, min(len(frames) - 1, int(state.get("current_xyz_index", 0))))
         state["current_xyz_index"] = index
-        _render_xyz_in_viewer(_frame_to_xyz(frames[index]))
-        frame_label_html.value = f"<b>Frame:</b>"
+        frame_input.unobserve(_on_frame_change, names="value")
+        try:
+            frame_input.value = index + 1
+            frame_input.max = len(frames)
+        finally:
+            frame_input.observe(_on_frame_change, names="value")
+        comment = str(frames[index][0] or "")
+        large_traj_note = (
+            f' <span style="color:#888;font-size:0.85em;">'
+            f'(large trajectory, single-frame mode)</span>'
+            if len(frames) > REMOTE_XYZ_LARGE_TRAJ_FRAMES else ""
+        )
+        frame_label_html.value = (
+            f"{html.escape(comment[:100])}{'...' if len(comment) > 100 else ''}{large_traj_note}"
+        )
         frame_total_html.value = f"<b>/ {len(frames)}</b>"
+        frame_label_html.layout.display = "block"
+        frame_input.layout.display = "inline-flex"
+        frame_total_html.layout.display = "inline-flex"
+        if len(frames) > 1 and view_toggle.value:
+            _render_xyz_trajectory_viewer(initial_load=not state.get("traj_viewer_ready"))
+        elif view_toggle.value:
+            _render_xyz_in_viewer(_frame_to_xyz(frames[index]))
 
     def _join_remote_relative(base_relative, child_relative):
         base = normalize_remote_relative_path(base_relative)
@@ -416,10 +727,8 @@ def create_tab(ctx):
             f"<b><span style='word-break:break-all;'>{html.escape(name)}</span></b> "
             f"<span style='color:#616161;'>({html.escape(size_str)})</span>{extra_html}"
         )
-        selected_path_html.value = (
-            f"<span style='color:#616161; word-break:break-all;'>"
-            f"<code>{html.escape(state['selected_remote_path'])}</code></span>"
-        )
+        _set_selected_path_display(state["selected_remote_path"])
+        copy_path_btn.disabled = False
 
     def _current_entry_remote_path(entry):
         config = state.get("config") or {}
@@ -434,74 +743,89 @@ def create_tab(ctx):
         suffix = path.suffix.lower()
         lower_name = path.name.lower()
 
-        _hide_frame_controls()
-        _clear_viewer()
+        state["file_preview_note"] = str(note or "")
+        state["file_content"] = ""
+        copy_btn.disabled = True
+        _reset_visualization_state()
 
         if lower_name == "coord":
             content = path.read_text(errors="ignore")
             xyz_text = coord_to_xyz(content)
+            frames = parse_xyz_frames(xyz_text) if xyz_text else []
+            state["file_content"] = content
             _show_file_info(entry, "Turbomole coord")
             _render_text_preview(content, note=note)
-            if xyz_text:
-                _render_xyz_in_viewer(xyz_text)
+            _set_visualization("xyz" if xyz_text else "", xyz_text or "", frames=frames)
+            copy_btn.disabled = not bool(content)
+            if view_toggle.value and xyz_text:
+                _render_selected_frame()
             return
 
         if suffix == ".xyz":
             content = path.read_text(errors="ignore")
             frames = parse_xyz_frames(content)
+            state["file_content"] = content
             _show_file_info(entry, f"{len(frames) or 1} frame(s)")
             _render_text_preview(content, note=note)
-            if frames:
-                state["current_xyz_frames"] = frames
-                state["current_xyz_index"] = 0
-                if len(frames) > 1:
-                    frame_label_html.layout.display = "inline-flex"
-                    frame_input.layout.display = "inline-flex"
-                    frame_total_html.layout.display = "inline-flex"
-                    frame_input.max = len(frames)
-                    frame_input.value = 1
+            _set_visualization("xyz" if frames else "", content if frames else "", frames=frames)
+            copy_btn.disabled = not bool(content)
+            if view_toggle.value and frames:
                 _render_selected_frame()
             return
 
         if suffix in {".png"}:
+            state["file_content"] = ""
             _show_file_info(entry)
             _render_image_preview(path)
             return
 
         if suffix in {".cube", ".cub"}:
             content = path.read_text(errors="ignore")
+            state["file_content"] = content
             _show_file_info(entry)
             preview_html.value = (
                 "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
                 "padding:12px; background:#fafafa;'>3D volumetric preview</div>"
             )
-            _render_cube_in_viewer(content)
+            _set_visualization("cube", content)
+            copy_btn.disabled = not bool(content)
+            if view_toggle.value:
+                _render_cube_in_viewer(content)
             return
 
         if suffix in {".doc", ".docx"}:
+            state["file_content"] = ""
             _show_file_info(entry)
             _render_docx_preview(path)
             return
 
         if suffix in {".gbw", ".cis", ".densities", ".tmp"}:
+            state["file_content"] = ""
             _show_file_info(entry)
             _render_text_preview("Binary file.\n\nPreview is not available for this file type.", note=note)
             return
 
         content = path.read_text(errors="ignore")
+        state["file_content"] = content
         _show_file_info(entry)
         _render_text_preview(content, note=note)
+        copy_btn.disabled = not bool(content)
 
         if suffix in {".out", ".log"}:
             coords = _extract_orca_xyz_block(content)
-            if coords:
-                _render_xyz_in_viewer(f"{len(coords)}\n{path.name}\n" + "\n".join(coords))
+            xyz_text = f"{len(coords)}\n{path.name}\n" + "\n".join(coords) if coords else ""
+            frames = parse_xyz_frames(xyz_text) if xyz_text else []
+            _set_visualization("xyz" if xyz_text else "", xyz_text, frames=frames)
+            if view_toggle.value and xyz_text:
+                _render_selected_frame()
             return
 
         if suffix == ".inp":
             xyz_text = _build_xyz_from_input(content, path.name, entry.get("relative_path", ""))
-            if xyz_text:
-                _render_xyz_in_viewer(xyz_text)
+            frames = parse_xyz_frames(xyz_text) if xyz_text else []
+            _set_visualization("xyz" if xyz_text else "", xyz_text or "", frames=frames)
+            if view_toggle.value and xyz_text:
+                _render_selected_frame()
             return
 
     def _selected_entry():
@@ -511,12 +835,19 @@ def create_tab(ctx):
     def _update_buttons():
         config_ready = state.get("config") is not None
         has_parent = bool(normalize_remote_relative_path(state.get("current_relative_path", "")))
+        selected = _selected_entry()
+        open_btn.disabled = not bool(selected)
         up_btn.disabled = (not config_ready) or (not has_parent)
         home_btn.disabled = not config_ready
         refresh_btn.disabled = not config_ready
         file_list.disabled = not config_ready
         filter_input.disabled = not config_ready
         sort_dropdown.disabled = not config_ready
+        if not selected:
+            copy_path_btn.disabled = True
+        copy_btn.disabled = not bool(state.get("file_content"))
+        if not state.get("visualize_enabled"):
+            _set_view_toggle(False, disabled=True)
 
     def _apply_filter():
         query = str(filter_input.value or "").strip().lower()
@@ -675,11 +1006,15 @@ def create_tab(ctx):
                     entry.get("relative_path", ""),
                     max_bytes=TEXT_PREVIEW_MAX_BYTES,
                 )
+                state["file_content"] = str(preview.get("text", "") or "")
+                state["file_preview_note"] = "Large remote file preview."
+                _reset_visualization_state()
                 _show_file_info(entry)
                 note = "Large remote file preview."
                 if preview.get("truncated"):
                     note = f"{note} Only the first {TEXT_PREVIEW_MAX_BYTES:,} bytes are shown."
                 _render_text_preview(preview.get("text", ""), note=note)
+                copy_btn.disabled = not bool(state["file_content"])
         except Exception as exc:
             _clear_preview(f"Could not load {name}.")
             _set_status(html.escape(str(exc)), color="#d32f2f")
@@ -692,6 +1027,149 @@ def create_tab(ctx):
             color="#2e7d32",
         )
         _update_buttons()
+        _update_view()
+
+    def _update_view():
+        show_visualize = bool(view_toggle.value and state.get("visualize_enabled"))
+        if show_visualize:
+            content_label.layout.display = "none"
+            preview_html.layout.display = "none"
+            _set_viewer_visible(True)
+            if state.get("visualize_kind") == "cube":
+                _render_cube_in_viewer(state.get("visualize_payload", ""))
+            elif state.get("visualize_kind") == "xyz":
+                _render_selected_frame()
+            else:
+                _clear_viewer()
+        else:
+            _stop_xyz_playback(update_button=True)
+            _set_viewer_visible(False)
+            content_label.layout.display = "block"
+            preview_html.layout.display = "block"
+        _update_traj_control_state()
+
+    def _on_view_toggle(change=None):
+        _update_view()
+
+    def _on_copy_click(_button=None):
+        content = str(state.get("file_content") or "")
+        if not content:
+            return
+        _copy_to_clipboard(content, label="remote file content")
+
+    def _on_copy_path_click(_button=None):
+        remote_path = str(state.get("selected_remote_path") or "")
+        if not remote_path:
+            return
+        _set_selected_path_display(remote_path)
+        _copy_to_clipboard(remote_path, label="remote path")
+
+    def _on_xyz_copy(_button=None):
+        frames = state.get("current_xyz_frames") or []
+        if not frames:
+            return
+        idx = max(0, min(len(frames) - 1, int(state.get("current_xyz_index", 0))))
+        _copy_to_clipboard(_frame_to_xyz(frames[idx]).rstrip(), label=f"xyz frame {idx + 1}")
+
+    def _start_xyz_playback():
+        if not _traj_can_play():
+            _set_play_button_state(False, sync_value=True)
+            return
+        if not state.get("traj_viewer_ready"):
+            _render_selected_frame()
+        _stop_xyz_playback(update_button=False)
+        _set_play_button_state(True, sync_value=False)
+        frame_count = len(state.get("current_xyz_frames") or [])
+        try:
+            fps = int(xyz_fps_input.value)
+        except Exception:
+            fps = REMOTE_XYZ_PLAY_FPS_DEFAULT
+        fps = max(REMOTE_XYZ_PLAY_FPS_MIN, min(REMOTE_XYZ_PLAY_FPS_MAX, fps))
+        delay_ms = max(16, int(round(1000.0 / float(fps))))
+        loop_enabled = bool(xyz_loop_checkbox.value)
+        start_frame = int(state.get("current_xyz_index", 0)) + 1
+        scope_key_json = json.dumps(scope_id)
+        _run_js(
+            f"""
+            (function() {{
+                var scopeKey = {scope_key_json};
+                var frameCount = {int(frame_count)};
+                var loopEnabled = {str(loop_enabled).lower()};
+                var delayMs = {int(delay_ms)};
+                var startFrame = {int(start_frame)};
+                window._remoteTrajPlayTimerByScope = window._remoteTrajPlayTimerByScope || {{}};
+                if (window._remoteTrajPlayTimerByScope[scopeKey]) {{
+                    clearInterval(window._remoteTrajPlayTimerByScope[scopeKey]);
+                    delete window._remoteTrajPlayTimerByScope[scopeKey];
+                }}
+                function getViewer() {{
+                    if (window._remoteTrajViewerByScope && window._remoteTrajViewerByScope[scopeKey]) {{
+                        return window._remoteTrajViewerByScope[scopeKey];
+                    }}
+                    if (window._remoteMolViewerByScope && window._remoteMolViewerByScope[scopeKey]) {{
+                        return window._remoteMolViewerByScope[scopeKey];
+                    }}
+                    return null;
+                }}
+                var scopeRoot = document.querySelector('.{scope_id}');
+                if (!scopeRoot) return;
+                var frameWidget = scopeRoot.querySelector('.remote-xyz-frame-input');
+                var frameInput = frameWidget ? frameWidget.querySelector('input') : null;
+                var playButton = scopeRoot.querySelector('.remote-xyz-play-btn button');
+                if (!frameInput) return;
+                var current = parseInt(frameInput.value || String(startFrame), 10);
+                if (!isFinite(current) || current < 1 || current > frameCount) {{
+                    current = Math.max(1, Math.min(frameCount, startFrame));
+                }}
+                function syncFrameValue(next) {{
+                    frameInput.value = String(next);
+                    frameInput.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    frameInput.dispatchEvent(new Event('change', {{bubbles: true}}));
+                }}
+                var timer = setInterval(function() {{
+                    var nowVal = parseInt(frameInput.value || String(current), 10);
+                    if (!isFinite(nowVal) || nowVal < 1 || nowVal > frameCount) nowVal = current;
+                    var next = nowVal + 1;
+                    if (next > frameCount) {{
+                        if (loopEnabled) next = 1;
+                        else {{
+                            clearInterval(timer);
+                            delete window._remoteTrajPlayTimerByScope[scopeKey];
+                            if (playButton) {{
+                                try {{ playButton.click(); }} catch (_e) {{}}
+                            }}
+                            return;
+                        }}
+                    }}
+                    current = next;
+                    syncFrameValue(next);
+                    var viewer = getViewer();
+                    if (viewer) {{
+                        try {{
+                            viewer.setFrame(next - 1);
+                            viewer.render();
+                        }} catch (_e) {{}}
+                    }}
+                }}, delayMs);
+                window._remoteTrajPlayTimerByScope[scopeKey] = timer;
+            }})();
+            """
+        )
+
+    def _on_xyz_play_change(change):
+        if change.get("name") != "value":
+            return
+        if state.get("traj_play_toggle_guard"):
+            return
+        if bool(change.get("new")):
+            _start_xyz_playback()
+        else:
+            _stop_xyz_playback(update_button=True)
+
+    def _on_xyz_loop_change(change):
+        if change.get("name") != "value":
+            return
+        _update_loop_button_style()
 
     def _on_filter_change(change):
         _apply_filter()
@@ -714,27 +1192,18 @@ def create_tab(ctx):
                 f"<b><span style='word-break:break-all;'>{html.escape(str(entry.get('name') or 'Folder'))}</span></b> "
                 "<span style='color:#616161;'>(directory)</span>"
             )
-            selected_path_html.value = (
-                f"<span style='color:#616161; word-break:break-all;'>"
-                f"<code>{html.escape(state['selected_remote_path'])}</code></span>"
-            )
+            _set_selected_path_display(state["selected_remote_path"])
+            copy_path_btn.disabled = False
+            copy_btn.disabled = True
+            _reset_visualization_state()
             preview_html.value = (
                 "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
                 "padding:12px; background:#fafafa;'>"
-                "Directory selected. Double-click it or press <b>Enter</b> to enter it.</div>"
+                "Directory selected. Click <b>Open</b> to enter it.</div>"
             )
-            _clear_viewer()
-            _hide_frame_controls()
         else:
             _preview_selected_file(entry)
         _update_buttons()
-
-    def _on_dblclick(change):
-        value = str(change.get("new") or "").strip()
-        remote_dblclick_input.value = ""
-        if not value:
-            return
-        _open_entry(_entry_by_relative_path(value))
 
     def _on_frame_change(change):
         if change.get("name") != "value":
@@ -749,19 +1218,15 @@ def create_tab(ctx):
         ctx.select_tab("Settings")
 
     controls_row = widgets.HBox(
-        [up_btn, home_btn, refresh_btn, open_settings_btn],
+        [up_btn, home_btn, refresh_btn, open_btn, open_settings_btn],
         layout=widgets.Layout(width="100%", gap="6px", flex_flow="row wrap"),
     )
     filter_row = widgets.HBox(
         [filter_input, sort_dropdown],
         layout=widgets.Layout(width="100%", gap="6px", align_items="center"),
     )
-    hidden_inputs = widgets.VBox(
-        [remote_dblclick_input],
-        layout=widgets.Layout(display="none"),
-    )
     left_panel = widgets.VBox(
-        [info_html, path_html, controls_row, hidden_inputs, filter_row, file_list, status_html],
+        [info_html, path_html, controls_row, filter_row, file_list, status_html],
         layout=widgets.Layout(
             flex=f"0 0 {REMOTE_LEFT_DEFAULT}px",
             min_width=f"{REMOTE_LEFT_MIN}px",
@@ -775,12 +1240,64 @@ def create_tab(ctx):
         [frame_label_html, frame_input, frame_total_html],
         layout=widgets.Layout(width="100%", gap="6px", align_items="center"),
     )
+    xyz_controls = widgets.HBox(
+        [
+            widgets.HBox(
+                [widgets.HTML("<b>Frame:</b>"), frame_input, frame_total_html],
+                layout=widgets.Layout(gap="10px", align_items="center", min_width="170px", flex="0 0 auto"),
+            ),
+            xyz_copy_btn,
+        ],
+        layout=widgets.Layout(
+            display="none",
+            gap="12px",
+            margin="0 0 6px 0",
+            align_items="center",
+            justify_content="space-between",
+            flex_flow="row nowrap",
+            width="100%",
+        ),
+    )
+    xyz_playback_row = widgets.HBox(
+        [
+            xyz_loop_checkbox,
+            widgets.HBox(
+                [widgets.HTML("<b>FPS:</b>"), xyz_fps_input],
+                layout=widgets.Layout(gap="6px", align_items="center", flex="0 0 auto"),
+            ),
+            xyz_play_btn,
+        ],
+        layout=widgets.Layout(
+            display="none",
+            gap="12px",
+            align_items="center",
+            width="100%",
+            justify_content="space-between",
+        ),
+    )
     viewer_container = widgets.VBox(
-        [viewer_label, frame_row, viewer_output],
+        [viewer_label, frame_label_html, xyz_controls, xyz_playback_row, viewer_output],
         layout=widgets.Layout(display="none", margin="0 0 10px 0", width="100%", align_items="stretch"),
     )
+    top_toolbar = widgets.HBox(
+        [
+            file_info_html,
+            widgets.HBox(
+                [copy_path_btn, copy_btn, view_toggle],
+                layout=widgets.Layout(
+                    gap="10px",
+                    flex_flow="row wrap",
+                    justify_content="flex-end",
+                    align_items="center",
+                    width="100%",
+                    overflow_x="hidden",
+                ),
+            ),
+        ],
+        layout=widgets.Layout(align_items="center", justify_content="space-between", width="100%"),
+    )
     right_panel = widgets.VBox(
-        [file_info_html, selected_path_html, viewer_container, content_label, preview_html],
+        [top_toolbar, selected_path_html, viewer_container, content_label, preview_html],
         layout=widgets.Layout(
             flex="1 1 0",
             min_width="0",
@@ -805,138 +1322,6 @@ def create_tab(ctx):
         f" .{scope_id} .widget-output .jp-OutputArea-output {{ overflow:hidden !important; margin:0 !important; padding:0 !important; width:100% !important; }}"
         "</style>"
     )
-
-    init_js = f"""
-    (function() {{
-        function eventPointNode(e) {{
-            if (document.elementFromPoint && e && typeof e.clientX === 'number' && typeof e.clientY === 'number') {{
-                var pointed = document.elementFromPoint(e.clientX, e.clientY);
-                if (pointed) return pointed;
-            }}
-            return e && e.target ? e.target : null;
-        }}
-        function optionIndex(selectEl, opt) {{
-            if (!selectEl || !opt || !selectEl.options) return -1;
-            return Array.prototype.indexOf.call(selectEl.options, opt);
-        }}
-        function optionFromIndex(selectEl, idx) {{
-            if (!selectEl || !selectEl.options || idx < 0 || idx >= selectEl.options.length) return null;
-            return selectEl.options[idx];
-        }}
-        function optionVisualHeight(selectEl) {{
-            if (!selectEl || !selectEl.options || !selectEl.options.length) return 0;
-            for (var i = 0; i < selectEl.options.length; i++) {{
-                var rect = selectEl.options[i].getBoundingClientRect ? selectEl.options[i].getBoundingClientRect() : null;
-                if (rect && rect.height > 0) return rect.height;
-            }}
-            return 0;
-        }}
-        function optionIndexAtPoint(selectEl, e) {{
-            if (!selectEl || !selectEl.options || !selectEl.options.length) return -1;
-            var node = eventPointNode(e);
-            if (node && node.tagName === 'OPTION') return optionIndex(selectEl, node);
-            if (node && node.closest) {{
-                var optNode = node.closest('option');
-                if (optNode) return optionIndex(selectEl, optNode);
-            }}
-            if (!e || typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return -1;
-            var rect = selectEl.getBoundingClientRect();
-            if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return -1;
-            var optionCount = selectEl.options.length;
-            var optionHeight = optionVisualHeight(selectEl);
-            if ((!optionHeight || !isFinite(optionHeight)) && selectEl.scrollHeight && selectEl.scrollHeight > 0) {{
-                optionHeight = selectEl.scrollHeight / optionCount;
-            }}
-            if ((!optionHeight || !isFinite(optionHeight)) && rect.height > 0) {{
-                var visibleRows = Math.max(1, Math.min(optionCount, Number(selectEl.size) || optionCount));
-                optionHeight = rect.height / visibleRows;
-            }}
-            if (!optionHeight || !isFinite(optionHeight)) return -1;
-            var localY = (e.clientY - rect.top) + (selectEl.scrollTop || 0);
-            var contentHeight = optionHeight * optionCount;
-            if (localY < 0 || localY >= contentHeight) return -1;
-            var rawIdx = Math.floor(localY / optionHeight);
-            if (rawIdx < 0) rawIdx = 0;
-            if (rawIdx >= optionCount) rawIdx = optionCount - 1;
-            return rawIdx;
-        }}
-        function optionAtPoint(selectEl, e) {{
-            return optionFromIndex(selectEl, optionIndexAtPoint(selectEl, e));
-        }}
-        function setWidgetInput(root, cls, value) {{
-            if (!root) return false;
-            var field = root.querySelector('.' + cls + ' input, .' + cls + ' textarea');
-            if (!field) return false;
-            var strVal = String(value == null ? '' : value);
-            var nativeSet = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), 'value')
-                || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
-                || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
-            if (nativeSet && nativeSet.set) nativeSet.set.call(field, strVal);
-            else field.value = strVal;
-            field.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            field.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            return true;
-        }}
-        function initRemoteScope(attempt) {{
-            var root = document.querySelector('.{scope_id}');
-            if (!root) {{
-                if ((attempt || 0) < 40) setTimeout(function() {{ initRemoteScope((attempt || 0) + 1); }}, 250);
-                return;
-            }}
-            if (root._remoteArchiveExplorerReady) return;
-            root._remoteArchiveExplorerReady = true;
-            root._dblLastTime = 0;
-            root._dblLastValue = '';
-            root._dblLastX = 0;
-            root._dblLastY = 0;
-
-            root.addEventListener('mousedown', function(e) {{
-                if (e.button != null && e.button !== 0) return;
-                var selectEl = root.querySelector('.remote-file-list select');
-                if (!selectEl) return;
-                var currentOpt = optionAtPoint(selectEl, e);
-                if (!currentOpt) return;
-                var currentLabel = String(currentOpt.textContent || currentOpt.innerText || '').trim();
-                var currentValue = String(currentOpt.value || '');
-                if (!currentLabel || currentLabel.charAt(0) === '(' || !currentValue) return;
-                var now = Date.now();
-                var dx = Math.abs((typeof e.clientX === 'number' ? e.clientX : 0) - (Number(root._dblLastX) || 0));
-                var dy = Math.abs((typeof e.clientY === 'number' ? e.clientY : 0) - (Number(root._dblLastY) || 0));
-                if (currentValue === String(root._dblLastValue || '') && (now - root._dblLastTime) < 500 && dx <= 20 && dy <= 20) {{
-                    root._dblLastTime = 0;
-                    root._dblLastValue = '';
-                    root._dblLastX = 0;
-                    root._dblLastY = 0;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setWidgetInput(root, 'remote-archive-cmd-dblclick', currentValue);
-                    return;
-                }}
-                root._dblLastTime = now;
-                root._dblLastValue = currentValue;
-                root._dblLastX = (typeof e.clientX === 'number') ? e.clientX : 0;
-                root._dblLastY = (typeof e.clientY === 'number') ? e.clientY : 0;
-            }}, true);
-
-            root.addEventListener('keydown', function(e) {{
-                var selectEl = root.querySelector('.remote-file-list select');
-                if (!selectEl || e.target !== selectEl) return;
-                if (e.key === 'Enter') {{
-                    var selectedIndex = typeof selectEl.selectedIndex === 'number' ? selectEl.selectedIndex : -1;
-                    var selectedOpt = optionFromIndex(selectEl, selectedIndex);
-                    if (!selectedOpt) return;
-                    var currentLabel = String(selectedOpt.textContent || selectedOpt.innerText || '').trim();
-                    var currentValue = String(selectedOpt.value || '');
-                    if (!currentLabel || currentLabel.charAt(0) === '(' || !currentValue) return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setWidgetInput(root, 'remote-archive-cmd-dblclick', currentValue);
-                }}
-            }}, true);
-        }}
-        initRemoteScope(0);
-    }})();
-    """
 
     tab_widget = widgets.VBox(
         [
@@ -964,11 +1349,17 @@ def create_tab(ctx):
     home_btn.on_click(_navigate_home)
     up_btn.on_click(_navigate_up)
     refresh_btn.on_click(lambda _button: _refresh_listing(set_status=True))
+    open_btn.on_click(_open_selection)
+    copy_btn.on_click(_on_copy_click)
+    copy_path_btn.on_click(_on_copy_path_click)
+    view_toggle.observe(_on_view_toggle, names="value")
     filter_input.observe(_on_filter_change, names="value")
     sort_dropdown.observe(_on_sort_change, names="value")
     file_list.observe(_on_selection_change, names="value")
-    remote_dblclick_input.observe(_on_dblclick, names="value")
     frame_input.observe(_on_frame_change, names="value")
+    xyz_loop_checkbox.observe(_on_xyz_loop_change, names="value")
+    xyz_play_btn.observe(_on_xyz_play_change, names="value")
+    xyz_copy_btn.on_click(_on_xyz_copy)
 
     disable_spellcheck(ctx, class_name="remote-archive-filter")
 
@@ -978,4 +1369,4 @@ def create_tab(ctx):
     _update_path_html()
     _update_buttons()
 
-    return tab_widget, {"init_js": init_js}
+    return tab_widget, {}
