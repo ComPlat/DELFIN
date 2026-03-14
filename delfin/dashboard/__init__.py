@@ -25,6 +25,7 @@ from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
 from . import (
     tab_archive_statistics,
     tab_calculations_browser,
+    tab_remote_archive,
     tab_settings,
     tab_job_status,
     tab_orca_builder,
@@ -151,7 +152,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
     tab6, refs6 = tab_archive_statistics.create_tab(ctx)
-    tab7, _refs7 = tab_settings.create_tab(ctx)
+    tab7, _refs7 = tab_remote_archive.create_tab(ctx)
+    tab8, _refs8 = tab_settings.create_tab(ctx)
 
     # Run both calc-browser init scripts in ONE ctx.run_js() call.
     # If called separately, the second call's clear_output() would wipe the
@@ -195,6 +197,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     children.append(tab6)
     titles.append('Archive')
     children.append(tab7)
+    titles.append('Remote Archive')
+    children.append(tab8)
     titles.append('Settings')
 
     # Disable spellcheck in all textareas (browser-level red underlines).
