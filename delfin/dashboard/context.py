@@ -57,6 +57,8 @@ class DashboardContext:
     shared_explorer_state: dict = field(
         default_factory=lambda: {'refresh_hooks': {}, 'refresh_running': False}
     )
+    tabs_widget: Any = None
+    tab_indices: dict = field(default_factory=dict)
 
     # Templates
     default_control: str = ''
@@ -79,3 +81,14 @@ class DashboardContext:
             )
         else:
             self.busy_indicator.value = ''
+
+    def select_tab(self, title):
+        """Switch to a dashboard tab by title when available."""
+        if not self.tabs_widget:
+            return False
+        try:
+            index = int(self.tab_indices.get(title))
+        except Exception:
+            return False
+        self.tabs_widget.selected_index = index
+        return True

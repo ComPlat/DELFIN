@@ -11,6 +11,7 @@ import html
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import ipywidgets as widgets
@@ -24,6 +25,7 @@ from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
 from . import (
     tab_archive_statistics,
     tab_calculations_browser,
+    tab_settings,
     tab_job_status,
     tab_orca_builder,
     tab_recalc,
@@ -149,6 +151,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
     tab6, refs6 = tab_archive_statistics.create_tab(ctx)
+    tab7, _refs7 = tab_settings.create_tab(ctx)
 
     # Run both calc-browser init scripts in ONE ctx.run_js() call.
     # If called separately, the second call's clear_output() would wipe the
@@ -191,6 +194,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     titles.append('Calculations')
     children.append(tab6)
     titles.append('Archive')
+    children.append(tab7)
+    titles.append('Settings')
 
     # Disable spellcheck in all textareas (browser-level red underlines).
     disable_spellcheck_global(ctx)
@@ -198,6 +203,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tabs = widgets.Tab(children=children)
     for i, title in enumerate(titles):
         tabs.set_title(i, title)
+    ctx.tabs_widget = tabs
+    ctx.tab_indices = {title: i for i, title in enumerate(titles)}
 
     # Auto-refresh job list when switching to Job Status tab
     job_status_idx = titles.index('Job Status')
@@ -224,6 +231,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     pull_delfin_output = widgets.Output()
 
     orca_version_label = _build_orca_version_widget(orca_base, orca_candidates)
+    home_usage_label = _build_home_usage_widget(home)
 
     def refresh_git_status_label():
         rd = ctx.repo_dir
@@ -323,7 +331,14 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 f'DELFIN ({backend_label})</h2>'
             ),
             widgets.HBox(
-                [busy_indicator, git_status_label, pull_delfin_btn, rollback_delfin_btn, orca_version_label],
+                [
+                    busy_indicator,
+                    home_usage_label,
+                    git_status_label,
+                    pull_delfin_btn,
+                    rollback_delfin_btn,
+                    orca_version_label,
+                ],
                 layout=widgets.Layout(
                     margin='0 0 0 12px', align_items='center', gap='8px',
                 ),
@@ -546,3 +561,59 @@ def _build_orca_version_widget(orca_base, orca_candidates):
         style={'description_width': 'initial'},
         disabled=True,
     )
+
+
+def _build_home_usage_widget(home_dir, warn_threshold_gb=400):
+    """Build an asynchronously refreshed HOME usage widget."""
+    label = widgets.HTML(
+        '<span style="font-family:monospace; color:#455a64; '
+        'padding:2px 6px; border:1px solid #cfd8dc; border-radius:4px;">'
+        'HOME: measuring...</span>'
+    )
+
+    def _set_label(message, color='#455a64'):
+        label.value = (
+            f'<span style="font-family:monospace; color:{color}; '
+            f'padding:2px 6px; border:1px solid #cfd8dc; border-radius:4px;">'
+            f'{html.escape(message)}</span>'
+        )
+
+    def _measure_bytes():
+        commands = (
+            ['du', '-sb', str(home_dir)],
+            ['du', '-sk', str(home_dir)],
+        )
+        for cmd in commands:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    check=False,
+                    timeout=1800,
+                )
+            except Exception:
+                continue
+            if result.returncode != 0 or not result.stdout.strip():
+                continue
+            try:
+                value = int(result.stdout.split()[0])
+            except Exception:
+                continue
+            if cmd[1] == '-sk':
+                value *= 1024
+            return value
+        raise RuntimeError('du failed')
+
+    def _refresh():
+        try:
+            used_bytes = _measure_bytes()
+            used_gb = used_bytes / (1024 ** 3)
+            color = '#b71c1c' if used_gb >= float(warn_threshold_gb) else '#455a64'
+            _set_label(f'HOME: {used_gb:.1f} GB', color=color)
+        except Exception:
+            _set_label('HOME: n/a', color='#757575')
+
+    threading.Thread(target=_refresh, daemon=True).start()
+    return label

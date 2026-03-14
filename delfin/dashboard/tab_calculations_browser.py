@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -37,6 +38,17 @@ from .molecule_viewer import (
     patch_viewer_mouse_controls_js,
 )
 from delfin.reporting.delfin_docx_report import _orca_plot_binary
+from delfin.ssh_transfer_jobs import (
+    create_transfer_job,
+    ensure_jobs_dir,
+    launch_transfer_job,
+    list_transfer_jobs,
+)
+from delfin.user_settings import (
+    get_settings_path,
+    load_transfer_settings,
+    normalize_ssh_transfer_settings,
+)
 from rdkit import Chem, RDLogger
 from rdkit.Chem import rdDepictor, AllChem
 from rdkit.Chem.Draw import MolToImage
@@ -118,6 +130,7 @@ def create_tab(ctx):
         'rmsd_saved_display': {},
         'rename_source_path': '',
         'duplicate_source_path': '',
+        'ssh_transfer_running': False,
         'preselect': {
             'active': False,
             'entries': [],
@@ -190,6 +203,15 @@ def create_tab(ctx):
             width='118px', height='26px',
             display='inline-flex' if _is_archive_tab else 'none',
         ),
+    )
+    calc_ssh_transfer_btn = widgets.Button(
+        description='SSH Transfer',
+        button_style='info',
+        layout=widgets.Layout(
+            width='110px', height='26px',
+            display='inline-flex' if _is_archive_tab else 'none',
+        ),
+        disabled=not _is_archive_tab,
     )
     calc_move_archive_yes_btn = widgets.Button(
         description='Yes', button_style='warning',
@@ -337,6 +359,48 @@ def create_tab(ctx):
             calc_duplicate_prompt_cancel_btn,
         ],
         layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+    )
+    calc_transfer_jobs_btn = widgets.Button(
+        description='Running Transfers',
+        layout=widgets.Layout(
+            width='140px', height='26px',
+            display='inline-flex' if _is_archive_tab else 'none',
+        ),
+        disabled=not _is_archive_tab,
+    )
+    calc_transfer_jobs_refresh_btn = widgets.Button(
+        description='Refresh Jobs',
+        layout=widgets.Layout(width='106px', height='26px'),
+    )
+    calc_transfer_jobs_html = widgets.HTML(
+        value='',
+        layout=widgets.Layout(
+            width='100%',
+            overflow_x='hidden',
+            overflow_y='auto',
+            flex='1 1 0',
+            min_height='0',
+        ),
+    )
+    calc_transfer_jobs_panel = widgets.VBox(
+        [
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Running Transfers</b>'),
+                    calc_transfer_jobs_refresh_btn,
+                ],
+                layout=widgets.Layout(gap='6px', align_items='center', flex_flow='row wrap'),
+            ),
+            calc_transfer_jobs_html,
+        ],
+        layout=widgets.Layout(
+            display='none',
+            gap='6px',
+            width='100%',
+            flex='1 1 0',
+            min_height='0',
+            overflow='hidden',
+        ),
     )
     calc_ops_status = widgets.HTML(
         value='',
@@ -2115,6 +2179,131 @@ def create_tab(ctx):
         finally:
             shared['refresh_running'] = False
 
+    def _calc_transfer_jobs_dir():
+        return ensure_jobs_dir()
+
+    def _calc_settings_path():
+        return get_settings_path()
+
+    def _calc_load_transfer_config():
+        try:
+            return load_transfer_settings()
+        except Exception as exc:
+            ctx.select_tab('Settings')
+            _calc_set_ops_status(
+                (
+                    f'Settings invalid in <code>{_html.escape(str(_calc_settings_path()))}</code>: '
+                    f'{_html.escape(str(exc))}'
+                ),
+                color='#d32f2f',
+            )
+            return False
+
+    def _calc_transfer_status_color(status):
+        mapping = {
+            'queued': '#1976d2',
+            'running': '#1976d2',
+            'retrying': '#ef6c00',
+            'success': '#2e7d32',
+            'warning': '#ef6c00',
+            'failed': '#d32f2f',
+        }
+        return mapping.get(str(status or '').lower(), '#555')
+
+    def _calc_update_transfer_jobs_visibility():
+        if not _is_archive_tab:
+            return
+        jobs_visible = calc_transfer_jobs_panel.layout.display != 'none'
+        calc_transfer_jobs_btn.button_style = 'primary' if jobs_visible else ''
+        if jobs_visible:
+            calc_left.add_class('calc-transfer-jobs-mode')
+        else:
+            calc_left.remove_class('calc-transfer-jobs-mode')
+        if jobs_visible:
+            calc_rename_prompt_row.layout.display = 'none'
+            calc_duplicate_prompt_row.layout.display = 'none'
+            calc_filter_sort_row.layout.display = 'none'
+            calc_file_list.layout.display = 'none'
+        else:
+            calc_filter_sort_row.layout.display = 'flex'
+            calc_file_list.layout.display = ''
+
+    def _calc_transfer_items_html(entry, limit=4):
+        raw_sources = entry.get('sources', []) or []
+        rendered = []
+        for raw_source in raw_sources[:limit]:
+            source_text = str(raw_source or '').strip()
+            if not source_text:
+                continue
+            source_path = Path(source_text)
+            label = source_path.name or source_text
+            rendered.append(
+                f'<code title="{_html.escape(source_text)}">{_html.escape(label)}</code>'
+            )
+        if not rendered:
+            return 'n/a'
+        remaining = len(raw_sources) - len(rendered)
+        summary = ', '.join(rendered)
+        if remaining > 0:
+            summary = f'{summary} + {remaining} more'
+        return summary
+
+    def _calc_render_transfer_jobs(limit=8):
+        try:
+            entries = list_transfer_jobs(jobs_dir=_calc_transfer_jobs_dir(), limit=limit)
+        except Exception as exc:
+            calc_transfer_jobs_html.value = (
+                f'<span style="color:#d32f2f;">Could not load transfer jobs: '
+                f'{_html.escape(str(exc))}</span>'
+            )
+            return
+
+        if not entries:
+            calc_transfer_jobs_html.value = (
+                '<span style="color:#555;">No background transfer jobs yet.</span>'
+            )
+            return
+
+        blocks = []
+        for entry in entries:
+            status = str(entry.get('status') or 'unknown')
+            color = _calc_transfer_status_color(status)
+            remote = (
+                f'{entry.get("user", "?")}@{entry.get("host", "?")}:'
+                f'{entry.get("remote_path", "?")}'
+            )
+            summary = str(entry.get('last_summary') or entry.get('last_error') or '').strip()
+            retry_note = ''
+            retry_in = entry.get('retry_in_seconds', 0) or 0
+            if status == 'retrying' and retry_in:
+                retry_note = f' Retry in about {int(retry_in)} s.'
+            attempts = entry.get('attempt', 0)
+            max_retries = entry.get('max_retries', 0)
+            log_path = entry.get('log_path', '')
+            items_html = _calc_transfer_items_html(entry)
+            updated = str(entry.get('updated_at') or '').replace('T', ' ')
+            if updated.endswith('+00:00'):
+                updated = updated[:-6] + ' UTC'
+            blocks.append(
+                '<div style="border:1px solid #d9dee3;border-radius:6px;padding:8px 10px;'
+                'margin:0 0 8px 0;background:#fafbfc;">'
+                f'<div><b>{_html.escape(entry.get("job_id", "job"))}</b> '
+                f'<span style="color:{color};font-weight:600;">{_html.escape(status.upper())}</span></div>'
+                f'<div><code>{_html.escape(remote)}</code></div>'
+                f'<div>{int(entry.get("source_count", 0) or 0)} item(s), '
+                f'attempt {int(attempts or 0)}/{int(max_retries or 0) + 1}</div>'
+                f'<div>Items: {items_html}</div>'
+                f'<div>{_html.escape(summary or "No status message.")}{_html.escape(retry_note)}</div>'
+                f'<div style="color:#555;">Updated: {_html.escape(updated or "-")}</div>'
+                f'<div style="color:#555;">Log: <code>{_html.escape(str(log_path))}</code></div>'
+                '</div>'
+            )
+        calc_transfer_jobs_html.value = ''.join(blocks)
+
+    def _calc_set_ssh_transfer_running(is_running):
+        state['ssh_transfer_running'] = bool(is_running)
+        _calc_update_explorer_action_state()
+
     def _calc_hide_rename_prompt():
         state['rename_source_path'] = ''
         calc_rename_prompt_input.value = ''
@@ -2161,6 +2350,11 @@ def create_tab(ctx):
 
     def _calc_update_explorer_action_state():
         _calc_clipboard_paths()
+        if _is_archive_tab:
+            has_selection = bool(_calc_collect_selected_sources_only())
+            calc_ssh_transfer_btn.disabled = (
+                state.get('ssh_transfer_running', False) or not has_selection
+            )
 
     def _calc_parse_mutation_csv(csv_path):
         entries = []
@@ -7919,6 +8113,82 @@ def create_tab(ctx):
     def calc_on_move_archive_no(button):
         calc_move_archive_confirm.layout.display = 'none'
 
+    def _calc_start_ssh_transfer_with_config(sources, config_payload):
+        if state.get('ssh_transfer_running', False):
+            return
+        resolved_sources = [_calc_resolve_within_root(src) for src in sources]
+        host, user, remote_path, port = normalize_ssh_transfer_settings(
+            config_payload.get('host', ''),
+            config_payload.get('user', ''),
+            config_payload.get('remote_path', ''),
+            config_payload.get('port', 22),
+        )
+        job = create_transfer_job(
+            resolved_sources,
+            host,
+            user,
+            remote_path,
+            port,
+        )
+        source_count = len(resolved_sources)
+        target_label = _html.escape(f'{user}@{host}:{remote_path}')
+        _calc_set_ssh_transfer_running(True)
+        try:
+            pid = launch_transfer_job(job, python_executable=sys.executable)
+            calc_transfer_jobs_panel.layout.display = 'flex'
+            _calc_update_transfer_jobs_visibility()
+            _calc_render_transfer_jobs()
+            _calc_set_ops_status(
+                f'Started resumable transfer job <code>{_html.escape(job["job_id"])}</code> '
+                f'for {source_count} item(s) to <code>{target_label}</code>. '
+                f'PID: <code>{int(pid)}</code>. Log: <code>{_html.escape(job["log_path"])}</code>.',
+                color='#2e7d32',
+            )
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'SSH transfer failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+        finally:
+            _calc_set_ssh_transfer_running(False)
+
+    def calc_on_ssh_transfer_click(button=None):
+        _calc_hide_rename_prompt()
+        sources = _calc_collect_selected_sources_only()
+        if not sources:
+            _calc_update_explorer_action_state()
+            _calc_set_ops_status('Select item(s) first.', color='#d32f2f')
+            return
+
+        config_payload = _calc_load_transfer_config()
+        if config_payload is False:
+            return
+        if not config_payload:
+            ctx.select_tab('Settings')
+            _calc_set_ops_status(
+                (
+                    f'No transfer target saved yet. Opened <b>Settings</b>. '
+                    f'Save host, user, port and target once in '
+                    f'<code>{_html.escape(str(_calc_settings_path()))}</code>, '
+                    'then the SSH Transfer button can start directly.'
+                ),
+                color='#ef6c00',
+            )
+            return
+        _calc_start_ssh_transfer_with_config(sources, config_payload)
+
+    def calc_on_transfer_jobs_toggle(button=None):
+        if calc_transfer_jobs_panel.layout.display == 'none':
+            _calc_hide_rename_prompt()
+            _calc_render_transfer_jobs()
+            calc_transfer_jobs_panel.layout.display = 'flex'
+        else:
+            calc_transfer_jobs_panel.layout.display = 'none'
+        _calc_update_transfer_jobs_visibility()
+
+    def calc_on_transfer_jobs_refresh(button=None):
+        _calc_render_transfer_jobs()
+
     def _calc_parse_move_target_dir(raw_target):
         target = str(raw_target or '').strip()
         if not target:
@@ -9472,6 +9742,7 @@ def create_tab(ctx):
 
     # -- selection-change handler (show file content on single-click) --------
     def calc_on_selection_change(change):
+        _calc_update_explorer_action_state()
         labels = [label for label in (change['new'] or ()) if label and not label.startswith('(')]
         if len(labels) == 1:
             name = _calc_label_to_name(labels[0])
@@ -9534,8 +9805,11 @@ def create_tab(ctx):
     calc_delete_no_btn.on_click(calc_on_delete_no)
     calc_move_archive_btn.on_click(calc_on_move_archive_click)
     calc_back_to_calculations_btn.on_click(calc_on_back_to_calculations)
+    calc_ssh_transfer_btn.on_click(calc_on_ssh_transfer_click)
+    calc_transfer_jobs_btn.on_click(calc_on_transfer_jobs_toggle)
     calc_move_archive_yes_btn.on_click(calc_on_move_archive_yes)
     calc_move_archive_no_btn.on_click(calc_on_move_archive_no)
+    calc_transfer_jobs_refresh_btn.on_click(calc_on_transfer_jobs_refresh)
     calc_explorer_new_btn.on_click(calc_on_explorer_new_folder)
     calc_explorer_rename_btn.on_click(calc_on_explorer_start_rename)
     calc_duplicate_btn.on_click(calc_on_explorer_start_duplicate)
@@ -9614,6 +9888,8 @@ def create_tab(ctx):
 
     # -- initialise ---------------------------------------------------------
     _calc_register_explorer_refresh()
+    if _is_archive_tab:
+        _calc_render_transfer_jobs()
 
     if ctx.calc_dir.exists():
         calc_list_directory()
@@ -10590,24 +10866,29 @@ def create_tab(ctx):
     """
     # -- layout -------------------------------------------------------------
     _archive_nav_children = [calc_table_btn] if _is_archive_tab else [calc_move_archive_btn]
-    _archive_selection_children = [calc_back_to_calculations_btn] if _is_archive_tab else []
+    _archive_selection_children = (
+        [calc_ssh_transfer_btn, calc_back_to_calculations_btn]
+        if _is_archive_tab else []
+    )
+    calc_nav_controls_row = widgets.HBox(
+        [calc_back_btn, calc_home_btn, calc_refresh_btn, calc_delete_btn, *_archive_nav_children],
+        layout=widgets.Layout(
+            width='100%', overflow_x='hidden',
+            justify_content='flex-start', gap='6px',
+        ),
+    )
+    calc_nav_selection_row = widgets.HBox(
+        [calc_explorer_new_btn, calc_explorer_rename_btn, calc_duplicate_btn, *_archive_selection_children],
+        layout=widgets.Layout(
+            width='100%', overflow_x='hidden',
+            justify_content='flex-start', gap='6px',
+            display='flex', flex_flow='row wrap',
+        ),
+    )
     calc_nav_bar = widgets.VBox([
         calc_path_label,
-        widgets.HBox(
-            [calc_back_btn, calc_home_btn, calc_refresh_btn, calc_delete_btn, *_archive_nav_children],
-            layout=widgets.Layout(
-                width='100%', overflow_x='hidden',
-                justify_content='flex-start', gap='6px',
-            ),
-        ),
-        widgets.HBox(
-            [calc_explorer_new_btn, calc_explorer_rename_btn, calc_duplicate_btn, *_archive_selection_children],
-            layout=widgets.Layout(
-                width='100%', overflow_x='hidden',
-                justify_content='flex-start', gap='6px',
-                display='flex', flex_flow='row wrap',
-            ),
-        ),
+        calc_nav_controls_row,
+        calc_nav_selection_row,
         calc_rename_prompt_row,
         calc_duplicate_prompt_row,
         calc_hidden_upload,
@@ -10627,6 +10908,7 @@ def create_tab(ctx):
         calc_nav_bar,
         calc_filter_sort_row,
         calc_file_list,
+        calc_transfer_jobs_panel,
     ], layout=widgets.Layout(
         flex=f'0 0 {CALC_LEFT_DEFAULT}px',
         min_width=f'{CALC_LEFT_MIN}px',
@@ -10687,6 +10969,9 @@ def create_tab(ctx):
         '.calc-filter-row > .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
         '.calc-filter-row > .widget-text input { width:100% !important; min-width:0 !important; }'
         '.calc-filter-row > .widget-dropdown { flex:0 0 90px !important; margin-left:auto !important; }'
+        '.calc-left.calc-transfer-jobs-mode .calc-filter-row,'
+        ' .calc-left.calc-transfer-jobs-mode .calc-file-list'
+        ' { display:none !important; }'
         '.calc-left .widget-text input'
         ' { overflow-x:hidden !important; overflow-y:hidden !important; text-overflow: ellipsis; }'
         '.calc-right .widget-text input'
@@ -10758,7 +11043,14 @@ def create_tab(ctx):
         widgets.HBox([
             calc_file_info,
             widgets.HBox(
-                [calc_copy_path_btn, calc_copy_btn, calc_download_btn, calc_report_btn, calc_view_toggle],
+                [
+                    calc_transfer_jobs_btn,
+                    calc_copy_path_btn,
+                    calc_copy_btn,
+                    calc_download_btn,
+                    calc_report_btn,
+                    calc_view_toggle,
+                ],
                 layout=widgets.Layout(
                     gap='10px',
                     flex_flow='row wrap',
@@ -10823,6 +11115,10 @@ def create_tab(ctx):
     tab_widget.add_class(calc_scope_id)
     calc_left.add_class('calc-left')
     calc_right.add_class('calc-right')
+    calc_nav_controls_row.add_class('calc-nav-controls-row')
+    calc_nav_selection_row.add_class('calc-nav-selection-row')
+    calc_rename_prompt_row.add_class('calc-rename-prompt-row')
+    calc_duplicate_prompt_row.add_class('calc-duplicate-prompt-row')
     calc_content_area.add_class('calc-content-area')
     calc_table_panel.add_class('calc-table-panel')
     calc_table_output.add_class('calc-table-output')
@@ -11042,6 +11338,9 @@ def create_tab(ctx):
         ctx.calc_dir = new_root
         state['current_path'] = ''
         calc_list_directory()
+
+    if _is_archive_tab:
+        _calc_update_transfer_jobs_visibility()
 
     return tab_widget, {
         'calc_list_directory': calc_list_directory,
