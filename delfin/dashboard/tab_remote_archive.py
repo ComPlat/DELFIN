@@ -73,10 +73,6 @@ def create_tab(ctx):
     status_html = widgets.HTML(value="")
     path_html = widgets.HTML(value="<b>📂 Path:</b> /")
 
-    open_settings_btn = widgets.Button(
-        description="Settings",
-        layout=widgets.Layout(width="92px", height="28px"),
-    )
     up_btn = widgets.Button(
         description="⬆ Up",
         button_style="warning",
@@ -112,6 +108,11 @@ def create_tab(ctx):
         layout=widgets.Layout(width="100%", flex="1 1 0", min_height="0", margin="-4px 0 0 0"),
     )
     file_list.add_class("remote-file-list")
+    keyboard_action_input = widgets.Text(
+        value="",
+        layout=widgets.Layout(width="1px", height="1px", display="none"),
+    )
+    keyboard_action_input.add_class("remote-cmd-keyboard-action")
     file_info_html = widgets.HTML(value="")
     selected_path_html = widgets.HTML(value="")
     copy_path_btn = widgets.Button(
@@ -1367,11 +1368,18 @@ def create_tab(ctx):
             preview_html.value = (
                 "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
                 "padding:12px; background:#fafafa;'>"
-                "Directory selected. Click <b>Open</b> to enter it.</div>"
+                "Directory selected. Press <b>Enter</b> or click <b>Open</b> to enter it.</div>"
             )
         else:
             _preview_selected_file(entry)
         _update_buttons()
+
+    def _on_keyboard_action(change):
+        action = str(change.get("new") or "").strip()
+        keyboard_action_input.value = ""
+        if action != "open":
+            return
+        _open_selection()
 
     def _on_frame_change(change):
         if change.get("name") != "value":
@@ -1382,11 +1390,8 @@ def create_tab(ctx):
         state["current_xyz_index"] = max(0, min(len(frames) - 1, int(frame_input.value) - 1))
         _render_selected_frame()
 
-    def _open_settings(_button=None):
-        ctx.select_tab("Settings")
-
     controls_row = widgets.HBox(
-        [up_btn, home_btn, refresh_btn, open_btn, open_settings_btn],
+        [up_btn, home_btn, refresh_btn, open_btn],
         layout=widgets.Layout(width="100%", gap="6px", flex_flow="row wrap"),
     )
     filter_row = widgets.HBox(
@@ -1523,6 +1528,7 @@ def create_tab(ctx):
         [
             css,
             title,
+            keyboard_action_input,
             widgets.HBox(
                 [left_panel, right_panel],
                 layout=widgets.Layout(
@@ -1541,7 +1547,6 @@ def create_tab(ctx):
     left_panel.add_class("remote-left")
     right_panel.add_class("remote-right")
 
-    open_settings_btn.on_click(_open_settings)
     home_btn.on_click(_navigate_home)
     up_btn.on_click(_navigate_up)
     refresh_btn.on_click(lambda _button: _refresh_listing(set_status=True))
@@ -1552,6 +1557,7 @@ def create_tab(ctx):
     filter_input.observe(_on_filter_change, names="value")
     sort_dropdown.observe(_on_sort_change, names="value")
     file_list.observe(_on_selection_change, names="value")
+    keyboard_action_input.observe(_on_keyboard_action, names="value")
     frame_input.observe(_on_frame_change, names="value")
     xyz_loop_checkbox.observe(_on_xyz_loop_change, names="value")
     xyz_play_btn.observe(_on_xyz_play_change, names="value")
@@ -1565,4 +1571,65 @@ def create_tab(ctx):
     _update_path_html()
     _update_buttons()
 
-    return tab_widget, {}
+    init_js = f"""
+    (function() {{
+        function _setWidgetField(root, cls, value) {{
+            if (!root) return false;
+            var node = root.querySelector('.' + cls);
+            if (!node) return false;
+            var field = null;
+            if (node.matches && (node.matches('input') || node.matches('textarea'))) {{
+                field = node;
+            }} else if (node.querySelector) {{
+                field = node.querySelector('input, textarea');
+            }}
+            if (!field) return false;
+            var strVal = value == null ? '' : String(value);
+            var nativeSet = Object.getOwnPropertyDescriptor(
+                Object.getPrototypeOf(field), 'value'
+            ) || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
+              || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+            if (nativeSet && nativeSet.set) {{
+                nativeSet.set.call(field, strVal);
+            }} else {{
+                field.value = strVal;
+            }}
+            field.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            field.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return true;
+        }}
+        function installRemoteArchiveEnter(root) {{
+            if (!root) return;
+            var selectEl = root.querySelector('.remote-file-list select');
+            if (!selectEl) {{
+                if (!root._delfinRemoteArchiveEnterRetryScheduled) {{
+                    root._delfinRemoteArchiveEnterRetryScheduled = true;
+                    setTimeout(function() {{
+                        root._delfinRemoteArchiveEnterRetryScheduled = false;
+                        installRemoteArchiveEnter(root);
+                    }}, 150);
+                }}
+                return;
+            }}
+            if (selectEl.dataset.remoteEnterBound === '1') return;
+            selectEl.dataset.remoteEnterBound = '1';
+            selectEl.addEventListener('keydown', function(e) {{
+                if (!e || e.key !== 'Enter') return;
+                e.preventDefault();
+                e.stopPropagation();
+                _setWidgetField(root, 'remote-cmd-keyboard-action', 'open');
+            }}, true);
+        }}
+        function bootRemoteArchiveEnter() {{
+            installRemoteArchiveEnter(document.querySelector('.{scope_id}'));
+        }}
+        if (document.readyState === 'loading') {{
+            document.addEventListener('DOMContentLoaded', bootRemoteArchiveEnter, {{ once: true }});
+        }}
+        bootRemoteArchiveEnter();
+        setTimeout(bootRemoteArchiveEnter, 200);
+        setTimeout(bootRemoteArchiveEnter, 1000);
+    }})();
+    """
+
+    return tab_widget, {"init_js": init_js}
