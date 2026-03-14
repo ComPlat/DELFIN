@@ -114,7 +114,7 @@ def create_tab(ctx):
     )
     keyboard_action_input.add_class("remote-cmd-keyboard-action")
     file_info_html = widgets.HTML(value="")
-    selected_path_html = widgets.HTML(value="")
+    selected_path_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
     copy_path_btn = widgets.Button(
         description="PATH",
         layout=widgets.Layout(width="70px", min_width="70px", height="26px"),
@@ -373,15 +373,7 @@ def create_tab(ctx):
         viewer_container.layout.display = "flex" if is_visible else "none"
 
     def _set_selected_path_display(path_value):
-        path = str(path_value or "").strip()
-        if not path:
-            selected_path_html.value = ""
-            return
-        selected_path_html.value = (
-            f'<input type="text" value="{html.escape(path)}" onclick="this.select()" '
-            f'style="width:100%;font-family:monospace;font-size:12px;border:1px solid #aaa;'
-            f'padding:2px;background:#f8f8f8" readonly>'
-        )
+        selected_path_html.value = ""
 
     def _clear_viewer():
         viewer_output.clear_output()
@@ -1495,7 +1487,7 @@ def create_tab(ctx):
         layout=widgets.Layout(align_items="center", justify_content="space-between", width="100%"),
     )
     right_panel = widgets.VBox(
-        [top_toolbar, selected_path_html, viewer_container, content_label, preview_html],
+        [top_toolbar, viewer_container, content_label, preview_html],
         layout=widgets.Layout(
             flex="1 1 0",
             min_width="0",
