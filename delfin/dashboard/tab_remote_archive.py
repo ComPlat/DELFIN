@@ -10,7 +10,6 @@ import re
 from pathlib import Path, PurePosixPath
 
 import ipywidgets as widgets
-import py3Dmol
 from IPython.display import HTML, clear_output, display
 
 from delfin.remote_archive import (
@@ -27,7 +26,6 @@ from .input_processing import is_smiles, smiles_to_xyz_quick
 from .molecule_viewer import (
     DEFAULT_3DMOL_STYLE_JS,
     DEFAULT_3DMOL_ZOOM,
-    apply_molecule_view_style,
     coord_to_xyz,
     parse_xyz_frames,
     patch_viewer_mouse_controls_js,
@@ -35,8 +33,8 @@ from .molecule_viewer import (
 
 REMOTE_FULL_FETCH_MAX_BYTES = 128 * 1024 * 1024
 REMOTE_TEXT_RENDER_MAX_CHARS = 400_000
-REMOTE_VIEWER_WIDTH = 700
-REMOTE_VIEWER_HEIGHT = 420
+REMOTE_MOL_SIZE = 450
+REMOTE_MOL_DYNAMIC_SCALE = 0.9725
 REMOTE_LEFT_DEFAULT = 375
 REMOTE_LEFT_MIN = 375
 REMOTE_LEFT_MAX = 520
@@ -277,6 +275,7 @@ def create_tab(ctx):
         has_xyz = bool(frames) and view_toggle.value and state.get("visualize_kind") == "xyz"
         xyz_controls.layout.display = "flex" if has_xyz else "none"
         xyz_playback_row.layout.display = "flex" if has_xyz else "none"
+        xyz_tray_controls.layout.display = "flex" if has_xyz else "none"
         can_play = has_xyz and _traj_can_play()
         xyz_loop_checkbox.disabled = not can_play
         xyz_fps_input.disabled = not can_play
@@ -517,14 +516,143 @@ def create_tab(ctx):
             "</div>"
         )
 
-    def _render_xyz_in_viewer(xyz_text):
-        _set_viewer_visible(True)
+    def _render_3dmol(data, fmt="xyz", volumetric=False):
+        mol3d_counter[0] += 1
+        viewer_id = f"remote_mol3d_{mol3d_counter[0]}"
+        wrapper_id = f"remote_mol_wrap_{mol3d_counter[0]}"
+        data_json = json.dumps(str(data or ""))
+        scope_key_json = json.dumps(scope_id)
+        view_scope_json = json.dumps(f"{scope_id}:{state.get('current_relative_path') or '/'}")
+        volumetric_js = ""
+        if volumetric:
+            volumetric_js = (
+                "viewer.addVolumetricData(molData,'cube',{isoval:0.02,color:'#0026ff',opacity:0.85});"
+                "viewer.addVolumetricData(molData,'cube',{isoval:-0.02,color:'#b00010',opacity:0.85});"
+            )
         with viewer_output:
             clear_output()
-            view = py3Dmol.view(width=REMOTE_VIEWER_WIDTH, height=REMOTE_VIEWER_HEIGHT)
-            view.addModel(xyz_text, "xyz")
-            apply_molecule_view_style(view)
-            view.show()
+            display(
+                HTML(
+                    f"""
+                    <div id="{wrapper_id}" class="remote-mol-stage-wrapper" style="width:100%;">
+                        <div id="{viewer_id}" style="width:100%;height:{REMOTE_MOL_SIZE}px;position:relative;"></div>
+                    </div>
+                    <script>
+                    if (typeof $3Dmol === "undefined") {{
+                        var _s = document.createElement("script");
+                        _s.src = "https://3Dmol.org/build/3Dmol-min.js";
+                        document.head.appendChild(_s);
+                    }}
+                    (function() {{
+                        var tries = 0;
+                        function initViewer() {{
+                            var el = document.getElementById("{viewer_id}");
+                            var mv = el ? el.closest('.remote-mol-viewer') : null;
+                            var scopeRoot = el ? el.closest('.{scope_id}') : null;
+                            if (!scopeRoot) scopeRoot = document.querySelector('.{scope_id}');
+                            if (!el || typeof $3Dmol === "undefined" || !mv || mv.offsetParent === null) {{
+                                tries += 1;
+                                if (tries < 80) setTimeout(initViewer, 50);
+                                return;
+                            }}
+                            var rightPanel = scopeRoot ? scopeRoot.querySelector('.remote-right') : null;
+                            if (rightPanel) {{
+                                var mvRect = mv.getBoundingClientRect();
+                                if (mvRect.top > 0 || mvRect.height > 0) {{
+                                    var rightRect = rightPanel.getBoundingClientRect();
+                                    var topChildren = Array.prototype.slice.call(rightPanel.children || []);
+                                    var host = null;
+                                    for (var i = 0; i < topChildren.length; i++) {{
+                                        if (topChildren[i].contains(mv)) {{
+                                            host = topChildren[i];
+                                            break;
+                                        }}
+                                    }}
+                                    var reservedBelow = 0;
+                                    if (host) {{
+                                        var passed = false;
+                                        for (var j = 0; j < topChildren.length; j++) {{
+                                            var child = topChildren[j];
+                                            if (child === host) {{
+                                                passed = true;
+                                                continue;
+                                            }}
+                                            if (!passed) continue;
+                                            var style = window.getComputedStyle(child);
+                                            if (!style || style.display === 'none' || style.visibility === 'hidden') continue;
+                                            var childRect = child.getBoundingClientRect();
+                                            if (childRect.height > 0) reservedBelow += childRect.height;
+                                        }}
+                                    }}
+                                    var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
+                                    var row = mv.closest('.remote-mol-view-row');
+                                    var rowRect = row ? row.getBoundingClientRect() : rightRect;
+                                    var tray = scopeRoot ? scopeRoot.querySelector('.remote-xyz-tray-controls') : null;
+                                    var trayStyle = tray ? window.getComputedStyle(tray) : null;
+                                    var trayVisible = !!(tray && trayStyle && trayStyle.display !== 'none');
+                                    var trayWidth = trayVisible ? tray.getBoundingClientRect().width : 0;
+                                    var availW = Math.max(120, rowRect.width - trayWidth - 16);
+                                    var h = Math.floor(availH * {REMOTE_MOL_DYNAMIC_SCALE});
+                                    var w = Math.floor(Math.min(h * 1.2, availW));
+                                    if (h >= 80 && w >= 120) {{
+                                        mv.style.width = w + 'px';
+                                        mv.style.height = h + 'px';
+                                        el.style.width = w + 'px';
+                                        el.style.height = h + 'px';
+                                    }}
+                                }}
+                            }}
+                            window._remoteMolViewStateByScope = window._remoteMolViewStateByScope || {{}};
+                            window._remoteMolViewerByScope = window._remoteMolViewerByScope || {{}};
+                            window._remoteTrajViewerByScope = window._remoteTrajViewerByScope || {{}};
+                            window._remoteMolViewScopeKeyByScope = window._remoteMolViewScopeKeyByScope || {{}};
+                            var scopeKey = {scope_key_json};
+                            var viewScope = {view_scope_json};
+                            var previousViewer =
+                                window._remoteMolViewerByScope[scopeKey]
+                                || window._remoteTrajViewerByScope[scopeKey]
+                                || null;
+                            var previousScope =
+                                window._remoteMolViewScopeKeyByScope[scopeKey] || viewScope;
+                            if (previousViewer && typeof previousViewer.getView === 'function') {{
+                                try {{
+                                    window._remoteMolViewStateByScope[previousScope] = previousViewer.getView();
+                                }} catch (_e) {{}}
+                            }}
+                            var savedView = window._remoteMolViewStateByScope[viewScope] || null;
+                            var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                            {viewer_mouse_patch_js}
+                            var molData = {data_json};
+                            viewer.addModel(molData, "{fmt}");
+                            viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
+                            {volumetric_js}
+                            if (savedView && typeof viewer.setView === 'function') {{
+                                try {{
+                                    viewer.setView(savedView);
+                                }} catch (_e) {{
+                                    viewer.zoomTo();
+                                    viewer.center();
+                                    viewer.zoom({DEFAULT_3DMOL_ZOOM});
+                                }}
+                            }} else {{
+                                viewer.zoomTo();
+                                viewer.center();
+                                viewer.zoom({DEFAULT_3DMOL_ZOOM});
+                            }}
+                            viewer.render();
+                            window._remoteMolViewerByScope[scopeKey] = viewer;
+                            window._remoteMolViewScopeKeyByScope[scopeKey] = viewScope;
+                        }}
+                        setTimeout(initViewer, 0);
+                    }})();
+                    </script>
+                    """
+                )
+            )
+        _set_viewer_visible(True)
+
+    def _render_xyz_in_viewer(xyz_text):
+        _render_3dmol(xyz_text, fmt="xyz", volumetric=False)
 
     def _render_xyz_trajectory_viewer(initial_load=False):
         frames = state.get("current_xyz_frames") or []
@@ -564,7 +692,7 @@ def create_tab(ctx):
                 HTML(
                     f"""
                     <div id="{wrapper_id}" class="remote-mol-stage-wrapper" style="width:100%;">
-                        <div id="{viewer_id}" style="width:100%;height:{REMOTE_VIEWER_HEIGHT}px;position:relative;"></div>
+                        <div id="{viewer_id}" style="width:100%;height:{REMOTE_MOL_SIZE}px;position:relative;"></div>
                     </div>
                     <script>
                     if (typeof $3Dmol === "undefined") {{
@@ -576,10 +704,60 @@ def create_tab(ctx):
                         var tries = 0;
                         function initViewer() {{
                             var el = document.getElementById("{viewer_id}");
-                            if (!el || typeof $3Dmol === "undefined") {{
+                            var mv = el ? el.closest('.remote-mol-viewer') : null;
+                            var scopeRoot = el ? el.closest('.{scope_id}') : null;
+                            if (!scopeRoot) scopeRoot = document.querySelector('.{scope_id}');
+                            if (!el || typeof $3Dmol === "undefined" || !mv || mv.offsetParent === null) {{
                                 tries += 1;
                                 if (tries < 80) setTimeout(initViewer, 50);
                                 return;
+                            }}
+                            var rightPanel = scopeRoot ? scopeRoot.querySelector('.remote-right') : null;
+                            if (rightPanel) {{
+                                var mvRect = mv.getBoundingClientRect();
+                                if (mvRect.top > 0 || mvRect.height > 0) {{
+                                    var rightRect = rightPanel.getBoundingClientRect();
+                                    var topChildren = Array.prototype.slice.call(rightPanel.children || []);
+                                    var host = null;
+                                    for (var i = 0; i < topChildren.length; i++) {{
+                                        if (topChildren[i].contains(mv)) {{
+                                            host = topChildren[i];
+                                            break;
+                                        }}
+                                    }}
+                                    var reservedBelow = 0;
+                                    if (host) {{
+                                        var passed = false;
+                                        for (var j = 0; j < topChildren.length; j++) {{
+                                            var child = topChildren[j];
+                                            if (child === host) {{
+                                                passed = true;
+                                                continue;
+                                            }}
+                                            if (!passed) continue;
+                                            var style = window.getComputedStyle(child);
+                                            if (!style || style.display === 'none' || style.visibility === 'hidden') continue;
+                                            var childRect = child.getBoundingClientRect();
+                                            if (childRect.height > 0) reservedBelow += childRect.height;
+                                        }}
+                                    }}
+                                    var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
+                                    var row = mv.closest('.remote-mol-view-row');
+                                    var rowRect = row ? row.getBoundingClientRect() : rightRect;
+                                    var tray = scopeRoot ? scopeRoot.querySelector('.remote-xyz-tray-controls') : null;
+                                    var trayStyle = tray ? window.getComputedStyle(tray) : null;
+                                    var trayVisible = !!(tray && trayStyle && trayStyle.display !== 'none');
+                                    var trayWidth = trayVisible ? tray.getBoundingClientRect().width : 0;
+                                    var availW = Math.max(120, rowRect.width - trayWidth - 16);
+                                    var h = Math.floor(availH * {REMOTE_MOL_DYNAMIC_SCALE});
+                                    var w = Math.floor(Math.min(h * 1.2, availW));
+                                    if (h >= 80 && w >= 120) {{
+                                        mv.style.width = w + 'px';
+                                        mv.style.height = h + 'px';
+                                        el.style.width = w + 'px';
+                                        el.style.height = h + 'px';
+                                    }}
+                                }}
                             }}
                             var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
                             {viewer_mouse_patch_js}
@@ -605,18 +783,7 @@ def create_tab(ctx):
         _set_viewer_visible(True)
 
     def _render_cube_in_viewer(cube_text):
-        _set_viewer_visible(True)
-        with viewer_output:
-            clear_output()
-            view = py3Dmol.view(width=REMOTE_VIEWER_WIDTH, height=REMOTE_VIEWER_HEIGHT)
-            view.addModel(cube_text, "cube")
-            view.addVolumetricData(cube_text, "cube", {"isoval": 0.02, "color": "#0026ff", "opacity": 0.85})
-            view.addVolumetricData(cube_text, "cube", {"isoval": -0.02, "color": "#b00010", "opacity": 0.85})
-            view.setBackgroundColor("white")
-            view.zoomTo()
-            view.center()
-            view.render()
-            view.show()
+        _render_3dmol(cube_text, fmt="cube", volumetric=True)
 
     def _frame_to_xyz(frame):
         comment, xyz_block, n_atoms = frame
@@ -769,8 +936,9 @@ def create_tab(ctx):
             _render_text_preview(content, note=note)
             _set_visualization("xyz" if frames else "", content if frames else "", frames=frames)
             copy_btn.disabled = not bool(content)
-            if view_toggle.value and frames:
-                _render_selected_frame()
+            if frames:
+                _set_view_toggle(True, disabled=False)
+                _update_view()
             return
 
         if suffix in {".png"}:
@@ -1236,10 +1404,6 @@ def create_tab(ctx):
             overflow="hidden",
         ),
     )
-    frame_row = widgets.HBox(
-        [frame_label_html, frame_input, frame_total_html],
-        layout=widgets.Layout(width="100%", gap="6px", align_items="center"),
-    )
     xyz_controls = widgets.HBox(
         [
             widgets.HBox(
@@ -1275,8 +1439,37 @@ def create_tab(ctx):
             justify_content="space-between",
         ),
     )
+    viewer_wrap = widgets.Box(
+        [viewer_output],
+        layout=widgets.Layout(flex="0 0 auto", min_width="0", width="auto"),
+    )
+    viewer_wrap.add_class("remote-mol-view-wrap")
+    xyz_tray_controls = widgets.VBox(
+        [frame_label_html, xyz_controls, xyz_playback_row],
+        layout=widgets.Layout(
+            display="none",
+            gap="14px",
+            align_items="stretch",
+            width="360px",
+            min_width="340px",
+            max_width="420px",
+            margin="0",
+        ),
+    )
+    xyz_tray_controls.add_class("remote-xyz-tray-controls")
+    viewer_row = widgets.HBox(
+        [viewer_wrap, xyz_tray_controls],
+        layout=widgets.Layout(
+            width="100%",
+            gap="12px",
+            align_items="flex-start",
+            justify_content="flex-start",
+            flex_flow="row nowrap",
+        ),
+    )
+    viewer_row.add_class("remote-mol-view-row")
     viewer_container = widgets.VBox(
-        [viewer_label, frame_label_html, xyz_controls, xyz_playback_row, viewer_output],
+        [viewer_label, viewer_row],
         layout=widgets.Layout(display="none", margin="0 0 10px 0", width="100%", align_items="stretch"),
     )
     top_toolbar = widgets.HBox(
@@ -1320,6 +1513,9 @@ def create_tab(ctx):
         f".{scope_id} .widget-output .output_area, .{scope_id} .widget-output .output_subarea,"
         f" .{scope_id} .widget-output .output_wrapper, .{scope_id} .widget-output .jp-OutputArea-child,"
         f" .{scope_id} .widget-output .jp-OutputArea-output {{ overflow:hidden !important; margin:0 !important; padding:0 !important; width:100% !important; }}"
+        f".{scope_id} .remote-mol-view-row {{ width:100% !important; gap:12px !important; align-items:flex-start !important; flex-wrap:nowrap !important; }}"
+        f".{scope_id} .remote-mol-view-wrap {{ flex:0 0 auto !important; min-width:0 !important; width:auto !important; }}"
+        f".{scope_id} .remote-xyz-tray-controls {{ width:360px !important; min-width:340px !important; max-width:420px !important; }}"
         "</style>"
     )
 
