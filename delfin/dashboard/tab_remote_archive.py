@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import html
+import json
 import posixpath
 import re
 from pathlib import Path, PurePosixPath
@@ -33,6 +34,9 @@ REMOTE_FULL_FETCH_MAX_BYTES = 128 * 1024 * 1024
 REMOTE_TEXT_RENDER_MAX_CHARS = 400_000
 REMOTE_VIEWER_WIDTH = 700
 REMOTE_VIEWER_HEIGHT = 420
+REMOTE_LEFT_DEFAULT = 375
+REMOTE_LEFT_MIN = 375
+REMOTE_LEFT_MAX = 520
 
 
 def create_tab(ctx):
@@ -43,15 +47,16 @@ def create_tab(ctx):
         "entries": [],
         "filtered_entries": [],
         "selected_entry": None,
+        "selected_remote_path": "",
         "current_xyz_frames": [],
         "current_xyz_index": 0,
     }
     scope_id = f"remote-archive-scope-{abs(id(state))}"
 
-    title = widgets.HTML("<h3 style='margin:0;'>Remote Archive</h3>")
+    title = widgets.HTML("<h3>📂 Remote Archive</h3>")
     info_html = widgets.HTML(value="")
     status_html = widgets.HTML(value="")
-    path_html = widgets.HTML(value="<b>📂 Remote Path:</b> /")
+    path_html = widgets.HTML(value="<b>📂 Path:</b> /")
 
     open_settings_btn = widgets.Button(
         description="Settings",
@@ -71,11 +76,6 @@ def create_tab(ctx):
         description="🔄",
         layout=widgets.Layout(width="62px", height="28px"),
     )
-    open_btn = widgets.Button(
-        description="Open",
-        button_style="primary",
-        layout=widgets.Layout(width="88px", height="28px"),
-    )
     filter_input = widgets.Text(
         placeholder="Filter remote files...",
         layout=widgets.Layout(flex="1 1 auto", min_width="160px", height="28px"),
@@ -89,9 +89,24 @@ def create_tab(ctx):
     file_list = widgets.Select(
         options=[],
         rows=22,
-        layout=widgets.Layout(width="100%", flex="1 1 0", min_height="0"),
+        layout=widgets.Layout(width="100%", flex="1 1 0", min_height="0", margin="-4px 0 0 0"),
     )
+    file_list.add_class("remote-file-list")
+    remote_dblclick_input = widgets.Text(
+        value="",
+        layout=widgets.Layout(width="1px", height="1px", display="none"),
+    )
+    remote_dblclick_input.add_class("remote-archive-cmd-dblclick")
     file_info_html = widgets.HTML(value="")
+    selected_path_html = widgets.HTML(value="")
+    content_label = widgets.HTML(
+        "<div style='height:26px; line-height:26px; margin:0 0 8px 0;'>"
+        "<b>📄 File Preview:</b></div>"
+    )
+    viewer_label = widgets.HTML(
+        "<div style='height:26px; line-height:26px; margin:0 0 8px 0;'>"
+        "<b>🔬 Molecule Preview:</b></div>"
+    )
     frame_label_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
     frame_input = widgets.BoundedIntText(
         value=1,
@@ -104,7 +119,7 @@ def create_tab(ctx):
     viewer_output = widgets.Output(
         layout=widgets.Layout(
             width="100%",
-            border="1px solid #d9dee3",
+            border="2px solid #1976d2",
             min_height="0",
             overflow="hidden",
         )
@@ -173,18 +188,29 @@ def create_tab(ctx):
         rel = normalize_remote_relative_path(state.get("current_relative_path", ""))
         return root_path if not rel else f"{root_path}/{rel}"
 
+    def _entry_by_relative_path(relative_path):
+        rel = normalize_remote_relative_path(relative_path)
+        for entry in state.get("filtered_entries", []):
+            if normalize_remote_relative_path(entry.get("relative_path", "")) == rel:
+                return entry
+        return None
+
     def _update_path_html():
         config = state.get("config")
         if not config:
-            path_html.value = "<b>📂 Remote Path:</b> /"
+            path_html.value = "<b>📂 Path:</b> /"
             return
         path_html.value = (
-            f"<b>📂 Remote Path:</b> "
+            f"<b>📂 Path:</b> "
             f"<code>{html.escape(_current_remote_path(config))}</code>"
         )
 
+    def _set_viewer_visible(is_visible):
+        viewer_container.layout.display = "flex" if is_visible else "none"
+
     def _clear_viewer():
         viewer_output.clear_output()
+        _set_viewer_visible(False)
 
     def _hide_frame_controls():
         state["current_xyz_frames"] = []
@@ -199,6 +225,7 @@ def create_tab(ctx):
 
     def _clear_preview(message="Select a remote file to preview."):
         file_info_html.value = ""
+        selected_path_html.value = ""
         preview_html.value = (
             "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
             "padding:12px; background:#fafafa;'>"
@@ -278,6 +305,7 @@ def create_tab(ctx):
         )
 
     def _render_xyz_in_viewer(xyz_text):
+        _set_viewer_visible(True)
         with viewer_output:
             clear_output()
             view = py3Dmol.view(width=REMOTE_VIEWER_WIDTH, height=REMOTE_VIEWER_HEIGHT)
@@ -286,6 +314,7 @@ def create_tab(ctx):
             view.show()
 
     def _render_cube_in_viewer(cube_text):
+        _set_viewer_visible(True)
         with viewer_output:
             clear_output()
             view = py3Dmol.view(width=REMOTE_VIEWER_WIDTH, height=REMOTE_VIEWER_HEIGHT)
@@ -382,10 +411,23 @@ def create_tab(ctx):
         name = str(entry.get("name") or "")
         size_str = _format_size(entry.get("size", 0))
         extra_html = f" {extra}" if extra else ""
+        state["selected_remote_path"] = _current_entry_remote_path(entry)
         file_info_html.value = (
-            f"<b>{html.escape(name)}</b> "
+            f"<b><span style='word-break:break-all;'>{html.escape(name)}</span></b> "
             f"<span style='color:#616161;'>({html.escape(size_str)})</span>{extra_html}"
         )
+        selected_path_html.value = (
+            f"<span style='color:#616161; word-break:break-all;'>"
+            f"<code>{html.escape(state['selected_remote_path'])}</code></span>"
+        )
+
+    def _current_entry_remote_path(entry):
+        config = state.get("config") or {}
+        root_path = str(config.get("remote_path") or "/").rstrip("/") or "/"
+        relative_path = normalize_remote_relative_path(entry.get("relative_path", ""))
+        if not relative_path:
+            return root_path
+        return f"{root_path}/{relative_path}"
 
     def _preview_local_file(local_path, entry, *, note=""):
         path = Path(local_path)
@@ -464,21 +506,14 @@ def create_tab(ctx):
 
     def _selected_entry():
         value = file_list.value
-        for entry in state.get("filtered_entries", []):
-            if entry.get("relative_path") == value:
-                return entry
-        return None
+        return _entry_by_relative_path(value)
 
     def _update_buttons():
         config_ready = state.get("config") is not None
         has_parent = bool(normalize_remote_relative_path(state.get("current_relative_path", "")))
-        selected = _selected_entry()
-        file_selected = bool(selected and not selected.get("is_dir"))
-        dir_selected = bool(selected and selected.get("is_dir"))
         up_btn.disabled = (not config_ready) or (not has_parent)
         home_btn.disabled = not config_ready
         refresh_btn.disabled = not config_ready
-        open_btn.disabled = not (file_selected or dir_selected)
         file_list.disabled = not config_ready
         filter_input.disabled = not config_ready
         sort_dropdown.disabled = not config_ready
@@ -490,7 +525,7 @@ def create_tab(ctx):
             entries = [entry for entry in entries if query in str(entry.get("name") or "").lower()]
         state["filtered_entries"] = entries
         if not entries:
-            file_list.options = [("(No matches)", None)]
+            file_list.options = [("(No matches)", "")]
             file_list.index = 0
             state["selected_entry"] = None
             _update_buttons()
@@ -532,7 +567,7 @@ def create_tab(ctx):
         if not config:
             state["entries"] = []
             state["filtered_entries"] = []
-            file_list.options = [("(Configure Settings first)", None)]
+            file_list.options = [("(Configure Settings first)", "")]
             file_list.index = 0
             _update_buttons()
             return
@@ -552,7 +587,7 @@ def create_tab(ctx):
         except Exception as exc:
             state["entries"] = []
             state["filtered_entries"] = []
-            file_list.options = [("(Remote directory unavailable)", None)]
+            file_list.options = [("(Remote directory unavailable)", "")]
             file_list.index = 0
             _clear_preview("Could not load remote directory.")
             _set_status(html.escape(str(exc)), color="#d32f2f")
@@ -585,8 +620,7 @@ def create_tab(ctx):
         state["selected_entry"] = None
         _refresh_listing(set_status=True)
 
-    def _open_selection(_button=None):
-        entry = _selected_entry()
+    def _open_entry(entry):
         if not entry:
             return
         state["selected_entry"] = entry
@@ -595,6 +629,9 @@ def create_tab(ctx):
             _refresh_listing(set_status=True)
             return
         _preview_selected_file(entry)
+
+    def _open_selection(_button=None):
+        _open_entry(_selected_entry())
 
     def _preview_selected_file(entry):
         config = state.get("config")
@@ -672,20 +709,32 @@ def create_tab(ctx):
             _update_buttons()
             return
         if entry.get("is_dir"):
+            state["selected_remote_path"] = _current_entry_remote_path(entry)
             file_info_html.value = (
-                f"<b>{html.escape(str(entry.get('name') or 'Folder'))}</b> "
+                f"<b><span style='word-break:break-all;'>{html.escape(str(entry.get('name') or 'Folder'))}</span></b> "
                 "<span style='color:#616161;'>(directory)</span>"
+            )
+            selected_path_html.value = (
+                f"<span style='color:#616161; word-break:break-all;'>"
+                f"<code>{html.escape(state['selected_remote_path'])}</code></span>"
             )
             preview_html.value = (
                 "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
                 "padding:12px; background:#fafafa;'>"
-                "Directory selected. Click <b>Open</b> to enter it.</div>"
+                "Directory selected. Double-click it or press <b>Enter</b> to enter it.</div>"
             )
             _clear_viewer()
             _hide_frame_controls()
         else:
             _preview_selected_file(entry)
         _update_buttons()
+
+    def _on_dblclick(change):
+        value = str(change.get("new") or "").strip()
+        remote_dblclick_input.value = ""
+        if not value:
+            return
+        _open_entry(_entry_by_relative_path(value))
 
     def _on_frame_change(change):
         if change.get("name") != "value":
@@ -700,21 +749,25 @@ def create_tab(ctx):
         ctx.select_tab("Settings")
 
     controls_row = widgets.HBox(
-        [up_btn, home_btn, refresh_btn, open_btn, open_settings_btn],
+        [up_btn, home_btn, refresh_btn, open_settings_btn],
         layout=widgets.Layout(width="100%", gap="6px", flex_flow="row wrap"),
     )
     filter_row = widgets.HBox(
         [filter_input, sort_dropdown],
         layout=widgets.Layout(width="100%", gap="6px", align_items="center"),
     )
+    hidden_inputs = widgets.VBox(
+        [remote_dblclick_input],
+        layout=widgets.Layout(display="none"),
+    )
     left_panel = widgets.VBox(
-        [info_html, path_html, controls_row, filter_row, file_list, status_html],
+        [info_html, path_html, controls_row, hidden_inputs, filter_row, file_list, status_html],
         layout=widgets.Layout(
-            flex="0 0 390px",
-            min_width="340px",
-            max_width="480px",
-            padding="8px",
-            gap="8px",
+            flex=f"0 0 {REMOTE_LEFT_DEFAULT}px",
+            min_width=f"{REMOTE_LEFT_MIN}px",
+            max_width=f"{REMOTE_LEFT_MAX}px",
+            padding="5px",
+            gap="6px",
             overflow="hidden",
         ),
     )
@@ -722,28 +775,168 @@ def create_tab(ctx):
         [frame_label_html, frame_input, frame_total_html],
         layout=widgets.Layout(width="100%", gap="6px", align_items="center"),
     )
+    viewer_container = widgets.VBox(
+        [viewer_label, frame_row, viewer_output],
+        layout=widgets.Layout(display="none", margin="0 0 10px 0", width="100%", align_items="stretch"),
+    )
     right_panel = widgets.VBox(
-        [file_info_html, frame_row, viewer_output, preview_html],
+        [file_info_html, selected_path_html, viewer_container, content_label, preview_html],
         layout=widgets.Layout(
             flex="1 1 0",
             min_width="0",
-            padding="8px",
-            gap="8px",
+            padding="5px",
+            gap="6px",
             overflow="hidden",
         ),
     )
 
     css = widgets.HTML(
         "<style>"
+        f".{scope_id}, .{scope_id} * {{ overflow-x:hidden !important; box-sizing:border-box; }}"
         f".{scope_id} {{ height:calc(100vh - 145px); max-height:calc(100vh - 145px); "
-        "display:flex; flex-direction:column; overflow:hidden; }}"
+        "display:flex; flex-direction:column; overflow:hidden !important; }}"
+        f".{scope_id} .remote-left {{ display:flex !important; flex-direction:column !important; }}"
+        f".{scope_id} .remote-right {{ display:flex !important; flex-direction:column !important; overflow:hidden !important; }}"
         f".{scope_id} .widget-select select {{ height:100% !important; }}"
         f".{scope_id} .widget-select {{ flex:1 1 0 !important; min-height:0 !important; }}"
         f".{scope_id} .widget-output {{ overflow:hidden !important; }}"
         f".{scope_id} .widget-output .output_area, .{scope_id} .widget-output .output_subarea,"
-        f" .{scope_id} .widget-output .output_wrapper {{ overflow:hidden !important; margin:0 !important; padding:0 !important; }}"
+        f" .{scope_id} .widget-output .output_wrapper, .{scope_id} .widget-output .jp-OutputArea-child,"
+        f" .{scope_id} .widget-output .jp-OutputArea-output {{ overflow:hidden !important; margin:0 !important; padding:0 !important; width:100% !important; }}"
         "</style>"
     )
+
+    init_js = f"""
+    (function() {{
+        function eventPointNode(e) {{
+            if (document.elementFromPoint && e && typeof e.clientX === 'number' && typeof e.clientY === 'number') {{
+                var pointed = document.elementFromPoint(e.clientX, e.clientY);
+                if (pointed) return pointed;
+            }}
+            return e && e.target ? e.target : null;
+        }}
+        function optionIndex(selectEl, opt) {{
+            if (!selectEl || !opt || !selectEl.options) return -1;
+            return Array.prototype.indexOf.call(selectEl.options, opt);
+        }}
+        function optionFromIndex(selectEl, idx) {{
+            if (!selectEl || !selectEl.options || idx < 0 || idx >= selectEl.options.length) return null;
+            return selectEl.options[idx];
+        }}
+        function optionVisualHeight(selectEl) {{
+            if (!selectEl || !selectEl.options || !selectEl.options.length) return 0;
+            for (var i = 0; i < selectEl.options.length; i++) {{
+                var rect = selectEl.options[i].getBoundingClientRect ? selectEl.options[i].getBoundingClientRect() : null;
+                if (rect && rect.height > 0) return rect.height;
+            }}
+            return 0;
+        }}
+        function optionIndexAtPoint(selectEl, e) {{
+            if (!selectEl || !selectEl.options || !selectEl.options.length) return -1;
+            var node = eventPointNode(e);
+            if (node && node.tagName === 'OPTION') return optionIndex(selectEl, node);
+            if (node && node.closest) {{
+                var optNode = node.closest('option');
+                if (optNode) return optionIndex(selectEl, optNode);
+            }}
+            if (!e || typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return -1;
+            var rect = selectEl.getBoundingClientRect();
+            if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return -1;
+            var optionCount = selectEl.options.length;
+            var optionHeight = optionVisualHeight(selectEl);
+            if ((!optionHeight || !isFinite(optionHeight)) && selectEl.scrollHeight && selectEl.scrollHeight > 0) {{
+                optionHeight = selectEl.scrollHeight / optionCount;
+            }}
+            if ((!optionHeight || !isFinite(optionHeight)) && rect.height > 0) {{
+                var visibleRows = Math.max(1, Math.min(optionCount, Number(selectEl.size) || optionCount));
+                optionHeight = rect.height / visibleRows;
+            }}
+            if (!optionHeight || !isFinite(optionHeight)) return -1;
+            var localY = (e.clientY - rect.top) + (selectEl.scrollTop || 0);
+            var contentHeight = optionHeight * optionCount;
+            if (localY < 0 || localY >= contentHeight) return -1;
+            var rawIdx = Math.floor(localY / optionHeight);
+            if (rawIdx < 0) rawIdx = 0;
+            if (rawIdx >= optionCount) rawIdx = optionCount - 1;
+            return rawIdx;
+        }}
+        function optionAtPoint(selectEl, e) {{
+            return optionFromIndex(selectEl, optionIndexAtPoint(selectEl, e));
+        }}
+        function setWidgetInput(root, cls, value) {{
+            if (!root) return false;
+            var field = root.querySelector('.' + cls + ' input, .' + cls + ' textarea');
+            if (!field) return false;
+            var strVal = String(value == null ? '' : value);
+            var nativeSet = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), 'value')
+                || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
+                || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+            if (nativeSet && nativeSet.set) nativeSet.set.call(field, strVal);
+            else field.value = strVal;
+            field.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            field.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return true;
+        }}
+        function initRemoteScope(attempt) {{
+            var root = document.querySelector('.{scope_id}');
+            if (!root) {{
+                if ((attempt || 0) < 40) setTimeout(function() {{ initRemoteScope((attempt || 0) + 1); }}, 250);
+                return;
+            }}
+            if (root._remoteArchiveExplorerReady) return;
+            root._remoteArchiveExplorerReady = true;
+            root._dblLastTime = 0;
+            root._dblLastValue = '';
+            root._dblLastX = 0;
+            root._dblLastY = 0;
+
+            root.addEventListener('mousedown', function(e) {{
+                if (e.button != null && e.button !== 0) return;
+                var selectEl = root.querySelector('.remote-file-list select');
+                if (!selectEl) return;
+                var currentOpt = optionAtPoint(selectEl, e);
+                if (!currentOpt) return;
+                var currentLabel = String(currentOpt.textContent || currentOpt.innerText || '').trim();
+                var currentValue = String(currentOpt.value || '');
+                if (!currentLabel || currentLabel.charAt(0) === '(' || !currentValue) return;
+                var now = Date.now();
+                var dx = Math.abs((typeof e.clientX === 'number' ? e.clientX : 0) - (Number(root._dblLastX) || 0));
+                var dy = Math.abs((typeof e.clientY === 'number' ? e.clientY : 0) - (Number(root._dblLastY) || 0));
+                if (currentValue === String(root._dblLastValue || '') && (now - root._dblLastTime) < 500 && dx <= 20 && dy <= 20) {{
+                    root._dblLastTime = 0;
+                    root._dblLastValue = '';
+                    root._dblLastX = 0;
+                    root._dblLastY = 0;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setWidgetInput(root, 'remote-archive-cmd-dblclick', currentValue);
+                    return;
+                }}
+                root._dblLastTime = now;
+                root._dblLastValue = currentValue;
+                root._dblLastX = (typeof e.clientX === 'number') ? e.clientX : 0;
+                root._dblLastY = (typeof e.clientY === 'number') ? e.clientY : 0;
+            }}, true);
+
+            root.addEventListener('keydown', function(e) {{
+                var selectEl = root.querySelector('.remote-file-list select');
+                if (!selectEl || e.target !== selectEl) return;
+                if (e.key === 'Enter') {{
+                    var selectedIndex = typeof selectEl.selectedIndex === 'number' ? selectEl.selectedIndex : -1;
+                    var selectedOpt = optionFromIndex(selectEl, selectedIndex);
+                    if (!selectedOpt) return;
+                    var currentLabel = String(selectedOpt.textContent || selectedOpt.innerText || '').trim();
+                    var currentValue = String(selectedOpt.value || '');
+                    if (!currentLabel || currentLabel.charAt(0) === '(' || !currentValue) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setWidgetInput(root, 'remote-archive-cmd-dblclick', currentValue);
+                }}
+            }}, true);
+        }}
+        initRemoteScope(0);
+    }})();
+    """
 
     tab_widget = widgets.VBox(
         [
@@ -763,15 +956,18 @@ def create_tab(ctx):
         layout=widgets.Layout(width="100%", max_width="100%", padding="10px", overflow="hidden"),
     )
     tab_widget.add_class(scope_id)
+    tab_widget.add_class("remote-archive-tab")
+    left_panel.add_class("remote-left")
+    right_panel.add_class("remote-right")
 
     open_settings_btn.on_click(_open_settings)
     home_btn.on_click(_navigate_home)
     up_btn.on_click(_navigate_up)
     refresh_btn.on_click(lambda _button: _refresh_listing(set_status=True))
-    open_btn.on_click(_open_selection)
     filter_input.observe(_on_filter_change, names="value")
     sort_dropdown.observe(_on_sort_change, names="value")
     file_list.observe(_on_selection_change, names="value")
+    remote_dblclick_input.observe(_on_dblclick, names="value")
     frame_input.observe(_on_frame_change, names="value")
 
     disable_spellcheck(ctx, class_name="remote-archive-filter")
@@ -782,4 +978,4 @@ def create_tab(ctx):
     _update_path_html()
     _update_buttons()
 
-    return tab_widget, {}
+    return tab_widget, {"init_js": init_js}

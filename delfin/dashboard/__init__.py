@@ -152,7 +152,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
     tab6, refs6 = tab_archive_statistics.create_tab(ctx)
-    tab7, _refs7 = tab_remote_archive.create_tab(ctx)
+    tab7, refs7 = tab_remote_archive.create_tab(ctx)
     tab8, _refs8 = tab_settings.create_tab(ctx)
 
     # Run both calc-browser init scripts in ONE ctx.run_js() call.
@@ -166,6 +166,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + refs5.get('init_js', '')
         + '\n'
         + refs6.get('init_js', '')
+        + '\n'
+        + refs7.get('init_js', '')
     )
     if _calc_init.strip():
         ctx.run_js(_calc_init)
