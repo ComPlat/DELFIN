@@ -156,9 +156,24 @@ def create_tab(ctx):
     VIEWER_MOUSE_PATCH_JS = patch_viewer_mouse_controls_js('viewer', 'el')
 
     # -- widgets ------------------------------------------------------------
-    calc_path_label = widgets.HTML(
-        value='<b>📂 Path:</b> /',
-        layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    calc_path_prefix = widgets.HTML(
+        value='<b>📂 Path:</b>',
+        layout=widgets.Layout(width='100%'),
+    )
+    calc_path_input = widgets.Text(
+        value='/',
+        continuous_update=False,
+        layout=widgets.Layout(
+            flex='1 1 0', min_width='0', width='1px', max_width='100%',
+            height='24px', overflow_x='hidden', margin='0', padding='0',
+        ),
+    )
+    calc_path_label = widgets.VBox(
+        [calc_path_prefix, calc_path_input],
+        layout=widgets.Layout(
+            width='100%', overflow_x='hidden',
+            align_items='stretch', gap='2px',
+        ),
     )
     calc_back_btn = widgets.Button(
         description='⬆ Up', button_style='warning',
@@ -413,6 +428,8 @@ def create_tab(ctx):
         layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
     calc_path_label.add_class('calc-path-label')
+    calc_path_input.add_class('calc-cmd-path-input')
+    calc_path_input.add_class('delfin-nospell')
     calc_refresh_btn.add_class('calc-cmd-refresh-btn')
     calc_new_folder_input.add_class('calc-cmd-new-folder-input')
     calc_new_folder_btn.add_class('calc-cmd-new-folder-btn')
@@ -1404,6 +1421,19 @@ def create_tab(ctx):
 
     def _calc_current_dir():
         return _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
+
+    def _calc_state_rel_path(path):
+        rel = Path(path).resolve().relative_to(_calc_dir().resolve()).as_posix()
+        return '' if rel in {'', '.'} else rel
+
+    def _calc_label_for_name(name):
+        target_name = str(name or '').strip()
+        if not target_name:
+            return ''
+        for label in list(state.get('all_items') or []):
+            if _calc_label_to_name(label) == target_name:
+                return label
+        return ''
 
     def _calc_safe_job_token(text, fallback):
         cleaned = re.sub(r'[^A-Za-z0-9._-]+', '_', str(text or '').strip()).strip('._-')
@@ -4683,13 +4713,15 @@ def create_tab(ctx):
             "</div>"
         )
 
+    _calc_path_syncing = [False]
+
     def calc_update_path_display():
         display_path = '/' + state['current_path'] if state['current_path'] else '/'
-        calc_path_label.value = (
-            f'<b>📂 Path:</b> <code style="background:#eee;padding:2px 5px;'
-            f' white-space:nowrap; overflow:hidden; text-overflow:ellipsis;'
-            f' display:block; max-width:100%;" title="{display_path}">{display_path}</code>'
-        )
+        _calc_path_syncing[0] = True
+        try:
+            calc_path_input.value = display_path
+        finally:
+            _calc_path_syncing[0] = False
         calc_back_btn.disabled = (state['current_path'] == '')
 
     def calc_update_report_btn():
@@ -6936,6 +6968,48 @@ def create_tab(ctx):
         _calc_hide_rename_prompt()
         calc_list_directory()
         calc_file_list.value = ()
+
+    def _calc_resolve_navigation_target(raw_value):
+        raw = str(raw_value or '').strip()
+        root = _calc_dir().resolve()
+        if raw in {'', '/'}:
+            return root
+        if raw.startswith(str(root)):
+            candidate = Path(raw).expanduser()
+        elif raw.startswith('/'):
+            candidate = root / raw.lstrip('/')
+        else:
+            candidate = _calc_current_dir() / raw
+        return _calc_resolve_within_root(candidate)
+
+    def calc_on_path_change(change):
+        if _calc_path_syncing[0]:
+            return
+        raw = str(change.get('new') or '').strip()
+        if not raw:
+            calc_update_path_display()
+            return
+        try:
+            target = _calc_resolve_navigation_target(raw)
+            if not target.exists():
+                raise FileNotFoundError('Path not found inside explorer root.')
+            calc_folder_search.value = ''
+            if target.is_dir():
+                state['current_path'] = _calc_state_rel_path(target)
+                calc_list_directory()
+                calc_file_list.value = ()
+            else:
+                state['current_path'] = _calc_state_rel_path(target.parent)
+                calc_list_directory()
+                target_label = _calc_label_for_name(target.name)
+                if not target_label:
+                    raise FileNotFoundError('Target file could not be selected in explorer.')
+                calc_file_list.value = (target_label,)
+                _calc_open_item(target_label)
+            _calc_set_ops_status('', '#555')
+        except Exception as exc:
+            calc_update_path_display()
+            _calc_set_ops_status(_html.escape(str(exc)), '#d32f2f')
 
     def calc_on_back_to_calculations(_button=None):
         # Archive-tab shortcut: same behavior as move-button, but opposite direction.
@@ -9792,6 +9866,7 @@ def create_tab(ctx):
     calc_back_btn.on_click(calc_on_back)
     calc_home_btn.on_click(calc_on_home)
     calc_refresh_btn.on_click(calc_on_refresh)
+    calc_path_input.observe(calc_on_path_change, names='value')
     calc_top_btn.on_click(calc_go_top)
     calc_bottom_btn.on_click(calc_go_bottom)
     calc_search_btn.on_click(calc_do_search)
@@ -10974,6 +11049,17 @@ def create_tab(ctx):
         ' { border:2px dashed #1976d2 !important; background:#edf4ff !important; }'
         '.calc-left .widget-select select'
         ' { text-overflow: ellipsis; white-space: nowrap; }'
+        '.calc-path-label { gap:2px !important; align-items:stretch !important; }'
+        '.calc-path-label > .widget-html { width:100% !important; margin:0 !important; }'
+        '.calc-path-label > .widget-text'
+        ' { flex:1 1 0 !important; min-width:0 !important; width:1px !important;'
+        ' max-width:100% !important; margin:0 !important; }'
+        '.calc-path-label > .widget-text input'
+        ' { width:100% !important; height:24px !important; line-height:24px !important;'
+        ' padding:2px 5px !important; margin:0 !important; border:0 !important;'
+        ' border-radius:0 !important; box-shadow:none !important; background:#eee !important;'
+        ' font-family:monospace !important; overflow:hidden !important;'
+        ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
         '.calc-left .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
         '.calc-left .widget-text input { width:100% !important; }'
         '.calc-filter-row { width:100% !important; display:flex !important; }'
