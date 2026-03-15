@@ -31,7 +31,7 @@ def test_extract_comment_energy_from_plain_xyz_comment_line():
     assert energy == -83.6028516932
 
 
-def test_format_xyz_comment_label_adds_absolute_hartree_and_kcal():
+def test_format_xyz_comment_label_adds_trajectory_delta_e_to_first_frame():
     frames = [
         ("run_01 -105.779061555980 isomer", "H 0 0 0", 1),
         ("run_02 -105.777467025622 isomer", "H 0 0 0", 1),
@@ -43,7 +43,7 @@ def test_format_xyz_comment_label_adds_absolute_hartree_and_kcal():
     assert "E = -105.777467025622 Hartree;" in rendered
     assert "Hartree" in rendered
     assert "kcal/mol" in rendered
-    assert "ΔE" not in rendered
+    assert "<br>ΔE = 1.00 kcal/mol" in rendered
 
 
 def test_format_xyz_comment_label_single_frame_has_only_absolute_units():
@@ -56,3 +56,14 @@ def test_format_xyz_comment_label_single_frame_has_only_absolute_units():
     assert "Hartree" in rendered
     assert "kcal/mol" in rendered
     assert "ΔE" not in rendered
+
+
+def test_format_xyz_comment_label_first_trajectory_frame_has_zero_delta_e():
+    frames = [
+        ("run_01 -105.779061555980 isomer", "H 0 0 0", 1),
+        ("run_02 -105.777467025622 isomer", "H 0 0 0", 1),
+    ]
+
+    rendered = _MODULE.format_xyz_comment_label(frames[0][0], frames=frames)
+
+    assert "<br>ΔE = 0.00 kcal/mol" in rendered

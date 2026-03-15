@@ -45,9 +45,20 @@ def format_xyz_comment_label(comment, frames=None, max_chars=100):
         return clipped_comment
 
     abs_kcal = energy_hartree * HARTREE_TO_KCAL_PER_MOL
+    delta_line = ""
+    frame_list = list(frames or [])
+    if len(frame_list) > 1:
+        try:
+            reference_energy = extract_comment_energy(frame_list[0][0])
+        except Exception:
+            reference_energy = None
+        if reference_energy is not None:
+            delta_kcal = (energy_hartree - reference_energy) * HARTREE_TO_KCAL_PER_MOL
+            delta_line = f"<br>ΔE = {delta_kcal:.2f} kcal/mol"
     return (
         "<span style='color:#666;font-size:0.9em;'>"
         f"E = {energy_hartree:.12f} Hartree; "
         f"{abs_kcal:.2f} kcal/mol"
+        f"{delta_line}"
         "</span>"
     )
