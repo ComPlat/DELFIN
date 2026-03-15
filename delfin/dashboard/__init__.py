@@ -21,6 +21,7 @@ from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
 from .context import DashboardContext
 from .helpers import create_busy_css, disable_spellcheck_global
 from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
+from delfin.user_settings import load_remote_archive_enabled
 
 from . import (
     tab_archive_statistics,
@@ -150,9 +151,14 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         from . import tab_turbomole_builder
         tab_tm, _ = tab_turbomole_builder.create_tab(ctx)
 
+    try:
+        remote_archive_enabled = load_remote_archive_enabled()
+    except Exception:
+        remote_archive_enabled = False
+
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
     tab6, refs6 = tab_archive_statistics.create_tab(ctx)
-    tab7, refs7 = tab_remote_archive.create_tab(ctx)
+    tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
     tab8, _refs8 = tab_settings.create_tab(ctx)
 
     # Run both calc-browser init scripts in ONE ctx.run_js() call.
@@ -198,8 +204,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     titles.append('Calculations')
     children.append(tab6)
     titles.append('Archive')
-    children.append(tab7)
-    titles.append('Remote Archive')
+    if tab7 is not None:
+        children.append(tab7)
+        titles.append('Remote Archive')
     children.append(tab8)
     titles.append('Settings')
 

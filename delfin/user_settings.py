@@ -10,6 +10,9 @@ SETTINGS_FILE_NAME = ".delfin_settings.json"
 LEGACY_TRANSFER_CONFIG_NAME = ".delfin_transfer_target.json"
 DEFAULT_SETTINGS = {
     "transfer": {},
+    "features": {
+        "remote_archive_enabled": False,
+    },
 }
 
 
@@ -78,6 +81,15 @@ def _normalized_settings_dict(payload):
     if not isinstance(transfer, dict):
         raise ValueError("Settings key 'transfer' must be a JSON object.")
     normalized["transfer"] = dict(transfer)
+    features = normalized.get("features", {})
+    if features is None:
+        features = {}
+    if not isinstance(features, dict):
+        raise ValueError("Settings key 'features' must be a JSON object.")
+    normalized_features = dict(features)
+    if "remote_archive_enabled" in normalized_features:
+        normalized_features["remote_archive_enabled"] = bool(normalized_features["remote_archive_enabled"])
+    normalized["features"] = normalized_features
     return normalized
 
 
@@ -176,3 +188,23 @@ def save_transfer_settings(host, user, remote_path, port, settings_path=None):
         "port": port,
         "settings_path": str(path),
     }
+
+
+def load_remote_archive_enabled(settings_path=None):
+    path = get_settings_path(settings_path)
+    try:
+        settings = load_settings(path)
+    except Exception:
+        return bool(DEFAULT_SETTINGS.get("features", {}).get("remote_archive_enabled", False))
+    features = settings.get("features", {}) or {}
+    return bool(features.get("remote_archive_enabled", DEFAULT_SETTINGS["features"]["remote_archive_enabled"]))
+
+
+def save_remote_archive_enabled(enabled, settings_path=None):
+    path = get_settings_path(settings_path)
+    settings = load_settings(path)
+    features = settings.get("features", {}) or {}
+    features["remote_archive_enabled"] = bool(enabled)
+    settings["features"] = features
+    save_settings(settings, path)
+    return bool(features["remote_archive_enabled"])

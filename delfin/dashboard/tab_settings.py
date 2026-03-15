@@ -6,8 +6,9 @@ import ipywidgets as widgets
 
 from delfin.user_settings import (
     get_settings_path,
-    load_transfer_settings,
-    save_transfer_settings,
+    load_settings,
+    normalize_ssh_transfer_settings,
+    save_settings,
 )
 
 
@@ -30,6 +31,13 @@ def create_tab(ctx):
         button_style='primary',
         layout=widgets.Layout(width='120px', height='28px'),
     )
+    remote_archive_toggle = widgets.Checkbox(
+        value=False,
+        description='Enabled',
+        indent=False,
+        layout=widgets.Layout(width='110px', height='28px'),
+    )
+    state = {'remote_archive_enabled': False}
 
     host_hidden = widgets.Password(
         placeholder='Host or IP',
@@ -136,11 +144,18 @@ def create_tab(ctx):
         show_sensitive_btn.icon = 'eye-slash' if visible else 'eye'
         show_sensitive_btn.description = 'Hide Values' if visible else 'Show Values'
 
+    def _set_remote_archive_widget(settings_payload):
+        features = ((settings_payload or {}).get('features') or {})
+        enabled = bool(features.get('remote_archive_enabled', False))
+        remote_archive_toggle.value = enabled
+        state['remote_archive_enabled'] = enabled
+
     def _load_settings_to_widgets(set_status=True):
         try:
-            payload = load_transfer_settings()
+            settings_payload = load_settings()
         except Exception as exc:
             _set_transfer_widgets({})
+            _set_remote_archive_widget({})
             _set_status(
                 (
                     f'Could not load <code>{html.escape(str(settings_path))}</code>: '
@@ -150,7 +165,9 @@ def create_tab(ctx):
             )
             return None
 
-        _set_transfer_widgets(payload or {})
+        payload = settings_payload.get('transfer', {}) or {}
+        _set_transfer_widgets(payload)
+        _set_remote_archive_widget(settings_payload)
         if set_status:
             if payload:
                 _set_status(
@@ -169,7 +186,7 @@ def create_tab(ctx):
                     ),
                     color='#ef6c00',
                 )
-        return payload
+        return settings_payload
 
     def _on_toggle_sensitive(change):
         if change.get('name') != 'value':
@@ -182,7 +199,28 @@ def create_tab(ctx):
     def _on_save(button):
         try:
             host, user, remote_path, port = _transfer_payload_from_widgets()
-            payload = save_transfer_settings(host, user, remote_path, port)
+            host = str(host or '').strip()
+            user = str(user or '').strip()
+            remote_path = str(remote_path or '').strip()
+            settings_payload = load_settings()
+            if host or user or remote_path:
+                host, user, remote_path, port = normalize_ssh_transfer_settings(
+                    host,
+                    user,
+                    remote_path,
+                    port,
+                )
+                settings_payload['transfer'] = {
+                    'host': host,
+                    'user': user,
+                    'remote_path': remote_path,
+                    'port': port,
+                }
+            else:
+                settings_payload['transfer'] = {}
+            settings_payload.setdefault('features', {})
+            settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
+            save_settings(settings_payload, settings_path)
         except Exception as exc:
             _set_status(
                 (
@@ -193,11 +231,15 @@ def create_tab(ctx):
             )
             return
 
-        _set_transfer_widgets(payload)
+        toggle_changed = bool(remote_archive_toggle.value) != bool(state.get('remote_archive_enabled'))
+        _set_transfer_widgets(settings_payload.get('transfer', {}) or {})
+        _set_remote_archive_widget(settings_payload)
+        reload_hint = ' Reload DELFIN to apply Remote Archive tab/button visibility.' if toggle_changed else ''
         _set_status(
             (
-                f'Saved transfer target to '
-                f'<code>{html.escape(str(payload["settings_path"]))}</code>.'
+                f'Saved local settings to '
+                f'<code>{html.escape(str(settings_path))}</code>.'
+                f'{reload_hint}'
             ),
             color='#2e7d32',
         )
@@ -219,8 +261,26 @@ def create_tab(ctx):
         )
     )
     transfer_header = widgets.HTML('<h3 style="margin:0;">Transfer Target</h3>')
+    remote_archive_row = widgets.HBox(
+        [
+            widgets.HTML('<b>Remote Archive</b>'),
+            remote_archive_toggle,
+            widgets.HTML(
+                '<span style="color:#616161;">'
+                'Controls the <code>Remote Archive</code> tab and remote buttons in <code>Archive</code>.'
+                '</span>'
+            ),
+        ],
+        layout=widgets.Layout(
+            width='100%',
+            gap='8px',
+            align_items='center',
+            flex_flow='row wrap',
+        ),
+    )
     transfer_rows = widgets.VBox(
         [
+            remote_archive_row,
             widgets.HBox(
                 [
                     widgets.HTML('<b>Host</b>'),

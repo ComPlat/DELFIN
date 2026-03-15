@@ -46,6 +46,7 @@ from delfin.ssh_transfer_jobs import (
 )
 from delfin.user_settings import (
     get_settings_path,
+    load_remote_archive_enabled,
     load_transfer_settings,
     normalize_ssh_transfer_settings,
 )
@@ -181,6 +182,10 @@ def create_tab(ctx):
 
     # Detect whether we are inside the Archive tab (calc_dir == archiv_dir)
     _is_archive_tab = ctx.calc_dir.resolve() == ctx.archive_dir.resolve()
+    try:
+        _remote_archive_enabled = load_remote_archive_enabled()
+    except Exception:
+        _remote_archive_enabled = False
     CALC_BROWSER_UPLOAD_SCOPE = 'archive' if _is_archive_tab else 'calculations'
     CALC_BROWSER_UPLOAD_STAGING_SCOPE_REL = (
         f'{CALC_BROWSER_UPLOAD_STAGING_REL}/{CALC_BROWSER_UPLOAD_SCOPE}'
@@ -209,9 +214,9 @@ def create_tab(ctx):
         button_style='info',
         layout=widgets.Layout(
             width='110px', height='26px',
-            display='inline-flex' if _is_archive_tab else 'none',
+            display='inline-flex' if (_is_archive_tab and _remote_archive_enabled) else 'none',
         ),
-        disabled=not _is_archive_tab,
+        disabled=not (_is_archive_tab and _remote_archive_enabled),
     )
     calc_move_archive_yes_btn = widgets.Button(
         description='Yes', button_style='warning',
@@ -364,9 +369,9 @@ def create_tab(ctx):
         description='Running Transfers',
         layout=widgets.Layout(
             width='140px', height='26px',
-            display='inline-flex' if _is_archive_tab else 'none',
+            display='inline-flex' if (_is_archive_tab and _remote_archive_enabled) else 'none',
         ),
-        disabled=not _is_archive_tab,
+        disabled=not (_is_archive_tab and _remote_archive_enabled),
     )
     calc_transfer_jobs_refresh_btn = widgets.Button(
         description='Refresh Jobs',

@@ -12,7 +12,9 @@ _SPEC.loader.exec_module(_MODULE)
 
 get_settings_path = _MODULE.get_settings_path
 load_settings = _MODULE.load_settings
+load_remote_archive_enabled = _MODULE.load_remote_archive_enabled
 load_transfer_settings = _MODULE.load_transfer_settings
+save_remote_archive_enabled = _MODULE.save_remote_archive_enabled
 save_transfer_settings = _MODULE.save_transfer_settings
 
 
@@ -55,6 +57,7 @@ def test_load_settings_migrates_legacy_transfer_file(tmp_path):
     loaded = load_settings(settings_path)
 
     assert loaded["transfer"]["host"] == "cluster.example.org"
+    assert loaded["features"]["remote_archive_enabled"] is False
     assert settings_path.exists()
     persisted = json.loads(settings_path.read_text(encoding="utf-8"))
     assert persisted["transfer"]["user"] == "alice"
@@ -81,6 +84,7 @@ def test_load_settings_appends_missing_defaults_without_overwriting_existing(tmp
     try:
         _MODULE.DEFAULT_SETTINGS = {
             "transfer": {},
+            "features": {"remote_archive_enabled": False},
             "ui": {"show_hidden_files": False},
         }
         loaded = load_settings(settings_path)
@@ -89,7 +93,21 @@ def test_load_settings_appends_missing_defaults_without_overwriting_existing(tmp
 
     assert loaded["transfer"]["host"] == "cluster.example.org"
     assert loaded["ui"]["show_hidden_files"] is False
+    assert loaded["features"]["remote_archive_enabled"] is False
 
     persisted = json.loads(settings_path.read_text(encoding="utf-8"))
     assert persisted["transfer"]["host"] == "cluster.example.org"
     assert persisted["ui"]["show_hidden_files"] is False
+
+
+def test_remote_archive_flag_defaults_to_false_and_persists(tmp_path):
+    settings_path = tmp_path / "settings.json"
+
+    assert load_remote_archive_enabled(settings_path) is False
+
+    saved = save_remote_archive_enabled(True, settings_path=settings_path)
+    loaded = load_settings(settings_path)
+
+    assert saved is True
+    assert load_remote_archive_enabled(settings_path) is True
+    assert loaded["features"]["remote_archive_enabled"] is True
