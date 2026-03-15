@@ -1250,7 +1250,12 @@ def create_tab(ctx):
                 color="#2e7d32",
             )
 
+    def _clear_filter_for_navigation():
+        if str(filter_input.value or "").strip():
+            filter_input.value = ""
+
     def _navigate_home(_button=None):
+        _clear_filter_for_navigation()
         state["current_relative_path"] = ""
         state["selected_entry"] = None
         _refresh_listing(set_status=True)
@@ -1259,6 +1264,7 @@ def create_tab(ctx):
         current = normalize_remote_relative_path(state.get("current_relative_path", ""))
         if not current:
             return
+        _clear_filter_for_navigation()
         parent = str(PurePosixPath(current).parent)
         state["current_relative_path"] = "" if parent == "." else normalize_remote_relative_path(parent)
         state["selected_entry"] = None
@@ -1269,6 +1275,7 @@ def create_tab(ctx):
             return
         state["selected_entry"] = entry
         if entry.get("is_dir"):
+            _clear_filter_for_navigation()
             state["current_relative_path"] = normalize_remote_relative_path(entry.get("relative_path", ""))
             _refresh_listing(set_status=True)
             return
