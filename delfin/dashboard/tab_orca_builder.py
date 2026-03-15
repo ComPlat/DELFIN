@@ -60,7 +60,7 @@ def create_tab(ctx):
             '6\nComment\nC  0.0  0.0  0.0\n...\nor just:\nC  0.0  0.0  0.0\n...'
         ),
         description='Coordinates:',
-        layout=widgets.Layout(width='100%', height='600px', box_sizing='border-box'), style=ws,
+        layout=widgets.Layout(width='100%', height='520px', box_sizing='border-box'), style=ws,
     )
     orca_convert_smiles_btn = widgets.Button(
         description='CONVERT SMILES', button_style='info',
@@ -150,7 +150,7 @@ def create_tab(ctx):
 
     orca_preview = widgets.Textarea(
         value='', description='INP Preview:',
-        layout=widgets.Layout(width='100%', height='700px', box_sizing='border-box'), style=ws,
+        layout=widgets.Layout(width='100%', height='620px', box_sizing='border-box'), style=ws,
         disabled=False,
     )
 
@@ -161,7 +161,7 @@ def create_tab(ctx):
     orca_output = widgets.Output()
 
     orca_mol_output = widgets.Output(layout=widgets.Layout(
-        border='2px solid #1976d2', width='100%', min_height='500px',
+        border='2px solid #1976d2', width='100%', min_height='440px', height='440px',
         overflow='hidden', box_sizing='border-box',
     ))
 
@@ -328,7 +328,7 @@ def create_tab(ctx):
 
     # -- handlers -------------------------------------------------------
     _VIEWER_JS_TMPL = (
-        '<div id="__DIV__" style="width:100%;height:600px;position:relative;"></div>\n'
+        '<div id="__DIV__" style="width:100%;height:440px;position:relative;"></div>\n'
         '<script>\n'
         'if(typeof $3Dmol==="undefined"){\n'
         '  var _s=document.createElement("script");\n'
@@ -745,12 +745,12 @@ def create_tab(ctx):
         _row([orca_pal, orca_maxcore]),
         _row([orca_slurm_time]),
         widgets.VBox([orca_drop_zone, orca_file_upload, orca_uploaded_files_label],
-                     layout=widgets.Layout(width='100%', min_width='0', overflow='hidden')),
+                     layout=widgets.Layout(width='100%', min_width='0', overflow='hidden', padding='0 8px 0 0')),
         _row([orca_path_files], wrap=False),
         _row([orca_save_btn, orca_submit_btn]),
         orca_output,
     ], layout=widgets.Layout(
-        flex='1 1 0', min_width='0', padding='10px',
+        flex='0 1 48%', max_width='48%', min_width='0', padding='8px', gap='6px',
         box_sizing='border-box', overflow_x='hidden',
     ))
 
@@ -761,13 +761,13 @@ def create_tab(ctx):
         orca_mol_nav_row,
         orca_mol_output,
     ], layout=widgets.Layout(
-        flex='1 1 0', min_width='0', padding='10px',
+        flex='1 1 0', min_width='0', padding='8px', gap='6px',
         box_sizing='border-box', overflow_x='hidden',
     ))
 
     split = widgets.HBox(
         [orca_left, orca_right],
-        layout=widgets.Layout(width='100%', align_items='stretch', overflow_x='hidden'),
+        layout=widgets.Layout(width='100%', align_items='stretch', overflow_x='hidden', gap='10px'),
     )
     orca_css = widgets.HTML(
         """
@@ -815,7 +815,7 @@ def create_tab(ctx):
         ),
         orca_css,
         split,
-    ], layout=widgets.Layout(width='100%', padding='10px', box_sizing='border-box'))
+    ], layout=widgets.Layout(width='100%', padding='8px', box_sizing='border-box'))
 
     # -- Drag-and-drop / click JS for the ORCA drop zone --------------------
     _orca_drop_js = r"""
