@@ -65,6 +65,7 @@ def create_tab(ctx):
         "traj_viewer_ready": False,
     }
     scope_id = f"remote-archive-scope-{abs(id(state))}"
+    remote_resize_mol_fn = f"remoteArchiveResizeMolViewer_{abs(id(state))}"
     viewer_mouse_patch_js = patch_viewer_mouse_controls_js("viewer", "el")
     mol3d_counter = [0]
 
@@ -1496,6 +1497,10 @@ def create_tab(ctx):
             overflow="hidden",
         ),
     )
+    splitter = widgets.HTML(
+        "<div class='remote-splitter' title='Drag to resize'></div>",
+        layout=widgets.Layout(height="100%", width="10px", margin="0", overflow="visible"),
+    )
 
     css = widgets.HTML(
         "<style>"
@@ -1510,6 +1515,11 @@ def create_tab(ctx):
         f".{scope_id} .widget-output .output_area, .{scope_id} .widget-output .output_subarea,"
         f" .{scope_id} .widget-output .output_wrapper, .{scope_id} .widget-output .jp-OutputArea-child,"
         f" .{scope_id} .widget-output .jp-OutputArea-output {{ overflow:hidden !important; margin:0 !important; padding:0 !important; width:100% !important; }}"
+        f".{scope_id} .remote-splitter {{ width:8px; height:100%; cursor:col-resize;"
+        " background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);"
+        " border-radius:4px; display:block; z-index:10; pointer-events:auto !important; position:relative; }"
+        f".{scope_id} .remote-splitter:hover {{ background:linear-gradient("
+        "to right, #b0b0b0, #e0e0e0, #b0b0b0); }"
         f".{scope_id} .remote-mol-view-row {{ width:100% !important; gap:12px !important; align-items:flex-start !important; flex-wrap:nowrap !important; }}"
         f".{scope_id} .remote-mol-view-wrap {{ flex:0 0 auto !important; min-width:0 !important; width:auto !important; }}"
         f".{scope_id} .remote-xyz-tray-controls {{ width:360px !important; min-width:340px !important; max-width:420px !important; }}"
@@ -1522,7 +1532,7 @@ def create_tab(ctx):
             title,
             keyboard_action_input,
             widgets.HBox(
-                [left_panel, right_panel],
+                [left_panel, splitter, right_panel],
                 layout=widgets.Layout(
                     width="100%",
                     align_items="stretch",
@@ -1565,6 +1575,72 @@ def create_tab(ctx):
 
     init_js = f"""
     (function() {{
+        function resizeRemoteArchiveViewer(scopeRoot) {{
+            if (!scopeRoot || scopeRoot.offsetParent === null) return;
+            var rightPanel = scopeRoot.querySelector('.remote-right');
+            var mv = scopeRoot.querySelector('.remote-mol-viewer');
+            if (!rightPanel || !mv || mv.offsetParent === null) return;
+            var stage = mv.querySelector('[id^="remote_mol3d_"], [id^="remote_trj_viewer_"]');
+            var container = mv.closest('.widget-vbox');
+            if (!container || container.style.display === 'none') return;
+            var mvRect = mv.getBoundingClientRect();
+            if (mvRect.top === 0 && mvRect.height === 0) return;
+            var rightRect = rightPanel.getBoundingClientRect();
+            var topChildren = Array.prototype.slice.call(rightPanel.children || []);
+            var host = null;
+            for (var i = 0; i < topChildren.length; i++) {{
+                if (topChildren[i].contains(mv)) {{
+                    host = topChildren[i];
+                    break;
+                }}
+            }}
+            var reservedBelow = 0;
+            if (host) {{
+                var passed = false;
+                for (var j = 0; j < topChildren.length; j++) {{
+                    var child = topChildren[j];
+                    if (child === host) {{
+                        passed = true;
+                        continue;
+                    }}
+                    if (!passed) continue;
+                    var style = window.getComputedStyle(child);
+                    if (!style || style.display === 'none' || style.visibility === 'hidden') continue;
+                    var childRect = child.getBoundingClientRect();
+                    if (childRect.height > 0) reservedBelow += childRect.height;
+                }}
+            }}
+            var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
+            var row = mv.closest('.remote-mol-view-row');
+            var rowRect = row ? row.getBoundingClientRect() : rightRect;
+            var tray = scopeRoot.querySelector('.remote-xyz-tray-controls');
+            var trayStyle = tray ? window.getComputedStyle(tray) : null;
+            var trayVisible = !!(tray && trayStyle && trayStyle.display !== 'none');
+            var trayWidth = trayVisible ? tray.getBoundingClientRect().width : 0;
+            var availW = Math.max(120, rowRect.width - trayWidth - 16);
+            var h = Math.floor(availH * {REMOTE_MOL_DYNAMIC_SCALE});
+            var w = Math.floor(Math.min(h * 1.2, availW));
+            if (h < 80 || w < 120) return;
+            mv.style.width = w + 'px';
+            mv.style.height = h + 'px';
+            if (stage) {{
+                stage.style.width = w + 'px';
+                stage.style.height = h + 'px';
+            }}
+            var scopeKey = {json.dumps(scope_id)};
+            var viewer = null;
+            if (window._remoteMolViewerByScope && window._remoteMolViewerByScope[scopeKey]) {{
+                viewer = window._remoteMolViewerByScope[scopeKey];
+            }} else if (window._remoteTrajViewerByScope && window._remoteTrajViewerByScope[scopeKey]) {{
+                viewer = window._remoteTrajViewerByScope[scopeKey];
+            }}
+            if (viewer && typeof viewer.resize === 'function') {{
+                try {{
+                    viewer.resize();
+                    viewer.render();
+                }} catch (_e) {{}}
+            }}
+        }}
         function _setWidgetField(root, cls, value) {{
             if (!root) return false;
             var node = root.querySelector('.' + cls);
@@ -1612,8 +1688,49 @@ def create_tab(ctx):
                 _setWidgetField(root, 'remote-cmd-keyboard-action', 'open');
             }}, true);
         }}
+        function installRemoteArchiveSplitter(root) {{
+            if (!root) return;
+            var left = root.querySelector('.remote-left');
+            var right = root.querySelector('.remote-right');
+            var splitter = root.querySelector('.remote-splitter');
+            var scopeKey = {json.dumps(scope_id)};
+            if (!left || !right || !splitter || splitter.dataset.bound === scopeKey) return;
+            splitter.dataset.bound = scopeKey;
+            var minW = {REMOTE_LEFT_MIN};
+            var maxW = {REMOTE_LEFT_MAX};
+            function onMove(e) {{
+                var box = left.parentElement.getBoundingClientRect();
+                var w = e.clientX - box.left;
+                if (w < minW) w = minW;
+                if (w > maxW) w = maxW;
+                left.style.flex = '0 0 ' + w + 'px';
+                left.style.minWidth = w + 'px';
+                left.style.maxWidth = w + 'px';
+            }}
+            function onUp() {{
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+                if (window["{remote_resize_mol_fn}"]) {{
+                    setTimeout(function() {{
+                        window["{remote_resize_mol_fn}"]();
+                    }}, 50);
+                }}
+            }}
+            splitter.addEventListener('mousedown', function(e) {{
+                e.preventDefault();
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            }});
+        }}
         function bootRemoteArchiveEnter() {{
-            installRemoteArchiveEnter(document.querySelector('.{scope_id}'));
+            var root = document.querySelector('.{scope_id}');
+            if (!root) return;
+            window["{remote_resize_mol_fn}"] = function() {{
+                resizeRemoteArchiveViewer(document.querySelector('.{scope_id}'));
+            }};
+            installRemoteArchiveEnter(root);
+            installRemoteArchiveSplitter(root);
+            setTimeout(window["{remote_resize_mol_fn}"], 150);
         }}
         if (document.readyState === 'loading') {{
             document.addEventListener('DOMContentLoaded', bootRemoteArchiveEnter, {{ once: true }});
@@ -1621,6 +1738,17 @@ def create_tab(ctx):
         bootRemoteArchiveEnter();
         setTimeout(bootRemoteArchiveEnter, 200);
         setTimeout(bootRemoteArchiveEnter, 1000);
+        if (!window._remoteArchiveResizeBoundByScope) {{
+            window._remoteArchiveResizeBoundByScope = {{}};
+        }}
+        if (!window._remoteArchiveResizeBoundByScope[{json.dumps(scope_id)}]) {{
+            window._remoteArchiveResizeBoundByScope[{json.dumps(scope_id)}] = true;
+            window.addEventListener('resize', function() {{
+                if (window["{remote_resize_mol_fn}"]) {{
+                    window["{remote_resize_mol_fn}"]();
+                }}
+            }});
+        }}
     }})();
     """
 
