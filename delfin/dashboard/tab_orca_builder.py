@@ -145,7 +145,7 @@ def create_tab(ctx):
         value='',
         placeholder='Paste file paths (one per line):\n/path/to/file.gbw\n/path/to/file.xyz',
         description='File Paths:',
-        layout=widgets.Layout(width='100%', height='150px', box_sizing='border-box'), style=ws,
+        layout=widgets.Layout(width='100%', height='120px', box_sizing='border-box'), style=ws,
     )
 
     orca_preview = widgets.Textarea(
