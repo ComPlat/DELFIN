@@ -230,9 +230,9 @@ def create_tab(ctx):
         button_style='info',
         layout=widgets.Layout(
             width='110px', height='26px',
-            display='inline-flex' if (_is_archive_tab and _remote_archive_enabled) else 'none',
+            display='inline-flex' if _remote_archive_enabled else 'none',
         ),
-        disabled=not (_is_archive_tab and _remote_archive_enabled),
+        disabled=not _remote_archive_enabled,
     )
     calc_move_archive_yes_btn = widgets.Button(
         description='Yes', button_style='warning',
@@ -385,9 +385,9 @@ def create_tab(ctx):
         description='Running Transfers',
         layout=widgets.Layout(
             width='140px', height='26px',
-            display='inline-flex' if (_is_archive_tab and _remote_archive_enabled) else 'none',
+            display='inline-flex' if _remote_archive_enabled else 'none',
         ),
-        disabled=not (_is_archive_tab and _remote_archive_enabled),
+        disabled=not _remote_archive_enabled,
     )
     calc_transfer_jobs_refresh_btn = widgets.Button(
         description='Refresh Jobs',
@@ -2247,8 +2247,6 @@ def create_tab(ctx):
         return mapping.get(str(status or '').lower(), '#555')
 
     def _calc_update_transfer_jobs_visibility():
-        if not _is_archive_tab:
-            return
         jobs_visible = calc_transfer_jobs_panel.layout.display != 'none'
         calc_transfer_jobs_btn.button_style = 'primary' if jobs_visible else ''
         if jobs_visible:
@@ -2391,7 +2389,7 @@ def create_tab(ctx):
 
     def _calc_update_explorer_action_state():
         _calc_clipboard_paths()
-        if _is_archive_tab:
+        if _remote_archive_enabled:
             has_selection = bool(_calc_collect_selected_sources_only())
             calc_ssh_transfer_btn.disabled = (
                 state.get('ssh_transfer_running', False) or not has_selection
@@ -9981,7 +9979,7 @@ def create_tab(ctx):
 
     # -- initialise ---------------------------------------------------------
     _calc_register_explorer_refresh()
-    if _is_archive_tab:
+    if _remote_archive_enabled:
         _calc_render_transfer_jobs()
 
     if ctx.calc_dir.exists():
@@ -10958,11 +10956,16 @@ def create_tab(ctx):
     })();
     """
     # -- layout -------------------------------------------------------------
-    _archive_nav_children = [calc_table_btn] if _is_archive_tab else [calc_move_archive_btn]
-    _archive_selection_children = (
-        [calc_ssh_transfer_btn, calc_back_to_calculations_btn]
-        if _is_archive_tab else []
-    )
+    _archive_nav_children = [calc_table_btn] if _is_archive_tab else []
+    _archive_selection_children = []
+    if not _is_archive_tab:
+        if _remote_archive_enabled:
+            _archive_selection_children.append(calc_ssh_transfer_btn)
+        _archive_selection_children.append(calc_move_archive_btn)
+    else:
+        if _remote_archive_enabled:
+            _archive_selection_children.append(calc_ssh_transfer_btn)
+        _archive_selection_children.append(calc_back_to_calculations_btn)
     calc_nav_controls_row = widgets.HBox(
         [calc_back_btn, calc_home_btn, calc_refresh_btn, calc_delete_btn, *_archive_nav_children],
         layout=widgets.Layout(
@@ -11443,7 +11446,7 @@ def create_tab(ctx):
         state['current_path'] = ''
         calc_list_directory()
 
-    if _is_archive_tab:
+    if _remote_archive_enabled:
         _calc_update_transfer_jobs_visibility()
 
     return tab_widget, {

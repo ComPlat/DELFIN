@@ -124,9 +124,15 @@ def create_tab(ctx):
     file_info_html = widgets.HTML(value="")
     selected_path_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
     transfer_back_btn = widgets.Button(
-        description="Transfer Back",
+        description="→ Calculations",
         button_style="info",
-        layout=widgets.Layout(width="124px", min_width="124px", height="26px"),
+        layout=widgets.Layout(width="126px", min_width="126px", height="26px"),
+        disabled=True,
+    )
+    transfer_to_archive_btn = widgets.Button(
+        description="→ Archive",
+        button_style="info",
+        layout=widgets.Layout(width="104px", min_width="104px", height="26px"),
         disabled=True,
     )
     transfer_jobs_btn = widgets.Button(
@@ -448,7 +454,7 @@ def create_tab(ctx):
             f'<b>Remote target:</b> '
             f'<code>{html.escape(str(config.get("user") or "?"))}@'
             f'{html.escape(str(config.get("host") or "?"))}:{html.escape(remote_root)}</code> '
-            f'<span style="color:#616161;">(browse inside this root; Transfer Back moves selected items into local Calculations)</span>'
+            f'<span style="color:#616161;">(browse inside this root; selected items can be moved back into local Calculations or Archive)</span>'
         )
 
     def _format_size(size_bytes):
@@ -1142,6 +1148,7 @@ def create_tab(ctx):
         has_parent = bool(normalize_remote_relative_path(state.get("current_relative_path", "")))
         selected = _selected_entry()
         transfer_back_btn.disabled = not (config_ready and selected)
+        transfer_to_archive_btn.disabled = not (config_ready and selected)
         open_btn.disabled = not bool(selected)
         up_btn.disabled = (not config_ready) or (not has_parent)
         home_btn.disabled = not config_ready
@@ -1370,7 +1377,7 @@ def create_tab(ctx):
         _set_selected_path_display(remote_path)
         _copy_to_clipboard(remote_path, label="remote path")
 
-    def _on_transfer_back_click(_button=None):
+    def _start_transfer_back(local_target, destination_label):
         config = state.get("config")
         entry = _selected_entry()
         if not config or not entry:
@@ -1380,8 +1387,9 @@ def create_tab(ctx):
         if not relative_path:
             _set_status("Select a remote file or directory first.", color="#d32f2f")
             return
-        local_target = Path(ctx.calc_dir).resolve()
+        local_target = Path(local_target).resolve()
         transfer_back_btn.disabled = True
+        transfer_to_archive_btn.disabled = True
         try:
             job = create_download_job(
                 [relative_path],
@@ -1405,7 +1413,7 @@ def create_tab(ctx):
         _render_transfer_jobs()
         destination = local_target / Path(relative_path)
         _set_status(
-            "Started transfer back job "
+            f"Started transfer job to {html.escape(destination_label)} "
             f"<code>{html.escape(job['job_id'])}</code> for "
             f"<code>{html.escape(relative_path)}</code> into "
             f"<code>{html.escape(str(destination))}</code>. "
@@ -1414,6 +1422,12 @@ def create_tab(ctx):
             color="#2e7d32",
         )
         _update_buttons()
+
+    def _on_transfer_back_click(_button=None):
+        _start_transfer_back(ctx.calc_dir, "Calculations")
+
+    def _on_transfer_to_archive_click(_button=None):
+        _start_transfer_back(ctx.archive_dir, "Archive")
 
     def _on_xyz_copy(_button=None):
         frames = state.get("current_xyz_frames") or []
@@ -1675,7 +1689,7 @@ def create_tab(ctx):
         [
             file_info_html,
             widgets.HBox(
-                [transfer_jobs_btn, transfer_back_btn, copy_path_btn, copy_btn, view_toggle],
+                [transfer_jobs_btn, transfer_back_btn, transfer_to_archive_btn, copy_path_btn, copy_btn, view_toggle],
                 layout=widgets.Layout(
                     gap="10px",
                     flex_flow="row wrap",
@@ -1759,6 +1773,7 @@ def create_tab(ctx):
     transfer_jobs_btn.on_click(_on_transfer_jobs_toggle)
     transfer_jobs_refresh_btn.on_click(_on_transfer_jobs_refresh)
     transfer_back_btn.on_click(_on_transfer_back_click)
+    transfer_to_archive_btn.on_click(_on_transfer_to_archive_click)
     copy_btn.on_click(_on_copy_click)
     copy_path_btn.on_click(_on_copy_path_click)
     view_toggle.observe(_on_view_toggle, names="value")

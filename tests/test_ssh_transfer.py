@@ -11,6 +11,8 @@ _SPEC.loader.exec_module(_MODULE)
 
 build_rsync_transfer_command = _MODULE.build_rsync_transfer_command
 build_rsync_download_command = _MODULE.build_rsync_download_command
+build_rsync_verify_transfer_command = _MODULE.build_rsync_verify_transfer_command
+build_rsync_verify_download_command = _MODULE.build_rsync_verify_download_command
 build_ssh_delete_command = _MODULE.build_ssh_delete_command
 build_ssh_mkdir_command = _MODULE.build_ssh_mkdir_command
 create_download_job = _MODULE.create_download_job
@@ -83,6 +85,26 @@ def test_build_rsync_transfer_command_builds_resumable_rsync(tmp_path):
     assert command[-1] == "alice@cluster.example.org:/remote/archive/"
 
 
+def test_build_rsync_verify_transfer_command_uses_checksum_dry_run(tmp_path):
+    source_file = tmp_path / "result.txt"
+    source_file.write_text("ok", encoding="utf-8")
+
+    command = build_rsync_verify_transfer_command(
+        [source_file],
+        "cluster.example.org",
+        "alice",
+        "/remote/archive",
+        22,
+    )
+
+    assert command[0] == "rsync"
+    assert "-n" in command
+    assert "-c" in command
+    assert "--itemize-changes" in command
+    assert "--append-verify" not in command
+    assert command[-1] == "alice@cluster.example.org:/remote/archive/"
+
+
 def test_create_transfer_job_writes_job_and_status_files(tmp_path):
     source_dir = tmp_path / "calc_a"
     source_dir.mkdir()
@@ -147,6 +169,27 @@ def test_build_rsync_download_command_preserves_remote_relative_paths(tmp_path):
     assert "--timeout=86400" in command
     assert "alice@cluster.example.org:/remote/archive/./job_01/out.log" == command[-3]
     assert "alice@cluster.example.org:/remote/archive/./job_02" == command[-2]
+    assert command[-1] == str(destination)
+
+
+def test_build_rsync_verify_download_command_uses_checksum_dry_run(tmp_path):
+    destination = tmp_path / "calc"
+    command = build_rsync_verify_download_command(
+        ["job_01/out.log"],
+        "cluster.example.org",
+        "alice",
+        "/remote/archive",
+        22,
+        destination,
+    )
+
+    assert command[0] == "rsync"
+    assert "-n" in command
+    assert "-c" in command
+    assert "--itemize-changes" in command
+    assert "--relative" in command
+    assert "--append-verify" not in command
+    assert command[-2] == "alice@cluster.example.org:/remote/archive/./job_01/out.log"
     assert command[-1] == str(destination)
 
 

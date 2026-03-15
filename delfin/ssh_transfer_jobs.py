@@ -109,6 +109,27 @@ def build_rsync_transfer_command(sources, host, user, remote_path, port):
     return command
 
 
+def build_rsync_verify_transfer_command(sources, host, user, remote_path, port):
+    normalized_sources = [str(Path(src)) for src in sources]
+    if not normalized_sources:
+        raise ValueError("No local files selected for transfer.")
+
+    command = [
+        "rsync",
+        "-a",
+        "-n",
+        "-c",
+        "--itemize-changes",
+        "--protect-args",
+        f"--timeout={DEFAULT_RSYNC_TIMEOUT_SECONDS}",
+        "-e",
+        build_rsync_ssh_command(host, user, port),
+    ]
+    command.extend(normalized_sources)
+    command.append(remote_directory_spec(user, host, remote_path))
+    return command
+
+
 def build_rsync_download_command(remote_sources, host, user, remote_path, port, local_target):
     normalized_sources = [_normalize_remote_job_source(source) for source in remote_sources]
     if not normalized_sources:
@@ -124,6 +145,33 @@ def build_rsync_download_command(remote_sources, host, user, remote_path, port, 
         "--protect-args",
         "--human-readable",
         "--info=progress2,stats1",
+        f"--timeout={DEFAULT_RSYNC_TIMEOUT_SECONDS}",
+        "--relative",
+        "-e",
+        build_rsync_ssh_command(host, user, port),
+    ]
+    for relative_source in normalized_sources:
+        command.append(
+            remote_source_spec(user, host, f"{normalized_root}/./{relative_source}")
+        )
+    command.append(str(destination))
+    return command
+
+
+def build_rsync_verify_download_command(remote_sources, host, user, remote_path, port, local_target):
+    normalized_sources = [_normalize_remote_job_source(source) for source in remote_sources]
+    if not normalized_sources:
+        raise ValueError("No remote files selected for transfer.")
+
+    destination = Path(local_target).expanduser()
+    normalized_root = os.path.normpath(str(remote_path or "").replace("\\", "/"))
+    command = [
+        "rsync",
+        "-a",
+        "-n",
+        "-c",
+        "--itemize-changes",
+        "--protect-args",
         f"--timeout={DEFAULT_RSYNC_TIMEOUT_SECONDS}",
         "--relative",
         "-e",
@@ -404,6 +452,25 @@ def _run_logged_command(command, log_path):
     return process.returncode, summary
 
 
+def _run_logged_command_capture(command, log_path):
+    _append_log(log_path, f"Running: {' '.join(shlex.quote(part) for part in command)}")
+    process = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    output = str(process.stdout or "")
+    if output:
+        with Path(log_path).open("a", encoding="utf-8") as handle:
+            handle.write(output)
+            if not output.endswith("\n"):
+                handle.write("\n")
+    summary = _summarize_output_text(output or _tail_text(log_path))
+    return process.returncode, output, summary
+
+
 def _is_retryable_failure(exit_code, summary):
     lowered = str(summary or "").lower()
     permanent_failure_tokens = (
@@ -459,6 +526,11 @@ def _delete_local_sources(sources):
             shutil.rmtree(path)
         else:
             path.unlink()
+
+
+def _verification_has_differences(output):
+    lines = [line.strip() for line in str(output or "").splitlines()]
+    return any(line for line in lines if line)
 
 
 def build_ssh_delete_command(host, user, remote_path, port, relative_sources):
@@ -620,10 +692,9 @@ def run_transfer_job(job_path):
                 if rsync_exit == 0
                 else "Transfer finished with vanished-file warning (rsync code 24)."
             )
-            if (
-                direction == "push"
-                and rsync_exit == 0
-                and bool(job.get("delete_local_on_success"))
+            if rsync_exit == 0 and (
+                bool(job.get("delete_local_on_success"))
+                or bool(job.get("delete_remote_on_success"))
             ):
                 _update_status(
                     status_path,
@@ -631,16 +702,77 @@ def run_transfer_job(job_path):
                     status="running",
                     attempt=attempt,
                     pid=os.getpid(),
-                    last_summary="Transfer finished. Removing local source after successful verification.",
+                    last_summary="Transfer finished. Verifying copied data before removing source.",
                     last_error="",
                     retry_in_seconds=0,
                 )
+                if direction == "push":
+                    verify_command = build_rsync_verify_transfer_command(
+                        job["sources"],
+                        job["host"],
+                        job["user"],
+                        job["remote_path"],
+                        job["port"],
+                    )
+                else:
+                    verify_command = build_rsync_verify_download_command(
+                        job["sources"],
+                        job["host"],
+                        job["user"],
+                        job["remote_path"],
+                        job["port"],
+                        job["local_target"],
+                    )
+                verify_exit, verify_output, verify_summary = _run_logged_command_capture(
+                    verify_command,
+                    log_path,
+                )
+                if verify_exit != 0:
+                    summary = verify_summary or f"verification exited with code {verify_exit}"
+                    if attempt < max_attempts and _is_retryable_failure(verify_exit, summary):
+                        wait_seconds = min(
+                            DEFAULT_RETRY_DELAY_SECONDS * attempt,
+                            DEFAULT_RETRY_BACKOFF_CAP_SECONDS,
+                        )
+                        _append_log(log_path, f"Retrying after verification failure in {wait_seconds}s: {summary}")
+                        _sleep_with_status(job, attempt, wait_seconds, summary)
+                        continue
+                    _update_status(
+                        status_path,
+                        job,
+                        status="warning",
+                        attempt=attempt,
+                        pid=os.getpid(),
+                        last_summary=f"Transfer finished, but verification failed. Source kept. {summary}",
+                        last_error=summary,
+                        retry_in_seconds=0,
+                    )
+                    return verify_exit
+                if _verification_has_differences(verify_output):
+                    summary = "Transfer finished, but checksum verification found differences. Source kept."
+                    _append_log(log_path, summary)
+                    _update_status(
+                        status_path,
+                        job,
+                        status="warning",
+                        attempt=attempt,
+                        pid=os.getpid(),
+                        last_summary=summary,
+                        last_error=summary,
+                        retry_in_seconds=0,
+                    )
+                    return 0
+            if (
+                direction == "push"
+                and rsync_exit == 0
+                and bool(job.get("delete_local_on_success"))
+            ):
                 try:
                     _delete_local_sources(job["sources"])
-                    summary = "Transfer finished and local source was removed."
+                    summary = "Transfer finished, verified, and local source was removed."
                 except Exception as exc:
                     final_status = "warning"
-                    summary = f"Transfer finished, but local cleanup failed. {exc}"
+                    summary = f"Transfer verified, but local cleanup failed. {exc}"
             if (
                 direction == "pull"
                 and rsync_exit == 0
@@ -667,11 +799,11 @@ def run_transfer_job(job_path):
                     log_path,
                 )
                 if delete_exit == 0:
-                    summary = "Transfer back finished and remote source was removed."
+                    summary = "Transfer back finished, verified, and remote source was removed."
                 else:
                     final_status = "warning"
                     summary = (
-                        "Transfer back finished, but remote cleanup failed. "
+                        "Transfer back was verified, but remote cleanup failed. "
                         f"{delete_summary or f'ssh exited with code {delete_exit}'}"
                     )
             _append_log(log_path, summary)
