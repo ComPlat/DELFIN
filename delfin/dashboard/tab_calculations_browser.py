@@ -22,6 +22,7 @@ import numpy as np
 from IPython.display import HTML, clear_output, display
 
 from .constants import CALC_SEARCH_OPTIONS
+from .energy_labels import format_xyz_comment_label
 from .input_processing import (
     parse_inp_resources,
     parse_resource_settings,
@@ -5977,7 +5978,7 @@ def create_tab(ctx):
         )
         calc_xyz_frame_total.value = f"<b>/ {len(frames)}</b>"
         calc_xyz_frame_label.value = (
-            f"{_html.escape(comment[:100])}{'...' if len(comment) > 100 else ''}"
+            f"{format_xyz_comment_label(comment, frames=frames)}"
             f"{large_traj_note}"
         )
         selected_path = _calc_selected_item_path()
@@ -9360,19 +9361,24 @@ def create_tab(ctx):
                         f' ({size_str}, {len(lines)} lines)'
                     )
                     if state['xyz_frames']:
+                        comment = state['xyz_frames'][0][0]
                         state['xyz_current_frame'][0] = 0
                         calc_xyz_frame_input.max = len(state['xyz_frames'])
                         calc_xyz_frame_input.value = 1
                         calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
                         calc_xyz_controls.layout.display = 'flex'
                         calc_coord_controls.layout.display = 'none'
+                        calc_xyz_frame_label.value = format_xyz_comment_label(
+                            comment,
+                            frames=state['xyz_frames'],
+                        )
                         _calc_update_xyz_traj_control_state()
                         _calc_set_rmsd_available(True)
                     else:
                         calc_xyz_controls.layout.display = 'none'
                         _calc_update_xyz_traj_control_state()
                         _calc_set_rmsd_available(False)
-                    calc_xyz_frame_label.value = ''
+                        calc_xyz_frame_label.value = ''
                     _render_3dmol(content)
                     _calc_apply_traj_style()
                 calc_render_content(scroll_to='top')
