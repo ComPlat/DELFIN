@@ -6,8 +6,10 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import textwrap
 import time
 import uuid
 from datetime import datetime, timezone
@@ -49,6 +51,10 @@ def remote_directory_spec(user, host, remote_path):
     if not path.endswith("/"):
         path = f"{path}/"
     return f"{user}@{host}:{quote_remote_path(path)}"
+
+
+def remote_source_spec(user, host, remote_path):
+    return f"{user}@{host}:{quote_remote_path(remote_path)}"
 
 
 def build_ssh_command_base(host, user, port):
@@ -103,6 +109,34 @@ def build_rsync_transfer_command(sources, host, user, remote_path, port):
     return command
 
 
+def build_rsync_download_command(remote_sources, host, user, remote_path, port, local_target):
+    normalized_sources = [_normalize_remote_job_source(source) for source in remote_sources]
+    if not normalized_sources:
+        raise ValueError("No remote files selected for transfer.")
+
+    destination = Path(local_target).expanduser()
+    normalized_root = os.path.normpath(str(remote_path or "").replace("\\", "/"))
+    command = [
+        "rsync",
+        "-a",
+        "--partial",
+        "--append-verify",
+        "--protect-args",
+        "--human-readable",
+        "--info=progress2,stats1",
+        f"--timeout={DEFAULT_RSYNC_TIMEOUT_SECONDS}",
+        "--relative",
+        "-e",
+        build_rsync_ssh_command(host, user, port),
+    ]
+    for relative_source in normalized_sources:
+        command.append(
+            remote_source_spec(user, host, f"{normalized_root}/./{relative_source}")
+        )
+    command.append(str(destination))
+    return command
+
+
 def _coerce_sources(sources: Iterable[str | Path]):
     resolved = []
     for source in sources:
@@ -113,6 +147,25 @@ def _coerce_sources(sources: Iterable[str | Path]):
     if not resolved:
         raise ValueError("No files selected for transfer.")
     return resolved
+
+
+def _normalize_remote_job_source(relative_path):
+    raw = str(relative_path or "").strip().replace("\\", "/")
+    if raw in {"", "/"}:
+        raise ValueError("Remote transfer source is empty.")
+    parts = []
+    for part in raw.lstrip("/").split("/"):
+        piece = str(part or "").strip()
+        if not piece or piece == ".":
+            continue
+        if piece == "..":
+            raise ValueError("Remote transfer source cannot leave the configured root.")
+        if any(ch in piece for ch in ("\x00", "\n", "\r")):
+            raise ValueError("Remote transfer source contains unsupported control characters.")
+        parts.append(piece)
+    if not parts:
+        raise ValueError("Remote transfer source is empty.")
+    return "/".join(parts)
 
 
 def _write_json_atomic(path, payload):
@@ -172,11 +225,15 @@ def _job_status_payload(job, **overrides):
         "status": "queued",
         "created_at": job["created_at"],
         "updated_at": utc_now_iso(),
+        "direction": job.get("direction", "push"),
         "source_count": len(job["sources"]),
         "sources": job["sources"],
         "host": job["host"],
         "user": job["user"],
         "remote_path": job["remote_path"],
+        "local_target": job.get("local_target", ""),
+        "delete_local_on_success": bool(job.get("delete_local_on_success", False)),
+        "delete_remote_on_success": bool(job.get("delete_remote_on_success", False)),
         "port": job["port"],
         "attempt": 0,
         "max_retries": job["max_retries"],
@@ -199,6 +256,7 @@ def create_transfer_job(
     *,
     jobs_dir=None,
     max_retries=DEFAULT_MAX_RETRIES,
+    delete_local_on_success=False,
 ):
     host, user, remote_path, port = normalize_ssh_transfer_settings(host, user, remote_path, port)
     source_paths = _coerce_sources(sources)
@@ -211,11 +269,59 @@ def create_transfer_job(
     job_payload = {
         "job_id": job_id,
         "created_at": utc_now_iso(),
+        "direction": "push",
         "host": host,
         "user": user,
         "remote_path": remote_path,
+        "local_target": "",
+        "delete_local_on_success": bool(delete_local_on_success),
+        "delete_remote_on_success": False,
         "port": port,
         "sources": [str(path) for path in source_paths],
+        "max_retries": int(max(0, max_retries)),
+        "job_path": str(job_path),
+        "status_path": str(status_path),
+        "log_path": str(log_path),
+    }
+    _write_json_atomic(job_path, job_payload)
+    _write_json_atomic(status_path, _job_status_payload(job_payload))
+    return job_payload
+
+
+def create_download_job(
+    remote_sources,
+    host,
+    user,
+    remote_path,
+    port,
+    local_target,
+    *,
+    jobs_dir=None,
+    max_retries=DEFAULT_MAX_RETRIES,
+    delete_remote_on_success=False,
+):
+    host, user, remote_path, port = normalize_ssh_transfer_settings(host, user, remote_path, port)
+    normalized_sources = [_normalize_remote_job_source(source) for source in remote_sources]
+    if not normalized_sources:
+        raise ValueError("No remote files selected for transfer.")
+    local_target_path = Path(local_target).expanduser().resolve()
+    jobs_dir_path = ensure_jobs_dir(jobs_dir)
+    job_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    job_path = jobs_dir_path / f"{job_id}.job.json"
+    status_path = jobs_dir_path / f"{job_id}.status.json"
+    log_path = jobs_dir_path / f"{job_id}.log"
+
+    job_payload = {
+        "job_id": job_id,
+        "created_at": utc_now_iso(),
+        "direction": "pull",
+        "host": host,
+        "user": user,
+        "remote_path": remote_path,
+        "local_target": str(local_target_path),
+        "delete_remote_on_success": bool(delete_remote_on_success),
+        "port": port,
+        "sources": normalized_sources,
         "max_retries": int(max(0, max_retries)),
         "job_path": str(job_path),
         "status_path": str(status_path),
@@ -338,8 +444,64 @@ def _sleep_with_status(job, attempt, wait_seconds, summary):
     time.sleep(wait_seconds)
 
 
+def _delete_local_sources(sources):
+    normalized = []
+    for source in sources:
+        path = Path(source).expanduser().resolve()
+        normalized.append(path)
+    normalized.sort(key=lambda item: len(item.parts), reverse=True)
+    for path in normalized:
+        if not path.exists():
+            continue
+        if path.is_symlink():
+            raise RuntimeError(f"Refusing to delete symlink: {path}")
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
+def build_ssh_delete_command(host, user, remote_path, port, relative_sources):
+    normalized_root = os.path.normpath(str(remote_path or "").replace("\\", "/"))
+    normalized_sources = [_normalize_remote_job_source(source) for source in relative_sources]
+    script = textwrap.dedent(
+        """
+        import os, shutil, sys
+
+        root = os.path.realpath(sys.argv[1])
+        raw_targets = sys.argv[2:]
+        normalized = []
+        for rel in raw_targets:
+            target = os.path.realpath(os.path.join(root, rel))
+            if os.path.commonpath([target, root]) != root:
+                raise SystemExit(f"Remote delete path escapes configured root: {rel}")
+            normalized.append((rel, target))
+
+        normalized.sort(key=lambda item: item[0].count("/"), reverse=True)
+        for _rel, target in normalized:
+            if not os.path.lexists(target):
+                continue
+            if os.path.islink(target):
+                raise SystemExit(f"Refusing to delete symlink: {_rel}")
+            if os.path.isdir(target):
+                shutil.rmtree(target)
+            else:
+                os.unlink(target)
+        """
+    ).strip()
+    command = build_ssh_command_base(host, user, port)
+    command.append(
+        "python3 -c "
+        + shlex.quote(script)
+        + " "
+        + " ".join(shlex.quote(value) for value in [normalized_root, *normalized_sources])
+    )
+    return command
+
+
 def run_transfer_job(job_path):
     job = _read_json(job_path)
+    direction = str(job.get("direction") or "push").strip().lower()
     status_path = job["status_path"]
     log_path = job["log_path"]
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
@@ -349,35 +511,64 @@ def run_transfer_job(job_path):
         job,
         status="running",
         pid=os.getpid(),
-        last_summary="Preparing remote directory.",
+        last_summary=(
+            "Preparing remote directory."
+            if direction == "push"
+            else "Preparing local target directory."
+        ),
         retry_in_seconds=0,
     )
 
     max_attempts = max(1, int(job.get("max_retries", DEFAULT_MAX_RETRIES)) + 1)
     for attempt in range(1, max_attempts + 1):
-        _update_status(
-            status_path,
-            job,
-            status="running",
-            attempt=attempt,
-            pid=os.getpid(),
-            last_summary=f"Attempt {attempt}: preparing remote directory.",
-            retry_in_seconds=0,
-        )
-        mkdir_exit, mkdir_summary = _run_logged_command(
-            build_ssh_mkdir_command(job["host"], job["user"], job["remote_path"], job["port"]),
-            log_path,
-        )
-        if mkdir_exit != 0:
-            summary = mkdir_summary or f"ssh exited with code {mkdir_exit}"
-            if attempt < max_attempts and _is_retryable_failure(mkdir_exit, summary):
-                wait_seconds = min(
-                    DEFAULT_RETRY_DELAY_SECONDS * attempt,
-                    DEFAULT_RETRY_BACKOFF_CAP_SECONDS,
+        if direction == "push":
+            _update_status(
+                status_path,
+                job,
+                status="running",
+                attempt=attempt,
+                pid=os.getpid(),
+                last_summary=f"Attempt {attempt}: preparing remote directory.",
+                retry_in_seconds=0,
+            )
+            mkdir_exit, mkdir_summary = _run_logged_command(
+                build_ssh_mkdir_command(job["host"], job["user"], job["remote_path"], job["port"]),
+                log_path,
+            )
+            if mkdir_exit != 0:
+                summary = mkdir_summary or f"ssh exited with code {mkdir_exit}"
+                if attempt < max_attempts and _is_retryable_failure(mkdir_exit, summary):
+                    wait_seconds = min(
+                        DEFAULT_RETRY_DELAY_SECONDS * attempt,
+                        DEFAULT_RETRY_BACKOFF_CAP_SECONDS,
+                    )
+                    _append_log(log_path, f"Retrying after SSH setup failure in {wait_seconds}s: {summary}")
+                    _sleep_with_status(job, attempt, wait_seconds, summary)
+                    continue
+                _update_status(
+                    status_path,
+                    job,
+                    status="failed",
+                    attempt=attempt,
+                    pid=os.getpid(),
+                    last_summary=summary,
+                    last_error=summary,
+                    retry_in_seconds=0,
                 )
-                _append_log(log_path, f"Retrying after SSH setup failure in {wait_seconds}s: {summary}")
-                _sleep_with_status(job, attempt, wait_seconds, summary)
-                continue
+                return mkdir_exit
+        elif direction == "pull":
+            _update_status(
+                status_path,
+                job,
+                status="running",
+                attempt=attempt,
+                pid=os.getpid(),
+                last_summary=f"Attempt {attempt}: preparing local target directory.",
+                retry_in_seconds=0,
+            )
+            Path(job["local_target"]).expanduser().mkdir(parents=True, exist_ok=True)
+        else:
+            summary = f"Unsupported transfer direction: {direction}"
             _update_status(
                 status_path,
                 job,
@@ -388,7 +579,7 @@ def run_transfer_job(job_path):
                 last_error=summary,
                 retry_in_seconds=0,
             )
-            return mkdir_exit
+            return 1
 
         _update_status(
             status_path,
@@ -396,20 +587,32 @@ def run_transfer_job(job_path):
             status="running",
             attempt=attempt,
             pid=os.getpid(),
-            last_summary=f"Attempt {attempt}: transferring with rsync.",
+            last_summary=(
+                f"Attempt {attempt}: transferring with rsync."
+                if direction == "push"
+                else f"Attempt {attempt}: transferring back with rsync."
+            ),
             last_error="",
             retry_in_seconds=0,
         )
-        rsync_exit, rsync_summary = _run_logged_command(
-            build_rsync_transfer_command(
+        if direction == "push":
+            rsync_command = build_rsync_transfer_command(
                 job["sources"],
                 job["host"],
                 job["user"],
                 job["remote_path"],
                 job["port"],
-            ),
-            log_path,
-        )
+            )
+        else:
+            rsync_command = build_rsync_download_command(
+                job["sources"],
+                job["host"],
+                job["user"],
+                job["remote_path"],
+                job["port"],
+                job["local_target"],
+            )
+        rsync_exit, rsync_summary = _run_logged_command(rsync_command, log_path)
         if rsync_exit in (0, 24):
             final_status = "success" if rsync_exit == 0 else "warning"
             summary = (
@@ -417,6 +620,60 @@ def run_transfer_job(job_path):
                 if rsync_exit == 0
                 else "Transfer finished with vanished-file warning (rsync code 24)."
             )
+            if (
+                direction == "push"
+                and rsync_exit == 0
+                and bool(job.get("delete_local_on_success"))
+            ):
+                _update_status(
+                    status_path,
+                    job,
+                    status="running",
+                    attempt=attempt,
+                    pid=os.getpid(),
+                    last_summary="Transfer finished. Removing local source after successful verification.",
+                    last_error="",
+                    retry_in_seconds=0,
+                )
+                try:
+                    _delete_local_sources(job["sources"])
+                    summary = "Transfer finished and local source was removed."
+                except Exception as exc:
+                    final_status = "warning"
+                    summary = f"Transfer finished, but local cleanup failed. {exc}"
+            if (
+                direction == "pull"
+                and rsync_exit == 0
+                and bool(job.get("delete_remote_on_success"))
+            ):
+                _update_status(
+                    status_path,
+                    job,
+                    status="running",
+                    attempt=attempt,
+                    pid=os.getpid(),
+                    last_summary="Transfer finished. Removing remote source after successful verification.",
+                    last_error="",
+                    retry_in_seconds=0,
+                )
+                delete_exit, delete_summary = _run_logged_command(
+                    build_ssh_delete_command(
+                        job["host"],
+                        job["user"],
+                        job["remote_path"],
+                        job["port"],
+                        job["sources"],
+                    ),
+                    log_path,
+                )
+                if delete_exit == 0:
+                    summary = "Transfer back finished and remote source was removed."
+                else:
+                    final_status = "warning"
+                    summary = (
+                        "Transfer back finished, but remote cleanup failed. "
+                        f"{delete_summary or f'ssh exited with code {delete_exit}'}"
+                    )
             _append_log(log_path, summary)
             _update_status(
                 status_path,

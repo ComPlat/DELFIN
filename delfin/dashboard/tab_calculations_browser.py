@@ -2304,10 +2304,15 @@ def create_tab(ctx):
         for entry in entries:
             status = str(entry.get('status') or 'unknown')
             color = _calc_transfer_status_color(status)
+            direction = str(entry.get('direction') or 'push').lower()
             remote = (
                 f'{entry.get("user", "?")}@{entry.get("host", "?")}:'
                 f'{entry.get("remote_path", "?")}'
             )
+            local_target = str(entry.get('local_target') or '').strip()
+            endpoint = remote
+            if direction == 'pull' and local_target:
+                endpoint = f'{remote} -> {local_target}'
             summary = str(entry.get('last_summary') or entry.get('last_error') or '').strip()
             retry_note = ''
             retry_in = entry.get('retry_in_seconds', 0) or 0
@@ -2325,7 +2330,7 @@ def create_tab(ctx):
                 'margin:0 0 8px 0;background:#fafbfc;">'
                 f'<div><b>{_html.escape(entry.get("job_id", "job"))}</b> '
                 f'<span style="color:{color};font-weight:600;">{_html.escape(status.upper())}</span></div>'
-                f'<div><code>{_html.escape(remote)}</code></div>'
+                f'<div><code>{_html.escape(endpoint)}</code></div>'
                 f'<div>{int(entry.get("source_count", 0) or 0)} item(s), '
                 f'attempt {int(attempts or 0)}/{int(max_retries or 0) + 1}</div>'
                 f'<div>Items: {items_html}</div>'
@@ -8209,6 +8214,7 @@ def create_tab(ctx):
             user,
             remote_path,
             port,
+            delete_local_on_success=True,
         )
         source_count = len(resolved_sources)
         target_label = _html.escape(f'{user}@{host}:{remote_path}')
@@ -8221,6 +8227,7 @@ def create_tab(ctx):
             _calc_set_ops_status(
                 f'Started resumable transfer job <code>{_html.escape(job["job_id"])}</code> '
                 f'for {source_count} item(s) to <code>{target_label}</code>. '
+                'Local sources will be removed only after rsync finishes successfully. '
                 f'PID: <code>{int(pid)}</code>. Log: <code>{_html.escape(job["log_path"])}</code>.',
                 color='#2e7d32',
             )

@@ -1,4 +1,4 @@
-"""Remote Archive tab: read-only browsing inside the configured SSH target root."""
+"""Remote Archive tab: browse a configured remote archive over SSH."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import html
 import json
 import posixpath
 import re
+import sys
 from pathlib import Path, PurePosixPath
 
 import ipywidgets as widgets
@@ -18,6 +19,12 @@ from delfin.remote_archive import (
     list_remote_entries,
     normalize_remote_relative_path,
     read_remote_text_preview,
+)
+from delfin.ssh_transfer_jobs import (
+    create_download_job,
+    ensure_jobs_dir,
+    launch_transfer_job,
+    list_transfer_jobs,
 )
 from delfin.user_settings import load_transfer_settings
 
@@ -116,6 +123,20 @@ def create_tab(ctx):
     keyboard_action_input.add_class("remote-cmd-keyboard-action")
     file_info_html = widgets.HTML(value="")
     selected_path_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
+    transfer_back_btn = widgets.Button(
+        description="Transfer Back",
+        button_style="info",
+        layout=widgets.Layout(width="124px", min_width="124px", height="26px"),
+        disabled=True,
+    )
+    transfer_jobs_btn = widgets.Button(
+        description="Running Transfers",
+        layout=widgets.Layout(width="142px", min_width="142px", height="26px"),
+    )
+    transfer_jobs_refresh_btn = widgets.Button(
+        description="Refresh Jobs",
+        layout=widgets.Layout(width="112px", min_width="112px", height="26px"),
+    )
     copy_path_btn = widgets.Button(
         description="PATH",
         layout=widgets.Layout(width="70px", min_width="70px", height="26px"),
@@ -190,6 +211,27 @@ def create_tab(ctx):
     preview_html = widgets.HTML(
         value="",
         layout=widgets.Layout(width="100%", flex="1 1 0", min_height="0", overflow="auto"),
+    )
+    transfer_jobs_html = widgets.HTML(
+        value="",
+        layout=widgets.Layout(width="100%", overflow_x="hidden", overflow_y="auto", flex="1 1 0", min_height="0"),
+    )
+    transfer_jobs_panel = widgets.VBox(
+        [
+            widgets.HBox(
+                [widgets.HTML("<b>Running Transfers</b>"), transfer_jobs_refresh_btn],
+                layout=widgets.Layout(gap="6px", align_items="center", flex_flow="row wrap"),
+            ),
+            transfer_jobs_html,
+        ],
+        layout=widgets.Layout(
+            display="none",
+            gap="6px",
+            width="100%",
+            flex="1 1 0",
+            min_height="0",
+            overflow="hidden",
+        ),
     )
 
     def _set_status(message, color="#455a64"):
@@ -297,6 +339,107 @@ def create_tab(ctx):
         view_toggle.value = value
         view_toggle.observe(_on_view_toggle, names="value")
 
+    def _transfer_jobs_dir():
+        return ensure_jobs_dir()
+
+    def _transfer_status_color(status):
+        mapping = {
+            "queued": "#1976d2",
+            "running": "#1976d2",
+            "retrying": "#ef6c00",
+            "success": "#2e7d32",
+            "warning": "#ef6c00",
+            "failed": "#d32f2f",
+        }
+        return mapping.get(str(status or "").lower(), "#555")
+
+    def _transfer_items_html(entry, limit=4):
+        raw_sources = entry.get("sources", []) or []
+        rendered = []
+        direction = str(entry.get("direction") or "push").lower()
+        for raw_source in raw_sources[:limit]:
+            source_text = str(raw_source or "").strip()
+            if not source_text:
+                continue
+            label = source_text
+            if direction == "push":
+                source_path = Path(source_text)
+                label = source_path.name or source_text
+            else:
+                label = PurePosixPath(source_text).name or source_text
+            rendered.append(f'<code title="{html.escape(source_text)}">{html.escape(label)}</code>')
+        if not rendered:
+            return "n/a"
+        remaining = len(raw_sources) - len(rendered)
+        summary = ", ".join(rendered)
+        if remaining > 0:
+            summary = f"{summary} + {remaining} more"
+        return summary
+
+    def _render_transfer_jobs(limit=8):
+        try:
+            entries = list_transfer_jobs(jobs_dir=_transfer_jobs_dir(), limit=limit)
+        except Exception as exc:
+            transfer_jobs_html.value = (
+                f'<span style="color:#d32f2f;">Could not load transfer jobs: '
+                f'{html.escape(str(exc))}</span>'
+            )
+            return
+        if not entries:
+            transfer_jobs_html.value = '<span style="color:#555;">No background transfer jobs yet.</span>'
+            return
+
+        blocks = []
+        for entry in entries:
+            status = str(entry.get("status") or "unknown")
+            color = _transfer_status_color(status)
+            direction = str(entry.get("direction") or "push").lower()
+            remote = (
+                f'{entry.get("user", "?")}@{entry.get("host", "?")}:'
+                f'{entry.get("remote_path", "?")}'
+            )
+            local_target = str(entry.get("local_target") or "").strip()
+            endpoint = remote if direction == "push" else f"{remote} -> {local_target or '?'}"
+            summary = str(entry.get("last_summary") or entry.get("last_error") or "").strip()
+            retry_note = ""
+            retry_in = entry.get("retry_in_seconds", 0) or 0
+            if status == "retrying" and retry_in:
+                retry_note = f" Retry in about {int(retry_in)} s."
+            attempts = entry.get("attempt", 0)
+            max_retries = entry.get("max_retries", 0)
+            log_path = entry.get("log_path", "")
+            items_html = _transfer_items_html(entry)
+            updated = str(entry.get("updated_at") or "").replace("T", " ")
+            if updated.endswith("+00:00"):
+                updated = updated[:-6] + " UTC"
+            blocks.append(
+                '<div style="border:1px solid #d9dee3;border-radius:6px;padding:8px 10px;'
+                'margin:0 0 8px 0;background:#fafbfc;">'
+                f'<div><b>{html.escape(entry.get("job_id", "job"))}</b> '
+                f'<span style="color:{color};font-weight:600;">{html.escape(status.upper())}</span></div>'
+                f'<div><code>{html.escape(endpoint)}</code></div>'
+                f'<div>{int(entry.get("source_count", 0) or 0)} item(s), '
+                f'attempt {int(attempts or 0)}/{int(max_retries or 0) + 1}</div>'
+                f'<div>Items: {items_html}</div>'
+                f'<div>{html.escape(summary or "No status message.")}{html.escape(retry_note)}</div>'
+                f'<div style="color:#555;">Updated: {html.escape(updated or "-")}</div>'
+                f'<div style="color:#555;">Log: <code>{html.escape(str(log_path))}</code></div>'
+                '</div>'
+            )
+        transfer_jobs_html.value = "".join(blocks)
+
+    def _update_transfer_jobs_visibility():
+        jobs_visible = transfer_jobs_panel.layout.display != "none"
+        transfer_jobs_btn.button_style = "primary" if jobs_visible else ""
+        if jobs_visible:
+            left_panel.add_class("remote-transfer-jobs-mode")
+            filter_row.layout.display = "none"
+            file_list.layout.display = "none"
+        else:
+            left_panel.remove_class("remote-transfer-jobs-mode")
+            filter_row.layout.display = "flex"
+            file_list.layout.display = ""
+
     def _settings_summary(config):
         if not config:
             return "No remote archive configured."
@@ -305,7 +448,7 @@ def create_tab(ctx):
             f'<b>Remote target:</b> '
             f'<code>{html.escape(str(config.get("user") or "?"))}@'
             f'{html.escape(str(config.get("host") or "?"))}:{html.escape(remote_root)}</code> '
-            f'<span style="color:#616161;">(read-only browse inside this root)</span>'
+            f'<span style="color:#616161;">(browse inside this root; Transfer Back moves selected items into local Calculations)</span>'
         )
 
     def _format_size(size_bytes):
@@ -998,6 +1141,7 @@ def create_tab(ctx):
         config_ready = state.get("config") is not None
         has_parent = bool(normalize_remote_relative_path(state.get("current_relative_path", "")))
         selected = _selected_entry()
+        transfer_back_btn.disabled = not (config_ready and selected)
         open_btn.disabled = not bool(selected)
         up_btn.disabled = (not config_ready) or (not has_parent)
         home_btn.disabled = not config_ready
@@ -1226,6 +1370,51 @@ def create_tab(ctx):
         _set_selected_path_display(remote_path)
         _copy_to_clipboard(remote_path, label="remote path")
 
+    def _on_transfer_back_click(_button=None):
+        config = state.get("config")
+        entry = _selected_entry()
+        if not config or not entry:
+            _set_status("Select a remote file or directory first.", color="#d32f2f")
+            return
+        relative_path = normalize_remote_relative_path(entry.get("relative_path", ""))
+        if not relative_path:
+            _set_status("Select a remote file or directory first.", color="#d32f2f")
+            return
+        local_target = Path(ctx.calc_dir).resolve()
+        transfer_back_btn.disabled = True
+        try:
+            job = create_download_job(
+                [relative_path],
+                config["host"],
+                config["user"],
+                config["remote_path"],
+                config["port"],
+                local_target,
+                delete_remote_on_success=True,
+            )
+            pid = launch_transfer_job(job, python_executable=sys.executable)
+        except Exception as exc:
+            _set_status(
+                f"Transfer back failed to start: {html.escape(str(exc))}",
+                color="#d32f2f",
+            )
+            _update_buttons()
+            return
+        transfer_jobs_panel.layout.display = "flex"
+        _update_transfer_jobs_visibility()
+        _render_transfer_jobs()
+        destination = local_target / Path(relative_path)
+        _set_status(
+            "Started transfer back job "
+            f"<code>{html.escape(job['job_id'])}</code> for "
+            f"<code>{html.escape(relative_path)}</code> into "
+            f"<code>{html.escape(str(destination))}</code>. "
+            "The remote source will be removed only after rsync finishes successfully. "
+            f"PID: <code>{int(pid)}</code>.",
+            color="#2e7d32",
+        )
+        _update_buttons()
+
     def _on_xyz_copy(_button=None):
         frames = state.get("current_xyz_frames") or []
         if not frames:
@@ -1341,6 +1530,17 @@ def create_tab(ctx):
             return
         _refresh_listing(set_status=False)
 
+    def _on_transfer_jobs_toggle(_button=None):
+        if transfer_jobs_panel.layout.display == "none":
+            _render_transfer_jobs()
+            transfer_jobs_panel.layout.display = "flex"
+        else:
+            transfer_jobs_panel.layout.display = "none"
+        _update_transfer_jobs_visibility()
+
+    def _on_transfer_jobs_refresh(_button=None):
+        _render_transfer_jobs()
+
     def _on_selection_change(change):
         entry = _selected_entry()
         state["selected_entry"] = entry
@@ -1391,8 +1591,9 @@ def create_tab(ctx):
         [filter_input, sort_dropdown],
         layout=widgets.Layout(width="100%", gap="6px", align_items="center"),
     )
+    filter_row.add_class("remote-filter-row")
     left_panel = widgets.VBox(
-        [info_html, path_html, controls_row, filter_row, file_list, status_html],
+        [info_html, path_html, controls_row, filter_row, file_list, transfer_jobs_panel, status_html],
         layout=widgets.Layout(
             flex=f"0 0 {REMOTE_LEFT_DEFAULT}px",
             min_width=f"{REMOTE_LEFT_MIN}px",
@@ -1474,7 +1675,7 @@ def create_tab(ctx):
         [
             file_info_html,
             widgets.HBox(
-                [copy_path_btn, copy_btn, view_toggle],
+                [transfer_jobs_btn, transfer_back_btn, copy_path_btn, copy_btn, view_toggle],
                 layout=widgets.Layout(
                     gap="10px",
                     flex_flow="row wrap",
@@ -1515,6 +1716,8 @@ def create_tab(ctx):
         f".{scope_id} .widget-output .output_area, .{scope_id} .widget-output .output_subarea,"
         f" .{scope_id} .widget-output .output_wrapper, .{scope_id} .widget-output .jp-OutputArea-child,"
         f" .{scope_id} .widget-output .jp-OutputArea-output {{ overflow:hidden !important; margin:0 !important; padding:0 !important; width:100% !important; }}"
+        f".{scope_id} .remote-left.remote-transfer-jobs-mode .remote-file-list,"
+        f" .{scope_id} .remote-left.remote-transfer-jobs-mode .remote-filter-row {{ display:none !important; }}"
         f".{scope_id} .remote-splitter {{ width:8px; height:100%; cursor:col-resize;"
         " background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);"
         " border-radius:4px; display:block; z-index:10; pointer-events:auto !important; position:relative; }"
@@ -1553,6 +1756,9 @@ def create_tab(ctx):
     up_btn.on_click(_navigate_up)
     refresh_btn.on_click(lambda _button: _refresh_listing(set_status=True))
     open_btn.on_click(_open_selection)
+    transfer_jobs_btn.on_click(_on_transfer_jobs_toggle)
+    transfer_jobs_refresh_btn.on_click(_on_transfer_jobs_refresh)
+    transfer_back_btn.on_click(_on_transfer_back_click)
     copy_btn.on_click(_on_copy_click)
     copy_path_btn.on_click(_on_copy_path_click)
     view_toggle.observe(_on_view_toggle, names="value")
@@ -1572,6 +1778,7 @@ def create_tab(ctx):
     _refresh_listing(set_status=False)
     _update_path_html()
     _update_buttons()
+    _update_transfer_jobs_visibility()
 
     init_js = f"""
     (function() {{
