@@ -1,0 +1,17 @@
+include LICENSE
+include README.md
+include pyproject.toml
+
+recursive-include delfin *.py
+recursive-include delfin/notebooks *.ipynb
+recursive-include tests *.py
+
+prune delfin/qm_tools/bin
+prune delfin/qm_tools/downloads
+
+include delfin/qm_tools/*.txt
+include delfin/qm_tools/*.sh
+include delfin/qm_tools/bin/stda_v1.6.1
+include delfin/qm_tools/bin/xtb4stda
+recursive-include delfin/qm_tools/share/xtb4stda *
+include delfin/submit_templates/*.sh

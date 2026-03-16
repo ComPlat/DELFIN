@@ -218,6 +218,43 @@ print_info "Installiere DELFIN..."
 pip install -e . -q
 print_success "DELFIN installiert"
 
+print_info "Schreibe lokale Runtime-Defaults..."
+python - <<EOF
+from pathlib import Path
+from delfin.user_settings import load_settings, save_settings
+
+settings = load_settings()
+runtime = settings.get("runtime", {}) or {}
+runtime.setdefault("local", {})
+runtime.setdefault("slurm", {})
+
+orca_bin = Path("${ORCA_PATH:-}").expanduser() if "${ORCA_PATH:-}" else None
+orca_base = str(orca_bin.parent) if orca_bin else ""
+submit_templates_dir = str(
+    Path("$INSTALL_DIR/examples/example_Job_Submission_Scripts/BwUniCluster/submit_sh").expanduser()
+)
+qm_tools_root = str(Path("$INSTALL_DIR/delfin/qm_tools").expanduser())
+
+if not runtime.get("backend") or runtime.get("backend") == "auto":
+    runtime["backend"] = "slurm"
+if orca_base and not runtime.get("orca_base"):
+    runtime["orca_base"] = orca_base
+if not runtime.get("qm_tools_root"):
+    runtime["qm_tools_root"] = qm_tools_root
+if orca_base and not runtime["local"].get("orca_base"):
+    runtime["local"]["orca_base"] = orca_base
+if orca_base and not runtime["slurm"].get("orca_base"):
+    runtime["slurm"]["orca_base"] = orca_base
+if not runtime["slurm"].get("submit_templates_dir"):
+    runtime["slurm"]["submit_templates_dir"] = submit_templates_dir
+if not runtime["slurm"].get("profile"):
+    runtime["slurm"]["profile"] = "bwunicluster3"
+
+settings["runtime"] = runtime
+save_settings(settings)
+print(f"Runtime-Defaults gespeichert in {Path.home() / '.delfin_settings.json'}")
+EOF
+
 # ========================================================================
 # Schritt 7: Installation prüfen
 # ========================================================================

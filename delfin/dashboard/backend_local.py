@@ -1,9 +1,11 @@
 """Local job backend: JSON-based queue with a background worker thread."""
 
+import importlib.util
 import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time as _time
 from datetime import datetime
@@ -32,6 +34,22 @@ class LocalJobBackend(JobBackend):
             target=self._queue_worker, daemon=True, name='delfin-queue'
         )
         self._worker_thread.start()
+
+    def _has_launch_target(self):
+        return self.run_script.exists() or importlib.util.find_spec(
+            'delfin.dashboard.local_runner'
+        ) is not None
+
+    def _build_launch_command(self, timeout_secs):
+        if self.run_script.exists():
+            return ['timeout', str(timeout_secs), 'bash', str(self.run_script)]
+        return [
+            'timeout',
+            str(timeout_secs),
+            sys.executable,
+            '-m',
+            'delfin.dashboard.local_runner',
+        ]
 
     # ------------------------------------------------------------------
     # Persistence
@@ -130,7 +148,7 @@ class LocalJobBackend(JobBackend):
             log_file = Path(job['job_dir']) / f'delfin_{job["job_id"]}.out'
             log_fd = open(log_file, 'w')
             proc = subprocess.Popen(
-                ['timeout', str(timeout_secs), 'bash', str(self.run_script)],
+                self._build_launch_command(timeout_secs),
                 cwd=str(job['job_dir']),
                 env=env,
                 stdout=log_fd,
@@ -195,8 +213,14 @@ class LocalJobBackend(JobBackend):
                  time_limit='48:00:00', override=None, build_mult=None,
                  pal=40, maxcore=6000, co2_species_delta=None,
                  xyz_file=None, workflow_label=None):
-        if not self.run_script.exists():
-            return SubmitResult(1, stderr=f'Run script not found: {self.run_script}')
+        if not self._has_launch_target():
+            return SubmitResult(
+                1,
+                stderr=(
+                    'Neither the local run script nor the bundled Python '
+                    'runner is available.'
+                ),
+            )
 
         with self._lock:
             data = self._load_jobs()

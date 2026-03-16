@@ -1,14 +1,25 @@
 """Dashboard Settings tab backed by a user-local settings file."""
 
 import html
+import shutil
 from pathlib import Path
 
 import ipywidgets as widgets
 
+from delfin.runtime_setup import (
+    apply_runtime_environment,
+    collect_runtime_diagnostics,
+    get_packaged_submit_templates_dir,
+    resolve_backend_choice,
+    resolve_orca_base,
+    resolve_submit_templates_dir,
+)
 from delfin.user_settings import (
     get_settings_path,
     load_settings,
+    normalize_choice_setting,
     normalize_local_directory_setting,
+    normalize_positive_int_setting,
     normalize_ssh_transfer_settings,
     save_settings,
 )
@@ -18,6 +29,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     """Create the dashboard Settings tab."""
     settings_path = get_settings_path()
     status_html = widgets.HTML(value='')
+    runtime_diagnostics_html = widgets.HTML(value='')
     show_sensitive_btn = widgets.ToggleButton(
         value=False,
         description='Show Values',
@@ -27,6 +39,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     reload_btn = widgets.Button(
         description='Reload',
         layout=widgets.Layout(width='90px', height='28px'),
+    )
+    validate_runtime_btn = widgets.Button(
+        description='Validate Setup',
+        button_style='info',
+        layout=widgets.Layout(width='120px', height='28px'),
     )
     save_btn = widgets.Button(
         description='Save Settings',
@@ -47,6 +64,54 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         placeholder=str(ctx.default_archive_dir),
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
+    backend_dropdown = widgets.Dropdown(
+        options=[
+            ('Auto', 'auto'),
+            ('Local', 'local'),
+            ('SLURM', 'slurm'),
+        ],
+        value='auto',
+        layout=widgets.Layout(width='160px', height='28px'),
+    )
+    global_orca_input = widgets.Text(
+        placeholder='Prefer PATH / auto-detect',
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    qm_tools_root_input = widgets.Text(
+        placeholder='Optional qm_tools root override',
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    local_orca_input = widgets.Text(
+        placeholder='Optional local ORCA override',
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    local_max_cores_input = widgets.BoundedIntText(
+        value=384,
+        min=1,
+        max=1_000_000,
+        step=1,
+        layout=widgets.Layout(width='120px', min_width='120px', height='28px'),
+    )
+    local_max_ram_input = widgets.BoundedIntText(
+        value=1_400_000,
+        min=1,
+        max=100_000_000,
+        step=1000,
+        layout=widgets.Layout(width='140px', min_width='140px', height='28px'),
+    )
+    slurm_orca_input = widgets.Text(
+        placeholder='Optional SLURM ORCA override',
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    slurm_templates_input = widgets.Text(
+        placeholder='Optional submit template directory',
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    slurm_profile_input = widgets.Text(
+        placeholder='Optional site profile label',
+        layout=widgets.Layout(width='220px', min_width='200px', height='28px'),
+    )
+
     state = {
         'remote_archive_enabled': False,
         'calculations_dir': str(ctx.calc_dir),
@@ -101,9 +166,110 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     )
 
     def _set_status(message, color='#455a64'):
-        status_html.value = (
-            f'<span style="color:{color};">{message}</span>'
+        status_html.value = f'<span style="color:{color};">{message}</span>'
+
+    def _slurm_available():
+        return shutil.which('sbatch') is not None
+
+    def _runtime_auto_candidates():
+        candidates = []
+        if ctx.orca_base:
+            candidates.append(str(ctx.orca_base))
+        for candidate in ctx.orca_candidates or []:
+            candidate_text = str(candidate)
+            if candidate_text not in candidates:
+                candidates.append(candidate_text)
+        return candidates
+
+    def _fallback_submit_templates_dir():
+        current = getattr(ctx, 'submit_templates_dir', None)
+        if current:
+            return Path(current)
+        return get_packaged_submit_templates_dir()
+
+    def _resolve_runtime_effective_values(runtime_payload):
+        effective_backend = resolve_backend_choice(
+            None,
+            runtime_payload.get('backend', 'auto'),
+            slurm_available=_slurm_available(),
         )
+        effective_orca_base = resolve_orca_base(
+            None,
+            runtime_payload,
+            effective_backend,
+            auto_candidates=_runtime_auto_candidates(),
+            local_default='/opt/orca' if effective_backend == 'local' else '',
+        )
+        submit_templates_dir = resolve_submit_templates_dir(
+            runtime_payload,
+            _fallback_submit_templates_dir(),
+        )
+        return effective_backend, effective_orca_base, submit_templates_dir
+
+    def _render_runtime_diagnostics(runtime_payload, *, reload_required=False):
+        effective_backend, effective_orca_base, submit_templates_dir = _resolve_runtime_effective_values(
+            runtime_payload
+        )
+        diagnostics = collect_runtime_diagnostics(
+            runtime_payload,
+            backend=effective_backend,
+            effective_orca_base=effective_orca_base,
+            submit_templates_dir=submit_templates_dir if effective_backend == 'slurm' else None,
+        )
+
+        summary_parts = [
+            f'Effective backend: <code>{html.escape(effective_backend)}</code>',
+            (
+                f'ORCA: <code>{html.escape(effective_orca_base)}</code>'
+                if effective_orca_base
+                else 'ORCA: <code>PATH / auto-detect</code>'
+            ),
+        ]
+        if runtime_payload.get('qm_tools_root'):
+            summary_parts.append(
+                f'qm_tools: <code>{html.escape(str(runtime_payload.get("qm_tools_root", "")))}</code>'
+            )
+        if effective_backend == 'slurm':
+            summary_parts.append(
+                f'Submit templates: <code>{html.escape(str(submit_templates_dir))}</code>'
+            )
+        if reload_required:
+            summary_parts.append(
+                f'<span style="color:#ef6c00;">Reload required to switch from '
+                f'<code>{html.escape(ctx.runtime_backend)}</code> to '
+                f'<code>{html.escape(effective_backend)}</code>.</span>'
+            )
+
+        rows = []
+        for item in diagnostics:
+            status = item.get('status', 'missing')
+            status_color = '#2e7d32' if status == 'ok' else '#d32f2f'
+            status_label = 'OK' if status == 'ok' else 'Missing'
+            rows.append(
+                '<tr>'
+                f'<td style="padding:4px 8px;"><code>{html.escape(str(item.get("name", "")))}</code></td>'
+                f'<td style="padding:4px 8px; color:{status_color}; font-weight:600;">{status_label}</td>'
+                f'<td style="padding:4px 8px;"><code>{html.escape(str(item.get("detail", "")))}</code></td>'
+                '</tr>'
+            )
+
+        runtime_diagnostics_html.value = (
+            '<div style="border:1px solid #d9dee3; border-radius:6px; padding:10px; background:#fafbfc;">'
+            '<b>Runtime validation</b><br>'
+            + ' | '.join(summary_parts)
+            + '<table style="margin-top:8px; border-collapse:collapse; width:100%;">'
+            '<thead>'
+            '<tr>'
+            '<th style="text-align:left; padding:4px 8px;">Check</th>'
+            '<th style="text-align:left; padding:4px 8px;">Status</th>'
+            '<th style="text-align:left; padding:4px 8px;">Detail</th>'
+            '</tr>'
+            '</thead>'
+            '<tbody>'
+            + ''.join(rows)
+            + '</tbody></table></div>'
+        )
+        return effective_backend, effective_orca_base, submit_templates_dir
 
     def _set_transfer_widgets(payload):
         host_value = str((payload or {}).get('host') or '')
@@ -129,6 +295,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         calc_path_input.value = str(paths_payload.get('calculations_dir') or '')
         archive_path_input.value = str(paths_payload.get('archive_dir') or '')
 
+    def _set_runtime_widgets(settings_payload):
+        runtime_payload = ((settings_payload or {}).get('runtime') or {})
+        local_payload = runtime_payload.get('local', {}) or {}
+        slurm_payload = runtime_payload.get('slurm', {}) or {}
+
+        backend_dropdown.value = runtime_payload.get('backend', 'auto')
+        global_orca_input.value = str(runtime_payload.get('orca_base') or '')
+        qm_tools_root_input.value = str(runtime_payload.get('qm_tools_root') or '')
+        local_orca_input.value = str(local_payload.get('orca_base') or '')
+        local_max_cores_input.value = int(local_payload.get('max_cores', 384))
+        local_max_ram_input.value = int(local_payload.get('max_ram_mb', 1_400_000))
+        slurm_orca_input.value = str(slurm_payload.get('orca_base') or '')
+        slurm_templates_input.value = str(slurm_payload.get('submit_templates_dir') or '')
+        slurm_profile_input.value = str(slurm_payload.get('profile') or '')
+
     def _effective_paths_from_widgets():
         calc_override = normalize_local_directory_setting(
             calc_path_input.value,
@@ -144,6 +325,51 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         )
         return calc_override, archive_override, effective_calc_dir, effective_archive_dir
 
+    def _runtime_payload_from_widgets():
+        return {
+            'backend': normalize_choice_setting(
+                backend_dropdown.value,
+                'Runtime backend',
+                {'auto', 'local', 'slurm'},
+                'auto',
+            ),
+            'orca_base': normalize_local_directory_setting(
+                global_orca_input.value,
+                'Global ORCA path',
+            ),
+            'qm_tools_root': normalize_local_directory_setting(
+                qm_tools_root_input.value,
+                'qm_tools root',
+            ),
+            'local': {
+                'orca_base': normalize_local_directory_setting(
+                    local_orca_input.value,
+                    'Local ORCA path',
+                ),
+                'max_cores': normalize_positive_int_setting(
+                    local_max_cores_input.value,
+                    'Local max cores',
+                    384,
+                ),
+                'max_ram_mb': normalize_positive_int_setting(
+                    local_max_ram_input.value,
+                    'Local max RAM (MB)',
+                    1_400_000,
+                ),
+            },
+            'slurm': {
+                'orca_base': normalize_local_directory_setting(
+                    slurm_orca_input.value,
+                    'SLURM ORCA path',
+                ),
+                'submit_templates_dir': normalize_local_directory_setting(
+                    slurm_templates_input.value,
+                    'SLURM submit templates path',
+                ),
+                'profile': str(slurm_profile_input.value or '').strip(),
+            },
+        }
+
     def _apply_workspace_paths(effective_calc_dir, effective_archive_dir):
         effective_calc_dir.mkdir(parents=True, exist_ok=True)
         effective_archive_dir.mkdir(parents=True, exist_ok=True)
@@ -158,6 +384,35 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             archive_refs['calc_set_root'](effective_archive_dir)
         if archive_refs and callable(archive_refs.get('calc_set_primary_root')):
             archive_refs['calc_set_primary_root'](effective_calc_dir)
+
+    def _apply_runtime_settings(runtime_payload):
+        effective_backend, effective_orca_base, submit_templates_dir = _resolve_runtime_effective_values(
+            runtime_payload
+        )
+        backend_switch_required = effective_backend != ctx.runtime_backend
+
+        ctx.runtime_settings = runtime_payload
+        apply_runtime_environment(
+            qm_tools_root=runtime_payload.get('qm_tools_root', ''),
+            orca_base=effective_orca_base,
+        )
+
+        if not backend_switch_required:
+            ctx.orca_base = effective_orca_base
+            if getattr(ctx, 'backend', None) is not None and hasattr(ctx.backend, 'orca_base'):
+                ctx.backend.orca_base = effective_orca_base
+            if effective_backend == 'local':
+                local_settings = runtime_payload.get('local', {}) or {}
+                if hasattr(ctx.backend, 'max_cores'):
+                    ctx.backend.max_cores = int(local_settings.get('max_cores', ctx.backend.max_cores))
+                if hasattr(ctx.backend, 'max_ram_mb'):
+                    ctx.backend.max_ram_mb = int(local_settings.get('max_ram_mb', ctx.backend.max_ram_mb))
+            if effective_backend == 'slurm':
+                ctx.submit_templates_dir = Path(submit_templates_dir)
+                if hasattr(ctx.backend, 'submit_templates_dir'):
+                    ctx.backend.submit_templates_dir = Path(submit_templates_dir)
+
+        return backend_switch_required, effective_backend, effective_orca_base
 
     def _transfer_payload_from_widgets():
         if show_sensitive_btn.value:
@@ -205,6 +460,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         except Exception as exc:
             _set_transfer_widgets({})
             _set_path_widgets({})
+            _set_runtime_widgets({})
             _set_remote_archive_widget({})
             _set_status(
                 (
@@ -218,7 +474,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         payload = settings_payload.get('transfer', {}) or {}
         _set_transfer_widgets(payload)
         _set_path_widgets(settings_payload)
+        _set_runtime_widgets(settings_payload)
         _set_remote_archive_widget(settings_payload)
+        runtime_payload = settings_payload.get('runtime', {}) or {}
+        effective_backend, effective_orca_base, _submit_templates_dir = _render_runtime_diagnostics(
+            runtime_payload,
+            reload_required=False,
+        )
         if set_status:
             current_calc_dir = html.escape(str(ctx.calc_dir))
             current_archive_dir = html.escape(str(ctx.archive_dir))
@@ -229,7 +491,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                         f'<code>{html.escape(str(settings_path))}</code>. '
                         'Sensitive values stay masked until revealed. '
                         f'Current paths: <code>{current_calc_dir}</code> and '
-                        f'<code>{current_archive_dir}</code>.'
+                        f'<code>{current_archive_dir}</code>. '
+                        f'Runtime resolves to <code>{html.escape(effective_backend)}</code> '
+                        f'with ORCA <code>{html.escape(effective_orca_base or "PATH / auto-detect")}</code>.'
                     ),
                     color='#2e7d32',
                 )
@@ -239,7 +503,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                         f'No transfer target saved yet. Settings will be created in '
                         f'<code>{html.escape(str(settings_path))}</code>. '
                         f'Current paths: <code>{current_calc_dir}</code> and '
-                        f'<code>{current_archive_dir}</code>.'
+                        f'<code>{current_archive_dir}</code>. '
+                        f'Runtime resolves to <code>{html.escape(effective_backend)}</code>.'
                     ),
                     color='#ef6c00',
                 )
@@ -253,6 +518,26 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     def _on_reload(button):
         _load_settings_to_widgets(set_status=True)
 
+    def _on_validate_runtime(button):
+        try:
+            runtime_payload = _runtime_payload_from_widgets()
+            effective_backend, _effective_orca_base, _submit_templates_dir = _resolve_runtime_effective_values(
+                runtime_payload
+            )
+            _render_runtime_diagnostics(
+                runtime_payload,
+                reload_required=(effective_backend != ctx.runtime_backend),
+            )
+            _set_status(
+                'Runtime validation finished. Review the checks below before saving.',
+                color='#2e7d32',
+            )
+        except Exception as exc:
+            _set_status(
+                f'Runtime validation failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
     def _on_save(button):
         try:
             host, user, remote_path, port = _transfer_payload_from_widgets()
@@ -260,6 +545,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             user = str(user or '').strip()
             remote_path = str(remote_path or '').strip()
             calc_override, archive_override, effective_calc_dir, effective_archive_dir = _effective_paths_from_widgets()
+            runtime_payload = _runtime_payload_from_widgets()
             settings_payload = load_settings()
             if host or user or remote_path:
                 host, user, remote_path, port = normalize_ssh_transfer_settings(
@@ -282,10 +568,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             if archive_override:
                 paths_payload['archive_dir'] = archive_override
             settings_payload['paths'] = paths_payload
+            settings_payload['runtime'] = runtime_payload
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
-            save_settings(settings_payload, settings_path)
+            settings_payload = save_settings(settings_payload, settings_path)
             _apply_workspace_paths(effective_calc_dir, effective_archive_dir)
+            backend_switch_required, effective_backend, effective_orca_base = _apply_runtime_settings(
+                settings_payload.get('runtime', {}) or runtime_payload
+            )
         except Exception as exc:
             _set_status(
                 (
@@ -299,21 +589,36 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         toggle_changed = bool(remote_archive_toggle.value) != bool(state.get('remote_archive_enabled'))
         _set_transfer_widgets(settings_payload.get('transfer', {}) or {})
         _set_path_widgets(settings_payload)
+        _set_runtime_widgets(settings_payload)
         _set_remote_archive_widget(settings_payload)
+        _render_runtime_diagnostics(
+            settings_payload.get('runtime', {}) or {},
+            reload_required=backend_switch_required,
+        )
         reload_hint = ' Reload DELFIN to apply Remote Archive tab/button visibility.' if toggle_changed else ''
+        backend_hint = (
+            f' Reload DELFIN to switch execution backend from '
+            f'<code>{html.escape(ctx.runtime_backend)}</code> to '
+            f'<code>{html.escape(effective_backend)}</code>.'
+            if backend_switch_required
+            else ' Runtime settings applied to the current session.'
+        )
         _set_status(
             (
                 f'Saved local settings to '
                 f'<code>{html.escape(str(settings_path))}</code>. '
                 f'Calculations now point to <code>{html.escape(str(effective_calc_dir))}</code>; '
-                f'Archive now points to <code>{html.escape(str(effective_archive_dir))}</code>.'
-                f'{reload_hint}'
+                f'Archive now points to <code>{html.escape(str(effective_archive_dir))}</code>. '
+                f'Runtime resolves to <code>{html.escape(effective_backend)}</code> with ORCA '
+                f'<code>{html.escape(effective_orca_base or "PATH / auto-detect")}</code>.'
+                f'{backend_hint}{reload_hint}'
             ),
             color='#2e7d32',
         )
 
     show_sensitive_btn.observe(_on_toggle_sensitive, names='value')
     reload_btn.on_click(_on_reload)
+    validate_runtime_btn.on_click(_on_validate_runtime)
     save_btn.on_click(_on_save)
 
     info_box = widgets.HTML(
@@ -326,6 +631,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             f'Leave path fields empty to use the defaults '
             f'<code>{html.escape(str(ctx.default_calc_dir))}</code> and '
             f'<code>{html.escape(str(ctx.default_archive_dir))}</code>.<br>'
+            'Leave runtime path fields empty to prefer environment variables, '
+            '<code>PATH</code>, or DELFIN auto-detection. '
             'Passwords are not stored here. Resumable SSH transfers use SSH keys or '
             '<code>ssh-agent</code>.'
             '</div>'
@@ -358,6 +665,116 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     flex_flow='row wrap',
                 ),
             ),
+        ],
+        layout=widgets.Layout(width='100%', gap='10px'),
+    )
+    runtime_header = widgets.HTML('<h3 style="margin:0;">Runtime / Execution</h3>')
+    runtime_rows = widgets.VBox(
+        [
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Backend</b>'),
+                    backend_dropdown,
+                    widgets.HTML(
+                        '<span style="color:#616161;">Auto chooses SLURM when <code>sbatch</code> is available.</span>'
+                    ),
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>ORCA path</b>'),
+                    global_orca_input,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>qm_tools root</b>'),
+                    qm_tools_root_input,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HTML('<b>Local overrides</b>'),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Local ORCA</b>'),
+                    local_orca_input,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Local max cores</b>'),
+                    local_max_cores_input,
+                    widgets.HTML('<b>Local max RAM (MB)</b>'),
+                    local_max_ram_input,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HTML('<b>SLURM overrides</b>'),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>SLURM ORCA</b>'),
+                    slurm_orca_input,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Submit templates</b>'),
+                    slurm_templates_input,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Site profile</b>'),
+                    slurm_profile_input,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            runtime_diagnostics_html,
         ],
         layout=widgets.Layout(width='100%', gap='10px'),
     )
@@ -414,7 +831,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 ),
             ),
             widgets.HBox(
-                [show_sensitive_btn, reload_btn, save_btn],
+                [show_sensitive_btn, reload_btn, validate_runtime_btn, save_btn],
                 layout=widgets.Layout(gap='8px', align_items='center', flex_flow='row wrap'),
             ),
             status_html,
@@ -454,6 +871,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             info_box,
             workspace_header,
             workspace_rows,
+            runtime_header,
+            runtime_rows,
             transfer_header,
             transfer_rows,
             ssh_help_box,

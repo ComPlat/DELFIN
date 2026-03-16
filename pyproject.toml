@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "delfin-complat"
-version = "1.1.6"
+version = "1.1.7"
 description = "Automated ORCA, xTB and CREST workflow for predicting preferred spin states and associated redox potentials."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10,<3.12"
@@ -65,7 +65,25 @@ where = ["."]
 include = ["delfin*"]
 
 [tool.setuptools.package-data]
+"delfin" = [
+    "qm_tools/*.txt",
+    "qm_tools/*.sh",
+    "qm_tools/bin/stda_v1.6.1",
+    "qm_tools/bin/xtb4stda",
+    "qm_tools/share/xtb4stda/*",
+    "submit_templates/*.sh",
+]
 "delfin.notebooks" = ["*.ipynb"]
+
+[tool.setuptools.exclude-package-data]
+"delfin" = [
+    "qm_tools/bin/crest",
+    "qm_tools/bin/dftb+",
+    "qm_tools/bin/std2",
+    "qm_tools/bin/stda",
+    "qm_tools/bin/xtb",
+    "qm_tools/downloads/*",
+]
 
 [tool.black]
 line-length = 88

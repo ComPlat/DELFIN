@@ -183,6 +183,38 @@ mkdir -p "$DELFIN_REPO/.runtime_cache"
 log "Created $DELFIN_REPO/delfin_venv.tar"
 log "Commit-pinned runtime wheels will be cached on demand in $DELFIN_REPO/.runtime_cache"
 
+log "Writing user-local DELFIN runtime defaults"
+python - <<EOF
+from pathlib import Path
+from delfin.user_settings import load_settings, save_settings
+
+settings = load_settings()
+runtime = settings.get("runtime", {}) or {}
+runtime.setdefault("local", {})
+runtime.setdefault("slurm", {})
+
+if not runtime.get("backend") or runtime.get("backend") == "auto":
+    runtime["backend"] = "slurm"
+if not runtime.get("orca_base"):
+    runtime["orca_base"] = str(Path("$ORCA_DIR").expanduser())
+if not runtime.get("qm_tools_root"):
+    runtime["qm_tools_root"] = str(Path("$DELFIN_REPO/delfin/qm_tools").expanduser())
+if not runtime["local"].get("orca_base"):
+    runtime["local"]["orca_base"] = str(Path("$ORCA_DIR").expanduser())
+if not runtime["slurm"].get("orca_base"):
+    runtime["slurm"]["orca_base"] = str(Path("$ORCA_DIR").expanduser())
+if not runtime["slurm"].get("submit_templates_dir"):
+    runtime["slurm"]["submit_templates_dir"] = str(
+        Path("$DELFIN_REPO/examples/example_Job_Submission_Scripts/BwUniCluster/submit_sh").expanduser()
+    )
+if not runtime["slurm"].get("profile"):
+    runtime["slurm"]["profile"] = "bwunicluster3"
+
+settings["runtime"] = runtime
+save_settings(settings)
+print(f"Saved runtime defaults to {Path.home() / '.delfin_settings.json'}")
+EOF
+
 # ================================================================
 # Step 4: Shell environment
 # ================================================================

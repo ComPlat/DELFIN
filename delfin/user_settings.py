@@ -11,6 +11,21 @@ LEGACY_TRANSFER_CONFIG_NAME = ".delfin_transfer_target.json"
 DEFAULT_SETTINGS = {
     "transfer": {},
     "paths": {},
+    "runtime": {
+        "backend": "auto",
+        "orca_base": "",
+        "qm_tools_root": "",
+        "local": {
+            "orca_base": "",
+            "max_cores": 384,
+            "max_ram_mb": 1_400_000,
+        },
+        "slurm": {
+            "orca_base": "",
+            "submit_templates_dir": "",
+            "profile": "",
+        },
+    },
     "features": {
         "remote_archive_enabled": False,
     },
@@ -55,6 +70,28 @@ def normalize_local_directory_setting(path_value, label):
     if "\x00" in path_value or "\n" in path_value or "\r" in path_value:
         raise ValueError(f"{label} contains unsupported control characters.")
     return str(Path(path_value).expanduser())
+
+
+def normalize_choice_setting(value, label, allowed_values, default):
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return default
+    if normalized not in allowed_values:
+        allowed = ", ".join(sorted(allowed_values))
+        raise ValueError(f"{label} must be one of: {allowed}.")
+    return normalized
+
+
+def normalize_positive_int_setting(value, label, default, minimum=1):
+    if value in ("", None):
+        return int(default)
+    try:
+        normalized = int(value)
+    except Exception as exc:
+        raise ValueError(f"{label} must be a whole number.") from exc
+    if normalized < minimum:
+        raise ValueError(f"{label} must be at least {minimum}.")
+    return normalized
 
 
 def get_settings_path(base_path=None):
@@ -107,6 +144,64 @@ def _normalized_settings_dict(payload):
             label,
         )
     normalized["paths"] = normalized_paths
+    runtime = normalized.get("runtime", {})
+    if runtime is None:
+        runtime = {}
+    if not isinstance(runtime, dict):
+        raise ValueError("Settings key 'runtime' must be a JSON object.")
+    local_runtime = runtime.get("local", {})
+    if local_runtime is None:
+        local_runtime = {}
+    if not isinstance(local_runtime, dict):
+        raise ValueError("Settings key 'runtime.local' must be a JSON object.")
+    slurm_runtime = runtime.get("slurm", {})
+    if slurm_runtime is None:
+        slurm_runtime = {}
+    if not isinstance(slurm_runtime, dict):
+        raise ValueError("Settings key 'runtime.slurm' must be a JSON object.")
+    normalized["runtime"] = {
+        "backend": normalize_choice_setting(
+            runtime.get("backend", DEFAULT_SETTINGS["runtime"]["backend"]),
+            "Runtime backend",
+            {"auto", "local", "slurm"},
+            DEFAULT_SETTINGS["runtime"]["backend"],
+        ),
+        "orca_base": normalize_local_directory_setting(
+            runtime.get("orca_base", ""),
+            "Global ORCA path",
+        ),
+        "qm_tools_root": normalize_local_directory_setting(
+            runtime.get("qm_tools_root", ""),
+            "qm_tools root",
+        ),
+        "local": {
+            "orca_base": normalize_local_directory_setting(
+                local_runtime.get("orca_base", ""),
+                "Local ORCA path",
+            ),
+            "max_cores": normalize_positive_int_setting(
+                local_runtime.get("max_cores", DEFAULT_SETTINGS["runtime"]["local"]["max_cores"]),
+                "Local max cores",
+                DEFAULT_SETTINGS["runtime"]["local"]["max_cores"],
+            ),
+            "max_ram_mb": normalize_positive_int_setting(
+                local_runtime.get("max_ram_mb", DEFAULT_SETTINGS["runtime"]["local"]["max_ram_mb"]),
+                "Local max RAM (MB)",
+                DEFAULT_SETTINGS["runtime"]["local"]["max_ram_mb"],
+            ),
+        },
+        "slurm": {
+            "orca_base": normalize_local_directory_setting(
+                slurm_runtime.get("orca_base", ""),
+                "SLURM ORCA path",
+            ),
+            "submit_templates_dir": normalize_local_directory_setting(
+                slurm_runtime.get("submit_templates_dir", ""),
+                "SLURM submit templates path",
+            ),
+            "profile": str(slurm_runtime.get("profile", "") or "").strip(),
+        },
+    }
     features = normalized.get("features", {})
     if features is None:
         features = {}
@@ -193,6 +288,12 @@ def load_transfer_settings(settings_path=None):
         "port": port,
         "settings_path": str(path),
     }
+
+
+def load_runtime_settings(settings_path=None):
+    path = get_settings_path(settings_path)
+    settings = load_settings(path)
+    return settings.get("runtime", {}) or _merge_missing_defaults({}, DEFAULT_SETTINGS["runtime"])
 
 
 def save_transfer_settings(host, user, remote_path, port, settings_path=None):

@@ -21,6 +21,13 @@ from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
 from .context import DashboardContext
 from .helpers import create_busy_css, disable_spellcheck_global
 from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
+from delfin.runtime_setup import (
+    apply_runtime_environment,
+    get_packaged_submit_templates_dir,
+    resolve_backend_choice,
+    resolve_orca_base,
+    resolve_submit_templates_dir,
+)
 from delfin.user_settings import load_remote_archive_enabled, load_settings
 
 from . import (
@@ -59,11 +66,17 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # -- resolve paths -----------------------------------------------------
     home = Path.home()
     notebook_dir = _get_notebook_dir()
+    settings_payload = {}
     configured_paths = {}
+    runtime_settings = {}
     try:
-        configured_paths = (load_settings().get('paths', {}) or {})
+        settings_payload = load_settings()
+        configured_paths = (settings_payload.get('paths', {}) or {})
+        runtime_settings = (settings_payload.get('runtime', {}) or {})
     except Exception:
+        settings_payload = {}
         configured_paths = {}
+        runtime_settings = {}
 
     # SLURM: look for a root_dir/calc pattern; local: ~/calc
     root_dir = _find_root_dir(notebook_dir)
@@ -84,23 +97,36 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     repo_dir = _find_delfin_root()
 
     # -- auto-detect backend -----------------------------------------------
-    if backend == 'auto':
-        backend = 'slurm' if shutil.which('sbatch') else 'local'
+    backend = resolve_backend_choice(
+        backend,
+        runtime_settings.get('backend', 'auto'),
+        slurm_available=shutil.which('sbatch') is not None,
+    )
 
     # -- build backend object ----------------------------------------------
     if backend == 'slurm':
         from .backend_slurm import SlurmJobBackend
 
-        submit_templates_dir = _find_submit_templates_dir(notebook_dir)
+        submit_templates_dir = resolve_submit_templates_dir(
+            runtime_settings,
+            _find_submit_templates_dir(notebook_dir),
+        )
         orca_candidates = _find_orca_candidates(notebook_dir)
-        if orca_base is None and orca_candidates:
-            # Prefer 6_1_1 if available, else latest
-            for p in orca_candidates:
-                if '6_1_1' in p.name:
-                    orca_base = str(p)
-                    break
-            if orca_base is None:
-                orca_base = str(orca_candidates[-1])
+        auto_orca_candidates = [str(path) for path in orca_candidates]
+        auto_orca_candidates.sort(
+            key=lambda value: ('6_1_1' not in Path(value).name, value)
+        )
+        orca_base = resolve_orca_base(
+            orca_base,
+            runtime_settings,
+            'slurm',
+            auto_candidates=auto_orca_candidates,
+            local_default='',
+        )
+        apply_runtime_environment(
+            qm_tools_root=runtime_settings.get('qm_tools_root', ''),
+            orca_base=orca_base,
+        )
 
         backend_obj = SlurmJobBackend(
             submit_templates_dir=submit_templates_dir,
@@ -111,12 +137,23 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         from .backend_local import LocalJobBackend
 
         run_script = _find_run_script(notebook_dir)
-        if orca_base is None:
-            orca_base = '/opt/orca'
+        orca_base = resolve_orca_base(
+            orca_base,
+            runtime_settings,
+            'local',
+            auto_candidates=[],
+            local_default='/opt/orca',
+        )
         orca_candidates = []
+        apply_runtime_environment(
+            qm_tools_root=runtime_settings.get('qm_tools_root', ''),
+            orca_base=orca_base,
+        )
         backend_obj = LocalJobBackend(
             run_script=run_script,
             orca_base=orca_base,
+            max_cores=int((runtime_settings.get('local', {}) or {}).get('max_cores', 384)),
+            max_ram_mb=int((runtime_settings.get('local', {}) or {}).get('max_ram_mb', 1_400_000)),
         )
         only_goat_template_path = None
 
@@ -132,6 +169,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         primary_calc_dir=calc_dir,
         default_calc_dir=default_calc_dir,
         default_archive_dir=default_archive_dir,
+        runtime_settings=runtime_settings,
+        runtime_backend=backend,
         notebook_dir=notebook_dir,
         repo_dir=repo_dir,
         backend=backend_obj,
@@ -499,6 +538,7 @@ def _find_submit_templates_dir(notebook_dir):
             / 'example_Job_Submission_Scripts' / 'BwUniCluster' / 'submit_sh'
         )
     candidates.append(notebook_dir / 'submit_sh')
+    candidates.append(get_packaged_submit_templates_dir())
     for p in candidates:
         if p.exists():
             return p

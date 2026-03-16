@@ -23,6 +23,8 @@ class DashboardContext:
     primary_calc_dir: Optional[Path] = None
     default_calc_dir: Path = field(default_factory=lambda: Path.home() / 'calc')
     default_archive_dir: Path = field(default_factory=lambda: Path.home() / 'archive')
+    runtime_settings: dict = field(default_factory=dict)
+    runtime_backend: str = 'auto'
     notebook_dir: Path = field(default_factory=Path.cwd)
     repo_dir: Optional[Path] = None
 

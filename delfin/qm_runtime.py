@@ -59,7 +59,7 @@ _XTB4STDA_RUNTIME_FILES: tuple[str, ...] = (
 
 
 def get_qm_tools_root() -> Path:
-    env_root = os.environ.get("DELFIN_QM_ROOT")
+    env_root = os.environ.get("DELFIN_QM_TOOLS_ROOT") or os.environ.get("DELFIN_QM_ROOT")
     if env_root:
         return Path(env_root).expanduser().resolve()
     return (Path(__file__).resolve().parent / "qm_tools").resolve()

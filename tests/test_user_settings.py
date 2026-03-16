@@ -13,6 +13,7 @@ _SPEC.loader.exec_module(_MODULE)
 get_settings_path = _MODULE.get_settings_path
 load_settings = _MODULE.load_settings
 load_remote_archive_enabled = _MODULE.load_remote_archive_enabled
+load_runtime_settings = _MODULE.load_runtime_settings
 load_transfer_settings = _MODULE.load_transfer_settings
 normalize_local_directory_setting = _MODULE.normalize_local_directory_setting
 save_remote_archive_enabled = _MODULE.save_remote_archive_enabled
@@ -85,6 +86,13 @@ def test_load_settings_appends_missing_defaults_without_overwriting_existing(tmp
     try:
         _MODULE.DEFAULT_SETTINGS = {
             "transfer": {},
+            "runtime": {
+                "backend": "auto",
+                "orca_base": "",
+                "qm_tools_root": "",
+                "local": {"orca_base": "", "max_cores": 384, "max_ram_mb": 1_400_000},
+                "slurm": {"orca_base": "", "submit_templates_dir": "", "profile": ""},
+            },
             "features": {"remote_archive_enabled": False},
             "ui": {"show_hidden_files": False},
         }
@@ -145,3 +153,54 @@ def test_normalize_local_directory_setting_allows_blank_and_rejects_controls():
         assert "unsupported control characters" in str(exc)
     else:
         raise AssertionError("Expected ValueError for control characters")
+
+
+def test_load_settings_normalizes_runtime_payload(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "runtime": {
+                    "backend": "SLURM",
+                    "orca_base": "~/orca_global",
+                    "qm_tools_root": "~/qm_tools",
+                    "local": {
+                        "orca_base": "~/orca_local",
+                        "max_cores": 32,
+                        "max_ram_mb": 128000,
+                    },
+                    "slurm": {
+                        "orca_base": "~/orca_slurm",
+                        "submit_templates_dir": "~/submit_templates",
+                        "profile": "bwunicluster3",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_settings(settings_path)
+
+    assert loaded["runtime"]["backend"] == "slurm"
+    assert loaded["runtime"]["orca_base"] == str(Path("~/orca_global").expanduser())
+    assert loaded["runtime"]["qm_tools_root"] == str(Path("~/qm_tools").expanduser())
+    assert loaded["runtime"]["local"]["orca_base"] == str(Path("~/orca_local").expanduser())
+    assert loaded["runtime"]["local"]["max_cores"] == 32
+    assert loaded["runtime"]["local"]["max_ram_mb"] == 128000
+    assert loaded["runtime"]["slurm"]["orca_base"] == str(Path("~/orca_slurm").expanduser())
+    assert loaded["runtime"]["slurm"]["submit_templates_dir"] == str(
+        Path("~/submit_templates").expanduser()
+    )
+    assert loaded["runtime"]["slurm"]["profile"] == "bwunicluster3"
+
+
+def test_load_runtime_settings_returns_defaults_when_missing(tmp_path):
+    settings_path = tmp_path / "settings.json"
+
+    runtime = load_runtime_settings(settings_path)
+
+    assert runtime["backend"] == "auto"
+    assert runtime["local"]["max_cores"] == 384
+    assert runtime["local"]["max_ram_mb"] == 1_400_000
+    assert runtime["slurm"]["submit_templates_dir"] == ""
