@@ -9,8 +9,10 @@ import ipywidgets as widgets
 from delfin.runtime_setup import (
     apply_runtime_environment,
     collect_runtime_diagnostics,
+    detect_local_runtime_limits,
     describe_orca_installation,
     discover_orca_installations,
+    prepare_bwunicluster_user_setup,
     get_packaged_submit_templates_dir,
     get_user_qm_tools_dir,
     run_qm_tools_installer,
@@ -69,6 +71,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         button_style='info',
         layout=widgets.Layout(width='130px', height='28px'),
     )
+    detect_local_resources_btn = widgets.Button(
+        description='Detect local resources',
+        layout=widgets.Layout(width='165px', height='28px'),
+    )
+    setup_bwunicluster_btn = widgets.Button(
+        description='Setup bwUniCluster',
+        button_style='success',
+        layout=widgets.Layout(width='150px', height='28px'),
+    )
     save_btn = widgets.Button(
         description='Save Settings',
         button_style='primary',
@@ -120,14 +131,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
     local_max_cores_input = widgets.BoundedIntText(
-        value=384,
+        value=detect_local_runtime_limits()[0],
         min=1,
         max=1_000_000,
         step=1,
         layout=widgets.Layout(width='120px', min_width='120px', height='28px'),
     )
     local_max_ram_input = widgets.BoundedIntText(
-        value=1_400_000,
+        value=detect_local_runtime_limits()[1],
         min=1,
         max=100_000_000,
         step=1000,
@@ -367,6 +378,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         archive_path_input.value = str(paths_payload.get('archive_dir') or '')
 
     def _set_runtime_widgets(settings_payload):
+        detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
         runtime_payload = ((settings_payload or {}).get('runtime') or {})
         local_payload = runtime_payload.get('local', {}) or {}
         slurm_payload = runtime_payload.get('slurm', {}) or {}
@@ -375,8 +387,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         global_orca_input.value = str(runtime_payload.get('orca_base') or '')
         qm_tools_root_input.value = str(runtime_payload.get('qm_tools_root') or '')
         local_orca_input.value = str(local_payload.get('orca_base') or '')
-        local_max_cores_input.value = int(local_payload.get('max_cores', 384))
-        local_max_ram_input.value = int(local_payload.get('max_ram_mb', 1_400_000))
+        local_max_cores_input.value = int(local_payload.get('max_cores', detected_local_cores))
+        local_max_ram_input.value = int(local_payload.get('max_ram_mb', detected_local_ram_mb))
         slurm_orca_input.value = str(slurm_payload.get('orca_base') or '')
         slurm_templates_input.value = str(slurm_payload.get('submit_templates_dir') or '')
         slurm_profile_input.value = str(slurm_payload.get('profile') or '')
@@ -630,6 +642,25 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 color='#d32f2f',
             )
 
+    def _on_detect_local_resources(button):
+        try:
+            detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
+            local_max_cores_input.value = detected_local_cores
+            local_max_ram_input.value = detected_local_ram_mb
+            _set_status(
+                (
+                    'Detected local resources from the current system: '
+                    f'<code>{detected_local_cores}</code> cores and '
+                    f'<code>{detected_local_ram_mb}</code> MB RAM.'
+                ),
+                color='#2e7d32',
+            )
+        except Exception as exc:
+            _set_status(
+                f'Local resource detection failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
     def _on_select_detected_orca(change):
         if change.get('name') != 'value':
             return
@@ -765,6 +796,83 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 color='#d32f2f',
             )
 
+    def _on_setup_bwunicluster(button):
+        try:
+            calc_override, archive_override, effective_calc_dir, effective_archive_dir = _effective_paths_from_widgets()
+            runtime_payload = _runtime_payload_from_widgets()
+            prepared = prepare_bwunicluster_user_setup(
+                repo_dir=getattr(ctx, 'repo_dir', None),
+                calc_dir=effective_calc_dir,
+                archive_dir=effective_archive_dir,
+                orca_base=runtime_payload.get('slurm', {}).get('orca_base')
+                or runtime_payload.get('orca_base', ''),
+                qm_tools_root=runtime_payload.get('qm_tools_root', ''),
+                install_qm_tools=True,
+            )
+
+            settings_payload = load_settings()
+            paths_payload = {}
+            if calc_override or prepared["paths"].get("calculations_dir"):
+                paths_payload["calculations_dir"] = str(prepared["paths"]["calculations_dir"])
+            if archive_override or prepared["paths"].get("archive_dir"):
+                paths_payload["archive_dir"] = str(prepared["paths"]["archive_dir"])
+            settings_payload["paths"] = paths_payload
+            settings_payload["runtime"] = prepared["runtime"]
+            settings_payload = save_settings(settings_payload, settings_path)
+
+            _apply_workspace_paths(Path(prepared["paths"]["calculations_dir"]), Path(prepared["paths"]["archive_dir"]))
+            _set_runtime_widgets(settings_payload)
+            backend_switch_required, effective_backend, effective_orca_base = _apply_runtime_settings(
+                settings_payload.get('runtime', {}) or prepared["runtime"]
+            )
+            _render_runtime_diagnostics(
+                settings_payload.get('runtime', {}) or prepared["runtime"],
+                reload_required=backend_switch_required,
+            )
+
+            log_lines = [
+                f"Prepared bwUniCluster runtime profile.",
+                f"Submit templates: {prepared['submit_templates_dir']}",
+                f"qm_tools root: {prepared['qm_tools_root']}",
+                f"ORCA: {prepared['orca_base'] or 'not detected'}",
+                f"Environment file: {prepared['env_file']}",
+            ]
+            if prepared.get("venv_tarball"):
+                log_lines.append(f"Venv tarball: {prepared['venv_tarball']}")
+            if prepared.get("runtime_cache_dir"):
+                log_lines.append(f"Runtime cache: {prepared['runtime_cache_dir']}")
+            if prepared.get("shell_files"):
+                log_lines.append("Shell rc updated: " + ", ".join(prepared["shell_files"]))
+            installer_output = str(prepared.get("qm_tools_installer_output") or "").strip()
+            if installer_output:
+                log_lines.append("")
+                log_lines.append(installer_output)
+            qm_tools_log.value = "\n".join(log_lines)
+
+            backend_hint = (
+                f' Reload DELFIN to switch execution backend from '
+                f'{ctx.runtime_backend} to {effective_backend}.'
+                if backend_switch_required
+                else ''
+            )
+            _set_status(
+                (
+                    'bwUniCluster setup completed. '
+                    f'Runtime now uses <code>slurm</code> with profile <code>bwunicluster3</code>, '
+                    f'ORCA <code>{html.escape(effective_orca_base or "not detected")}</code>, '
+                    f'qm_tools <code>{html.escape(str(prepared["qm_tools_root"]))}</code>, and '
+                    f'submit templates <code>{html.escape(str(prepared["submit_templates_dir"]))}</code>. '
+                    f'New shells will source <code>{html.escape(str(prepared["env_file"]))}</code>.'
+                    f'{backend_hint}'
+                ),
+                color='#2e7d32',
+            )
+        except Exception as exc:
+            _set_status(
+                f'bwUniCluster setup failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
     def _on_save(button):
         try:
             host, user, remote_path, port = _transfer_payload_from_widgets()
@@ -847,9 +955,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     reload_btn.on_click(_on_reload)
     validate_runtime_btn.on_click(_on_validate_runtime)
     scan_orca_btn.on_click(_on_scan_orca)
+    detect_local_resources_btn.on_click(_on_detect_local_resources)
     prepare_qm_tools_btn.on_click(_on_prepare_qm_tools)
     install_qm_tools_btn.on_click(_on_install_qm_tools)
     update_qm_tools_btn.on_click(_on_update_qm_tools)
+    setup_bwunicluster_btn.on_click(_on_setup_bwunicluster)
     save_btn.on_click(_on_save)
     detected_orca_dropdown.observe(_on_select_detected_orca, names='value')
     global_orca_input.observe(_on_change_global_orca, names='value')
@@ -1001,6 +1111,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     local_max_cores_input,
                     widgets.HTML('<b>Local max RAM (MB)</b>'),
                     local_max_ram_input,
+                    detect_local_resources_btn,
                 ],
                 layout=widgets.Layout(
                     width='100%',
@@ -1010,6 +1121,24 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 ),
             ),
             widgets.HTML('<b>SLURM overrides</b>'),
+            widgets.HBox(
+                [
+                    setup_bwunicluster_btn,
+                    widgets.HTML(
+                        '<span style="color:#616161;">Prepare the user-side bwUniCluster setup: '
+                        'set the runtime profile to <code>bwunicluster3</code>, prepare qm_tools, '
+                        'write <code>~/.delfin_env.sh</code>, create <code>calc</code>/<code>archive</code>, '
+                        'and package <code>delfin_venv.tar</code> when a repo checkout with <code>.venv</code> exists. '
+                        'ORCA downloads and cluster modules still stay external.</span>'
+                    ),
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
             widgets.HBox(
                 [
                     widgets.HTML('<b>SLURM ORCA</b>'),

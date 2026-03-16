@@ -23,6 +23,7 @@ from .helpers import create_busy_css, disable_spellcheck_global
 from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
 from delfin.runtime_setup import (
     apply_runtime_environment,
+    detect_local_runtime_limits,
     get_packaged_submit_templates_dir,
     resolve_backend_choice,
     resolve_orca_base,
@@ -137,6 +138,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         from .backend_local import LocalJobBackend
 
         run_script = _find_run_script(notebook_dir)
+        detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
         orca_base = resolve_orca_base(
             orca_base,
             runtime_settings,
@@ -152,8 +154,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         backend_obj = LocalJobBackend(
             run_script=run_script,
             orca_base=orca_base,
-            max_cores=int((runtime_settings.get('local', {}) or {}).get('max_cores', 384)),
-            max_ram_mb=int((runtime_settings.get('local', {}) or {}).get('max_ram_mb', 1_400_000)),
+            max_cores=int((runtime_settings.get('local', {}) or {}).get('max_cores', detected_local_cores)),
+            max_ram_mb=int((runtime_settings.get('local', {}) or {}).get('max_ram_mb', detected_local_ram_mb)),
         )
         only_goat_template_path = None
 

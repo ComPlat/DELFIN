@@ -3,11 +3,31 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    import psutil  # type: ignore
+except ImportError:
+    psutil = None  # type: ignore
+
 SETTINGS_FILE_NAME = ".delfin_settings.json"
 LEGACY_TRANSFER_CONFIG_NAME = ".delfin_transfer_target.json"
+
+
+def _detect_default_local_limits():
+    cpu_count = os.cpu_count() or 1
+    memory_mb = 1_400_000
+    if psutil is not None:
+        try:
+            memory_mb = max(1, int(psutil.virtual_memory().total // (1024 * 1024)))
+        except Exception:
+            memory_mb = 1_400_000
+    return max(1, int(cpu_count)), memory_mb
+
+
+_DEFAULT_LOCAL_CORES, _DEFAULT_LOCAL_RAM_MB = _detect_default_local_limits()
 DEFAULT_SETTINGS = {
     "transfer": {},
     "paths": {},
@@ -17,8 +37,8 @@ DEFAULT_SETTINGS = {
         "qm_tools_root": "",
         "local": {
             "orca_base": "",
-            "max_cores": 384,
-            "max_ram_mb": 1_400_000,
+            "max_cores": _DEFAULT_LOCAL_CORES,
+            "max_ram_mb": _DEFAULT_LOCAL_RAM_MB,
         },
         "slurm": {
             "orca_base": "",

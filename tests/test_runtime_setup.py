@@ -2,6 +2,7 @@ from pathlib import Path
 
 from delfin.runtime_setup import (
     collect_runtime_diagnostics,
+    detect_local_runtime_limits,
     describe_orca_installation,
     discover_orca_installations,
     get_packaged_submit_templates_dir,
@@ -103,3 +104,10 @@ def test_discover_orca_installations_finds_multiple_versions(tmp_path):
 
 def test_describe_orca_installation_formats_version():
     assert describe_orca_installation("/opt/orca_6_1_1") == "ORCA 6.1.1"
+
+
+def test_detect_local_runtime_limits_returns_positive_values():
+    cores, ram_mb = detect_local_runtime_limits()
+
+    assert cores >= 1
+    assert ram_mb >= 1

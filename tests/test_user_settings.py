@@ -201,6 +201,6 @@ def test_load_runtime_settings_returns_defaults_when_missing(tmp_path):
     runtime = load_runtime_settings(settings_path)
 
     assert runtime["backend"] == "auto"
-    assert runtime["local"]["max_cores"] == 384
-    assert runtime["local"]["max_ram_mb"] == 1_400_000
+    assert runtime["local"]["max_cores"] == _MODULE.DEFAULT_SETTINGS["runtime"]["local"]["max_cores"]
+    assert runtime["local"]["max_ram_mb"] == _MODULE.DEFAULT_SETTINGS["runtime"]["local"]["max_ram_mb"]
     assert runtime["slurm"]["submit_templates_dir"] == ""
