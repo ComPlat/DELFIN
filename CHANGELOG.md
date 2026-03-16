@@ -10,6 +10,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - _No unreleased entries yet._
 
+## [1.1.9] - 2026-03-16
+
+### Added
+- New runtime and setup controls in the Settings tab, including configurable `Calculations`/`Archive` paths, backend selection, ORCA path overrides, ORCA scan/selection, and system-aware local resource detection.
+- New packaged `qm_tools` workflow controls in the Settings tab: `Prepare qm_tools`, `Install qm_tools`, and `Update qm_tools`.
+- New bwUniCluster actions in the Settings tab: `Setup bwUniCluster`, `Verify bwUniCluster`, and `Full bwUni install`.
+- New packaged runtime resources for wheel/PyPI installs, including generic submit templates and the packaged bwUniCluster installer.
+- New English setup documentation in `docs/SETTINGS_AND_SETUP.md`.
+
+### Changed
+- DELFIN runtime configuration is now stored in `~/.delfin_settings.json`, keeping user-specific paths and runtime choices outside the git repository.
+- Local execution now uses a bundled Python local runner fallback when shell-based local runner scripts are not present.
+- `delfin-voila` now stages packaged notebooks safely, avoids fragile server-side browser assumptions, and behaves better in remote/server sessions.
+- Local and cluster setup flows are now exposed directly in the GUI while preserving compatibility with editable installs, existing repo-based installations, and established `software/` layouts.
+- Packaged installs now include the resources needed for runtime setup instead of assuming a neighboring source checkout.
+
+### Fixed
+- Fixed packaged `delfin-voila` launch failures caused by notebook root-directory issues, hidden staging paths, and server/browser launch behavior.
+- Fixed missing packaged runtime resources for PyPI/wheel installs, including local runner and setup assets that were previously only available from a source checkout.
+- Fixed Settings-tab issues around saving configurable workspace/runtime paths and improved masking/handling of local sensitive transfer settings.
+
+### Documentation
+- Added detailed documentation for Settings, runtime controls, setup buttons, local installs, PyPI installs, and bwUniCluster workflows.
+
 ## [1.1.0] - 2026-03-03
 
 ### Added
