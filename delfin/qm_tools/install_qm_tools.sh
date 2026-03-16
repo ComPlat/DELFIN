@@ -20,6 +20,7 @@ STD2_SRC_URL="${STD2_SRC_URL:-https://github.com/grimme-lab/std2/archive/refs/ta
 USE_SYSTEM_TOOLS="${USE_SYSTEM_TOOLS:-1}"
 INSTALL_STD2_FROM_SOURCE="${INSTALL_STD2_FROM_SOURCE:-0}"
 FORCE_REDOWNLOAD="${FORCE_REDOWNLOAD:-0}"
+FORCE_CONDA_UPDATE="${FORCE_CONDA_UPDATE:-0}"
 STD2_BIN="${STD2_BIN:-}"
 
 log() {
@@ -132,11 +133,18 @@ install_conda_stack() {
   mamba="$(ensure_micromamba)" || die "micromamba/conda not found; cannot auto-install xtb/crest/dftb+"
 
   if [[ ! -x "${MAMBA_ENV}/bin/xtb" || ! -x "${MAMBA_ENV}/bin/crest" || ! -x "${MAMBA_ENV}/bin/dftb+" ]]; then
-    log "create/update local conda env at ${MAMBA_ENV}"
+    log "create local conda env at ${MAMBA_ENV}"
     if [[ "$(basename "${mamba}")" == "micromamba" ]]; then
       "${mamba}" create -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
     else
       "${mamba}" create -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
+    fi
+  elif [[ "${FORCE_CONDA_UPDATE}" == "1" ]]; then
+    log "update local conda env at ${MAMBA_ENV}"
+    if [[ "$(basename "${mamba}")" == "micromamba" ]]; then
+      "${mamba}" install -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
+    else
+      "${mamba}" install -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
     fi
   fi
 

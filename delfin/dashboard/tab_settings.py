@@ -62,6 +62,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         button_style='warning',
         layout=widgets.Layout(width='125px', height='28px'),
     )
+    update_qm_tools_btn = widgets.Button(
+        description='Update qm_tools',
+        button_style='info',
+        layout=widgets.Layout(width='130px', height='28px'),
+    )
     save_btn = widgets.Button(
         description='Save Settings',
         button_style='primary',
@@ -580,7 +585,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             qm_tools_log.value = (
                 f'Prepared bundled qm_tools under {target}\n'
                 'Only the packaged DELFIN bundle was copied. '
-                'For optional downloads / conda-based extras use "Install qm_tools".'
+                'For optional downloads / conda-based extras use "Install qm_tools" or "Update qm_tools".'
             )
             backend_hint = (
                 f' Reload DELFIN to switch execution backend from '
@@ -643,6 +648,53 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             qm_tools_log.value = ''
             _set_status(
                 f'Running qm_tools installer failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def _on_update_qm_tools(button):
+        try:
+            target, result = run_qm_tools_installer(
+                extra_env={
+                    'FORCE_REDOWNLOAD': '1',
+                    'FORCE_CONDA_UPDATE': '1',
+                }
+            )
+            runtime_payload = _runtime_payload_from_widgets()
+            runtime_payload['qm_tools_root'] = str(target)
+            backend_switch_required, effective_backend, effective_orca_base = _persist_runtime_payload(
+                runtime_payload
+            )
+            qm_tools_log.value = result.stdout or '(no updater output)'
+            if result.returncode == 0:
+                backend_hint = (
+                    f' Reload DELFIN to switch execution backend from '
+                    f'{ctx.runtime_backend} to {effective_backend}.'
+                    if backend_switch_required
+                    else ''
+                )
+                _set_status(
+                    (
+                        f'qm_tools updated in <code>{html.escape(str(target))}</code>. '
+                        'Bundled downloads were refreshed and DELFIN-managed conda envs were updated when used. '
+                        'External PATH/.venv tools are still reused, not modified. '
+                        f'Effective ORCA: <code>{html.escape(effective_orca_base or "PATH / auto-detect")}</code>.'
+                        f'{backend_hint}'
+                    ),
+                    color='#2e7d32',
+                )
+            else:
+                _set_status(
+                    (
+                        f'qm_tools update failed with exit code {result.returncode}. '
+                        f'Inspect the log below. Runtime still points to '
+                        f'<code>{html.escape(str(target))}</code>.'
+                    ),
+                    color='#d32f2f',
+                )
+        except Exception as exc:
+            qm_tools_log.value = ''
+            _set_status(
+                f'Updating qm_tools failed: {html.escape(str(exc))}',
                 color='#d32f2f',
             )
 
@@ -729,6 +781,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     validate_runtime_btn.on_click(_on_validate_runtime)
     prepare_qm_tools_btn.on_click(_on_prepare_qm_tools)
     install_qm_tools_btn.on_click(_on_install_qm_tools)
+    update_qm_tools_btn.on_click(_on_update_qm_tools)
     save_btn.on_click(_on_save)
 
     info_box = widgets.HTML(
@@ -824,12 +877,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 [
                     prepare_qm_tools_btn,
                     install_qm_tools_btn,
+                    update_qm_tools_btn,
                     widgets.HTML(
                         (
                             f'<span style="color:#616161;">'
                             f'Installs into <code>{html.escape(str(get_user_qm_tools_dir()))}</code>, '
                             'not into the Python package directory. '
-                            'ORCA and site modules stay external.'
+                            'ORCA and site modules stay external; PATH/.venv tools are reused.'
                             f'</span>'
                         )
                     ),
