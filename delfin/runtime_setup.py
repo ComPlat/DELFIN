@@ -232,6 +232,14 @@ def get_repo_qm_tools_dir(repo_dir: str | Path | None) -> Path | None:
     return candidate if candidate.is_dir() else None
 
 
+def get_repo_bwunicluster_install_script(repo_dir: str | Path | None) -> Path | None:
+    if not repo_dir:
+        return None
+    repo_path = Path(repo_dir).expanduser()
+    candidate = repo_path / "scripts" / "install_delfin_bwu.sh"
+    return candidate if candidate.is_file() else None
+
+
 def write_delfin_env_file(
     *,
     repo_dir: str | Path | None = None,
@@ -341,6 +349,52 @@ def package_repo_venv(repo_dir: str | Path | None) -> tuple[Path | None, Path | 
     cache_dir = repo_path / ".runtime_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return tar_path, cache_dir
+
+
+def run_bwunicluster_installer(
+    *,
+    repo_dir: str | Path | None,
+    orca_base: str = "",
+    calc_dir: str | Path | None = None,
+    archive_dir: str | Path | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    installer = get_repo_bwunicluster_install_script(repo_dir)
+    if installer is None:
+        raise FileNotFoundError(
+            "BwUniCluster installer script not found. This full install path currently requires a repo checkout."
+        )
+
+    env = os.environ.copy()
+    repo_path = Path(repo_dir).expanduser()
+    env["DELFIN_REPO"] = str(repo_path)
+    if calc_dir:
+        env["DELFIN_CALC_DIR"] = str(Path(calc_dir).expanduser())
+    if archive_dir:
+        env["DELFIN_ARCHIVE_DIR"] = str(Path(archive_dir).expanduser())
+    normalized_orca = normalize_orca_base(orca_base)
+    if normalized_orca:
+        env["ORCA_DIR"] = normalized_orca
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    shell_command = (
+        'if ! command -v module >/dev/null 2>&1; then '
+        'for init in /etc/profile.d/modules.sh /usr/share/Modules/init/bash /etc/profile.d/lmod.sh; do '
+        '[ -f "$init" ] && source "$init" && break; '
+        'done; '
+        'fi; '
+        f'bash "{installer}"'
+    )
+    return subprocess.run(
+        ["bash", "-lc", shell_command],
+        cwd=str(repo_path),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
 
 
 def prepare_bwunicluster_user_setup(

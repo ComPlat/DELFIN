@@ -13,6 +13,7 @@ from delfin.runtime_setup import (
     describe_orca_installation,
     discover_orca_installations,
     prepare_bwunicluster_user_setup,
+    run_bwunicluster_installer,
     get_packaged_submit_templates_dir,
     get_user_qm_tools_dir,
     run_qm_tools_installer,
@@ -79,6 +80,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         description='Setup bwUniCluster',
         button_style='success',
         layout=widgets.Layout(width='150px', height='28px'),
+    )
+    full_install_bwunicluster_btn = widgets.Button(
+        description='Full bwUni install',
+        button_style='warning',
+        layout=widgets.Layout(width='145px', height='28px'),
     )
     save_btn = widgets.Button(
         description='Save Settings',
@@ -873,6 +879,69 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 color='#d32f2f',
             )
 
+    def _on_full_install_bwunicluster(button):
+        try:
+            _set_status(
+                'Running the full bwUniCluster installer script. This can take a while because OpenMPI may be built and the repo venv may be recreated.',
+                color='#ef6c00',
+            )
+            _on_detect_local_resources(button)
+            _refresh_orca_dropdown(global_orca_input.value)
+            _calc_override, _archive_override, effective_calc_dir, effective_archive_dir = _effective_paths_from_widgets()
+            runtime_payload = _runtime_payload_from_widgets()
+            result = run_bwunicluster_installer(
+                repo_dir=getattr(ctx, 'repo_dir', None),
+                orca_base=runtime_payload.get('slurm', {}).get('orca_base')
+                or runtime_payload.get('orca_base', ''),
+                calc_dir=effective_calc_dir,
+                archive_dir=effective_archive_dir,
+            )
+            qm_tools_log.value = result.stdout or '(no installer output)'
+            if result.returncode != 0:
+                _set_status(
+                    (
+                        f'Full bwUniCluster install failed with exit code {result.returncode}. '
+                        'Inspect the log below. The installer script is '
+                        f'<code>{html.escape(str(Path(ctx.repo_dir or ".") / "scripts" / "install_delfin_bwu.sh"))}</code>.'
+                    ),
+                    color='#d32f2f',
+                )
+                return
+
+            settings_payload = _load_settings_to_widgets(set_status=False) or {}
+            runtime_payload = settings_payload.get('runtime', {}) or {}
+            paths_payload = settings_payload.get('paths', {}) or {}
+            effective_calc_dir = Path(paths_payload.get('calculations_dir') or ctx.default_calc_dir)
+            effective_archive_dir = Path(paths_payload.get('archive_dir') or ctx.default_archive_dir)
+            _apply_workspace_paths(effective_calc_dir, effective_archive_dir)
+            backend_switch_required, effective_backend, effective_orca_base = _apply_runtime_settings(
+                runtime_payload
+            )
+            _render_runtime_diagnostics(
+                runtime_payload,
+                reload_required=backend_switch_required,
+            )
+            backend_hint = (
+                f' Reload DELFIN to switch execution backend from {ctx.runtime_backend} to {effective_backend}.'
+                if backend_switch_required
+                else ''
+            )
+            _set_status(
+                (
+                    'Full bwUniCluster install completed via '
+                    f'<code>{html.escape(str(Path(ctx.repo_dir or ".") / "scripts" / "install_delfin_bwu.sh"))}</code>. '
+                    f'Runtime resolves to <code>{html.escape(effective_backend)}</code> with ORCA '
+                    f'<code>{html.escape(effective_orca_base or "PATH / auto-detect")}</code>.'
+                    f'{backend_hint}'
+                ),
+                color='#2e7d32',
+            )
+        except Exception as exc:
+            _set_status(
+                f'Full bwUniCluster install failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
     def _on_save(button):
         try:
             host, user, remote_path, port = _transfer_payload_from_widgets()
@@ -960,6 +1029,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     install_qm_tools_btn.on_click(_on_install_qm_tools)
     update_qm_tools_btn.on_click(_on_update_qm_tools)
     setup_bwunicluster_btn.on_click(_on_setup_bwunicluster)
+    full_install_bwunicluster_btn.on_click(_on_full_install_bwunicluster)
     save_btn.on_click(_on_save)
     detected_orca_dropdown.observe(_on_select_detected_orca, names='value')
     global_orca_input.observe(_on_change_global_orca, names='value')
@@ -1124,12 +1194,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             widgets.HBox(
                 [
                     setup_bwunicluster_btn,
+                    full_install_bwunicluster_btn,
                     widgets.HTML(
                         '<span style="color:#616161;">Prepare the user-side bwUniCluster setup: '
                         'set the runtime profile to <code>bwunicluster3</code>, prepare qm_tools, '
                         'write <code>~/.delfin_env.sh</code>, create <code>calc</code>/<code>archive</code>, '
                         'and package <code>delfin_venv.tar</code> when a repo checkout with <code>.venv</code> exists. '
-                        'ORCA downloads and cluster modules still stay external.</span>'
+                        'The full install button runs the repo installer script for OpenMPI, venv, runtime defaults, and environment setup. '
+                        'ORCA itself still stays external.</span>'
                     ),
                 ],
                 layout=widgets.Layout(

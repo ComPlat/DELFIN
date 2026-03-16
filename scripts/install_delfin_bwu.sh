@@ -34,6 +34,8 @@ OPENMPI_URL="${OPENMPI_URL:-https://download.open-mpi.org/release/open-mpi/v4.1/
 MAKE_JOBS="${MAKE_JOBS:-8}"
 DELFIN_AUTO_ACTIVATE_VENV="${DELFIN_AUTO_ACTIVATE_VENV:-1}"
 REQUIRE_ORCA_PLOT="${REQUIRE_ORCA_PLOT:-1}"
+DELFIN_CALC_DIR="${DELFIN_CALC_DIR:-$HOME/calc}"
+DELFIN_ARCHIVE_DIR="${DELFIN_ARCHIVE_DIR:-$HOME/archive}"
 
 log() { printf "[install] %s\n" "$*"; }
 err() { printf "[install][error] %s\n" "$*" >&2; }
@@ -43,12 +45,30 @@ find_orca_dir() {
     return 0
   fi
   local detected
-  detected="$(find "$HOME/software" -maxdepth 3 -type f -name orca 2>/dev/null | head -n1 || true)"
+  detected="$(
+    find "$HOME/software" "$HOME/apps" "$HOME/local" "/opt" \
+      -maxdepth 4 -type f -name orca 2>/dev/null | head -n1 || true
+  )"
   if [ -n "$detected" ]; then
     ORCA_DIR="$(dirname "$detected")"
     log "Detected ORCA directory: $ORCA_DIR"
   fi
   [ -x "$ORCA_DIR/orca" ]
+}
+
+ensure_module_command() {
+  if command -v module >/dev/null 2>&1; then
+    return 0
+  fi
+  local init
+  for init in /etc/profile.d/modules.sh /usr/share/Modules/init/bash /etc/profile.d/lmod.sh; do
+    if [ -f "$init" ]; then
+      # shellcheck disable=SC1090
+      source "$init"
+      break
+    fi
+  done
+  command -v module >/dev/null 2>&1
 }
 
 ensure_delfin_env_sourced() {
@@ -65,7 +85,7 @@ ensure_delfin_env_sourced() {
   fi
 }
 
-if ! command -v module >/dev/null 2>&1; then
+if ! ensure_module_command; then
   err "'module' command not found. Run this on BwUniCluster login node."
   exit 1
 fi
@@ -148,8 +168,8 @@ module load devel/python/3.11.7-gnu-14.2
 
 # Create working directories
 mkdir -p "$HOME/software"
-mkdir -p "$HOME/calc"
-mkdir -p "$HOME/archive"
+mkdir -p "$DELFIN_CALC_DIR"
+mkdir -p "$DELFIN_ARCHIVE_DIR"
 
 # Clone or update DELFIN repo
 if [ ! -d "$DELFIN_REPO" ]; then
