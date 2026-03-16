@@ -1,10 +1,12 @@
 from pathlib import Path
 
 from delfin.runtime_setup import (
+    collect_bwunicluster_verification,
     collect_runtime_diagnostics,
     detect_local_runtime_limits,
     describe_orca_installation,
     discover_orca_installations,
+    get_packaged_bwunicluster_install_script,
     get_packaged_submit_templates_dir,
     get_user_qm_tools_dir,
     resolve_backend_choice,
@@ -111,3 +113,23 @@ def test_detect_local_runtime_limits_returns_positive_values():
 
     assert cores >= 1
     assert ram_mb >= 1
+
+
+def test_packaged_bwunicluster_installer_exists():
+    installer = get_packaged_bwunicluster_install_script()
+
+    assert installer is not None
+    assert installer.is_file()
+
+
+def test_collect_bwunicluster_verification_reports_expected_keys(tmp_path):
+    checks = collect_bwunicluster_verification(
+        repo_dir=tmp_path / "missing_repo",
+        calc_dir=tmp_path / "calc",
+        archive_dir=tmp_path / "archive",
+    )
+
+    by_name = {item["name"]: item for item in checks}
+    assert "install-script" in by_name
+    assert "submit-templates" in by_name
+    assert "sbatch" in by_name

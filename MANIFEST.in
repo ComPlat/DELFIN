@@ -15,3 +15,4 @@ include delfin/qm_tools/bin/stda_v1.6.1
 include delfin/qm_tools/bin/xtb4stda
 recursive-include delfin/qm_tools/share/xtb4stda *
 include delfin/submit_templates/*.sh
+include delfin/installers/*.sh

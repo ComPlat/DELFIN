@@ -8,6 +8,7 @@ import ipywidgets as widgets
 
 from delfin.runtime_setup import (
     apply_runtime_environment,
+    collect_bwunicluster_verification,
     collect_runtime_diagnostics,
     detect_local_runtime_limits,
     describe_orca_installation,
@@ -80,6 +81,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         description='Setup bwUniCluster',
         button_style='success',
         layout=widgets.Layout(width='150px', height='28px'),
+    )
+    verify_bwunicluster_btn = widgets.Button(
+        description='Verify bwUniCluster',
+        button_style='info',
+        layout=widgets.Layout(width='155px', height='28px'),
     )
     full_install_bwunicluster_btn = widgets.Button(
         description='Full bwUni install',
@@ -879,6 +885,55 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 color='#d32f2f',
             )
 
+    def _on_verify_bwunicluster(button):
+        try:
+            _calc_override, _archive_override, effective_calc_dir, effective_archive_dir = _effective_paths_from_widgets()
+            runtime_payload = _runtime_payload_from_widgets()
+            checks = collect_bwunicluster_verification(
+                repo_dir=getattr(ctx, 'repo_dir', None),
+                orca_base=runtime_payload.get('slurm', {}).get('orca_base')
+                or runtime_payload.get('orca_base', ''),
+                calc_dir=effective_calc_dir,
+                archive_dir=effective_archive_dir,
+            )
+            rows = []
+            missing = 0
+            for item in checks:
+                status = item.get("status", "missing")
+                if status != "ok":
+                    missing += 1
+                status_color = "#2e7d32" if status == "ok" else "#d32f2f"
+                status_label = "OK" if status == "ok" else "Missing"
+                rows.append(
+                    "<tr>"
+                    f"<td style='padding:4px 8px;'><code>{html.escape(str(item.get('name', '')))}</code></td>"
+                    f"<td style='padding:4px 8px; color:{status_color}; font-weight:600;'>{status_label}</td>"
+                    f"<td style='padding:4px 8px;'><code>{html.escape(str(item.get('detail', '')))}</code></td>"
+                    "</tr>"
+                )
+            qm_tools_log.value = (
+                "<bwUniCluster verification>\n"
+                + "\n".join(
+                    f"{item['name']}: {item['status']} - {item['detail']}"
+                    for item in checks
+                )
+            )
+            if missing:
+                _set_status(
+                    f'Verify bwUniCluster found {missing} missing item(s). Review the log below. This check does not modify your system.',
+                    color='#ef6c00',
+                )
+            else:
+                _set_status(
+                    'Verify bwUniCluster passed. No missing items were detected. This check did not modify your system.',
+                    color='#2e7d32',
+                )
+        except Exception as exc:
+            _set_status(
+                f'Verify bwUniCluster failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
     def _on_full_install_bwunicluster(button):
         try:
             _set_status(
@@ -1029,6 +1084,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     install_qm_tools_btn.on_click(_on_install_qm_tools)
     update_qm_tools_btn.on_click(_on_update_qm_tools)
     setup_bwunicluster_btn.on_click(_on_setup_bwunicluster)
+    verify_bwunicluster_btn.on_click(_on_verify_bwunicluster)
     full_install_bwunicluster_btn.on_click(_on_full_install_bwunicluster)
     save_btn.on_click(_on_save)
     detected_orca_dropdown.observe(_on_select_detected_orca, names='value')
@@ -1190,18 +1246,19 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     flex_flow='row wrap',
                 ),
             ),
-            widgets.HTML('<b>SLURM overrides</b>'),
+            widgets.HTML('<b>SLURM / Cluster</b>'),
             widgets.HBox(
                 [
                     setup_bwunicluster_btn,
+                    verify_bwunicluster_btn,
                     full_install_bwunicluster_btn,
                     widgets.HTML(
-                        '<span style="color:#616161;">Prepare the user-side bwUniCluster setup: '
-                        'set the runtime profile to <code>bwunicluster3</code>, prepare qm_tools, '
-                        'write <code>~/.delfin_env.sh</code>, create <code>calc</code>/<code>archive</code>, '
-                        'and package <code>delfin_venv.tar</code> when a repo checkout with <code>.venv</code> exists. '
-                        'The full install button runs the repo installer script for OpenMPI, venv, runtime defaults, and environment setup. '
-                        'ORCA itself still stays external.</span>'
+                        '<span style="color:#616161;">'
+                        '<b>Setup</b> prepares an existing DELFIN install for bwUniCluster. '
+                        '<b>Verify</b> is read-only and only reports what is present or missing. '
+                        '<b>Full install</b> runs the packaged or repo installer for OpenMPI, repo/venv setup, runtime defaults, and environment wiring. '
+                        'ORCA itself still stays external, but an existing ORCA install or tarball is reused when found.'
+                        '</span>'
                     ),
                 ],
                 layout=widgets.Layout(
