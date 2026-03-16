@@ -132,6 +132,10 @@ voila delfin_dashboard.ipynb --no-browser --port=8866
 
 This serves the dashboard as a pure web application (suitable for local use and HPC Jupyter/Voila setups).
 
+Detailed documentation for the Settings tab, runtime resolution, qm tools, local setup, and bwUniCluster setup is available here:
+
+- [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
+
 ---
 
 ## 📋 CLI Reference
