@@ -83,6 +83,22 @@ def _prepare_voila_env(open_browser: bool) -> dict[str, str]:
     return env
 
 
+def _should_open_browser(args_no_browser: bool) -> bool:
+    """Only auto-open browsers when the current session can realistically do it."""
+    if args_no_browser:
+        return False
+
+    browser = str(os.environ.get("BROWSER") or "")
+    term_program = str(os.environ.get("TERM_PROGRAM") or "")
+    if term_program == "vscode" or "browser.sh" in browser:
+        return True
+
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        return True
+
+    return False
+
+
 def _voila_is_available() -> bool:
     """Return True when the current Python can import voila."""
     return importlib.util.find_spec("voila") is not None
@@ -99,7 +115,7 @@ def _stage_notebook_under_root(notebook: str, root_dir: str) -> str:
     except ValueError:
         pass
 
-    staged_dir = root_path / ".delfin" / "voila"
+    staged_dir = root_path / "delfin_voila_runtime"
     staged_path = staged_dir / notebook_path.name
     staged_dir.mkdir(parents=True, exist_ok=True)
 
@@ -144,6 +160,7 @@ def main(argv=None):
         )
         sys.exit(1)
 
+    open_browser = _should_open_browser(args.no_browser)
     notebook = _find_notebook()
     root_dir = str(
         Path(
@@ -151,7 +168,7 @@ def main(argv=None):
         ).resolve()
     )
     notebook = _stage_notebook_under_root(notebook, root_dir)
-    env = _prepare_voila_env(open_browser=not args.no_browser)
+    env = _prepare_voila_env(open_browser=open_browser)
     env.setdefault("DELFIN_VOILA_ROOT_DIR", root_dir)
 
     cmd = [
@@ -167,10 +184,10 @@ def main(argv=None):
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)",
     ]
 
-    if args.no_browser:
-        cmd.append("--no-browser")
-    else:
+    if open_browser:
         cmd.append("--Voila.open_browser=True")
+    else:
+        cmd.append("--no-browser")
 
     if args.dark:
         cmd.append("--theme=dark")

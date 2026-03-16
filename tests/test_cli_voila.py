@@ -28,7 +28,7 @@ def test_stage_notebook_copies_packaged_notebook_under_root(tmp_path):
         cli_voila._stage_notebook_under_root(str(notebook), str(root_dir))
     )
 
-    assert staged == root_dir / ".delfin" / "voila" / notebook.name
+    assert staged == root_dir / "delfin_voila_runtime" / notebook.name
     assert staged.read_text(encoding="utf-8") == '{"cells":[]}'
 
 
@@ -64,7 +64,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     except SystemExit as exc:
         assert exc.code == 0
 
-    staged_path = root_dir / ".delfin" / "voila" / notebook.name
+    staged_path = root_dir / "delfin_voila_runtime" / notebook.name
     assert staged_path.exists()
     assert captured["cmd"][:4] == [
         sys.executable,
@@ -96,3 +96,18 @@ def test_main_reports_missing_voila_module(monkeypatch, capsys):
     stderr = capsys.readouterr().err
     assert "Error: voila is not installed." in stderr
     assert f"{sys.executable} -m pip install voila" in stderr
+
+
+def test_should_open_browser_defaults_to_false_without_gui(monkeypatch):
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("BROWSER", raising=False)
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+
+    assert cli_voila._should_open_browser(False) is False
+
+
+def test_should_open_browser_keeps_vscode_autostart(monkeypatch):
+    monkeypatch.setenv("TERM_PROGRAM", "vscode")
+
+    assert cli_voila._should_open_browser(False) is True
