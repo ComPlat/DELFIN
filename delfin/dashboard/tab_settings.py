@@ -142,15 +142,16 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         placeholder='Optional local ORCA override',
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
+    _init_cores, _init_ram_mb = detect_local_runtime_limits()
     local_max_cores_input = widgets.BoundedIntText(
-        value=detect_local_runtime_limits()[0],
+        value=_init_cores,
         min=1,
         max=1_000_000,
         step=1,
         layout=widgets.Layout(width='120px', min_width='120px', height='28px'),
     )
     local_max_ram_input = widgets.BoundedIntText(
-        value=detect_local_runtime_limits()[1],
+        value=_init_ram_mb,
         min=1,
         max=100_000_000,
         step=1000,
@@ -606,6 +607,24 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 )
         return settings_payload
 
+    _long_running_buttons = [
+        install_qm_tools_btn, update_qm_tools_btn,
+        setup_bwunicluster_btn, verify_bwunicluster_btn,
+        full_install_bwunicluster_btn,
+    ]
+
+    def _with_buttons_disabled(func):
+        """Wrapper that disables long-running buttons during execution."""
+        def wrapper(button):
+            for btn in _long_running_buttons:
+                btn.disabled = True
+            try:
+                func(button)
+            finally:
+                for btn in _long_running_buttons:
+                    btn.disabled = False
+        return wrapper
+
     def _on_toggle_sensitive(change):
         if change.get('name') != 'value':
             return
@@ -912,7 +931,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     "</tr>"
                 )
             qm_tools_log.value = (
-                "<bwUniCluster verification>\n"
+                "=== bwUniCluster verification ===\n"
                 + "\n".join(
                     f"{item['name']}: {item['status']} - {item['detail']}"
                     for item in checks
@@ -1081,11 +1100,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     scan_orca_btn.on_click(_on_scan_orca)
     detect_local_resources_btn.on_click(_on_detect_local_resources)
     prepare_qm_tools_btn.on_click(_on_prepare_qm_tools)
-    install_qm_tools_btn.on_click(_on_install_qm_tools)
-    update_qm_tools_btn.on_click(_on_update_qm_tools)
-    setup_bwunicluster_btn.on_click(_on_setup_bwunicluster)
-    verify_bwunicluster_btn.on_click(_on_verify_bwunicluster)
-    full_install_bwunicluster_btn.on_click(_on_full_install_bwunicluster)
+    install_qm_tools_btn.on_click(_with_buttons_disabled(_on_install_qm_tools))
+    update_qm_tools_btn.on_click(_with_buttons_disabled(_on_update_qm_tools))
+    setup_bwunicluster_btn.on_click(_with_buttons_disabled(_on_setup_bwunicluster))
+    verify_bwunicluster_btn.on_click(_with_buttons_disabled(_on_verify_bwunicluster))
+    full_install_bwunicluster_btn.on_click(_with_buttons_disabled(_on_full_install_bwunicluster))
     save_btn.on_click(_on_save)
     detected_orca_dropdown.observe(_on_select_detected_orca, names='value')
     global_orca_input.observe(_on_change_global_orca, names='value')

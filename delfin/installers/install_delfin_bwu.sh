@@ -227,9 +227,32 @@ EOF
 ensure_delfin_env_sourced "$HOME/.bashrc"
 ensure_delfin_env_sourced "$HOME/.profile"
 
+log "orca_plot check"
+if [ -x "$ORCA_DIR/orca_plot" ]; then
+  log "orca_plot available at $ORCA_DIR/orca_plot"
+else
+  log "orca_plot not found (check ORCA install)"
+fi
+
+# Apply env for current shell
+# shellcheck disable=SC1090
 source "$HOME/.delfin_env.sh"
 
 log ""
 log "============================================"
 log "  DELFIN installation complete!"
 log "============================================"
+log ""
+log "Directories created:"
+log "  ~/calc       - working directory for calculations"
+log "  ~/archive    - archive for completed calculations"
+log ""
+log "Next steps:"
+log "  source ~/.bashrc        # reload shell environment"
+log "  delfin --version        # verify installation"
+log "  delfin-voila --port 9000  # launch dashboard (open URL in browser)"
+log ""
+log "Notes:"
+log "  - ORCA download is manual (license required)."
+log "  - Set DELFIN_AUTO_ACTIVATE_VENV=0 to disable auto-activation."
+log "  - VS Code terminals are excluded from auto-activation."
