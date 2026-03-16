@@ -21,7 +21,7 @@ from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
 from .context import DashboardContext
 from .helpers import create_busy_css, disable_spellcheck_global
 from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
-from delfin.user_settings import load_remote_archive_enabled
+from delfin.user_settings import load_remote_archive_enabled, load_settings
 
 from . import (
     tab_archive_statistics,
@@ -59,17 +59,26 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # -- resolve paths -----------------------------------------------------
     home = Path.home()
     notebook_dir = _get_notebook_dir()
+    configured_paths = {}
+    try:
+        configured_paths = (load_settings().get('paths', {}) or {})
+    except Exception:
+        configured_paths = {}
+
+    # SLURM: look for a root_dir/calc pattern; local: ~/calc
+    root_dir = _find_root_dir(notebook_dir)
+    if root_dir and (root_dir / 'calc').exists():
+        default_calc_dir = root_dir / 'calc'
+    else:
+        default_calc_dir = home / 'calc'
+    default_archive_dir = default_calc_dir.parent / 'archive'
 
     if calc_dir is None:
-        # SLURM: look for a root_dir/calc pattern; local: ~/calc
-        root_dir = _find_root_dir(notebook_dir)
-        if root_dir and (root_dir / 'calc').exists():
-            calc_dir = root_dir / 'calc'
-        else:
-            calc_dir = home / 'calc'
-    calc_dir = Path(calc_dir)
+        calc_dir = configured_paths.get('calculations_dir') or default_calc_dir
+    calc_dir = Path(calc_dir).expanduser()
     calc_dir.mkdir(parents=True, exist_ok=True)
-    archive_dir = calc_dir.parent / 'archive'
+    archive_dir = configured_paths.get('archive_dir') or default_archive_dir
+    archive_dir = Path(archive_dir).expanduser()
     archive_dir.mkdir(parents=True, exist_ok=True)
 
     repo_dir = _find_delfin_root()
@@ -120,6 +129,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     ctx = DashboardContext(
         calc_dir=calc_dir,
         archive_dir=archive_dir,
+        primary_calc_dir=calc_dir,
+        default_calc_dir=default_calc_dir,
+        default_archive_dir=default_archive_dir,
         notebook_dir=notebook_dir,
         repo_dir=repo_dir,
         backend=backend_obj,
@@ -159,7 +171,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
     tab6, refs6 = tab_archive_statistics.create_tab(ctx)
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
-    tab8, _refs8 = tab_settings.create_tab(ctx)
+    tab8, _refs8 = tab_settings.create_tab(ctx, calc_refs=refs5, archive_refs=refs6)
 
     # Run both calc-browser init scripts in ONE ctx.run_js() call.
     # If called separately, the second call's clear_output() would wipe the

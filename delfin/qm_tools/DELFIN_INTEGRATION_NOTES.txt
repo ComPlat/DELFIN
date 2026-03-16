@@ -3,7 +3,7 @@ Date: 2026-03-11
 
 Goal
 - Make DELFIN use the unified QM toolchain from:
-  /home/qmchem_max/ComPlat/DELFIN/delfin/qm_tools/bin
+  /path/to/DELFIN/delfin/qm_tools/bin
 - Keep ORCA outside qm_tools as a separate system dependency.
 
 Immediate practical approach
@@ -30,7 +30,7 @@ Expected DELFIN touch points
     - write structured json/csv output
 
 Suggested config additions
-- qm_tools_root = /home/qmchem_max/ComPlat/DELFIN/delfin/qm_tools
+- qm_tools_root = /path/to/DELFIN/delfin/qm_tools
 - use_local_qm_tools = true
 - hyperpol_engine = std2 | stda
 - hyperpol_preopt = xtb | crest | none

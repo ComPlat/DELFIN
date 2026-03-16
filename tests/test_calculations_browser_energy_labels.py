@@ -18,7 +18,7 @@ def test_extract_comment_energy_from_goat_label():
 def test_extract_comment_energy_from_orca_comment_path_label():
     comment = (
         "Coordinates from ORCA-job "
-        "/home/qmchem_max/calc/Fabian_Co4/ox_step_1_OCCUPIER/"
+        "/home/exampleuser/calc/Fabian_Co4/ox_step_1_OCCUPIER/"
         ".orca_iso_input2_309535_135210566022848_dfe6fe08/input2 "
         "E -2675.849910594636"
     )

@@ -1,18 +1,20 @@
 """Dashboard Settings tab backed by a user-local settings file."""
 
 import html
+from pathlib import Path
 
 import ipywidgets as widgets
 
 from delfin.user_settings import (
     get_settings_path,
     load_settings,
+    normalize_local_directory_setting,
     normalize_ssh_transfer_settings,
     save_settings,
 )
 
 
-def create_tab(ctx):
+def create_tab(ctx, calc_refs=None, archive_refs=None):
     """Create the dashboard Settings tab."""
     settings_path = get_settings_path()
     status_html = widgets.HTML(value='')
@@ -37,7 +39,19 @@ def create_tab(ctx):
         indent=False,
         layout=widgets.Layout(width='110px', height='28px'),
     )
-    state = {'remote_archive_enabled': False}
+    calc_path_input = widgets.Text(
+        placeholder=str(ctx.default_calc_dir),
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    archive_path_input = widgets.Text(
+        placeholder=str(ctx.default_archive_dir),
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    state = {
+        'remote_archive_enabled': False,
+        'calculations_dir': str(ctx.calc_dir),
+        'archive_dir': str(ctx.archive_dir),
+    }
 
     host_hidden = widgets.Password(
         placeholder='Host or IP',
@@ -110,6 +124,41 @@ def create_tab(ctx):
             user_visible.value = ''
             path_visible.value = ''
 
+    def _set_path_widgets(settings_payload):
+        paths_payload = ((settings_payload or {}).get('paths') or {})
+        calc_path_input.value = str(paths_payload.get('calculations_dir') or '')
+        archive_path_input.value = str(paths_payload.get('archive_dir') or '')
+
+    def _effective_paths_from_widgets():
+        calc_override = normalize_local_directory_setting(
+            calc_path_input.value,
+            'Calculations path',
+        )
+        archive_override = normalize_local_directory_setting(
+            archive_path_input.value,
+            'Archive path',
+        )
+        effective_calc_dir = Path(calc_override) if calc_override else Path(ctx.default_calc_dir)
+        effective_archive_dir = (
+            Path(archive_override) if archive_override else Path(ctx.default_archive_dir)
+        )
+        return calc_override, archive_override, effective_calc_dir, effective_archive_dir
+
+    def _apply_workspace_paths(effective_calc_dir, effective_archive_dir):
+        effective_calc_dir.mkdir(parents=True, exist_ok=True)
+        effective_archive_dir.mkdir(parents=True, exist_ok=True)
+        ctx.calc_dir = effective_calc_dir
+        ctx.archive_dir = effective_archive_dir
+        state['calculations_dir'] = str(effective_calc_dir)
+        state['archive_dir'] = str(effective_archive_dir)
+
+        if calc_refs and callable(calc_refs.get('calc_set_root')):
+            calc_refs['calc_set_root'](effective_calc_dir)
+        if archive_refs and callable(archive_refs.get('calc_set_root')):
+            archive_refs['calc_set_root'](effective_archive_dir)
+        if archive_refs and callable(archive_refs.get('calc_set_primary_root')):
+            archive_refs['calc_set_primary_root'](effective_calc_dir)
+
     def _transfer_payload_from_widgets():
         if show_sensitive_btn.value:
             host_value = host_visible.value
@@ -155,6 +204,7 @@ def create_tab(ctx):
             settings_payload = load_settings()
         except Exception as exc:
             _set_transfer_widgets({})
+            _set_path_widgets({})
             _set_remote_archive_widget({})
             _set_status(
                 (
@@ -167,14 +217,19 @@ def create_tab(ctx):
 
         payload = settings_payload.get('transfer', {}) or {}
         _set_transfer_widgets(payload)
+        _set_path_widgets(settings_payload)
         _set_remote_archive_widget(settings_payload)
         if set_status:
+            current_calc_dir = html.escape(str(ctx.calc_dir))
+            current_archive_dir = html.escape(str(ctx.archive_dir))
             if payload:
                 _set_status(
                     (
                         f'Loaded local settings from '
                         f'<code>{html.escape(str(settings_path))}</code>. '
-                        'Sensitive values stay masked until revealed.'
+                        'Sensitive values stay masked until revealed. '
+                        f'Current paths: <code>{current_calc_dir}</code> and '
+                        f'<code>{current_archive_dir}</code>.'
                     ),
                     color='#2e7d32',
                 )
@@ -182,7 +237,9 @@ def create_tab(ctx):
                 _set_status(
                     (
                         f'No transfer target saved yet. Settings will be created in '
-                        f'<code>{html.escape(str(settings_path))}</code>.'
+                        f'<code>{html.escape(str(settings_path))}</code>. '
+                        f'Current paths: <code>{current_calc_dir}</code> and '
+                        f'<code>{current_archive_dir}</code>.'
                     ),
                     color='#ef6c00',
                 )
@@ -202,6 +259,7 @@ def create_tab(ctx):
             host = str(host or '').strip()
             user = str(user or '').strip()
             remote_path = str(remote_path or '').strip()
+            calc_override, archive_override, effective_calc_dir, effective_archive_dir = _effective_paths_from_widgets()
             settings_payload = load_settings()
             if host or user or remote_path:
                 host, user, remote_path, port = normalize_ssh_transfer_settings(
@@ -218,9 +276,16 @@ def create_tab(ctx):
                 }
             else:
                 settings_payload['transfer'] = {}
+            paths_payload = {}
+            if calc_override:
+                paths_payload['calculations_dir'] = calc_override
+            if archive_override:
+                paths_payload['archive_dir'] = archive_override
+            settings_payload['paths'] = paths_payload
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
             save_settings(settings_payload, settings_path)
+            _apply_workspace_paths(effective_calc_dir, effective_archive_dir)
         except Exception as exc:
             _set_status(
                 (
@@ -233,12 +298,15 @@ def create_tab(ctx):
 
         toggle_changed = bool(remote_archive_toggle.value) != bool(state.get('remote_archive_enabled'))
         _set_transfer_widgets(settings_payload.get('transfer', {}) or {})
+        _set_path_widgets(settings_payload)
         _set_remote_archive_widget(settings_payload)
         reload_hint = ' Reload DELFIN to apply Remote Archive tab/button visibility.' if toggle_changed else ''
         _set_status(
             (
                 f'Saved local settings to '
-                f'<code>{html.escape(str(settings_path))}</code>.'
+                f'<code>{html.escape(str(settings_path))}</code>. '
+                f'Calculations now point to <code>{html.escape(str(effective_calc_dir))}</code>; '
+                f'Archive now points to <code>{html.escape(str(effective_archive_dir))}</code>.'
                 f'{reload_hint}'
             ),
             color='#2e7d32',
@@ -255,10 +323,43 @@ def create_tab(ctx):
             'This file lives in your HOME, outside the git repo. '
             '<code>git pull</code> will not overwrite it. Missing future settings are '
             'added without replacing your existing values.<br>'
+            f'Leave path fields empty to use the defaults '
+            f'<code>{html.escape(str(ctx.default_calc_dir))}</code> and '
+            f'<code>{html.escape(str(ctx.default_archive_dir))}</code>.<br>'
             'Passwords are not stored here. Resumable SSH transfers use SSH keys or '
             '<code>ssh-agent</code>.'
             '</div>'
         )
+    )
+    workspace_header = widgets.HTML('<h3 style="margin:0;">Workspace Paths</h3>')
+    workspace_rows = widgets.VBox(
+        [
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Calculations</b>'),
+                    calc_path_input,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Archive</b>'),
+                    archive_path_input,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+        ],
+        layout=widgets.Layout(width='100%', gap='10px'),
     )
     transfer_header = widgets.HTML('<h3 style="margin:0;">Transfer Target</h3>')
     remote_archive_row = widgets.HBox(
@@ -349,7 +450,15 @@ def create_tab(ctx):
     )
 
     tab = widgets.VBox(
-        [info_box, transfer_header, transfer_rows, ssh_help_box, future_box],
+        [
+            info_box,
+            workspace_header,
+            workspace_rows,
+            transfer_header,
+            transfer_rows,
+            ssh_help_box,
+            future_box,
+        ],
         layout=widgets.Layout(width='100%', gap='12px', padding='10px'),
     )
 

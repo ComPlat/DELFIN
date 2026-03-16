@@ -14,6 +14,7 @@ get_settings_path = _MODULE.get_settings_path
 load_settings = _MODULE.load_settings
 load_remote_archive_enabled = _MODULE.load_remote_archive_enabled
 load_transfer_settings = _MODULE.load_transfer_settings
+normalize_local_directory_setting = _MODULE.normalize_local_directory_setting
 save_remote_archive_enabled = _MODULE.save_remote_archive_enabled
 save_transfer_settings = _MODULE.save_transfer_settings
 
@@ -111,3 +112,36 @@ def test_remote_archive_flag_defaults_to_false_and_persists(tmp_path):
     assert saved is True
     assert load_remote_archive_enabled(settings_path) is True
     assert loaded["features"]["remote_archive_enabled"] is True
+
+
+def test_load_settings_normalizes_workspace_paths(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "paths": {
+                    "calculations_dir": "~/calc_custom",
+                    "archive_dir": str(tmp_path / "archive_custom"),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_settings(settings_path)
+
+    assert loaded["paths"]["calculations_dir"] == str(Path("~/calc_custom").expanduser())
+    assert loaded["paths"]["archive_dir"] == str((tmp_path / "archive_custom").expanduser())
+
+
+def test_normalize_local_directory_setting_allows_blank_and_rejects_controls():
+    assert normalize_local_directory_setting("", "Calculations path") == ""
+    assert normalize_local_directory_setting("  ~/calc  ", "Calculations path") == str(
+        Path("~/calc").expanduser()
+    )
+    try:
+        normalize_local_directory_setting("bad\npath", "Calculations path")
+    except ValueError as exc:
+        assert "unsupported control characters" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for control characters")

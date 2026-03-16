@@ -11443,8 +11443,19 @@ def create_tab(ctx):
             new_root = Path(root_dir)
         new_root.mkdir(parents=True, exist_ok=True)
         ctx.calc_dir = new_root
+        if _is_archive_tab:
+            ctx.archive_dir = new_root
         state['current_path'] = ''
         calc_list_directory()
+
+    def calc_set_primary_root(root_dir):
+        """Update the Calculations root used by Archive move-back actions."""
+        try:
+            new_root = Path(root_dir).expanduser()
+        except Exception:
+            new_root = Path(root_dir)
+        new_root.mkdir(parents=True, exist_ok=True)
+        ctx.primary_calc_dir = new_root
 
     if _remote_archive_enabled:
         _calc_update_transfer_jobs_visibility()
@@ -11452,5 +11463,6 @@ def create_tab(ctx):
     return tab_widget, {
         'calc_list_directory': calc_list_directory,
         'calc_set_root': calc_set_root,
+        'calc_set_primary_root': calc_set_primary_root,
         'init_js': _init_js,
     }

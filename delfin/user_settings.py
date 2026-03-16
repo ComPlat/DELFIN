@@ -10,6 +10,7 @@ SETTINGS_FILE_NAME = ".delfin_settings.json"
 LEGACY_TRANSFER_CONFIG_NAME = ".delfin_transfer_target.json"
 DEFAULT_SETTINGS = {
     "transfer": {},
+    "paths": {},
     "features": {
         "remote_archive_enabled": False,
     },
@@ -44,6 +45,16 @@ def normalize_ssh_transfer_settings(host, user, remote_path, port):
         raise ValueError("SSH port must be between 1 and 65535.")
 
     return host, user, remote_path, port
+
+
+def normalize_local_directory_setting(path_value, label):
+    """Validate and normalize an optional local directory setting."""
+    path_value = str(path_value or "").strip()
+    if not path_value:
+        return ""
+    if "\x00" in path_value or "\n" in path_value or "\r" in path_value:
+        raise ValueError(f"{label} contains unsupported control characters.")
+    return str(Path(path_value).expanduser())
 
 
 def get_settings_path(base_path=None):
@@ -81,6 +92,21 @@ def _normalized_settings_dict(payload):
     if not isinstance(transfer, dict):
         raise ValueError("Settings key 'transfer' must be a JSON object.")
     normalized["transfer"] = dict(transfer)
+    paths = normalized.get("paths", {})
+    if paths is None:
+        paths = {}
+    if not isinstance(paths, dict):
+        raise ValueError("Settings key 'paths' must be a JSON object.")
+    normalized_paths = {}
+    for key, label in (
+        ("calculations_dir", "Calculations path"),
+        ("archive_dir", "Archive path"),
+    ):
+        normalized_paths[key] = normalize_local_directory_setting(
+            paths.get(key, ""),
+            label,
+        )
+    normalized["paths"] = normalized_paths
     features = normalized.get("features", {})
     if features is None:
         features = {}

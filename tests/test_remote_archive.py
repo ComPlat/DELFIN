@@ -36,8 +36,8 @@ def test_normalize_remote_relative_path_rejects_parent_escape():
 
 def test_build_remote_absolute_path_joins_under_root():
     assert (
-        build_remote_absolute_path("/home/qmchem_all/Max", "job_01/out.log")
-        == "/home/qmchem_all/Max/job_01/out.log"
+        build_remote_absolute_path("/home/exampleuser/archive", "job_01/out.log")
+        == "/home/exampleuser/archive/job_01/out.log"
     )
 
 
