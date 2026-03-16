@@ -204,6 +204,10 @@ def get_packaged_qm_tools_dir() -> Path:
     return (Path(__file__).resolve().parent / "qm_tools").resolve()
 
 
+def get_packaged_installers_dir() -> Path:
+    return (Path(__file__).resolve().parent / "installers").resolve()
+
+
 def get_user_qm_tools_dir(target_dir: str | Path | None = None) -> Path:
     if target_dir:
         return Path(target_dir).expanduser()
@@ -237,6 +241,11 @@ def get_repo_bwunicluster_install_script(repo_dir: str | Path | None) -> Path | 
         return None
     repo_path = Path(repo_dir).expanduser()
     candidate = repo_path / "scripts" / "install_delfin_bwu.sh"
+    return candidate if candidate.is_file() else None
+
+
+def get_packaged_bwunicluster_install_script() -> Path | None:
+    candidate = get_packaged_installers_dir() / "install_delfin_bwu.sh"
     return candidate if candidate.is_file() else None
 
 
@@ -360,14 +369,15 @@ def run_bwunicluster_installer(
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     installer = get_repo_bwunicluster_install_script(repo_dir)
+    repo_path = Path(repo_dir).expanduser() if repo_dir else None
     if installer is None:
-        raise FileNotFoundError(
-            "BwUniCluster installer script not found. This full install path currently requires a repo checkout."
-        )
+        installer = get_packaged_bwunicluster_install_script()
+    if installer is None:
+        raise FileNotFoundError("BwUniCluster installer script not found in repo or packaged resources.")
 
     env = os.environ.copy()
-    repo_path = Path(repo_dir).expanduser()
-    env["DELFIN_REPO"] = str(repo_path)
+    if repo_path is not None:
+        env["DELFIN_REPO"] = str(repo_path)
     if calc_dir:
         env["DELFIN_CALC_DIR"] = str(Path(calc_dir).expanduser())
     if archive_dir:
@@ -388,13 +398,88 @@ def run_bwunicluster_installer(
     )
     return subprocess.run(
         ["bash", "-lc", shell_command],
-        cwd=str(repo_path),
+        cwd=str(repo_path or Path.home()),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         check=False,
     )
+
+
+def collect_bwunicluster_verification(
+    *,
+    repo_dir: str | Path | None = None,
+    orca_base: str = "",
+    calc_dir: str | Path | None = None,
+    archive_dir: str | Path | None = None,
+) -> list[dict[str, str]]:
+    repo_path = Path(repo_dir).expanduser() if repo_dir else None
+    calc_path = Path(calc_dir).expanduser() if calc_dir else (Path.home() / "calc")
+    archive_path = Path(archive_dir).expanduser() if archive_dir else (Path.home() / "archive")
+    openmpi_path = Path.home() / "software" / "openmpi-4.1.8" / "bin" / "mpirun"
+    submit_dir = get_repo_submit_templates_dir(repo_path) or get_packaged_submit_templates_dir()
+    install_script = get_repo_bwunicluster_install_script(repo_path) or get_packaged_bwunicluster_install_script()
+
+    effective_orca = normalize_orca_base(orca_base)
+    if not effective_orca:
+        discovered = discover_orca_installations(
+            search_roots=[Path.home() / "software", Path.home() / "apps", Path.home() / "local", Path("/opt")]
+        )
+        effective_orca = discovered[0] if discovered else ""
+
+    return [
+        {
+            "name": "install-script",
+            "status": "ok" if install_script and Path(install_script).is_file() else "missing",
+            "detail": str(install_script) if install_script else "not found",
+        },
+        {
+            "name": "repo",
+            "status": "ok" if (repo_path and repo_path.exists()) else "missing",
+            "detail": str(repo_path) if repo_path else "no repo checkout configured",
+        },
+        {
+            "name": "venv",
+            "status": "ok" if (repo_path and (repo_path / ".venv").is_dir()) else "missing",
+            "detail": str((repo_path / ".venv") if repo_path else Path.home() / "software" / "delfin" / ".venv"),
+        },
+        {
+            "name": "openmpi",
+            "status": "ok" if openmpi_path.is_file() else "missing",
+            "detail": str(openmpi_path),
+        },
+        {
+            "name": "orca",
+            "status": "ok" if effective_orca and (Path(effective_orca) / "orca").is_file() else "missing",
+            "detail": str(Path(effective_orca) / "orca") if effective_orca else "not found",
+        },
+        {
+            "name": "orca_plot",
+            "status": "ok" if effective_orca and (Path(effective_orca) / "orca_plot").is_file() else "missing",
+            "detail": str(Path(effective_orca) / "orca_plot") if effective_orca else "not found",
+        },
+        {
+            "name": "calc",
+            "status": "ok" if calc_path.exists() else "missing",
+            "detail": str(calc_path),
+        },
+        {
+            "name": "archive",
+            "status": "ok" if archive_path.exists() else "missing",
+            "detail": str(archive_path),
+        },
+        {
+            "name": "submit-templates",
+            "status": "ok" if (submit_dir / "submit_delfin.sh").is_file() else "missing",
+            "detail": str(submit_dir),
+        },
+        {
+            "name": "sbatch",
+            "status": "ok" if shutil.which("sbatch") else "missing",
+            "detail": shutil.which("sbatch") or "sbatch not found in PATH",
+        },
+    ]
 
 
 def prepare_bwunicluster_user_setup(
