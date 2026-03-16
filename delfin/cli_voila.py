@@ -8,6 +8,7 @@ Usage::
 """
 
 import argparse
+import importlib.util
 import importlib.resources
 import os
 import socket
@@ -82,6 +83,35 @@ def _prepare_voila_env(open_browser: bool) -> dict[str, str]:
     return env
 
 
+def _voila_is_available() -> bool:
+    """Return True when the current Python can import voila."""
+    return importlib.util.find_spec("voila") is not None
+
+
+def _stage_notebook_under_root(notebook: str, root_dir: str) -> str:
+    """Copy packaged notebooks into root_dir so Voila can serve them safely."""
+    notebook_path = Path(notebook).resolve()
+    root_path = Path(root_dir).resolve()
+
+    try:
+        notebook_path.relative_to(root_path)
+        return str(notebook_path)
+    except ValueError:
+        pass
+
+    staged_dir = root_path / ".delfin" / "voila"
+    staged_path = staged_dir / notebook_path.name
+    staged_dir.mkdir(parents=True, exist_ok=True)
+
+    if (
+        not staged_path.exists()
+        or notebook_path.stat().st_mtime > staged_path.stat().st_mtime
+    ):
+        shutil.copy2(notebook_path, staged_path)
+
+    return str(staged_path)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="delfin-voila",
@@ -105,17 +135,22 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    # Check that voila is installed
-    if shutil.which("voila") is None:
+    # Check that voila is installed in the current Python environment.
+    if not _voila_is_available():
         print(
             "Error: voila is not installed.\n"
-            "Install it with:  pip install 'delfin-complat[dashboard]'",
+            f"Install it with:  {sys.executable} -m pip install voila",
             file=sys.stderr,
         )
         sys.exit(1)
 
     notebook = _find_notebook()
-    root_dir = str(Path.home().resolve())
+    root_dir = str(
+        Path(
+            os.environ.get("DELFIN_VOILA_ROOT_DIR", str(Path.home().resolve()))
+        ).resolve()
+    )
+    notebook = _stage_notebook_under_root(notebook, root_dir)
     env = _prepare_voila_env(open_browser=not args.no_browser)
     env.setdefault("DELFIN_VOILA_ROOT_DIR", root_dir)
 
@@ -129,8 +164,7 @@ def main(argv=None):
         f"--Voila.root_dir={root_dir}",
         "--ServerApp.websocket_ping_interval=30000",
         "--ServerApp.websocket_ping_timeout=30000",
-        "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg)",
-        "--VoilaConfiguration.file_allowlist=.*\\.(js|css|html)",
+        "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)",
     ]
 
     if args.no_browser:
