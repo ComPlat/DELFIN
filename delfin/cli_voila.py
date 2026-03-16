@@ -2,9 +2,9 @@
 
 Usage::
 
-    delfin-voila              # start on default port 8866
-    delfin-voila --port 9000  # custom port
-    delfin-voila --no-browser # don't auto-open a browser
+    delfin-voila               # start on default port 8866
+    delfin-voila --port 9000   # custom port
+    delfin-voila --open-browser
 """
 
 import argparse
@@ -83,22 +83,6 @@ def _prepare_voila_env(open_browser: bool) -> dict[str, str]:
     return env
 
 
-def _should_open_browser(args_no_browser: bool) -> bool:
-    """Only auto-open browsers when the current session can realistically do it."""
-    if args_no_browser:
-        return False
-
-    browser = str(os.environ.get("BROWSER") or "")
-    term_program = str(os.environ.get("TERM_PROGRAM") or "")
-    if term_program == "vscode" or "browser.sh" in browser:
-        return True
-
-    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
-        return True
-
-    return False
-
-
 def _voila_is_available() -> bool:
     """Return True when the current Python can import voila."""
     return importlib.util.find_spec("voila") is not None
@@ -139,10 +123,16 @@ def main(argv=None):
         default=8866,
         help="Port to serve on (default: 8866)",
     )
-    parser.add_argument(
+    browser_group = parser.add_mutually_exclusive_group()
+    browser_group.add_argument(
+        "--open-browser",
+        action="store_true",
+        help="Explicitly ask Voila to open a browser window",
+    )
+    browser_group.add_argument(
         "--no-browser",
         action="store_true",
-        help="Do not automatically open a browser window",
+        help="Deprecated alias for the default server-safe behaviour",
     )
     parser.add_argument(
         "--dark",
@@ -160,7 +150,7 @@ def main(argv=None):
         )
         sys.exit(1)
 
-    open_browser = _should_open_browser(args.no_browser)
+    open_browser = bool(args.open_browser)
     notebook = _find_notebook()
     root_dir = str(
         Path(

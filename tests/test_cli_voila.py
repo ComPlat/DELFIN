@@ -98,16 +98,69 @@ def test_main_reports_missing_voila_module(monkeypatch, capsys):
     assert f"{sys.executable} -m pip install voila" in stderr
 
 
-def test_should_open_browser_defaults_to_false_without_gui(monkeypatch):
-    monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-    monkeypatch.delenv("BROWSER", raising=False)
-    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
+    root_dir = tmp_path / "home"
+    package_dir = tmp_path / "package"
+    root_dir.mkdir()
+    package_dir.mkdir()
 
-    assert cli_voila._should_open_browser(False) is False
+    notebook = package_dir / "delfin_dashboard.ipynb"
+    notebook.write_text('{"cells":[]}', encoding="utf-8")
+
+    captured = {}
+
+    def fake_run(cmd, env, check):
+        captured["cmd"] = cmd
+
+        class Result:
+            returncode = 0
+
+        return Result()
+
+    monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
+    monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
+    monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
+    monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
+
+    try:
+        cli_voila.main([])
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert "--no-browser" in captured["cmd"]
+    assert "--Voila.open_browser=True" not in captured["cmd"]
 
 
-def test_should_open_browser_keeps_vscode_autostart(monkeypatch):
-    monkeypatch.setenv("TERM_PROGRAM", "vscode")
+def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
+    root_dir = tmp_path / "home"
+    package_dir = tmp_path / "package"
+    root_dir.mkdir()
+    package_dir.mkdir()
 
-    assert cli_voila._should_open_browser(False) is True
+    notebook = package_dir / "delfin_dashboard.ipynb"
+    notebook.write_text('{"cells":[]}', encoding="utf-8")
+
+    captured = {}
+
+    def fake_run(cmd, env, check):
+        captured["cmd"] = cmd
+
+        class Result:
+            returncode = 0
+
+        return Result()
+
+    monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
+    monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
+    monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
+    monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
+
+    try:
+        cli_voila.main(["--open-browser"])
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert "--Voila.open_browser=True" in captured["cmd"]
+    assert "--no-browser" not in captured["cmd"]
