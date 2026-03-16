@@ -167,6 +167,12 @@ pip install -e . -q
 
 print_success "DELFIN installiert"
 
+echo "Packe Virtual Environment fuer Low-I/O Job-Staging..."
+rm -f "$INSTALL_DIR/delfin_venv.tar"
+tar -cf "$INSTALL_DIR/delfin_venv.tar" -C "$INSTALL_DIR" .venv
+mkdir -p "$INSTALL_DIR/.runtime_cache"
+print_success "delfin_venv.tar erstellt"
+
 # ========================================================================
 # Schritt 5: Installation prüfen
 # ========================================================================

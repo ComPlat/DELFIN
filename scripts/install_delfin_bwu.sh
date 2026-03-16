@@ -176,6 +176,13 @@ python -m pip install -e "$DELFIN_REPO"
 log "DELFIN check"
 delfin --version || true
 
+log "Packaging local venv tarball for low-I/O job staging"
+rm -f "$DELFIN_REPO/delfin_venv.tar"
+tar -cf "$DELFIN_REPO/delfin_venv.tar" -C "$DELFIN_REPO" .venv
+mkdir -p "$DELFIN_REPO/.runtime_cache"
+log "Created $DELFIN_REPO/delfin_venv.tar"
+log "Commit-pinned runtime wheels will be cached on demand in $DELFIN_REPO/.runtime_cache"
+
 # ================================================================
 # Step 4: Shell environment
 # ================================================================

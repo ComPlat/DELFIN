@@ -235,27 +235,32 @@ export OMPI_MCA_hwloc_base_binding_policy=none
 export OMPI_MCA_rmaps_base_mapping_policy=core
 export OMPI_MCA_rmaps_base_oversubscribe=true # Allow ORCA's dynamic parallelism
 
-# Activate DELFIN virtual environment
-# Use a pre-packed tarball (delfin_venv.tar) to transfer the venv to local SSD.
-# Reading 1 tar file from HOME generates ~5 getxattr ops instead of ~150,000
-# (one per file in the venv). Run once to create: tar -cf delfin_venv.tar .venv/
+# Normalise SLURM scratch hints before touching the Python runtime.
+if [ -z "${TMPDIR:-}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
+    export TMPDIR="$SLURM_TMPDIR"
+fi
+STAGE_BASE="${TMPDIR:-${BEEOND_MOUNTPOINT:-}}"
+
+# Activate DELFIN virtual environment from a single tarball to keep HOME I/O low.
 VENV_TAR="$DELFIN_DIR/delfin_venv.tar"
-if [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
-    VENV_LOCAL="$TMPDIR/delfin_venv_${SLURM_JOB_ID}"
-    if [ -f "$VENV_TAR" ]; then
-        echo "Unpacking venv tarball to local SSD ($VENV_LOCAL) to minimise HOME I/O..."
-        mkdir -p "$VENV_LOCAL"
-        tar -xf "$VENV_TAR" --strip-components=1 -C "$VENV_LOCAL"
-    else
-        echo "WARNING: $VENV_TAR not found, falling back to cp -a (higher HOME I/O)."
-        echo "         Run once: cd $DELFIN_DIR && tar -cf delfin_venv.tar .venv/"
-        cp -a "$DELFIN_DIR/.venv" "$VENV_LOCAL"
+VENV_LOCAL=""
+if [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
+    VENV_LOCAL="$STAGE_BASE/delfin_venv_${SLURM_JOB_ID}"
+    if [ ! -f "$VENV_TAR" ]; then
+        echo "ERROR: Required runtime tarball not found: $VENV_TAR"
+        echo "       Create it once after install: cd $DELFIN_DIR && tar -cf delfin_venv.tar .venv/"
+        exit 1
     fi
-    # Rewrite shebangs/paths: activate script uses absolute paths
+    echo "Unpacking venv tarball to local SSD ($VENV_LOCAL) to minimise HOME I/O..."
+    mkdir -p "$VENV_LOCAL"
+    tar -xf "$VENV_TAR" --strip-components=1 -C "$VENV_LOCAL"
+    # Rewrite shebangs/paths: activate script uses absolute paths.
     sed -i "s|$DELFIN_DIR/.venv|$VENV_LOCAL|g" "$VENV_LOCAL/bin/activate" 2>/dev/null || true
     source "$VENV_LOCAL/bin/activate"
     echo "venv loaded from local SSD."
 else
+    echo "WARNING: No local stage base detected; falling back to repository venv."
+    echo "         Runtime overlay cache will be skipped in this job."
     source "$DELFIN_DIR/.venv/bin/activate"
 fi
 
@@ -264,75 +269,168 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export DELFIN_ORCA_PROGRESS=0
 export MPLBACKEND=Agg
-# Reduce HOME filesystem I/O: avoid writing .pyc files and user site-packages
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
-if [ -z "${TMPDIR:-}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
-    export TMPDIR="$SLURM_TMPDIR"
-fi
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+export PIP_NO_INPUT=1
 
-STAGE_BASE="${TMPDIR:-${BEEOND_MOUNTPOINT:-}}"
 if [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
     export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$STAGE_BASE/.cache_${SLURM_JOB_ID}}"
     export MPLCONFIGDIR="${MPLCONFIGDIR:-$STAGE_BASE/.mplconfig_${SLURM_JOB_ID}}"
+    export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$STAGE_BASE/.pip_${SLURM_JOB_ID}}"
+    mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR" "$PIP_CACHE_DIR"
 fi
 
-# If DELFIN was installed with "pip install -e", the local venv still points to
-# the source tree on HOME. Keep a tar snapshot of the Python package on HOME
-# and refresh it only when the repository HEAD changes. Normal submits then read
-# one tarball instead of many small source files from HOME.
-refresh_delfin_source_tar() {
-    DELFIN_SRC_TAR="$DELFIN_DIR/delfin_src.tar"
-    DELFIN_SRC_HEAD_FILE="$DELFIN_DIR/delfin_src.tar.head"
-    local current_head=""
-    local stored_head=""
-    local local_changes=""
-    local tmp_tar=""
+RUNTIME_CACHE_DIR="${DELFIN_RUNTIME_CACHE_DIR:-$DELFIN_DIR/.runtime_cache}"
+RUNTIME_KEY=""
+RUNTIME_BUILD_MODE=""
+RUNTIME_WHEEL=""
 
-    if [ -d "$DELFIN_DIR/.git" ]; then
-        current_head="$(git -C "$DELFIN_DIR" rev-parse HEAD 2>/dev/null || true)"
-        local_changes="$(git -C "$DELFIN_DIR" status --porcelain=v1 --untracked-files=all -- delfin 2>/dev/null || true)"
-    fi
-    if [ -f "$DELFIN_SRC_HEAD_FILE" ]; then
-        stored_head="$(cat "$DELFIN_SRC_HEAD_FILE" 2>/dev/null || true)"
+compute_runtime_dirty_hash() {
+    {
+        git -C "$DELFIN_DIR" diff --binary HEAD -- delfin pyproject.toml README.md 2>/dev/null || true
+        while IFS= read -r rel_path; do
+            [ -f "$DELFIN_DIR/$rel_path" ] || continue
+            printf '=== %s ===\n' "$rel_path"
+            cat "$DELFIN_DIR/$rel_path"
+            printf '\n'
+        done < <(git -C "$DELFIN_DIR" ls-files --others --exclude-standard -- delfin pyproject.toml README.md 2>/dev/null)
+    } | sha256sum | awk '{print $1}'
+}
+
+detect_runtime_key() {
+    local head=""
+    local tree_state=""
+    local dirty_hash=""
+
+    if [ -d "$DELFIN_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+        head="$(git -C "$DELFIN_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
+        if [ -n "$head" ]; then
+            tree_state="$(git -C "$DELFIN_DIR" status --porcelain=v1 --untracked-files=normal -- delfin pyproject.toml README.md 2>/dev/null || true)"
+            if [ -z "$tree_state" ]; then
+                RUNTIME_KEY="git-${head}"
+                RUNTIME_BUILD_MODE="git-archive"
+                return 0
+            fi
+            dirty_hash="$(compute_runtime_dirty_hash)"
+            if [ -n "$dirty_hash" ]; then
+                RUNTIME_KEY="worktree-${head}-${dirty_hash}"
+                RUNTIME_BUILD_MODE="live-repo"
+                return 0
+            fi
+        fi
     fi
 
-    if [ -f "$DELFIN_SRC_TAR" ] && [ -n "$current_head" ] && [ "$current_head" = "$stored_head" ] && [ -z "$local_changes" ]; then
+    RUNTIME_KEY="tree-default"
+    RUNTIME_BUILD_MODE="live-repo"
+}
+
+build_runtime_context() {
+    local build_dir="$1"
+    mkdir -p "$build_dir"
+
+    if [ "$RUNTIME_BUILD_MODE" = "git-archive" ]; then
+        git -C "$DELFIN_DIR" archive --format=tar HEAD delfin pyproject.toml README.md | tar -xf - -C "$build_dir"
         return 0
     fi
 
-    echo "Refreshing DELFIN source tarball..."
-    tmp_tar="$DELFIN_SRC_TAR.tmp.$$"
-    rm -f "$tmp_tar"
-    tar -cf "$tmp_tar" -C "$DELFIN_DIR" delfin
-    mv "$tmp_tar" "$DELFIN_SRC_TAR"
-    if [ -n "$current_head" ]; then
-        printf '%s\n' "$current_head" > "$DELFIN_SRC_HEAD_FILE"
-    else
-        rm -f "$DELFIN_SRC_HEAD_FILE"
+    mkdir -p "$build_dir/delfin"
+    cp -a "$DELFIN_DIR/delfin/." "$build_dir/delfin/"
+    cp -a "$DELFIN_DIR/pyproject.toml" "$build_dir/"
+    if [ -f "$DELFIN_DIR/README.md" ]; then
+        cp -a "$DELFIN_DIR/README.md" "$build_dir/"
     fi
 }
 
-stage_delfin_python_source() {
-    local stage_base="${STAGE_BASE:-}"
-    if [ -z "${stage_base}" ] || [ ! -d "${stage_base}" ]; then
+ensure_runtime_wheel() {
+    local runtime_root=""
+    local lock_fd_opened=0
+    local stage_root=""
+    local tmp_build_dir=""
+    local tmp_wheel_dir=""
+    local built_wheel=""
+
+    if [ -n "$RUNTIME_WHEEL" ] && [ -f "$RUNTIME_WHEEL" ]; then
         return 0
     fi
 
-    LOCAL_DELFIN_ROOT="$stage_base/delfin_runtime_${SLURM_JOB_ID}"
-    LOCAL_DELFIN_SRC="$LOCAL_DELFIN_ROOT/src"
+    detect_runtime_key
+    runtime_root="$RUNTIME_CACHE_DIR/$RUNTIME_KEY"
+    mkdir -p "$runtime_root"
 
-    mkdir -p "$LOCAL_DELFIN_SRC"
-    refresh_delfin_source_tar
-    echo "Unpacking DELFIN source snapshot to local SSD ($LOCAL_DELFIN_SRC)..."
-    tar -xf "$DELFIN_SRC_TAR" -C "$LOCAL_DELFIN_SRC"
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$runtime_root/.lock"
+        flock 9
+        lock_fd_opened=1
+    fi
 
-    export PYTHONPATH="$LOCAL_DELFIN_SRC${PYTHONPATH:+:$PYTHONPATH}"
-    export DELFIN_LOCAL_SOURCE_ROOT="$LOCAL_DELFIN_SRC"
-    echo "DELFIN Python imports redirected to local SSD."
+    RUNTIME_WHEEL="$(find "$runtime_root" -maxdepth 1 -type f -name 'delfin_complat-*.whl' | sort | tail -n 1)"
+    if [ -n "$RUNTIME_WHEEL" ] && [ -f "$RUNTIME_WHEEL" ]; then
+        if [ "$lock_fd_opened" -eq 1 ]; then
+            flock -u 9
+            exec 9>&-
+        fi
+        return 0
+    fi
+
+    echo "Building DELFIN runtime wheel cache for $RUNTIME_KEY..."
+    stage_root="${STAGE_BASE:-$runtime_root}"
+    tmp_build_dir="$stage_root/delfin_runtime_build_${SLURM_JOB_ID}_$$"
+    tmp_wheel_dir="$stage_root/delfin_runtime_dist_${SLURM_JOB_ID}_$$"
+    rm -rf "$tmp_build_dir" "$tmp_wheel_dir"
+    mkdir -p "$tmp_build_dir" "$tmp_wheel_dir"
+
+    build_runtime_context "$tmp_build_dir"
+    python -m pip wheel \
+        --quiet \
+        --no-build-isolation \
+        --no-deps \
+        --wheel-dir "$tmp_wheel_dir" \
+        "$tmp_build_dir"
+
+    built_wheel="$(find "$tmp_wheel_dir" -maxdepth 1 -type f -name 'delfin_complat-*.whl' | sort | tail -n 1)"
+    if [ -z "$built_wheel" ] || [ ! -f "$built_wheel" ]; then
+        echo "ERROR: Failed to build runtime wheel for $RUNTIME_KEY"
+        rm -rf "$tmp_build_dir" "$tmp_wheel_dir"
+        if [ "$lock_fd_opened" -eq 1 ]; then
+            flock -u 9
+            exec 9>&-
+        fi
+        exit 1
+    fi
+
+    mv "$built_wheel" "$runtime_root/"
+    printf 'runtime_key=%s\nbuild_mode=%s\ncreated=%s\n' \
+        "$RUNTIME_KEY" "$RUNTIME_BUILD_MODE" "$(date -Is)" > "$runtime_root/runtime.meta"
+    rm -rf "$tmp_build_dir" "$tmp_wheel_dir"
+
+    RUNTIME_WHEEL="$(find "$runtime_root" -maxdepth 1 -type f -name 'delfin_complat-*.whl' | sort | tail -n 1)"
+    if [ "$lock_fd_opened" -eq 1 ]; then
+        flock -u 9
+        exec 9>&-
+    fi
 }
 
-stage_delfin_python_source
+install_cached_runtime_wheel() {
+    if [ -z "${VENV_LOCAL:-}" ] || [ ! -x "$VENV_LOCAL/bin/python" ]; then
+        export DELFIN_RUNTIME_KEY="editable-home-fallback"
+        echo "WARNING: Skipping runtime wheel overlay because no local venv is staged."
+        return 0
+    fi
+
+    ensure_runtime_wheel
+    echo "Installing cached runtime wheel into local venv ($RUNTIME_KEY)..."
+    "$VENV_LOCAL/bin/python" -m pip install \
+        --quiet \
+        --disable-pip-version-check \
+        --no-deps \
+        --force-reinstall \
+        "$RUNTIME_WHEEL"
+    export DELFIN_RUNTIME_KEY="$RUNTIME_KEY"
+    echo "Using DELFIN runtime cache: $DELFIN_RUNTIME_KEY"
+}
+
+install_cached_runtime_wheel
 
 # Scratch directory setup
 # Priority: 1) BeeOND (for multi-node), 2) $TMPDIR (local SSD), 3) /scratch (network, last resort)
@@ -405,34 +503,77 @@ fi
 
 copy_workspace_to_scratch() {
     local copy_profile="${1:-full}"
+    local manifest_file="$DELFIN_SCRATCH/.fresh_inputs.txt"
+    local staged_count=0
     echo "Copying files to scratch (profile: ${copy_profile})..."
 
     if [ "$copy_profile" = "fresh" ]; then
-        rsync -a \
-            --exclude='.git/' \
-            --exclude='.venv/' \
-            --exclude='__pycache__/' \
-            --exclude='.ipynb_checkpoints/' \
-            --exclude='.orca_iso*' \
-            --exclude='delfin_*.out' \
-            --exclude='delfin_*.err' \
-            --exclude='*.out' \
-            --exclude='*.gbw' \
-            --exclude='*.hess' \
-            --exclude='*.cube' \
-            --exclude='*.densitiesinfo' \
-            --exclude='*.property.txt' \
-            --exclude='*.png' \
-            --exclude='*.svg' \
-            --exclude='*.pdf' \
-            --exclude='*.docx' \
-            --exclude='*.json' \
-            --exclude='*.fprint' \
-            --exclude='*.tmp' \
-            --exclude='*_OCCUPIER/' \
-            --exclude='ESD/' \
-            --exclude='builder/' \
-            "$SLURM_SUBMIT_DIR"/ "$RUN_DIR"/ 2>/dev/null || true
+        : > "$manifest_file"
+        if [ -f "$SLURM_SUBMIT_DIR/CONTROL.txt" ]; then
+            printf '%s\n' "CONTROL.txt" >> "$manifest_file"
+            input_entry="$(awk -F= '
+                /^[[:space:]]*input_file[[:space:]]*=/ {
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+                    print $2
+                    exit
+                }
+            ' "$SLURM_SUBMIT_DIR/CONTROL.txt")"
+            input_entry="${input_entry:-input.txt}"
+            if [[ "$input_entry" = /* ]]; then
+                echo "Fresh staging fallback: CONTROL.txt references absolute input_file '$input_entry'."
+                staged_count=0
+            else
+                printf '%s\n' "$input_entry" >> "$manifest_file"
+            fi
+        fi
+        for optional_file in input.txt input.xyz start.txt co2.xyz; do
+            [ -e "$SLURM_SUBMIT_DIR/$optional_file" ] && printf '%s\n' "$optional_file" >> "$manifest_file"
+        done
+        awk 'NF && !seen[$0]++' "$manifest_file" > "${manifest_file}.tmp" && mv "${manifest_file}.tmp" "$manifest_file"
+
+        if [ -s "$manifest_file" ]; then
+            while IFS= read -r rel_path; do
+                [ -e "$SLURM_SUBMIT_DIR/$rel_path" ] || continue
+                mkdir -p "$RUN_DIR/$(dirname "$rel_path")"
+                cp -a "$SLURM_SUBMIT_DIR/$rel_path" "$RUN_DIR/$rel_path"
+                staged_count=$((staged_count + 1))
+            done < "$manifest_file"
+        fi
+
+        if [ -n "${DELFIN_XYZ_FILE:-}" ] && [ -f "$DELFIN_XYZ_FILE" ]; then
+            cp -a "$DELFIN_XYZ_FILE" "$RUN_DIR/$(basename "$DELFIN_XYZ_FILE")"
+        fi
+
+        if [ "$staged_count" -gt 0 ]; then
+            echo "Staged ${staged_count} explicit input paths to scratch."
+        else
+            echo "Falling back to rsync fresh profile because no safe explicit input set was found."
+            rsync -a \
+                --exclude='.git/' \
+                --exclude='.venv/' \
+                --exclude='__pycache__/' \
+                --exclude='.ipynb_checkpoints/' \
+                --exclude='.orca_iso*' \
+                --exclude='delfin_*.out' \
+                --exclude='delfin_*.err' \
+                --exclude='*.out' \
+                --exclude='*.gbw' \
+                --exclude='*.hess' \
+                --exclude='*.cube' \
+                --exclude='*.densitiesinfo' \
+                --exclude='*.property.txt' \
+                --exclude='*.png' \
+                --exclude='*.svg' \
+                --exclude='*.pdf' \
+                --exclude='*.docx' \
+                --exclude='*.json' \
+                --exclude='*.fprint' \
+                --exclude='*.tmp' \
+                --exclude='*_OCCUPIER/' \
+                --exclude='ESD/' \
+                --exclude='builder/' \
+                "$SLURM_SUBMIT_DIR"/ "$RUN_DIR"/ 2>/dev/null || true
+        fi
     else
         rsync -a \
             --exclude='.git/' \
@@ -468,30 +609,61 @@ purge_xtb_goat_out_files() {
     find "$RUN_DIR" -type f -name 'XTB_GOAT.goat.*.out' -delete 2>/dev/null || true
 }
 
-SYNC_STAMP="$DELFIN_SCRATCH/.last_result_sync"
+SYNC_STAMP_MINIMAL="$DELFIN_SCRATCH/.last_result_sync.minimal"
 
-collect_changed_results() {
+collect_sync_results() {
     local list_file="$1"
-    if [ -f "$SYNC_STAMP" ]; then
-        find "$RUN_DIR" \
-            \( -type f -o -type l \) \
-            ! -path '*/.orca_iso*/*' \
-            ! -name '*.tmp' \
-            ! -name 'XTB_GOAT.goat.*.out' \
-            -newer "$SYNC_STAMP" \
-            -printf '%P\n' | sort -u > "$list_file"
-    else
-        find "$RUN_DIR" \
-            \( -type f -o -type l \) \
-            ! -path '*/.orca_iso*/*' \
-            ! -name '*.tmp' \
-            ! -name 'XTB_GOAT.goat.*.out' \
-            -printf '%P\n' | sort -u > "$list_file"
-    fi
+    local profile="${2:-full}"
+    local stamp_path=""
+
+    case "$profile" in
+        minimal)
+            stamp_path="$SYNC_STAMP_MINIMAL"
+            if [ -f "$stamp_path" ]; then
+                find "$RUN_DIR" \
+                    \( -type f -o -type l \) \
+                    ! -path '*/.orca_iso*/*' \
+                    ! -path '*/__pycache__/*' \
+                    ! -path '*/.ipynb_checkpoints/*' \
+                    ! -name '*.tmp' \
+                    ! -name '*.pyc' \
+                    ! -name '*.pyo' \
+                    ! -name 'XTB_GOAT.goat.*.out' \
+                    \( -name '*.out' -o -name '*.err' -o -name '*.log' -o -name '*.json' -o -name '*.txt' -o -name '*.xyz' -o -name '*.inp' -o -name '*.png' -o -name '*.svg' -o -name '*.pdf' -o -name '*.docx' -o -name '*.csv' -o -name '*.dat' \) \
+                    -newer "$stamp_path" \
+                    -printf '%P\n' | sort -u > "$list_file"
+            else
+                find "$RUN_DIR" \
+                    \( -type f -o -type l \) \
+                    ! -path '*/.orca_iso*/*' \
+                    ! -path '*/__pycache__/*' \
+                    ! -path '*/.ipynb_checkpoints/*' \
+                    ! -name '*.tmp' \
+                    ! -name '*.pyc' \
+                    ! -name '*.pyo' \
+                    ! -name 'XTB_GOAT.goat.*.out' \
+                    \( -name '*.out' -o -name '*.err' -o -name '*.log' -o -name '*.json' -o -name '*.txt' -o -name '*.xyz' -o -name '*.inp' -o -name '*.png' -o -name '*.svg' -o -name '*.pdf' -o -name '*.docx' -o -name '*.csv' -o -name '*.dat' \) \
+                    -printf '%P\n' | sort -u > "$list_file"
+            fi
+            ;;
+        *)
+            find "$RUN_DIR" \
+                \( -type f -o -type l \) \
+                ! -path '*/.orca_iso*/*' \
+                ! -path '*/__pycache__/*' \
+                ! -path '*/.ipynb_checkpoints/*' \
+                ! -name '*.tmp' \
+                ! -name '*.pyc' \
+                ! -name '*.pyo' \
+                ! -name 'XTB_GOAT.goat.*.out' \
+                -printf '%P\n' | sort -u > "$list_file"
+            ;;
+    esac
 }
 
 sync_results_back() {
     local sync_label="${1:-sync}"
+    local sync_profile="${2:-full}"
     local list_file="$DELFIN_SCRATCH/.sync_files.txt"
     local file_count
 
@@ -501,18 +673,25 @@ sync_results_back() {
     fi
 
     purge_xtb_goat_out_files
-    collect_changed_results "$list_file"
+    if [ "$sync_profile" = "full" ]; then
+        rescue_iso_files
+    fi
+    collect_sync_results "$list_file" "$sync_profile"
 
     if [ ! -s "$list_file" ]; then
         echo "No updated result files to copy (${sync_label})."
-        touch "$SYNC_STAMP" 2>/dev/null || true
+        if [ "$sync_profile" = "minimal" ]; then
+            touch "$SYNC_STAMP_MINIMAL" 2>/dev/null || true
+        fi
         return 0
     fi
 
     file_count="$(wc -l < "$list_file" 2>/dev/null || echo 0)"
     rsync -a --files-from="$list_file" "$RUN_DIR"/ "$SLURM_SUBMIT_DIR"/ 2>/dev/null || true
-    touch "$SYNC_STAMP" 2>/dev/null || true
-    echo "Copied ${file_count} changed result files (${sync_label})."
+    if [ "$sync_profile" = "minimal" ]; then
+        touch "$SYNC_STAMP_MINIMAL" 2>/dev/null || true
+    fi
+    echo "Copied ${file_count} result files (${sync_label}, profile=${sync_profile})."
 }
 
 # Cleanup function for trap (handles SIGTERM from timeout, SIGINT, etc.)
@@ -529,15 +708,12 @@ cleanup() {
     # Capture scheduler reason at shutdown.
     write_slurm_reason
 
-    # Rescue files from any active iso dirs (ORCA was killed mid-run)
-    rescue_iso_files
-
-    # CRITICAL: Copy updated results back before cleanup
+    # CRITICAL: Rescue .orca_iso files first, then perform a full result sync.
     echo "Copying results back to $SLURM_SUBMIT_DIR..."
-    sync_results_back "signal-${signal_name}"
+    sync_results_back "signal-${signal_name}" "full"
 
     # Cleanup scratch (only after successful copy)
-    rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${LOCAL_DELFIN_ROOT:-}" 2>/dev/null || true
+    rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}" 2>/dev/null || true
     echo "Cleanup completed at $(date)"
     exit 1
 }
@@ -547,7 +723,7 @@ periodic_copy() {
     while true; do
         sleep 7200
         if [ -d "$RUN_DIR" ]; then
-            sync_results_back "periodic"
+            sync_results_back "periodic" "minimal"
         fi
     done
 }
@@ -590,8 +766,7 @@ schedule_final_backup() {
     echo "Final backup 5 min before timeout: $(date)"
     echo "========================================"
     if [ -d "$RUN_DIR" ]; then
-        rescue_iso_files
-        sync_results_back "final-backup"
+        sync_results_back "final-backup" "full"
         echo "Final backup completed."
     fi
 }
@@ -676,7 +851,7 @@ rm -f "$RUN_DIR"/delfin_*.out "$RUN_DIR"/delfin_*.err 2>/dev/null || true
 
 cd "$RUN_DIR"
 purge_xtb_goat_out_files
-touch "$SYNC_STAMP" 2>/dev/null || true
+touch "$SYNC_STAMP_MINIMAL" 2>/dev/null || true
 
 # Resolve the Python that belongs to the delfin installation
 # (bare `python` may point to a different conda/mamba env)
@@ -684,6 +859,33 @@ DELFIN_PYTHON="$(head -1 "$(command -v delfin)" | sed 's/^#!//')"
 if [ ! -x "$DELFIN_PYTHON" ]; then
     DELFIN_PYTHON="$(command -v python)"
 fi
+
+configure_local_xtb4stda_home() {
+    local stage_base="${STAGE_BASE:-}"
+    local short_link=""
+    local target=""
+    if [ -z "$stage_base" ] || [ ! -d "$stage_base" ]; then
+        return 0
+    fi
+    short_link="$stage_base/xtb4stda_${SLURM_JOB_ID}"
+    target="$("$DELFIN_PYTHON" - <<'PY' 2>/dev/null
+from pathlib import Path
+from delfin.qm_runtime import get_qm_tools_root
+root = Path(get_qm_tools_root())
+target = root / "share" / "xtb4stda"
+print(target.resolve() if target.exists() else "")
+PY
+)"
+    if [ -n "$target" ] && [ -d "$target" ]; then
+        rm -f "$short_link"
+        ln -s "$target" "$short_link" 2>/dev/null || true
+        if [ -L "$short_link" ] || [ -d "$short_link" ]; then
+            export XTB4STDAHOME="$short_link"
+        fi
+    fi
+}
+
+configure_local_xtb4stda_home
 
 # Run appropriate mode
 EXIT_CODE=0
@@ -774,7 +976,10 @@ case "$MODE" in
     hyperpol_xtb)
         XYZ_FILE="${DELFIN_XYZ_FILE:-}"
         WORKFLOW_LABEL="${DELFIN_WORKFLOW_LABEL:-hyperpol_xtb}"
-        TARGET_WORKDIR="${SLURM_SUBMIT_DIR:-$PWD}"
+        TARGET_WORKDIR="$RUN_DIR"
+        if [ -n "$XYZ_FILE" ] && [ -f "$RUN_DIR/$(basename "$XYZ_FILE")" ]; then
+            XYZ_FILE="$RUN_DIR/$(basename "$XYZ_FILE")"
+        fi
         if [ -z "$XYZ_FILE" ]; then
             echo "ERROR: DELFIN_XYZ_FILE not set for hyperpol_xtb mode"
             EXIT_CODE=1
@@ -806,7 +1011,10 @@ case "$MODE" in
     tadf_xtb)
         XYZ_FILE="${DELFIN_XYZ_FILE:-}"
         WORKFLOW_LABEL="${DELFIN_WORKFLOW_LABEL:-tadf_xtb}"
-        TARGET_WORKDIR="${SLURM_SUBMIT_DIR:-$PWD}"
+        TARGET_WORKDIR="$RUN_DIR"
+        if [ -n "$XYZ_FILE" ] && [ -f "$RUN_DIR/$(basename "$XYZ_FILE")" ]; then
+            XYZ_FILE="$RUN_DIR/$(basename "$XYZ_FILE")"
+        fi
         if [ -z "$XYZ_FILE" ]; then
             echo "ERROR: DELFIN_XYZ_FILE not set for tadf_xtb mode"
             EXIT_CODE=1
@@ -873,11 +1081,10 @@ echo "Job finished: $(date)"
 echo "Exit Code:   $EXIT_CODE"
 echo "========================================"
 
-# Copy results back
-rescue_iso_files
-sync_results_back "job-end"
+# Copy results back (always rescue .orca_iso contents before the final full sync)
+sync_results_back "job-end" "full"
 
 # Cleanup scratch
-rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}" "${LOCAL_DELFIN_ROOT:-}"
+rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}"
 
 exit $EXIT_CODE
