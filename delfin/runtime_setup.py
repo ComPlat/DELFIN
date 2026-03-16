@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from contextlib import contextmanager
@@ -11,11 +12,100 @@ from pathlib import Path
 from delfin.qm_runtime import check_tools
 
 
+_ORCA_VERSION_RE = re.compile(r"orca[_-]?(\d+(?:[_\.-]\d+)*)", re.IGNORECASE)
+
+
 def normalize_runtime_path(path_value: str | Path | None) -> str:
     text = str(path_value or "").strip()
     if not text:
         return ""
     return str(Path(text).expanduser())
+
+
+def normalize_orca_base(path_value: str | Path | None) -> str:
+    normalized = normalize_runtime_path(path_value)
+    if not normalized:
+        return ""
+    path = Path(normalized)
+    if path.is_file():
+        if path.name.lower().startswith("orca"):
+            return str(path.parent.resolve())
+        return str(path.resolve().parent)
+    candidate = path / "orca"
+    if candidate.is_file():
+        return str(path.resolve())
+    return str(path.resolve())
+
+
+def describe_orca_installation(path_value: str | Path | None) -> str:
+    normalized = normalize_orca_base(path_value)
+    if not normalized:
+        return "ORCA"
+    name = Path(normalized).name
+    match = _ORCA_VERSION_RE.search(name)
+    if match:
+        version = match.group(1).replace("_", ".").replace("-", ".")
+        return f"ORCA {version}"
+    return f"ORCA ({name})"
+
+
+def discover_orca_installations(
+    *,
+    seed_candidates: list[str] | None = None,
+    search_roots: list[str | Path] | None = None,
+) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add_candidate(raw_value: str | Path | None) -> None:
+        normalized = normalize_orca_base(raw_value)
+        if not normalized:
+            return
+        resolved = str(Path(normalized).expanduser().resolve())
+        if resolved in seen:
+            return
+        orca_binary = Path(resolved) / "orca"
+        if not orca_binary.is_file():
+            return
+        seen.add(resolved)
+        candidates.append(resolved)
+
+    for env_key in ("DELFIN_ORCA_BASE", "ORCA_BINARY", "ORCA_PATH"):
+        _add_candidate(os.environ.get(env_key))
+
+    _add_candidate(shutil.which("orca"))
+
+    for candidate in seed_candidates or []:
+        _add_candidate(candidate)
+
+    roots = []
+    for root in search_roots or []:
+        normalized = normalize_runtime_path(root)
+        if normalized:
+            roots.append(Path(normalized))
+
+    for root in roots:
+        if not root.exists():
+            continue
+        try:
+            entries = list(root.iterdir())
+        except Exception:
+            continue
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            if "orca" not in entry.name.lower():
+                continue
+            _add_candidate(entry)
+
+    return sorted(
+        candidates,
+        key=lambda value: (
+            "6.1.1" not in describe_orca_installation(value),
+            describe_orca_installation(value),
+            value,
+        ),
+    )
 
 
 def resolve_backend_choice(
@@ -71,7 +161,7 @@ def resolve_orca_base(
         candidates.append(local_default)
 
     for candidate in candidates:
-        normalized = normalize_runtime_path(candidate)
+        normalized = normalize_orca_base(candidate)
         if not normalized:
             continue
         path = Path(normalized)

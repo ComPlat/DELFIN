@@ -2,6 +2,8 @@ from pathlib import Path
 
 from delfin.runtime_setup import (
     collect_runtime_diagnostics,
+    describe_orca_installation,
+    discover_orca_installations,
     get_packaged_submit_templates_dir,
     get_user_qm_tools_dir,
     resolve_backend_choice,
@@ -82,3 +84,22 @@ def test_get_user_qm_tools_dir_accepts_override(tmp_path):
     target = tmp_path / "custom_qm_tools"
 
     assert get_user_qm_tools_dir(target) == target
+
+
+def test_discover_orca_installations_finds_multiple_versions(tmp_path):
+    root = tmp_path / "software"
+    orca_611 = root / "orca_6_1_1"
+    orca_601 = root / "orca_6_0_1"
+    orca_611.mkdir(parents=True)
+    orca_601.mkdir(parents=True)
+    (orca_611 / "orca").write_text("", encoding="utf-8")
+    (orca_601 / "orca").write_text("", encoding="utf-8")
+
+    discovered = discover_orca_installations(search_roots=[root])
+
+    assert str(orca_611) in discovered
+    assert str(orca_601) in discovered
+
+
+def test_describe_orca_installation_formats_version():
+    assert describe_orca_installation("/opt/orca_6_1_1") == "ORCA 6.1.1"

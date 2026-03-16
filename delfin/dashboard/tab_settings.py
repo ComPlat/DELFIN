@@ -9,6 +9,8 @@ import ipywidgets as widgets
 from delfin.runtime_setup import (
     apply_runtime_environment,
     collect_runtime_diagnostics,
+    describe_orca_installation,
+    discover_orca_installations,
     get_packaged_submit_templates_dir,
     get_user_qm_tools_dir,
     run_qm_tools_installer,
@@ -98,6 +100,16 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     global_orca_input = widgets.Text(
         placeholder='Prefer PATH / auto-detect',
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    scan_orca_btn = widgets.Button(
+        description='Scan ORCA',
+        layout=widgets.Layout(width='105px', height='28px'),
+    )
+    detected_orca_dropdown = widgets.Dropdown(
+        options=[('Auto-detect / PATH', '')],
+        value='',
+        disabled=True,
+        layout=widgets.Layout(width='320px', min_width='250px', height='28px'),
     )
     qm_tools_root_input = widgets.Text(
         placeholder='Optional qm_tools root override',
@@ -202,6 +214,29 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             if candidate_text not in candidates:
                 candidates.append(candidate_text)
         return candidates
+
+    def _orca_search_roots():
+        roots = [Path.home() / 'software', Path.home() / 'apps', Path.home() / 'local', Path('/opt')]
+        if getattr(ctx, 'repo_dir', None):
+            roots.append(Path(ctx.repo_dir).parent / 'software')
+        return roots
+
+    def _refresh_orca_dropdown(selected_value=None):
+        current_value = str(selected_value if selected_value is not None else global_orca_input.value or '').strip()
+        options = [('Auto-detect / PATH', '')]
+        for candidate in discover_orca_installations(
+            seed_candidates=_runtime_auto_candidates(),
+            search_roots=_orca_search_roots(),
+        ):
+            options.append((describe_orca_installation(candidate), candidate))
+
+        if current_value and all(current_value != value for _label, value in options):
+            options.append((f'Configured: {current_value}', current_value))
+
+        detected_orca_dropdown.options = options
+        allowed_values = {value for _label, value in options}
+        detected_orca_dropdown.value = current_value if current_value in allowed_values else ''
+        detected_orca_dropdown.disabled = len(options) <= 1
 
     def _fallback_submit_templates_dir():
         current = getattr(ctx, 'submit_templates_dir', None)
@@ -345,6 +380,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         slurm_orca_input.value = str(slurm_payload.get('orca_base') or '')
         slurm_templates_input.value = str(slurm_payload.get('submit_templates_dir') or '')
         slurm_profile_input.value = str(slurm_payload.get('profile') or '')
+        _refresh_orca_dropdown(global_orca_input.value)
 
     def _effective_paths_from_widgets():
         calc_override = normalize_local_directory_setting(
@@ -574,6 +610,37 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 color='#d32f2f',
             )
 
+    def _on_scan_orca(button):
+        try:
+            _refresh_orca_dropdown(global_orca_input.value)
+            options_count = max(len(detected_orca_dropdown.options) - 1, 0)
+            if options_count:
+                _set_status(
+                    f'Found {options_count} ORCA installation(s). Select one below or keep auto-detect.',
+                    color='#2e7d32',
+                )
+            else:
+                _set_status(
+                    'No ORCA installation was found in PATH or the standard search roots. Keep auto-detect or enter a path manually.',
+                    color='#ef6c00',
+                )
+        except Exception as exc:
+            _set_status(
+                f'ORCA scan failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def _on_select_detected_orca(change):
+        if change.get('name') != 'value':
+            return
+        selected = str(change.get('new') or '')
+        global_orca_input.value = selected
+
+    def _on_change_global_orca(change):
+        if change.get('name') != 'value':
+            return
+        _refresh_orca_dropdown(change.get('new'))
+
     def _on_prepare_qm_tools(button):
         try:
             target = stage_packaged_qm_tools()
@@ -779,10 +846,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     show_sensitive_btn.observe(_on_toggle_sensitive, names='value')
     reload_btn.on_click(_on_reload)
     validate_runtime_btn.on_click(_on_validate_runtime)
+    scan_orca_btn.on_click(_on_scan_orca)
     prepare_qm_tools_btn.on_click(_on_prepare_qm_tools)
     install_qm_tools_btn.on_click(_on_install_qm_tools)
     update_qm_tools_btn.on_click(_on_update_qm_tools)
     save_btn.on_click(_on_save)
+    detected_orca_dropdown.observe(_on_select_detected_orca, names='value')
+    global_orca_input.observe(_on_change_global_orca, names='value')
 
     info_box = widgets.HTML(
         value=(
@@ -853,6 +923,22 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 [
                     widgets.HTML('<b>ORCA path</b>'),
                     global_orca_input,
+                    scan_orca_btn,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Detected ORCA</b>'),
+                    detected_orca_dropdown,
+                    widgets.HTML(
+                        '<span style="color:#616161;">Choose a detected installation to fill the ORCA path automatically.</span>'
+                    ),
                 ],
                 layout=widgets.Layout(
                     width='100%',
@@ -1059,9 +1145,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             workspace_rows,
             transfer_header,
             transfer_rows,
+            ssh_help_box,
             runtime_header,
             runtime_rows,
-            ssh_help_box,
             future_box,
         ],
         layout=widgets.Layout(width='100%', gap='12px', padding='10px'),
