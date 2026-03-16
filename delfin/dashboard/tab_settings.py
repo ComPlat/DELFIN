@@ -10,9 +10,12 @@ from delfin.runtime_setup import (
     apply_runtime_environment,
     collect_runtime_diagnostics,
     get_packaged_submit_templates_dir,
+    get_user_qm_tools_dir,
+    run_qm_tools_installer,
     resolve_backend_choice,
     resolve_orca_base,
     resolve_submit_templates_dir,
+    stage_packaged_qm_tools,
 )
 from delfin.user_settings import (
     get_settings_path,
@@ -30,6 +33,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     settings_path = get_settings_path()
     status_html = widgets.HTML(value='')
     runtime_diagnostics_html = widgets.HTML(value='')
+    qm_tools_log = widgets.Textarea(
+        value='',
+        disabled=True,
+        layout=widgets.Layout(width='100%', height='160px'),
+    )
     show_sensitive_btn = widgets.ToggleButton(
         value=False,
         description='Show Values',
@@ -44,6 +52,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         description='Validate Setup',
         button_style='info',
         layout=widgets.Layout(width='120px', height='28px'),
+    )
+    prepare_qm_tools_btn = widgets.Button(
+        description='Prepare qm_tools',
+        layout=widgets.Layout(width='135px', height='28px'),
+    )
+    install_qm_tools_btn = widgets.Button(
+        description='Install qm_tools',
+        button_style='warning',
+        layout=widgets.Layout(width='125px', height='28px'),
     )
     save_btn = widgets.Button(
         description='Save Settings',
@@ -270,6 +287,20 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             + '</tbody></table></div>'
         )
         return effective_backend, effective_orca_base, submit_templates_dir
+
+    def _persist_runtime_payload(runtime_payload):
+        settings_payload = load_settings()
+        settings_payload['runtime'] = runtime_payload
+        settings_payload = save_settings(settings_payload, settings_path)
+        _set_runtime_widgets(settings_payload)
+        backend_switch_required, effective_backend, effective_orca_base = _apply_runtime_settings(
+            settings_payload.get('runtime', {}) or runtime_payload
+        )
+        _render_runtime_diagnostics(
+            settings_payload.get('runtime', {}) or runtime_payload,
+            reload_required=backend_switch_required,
+        )
+        return backend_switch_required, effective_backend, effective_orca_base
 
     def _set_transfer_widgets(payload):
         host_value = str((payload or {}).get('host') or '')
@@ -538,6 +569,83 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 color='#d32f2f',
             )
 
+    def _on_prepare_qm_tools(button):
+        try:
+            target = stage_packaged_qm_tools()
+            runtime_payload = _runtime_payload_from_widgets()
+            runtime_payload['qm_tools_root'] = str(target)
+            backend_switch_required, effective_backend, effective_orca_base = _persist_runtime_payload(
+                runtime_payload
+            )
+            qm_tools_log.value = (
+                f'Prepared bundled qm_tools under {target}\n'
+                'Only the packaged DELFIN bundle was copied. '
+                'For optional downloads / conda-based extras use "Install qm_tools".'
+            )
+            backend_hint = (
+                f' Reload DELFIN to switch execution backend from '
+                f'{ctx.runtime_backend} to {effective_backend}.'
+                if backend_switch_required
+                else ''
+            )
+            _set_status(
+                (
+                    f'Bundled qm_tools prepared in <code>{html.escape(str(target))}</code>. '
+                    f'Runtime now uses <code>{html.escape(str(target))}</code>. '
+                    f'Effective backend: <code>{html.escape(effective_backend)}</code>; '
+                    f'ORCA: <code>{html.escape(effective_orca_base or "PATH / auto-detect")}</code>.'
+                    f'{backend_hint}'
+                ),
+                color='#2e7d32',
+            )
+        except Exception as exc:
+            qm_tools_log.value = ''
+            _set_status(
+                f'Preparing qm_tools failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def _on_install_qm_tools(button):
+        try:
+            target, result = run_qm_tools_installer()
+            runtime_payload = _runtime_payload_from_widgets()
+            runtime_payload['qm_tools_root'] = str(target)
+            backend_switch_required, effective_backend, effective_orca_base = _persist_runtime_payload(
+                runtime_payload
+            )
+            qm_tools_log.value = result.stdout or '(no installer output)'
+            if result.returncode == 0:
+                backend_hint = (
+                    f' Reload DELFIN to switch execution backend from '
+                    f'{ctx.runtime_backend} to {effective_backend}.'
+                    if backend_switch_required
+                    else ''
+                )
+                _set_status(
+                    (
+                        f'qm_tools installer completed in <code>{html.escape(str(target))}</code>. '
+                        f'Runtime now uses <code>{html.escape(str(target))}</code>. '
+                        f'Effective ORCA: <code>{html.escape(effective_orca_base or "PATH / auto-detect")}</code>.'
+                        f'{backend_hint}'
+                    ),
+                    color='#2e7d32',
+                )
+            else:
+                _set_status(
+                    (
+                        f'qm_tools installer failed with exit code {result.returncode}. '
+                        f'Inspect the log below. Runtime still points to '
+                        f'<code>{html.escape(str(target))}</code>.'
+                    ),
+                    color='#d32f2f',
+                )
+        except Exception as exc:
+            qm_tools_log.value = ''
+            _set_status(
+                f'Running qm_tools installer failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
     def _on_save(button):
         try:
             host, user, remote_path, port = _transfer_payload_from_widgets()
@@ -619,6 +727,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     show_sensitive_btn.observe(_on_toggle_sensitive, names='value')
     reload_btn.on_click(_on_reload)
     validate_runtime_btn.on_click(_on_validate_runtime)
+    prepare_qm_tools_btn.on_click(_on_prepare_qm_tools)
+    install_qm_tools_btn.on_click(_on_install_qm_tools)
     save_btn.on_click(_on_save)
 
     info_box = widgets.HTML(
@@ -710,6 +820,28 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     flex_flow='row wrap',
                 ),
             ),
+            widgets.HBox(
+                [
+                    prepare_qm_tools_btn,
+                    install_qm_tools_btn,
+                    widgets.HTML(
+                        (
+                            f'<span style="color:#616161;">'
+                            f'Installs into <code>{html.escape(str(get_user_qm_tools_dir()))}</code>, '
+                            'not into the Python package directory. '
+                            'ORCA and site modules stay external.'
+                            f'</span>'
+                        )
+                    ),
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            qm_tools_log,
             widgets.HTML('<b>Local overrides</b>'),
             widgets.HBox(
                 [
@@ -871,10 +1003,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             info_box,
             workspace_header,
             workspace_rows,
-            runtime_header,
-            runtime_rows,
             transfer_header,
             transfer_rows,
+            runtime_header,
+            runtime_rows,
             ssh_help_box,
             future_box,
         ],

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -90,6 +91,60 @@ def resolve_submit_templates_dir(runtime_settings: dict | None, fallback_dir: st
 
 def get_packaged_submit_templates_dir() -> Path:
     return (Path(__file__).resolve().parent / "submit_templates").resolve()
+
+
+def get_packaged_qm_tools_dir() -> Path:
+    return (Path(__file__).resolve().parent / "qm_tools").resolve()
+
+
+def get_user_qm_tools_dir(target_dir: str | Path | None = None) -> Path:
+    if target_dir:
+        return Path(target_dir).expanduser()
+    return (Path.home() / ".delfin" / "qm_tools").expanduser()
+
+
+def stage_packaged_qm_tools(target_dir: str | Path | None = None) -> Path:
+    source = get_packaged_qm_tools_dir()
+    if not source.is_dir():
+        raise FileNotFoundError(f"Packaged qm_tools directory not found: {source}")
+
+    target = get_user_qm_tools_dir(target_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "downloads"),
+    )
+    return target
+
+
+def run_qm_tools_installer(
+    target_dir: str | Path | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    target = stage_packaged_qm_tools(target_dir)
+    installer = target / "install_qm_tools.sh"
+    if not installer.is_file():
+        raise FileNotFoundError(f"qm_tools installer not found: {installer}")
+
+    env = os.environ.copy()
+    env["DELFIN_QM_ROOT"] = str(target)
+    env["DELFIN_QM_TOOLS_ROOT"] = str(target)
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    result = subprocess.run(
+        ["bash", str(installer)],
+        cwd=str(target),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    return target, result
 
 
 def _prepend_path_env_once(path_entry: str) -> None:

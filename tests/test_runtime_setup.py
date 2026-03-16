@@ -3,9 +3,11 @@ from pathlib import Path
 from delfin.runtime_setup import (
     collect_runtime_diagnostics,
     get_packaged_submit_templates_dir,
+    get_user_qm_tools_dir,
     resolve_backend_choice,
     resolve_orca_base,
     resolve_submit_templates_dir,
+    stage_packaged_qm_tools,
 )
 
 
@@ -62,3 +64,21 @@ def test_collect_runtime_diagnostics_reports_missing_orca_but_existing_templates
     assert by_name["backend"]["detail"] == "slurm"
     assert by_name["slurm-templates"]["status"] == "ok"
     assert by_name["orca"]["status"] in {"ok", "missing"}
+
+
+def test_stage_packaged_qm_tools_copies_bundle_to_target(tmp_path):
+    target = tmp_path / "user_qm_tools"
+
+    staged = stage_packaged_qm_tools(target)
+
+    assert staged == target
+    assert (staged / "install_qm_tools.sh").is_file()
+    assert (staged / "bin" / "xtb4stda").is_file()
+    assert (staged / "bin" / "stda_v1.6.1").is_file()
+    assert (staged / "share" / "xtb4stda" / ".xtb4stdarc").is_file()
+
+
+def test_get_user_qm_tools_dir_accepts_override(tmp_path):
+    target = tmp_path / "custom_qm_tools"
+
+    assert get_user_qm_tools_dir(target) == target
