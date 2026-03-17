@@ -6,6 +6,10 @@ dist/
 *.egg-info/
 own_auto_tree.json
 
+# Backup files
+*.bak
+*.bak_*
+
 # Python cache / bytecode
 __pycache__/
 *.py[cod]
