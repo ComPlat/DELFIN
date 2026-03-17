@@ -82,7 +82,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     assert captured["env"]["DELFIN_VOILA_ROOT_DIR"] == str(root_dir.resolve())
 
     stdout = capsys.readouterr().out
-    assert "Starting DELFIN Dashboard on http://localhost:9001" in stdout
+    assert "Starting DELFIN Dashboard on http://0.0.0.0:9001" in stdout
 
 
 def test_main_reports_missing_voila_module(monkeypatch, capsys):

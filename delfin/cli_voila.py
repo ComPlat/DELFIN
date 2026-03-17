@@ -151,6 +151,11 @@ def main(argv=None):
         action="store_true",
         help="Use dark theme",
     )
+    parser.add_argument(
+        "--ip",
+        default="0.0.0.0",
+        help="IP to bind to (default: 0.0.0.0 = all interfaces, use 127.0.0.1 for local only)",
+    )
     args = parser.parse_args(argv)
 
     # Check that voila is installed in the current Python environment.
@@ -193,6 +198,7 @@ def main(argv=None):
         "voila",
         notebook,
         f"--port={args.port}",
+        f"--Voila.ip={args.ip}",
         "--show_tracebacks=True",
         f"--Voila.root_dir={root_dir}",
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)",
@@ -206,7 +212,8 @@ def main(argv=None):
     if args.dark:
         cmd.append("--theme=dark")
 
-    print(f"Starting DELFIN Dashboard on http://localhost:{args.port}")
+    bind_display = "localhost" if args.ip == "127.0.0.1" else args.ip
+    print(f"Starting DELFIN Dashboard on http://{bind_display}:{args.port}")
     print("Press Ctrl+C to stop.\n")
 
     try:
