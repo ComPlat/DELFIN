@@ -6601,9 +6601,15 @@ def create_tab(ctx):
                     key=lambda x: (not x.is_dir(), x.name.lower()),
                 )
             try:
-                is_top_level_calc_view = current_dir.resolve() == _calc_dir().resolve()
+                is_top_level_calc_view = (
+                    not _is_archive_tab
+                    and current_dir.resolve() == _calc_dir().resolve()
+                )
             except Exception:
-                is_top_level_calc_view = (state.get('current_path') or '') == ''
+                is_top_level_calc_view = (
+                    not _is_archive_tab
+                    and (state.get('current_path') or '') == ''
+                )
             local_status_dirs = calc_collect_local_job_status_dirs()
             for entry in entries:
                 if entry.is_dir():
