@@ -1226,30 +1226,30 @@ def main(argv: list[str] | None = None) -> int:
     # Handle --report mode: recompute potentials from existing outputs
     if REPORT_TEXT:
         from .cli_report import run_report_mode
+        from .config import parse_control_text
 
-        # Read CONTROL.txt
+        # Read CONTROL.txt without validation – report only reads values.
         try:
-            config = read_control_file(str(control_file_path))
+            config = parse_control_text(
+                control_file_path.read_text(encoding="utf-8")
+            )
         except FileNotFoundError:
             logger.error("CONTROL file not found: %s", control_file_path)
             logger.error("Hint: run `delfin %s --define` or pass `--control /path/to/CONTROL.txt`.", workspace_arg)
-            return 2
-        except ValueError as exc:
-            logger.error("Invalid CONTROL configuration: %s", exc)
             return 2
 
         return run_report_mode(config)
     if REPORT_DOCX:
         from .cli_report_docx import run_docx_report_mode
+        from .config import parse_control_text
 
         try:
-            config = read_control_file(str(control_file_path))
+            config = parse_control_text(
+                control_file_path.read_text(encoding="utf-8")
+            )
         except FileNotFoundError:
             logger.error("CONTROL file not found: %s", control_file_path)
             logger.error("Hint: run `delfin %s --define` or pass `--control /path/to/CONTROL.txt`.", workspace_arg)
-            return 2
-        except ValueError as exc:
-            logger.error("Invalid CONTROL configuration: %s", exc)
             return 2
 
         return run_docx_report_mode(

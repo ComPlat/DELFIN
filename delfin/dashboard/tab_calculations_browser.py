@@ -7500,7 +7500,29 @@ def create_tab(ctx):
 
     def calc_on_report(button):
         current_dir = _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
-        report_targets = calc_collect_report_targets()
+
+        # If folders are selected, only generate reports for those.
+        selected = _calc_selected_labels()
+        selected_dirs = []
+        if selected:
+            for label in selected:
+                name = _calc_label_to_name(label)
+                if not name:
+                    continue
+                candidate = current_dir / name
+                if candidate.is_dir() and _calc_is_report_workspace(candidate):
+                    selected_dirs.append(candidate)
+                elif candidate.is_dir():
+                    # Check subfolders of selected dir
+                    try:
+                        for ctrl in candidate.rglob('CONTROL.txt'):
+                            sub = ctrl.parent
+                            if _calc_is_report_workspace(sub):
+                                selected_dirs.append(sub)
+                    except Exception:
+                        pass
+
+        report_targets = selected_dirs if selected_dirs else calc_collect_report_targets()
         if not report_targets:
             calc_report_status.value = (
                 '<span style="color:#d32f2f;">No reportable DELFIN folders found here.</span>'
