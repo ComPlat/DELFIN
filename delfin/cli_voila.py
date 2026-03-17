@@ -83,6 +83,27 @@ def _prepare_voila_env(open_browser: bool) -> dict[str, str]:
     return env
 
 
+def _get_local_ips() -> list[str]:
+    """Return non-loopback IPv4 addresses of this machine."""
+    ips: list[str] = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addr = info[4][0]
+            if not addr.startswith("127."):
+                ips.append(addr)
+    except Exception:
+        pass
+    if not ips:
+        # Fallback: connect to a public IP to discover the default route address.
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                ips.append(s.getsockname()[0])
+        except Exception:
+            pass
+    return list(dict.fromkeys(ips))  # dedupe, preserve order
+
+
 def _voila_is_available() -> bool:
     """Return True when the current Python can import voila."""
     return importlib.util.find_spec("voila") is not None
@@ -214,6 +235,19 @@ def main(argv=None):
 
     bind_display = "localhost" if args.ip == "127.0.0.1" else args.ip
     print(f"Starting DELFIN Dashboard on http://{bind_display}:{args.port}")
+
+    # Show all reachable URLs so remote users know exactly what to type.
+    if args.ip == "0.0.0.0":
+        for ip in _get_local_ips():
+            print(f"  -> http://{ip}:{args.port}")
+
+    print()
+    if args.ip == "0.0.0.0":
+        print(
+            "Tip: From another machine, use one of the URLs above.\n"
+            "     If it doesn't connect, check your firewall:\n"
+            f"       sudo ufw allow {args.port}/tcp"
+        )
     print("Press Ctrl+C to stop.\n")
 
     try:
