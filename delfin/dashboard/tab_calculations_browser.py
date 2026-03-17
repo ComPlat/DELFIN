@@ -2043,6 +2043,7 @@ def create_tab(ctx):
                 color='#d32f2f',
             )
         finally:
+            calc_upload_ack_input.value = seq
             calc_upload_ack_label.value = str(seq)
             calc_upload_chunk_input.value = ''
 
@@ -10280,7 +10281,7 @@ def create_tab(ctx):
                 throw new Error('Upload chunk widget not found');
             }
             if (_clickWidgetButton(root, 'calc-upload-trigger-btn')) {
-                await _waitForUploadAck(root, prevAck, 20000);
+                await _waitForUploadAck(root, prevAck, 60000);
                 await _sleep(5);
                 return;
             }
@@ -10291,7 +10292,7 @@ def create_tab(ctx):
             if (!_setWidgetInput(root, 'calc-upload-seq', String(root._delfinUploadSeq))) {
                 throw new Error('Upload trigger controls not found');
             }
-            await _waitForUploadAck(root, prevAck, 20000);
+            await _waitForUploadAck(root, prevAck, 60000);
             await _sleep(5);
         }
         async function _putContentsModel(relPath, model){
