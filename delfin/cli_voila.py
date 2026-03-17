@@ -112,6 +112,18 @@ def _stage_notebook_under_root(notebook: str, root_dir: str) -> str:
     return str(staged_path)
 
 
+def _trust_notebook(notebook: str) -> None:
+    """Mark the notebook as trusted so Voilà skips the security warning."""
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "jupyter", "trust", notebook],
+            capture_output=True,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="delfin-voila",
@@ -132,7 +144,7 @@ def main(argv=None):
     browser_group.add_argument(
         "--no-browser",
         action="store_true",
-        help="Deprecated alias for the default server-safe behaviour",
+        help="Default behaviour (kept for backwards compatibility)",
     )
     parser.add_argument(
         "--dark",
@@ -150,6 +162,17 @@ def main(argv=None):
         )
         sys.exit(1)
 
+    # Check port is free before launching Voilà.
+    port = args.port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        if sock.connect_ex(("127.0.0.1", port)) == 0:
+            print(
+                f"Error: port {port} is already in use.\n"
+                f"Stop the other process or use a different port:  delfin-voila --port {port + 1}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     open_browser = bool(args.open_browser)
     notebook = _find_notebook()
     root_dir = str(
@@ -161,6 +184,9 @@ def main(argv=None):
     env = _prepare_voila_env(open_browser=open_browser)
     env.setdefault("DELFIN_VOILA_ROOT_DIR", root_dir)
 
+    # Trust the notebook so Voilà doesn't warn about untrusted content.
+    _trust_notebook(notebook)
+
     cmd = [
         sys.executable,
         "-m",
@@ -169,8 +195,6 @@ def main(argv=None):
         f"--port={args.port}",
         "--show_tracebacks=True",
         f"--Voila.root_dir={root_dir}",
-        "--ServerApp.websocket_ping_interval=30000",
-        "--ServerApp.websocket_ping_timeout=30000",
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)",
     ]
 
