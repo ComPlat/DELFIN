@@ -1897,9 +1897,13 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to collect ESD summary data: %s", exc)
 
-    # Parse ISC data
-    isc_pairs = [("S1", "T1"), ("S1", "T2"), ("S2", "T1")]
-    for state1, state2 in isc_pairs:
+    # Parse ISC data: auto-discover all *_ISC_ms0.out files to find state pairs
+    isc_pairs: set[tuple[str, str]] = set()
+    for isc_file in esd_dir.glob("*_ISC_ms0.out"):
+        match = re.match(r"^([A-Za-z]\d+)_([A-Za-z]\d+)_ISC_ms0\.out$", isc_file.name)
+        if match:
+            isc_pairs.add((match.group(1), match.group(2)))
+    for state1, state2 in sorted(isc_pairs):
         isc_data = parse_isc_data(esd_dir, state1, state2)
         key = f"{state1}_{state2}"
         summary_isc = summary_data.get("isc", {}).get(key)
@@ -1918,9 +1922,13 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
                 entry["total_rate_s1"] = _calculate_total_isc_rate(entry["ms_components"])
             data["intersystem_crossing"][key] = entry
 
-    # Parse IC data
-    ic_pairs = [("S1", "S0"), ("S2", "S1"), ("T2", "T1")]
-    for state1, state2 in ic_pairs:
+    # Parse IC data: auto-discover all *_IC.out files to find state pairs
+    ic_pairs: set[tuple[str, str]] = set()
+    for ic_file in esd_dir.glob("*_IC.out"):
+        match = re.match(r"^([A-Za-z]\d+)_([A-Za-z]\d+)_IC\.out$", ic_file.name)
+        if match:
+            ic_pairs.add((match.group(1), match.group(2)))
+    for state1, state2 in sorted(ic_pairs):
         ic_data = parse_ic_data(esd_dir, state1, state2)
         key = f"{state1}_{state2}"
         summary_ic = summary_data.get("ic", {}).get(key)
