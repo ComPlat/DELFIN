@@ -1278,7 +1278,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     layout=widgets.Layout(width='80px', height='24px'),
                     tooltip=f'pip install --upgrade {pkg_key}',
                 )
-                btn.on_click(lambda b, pkg=install_cmd, lbl=name, fn=refresh_fn:
+                btn.on_click(lambda b, pkg=pip_pkg_name or install_cmd, lbl=name, fn=refresh_fn:
                              _pip_update_tool(pkg, lbl, fn))
                 return widgets.HBox(
                     [label, btn],
