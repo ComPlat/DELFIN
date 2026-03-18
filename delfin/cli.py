@@ -344,6 +344,54 @@ def _run_mlp_check_subcommand(argv: list[str]) -> int:
     return 0
 
 
+def _run_analysis_check_subcommand(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="delfin analysis_check",
+        description="Inspect DELFIN analysis tools availability (Multiwfn, CENSO, morfeus).",
+    )
+    parser.parse_args(argv)
+
+    try:
+        from delfin.analysis_tools import (
+            get_analysis_tools_root,
+            multiwfn_available,
+            censo_available,
+            morfeus_available,
+            get_multiwfn_version,
+            get_multiwfn_path,
+            get_censo_version,
+            get_morfeus_version,
+        )
+
+        print(f"analysis_tools root: {get_analysis_tools_root()}")
+        print()
+
+        # Multiwfn
+        if multiwfn_available():
+            print(f"  Multiwfn: {get_multiwfn_version()} [{get_multiwfn_path()}]")
+        else:
+            print("  Multiwfn: NOT INSTALLED")
+            print("    Download from: http://sobereva.com/multiwfn/")
+
+        # CENSO
+        if censo_available():
+            print(f"  CENSO: v{get_censo_version()}")
+        else:
+            print("  CENSO: NOT INSTALLED")
+            print("    Install with: conda install -c conda-forge censo")
+
+        # morfeus
+        if morfeus_available():
+            print(f"  morfeus: v{get_morfeus_version()}")
+        else:
+            print("  morfeus: NOT INSTALLED")
+            print("    Install with: pip install morfeus-ml")
+
+    except ImportError:
+        print("analysis_tools module not found")
+    return 0
+
+
 def _run_tadf_xtb_subcommand(argv: list[str]) -> int:
     from .tadf_xtb import run_cli as run_tadf_xtb_cli
 
@@ -1179,6 +1227,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_csp_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "mlp_check":
         return _run_mlp_check_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "analysis_check":
+        return _run_analysis_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "tadf_xtb":
         return _run_tadf_xtb_subcommand(arg_list[1:])
     if arg_list and arg_list[0] in {"hyperpol", "hyperpol_xtb"}:

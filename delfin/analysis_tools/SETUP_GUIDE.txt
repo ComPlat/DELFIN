@@ -1,0 +1,131 @@
+================================================================================
+DELFIN Analysis Tools — Setup Guide
+================================================================================
+
+This package integrates three analysis tools for post-processing quantum
+chemistry results:
+
+  1. Multiwfn   — Wavefunction analysis (orbitals, bonds, ESP, charges)
+  2. CENSO      — Conformer ensemble sorting with DFT refinement
+  3. morfeus    — Steric descriptors for metal complexes
+
+================================================================================
+1. MORFEUS (Steric Descriptors)
+================================================================================
+
+What it does:
+  Computes buried volume (%Vbur), cone angle, bite angle, Sterimol
+  parameters (L, B1, B5), and solid angle — the standard steric
+  descriptors used in organometallic and catalysis research.
+
+Install:
+  pip install morfeus-ml
+
+Usage:
+  from delfin.analysis_tools.morfeus_wrapper import (
+      buried_volume, cone_angle, bite_angle, full_steric_report,
+  )
+
+  # Buried volume of a Pd complex (metal at atom index 0)
+  result = buried_volume("complex.xyz", metal_index=0)
+  print(f"Buried volume: {result['percent_buried_volume']:.1f}%")
+
+  # Full steric report
+  report = full_steric_report("complex.xyz", metal_index=0,
+                               donor_indices=[1, 2])
+
+Dependencies: numpy (already in DELFIN)
+
+================================================================================
+2. CENSO (Conformer Ensemble Sorting)
+================================================================================
+
+What it does:
+  Takes a set of conformer structures (typically from CREST) and
+  successively refines them through prescreening (xTB), screening (DFT),
+  optimization, and refinement. Optionally computes thermochemistry
+  (mRRHO) and ensemble properties (NMR, UV-Vis).
+
+Install (option A — recommended):
+  conda install -c conda-forge censo
+
+Install (option B):
+  pip install git+https://github.com/grimme-lab/CENSO.git
+
+Requirements:
+  - xTB must be in PATH (for prescreening)
+  - ORCA or TURBOMOLE for DFT steps (screening, optimization)
+
+Usage:
+  from delfin.analysis_tools.censo_wrapper import run_censo, quick_sort
+
+  # Quick prescreening (xTB only, seconds to minutes)
+  result = quick_sort("crest_conformers.xyz", charge=0)
+
+  # Full CENSO run with DFT screening
+  result = run_censo("crest_conformers.xyz",
+                     charge=0,
+                     solvent="chcl3",
+                     functional="r2scan-3c",
+                     screening=True)
+
+  # Parse ranked energies
+  from delfin.analysis_tools.censo_wrapper import parse_censo_energies
+  ranked = parse_censo_energies(result["output_dir"])
+
+Typical workflow:
+  CREST (generate conformers) → CENSO (sort & refine) → ORCA (final SP)
+
+================================================================================
+3. MULTIWFN (Wavefunction Analysis)
+================================================================================
+
+What it does:
+  Analyses wavefunction files (.molden, .wfn, .wfx) to compute:
+  - Bond orders (Mayer, Wiberg, Fuzzy)
+  - Population analysis (Hirshfeld, Mulliken, Löwdin, Becke)
+  - Orbital composition analysis
+  - Electrostatic potential (ESP)
+  - Electron localization function (ELF)
+  - And many more (>100 analysis types)
+
+Install:
+  Multiwfn is a standalone binary (not a pip package).
+  1. Download from http://sobereva.com/multiwfn/
+  2. Extract the archive
+  3. Add to PATH:  export PATH=/path/to/Multiwfn:$PATH
+  4. For ORCA support, edit settings.ini:
+       orca_2mkl_path = /path/to/orca_2mkl
+
+  Free for academic/non-commercial use.
+
+Usage with ORCA:
+  # First convert ORCA .gbw to .molden:
+  from delfin.analysis_tools.multiwfn_wrapper import (
+      convert_orca_gbw_to_molden, bond_order_analysis, population_analysis,
+  )
+
+  molden_file = convert_orca_gbw_to_molden("calculation.gbw")
+
+  # Bond order analysis
+  result = bond_order_analysis(molden_file, method="mayer")
+  for bond in result["bond_orders"]:
+      print(f"{bond['atom1_elem']}-{bond['atom2_elem']}: {bond['bond_order']:.3f}")
+
+  # Hirshfeld charges
+  charges = population_analysis(molden_file, method="hirshfeld")
+
+================================================================================
+Quick Reference
+================================================================================
+
+  Check availability:
+    delfin analysis_check
+
+  Install all (except Multiwfn):
+    bash delfin/analysis_tools/install_analysis_tools.sh
+
+  Install Multiwfn too:
+    INSTALL_MULTIWFN=1 bash delfin/analysis_tools/install_analysis_tools.sh
+
+================================================================================

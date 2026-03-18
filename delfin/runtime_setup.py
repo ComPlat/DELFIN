@@ -226,6 +226,10 @@ def get_packaged_mlp_tools_dir() -> Path:
     return (Path(__file__).resolve().parent / "mlp_tools").resolve()
 
 
+def get_packaged_analysis_tools_dir() -> Path:
+    return (Path(__file__).resolve().parent / "analysis_tools").resolve()
+
+
 def get_packaged_installers_dir() -> Path:
     return (Path(__file__).resolve().parent / "installers").resolve()
 
@@ -246,6 +250,12 @@ def get_user_mlp_tools_dir(target_dir: str | Path | None = None) -> Path:
     if target_dir:
         return Path(target_dir).expanduser()
     return (Path.home() / ".delfin" / "mlp_tools").expanduser()
+
+
+def get_user_analysis_tools_dir(target_dir: str | Path | None = None) -> Path:
+    if target_dir:
+        return Path(target_dir).expanduser()
+    return (Path.home() / ".delfin" / "analysis_tools").expanduser()
 
 
 def get_repo_submit_templates_dir(repo_dir: str | Path | None) -> Path | None:
@@ -751,6 +761,50 @@ def run_mlp_tools_installer(
     return target, result
 
 
+def stage_packaged_analysis_tools(target_dir: str | Path | None = None) -> Path:
+    source = get_packaged_analysis_tools_dir()
+    if not source.is_dir():
+        raise FileNotFoundError(f"Packaged analysis_tools directory not found: {source}")
+
+    target = get_user_analysis_tools_dir(target_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    return target
+
+
+def run_analysis_tools_installer(
+    target_dir: str | Path | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    target = stage_packaged_analysis_tools(target_dir)
+    installer = target / "install_analysis_tools.sh"
+    if not installer.is_file():
+        raise FileNotFoundError(f"analysis_tools installer not found: {installer}")
+
+    env = os.environ.copy()
+    env["DELFIN_ANALYSIS_TOOLS_ROOT"] = str(target)
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    result = subprocess.run(
+        ["bash", str(installer)],
+        cwd=str(target),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    return target, result
+
+
 def run_pip_install_editable() -> subprocess.CompletedProcess[str]:
     """Run ``pip install -e .`` in the DELFIN repo root using the current Python.
 
@@ -1004,6 +1058,34 @@ def collect_runtime_diagnostics(
             (torchani_available, get_torchani_version, "ani2x"),
             (aimnet2_available, get_aimnet2_version, "aimnet2"),
             (mace_available, get_mace_version, "mace-off"),
+        ]:
+            ok = check_fn()
+            ver = ver_fn() or ""
+            diagnostics.append(
+                {
+                    "name": label,
+                    "status": "ok" if ok else "missing",
+                    "detail": f"v{ver}" if ok else "not installed",
+                }
+            )
+    except ImportError:
+        pass
+
+    # -- Analysis tools diagnostics ----------------------------------------
+    try:
+        from delfin.analysis_tools import (
+            multiwfn_available,
+            censo_available,
+            morfeus_available,
+            get_multiwfn_version,
+            get_censo_version,
+            get_morfeus_version,
+        )
+
+        for check_fn, ver_fn, label in [
+            (multiwfn_available, get_multiwfn_version, "multiwfn"),
+            (censo_available, get_censo_version, "censo"),
+            (morfeus_available, get_morfeus_version, "morfeus"),
         ]:
             ok = check_fn()
             ver = ver_fn() or ""

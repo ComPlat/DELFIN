@@ -56,6 +56,9 @@ mlp-full = [
     "aimnet2calc @ git+https://github.com/zubatyuk/aimnet2calc.git",
     "mace-torch",
 ]
+analysis = [
+    "morfeus-ml",
+]
 dev = [
     "pytest>=6.0",
     "pytest-cov",
@@ -87,6 +90,8 @@ include = ["delfin*"]
     "qm_tools/share/xtb4stda/*",
     "csp_tools/*.sh",
     "mlp_tools/*.sh",
+    "analysis_tools/*.sh",
+    "analysis_tools/*.txt",
     "submit_templates/*.sh",
 ]
 "delfin.notebooks" = ["*.ipynb"]

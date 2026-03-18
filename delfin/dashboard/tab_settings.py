@@ -23,6 +23,9 @@ from delfin.runtime_setup import (
     run_qm_tools_installer,
     run_csp_tools_installer,
     run_mlp_tools_installer,
+    run_analysis_tools_installer,
+    get_user_analysis_tools_dir,
+    stage_packaged_analysis_tools,
     resolve_backend_choice,
     resolve_orca_base,
     resolve_submit_templates_dir,
@@ -115,6 +118,27 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     )
     update_mlp_tools_btn = widgets.Button(
         description='Update mlp_tools',
+        button_style='info',
+        layout=widgets.Layout(width='130px', height='28px'),
+    )
+    analysis_tools_log = widgets.Textarea(
+        value='',
+        disabled=True,
+        layout=widgets.Layout(width='100%', height='160px'),
+    )
+    install_analysis_tools_btn = widgets.Button(
+        description='Install analysis_tools',
+        button_style='warning',
+        layout=widgets.Layout(width='160px', height='28px'),
+    )
+    update_analysis_tools_btn = widgets.Button(
+        description='Update analysis_tools',
+        button_style='info',
+        layout=widgets.Layout(width='160px', height='28px'),
+    )
+    analysis_status_html = widgets.HTML(value='')
+    refresh_analysis_status_btn = widgets.Button(
+        description='Refresh status',
         button_style='info',
         layout=widgets.Layout(width='130px', height='28px'),
     )
@@ -690,6 +714,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         install_qm_tools_btn, update_qm_tools_btn,
         install_csp_tools_btn, update_csp_tools_btn,
         install_mlp_tools_btn, update_mlp_tools_btn,
+        install_analysis_tools_btn, update_analysis_tools_btn,
         pip_install_btn,
         setup_bwunicluster_btn, verify_bwunicluster_btn,
         full_install_bwunicluster_btn,
@@ -1041,6 +1066,98 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             _set_status(
                 f'Updating mlp_tools failed: {html.escape(str(exc))}',
                 color='#d32f2f',
+            )
+
+    def _on_install_analysis_tools(button):
+        try:
+            target, result = run_analysis_tools_installer()
+            analysis_tools_log.value = result.stdout or '(no installer output)'
+            if result.returncode == 0:
+                _set_status(
+                    (
+                        f'analysis_tools installed in <code>{html.escape(str(target))}</code>. '
+                        'morfeus and CENSO are now available.'
+                    ),
+                    color='#2e7d32',
+                )
+            else:
+                _set_status(
+                    (
+                        f'analysis_tools installer failed with exit code {result.returncode}. '
+                        'Inspect the log below.'
+                    ),
+                    color='#d32f2f',
+                )
+            _refresh_analysis_status()
+        except Exception as exc:
+            analysis_tools_log.value = ''
+            _set_status(
+                f'Running analysis_tools installer failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def _on_update_analysis_tools(button):
+        try:
+            target, result = run_analysis_tools_installer(
+                extra_env={'FORCE_REINSTALL': '1'}
+            )
+            analysis_tools_log.value = result.stdout or '(no updater output)'
+            if result.returncode == 0:
+                _set_status(
+                    (
+                        f'analysis_tools updated in <code>{html.escape(str(target))}</code>.'
+                    ),
+                    color='#2e7d32',
+                )
+            else:
+                _set_status(
+                    (
+                        f'analysis_tools update failed with exit code {result.returncode}. '
+                        'Inspect the log below.'
+                    ),
+                    color='#d32f2f',
+                )
+            _refresh_analysis_status()
+        except Exception as exc:
+            analysis_tools_log.value = ''
+            _set_status(
+                f'Updating analysis_tools failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def _refresh_analysis_status(button=None):
+        try:
+            from delfin.analysis_tools import collect_analysis_summary
+            info = collect_analysis_summary()
+
+            rows = []
+            for t in info['tools']:
+                if t['installed']:
+                    ver = f' v{t["version"]}' if t['version'] else ''
+                    rows.append(
+                        f'<tr><td>&#x2705; <b>{t["name"]}</b>{ver}</td>'
+                        f'<td style="color:#455a64;font-size:0.9em;">{t["description"]}</td></tr>'
+                    )
+                else:
+                    rows.append(
+                        f'<tr><td>&#x274C; <b>{t["name"]}</b></td>'
+                        f'<td style="color:#9e9e9e;">{t["description"]}</td></tr>'
+                    )
+
+            table = (
+                '<table style="border-collapse:collapse;margin:4px 0;">'
+                '<tr><th style="text-align:left;padding-right:16px;">Tool</th>'
+                '<th style="text-align:left;">Description</th></tr>'
+                + ''.join(rows) +
+                '</table>'
+            )
+            analysis_status_html.value = (
+                f'<div style="border:1px solid #d9dee3;border-radius:6px;padding:8px;background:#fafbfc;">'
+                f'{table}</div>'
+            )
+        except Exception as exc:
+            analysis_status_html.value = (
+                f'<span style="color:#d32f2f;">Could not load analysis tools status: {html.escape(str(exc))}</span>'
             )
 
     def _refresh_mlp_status(button=None):
@@ -1410,6 +1527,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     update_csp_tools_btn.on_click(_with_buttons_disabled(_on_update_csp_tools))
     install_mlp_tools_btn.on_click(_with_buttons_disabled(_on_install_mlp_tools))
     update_mlp_tools_btn.on_click(_with_buttons_disabled(_on_update_mlp_tools))
+    install_analysis_tools_btn.on_click(_with_buttons_disabled(_on_install_analysis_tools))
+    update_analysis_tools_btn.on_click(_with_buttons_disabled(_on_update_analysis_tools))
+    refresh_analysis_status_btn.on_click(_refresh_analysis_status)
     pip_install_btn.on_click(_with_buttons_disabled(_on_pip_install_editable))
     refresh_mlp_status_btn.on_click(_refresh_mlp_status)
     setup_bwunicluster_btn.on_click(_with_buttons_disabled(_on_setup_bwunicluster))
@@ -1630,6 +1750,30 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 ),
             ),
             mlp_status_html,
+            widgets.HTML('<b>Analysis tools (Multiwfn, CENSO, morfeus)</b>'),
+            widgets.HBox(
+                [
+                    install_analysis_tools_btn,
+                    update_analysis_tools_btn,
+                    refresh_analysis_status_btn,
+                    widgets.HTML(
+                        (
+                            f'<span style="color:#616161;">'
+                            f'Installs morfeus + CENSO into <code>{html.escape(str(get_user_analysis_tools_dir()))}</code>. '
+                            'Multiwfn requires manual binary download.'
+                            f'</span>'
+                        )
+                    ),
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            analysis_status_html,
+            analysis_tools_log,
             widgets.HTML('<b>Developer Install</b>'),
             widgets.HBox(
                 [
@@ -1849,5 +1993,6 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     _apply_sensitive_visibility()
     _load_settings_to_widgets(set_status=True)
     _refresh_mlp_status()
+    _refresh_analysis_status()
 
     return tab, {'reload_settings': _load_settings_to_widgets}
