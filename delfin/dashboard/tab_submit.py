@@ -69,6 +69,12 @@ def create_tab(ctx):
         layout=widgets.Layout(width='150px'),
     )
 
+    architector_button = widgets.Button(
+        description='ARCHITECTOR', button_style='warning',
+        layout=widgets.Layout(width='150px'),
+        tooltip='Convert metal-complex SMILES to 3D via architector',
+    )
+
     guppy_submit_button = widgets.Button(
         description='SUBMIT GUPPY', button_style='warning',
         layout=widgets.Layout(width='170px'),
@@ -438,6 +444,88 @@ def create_tab(ctx):
                     print(result.stderr)
             except Exception as e:
                 print(f'Error submitting job: {e}')
+
+    def handle_architector_convert(button):
+        """Convert metal-complex SMILES to 3D XYZ via architector."""
+        cached_smiles = state['converted_xyz_cache'].get('smiles')
+        raw_input = cached_smiles or coords_widget.value.strip()
+        if not raw_input:
+            with mol_output:
+                clear_output()
+                print('Please enter a metal-complex SMILES in the input box.')
+            return
+        cleaned_data, input_type = clean_input_data(raw_input)
+        if input_type != 'smiles':
+            with mol_output:
+                clear_output()
+                print('Please enter a SMILES string in the input box.')
+            return
+        if not contains_metal(cleaned_data):
+            with mol_output:
+                clear_output()
+                print('SMILES does not contain a metal atom.\n'
+                      'Architector is for metal complexes — use CONVERT SMILES for organic molecules.')
+            return
+        with mol_output:
+            clear_output()
+            print('Running architector...')
+        try:
+            import importlib.util
+            if importlib.util.find_spec('architector') is None:
+                with mol_output:
+                    clear_output()
+                    print('architector is not installed.\n'
+                          'Install via: pip install architector\n'
+                          'Or use the Install button in Settings → AI Tools.')
+                return
+
+            from architector import build_complex
+
+            results = build_complex(cleaned_data)
+
+            if not results:
+                with mol_output:
+                    clear_output()
+                    print('Architector returned no structures for this SMILES.')
+                return
+
+            isomers = []
+            for i, mol in enumerate(results):
+                atoms = mol.ase_atoms if hasattr(mol, 'ase_atoms') else None
+                if atoms is None and hasattr(mol, 'mol'):
+                    # Try to extract from RDKit mol or dict
+                    try:
+                        from ase import Atoms
+                        atoms = Atoms(
+                            symbols=[a.GetSymbol() for a in mol.mol.GetAtoms()],
+                            positions=mol.mol.GetConformer().GetPositions(),
+                        )
+                    except Exception:
+                        continue
+                if atoms is None:
+                    continue
+
+                xyz_lines = []
+                for atom, pos in zip(atoms.get_chemical_symbols(), atoms.get_positions()):
+                    xyz_lines.append(f'{atom}  {pos[0]:.6f}  {pos[1]:.6f}  {pos[2]:.6f}')
+                xyz_string = '\n'.join(xyz_lines)
+                num_atoms = len(atoms)
+                label = f'architector-{i + 1}'
+                isomers.append((xyz_string, num_atoms, label))
+
+            if not isomers:
+                with mol_output:
+                    clear_output()
+                    print('Architector could not produce valid 3D structures.')
+                return
+
+            state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
+            state['isomers'] = isomers
+            _show_isomer_at_index(0)
+        except Exception as exc:
+            with mol_output:
+                clear_output()
+                print(f'Architector error: {exc}')
 
     def handle_guppy_submit(button):
         """Submit SMILES->20x XTB sampling job (GUPPY trajectory mode)."""
@@ -1186,6 +1274,7 @@ def create_tab(ctx):
     convert_smiles_quick_button.on_click(handle_convert_smiles_quick)
     convert_smiles_uff_button.on_click(handle_convert_smiles_uff)
     build_complex_button.on_click(handle_build_complex)
+    architector_button.on_click(handle_architector_convert)
     guppy_submit_button.on_click(handle_guppy_submit)
     submit_smiles_list_button.on_click(handle_submit_smiles_list)
     smiles_prev_button.on_click(handle_smiles_prev)
@@ -1214,7 +1303,7 @@ def create_tab(ctx):
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
-        widgets.HBox([build_complex_button, guppy_submit_button],
+        widgets.HBox([build_complex_button, architector_button, guppy_submit_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
