@@ -1338,9 +1338,18 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 'ALIGNN':     ('alignn',       'alignn'),
             }
 
+            def _format_mlp_elements(name, elements):
+                if not elements:
+                    return 'trainable (any elements)'
+                if name in {'CHGNet', 'M3GNet'}:
+                    return f'{len(elements)} supported elements (Materials Project coverage)'
+                if len(elements) > 20:
+                    return f'{len(elements)} supported elements'
+                return ', '.join(elements)
+
             rows = []
             for b in info['backends']:
-                elems = ', '.join(b['elements']) if b['elements'] else 'trainable (any elements)'
+                elems = _format_mlp_elements(b['name'], b['elements'])
                 cmd, pkg = _MLP_PKGS.get(b['name'], (b['name'].lower(), b['name'].lower()))
                 rows.append(_make_tool_row(
                     b['name'], b['installed'], b.get('version', ''),

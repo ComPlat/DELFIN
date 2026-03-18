@@ -23,6 +23,7 @@ pyproject_qmserver.toml
 
 # ChemDarwin tab (optional, local only)
 delfin/dashboard/tab_chemdarwin.py
+delfin/csp_tools/.build/
 
 # Local QM tool bundle inside the package directory
 # Keep scripts/docs in git, ignore only local installs and build artifacts.
