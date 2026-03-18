@@ -19,8 +19,10 @@ set -euo pipefail
 #   INSTALL_MATTERGEN            (default: 0)  MatterGen
 #   INSTALL_CDVAE                (default: 0)  CDVAE
 #   INSTALL_AIZYNTHFINDER        (default: 0)  AiZynthFinder
+#   INSTALL_LOCALRETRO           (default: 0)  LocalRetro
 #   INSTALL_RXNMAPPER            (default: 0)  RXNMapper
 #   INSTALL_DEEPCHEM             (default: 0)  DeepChem
+#   INSTALL_ADMETLAB             (default: 0)  ADMETlab
 #   INSTALL_MOLSIMPLIFY          (default: 0)  molSimplify
 #   INSTALL_ARCHITECTOR          (default: 0)  architector
 #   INSTALL_PLOTLY               (default: 0)  plotly
@@ -42,8 +44,10 @@ INSTALL_TORSIONAL_DIFFUSION="${INSTALL_TORSIONAL_DIFFUSION:-${INSTALL_ALL}}"
 INSTALL_MATTERGEN="${INSTALL_MATTERGEN:-${INSTALL_ALL}}"
 INSTALL_CDVAE="${INSTALL_CDVAE:-${INSTALL_ALL}}"
 INSTALL_AIZYNTHFINDER="${INSTALL_AIZYNTHFINDER:-${INSTALL_ALL}}"
+INSTALL_LOCALRETRO="${INSTALL_LOCALRETRO:-${INSTALL_ALL}}"
 INSTALL_RXNMAPPER="${INSTALL_RXNMAPPER:-${INSTALL_ALL}}"
 INSTALL_DEEPCHEM="${INSTALL_DEEPCHEM:-${INSTALL_ALL}}"
+INSTALL_ADMETLAB="${INSTALL_ADMETLAB:-${INSTALL_ALL}}"
 INSTALL_MOLSIMPLIFY="${INSTALL_MOLSIMPLIFY:-${INSTALL_ALL}}"
 INSTALL_ARCHITECTOR="${INSTALL_ARCHITECTOR:-${INSTALL_ALL}}"
 INSTALL_PLOTLY="${INSTALL_PLOTLY:-${INSTALL_ALL}}"
@@ -117,10 +121,12 @@ main() {
 
   # Retrosynthesis
   pip_install "${python_bin}" INSTALL_AIZYNTHFINDER "aizynthfinder"  aizynthfinder
+  pip_install "${python_bin}" INSTALL_LOCALRETRO    "localretro"     localretro
   pip_install "${python_bin}" INSTALL_RXNMAPPER     "rxnmapper"      rxnmapper
 
   # Screening
-  pip_install "${python_bin}" INSTALL_DEEPCHEM "deepchem" deepchem
+  pip_install "${python_bin}" INSTALL_DEEPCHEM  "deepchem"   deepchem
+  pip_install "${python_bin}" INSTALL_ADMETLAB  "admetlab3"  admetlab3
 
   # Metal Complex ML
   pip_install "${python_bin}" INSTALL_MOLSIMPLIFY "molSimplify" molSimplify
@@ -143,8 +149,10 @@ main() {
     "mattergen:MatterGen" \
     "cdvae:CDVAE" \
     "aizynthfinder:AiZynthFinder" \
+    "localretro:LocalRetro" \
     "rxnmapper:RXNMapper" \
     "deepchem:DeepChem" \
+    "admetlab3:ADMETlab" \
     "molSimplify:molSimplify" \
     "architector:architector" \
     "plotly:plotly"; do

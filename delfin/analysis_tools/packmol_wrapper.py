@@ -98,7 +98,6 @@ end structure
             subprocess.run(
                 [packmol],
                 input=inp_text,
-                capture_output=False,
                 stdout=lf,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -177,7 +176,6 @@ def pack_molecules(
             subprocess.run(
                 [packmol],
                 input=inp_text,
-                capture_output=False,
                 stdout=lf,
                 stderr=subprocess.STDOUT,
                 text=True,

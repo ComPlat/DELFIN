@@ -230,6 +230,10 @@ def get_packaged_analysis_tools_dir() -> Path:
     return (Path(__file__).resolve().parent / "analysis_tools").resolve()
 
 
+def get_packaged_ai_tools_dir() -> Path:
+    return (Path(__file__).resolve().parent / "ai_tools").resolve()
+
+
 def get_packaged_installers_dir() -> Path:
     return (Path(__file__).resolve().parent / "installers").resolve()
 
@@ -256,6 +260,12 @@ def get_user_analysis_tools_dir(target_dir: str | Path | None = None) -> Path:
     if target_dir:
         return Path(target_dir).expanduser()
     return (Path.home() / ".delfin" / "analysis_tools").expanduser()
+
+
+def get_user_ai_tools_dir(target_dir: str | Path | None = None) -> Path:
+    if target_dir:
+        return Path(target_dir).expanduser()
+    return (Path.home() / ".delfin" / "ai_tools").expanduser()
 
 
 def get_repo_submit_templates_dir(repo_dir: str | Path | None) -> Path | None:
@@ -791,6 +801,50 @@ def run_analysis_tools_installer(
 
     env = os.environ.copy()
     env["DELFIN_ANALYSIS_TOOLS_ROOT"] = str(target)
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    result = subprocess.run(
+        ["bash", str(installer)],
+        cwd=str(target),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    return target, result
+
+
+def stage_packaged_ai_tools(target_dir: str | Path | None = None) -> Path:
+    source = get_packaged_ai_tools_dir()
+    if not source.is_dir():
+        raise FileNotFoundError(f"Packaged ai_tools directory not found: {source}")
+
+    target = get_user_ai_tools_dir(target_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    return target
+
+
+def run_ai_tools_installer(
+    target_dir: str | Path | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    target = stage_packaged_ai_tools(target_dir)
+    installer = target / "install_ai_tools.sh"
+    if not installer.is_file():
+        raise FileNotFoundError(f"ai_tools installer not found: {installer}")
+
+    env = os.environ.copy()
+    env["DELFIN_AI_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
 

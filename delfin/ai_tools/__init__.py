@@ -84,12 +84,12 @@ def get_chemberta_version() -> Optional[str]:
 # ── Generative Models ────────────────────────────────────────────────
 
 def reinvent_available() -> bool:
-    return _has_spec("reinvent")
+    return _has_spec("reinvent") or _has_spec("reinvent4")
 
 def get_reinvent_version() -> Optional[str]:
     if not reinvent_available():
         return None
-    return _pkg_version("reinvent") or _pkg_version("REINVENT4") or "installed"
+    return _pkg_version("REINVENT4") or _pkg_version("reinvent") or "installed"
 
 def synthemol_available() -> bool:
     return _has_spec("synthemol")
@@ -108,12 +108,16 @@ def get_geomol_version() -> Optional[str]:
     return _pkg_version("geomol") or "installed"
 
 def torsional_diffusion_available() -> bool:
-    return _has_spec("torsional_diffusion") or _has_spec("diffusion_hopping")
+    return (_has_spec("torsional_diffusion")
+            or _has_spec("diffusion_hopping")
+            or _has_spec("tordiff"))
 
 def get_torsional_diffusion_version() -> Optional[str]:
     if not torsional_diffusion_available():
         return None
-    return _pkg_version("torsional-diffusion") or "installed"
+    return (_pkg_version("torsional-diffusion")
+            or _pkg_version("torsional_diffusion")
+            or "installed")
 
 def mattergen_available() -> bool:
     return _has_spec("mattergen")
@@ -181,12 +185,12 @@ def get_admetlab_version() -> Optional[str]:
 # ── Metal Complex ML ─────────────────────────────────────────────────
 
 def molsimplify_available() -> bool:
-    return _has_spec("molSimplify")
+    return _has_spec("molSimplify") or _has_spec("molsimplify")
 
 def get_molsimplify_version() -> Optional[str]:
     if not molsimplify_available():
         return None
-    return _pkg_version("molSimplify") or "installed"
+    return _pkg_version("molSimplify") or _pkg_version("molsimplify") or "installed"
 
 def architector_available() -> bool:
     return _has_spec("architector")
@@ -265,19 +269,19 @@ _TOOL_REGISTRY = [
      "pip install plotly"),
     # ── Wrapper Libraries (unified interfaces to external codes) ──
     ("pymatgen", "Wrapper Libraries", lambda: _has_spec("pymatgen"),
-     lambda: _pkg_version("pymatgen") or "installed" if _has_spec("pymatgen") else None,
+     lambda: (_pkg_version("pymatgen") or "installed") if _has_spec("pymatgen") else None,
      "Materials science library (VASP, CP2K, Gaussian, LAMMPS, Lobster, Phonopy interfaces)",
      "pip install pymatgen"),
     ("QCEngine", "Wrapper Libraries", lambda: _has_spec("qcengine"),
-     lambda: _pkg_version("qcengine") or "installed" if _has_spec("qcengine") else None,
+     lambda: (_pkg_version("qcengine") or "installed") if _has_spec("qcengine") else None,
      "MolSSI unified interface for QM programs (Psi4, NWChem, GAMESS, Turbomole, ...)",
      "pip install qcengine"),
     ("MDAnalysis", "Wrapper Libraries", lambda: _has_spec("MDAnalysis"),
-     lambda: _pkg_version("MDAnalysis") or "installed" if _has_spec("MDAnalysis") else None,
+     lambda: (_pkg_version("MDAnalysis") or "installed") if _has_spec("MDAnalysis") else None,
      "Trajectory analysis for GROMACS, LAMMPS, AMBER, NAMD",
      "pip install MDAnalysis"),
     ("pymolpro", "Wrapper Libraries", lambda: _has_spec("pymolpro"),
-     lambda: _pkg_version("pymolpro") or "installed" if _has_spec("pymolpro") else None,
+     lambda: (_pkg_version("pymolpro") or "installed") if _has_spec("pymolpro") else None,
      "Python interface to Molpro quantum chemistry",
      "pip install pymolpro"),
 ]

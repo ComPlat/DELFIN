@@ -1,6 +1,7 @@
 """Dashboard Settings tab backed by a user-local settings file."""
 
 import html
+import logging
 import shlex
 import shutil
 from pathlib import Path
@@ -1167,6 +1168,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
             analysis_status_box.children = rows
         except Exception as exc:
+            logging.exception("Failed to refresh analysis tools status")
             analysis_status_box.children = [widgets.HTML(
                 f'<span style="color:#d32f2f;">Could not load analysis tools status: {html.escape(str(exc))}</span>'
             )]
@@ -1381,6 +1383,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
             mlp_status_box.children = rows + [footer]
         except Exception as exc:
+            logging.exception("Failed to refresh MLP status")
             mlp_status_box.children = [widgets.HTML(
                 f'<span style="color:#d32f2f;">Could not load MLP status: {html.escape(str(exc))}</span>'
             )]
@@ -1428,6 +1431,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
             ai_status_box.children = children
         except Exception as exc:
+            logging.exception("Failed to refresh AI tools status")
             ai_status_box.children = [widgets.HTML(
                 f'<span style="color:#d32f2f;">Could not load AI tools status: {html.escape(str(exc))}</span>'
             )]

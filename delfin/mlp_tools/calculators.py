@@ -68,8 +68,8 @@ def _create_aimnet2(
     """Create an AIMNet2 ASE calculator."""
     from aimnet2calc import AIMNet2ASE
 
-    calc = AIMNet2ASE("aimnet2", charge=charge, mult=mult)
-    logger.info("Created AIMNet2 calculator (charge=%d, mult=%d)", charge, mult)
+    calc = AIMNet2ASE("aimnet2", charge=charge, mult=mult, device=device)
+    logger.info("Created AIMNet2 calculator (device=%s, charge=%d, mult=%d)", device, charge, mult)
     return calc
 
 
@@ -97,12 +97,15 @@ def _create_chgnet(device: str = "cpu", **kwargs) -> Calculator:
 
 def _create_m3gnet(device: str = "cpu", **kwargs) -> Calculator:
     """Create an M3GNet ASE calculator via MatGL."""
+    import torch
     import matgl
     from matgl.ext.ase import M3GNetCalculator
 
     potential = matgl.load_model("M3GNet-MP-2021.2.8-PES")
+    if device != "cpu":
+        potential = potential.to(torch.device(device))
     calc = M3GNetCalculator(potential=potential)
-    logger.info("Created M3GNet calculator")
+    logger.info("Created M3GNet calculator (device=%s)", device)
     return calc
 
 
@@ -153,8 +156,8 @@ def _create_alignn(device: str = "cpu", model_name: str = "jv_formation_energy_p
     """Create an ALIGNN ASE calculator with a pre-trained model."""
     from alignn.ff.ff import AlignnAtomwiseCalculator
 
-    calc = AlignnAtomwiseCalculator(device=device)
-    logger.info("Created ALIGNN calculator (device=%s)", device)
+    calc = AlignnAtomwiseCalculator(device=device, model_name=model_name)
+    logger.info("Created ALIGNN calculator (model=%s, device=%s)", model_name, device)
     return calc
 
 
@@ -203,6 +206,18 @@ def create_calculator(
         raise ValueError(
             f"Backend '{key}' is registered but has no factory implementation."
         )
+    # Validate CUDA device availability
+    if device != "cpu" and device.startswith("cuda"):
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                logger.warning(
+                    "CUDA requested (device=%s) but not available — falling back to CPU", device
+                )
+                device = "cpu"
+        except ImportError:
+            logger.warning("PyTorch not installed — falling back to CPU")
+            device = "cpu"
     return factory(device=device, charge=charge, mult=mult, **kwargs)
 
 
