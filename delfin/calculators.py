@@ -285,10 +285,7 @@ def _create_fleur(**kwargs) -> Calculator:
 
 
 def _create_openmolcas(**kwargs) -> Calculator:
-    from ase.calculators.openmx import OpenMX
-    # OpenMolcas doesn't have a native ASE calculator;
-    # use generic command-line calculator pattern
-    from ase.calculators.genericfileio import GenericFileIOCalculator
+    # OpenMolcas doesn't have a native ASE calculator
     raise NotImplementedError(
         "OpenMolcas ASE calculator is not yet available. "
         "Use pymolcas CLI wrapper instead."
@@ -351,8 +348,8 @@ def _create_mopac(method: str = "PM7", charge: int = 0,
                   mult: int = 1, **kwargs) -> Calculator:
     from ase.calculators.mopac import MOPAC
     task = method
-    if mult > 1:
-        task += f" UHFSINGLET" if mult == 1 else f" UHF"
+    if mult != 1:
+        task += " UHF"
     calc = MOPAC(method=task, charge=charge, **kwargs)
     logger.info("Created MOPAC calculator (%s)", method)
     return calc

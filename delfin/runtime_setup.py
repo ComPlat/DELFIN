@@ -578,6 +578,8 @@ def prepare_bwunicluster_user_setup(
     installer_result = None
     if install_qm_tools:
         target, installer_result = run_qm_tools_installer(qm_root or None)
+        if installer_result and installer_result.returncode != 0:
+            logger.warning("QM tools installer exited with code %d", installer_result.returncode)
         qm_root = str(target)
     elif not qm_root:
         repo_qm_root = get_repo_qm_tools_dir(repo_path)

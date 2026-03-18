@@ -198,7 +198,11 @@ def create_calculator(
             f"Unknown MLP backend '{backend}'. Available: {available}"
         )
 
-    factory = _FACTORIES[key]
+    factory = _FACTORIES.get(key)
+    if factory is None:
+        raise ValueError(
+            f"Backend '{key}' is registered but has no factory implementation."
+        )
     return factory(device=device, charge=charge, mult=mult, **kwargs)
 
 

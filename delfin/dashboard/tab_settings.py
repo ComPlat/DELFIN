@@ -1,6 +1,7 @@
 """Dashboard Settings tab backed by a user-local settings file."""
 
 import html
+import shlex
 import shutil
 from pathlib import Path
 
@@ -1201,7 +1202,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         tool_install_log.value = f'Installing {label}...\n'
         try:
             result = subprocess.run(
-                [sys.executable, '-m', 'pip', 'install'] + pip_cmd.split(),
+                [sys.executable, '-m', 'pip', 'install'] + shlex.split(pip_cmd),
                 capture_output=True, text=True, timeout=600,
             )
             tool_install_log.value += result.stdout or ''
@@ -1226,7 +1227,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         tool_install_log.value = f'Updating {label}...\n'
         try:
             result = subprocess.run(
-                [sys.executable, '-m', 'pip', 'install', '--upgrade'] + pip_pkg.split(),
+                [sys.executable, '-m', 'pip', 'install', '--upgrade'] + shlex.split(pip_pkg),
                 capture_output=True, text=True, timeout=600,
             )
             tool_install_log.value += result.stdout or ''
@@ -1251,7 +1252,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         pip_pkg_name : the pip package name used to check for updates
                        (e.g. 'cclib', 'torchani'). If empty, uses install_cmd.
         """
-        pkg_key = (pip_pkg_name or install_cmd or '').split()[0].lower() if (pip_pkg_name or install_cmd) else ''
+        _raw = pip_pkg_name or install_cmd or ''
+        pkg_key = shlex.split(_raw)[0].lower() if _raw.strip() else ''
 
         if installed:
             ver = f' v{version}' if version else ''
@@ -1394,8 +1396,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 ))
                 for t in tools:
                     hint = t.get('install_hint', '')
-                    cmd = hint.replace('pip install ', '') if hint else t['name'].lower()
-                    pkg = cmd.split()[0] if cmd else ''
+                    # Extract pip package spec from install_hint
+                    if hint.startswith('pip install '):
+                        cmd = hint[len('pip install '):]
+                    elif hint:
+                        cmd = hint
+                    else:
+                        cmd = ''
+                    pkg = shlex.split(cmd)[0] if cmd else ''
                     children.append(_make_tool_row(
                         t['name'], t['installed'], t.get('version', ''),
                         t['description'] if t['installed'] else hint,
