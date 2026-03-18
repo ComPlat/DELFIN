@@ -6,7 +6,7 @@
 
 > 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
 
-**DELFIN** is a modular computational chemistry platform that automates quantum chemical workflows — from SMILES input to publication-ready results. It combines DFT, semi-empirical methods, ML potentials, and AI tools behind a unified interface with an interactive browser-based dashboard.
+**DELFIN** is a modular computational chemistry platform that automates quantum chemical workflows — from SMILES input to realistic property predictions. It combines DFT, semi-empirical methods, ML potentials, and AI tools behind a unified interface with an interactive browser-based dashboard.
 
 ### What DELFIN can do
 
@@ -122,7 +122,6 @@ ctx = create_dashboard(backend="auto")
 | **Recalc** | Edit and resubmit existing CONTROL.txt |
 | **ORCA Builder** | Interactive ORCA input generation with geometry preview |
 | **TURBOMOLE Builder** | Turbomole define workflow (SLURM backends) |
-| **ChemDarwin** | Metal complex design with ligand library and SMARTS matching |
 | **Job Status** | Real-time queue monitoring (local/SLURM), resource usage, job cancellation |
 | **Calculations** | File browser, search, recalculation trigger, energy statistics |
 | **Archive** | Archive browser with statistics |
@@ -146,8 +145,6 @@ Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
 
 DELFIN's core workflow automates spin-state identification and redox potential calculation:
 
-- **OCCUPIER method**: Adaptive tree-based orbital occupation search (flat, deep2, deep3, deep)
-- **Broken-symmetry DFT**: Automatic BS state generation and evolution
 - **Multi-step redox**: Up to 3 sequential oxidation/reduction steps
 - **Parallel workflows**: Oxidation and reduction run simultaneously with automatic PAL splitting
 - **Smart recalc**: Fingerprint-based skip logic avoids unnecessary reruns
@@ -202,21 +199,6 @@ DELFIN provides multiple conversion methods for organic and metal-containing sys
 | `SUBMIT GUPPY` | Multi-start XTB sampling with ranked trajectories | Robust start structures |
 
 For coordination complexes, DELFIN combines Open Babel conformer pools, RDKit multi-seed embedding, topological isomer enumeration, and fragment sanity checks.
-
-### Metal Complex Builder (PSO)
-
-`delfin-build2` builds 3D metal complex structures from SMILES using particle swarm optimization:
-
-- Parses metal-complex SMILES into metal centers and ligand fragments
-- Enumerates coordination templates (octahedral, tetrahedral, square planar, ...)
-- PSO swarm places ligands as rigid bodies (6 DOF each)
-- VdW-based clash detection, Procrustes initialization for bidentate+ ligands
-- Optional xTB GFN2 re-ranking of candidates
-
-```bash
-delfin-build2 input.txt --swarm --swarm-particles 24 --swarm-iterations 200
-delfin-build2 input.txt --xtb --xtb-parallel 4
-```
 
 ### ML Potentials & Unified Calculator Factory
 
@@ -321,7 +303,6 @@ Automated CO2 placement around metal centers with relaxed distance scans (1.6–
 ### Companion CLI Tools
 
 - `delfin-build [input.txt]` — Build metal complexes stepwise from SMILES using ORCA/XTB Docker workflow
-- `delfin-build2 [input.txt]` — PSO-based metal complex builder with swarm optimization
 - `delfin-guppy [input.txt]` — Multi-start SMILES sampling workflow with repeated XTB optimization and ranked trajectories
 - `delfin-voila` — Launch the DELFIN Dashboard as a standalone web app via Voila
 - `delfin-json` — Collect DELFIN project outputs into JSON
@@ -362,7 +343,6 @@ Automated CO2 placement around metal centers with relaxed distance scans (1.6–
 - `delfin ESD` — Run excited-state dynamics workflow (requires `ESD_modul=yes` in CONTROL)
 - `delfin-guppy --runs N --parallel-jobs M --pal P` — Broadened start-structure sampling
 - `delfin-build --goat [--no-ligand-goat]` — Ligand docking with optional GOAT optimization
-- `delfin-build2 input.txt --swarm --xtb` — PSO metal complex builder with xTB re-ranking
 
 ---
 
