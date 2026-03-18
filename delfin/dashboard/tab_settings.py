@@ -137,22 +137,30 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         layout=widgets.Layout(width='160px', height='28px'),
     )
     analysis_status_html = widgets.HTML(value='')
+    analysis_status_box = widgets.VBox(layout=widgets.Layout(width='100%'))
     refresh_analysis_status_btn = widgets.Button(
         description='Refresh status',
         button_style='info',
         layout=widgets.Layout(width='130px', height='28px'),
     )
     mlp_status_html = widgets.HTML(value='')
+    mlp_status_box = widgets.VBox(layout=widgets.Layout(width='100%'))
     refresh_mlp_status_btn = widgets.Button(
         description='Refresh MLP status',
         button_style='info',
         layout=widgets.Layout(width='155px', height='28px'),
     )
     ai_status_html = widgets.HTML(value='')
+    ai_status_box = widgets.VBox(layout=widgets.Layout(width='100%'))
     refresh_ai_status_btn = widgets.Button(
         description='Refresh AI status',
         button_style='info',
         layout=widgets.Layout(width='155px', height='28px'),
+    )
+    tool_install_log = widgets.Textarea(
+        value='',
+        disabled=True,
+        layout=widgets.Layout(width='100%', height='120px'),
     )
     pip_install_log = widgets.Textarea(
         value='',
@@ -1136,34 +1144,79 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             from delfin.analysis_tools import collect_analysis_summary
             info = collect_analysis_summary()
 
+            _ANALYSIS_INSTALL_CMDS = {
+                'Multiwfn': '',  # manual binary download
+                'CENSO': 'censo',
+                'morfeus': 'morfeus-ml',
+                'cclib': 'cclib',
+                'nglview': 'nglview',
+                'Packmol': '',  # conda install
+            }
+
             rows = []
             for t in info['tools']:
-                if t['installed']:
-                    ver = f' v{t["version"]}' if t['version'] else ''
-                    rows.append(
-                        f'<tr><td>&#x2705; <b>{t["name"]}</b>{ver}</td>'
-                        f'<td style="color:#455a64;font-size:0.9em;">{t["description"]}</td></tr>'
-                    )
-                else:
-                    rows.append(
-                        f'<tr><td>&#x274C; <b>{t["name"]}</b></td>'
-                        f'<td style="color:#9e9e9e;">{t["description"]}</td></tr>'
-                    )
+                cmd = _ANALYSIS_INSTALL_CMDS.get(t['name'], t['name'].lower())
+                rows.append(_make_tool_row(
+                    t['name'], t['installed'], t.get('version', ''),
+                    t['description'], cmd, _refresh_analysis_status,
+                ))
 
-            table = (
-                '<table style="border-collapse:collapse;margin:4px 0;">'
-                '<tr><th style="text-align:left;padding-right:16px;">Tool</th>'
-                '<th style="text-align:left;">Description</th></tr>'
-                + ''.join(rows) +
-                '</table>'
-            )
-            analysis_status_html.value = (
-                f'<div style="border:1px solid #d9dee3;border-radius:6px;padding:8px;background:#fafbfc;">'
-                f'{table}</div>'
-            )
+            analysis_status_box.children = rows
         except Exception as exc:
-            analysis_status_html.value = (
+            analysis_status_box.children = [widgets.HTML(
                 f'<span style="color:#d32f2f;">Could not load analysis tools status: {html.escape(str(exc))}</span>'
+            )]
+
+    def _pip_install_tool(pip_cmd, label, refresh_fn):
+        """Run pip install in background and refresh status afterwards."""
+        import subprocess
+        import sys
+
+        tool_install_log.value = f'Installing {label}...\n'
+        try:
+            result = subprocess.run(
+                [sys.executable, '-m', 'pip', 'install'] + pip_cmd.split(),
+                capture_output=True, text=True, timeout=600,
+            )
+            tool_install_log.value += result.stdout or ''
+            if result.stderr:
+                tool_install_log.value += result.stderr
+            if result.returncode == 0:
+                _set_status(f'{label} installed successfully.', color='#2e7d32')
+            else:
+                _set_status(f'{label} installation failed (exit {result.returncode}).', color='#d32f2f')
+        except Exception as exc:
+            tool_install_log.value += f'\nError: {exc}'
+            _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+        refresh_fn()
+
+    def _make_tool_row(name, installed, version, detail_text, install_cmd, refresh_fn):
+        """Create a widget row for a single tool with optional install button."""
+        if installed:
+            ver = f' v{version}' if version else ''
+            label = widgets.HTML(
+                f'<span>&#x2705; <b>{html.escape(name)}</b>{html.escape(ver)}'
+                f' &mdash; <span style="color:#455a64;font-size:0.9em;">{html.escape(detail_text)}</span></span>',
+                layout=widgets.Layout(min_width='300px'),
+            )
+            return widgets.HBox([label], layout=widgets.Layout(width='100%', margin='1px 0'))
+        else:
+            label = widgets.HTML(
+                f'<span>&#x274C; <b>{html.escape(name)}</b>'
+                f' &mdash; <span style="color:#9e9e9e;font-size:0.9em;">{html.escape(detail_text)}</span></span>',
+                layout=widgets.Layout(min_width='300px'),
+            )
+            btn = widgets.Button(
+                description=f'Install',
+                button_style='warning',
+                layout=widgets.Layout(width='80px', height='24px'),
+                tooltip=f'{install_cmd}',
+            )
+            btn.on_click(lambda b, cmd=install_cmd, lbl=name, fn=refresh_fn:
+                         _pip_install_tool(cmd, lbl, fn))
+            return widgets.HBox(
+                [label, btn],
+                layout=widgets.Layout(width='100%', margin='1px 0', align_items='center'),
             )
 
     def _refresh_mlp_status(button=None):
@@ -1171,22 +1224,27 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             from delfin.mlp_tools import collect_mlp_summary
             info = collect_mlp_summary()
 
+            _MLP_INSTALL_CMDS = {
+                'ANI-2x': 'torchani',
+                'AIMNet2': 'aimnet2calc',
+                'MACE-OFF': 'mace-torch',
+                'CHGNet': 'chgnet',
+                'M3GNet': 'matgl',
+                'SchNetPack': 'schnetpack',
+                'NequIP': 'nequip',
+                'ALIGNN': 'alignn',
+            }
+
             rows = []
             for b in info['backends']:
-                if b['installed']:
-                    ver = f' v{b["version"]}' if b['version'] else ''
-                    icon = '&#x2705;'
-                    elems = ', '.join(b['elements'])
-                    rows.append(
-                        f'<tr><td>{icon} <b>{b["name"]}</b>{ver}</td>'
-                        f'<td style="color:#455a64;font-size:0.9em;">{elems}</td></tr>'
-                    )
-                else:
-                    rows.append(
-                        f'<tr><td>&#x274C; <b>{b["name"]}</b></td>'
-                        f'<td style="color:#9e9e9e;">not installed</td></tr>'
-                    )
+                elems = ', '.join(b['elements']) if b['elements'] else 'trainable (any elements)'
+                cmd = _MLP_INSTALL_CMDS.get(b['name'], b['name'].lower())
+                rows.append(_make_tool_row(
+                    b['name'], b['installed'], b.get('version', ''),
+                    elems, cmd, _refresh_mlp_status,
+                ))
 
+            # PyTorch / CUDA info
             torch_line = ''
             if info['torch_version']:
                 cuda_badge = (
@@ -1201,84 +1259,55 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             gpu_line = ''
             if info['gpu_partition']:
                 gpu_line = (
-                    f'<br>SLURM GPU partition detected: '
-                    f'<code>{html.escape(info["gpu_partition"])}</code> '
-                    '(MLP jobs will auto-request GPU)'
+                    f'<br>SLURM GPU partition: '
+                    f'<code>{html.escape(info["gpu_partition"])}</code>'
                 )
 
-            table = (
-                '<table style="border-collapse:collapse;margin:4px 0;">'
-                '<tr><th style="text-align:left;padding-right:16px;">Backend</th>'
-                '<th style="text-align:left;">Supported Elements</th></tr>'
-                + ''.join(rows) +
-                '</table>'
+            footer = widgets.HTML(
+                f'<div style="margin-top:4px;font-size:0.9em;">{torch_line}{gpu_line}</div>'
             )
-            mlp_status_html.value = (
-                f'<div style="border:1px solid #d9dee3;border-radius:6px;padding:8px;background:#fafbfc;">'
-                f'{table}'
-                f'<div style="margin-top:6px;">{torch_line}{gpu_line}</div>'
-                f'</div>'
-            )
+
+            mlp_status_box.children = rows + [footer]
         except Exception as exc:
-            mlp_status_html.value = (
+            mlp_status_box.children = [widgets.HTML(
                 f'<span style="color:#d32f2f;">Could not load MLP status: {html.escape(str(exc))}</span>'
-            )
+            )]
 
     def _refresh_ai_status(button=None):
         try:
             from delfin.ai_tools import collect_ai_summary
             info = collect_ai_summary()
 
+            children = []
             # Group by category
             categories = {}
             for t in info['tools']:
-                cat = t['category']
-                categories.setdefault(cat, []).append(t)
+                categories.setdefault(t['category'], []).append(t)
 
-            sections = []
             for cat, tools in categories.items():
-                rows = []
+                children.append(widgets.HTML(
+                    f'<div style="margin-top:6px;font-weight:bold;color:#37474f;">{html.escape(cat)}</div>'
+                ))
                 for t in tools:
-                    if t['installed']:
-                        ver = f' v{t["version"]}' if t['version'] else ''
-                        icon = '&#x2705;'
-                        desc = html.escape(t['description'])
-                        rows.append(
-                            f'<tr><td>{icon} <b>{t["name"]}</b>{ver}</td>'
-                            f'<td style="color:#455a64;font-size:0.9em;">{desc}</td></tr>'
-                        )
-                    else:
-                        hint = html.escape(t.get('install_hint', ''))
-                        rows.append(
-                            f'<tr><td>&#x274C; <b>{t["name"]}</b></td>'
-                            f'<td style="color:#9e9e9e;">{hint}</td></tr>'
-                        )
-                sections.append(
-                    f'<tr><td colspan="2" style="padding-top:6px;font-weight:bold;'
-                    f'color:#37474f;">{html.escape(cat)}</td></tr>'
-                    + ''.join(rows)
-                )
+                    children.append(_make_tool_row(
+                        t['name'], t['installed'], t.get('version', ''),
+                        t['description'] if t['installed'] else t.get('install_hint', ''),
+                        t.get('install_hint', '').replace('pip install ', '') if t.get('install_hint') else t['name'].lower(),
+                        _refresh_ai_status,
+                    ))
 
-            table = (
-                '<table style="border-collapse:collapse;margin:4px 0;">'
-                '<tr><th style="text-align:left;padding-right:16px;">Tool</th>'
-                '<th style="text-align:left;">Description / Install</th></tr>'
-                + ''.join(sections) +
-                '</table>'
-            )
             n_installed = sum(1 for t in info['tools'] if t['installed'])
             n_total = len(info['tools'])
-            ai_status_html.value = (
-                f'<div style="border:1px solid #d9dee3;border-radius:6px;padding:8px;background:#fafbfc;">'
-                f'{table}'
+            children.append(widgets.HTML(
                 f'<div style="margin-top:6px;color:#546e7a;">'
                 f'{n_installed}/{n_total} AI tools installed</div>'
-                f'</div>'
-            )
+            ))
+
+            ai_status_box.children = children
         except Exception as exc:
-            ai_status_html.value = (
+            ai_status_box.children = [widgets.HTML(
                 f'<span style="color:#d32f2f;">Could not load AI tools status: {html.escape(str(exc))}</span>'
-            )
+            )]
 
     def _on_pip_install_editable(button):
         import sys
@@ -1812,8 +1841,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     flex_flow='row wrap',
                 ),
             ),
-            mlp_status_html,
-            widgets.HTML('<b>Analysis tools (Multiwfn, CENSO, morfeus)</b>'),
+            mlp_status_box,
+            widgets.HTML('<b>Analysis tools (Multiwfn, CENSO, morfeus, cclib, nglview, Packmol)</b>'),
             widgets.HBox(
                 [
                     install_analysis_tools_btn,
@@ -1835,7 +1864,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     flex_flow='row wrap',
                 ),
             ),
-            analysis_status_html,
+            analysis_status_box,
             analysis_tools_log,
             widgets.HTML('<b>AI/ML Tools (Foundation Models, Generative, Retrosynthesis, ADMET, Metal Complex ML)</b>'),
             widgets.HBox(
@@ -1855,7 +1884,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     flex_flow='row wrap',
                 ),
             ),
-            ai_status_html,
+            ai_status_box,
+            tool_install_log,
             widgets.HTML('<b>Developer Install</b>'),
             widgets.HBox(
                 [
