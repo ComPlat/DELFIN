@@ -263,6 +263,23 @@ _TOOL_REGISTRY = [
     ("plotly", "Visualization", plotly_available, get_plotly_version,
      "Interactive plots for dashboards",
      "pip install plotly"),
+    # ── Wrapper Libraries (unified interfaces to external codes) ──
+    ("pymatgen", "Wrapper Libraries", lambda: _has_spec("pymatgen"),
+     lambda: _pkg_version("pymatgen") or "installed" if _has_spec("pymatgen") else None,
+     "Materials science library (VASP, CP2K, Gaussian, LAMMPS, Lobster, Phonopy interfaces)",
+     "pip install pymatgen"),
+    ("QCEngine", "Wrapper Libraries", lambda: _has_spec("qcengine"),
+     lambda: _pkg_version("qcengine") or "installed" if _has_spec("qcengine") else None,
+     "MolSSI unified interface for QM programs (Psi4, NWChem, GAMESS, Turbomole, ...)",
+     "pip install qcengine"),
+    ("MDAnalysis", "Wrapper Libraries", lambda: _has_spec("MDAnalysis"),
+     lambda: _pkg_version("MDAnalysis") or "installed" if _has_spec("MDAnalysis") else None,
+     "Trajectory analysis for GROMACS, LAMMPS, AMBER, NAMD",
+     "pip install MDAnalysis"),
+    ("pymolpro", "Wrapper Libraries", lambda: _has_spec("pymolpro"),
+     lambda: _pkg_version("pymolpro") or "installed" if _has_spec("pymolpro") else None,
+     "Python interface to Molpro quantum chemistry",
+     "pip install pymolpro"),
 ]
 
 

@@ -1103,6 +1103,10 @@ def collect_runtime_diagnostics(
     _EXT_PYTHON_MODULES = [
         ("openmm", "openmm"),
         ("pyscf", "pyscf"),
+        ("pymatgen", "pymatgen"),
+        ("qcengine", "qcengine"),
+        ("MDAnalysis", "mdanalysis"),
+        ("plams", "plams"),
     ]
     import importlib.util as _ilu_diag
     for mod_name, label in _EXT_PYTHON_MODULES:
