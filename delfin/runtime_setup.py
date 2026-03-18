@@ -1043,6 +1043,37 @@ def collect_runtime_diagnostics(
             }
         )
 
+    # -- External QM programs (auto-detect) --------------------------------
+    import shutil as _shutil_diag
+
+    _EXT_QM_PROGRAMS = [
+        # (binary_names_to_try, label)
+        (["turbomole", "ridft", "dscf", "define"], "turbomole"),
+        (["g16", "g09", "gaussian"], "gaussian"),
+        (["nwchem"], "nwchem"),
+        (["qchem"], "qchem"),
+        (["gamess", "rungms"], "gamess"),
+        (["molpro", "molpro.exe"], "molpro"),
+        (["dalton", "dalton.x"], "dalton"),
+        (["psi4"], "psi4"),
+        (["cfour", "xcfour"], "cfour"),
+        (["mrcc", "dmrcc"], "mrcc"),
+    ]
+    for binaries, label in _EXT_QM_PROGRAMS:
+        found_path = None
+        for name in binaries:
+            path = _shutil_diag.which(name)
+            if path:
+                found_path = path
+                break
+        diagnostics.append(
+            {
+                "name": label,
+                "status": "ok" if found_path else "missing",
+                "detail": found_path or "not found",
+            }
+        )
+
     # -- MLP tools diagnostics --------------------------------------------
     try:
         from delfin.mlp_tools import (

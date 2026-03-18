@@ -1144,21 +1144,24 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             from delfin.analysis_tools import collect_analysis_summary
             info = collect_analysis_summary()
 
-            _ANALYSIS_INSTALL_CMDS = {
-                'Multiwfn': '',  # manual binary download
-                'CENSO': 'censo',
-                'morfeus': 'morfeus-ml',
-                'cclib': 'cclib',
-                'nglview': 'nglview',
-                'Packmol': '',  # conda install
+            if not _outdated_cache:
+                _check_outdated_packages()
+
+            _ANALYSIS_PKGS = {
+                'Multiwfn': ('', ''),           # manual binary
+                'CENSO':    ('censo', 'censo'),
+                'morfeus':  ('morfeus-ml', 'morfeus-ml'),
+                'cclib':    ('cclib', 'cclib'),
+                'nglview':  ('nglview', 'nglview'),
+                'Packmol':  ('', ''),           # conda install
             }
 
             rows = []
             for t in info['tools']:
-                cmd = _ANALYSIS_INSTALL_CMDS.get(t['name'], t['name'].lower())
+                cmd, pkg = _ANALYSIS_PKGS.get(t['name'], (t['name'].lower(), t['name'].lower()))
                 rows.append(_make_tool_row(
                     t['name'], t['installed'], t.get('version', ''),
-                    t['description'], cmd, _refresh_analysis_status,
+                    t['description'], cmd, _refresh_analysis_status, pip_pkg_name=pkg,
                 ))
 
             analysis_status_box.children = rows
@@ -1166,6 +1169,29 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             analysis_status_box.children = [widgets.HTML(
                 f'<span style="color:#d32f2f;">Could not load analysis tools status: {html.escape(str(exc))}</span>'
             )]
+
+    # ── pip helpers for install / update ──────────────────────────────────
+
+    _outdated_cache: dict = {}  # package_name_lower -> latest_version
+
+    def _check_outdated_packages():
+        """Query pip for outdated packages once; cache the result."""
+        import json
+        import subprocess
+        import sys
+
+        try:
+            result = subprocess.run(
+                [sys.executable, '-m', 'pip', 'list', '--outdated', '--format=json'],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout)
+                _outdated_cache.clear()
+                for pkg in data:
+                    _outdated_cache[pkg['name'].lower()] = pkg['latest_version']
+        except Exception:
+            pass  # non-critical, just won't show update badges
 
     def _pip_install_tool(pip_cmd, label, refresh_fn):
         """Run pip install in background and refresh status afterwards."""
@@ -1188,60 +1214,135 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
             _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+        # Invalidate cache so next refresh re-checks
+        _outdated_cache.clear()
         refresh_fn()
 
-    def _make_tool_row(name, installed, version, detail_text, install_cmd, refresh_fn):
-        """Create a widget row for a single tool with optional install button."""
+    def _pip_update_tool(pip_pkg, label, refresh_fn):
+        """Run pip install --upgrade for a specific package."""
+        import subprocess
+        import sys
+
+        tool_install_log.value = f'Updating {label}...\n'
+        try:
+            result = subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', '--upgrade'] + pip_pkg.split(),
+                capture_output=True, text=True, timeout=600,
+            )
+            tool_install_log.value += result.stdout or ''
+            if result.stderr:
+                tool_install_log.value += result.stderr
+            if result.returncode == 0:
+                _set_status(f'{label} updated successfully.', color='#2e7d32')
+            else:
+                _set_status(f'{label} update failed (exit {result.returncode}).', color='#d32f2f')
+        except Exception as exc:
+            tool_install_log.value += f'\nError: {exc}'
+            _set_status(f'{label} update error: {exc}', color='#d32f2f')
+        _outdated_cache.clear()
+        refresh_fn()
+
+    def _make_tool_row(name, installed, version, detail_text, install_cmd, refresh_fn,
+                       pip_pkg_name=''):
+        """Create a widget row with Install or Update button.
+
+        Parameters
+        ----------
+        pip_pkg_name : the pip package name used to check for updates
+                       (e.g. 'cclib', 'torchani'). If empty, uses install_cmd.
+        """
+        pkg_key = (pip_pkg_name or install_cmd or '').split()[0].lower() if (pip_pkg_name or install_cmd) else ''
+
         if installed:
             ver = f' v{version}' if version else ''
-            label = widgets.HTML(
-                f'<span>&#x2705; <b>{html.escape(name)}</b>{html.escape(ver)}'
-                f' &mdash; <span style="color:#455a64;font-size:0.9em;">{html.escape(detail_text)}</span></span>',
-                layout=widgets.Layout(min_width='300px'),
-            )
-            return widgets.HBox([label], layout=widgets.Layout(width='100%', margin='1px 0'))
+            # Check if an update is available
+            latest = _outdated_cache.get(pkg_key, '')
+
+            if latest and version and latest != version:
+                # Update available — show update button
+                label = widgets.HTML(
+                    f'<span>&#x2705; <b>{html.escape(name)}</b>{html.escape(ver)}'
+                    f' <span style="color:#ef6c00;font-size:0.85em;">'
+                    f'&#x2192; v{html.escape(latest)} available</span>'
+                    f' &mdash; <span style="color:#455a64;font-size:0.9em;">'
+                    f'{html.escape(detail_text)}</span></span>',
+                    layout=widgets.Layout(min_width='300px'),
+                )
+                btn = widgets.Button(
+                    description='Update',
+                    button_style='info',
+                    layout=widgets.Layout(width='80px', height='24px'),
+                    tooltip=f'pip install --upgrade {pkg_key}',
+                )
+                btn.on_click(lambda b, pkg=install_cmd, lbl=name, fn=refresh_fn:
+                             _pip_update_tool(pkg, lbl, fn))
+                return widgets.HBox(
+                    [label, btn],
+                    layout=widgets.Layout(width='100%', margin='1px 0', align_items='center'),
+                )
+            else:
+                # Up to date
+                label = widgets.HTML(
+                    f'<span>&#x2705; <b>{html.escape(name)}</b>{html.escape(ver)}'
+                    f' &mdash; <span style="color:#455a64;font-size:0.9em;">'
+                    f'{html.escape(detail_text)}</span></span>',
+                    layout=widgets.Layout(min_width='300px'),
+                )
+                return widgets.HBox([label], layout=widgets.Layout(width='100%', margin='1px 0'))
         else:
+            # Not installed — show install button
             label = widgets.HTML(
                 f'<span>&#x274C; <b>{html.escape(name)}</b>'
-                f' &mdash; <span style="color:#9e9e9e;font-size:0.9em;">{html.escape(detail_text)}</span></span>',
+                f' &mdash; <span style="color:#9e9e9e;font-size:0.9em;">'
+                f'{html.escape(detail_text)}</span></span>',
                 layout=widgets.Layout(min_width='300px'),
             )
-            btn = widgets.Button(
-                description=f'Install',
-                button_style='warning',
-                layout=widgets.Layout(width='80px', height='24px'),
-                tooltip=f'{install_cmd}',
-            )
-            btn.on_click(lambda b, cmd=install_cmd, lbl=name, fn=refresh_fn:
-                         _pip_install_tool(cmd, lbl, fn))
-            return widgets.HBox(
-                [label, btn],
-                layout=widgets.Layout(width='100%', margin='1px 0', align_items='center'),
-            )
+            if install_cmd:
+                btn = widgets.Button(
+                    description='Install',
+                    button_style='warning',
+                    layout=widgets.Layout(width='80px', height='24px'),
+                    tooltip=f'pip install {install_cmd}',
+                )
+                btn.on_click(lambda b, cmd=install_cmd, lbl=name, fn=refresh_fn:
+                             _pip_install_tool(cmd, lbl, fn))
+                return widgets.HBox(
+                    [label, btn],
+                    layout=widgets.Layout(width='100%', margin='1px 0', align_items='center'),
+                )
+            else:
+                return widgets.HBox(
+                    [label],
+                    layout=widgets.Layout(width='100%', margin='1px 0'),
+                )
 
     def _refresh_mlp_status(button=None):
         try:
             from delfin.mlp_tools import collect_mlp_summary
             info = collect_mlp_summary()
 
-            _MLP_INSTALL_CMDS = {
-                'ANI-2x': 'torchani',
-                'AIMNet2': 'aimnet2calc',
-                'MACE-OFF': 'mace-torch',
-                'CHGNet': 'chgnet',
-                'M3GNet': 'matgl',
-                'SchNetPack': 'schnetpack',
-                'NequIP': 'nequip',
-                'ALIGNN': 'alignn',
+            if not _outdated_cache:
+                _check_outdated_packages()
+
+            # install_cmd -> pip_pkg_name mapping
+            _MLP_PKGS = {
+                'ANI-2x':     ('torchani',    'torchani'),
+                'AIMNet2':    ('aimnet2calc',  'aimnet2calc'),
+                'MACE-OFF':   ('mace-torch',  'mace-torch'),
+                'CHGNet':     ('chgnet',       'chgnet'),
+                'M3GNet':     ('matgl',        'matgl'),
+                'SchNetPack': ('schnetpack',   'schnetpack'),
+                'NequIP':     ('nequip',       'nequip'),
+                'ALIGNN':     ('alignn',       'alignn'),
             }
 
             rows = []
             for b in info['backends']:
                 elems = ', '.join(b['elements']) if b['elements'] else 'trainable (any elements)'
-                cmd = _MLP_INSTALL_CMDS.get(b['name'], b['name'].lower())
+                cmd, pkg = _MLP_PKGS.get(b['name'], (b['name'].lower(), b['name'].lower()))
                 rows.append(_make_tool_row(
                     b['name'], b['installed'], b.get('version', ''),
-                    elems, cmd, _refresh_mlp_status,
+                    elems, cmd, _refresh_mlp_status, pip_pkg_name=pkg,
                 ))
 
             # PyTorch / CUDA info
@@ -1278,6 +1379,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             from delfin.ai_tools import collect_ai_summary
             info = collect_ai_summary()
 
+            if not _outdated_cache:
+                _check_outdated_packages()
+
             children = []
             # Group by category
             categories = {}
@@ -1289,11 +1393,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     f'<div style="margin-top:6px;font-weight:bold;color:#37474f;">{html.escape(cat)}</div>'
                 ))
                 for t in tools:
+                    hint = t.get('install_hint', '')
+                    cmd = hint.replace('pip install ', '') if hint else t['name'].lower()
+                    pkg = cmd.split()[0] if cmd else ''
                     children.append(_make_tool_row(
                         t['name'], t['installed'], t.get('version', ''),
-                        t['description'] if t['installed'] else t.get('install_hint', ''),
-                        t.get('install_hint', '').replace('pip install ', '') if t.get('install_hint') else t['name'].lower(),
-                        _refresh_ai_status,
+                        t['description'] if t['installed'] else hint,
+                        cmd, _refresh_ai_status, pip_pkg_name=pkg,
                     ))
 
             n_installed = sum(1 for t in info['tools'] if t['installed'])
