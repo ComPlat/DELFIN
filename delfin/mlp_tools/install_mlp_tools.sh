@@ -6,15 +6,25 @@ set -euo pipefail
 # MLP (Machine Learning Potential) tools installer for DELFIN.
 #
 # Installs one or more ML potential backends:
-#   - ANI-2x   (torchani)    — H,C,N,O,S,F,Cl
-#   - AIMNet2  (aimnet2calc) — 14 elements + charge support
-#   - MACE-OFF (mace-torch)  — broad element coverage
+#   - ANI-2x      (torchani)     — H,C,N,O,S,F,Cl
+#   - AIMNet2     (aimnet2calc)  — 14 elements + charge support
+#   - MACE-OFF    (mace-torch)   — broad element coverage
+#   - CHGNet      (chgnet)       — universal potential (Materials Project)
+#   - M3GNet      (matgl)        — materials graph neural network
+#   - SchNetPack  (schnetpack)   — trainable equivariant GNNs
+#   - NequIP      (nequip)       — E(3)-equivariant, data-efficient
+#   - ALIGNN      (alignn)       — atomistic line graph NN
 #
 # Environment variables:
-#   INSTALL_ANI2X       Set to 1 to install ANI-2x   (default: 1)
-#   INSTALL_AIMNET2     Set to 1 to install AIMNet2   (default: 1)
-#   INSTALL_MACE        Set to 1 to install MACE-OFF  (default: 0, large)
-#   FORCE_REINSTALL     Set to 1 to force reinstall   (default: 0)
+#   INSTALL_ANI2X       Set to 1 to install ANI-2x      (default: 1)
+#   INSTALL_AIMNET2     Set to 1 to install AIMNet2      (default: 1)
+#   INSTALL_MACE        Set to 1 to install MACE-OFF     (default: 0, large)
+#   INSTALL_CHGNET      Set to 1 to install CHGNet       (default: 0)
+#   INSTALL_M3GNET      Set to 1 to install M3GNet       (default: 0)
+#   INSTALL_SCHNETPACK  Set to 1 to install SchNetPack   (default: 0)
+#   INSTALL_NEQUIP      Set to 1 to install NequIP       (default: 0)
+#   INSTALL_ALIGNN      Set to 1 to install ALIGNN       (default: 0)
+#   FORCE_REINSTALL     Set to 1 to force reinstall      (default: 0)
 #   DELFIN_MLP_TOOLS_ROOT  Override install root
 # ---------------------------------------------------------------------------
 
@@ -24,6 +34,11 @@ LOG_DIR="${ROOT}/logs"
 INSTALL_ANI2X="${INSTALL_ANI2X:-1}"
 INSTALL_AIMNET2="${INSTALL_AIMNET2:-1}"
 INSTALL_MACE="${INSTALL_MACE:-0}"
+INSTALL_CHGNET="${INSTALL_CHGNET:-0}"
+INSTALL_M3GNET="${INSTALL_M3GNET:-0}"
+INSTALL_SCHNETPACK="${INSTALL_SCHNETPACK:-0}"
+INSTALL_NEQUIP="${INSTALL_NEQUIP:-0}"
+INSTALL_ALIGNN="${INSTALL_ALIGNN:-0}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 
 log() {
@@ -172,6 +187,106 @@ install_mace() {
 }
 
 # ---------------------------------------------------------------------------
+install_chgnet() {
+  local python_bin="$1"
+  if [ "${INSTALL_CHGNET}" != "1" ]; then
+    log "CHGNet: skipped (INSTALL_CHGNET=0)"
+    return 0
+  fi
+  if python_has_module "${python_bin}" "chgnet" && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "CHGNet: already installed"
+    return 0
+  fi
+  log "installing CHGNet..."
+  "${python_bin}" -m pip install chgnet 2>&1 | tee -a "${LOG_DIR}/chgnet_install.log"
+  if python_has_module "${python_bin}" "chgnet"; then
+    log "CHGNet installed successfully"
+  else
+    warn "CHGNet installation failed"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+install_m3gnet() {
+  local python_bin="$1"
+  if [ "${INSTALL_M3GNET}" != "1" ]; then
+    log "M3GNet (matgl): skipped (INSTALL_M3GNET=0)"
+    return 0
+  fi
+  if python_has_module "${python_bin}" "matgl" && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "M3GNet (matgl): already installed"
+    return 0
+  fi
+  log "installing M3GNet (matgl)..."
+  "${python_bin}" -m pip install matgl 2>&1 | tee -a "${LOG_DIR}/m3gnet_install.log"
+  if python_has_module "${python_bin}" "matgl"; then
+    log "M3GNet installed successfully"
+  else
+    warn "M3GNet installation failed"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+install_schnetpack() {
+  local python_bin="$1"
+  if [ "${INSTALL_SCHNETPACK}" != "1" ]; then
+    log "SchNetPack: skipped (INSTALL_SCHNETPACK=0)"
+    return 0
+  fi
+  if python_has_module "${python_bin}" "schnetpack" && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "SchNetPack: already installed"
+    return 0
+  fi
+  log "installing SchNetPack..."
+  "${python_bin}" -m pip install schnetpack 2>&1 | tee -a "${LOG_DIR}/schnetpack_install.log"
+  if python_has_module "${python_bin}" "schnetpack"; then
+    log "SchNetPack installed successfully"
+  else
+    warn "SchNetPack installation failed"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+install_nequip() {
+  local python_bin="$1"
+  if [ "${INSTALL_NEQUIP}" != "1" ]; then
+    log "NequIP: skipped (INSTALL_NEQUIP=0)"
+    return 0
+  fi
+  if python_has_module "${python_bin}" "nequip" && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "NequIP: already installed"
+    return 0
+  fi
+  log "installing NequIP..."
+  "${python_bin}" -m pip install nequip 2>&1 | tee -a "${LOG_DIR}/nequip_install.log"
+  if python_has_module "${python_bin}" "nequip"; then
+    log "NequIP installed successfully"
+  else
+    warn "NequIP installation failed"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+install_alignn() {
+  local python_bin="$1"
+  if [ "${INSTALL_ALIGNN}" != "1" ]; then
+    log "ALIGNN: skipped (INSTALL_ALIGNN=0)"
+    return 0
+  fi
+  if python_has_module "${python_bin}" "alignn" && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "ALIGNN: already installed"
+    return 0
+  fi
+  log "installing ALIGNN..."
+  "${python_bin}" -m pip install alignn 2>&1 | tee -a "${LOG_DIR}/alignn_install.log"
+  if python_has_module "${python_bin}" "alignn"; then
+    log "ALIGNN installed successfully"
+  else
+    warn "ALIGNN installation failed"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 verify_backends() {
   local python_bin="$1"
 
@@ -200,7 +315,7 @@ summary() {
   log "============================================"
 
   if python_bin="$(detect_python)"; then
-    for mod_name in torchani:ANI-2x aimnet2calc:AIMNet2 mace:MACE-OFF; do
+    for mod_name in torchani:ANI-2x aimnet2calc:AIMNet2 mace:MACE-OFF chgnet:CHGNet matgl:M3GNet schnetpack:SchNetPack nequip:NequIP alignn:ALIGNN; do
       local mod="${mod_name%%:*}"
       local label="${mod_name##*:}"
       if python_has_module "${python_bin}" "${mod}"; then
@@ -234,6 +349,11 @@ main() {
   install_ani2x "${python_bin}"
   install_aimnet2 "${python_bin}"
   install_mace "${python_bin}"
+  install_chgnet "${python_bin}"
+  install_m3gnet "${python_bin}"
+  install_schnetpack "${python_bin}"
+  install_nequip "${python_bin}"
+  install_alignn "${python_bin}"
   verify_backends "${python_bin}"
   summary
 }

@@ -1049,15 +1049,30 @@ def collect_runtime_diagnostics(
             torchani_available,
             aimnet2_available,
             mace_available,
+            chgnet_available,
+            matgl_available,
+            schnetpack_available,
+            nequip_available,
+            alignn_available,
             get_torchani_version,
             get_aimnet2_version,
             get_mace_version,
+            get_chgnet_version,
+            get_matgl_version,
+            get_schnetpack_version,
+            get_nequip_version,
+            get_alignn_version,
         )
 
         for check_fn, ver_fn, label in [
             (torchani_available, get_torchani_version, "ani2x"),
             (aimnet2_available, get_aimnet2_version, "aimnet2"),
             (mace_available, get_mace_version, "mace-off"),
+            (chgnet_available, get_chgnet_version, "chgnet"),
+            (matgl_available, get_matgl_version, "m3gnet"),
+            (schnetpack_available, get_schnetpack_version, "schnetpack"),
+            (nequip_available, get_nequip_version, "nequip"),
+            (alignn_available, get_alignn_version, "alignn"),
         ]:
             ok = check_fn()
             ver = ver_fn() or ""
@@ -1101,6 +1116,23 @@ def collect_runtime_diagnostics(
             diagnostics.append(
                 {
                     "name": label,
+                    "status": "ok" if ok else "missing",
+                    "detail": f"v{ver}" if ok else "not installed",
+                }
+            )
+    except ImportError:
+        pass
+
+    # -- AI tools diagnostics -----------------------------------------------
+    try:
+        from delfin.ai_tools import _TOOL_REGISTRY
+
+        for label, category, avail_fn, ver_fn, description, install_hint in _TOOL_REGISTRY:
+            ok = avail_fn()
+            ver = ver_fn() or ""
+            diagnostics.append(
+                {
+                    "name": label.lower().replace(" ", "-"),
                     "status": "ok" if ok else "missing",
                     "detail": f"v{ver}" if ok else "not installed",
                 }

@@ -33,6 +33,16 @@ _BACKEND_ALIASES: dict[str, str] = {
     "mace_off": "mace_off",
     "mace-off": "mace_off",
     "mace": "mace_off",
+    "chgnet": "chgnet",
+    "m3gnet": "m3gnet",
+    "matgl": "m3gnet",
+    "megnet": "m3gnet",
+    "schnetpack": "schnetpack",
+    "schnet": "schnetpack",
+    "painn": "schnetpack",
+    "nequip": "nequip",
+    "allegro": "nequip",
+    "alignn": "alignn",
 }
 
 
@@ -76,10 +86,87 @@ def _create_mace_off(
     return calc
 
 
+def _create_chgnet(device: str = "cpu", **kwargs) -> Calculator:
+    """Create a CHGNet ASE calculator (universal potential for materials)."""
+    from chgnet.model.dynamics import CHGNetCalculator
+
+    calc = CHGNetCalculator(use_device=device)
+    logger.info("Created CHGNet calculator (device=%s)", device)
+    return calc
+
+
+def _create_m3gnet(device: str = "cpu", **kwargs) -> Calculator:
+    """Create an M3GNet ASE calculator via MatGL."""
+    import matgl
+    from matgl.ext.ase import M3GNetCalculator
+
+    potential = matgl.load_model("M3GNet-MP-2021.2.8-PES")
+    calc = M3GNetCalculator(potential=potential)
+    logger.info("Created M3GNet calculator")
+    return calc
+
+
+def _create_schnetpack(device: str = "cpu", model_path: str = "", **kwargs) -> Calculator:
+    """Create a SchNetPack ASE calculator.
+
+    Requires a trained model. Use model_path to specify the model checkpoint.
+    For pre-trained models, see: schnetpack.org
+    """
+    import torch
+    import schnetpack
+
+    if not model_path:
+        raise ValueError(
+            "SchNetPack requires a trained model. Provide model_path kwarg.\n"
+            "Train with: spktrain experiment=... or download pre-trained models."
+        )
+    model = torch.load(model_path, map_location=device)
+    calc = schnetpack.interfaces.SpkCalculator(
+        model=model,
+        neighbor_list=schnetpack.transform.ASENeighborList(cutoff=5.0),
+        energy_key="energy",
+        force_key="forces",
+        device=device,
+    )
+    logger.info("Created SchNetPack calculator from %s (device=%s)", model_path, device)
+    return calc
+
+
+def _create_nequip(device: str = "cpu", model_path: str = "", **kwargs) -> Calculator:
+    """Create a NequIP ASE calculator.
+
+    Requires a trained model. Use model_path to specify the deployed model.
+    """
+    from nequip.ase import NequIPCalculator
+
+    if not model_path:
+        raise ValueError(
+            "NequIP requires a trained/deployed model. Provide model_path kwarg.\n"
+            "Deploy with: nequip-deploy build ..."
+        )
+    calc = NequIPCalculator.from_deployed_model(model_path, device=device)
+    logger.info("Created NequIP calculator from %s (device=%s)", model_path, device)
+    return calc
+
+
+def _create_alignn(device: str = "cpu", model_name: str = "jv_formation_energy_peratom_alignn", **kwargs) -> Calculator:
+    """Create an ALIGNN ASE calculator with a pre-trained model."""
+    from alignn.ff.ff import AlignnAtomwiseCalculator
+
+    calc = AlignnAtomwiseCalculator(device=device)
+    logger.info("Created ALIGNN calculator (device=%s)", device)
+    return calc
+
+
 _FACTORIES = {
     "ani2x": _create_ani2x,
     "aimnet2": _create_aimnet2,
     "mace_off": _create_mace_off,
+    "chgnet": _create_chgnet,
+    "m3gnet": _create_m3gnet,
+    "schnetpack": _create_schnetpack,
+    "nequip": _create_nequip,
+    "alignn": _create_alignn,
 }
 
 

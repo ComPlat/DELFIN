@@ -1,7 +1,14 @@
 """MLP (Machine Learning Potential) tools for DELFIN.
 
-Provides unified access to ANI-2x, AIMNet2, MACE-OFF and other
-ML potentials as ASE calculators.
+Provides unified access to pre-trained ML potentials as ASE calculators:
+  - ANI-2x     (torchani)     — H,C,N,O,S,F,Cl
+  - AIMNet2    (aimnet2calc)  — 14 elements + charge/spin support
+  - MACE-OFF   (mace-torch)   — 23 elements, state-of-the-art accuracy
+  - CHGNet     (chgnet)       — universal potential for materials (Materials Project)
+  - M3GNet     (matgl)        — materials graph neural network potential
+  - SchNet/PaiNN (schnetpack) — equivariant GNNs, trainable
+  - NequIP     (nequip)       — E(3)-equivariant, extremely data-efficient
+  - ALIGNN     (alignn)       — atomistic line graph neural network
 """
 
 from __future__ import annotations
@@ -46,6 +53,46 @@ def mace_available() -> bool:
         return False
 
 
+def chgnet_available() -> bool:
+    """Check whether CHGNet is importable."""
+    try:
+        return importlib.util.find_spec("chgnet") is not None
+    except (ModuleNotFoundError, ValueError):
+        return False
+
+
+def matgl_available() -> bool:
+    """Check whether MatGL (M3GNet/MEGNet) is importable."""
+    try:
+        return importlib.util.find_spec("matgl") is not None
+    except (ModuleNotFoundError, ValueError):
+        return False
+
+
+def schnetpack_available() -> bool:
+    """Check whether SchNetPack (SchNet/PaiNN) is importable."""
+    try:
+        return importlib.util.find_spec("schnetpack") is not None
+    except (ModuleNotFoundError, ValueError):
+        return False
+
+
+def nequip_available() -> bool:
+    """Check whether NequIP is importable."""
+    try:
+        return importlib.util.find_spec("nequip") is not None
+    except (ModuleNotFoundError, ValueError):
+        return False
+
+
+def alignn_available() -> bool:
+    """Check whether ALIGNN is importable."""
+    try:
+        return importlib.util.find_spec("alignn") is not None
+    except (ModuleNotFoundError, ValueError):
+        return False
+
+
 def available_backends() -> list[str]:
     """Return a list of available MLP backend names."""
     backends = []
@@ -55,6 +102,16 @@ def available_backends() -> list[str]:
         backends.append("aimnet2")
     if mace_available():
         backends.append("mace_off")
+    if chgnet_available():
+        backends.append("chgnet")
+    if matgl_available():
+        backends.append("m3gnet")
+    if schnetpack_available():
+        backends.append("schnetpack")
+    if nequip_available():
+        backends.append("nequip")
+    if alignn_available():
+        backends.append("alignn")
     return backends
 
 
@@ -98,6 +155,80 @@ def get_mace_version() -> Optional[str]:
         return None
 
 
+def get_chgnet_version() -> Optional[str]:
+    if not chgnet_available():
+        return None
+    try:
+        from importlib.metadata import version
+        return version("chgnet")
+    except Exception:
+        return "installed"
+
+
+def get_matgl_version() -> Optional[str]:
+    if not matgl_available():
+        return None
+    try:
+        from importlib.metadata import version
+        return version("matgl")
+    except Exception:
+        return "installed"
+
+
+def get_schnetpack_version() -> Optional[str]:
+    if not schnetpack_available():
+        return None
+    try:
+        from importlib.metadata import version
+        return version("schnetpack")
+    except Exception:
+        return "installed"
+
+
+def get_nequip_version() -> Optional[str]:
+    if not nequip_available():
+        return None
+    try:
+        from importlib.metadata import version
+        return version("nequip")
+    except Exception:
+        return "installed"
+
+
+def get_alignn_version() -> Optional[str]:
+    if not alignn_available():
+        return None
+    try:
+        from importlib.metadata import version
+        return version("alignn")
+    except Exception:
+        return "installed"
+
+
+# ── element support (new backends) ───────────────────────────────────
+
+# CHGNet: trained on Materials Project, supports all elements up to Og
+CHGNET_ELEMENTS = frozenset({
+    "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
+    "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
+    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+    "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
+    "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
+    "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
+    "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
+    "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "Tl", "Pb", "Bi",
+})
+
+# M3GNet: same coverage as CHGNet (Materials Project)
+M3GNET_ELEMENTS = CHGNET_ELEMENTS
+
+# SchNetPack / NequIP / ALIGNN: element-agnostic (trainable on any)
+SCHNETPACK_ELEMENTS = frozenset()  # depends on training data
+NEQUIP_ELEMENTS = frozenset()
+ALIGNN_ELEMENTS = frozenset()
+
+
 # ── requirement helpers ────────────────────────────────────────────────
 
 def require_any_mlp(feature: str = "ML potential evaluation") -> None:
@@ -130,6 +261,11 @@ def collect_mlp_summary() -> dict:
         ("ANI-2x", torchani_available, get_torchani_version, ANI2X_ELEMENTS),
         ("AIMNet2", aimnet2_available, get_aimnet2_version, AIMNET2_ELEMENTS),
         ("MACE-OFF", mace_available, get_mace_version, MACE_OFF_ELEMENTS),
+        ("CHGNet", chgnet_available, get_chgnet_version, CHGNET_ELEMENTS),
+        ("M3GNet", matgl_available, get_matgl_version, M3GNET_ELEMENTS),
+        ("SchNetPack", schnetpack_available, get_schnetpack_version, SCHNETPACK_ELEMENTS),
+        ("NequIP", nequip_available, get_nequip_version, NEQUIP_ELEMENTS),
+        ("ALIGNN", alignn_available, get_alignn_version, ALIGNN_ELEMENTS),
     ]:
         ok = avail_fn()
         backends_info.append({

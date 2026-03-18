@@ -55,11 +55,36 @@ mlp-full = [
     "torchani",
     "aimnet2calc @ git+https://github.com/zubatyuk/aimnet2calc.git",
     "mace-torch",
+    "chgnet",
+    "matgl",
+    "schnetpack",
+    "nequip",
+    "alignn",
+]
+mlp-materials = [
+    "chgnet",
+    "matgl",
 ]
 analysis = [
     "morfeus-ml",
     "cclib",
     "nglview",
+    "plotly",
+]
+ai-foundation = [
+    "transformers",
+    "torch",
+]
+ai-retro = [
+    "aizynthfinder",
+    "rxnmapper",
+]
+ai-screening = [
+    "deepchem",
+]
+ai-complex = [
+    "molSimplify",
+    "architector",
 ]
 dev = [
     "pytest>=6.0",
@@ -94,6 +119,8 @@ include = ["delfin*"]
     "mlp_tools/*.sh",
     "analysis_tools/*.sh",
     "analysis_tools/*.txt",
+    "ai_tools/*.sh",
+    "ai_tools/*.txt",
     "submit_templates/*.sh",
 ]
 "delfin.notebooks" = ["*.ipynb"]

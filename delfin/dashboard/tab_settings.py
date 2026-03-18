@@ -148,6 +148,12 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         button_style='info',
         layout=widgets.Layout(width='155px', height='28px'),
     )
+    ai_status_html = widgets.HTML(value='')
+    refresh_ai_status_btn = widgets.Button(
+        description='Refresh AI status',
+        button_style='info',
+        layout=widgets.Layout(width='155px', height='28px'),
+    )
     pip_install_log = widgets.Textarea(
         value='',
         disabled=True,
@@ -1218,6 +1224,62 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 f'<span style="color:#d32f2f;">Could not load MLP status: {html.escape(str(exc))}</span>'
             )
 
+    def _refresh_ai_status(button=None):
+        try:
+            from delfin.ai_tools import collect_ai_summary
+            info = collect_ai_summary()
+
+            # Group by category
+            categories = {}
+            for t in info['tools']:
+                cat = t['category']
+                categories.setdefault(cat, []).append(t)
+
+            sections = []
+            for cat, tools in categories.items():
+                rows = []
+                for t in tools:
+                    if t['installed']:
+                        ver = f' v{t["version"]}' if t['version'] else ''
+                        icon = '&#x2705;'
+                        desc = html.escape(t['description'])
+                        rows.append(
+                            f'<tr><td>{icon} <b>{t["name"]}</b>{ver}</td>'
+                            f'<td style="color:#455a64;font-size:0.9em;">{desc}</td></tr>'
+                        )
+                    else:
+                        hint = html.escape(t.get('install_hint', ''))
+                        rows.append(
+                            f'<tr><td>&#x274C; <b>{t["name"]}</b></td>'
+                            f'<td style="color:#9e9e9e;">{hint}</td></tr>'
+                        )
+                sections.append(
+                    f'<tr><td colspan="2" style="padding-top:6px;font-weight:bold;'
+                    f'color:#37474f;">{html.escape(cat)}</td></tr>'
+                    + ''.join(rows)
+                )
+
+            table = (
+                '<table style="border-collapse:collapse;margin:4px 0;">'
+                '<tr><th style="text-align:left;padding-right:16px;">Tool</th>'
+                '<th style="text-align:left;">Description / Install</th></tr>'
+                + ''.join(sections) +
+                '</table>'
+            )
+            n_installed = sum(1 for t in info['tools'] if t['installed'])
+            n_total = len(info['tools'])
+            ai_status_html.value = (
+                f'<div style="border:1px solid #d9dee3;border-radius:6px;padding:8px;background:#fafbfc;">'
+                f'{table}'
+                f'<div style="margin-top:6px;color:#546e7a;">'
+                f'{n_installed}/{n_total} AI tools installed</div>'
+                f'</div>'
+            )
+        except Exception as exc:
+            ai_status_html.value = (
+                f'<span style="color:#d32f2f;">Could not load AI tools status: {html.escape(str(exc))}</span>'
+            )
+
     def _on_pip_install_editable(button):
         import sys
 
@@ -1532,6 +1594,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     refresh_analysis_status_btn.on_click(_refresh_analysis_status)
     pip_install_btn.on_click(_with_buttons_disabled(_on_pip_install_editable))
     refresh_mlp_status_btn.on_click(_refresh_mlp_status)
+    refresh_ai_status_btn.on_click(_refresh_ai_status)
     setup_bwunicluster_btn.on_click(_with_buttons_disabled(_on_setup_bwunicluster))
     verify_bwunicluster_btn.on_click(_with_buttons_disabled(_on_verify_bwunicluster))
     full_install_bwunicluster_btn.on_click(_with_buttons_disabled(_on_full_install_bwunicluster))
@@ -1774,6 +1837,25 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             ),
             analysis_status_html,
             analysis_tools_log,
+            widgets.HTML('<b>AI/ML Tools (Foundation Models, Generative, Retrosynthesis, ADMET, Metal Complex ML)</b>'),
+            widgets.HBox(
+                [
+                    refresh_ai_status_btn,
+                    widgets.HTML(
+                        '<span style="color:#616161;">'
+                        'Optional AI tools — install individually via pip as needed. '
+                        'See install hints in the status panel.'
+                        '</span>'
+                    ),
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            ai_status_html,
             widgets.HTML('<b>Developer Install</b>'),
             widgets.HBox(
                 [
@@ -1994,5 +2076,6 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     _load_settings_to_widgets(set_status=True)
     _refresh_mlp_status()
     _refresh_analysis_status()
+    _refresh_ai_status()
 
     return tab, {'reload_settings': _load_settings_to_widgets}
