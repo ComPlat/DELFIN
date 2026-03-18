@@ -1047,7 +1047,7 @@ def collect_runtime_diagnostics(
     import shutil as _shutil_diag
 
     _EXT_QM_PROGRAMS = [
-        # (binary_names_to_try, label)
+        # ── QM engines (ab initio / DFT / semiempirical) ──
         (["turbomole", "ridft", "dscf", "define"], "turbomole"),
         (["g16", "g09", "gaussian"], "gaussian"),
         (["nwchem"], "nwchem"),
@@ -1058,7 +1058,68 @@ def collect_runtime_diagnostics(
         (["psi4"], "psi4"),
         (["cfour", "xcfour"], "cfour"),
         (["mrcc", "dmrcc"], "mrcc"),
+        # ── Periodic DFT / solid state ──
+        (["vasp", "vasp_std", "vasp_gam", "vasp_ncl"], "vasp"),
+        (["pw.x", "pw", "quantum-espresso"], "quantum-espresso"),
+        (["cp2k", "cp2k.popt", "cp2k.psmp", "cp2k.sopt"], "cp2k"),
+        (["aims.x", "FHIaims", "aims"], "fhi-aims"),
+        (["crystal", "crystal17", "crystal23", "Pcrystal"], "crystal"),
+        (["siesta"], "siesta"),
+        (["gpaw", "gpaw-python"], "gpaw"),
+        (["fleur", "fleur_MPI"], "fleur"),
+        (["wien2k", "run_lapw", "runsp_lapw"], "wien2k"),
+        (["elk"], "elk"),
+        (["abinit"], "abinit"),
+        # ── Multireference / correlated ──
+        (["pymolcas", "molcas", "OpenMolcas"], "openmolcas"),
+        (["bagel", "BAGEL"], "bagel"),
+        (["columbus", "COLUMBUS"], "columbus"),
+        # ── Semiempirical ──
+        (["mopac", "MOPAC", "mopac2016"], "mopac"),
+        (["sparrow"], "sparrow"),
+        # ── MD engines ──
+        (["gmx", "gmx_mpi", "gromacs", "mdrun"], "gromacs"),
+        (["lmp", "lmp_mpi", "lammps", "lmp_serial"], "lammps"),
+        (["sander", "pmemd", "pmemd.cuda"], "amber"),
+        (["namd2", "namd3", "namd"], "namd"),
+        (["openmmrun"], "openmm"),
+        # ── Visualization / editors ──
+        (["vmd"], "vmd"),
+        (["avogadro", "avogadro2"], "avogadro"),
+        (["jmol"], "jmol"),
+        (["chimera", "chimerax", "ChimeraX"], "chimerax"),
+        (["iqmol", "IQmol"], "iqmol"),
+        # ── Analysis / post-processing ──
+        (["orca_2mkl"], "orca_2mkl"),
+        (["nbo7", "nbo6", "gennbo"], "nbo"),
+        (["aimall", "aimqb"], "aimall"),
+        (["critic2"], "critic2"),
+        (["chargemol"], "chargemol"),
+        (["lobster", "LOBSTER"], "lobster"),
+        (["phonopy"], "phonopy"),
+        (["ase"], "ase-cli"),
     ]
+    # Also check Python-only tools that may not have CLI binaries
+    _EXT_PYTHON_MODULES = [
+        ("openmm", "openmm"),
+        ("pyscf", "pyscf"),
+    ]
+    import importlib.util as _ilu_diag
+    for mod_name, label in _EXT_PYTHON_MODULES:
+        try:
+            found = _ilu_diag.find_spec(mod_name) is not None
+        except (ModuleNotFoundError, ValueError):
+            found = False
+        # Don't duplicate if already found via binary check
+        if any(d["name"] == label for d in diagnostics):
+            continue
+        diagnostics.append(
+            {
+                "name": label,
+                "status": "ok" if found else "missing",
+                "detail": f"Python module '{mod_name}'" if found else "not installed",
+            }
+        )
     for binaries, label in _EXT_QM_PROGRAMS:
         found_path = None
         for name in binaries:
