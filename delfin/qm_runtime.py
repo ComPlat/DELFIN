@@ -81,6 +81,13 @@ def get_csp_tools_bin_dir() -> Path:
     return get_csp_tools_root() / "bin"
 
 
+def get_mlp_tools_root() -> Path:
+    env_root = os.environ.get("DELFIN_MLP_TOOLS_ROOT")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    return (Path(__file__).resolve().parent / "mlp_tools").resolve()
+
+
 _CSP_TOOL_NAMES = frozenset({"gnrs", "genarris"})
 
 

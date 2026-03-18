@@ -18,13 +18,16 @@ from delfin.runtime_setup import (
     get_packaged_submit_templates_dir,
     get_user_qm_tools_dir,
     get_user_csp_tools_dir,
+    get_user_mlp_tools_dir,
     run_qm_tools_installer,
     run_csp_tools_installer,
+    run_mlp_tools_installer,
     resolve_backend_choice,
     resolve_orca_base,
     resolve_submit_templates_dir,
     stage_packaged_qm_tools,
     stage_packaged_csp_tools,
+    stage_packaged_mlp_tools,
 )
 from delfin.user_settings import (
     get_settings_path,
@@ -92,6 +95,25 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     )
     update_csp_tools_btn = widgets.Button(
         description='Update csp_tools',
+        button_style='info',
+        layout=widgets.Layout(width='130px', height='28px'),
+    )
+    mlp_tools_log = widgets.Textarea(
+        value='',
+        disabled=True,
+        layout=widgets.Layout(width='100%', height='160px'),
+    )
+    mlp_tools_root_input = widgets.Text(
+        placeholder='Optional mlp_tools root override',
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    install_mlp_tools_btn = widgets.Button(
+        description='Install mlp_tools',
+        button_style='warning',
+        layout=widgets.Layout(width='130px', height='28px'),
+    )
+    update_mlp_tools_btn = widgets.Button(
+        description='Update mlp_tools',
         button_style='info',
         layout=widgets.Layout(width='130px', height='28px'),
     )
@@ -336,6 +358,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             summary_parts.append(
                 f'csp_tools: <code>{html.escape(str(runtime_payload.get("csp_tools_root", "")))}</code>'
             )
+        if runtime_payload.get('mlp_tools_root'):
+            summary_parts.append(
+                f'mlp_tools: <code>{html.escape(str(runtime_payload.get("mlp_tools_root", "")))}</code>'
+            )
         if effective_backend == 'slurm':
             summary_parts.append(
                 f'Submit templates: <code>{html.escape(str(submit_templates_dir))}</code>'
@@ -426,6 +452,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         global_orca_input.value = str(runtime_payload.get('orca_base') or '')
         qm_tools_root_input.value = str(runtime_payload.get('qm_tools_root') or '')
         csp_tools_root_input.value = str(runtime_payload.get('csp_tools_root') or '')
+        mlp_tools_root_input.value = str(runtime_payload.get('mlp_tools_root') or '')
         local_orca_input.value = str(local_payload.get('orca_base') or '')
         local_max_cores_input.value = int(local_payload.get('max_cores', detected_local_cores))
         local_max_ram_input.value = int(local_payload.get('max_ram_mb', detected_local_ram_mb))
@@ -468,6 +495,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             'csp_tools_root': normalize_local_directory_setting(
                 csp_tools_root_input.value,
                 'csp_tools root',
+            ),
+            'mlp_tools_root': normalize_local_directory_setting(
+                mlp_tools_root_input.value,
+                'mlp_tools root',
             ),
             'local': {
                 'orca_base': normalize_local_directory_setting(
@@ -927,6 +958,72 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 color='#d32f2f',
             )
 
+    def _on_install_mlp_tools(button):
+        try:
+            target, result = run_mlp_tools_installer()
+            runtime_payload = _runtime_payload_from_widgets()
+            runtime_payload['mlp_tools_root'] = str(target)
+            backend_switch_required, effective_backend, effective_orca_base = _persist_runtime_payload(
+                runtime_payload
+            )
+            mlp_tools_log.value = result.stdout or '(no installer output)'
+            if result.returncode == 0:
+                _set_status(
+                    (
+                        f'mlp_tools installed in <code>{html.escape(str(target))}</code>. '
+                        'ML potential backends (ANI-2x, AIMNet2) are now available.'
+                    ),
+                    color='#2e7d32',
+                )
+            else:
+                _set_status(
+                    (
+                        f'mlp_tools installer failed with exit code {result.returncode}. '
+                        'Inspect the MLP tools log below.'
+                    ),
+                    color='#d32f2f',
+                )
+        except Exception as exc:
+            mlp_tools_log.value = ''
+            _set_status(
+                f'Running mlp_tools installer failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def _on_update_mlp_tools(button):
+        try:
+            target, result = run_mlp_tools_installer(
+                extra_env={'FORCE_REINSTALL': '1'}
+            )
+            runtime_payload = _runtime_payload_from_widgets()
+            runtime_payload['mlp_tools_root'] = str(target)
+            backend_switch_required, effective_backend, effective_orca_base = _persist_runtime_payload(
+                runtime_payload
+            )
+            mlp_tools_log.value = result.stdout or '(no updater output)'
+            if result.returncode == 0:
+                _set_status(
+                    (
+                        f'mlp_tools updated in <code>{html.escape(str(target))}</code>. '
+                        'All MLP backends were reinstalled.'
+                    ),
+                    color='#2e7d32',
+                )
+            else:
+                _set_status(
+                    (
+                        f'mlp_tools update failed with exit code {result.returncode}. '
+                        'Inspect the MLP tools log below.'
+                    ),
+                    color='#d32f2f',
+                )
+        except Exception as exc:
+            mlp_tools_log.value = ''
+            _set_status(
+                f'Updating mlp_tools failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
     def _on_setup_bwunicluster(button):
         try:
             calc_override, archive_override, effective_calc_dir, effective_archive_dir = _effective_paths_from_widgets()
@@ -1204,6 +1301,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     update_qm_tools_btn.on_click(_with_buttons_disabled(_on_update_qm_tools))
     install_csp_tools_btn.on_click(_with_buttons_disabled(_on_install_csp_tools))
     update_csp_tools_btn.on_click(_with_buttons_disabled(_on_update_csp_tools))
+    install_mlp_tools_btn.on_click(_with_buttons_disabled(_on_install_mlp_tools))
+    update_mlp_tools_btn.on_click(_with_buttons_disabled(_on_update_mlp_tools))
     setup_bwunicluster_btn.on_click(_with_buttons_disabled(_on_setup_bwunicluster))
     verify_bwunicluster_btn.on_click(_with_buttons_disabled(_on_verify_bwunicluster))
     full_install_bwunicluster_btn.on_click(_with_buttons_disabled(_on_full_install_bwunicluster))
@@ -1373,6 +1472,40 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 ),
             ),
             csp_tools_log,
+            widgets.HTML('<b>MLP tools (Machine Learning Potentials)</b>'),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>mlp_tools root</b>'),
+                    mlp_tools_root_input,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HBox(
+                [
+                    install_mlp_tools_btn,
+                    update_mlp_tools_btn,
+                    widgets.HTML(
+                        (
+                            f'<span style="color:#616161;">'
+                            f'Installs ANI-2x + AIMNet2 into <code>{html.escape(str(get_user_mlp_tools_dir()))}</code>. '
+                            'Requires PyTorch. Set <code>INSTALL_MACE=1</code> for MACE-OFF.'
+                            f'</span>'
+                        )
+                    ),
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            mlp_tools_log,
             widgets.HTML('<b>Local overrides</b>'),
             widgets.HBox(
                 [

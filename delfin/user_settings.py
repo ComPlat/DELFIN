@@ -36,6 +36,7 @@ DEFAULT_SETTINGS = {
         "orca_base": "",
         "qm_tools_root": "",
         "csp_tools_root": "",
+        "mlp_tools_root": "",
         "local": {
             "orca_base": "",
             "max_cores": _DEFAULT_LOCAL_CORES,
@@ -198,6 +199,10 @@ def _normalized_settings_dict(payload):
         "csp_tools_root": normalize_local_directory_setting(
             runtime.get("csp_tools_root", ""),
             "csp_tools root",
+        ),
+        "mlp_tools_root": normalize_local_directory_setting(
+            runtime.get("mlp_tools_root", ""),
+            "mlp_tools root",
         ),
         "local": {
             "orca_base": normalize_local_directory_setting(

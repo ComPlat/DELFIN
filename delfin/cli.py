@@ -14,7 +14,7 @@ from dataclasses import asdict
 from typing import Optional
 from delfin.common.logging import configure_logging, get_logger
 from delfin.common.paths import resolve_path
-from .qm_runtime import check_tools as check_qm_tools, get_qm_tools_root, get_csp_tools_root, run_tool as run_qm_tool
+from .qm_runtime import check_tools as check_qm_tools, get_qm_tools_root, get_csp_tools_root, get_mlp_tools_root, run_tool as run_qm_tool
 
 logger = get_logger(__name__)
 
@@ -292,6 +292,55 @@ def _run_csp_check_subcommand(argv: list[str]) -> int:
             print(f"{name} CLI: MISSING")
         else:
             print(f"{name} CLI: {resolved.path} [{resolved.source}]")
+    return 0
+
+
+def _run_mlp_check_subcommand(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="delfin mlp_check",
+        description="Inspect DELFIN MLP (Machine Learning Potential) tools availability.",
+    )
+    parser.parse_args(argv)
+
+    print(f"mlp_tools root: {get_mlp_tools_root()}")
+
+    try:
+        from delfin.mlp_tools import (
+            available_backends,
+            get_torchani_version,
+            get_aimnet2_version,
+            get_mace_version,
+        )
+
+        backends = available_backends()
+        if backends:
+            print(f"Available backends: {', '.join(backends)}")
+        else:
+            print("No MLP backends installed")
+            print("  Install with: pip install delfin-complat[mlp]")
+            print("            or: bash delfin/mlp_tools/install_mlp_tools.sh")
+
+        for label, ver_fn in [
+            ("ANI-2x (torchani)", get_torchani_version),
+            ("AIMNet2", get_aimnet2_version),
+            ("MACE-OFF", get_mace_version),
+        ]:
+            ver = ver_fn()
+            if ver:
+                print(f"  {label}: v{ver}")
+            else:
+                print(f"  {label}: not installed")
+
+        try:
+            import torch
+
+            cuda = torch.cuda.is_available()
+            print(f"  PyTorch: v{torch.__version__} (CUDA: {cuda})")
+        except ImportError:
+            print("  PyTorch: not installed")
+
+    except ImportError:
+        print("mlp_tools module not found")
     return 0
 
 
@@ -1128,6 +1177,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_qm_run_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "csp_check":
         return _run_csp_check_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "mlp_check":
+        return _run_mlp_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "tadf_xtb":
         return _run_tadf_xtb_subcommand(arg_list[1:])
     if arg_list and arg_list[0] in {"hyperpol", "hyperpol_xtb"}:

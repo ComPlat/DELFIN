@@ -11,7 +11,7 @@ import tarfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from delfin.qm_runtime import check_tools, get_csp_tools_root
+from delfin.qm_runtime import check_tools, get_csp_tools_root, get_mlp_tools_root
 
 try:
     import psutil  # type: ignore
@@ -209,6 +209,10 @@ def get_packaged_csp_tools_dir() -> Path:
     return (Path(__file__).resolve().parent / "csp_tools").resolve()
 
 
+def get_packaged_mlp_tools_dir() -> Path:
+    return (Path(__file__).resolve().parent / "mlp_tools").resolve()
+
+
 def get_packaged_installers_dir() -> Path:
     return (Path(__file__).resolve().parent / "installers").resolve()
 
@@ -223,6 +227,12 @@ def get_user_csp_tools_dir(target_dir: str | Path | None = None) -> Path:
     if target_dir:
         return Path(target_dir).expanduser()
     return (Path.home() / ".delfin" / "csp_tools").expanduser()
+
+
+def get_user_mlp_tools_dir(target_dir: str | Path | None = None) -> Path:
+    if target_dir:
+        return Path(target_dir).expanduser()
+    return (Path.home() / ".delfin" / "mlp_tools").expanduser()
 
 
 def get_repo_submit_templates_dir(repo_dir: str | Path | None) -> Path | None:
@@ -684,6 +694,50 @@ def run_csp_tools_installer(
     return target, result
 
 
+def stage_packaged_mlp_tools(target_dir: str | Path | None = None) -> Path:
+    source = get_packaged_mlp_tools_dir()
+    if not source.is_dir():
+        raise FileNotFoundError(f"Packaged mlp_tools directory not found: {source}")
+
+    target = get_user_mlp_tools_dir(target_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    return target
+
+
+def run_mlp_tools_installer(
+    target_dir: str | Path | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    target = stage_packaged_mlp_tools(target_dir)
+    installer = target / "install_mlp_tools.sh"
+    if not installer.is_file():
+        raise FileNotFoundError(f"mlp_tools installer not found: {installer}")
+
+    env = os.environ.copy()
+    env["DELFIN_MLP_TOOLS_ROOT"] = str(target)
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    result = subprocess.run(
+        ["bash", str(installer)],
+        cwd=str(target),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    return target, result
+
+
 def _prepend_path_env_once(path_entry: str) -> None:
     normalized = str(Path(path_entry).expanduser())
     current_entries = [item for item in os.environ.get("PATH", "").split(os.pathsep) if item]
@@ -887,5 +941,33 @@ def collect_runtime_diagnostics(
                 "detail": csp_tools_root,
             }
         )
+
+    # -- MLP tools diagnostics --------------------------------------------
+    try:
+        from delfin.mlp_tools import (
+            torchani_available,
+            aimnet2_available,
+            mace_available,
+            get_torchani_version,
+            get_aimnet2_version,
+            get_mace_version,
+        )
+
+        for check_fn, ver_fn, label in [
+            (torchani_available, get_torchani_version, "ani2x"),
+            (aimnet2_available, get_aimnet2_version, "aimnet2"),
+            (mace_available, get_mace_version, "mace-off"),
+        ]:
+            ok = check_fn()
+            ver = ver_fn() or ""
+            diagnostics.append(
+                {
+                    "name": label,
+                    "status": "ok" if ok else "missing",
+                    "detail": f"v{ver}" if ok else "not installed",
+                }
+            )
+    except ImportError:
+        pass
 
     return diagnostics
