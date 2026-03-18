@@ -309,6 +309,45 @@ energy = atoms.get_potential_energy()
 
 All tools are lazily loaded and individually installable via the Dashboard Settings tab. External programs (Gaussian, VASP, etc.) are auto-detected via PATH.
 
+<details>
+<summary><b>Full list of supported tools (88 total)</b></summary>
+
+**ML Potentials (8):** ANI-2x, AIMNet2, MACE-OFF, CHGNet, M3GNet/MatGL, SchNetPack, NequIP/Allegro, ALIGNN
+
+**QM Programs — Ab initio / DFT (11):** ORCA, Gaussian (g16/g09), Turbomole, NWChem, Q-Chem, GAMESS, Molpro, Dalton, Psi4, CFOUR, MRCC
+
+**QM Programs — Periodic / Solid State (11):** VASP, Quantum ESPRESSO, CP2K, FHI-aims, CRYSTAL, SIESTA, GPAW, FLEUR, WIEN2k, Elk, ABINIT
+
+**QM Programs — Multireference (3):** OpenMolcas, BAGEL, Columbus
+
+**Semi-empirical (3):** xTB, MOPAC, Sparrow
+
+**MD Engines (5):** GROMACS, LAMMPS, AMBER, NAMD, OpenMM
+
+**AI/ML — Foundation Models (3):** MoLFormer, Uni-Mol, ChemBERTa
+
+**AI/ML — Generative (2):** REINVENT4, SyntheMol
+
+**AI/ML — Conformers (2):** GeoMol, torsional-diffusion
+
+**AI/ML — Crystal Generation (2):** MatterGen, CDVAE
+
+**AI/ML — Retrosynthesis (3):** AiZynthFinder, RXNMapper, LocalRetro
+
+**AI/ML — Screening / ADMET (2):** DeepChem, ADMETlab
+
+**AI/ML — Metal Complex ML (2):** molSimplify, architector
+
+**Analysis / Post-Processing (12):** cclib, Multiwfn, CENSO, morfeus, nglview, Packmol, NBO, AIMAll, critic2, Chargemol, LOBSTER, phonopy
+
+**Wrapper Libraries (4):** pymatgen, QCEngine, MDAnalysis, pymolpro
+
+**Visualization (6):** plotly, VMD, Avogadro, Jmol, ChimeraX, IQmol
+
+**Python-Only Backends (3):** PySCF, OpenMM, PLAMS
+
+</details>
+
 ---
 
 ## Typical workflow switches (in CONTROL.txt)
