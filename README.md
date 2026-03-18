@@ -101,7 +101,7 @@ ctx = create_dashboard(backend="auto")
 `backend="auto"` selects SLURM if available, otherwise local execution.
 
 Main tabs include:
-- Submit Job (SMILES/XYZ conversion, `CONVERT SMILES`, `QUICK CONVERT SMILES`, `CONVERT SMILES + UFF`, `BUILD COMPLEX`, `SUBMIT GUPPY`)
+- Submit Job (SMILES/XYZ conversion, `CONVERT SMILES`, `QUICK CONVERT SMILES`, `CONVERT SMILES + UFF`, `BUILD COMPLEX`, `ARCHITECTOR`, `SUBMIT GUPPY`)
 - Recalc
 - ORCA Builder
 - TURBOMOLE Builder (SLURM backends)
@@ -283,8 +283,31 @@ For coordination complexes, DELFIN combines:
 - topological isomer enumeration and linkage/binding-mode exploration
 - topology and fragment sanity checks before accepting structures
 
+For metal complexes, the **ARCHITECTOR** button uses the [architector](https://github.com/lanl/Architector) library for automated 3D structure generation from SMILES. Install via `pip install architector` or the Dashboard Settings tab.
+
 `delfin-guppy` reuses the same SMILES engine for multi-start XTB sampling and writes ranked trajectory outputs (`GUPPY_try.xyz`, `GUPPY_try_isomer.xyz`, `GUPPY_try_random.xyz`) plus `best_coordniation.xyz`.
 When GOAT refinement is enabled (`--goat-topk` or pipeline `GUPPY=yes` + `XTB_GOAT=yes`), the top-k XTB candidates are refined in parallel, compared by final GOAT energy, and the global winner is persisted as `best_coordniation.xyz` (with `best_coordniation_pre_goat.xyz`, `GUPPY_try_goat.xyz`, and `guppy_goat_summary.json` as trace artifacts).
+
+### ML Potentials & Computational Tools
+
+DELFIN integrates 34 computational backends through a unified ASE Calculator factory:
+
+```python
+from delfin.calculators import create_calculator
+
+calc = create_calculator("ani2x", device="cuda")       # ML potential
+calc = create_calculator("orca", method="B3LYP")       # DFT
+calc = create_calculator("xtb")                        # Semi-empirical
+
+atoms.calc = calc
+energy = atoms.get_potential_energy()
+```
+
+**ML Potentials:** ANI-2x, AIMNet2, MACE-OFF, CHGNet, M3GNet, SchNetPack, NequIP, ALIGNN
+**QM Backends:** ORCA, Gaussian, VASP, Quantum ESPRESSO, CP2K, FHI-aims, Turbomole, NWChem, Q-Chem, GAMESS, Molpro, PySCF, and more
+**AI/ML Tools:** 21 tools for molecular generation, retrosynthesis, screening, and metal complex design
+
+All tools are lazily loaded and individually installable via the Dashboard Settings tab. External programs (Gaussian, VASP, etc.) are auto-detected via PATH.
 
 ---
 
@@ -630,7 +653,11 @@ delfin/
   verify_global_manager.py  # smoke tests for the global resource orchestration
   cluster_utils.py        # cluster resource detection (SLURM/PBS/LSF)
   api.py            # programmatic API (e.g. `delfin.api.run(...)` for notebooks/workflows)
+  calculators.py    # unified ASE calculator factory (34 backends)
   dashboard/        # Jupyter/Voila dashboard tabs and backends
+  mlp_tools/        # ML potential backends (ANI-2x, AIMNet2, MACE, CHGNet, M3GNet, ...)
+  ai_tools/         # AI/ML tools registry and installers
+  analysis_tools/   # analysis wrappers (cclib, Packmol, Multiwfn, CENSO, morfeus)
   co2/              # CO2 coordinator helper workflows
   tests/            # test modules
   common/           # shared utilities

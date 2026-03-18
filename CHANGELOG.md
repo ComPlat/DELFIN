@@ -8,7 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- _No unreleased entries yet._
+- **Unified Calculator Factory** (`delfin/calculators.py`): 34 computational backends (8 MLP, 20 QM, 3 semi-empirical, 3 MD) accessible through a single `create_calculator()` interface returning standard ASE Calculator objects.
+- **ML Potential backends**: CHGNet, M3GNet/MatGL, SchNetPack, NequIP/Allegro, and ALIGNN added alongside existing ANI-2x, AIMNet2, and MACE-OFF, with CUDA device validation and automatic CPU fallback.
+- **AI/ML tools integration** (`delfin/ai_tools/`): 21 tools across Foundation Models (MoLFormer, Uni-Mol, ChemBERTa), Generative (REINVENT4, SyntheMol), Conformers (GeoMol, torsional-diffusion), Crystal Generation (MatterGen, CDVAE), Retrosynthesis (AiZynthFinder, RXNMapper, LocalRetro), Screening (DeepChem, ADMETlab), Metal Complex ML (molSimplify, architector), Visualization (plotly), and Wrapper Libraries (pymatgen, QCEngine, MDAnalysis, pymolpro).
+- **Analysis tools**: cclib (output parsing), nglview (3D visualization), and Packmol (solvation box builder) with wrapper modules.
+- **Per-tool Install/Update buttons** in Dashboard Settings tab for all pip-installable tools, with outdated-package detection via `pip list --outdated`.
+- **Auto-detection of 88 external programs**: Turbomole, Gaussian, NWChem, Q-Chem, GAMESS, Molpro, VASP, Quantum ESPRESSO, CP2K, FHI-aims, GROMACS, LAMMPS, AMBER, NAMD, OpenMM, and many more via PATH search (compatible with cluster module systems).
+- **ARCHITECTOR button** in Submit Job tab: converts metal-complex SMILES to 3D XYZ structures using the architector library, with isomer navigation and 3D viewer display.
+- Shell-based installers for all tool categories (`install_mlp_tools.sh`, `install_ai_tools.sh`, `install_analysis_tools.sh`) with per-tool environment variable control.
+
+### Fixed
+- Fixed xTB calculator missing OrcaProfile (caused ASE BadConfiguration error).
+- Fixed MOPAC calculator unreachable UHFSINGLET branch.
+- Fixed OpenMM calculator dead code and confusing error flow.
+- Fixed OpenMolcas factory importing wrong module (openmx instead of openmolcas).
+- Fixed AIMNet2 and M3GNet silently ignoring `device` parameter (GPU requests had no effect).
+- Fixed ALIGNN ignoring `model_name` parameter.
+- Fixed Dashboard Update button using `install_cmd` instead of `pip_pkg_name` (wrong package updated).
+- Fixed Dashboard pip command parsing using `str.split()` instead of `shlex.split()` (broke on complex package specs).
+- Fixed operator precedence in wrapper library version lambdas (`or` vs `if/else`).
+- Fixed missing ADMETlab and LocalRetro in AI tools installer script.
+- Added `logging.exception()` to Dashboard refresh error handlers (errors were silently swallowed).
+- Added installer return code check in `setup_runtime()` for QM tools.
 
 ## [1.1.9] - 2026-03-16
 
