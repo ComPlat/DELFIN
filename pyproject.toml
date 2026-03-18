@@ -58,6 +58,8 @@ mlp-full = [
 ]
 analysis = [
     "morfeus-ml",
+    "cclib",
+    "nglview",
 ]
 dev = [
     "pytest>=6.0",

@@ -9,11 +9,17 @@ set -euo pipefail
 #   - morfeus-ml      (pip, steric descriptors)
 #   - CENSO           (conda/pip, conformer ensemble sorting)
 #   - Multiwfn        (binary download, wavefunction analysis)
+#   - cclib           (pip, log file parser)
+#   - nglview         (pip, 3D molecular viewer)
+#   - Packmol         (conda, packing tool for MD)
 #
 # Environment variables:
 #   INSTALL_MORFEUS       Set to 1 to install morfeus-ml    (default: 1)
 #   INSTALL_CENSO         Set to 1 to install CENSO         (default: 1)
 #   INSTALL_MULTIWFN      Set to 1 to install Multiwfn      (default: 0, large binary)
+#   INSTALL_CCLIB         Set to 1 to install cclib          (default: 1)
+#   INSTALL_NGLVIEW       Set to 1 to install nglview        (default: 1)
+#   INSTALL_PACKMOL       Set to 1 to install Packmol        (default: 1)
 #   FORCE_REINSTALL       Set to 1 to force reinstall       (default: 0)
 #   DELFIN_ANALYSIS_TOOLS_ROOT  Override install root
 # ---------------------------------------------------------------------------
@@ -24,6 +30,9 @@ LOG_DIR="${ROOT}/logs"
 INSTALL_MORFEUS="${INSTALL_MORFEUS:-1}"
 INSTALL_CENSO="${INSTALL_CENSO:-1}"
 INSTALL_MULTIWFN="${INSTALL_MULTIWFN:-0}"
+INSTALL_CCLIB="${INSTALL_CCLIB:-1}"
+INSTALL_NGLVIEW="${INSTALL_NGLVIEW:-1}"
+INSTALL_PACKMOL="${INSTALL_PACKMOL:-1}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 
 log() {
@@ -161,6 +170,93 @@ install_multiwfn() {
 }
 
 # ---------------------------------------------------------------------------
+install_cclib() {
+  local python_bin="$1"
+
+  if [ "${INSTALL_CCLIB}" != "1" ]; then
+    log "cclib: skipped (INSTALL_CCLIB=0)"
+    return 0
+  fi
+
+  if python_has_module "${python_bin}" "cclib" && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "cclib: already installed"
+    return 0
+  fi
+
+  log "installing cclib..."
+  "${python_bin}" -m pip install cclib 2>&1 | tee -a "${LOG_DIR}/cclib_install.log"
+
+  if python_has_module "${python_bin}" "cclib"; then
+    local version
+    version="$("${python_bin}" -c "from importlib.metadata import version; print(version('cclib'))" 2>/dev/null || echo "?")"
+    log "cclib v${version} installed successfully"
+  else
+    warn "cclib installation failed"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+install_nglview() {
+  local python_bin="$1"
+
+  if [ "${INSTALL_NGLVIEW}" != "1" ]; then
+    log "nglview: skipped (INSTALL_NGLVIEW=0)"
+    return 0
+  fi
+
+  if python_has_module "${python_bin}" "nglview" && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "nglview: already installed"
+    return 0
+  fi
+
+  log "installing nglview..."
+  "${python_bin}" -m pip install nglview 2>&1 | tee -a "${LOG_DIR}/nglview_install.log"
+
+  if python_has_module "${python_bin}" "nglview"; then
+    local version
+    version="$("${python_bin}" -c "from importlib.metadata import version; print(version('nglview'))" 2>/dev/null || echo "?")"
+    log "nglview v${version} installed successfully"
+  else
+    warn "nglview installation failed"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+install_packmol() {
+  if [ "${INSTALL_PACKMOL}" != "1" ]; then
+    log "Packmol: skipped (INSTALL_PACKMOL=0)"
+    return 0
+  fi
+
+  if have packmol && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "Packmol: already installed at $(command -v packmol)"
+    return 0
+  fi
+
+  if have micromamba || have mamba || have conda; then
+    local conda_cmd
+    if have micromamba; then
+      conda_cmd="micromamba"
+    elif have mamba; then
+      conda_cmd="mamba"
+    else
+      conda_cmd="conda"
+    fi
+
+    log "installing Packmol via ${conda_cmd}..."
+    "${conda_cmd}" install -y -c conda-forge packmol 2>&1 | tee -a "${LOG_DIR}/packmol_install.log" || true
+
+    if have packmol; then
+      log "Packmol installed successfully via ${conda_cmd}"
+      return 0
+    fi
+  fi
+
+  warn "Packmol installation requires conda/micromamba/mamba."
+  warn "  Install manually: conda install -c conda-forge packmol"
+}
+
+# ---------------------------------------------------------------------------
 summary() {
   local python_bin
 
@@ -169,7 +265,7 @@ summary() {
   log "============================================"
 
   if python_bin="$(detect_python)"; then
-    for mod_label in "morfeus:morfeus-ml" "censo:CENSO"; do
+    for mod_label in "morfeus:morfeus-ml" "censo:CENSO" "cclib:cclib" "nglview:nglview"; do
       local mod="${mod_label%%:*}"
       local label="${mod_label##*:}"
       if python_has_module "${python_bin}" "${mod}"; then
@@ -184,6 +280,12 @@ summary() {
     else
       printf "  %-16s %s\n" "Multiwfn" "not installed (manual download required)"
     fi
+
+    if have packmol; then
+      printf "  %-16s %s\n" "Packmol" "installed ($(command -v packmol))"
+    else
+      printf "  %-16s %s\n" "Packmol" "not installed"
+    fi
   fi
 
   printf "  %-16s %s\n" "tools root" "${ROOT}"
@@ -192,6 +294,8 @@ summary() {
   printf "  from delfin.analysis_tools.morfeus_wrapper import full_steric_report\n"
   printf "  from delfin.analysis_tools.censo_wrapper import run_censo\n"
   printf "  from delfin.analysis_tools.multiwfn_wrapper import bond_order_analysis\n"
+  printf "  from delfin.analysis_tools.cclib_wrapper import parse_output\n"
+  printf "  from delfin.analysis_tools.packmol_wrapper import solvate\n"
 }
 
 # ---------------------------------------------------------------------------
@@ -203,6 +307,9 @@ main() {
   install_morfeus "${python_bin}"
   install_censo "${python_bin}"
   install_multiwfn "${python_bin}"
+  install_cclib "${python_bin}"
+  install_nglview "${python_bin}"
+  install_packmol
   summary
 }
 

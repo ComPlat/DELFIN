@@ -226,6 +226,44 @@ def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="start.txt
             print("crest_best.xyz not found!")
             return
 
+    # Optional: CENSO conformer ensemble sorting
+    crest_conformers = work / "crest_conformers.xyz"
+    censo_enabled = str(os.environ.get("DELFIN_CENSO", "0")).lower() in ("1", "true", "yes", "on")
+    if censo_enabled and crest_conformers.exists():
+        try:
+            from delfin.analysis_tools import censo_available
+
+            if censo_available():
+                from delfin.analysis_tools.censo_wrapper import run_censo
+
+                print("\nstarting CENSO conformer sorting\n")
+                censo_solvent = solvent if solvent and solvent.lower() not in ("none", "") else ""
+                censo_result = run_censo(
+                    crest_conformers,
+                    charge=charge,
+                    uhf=max(0, multiplicity - 1),
+                    solvent=censo_solvent,
+                    prescreening=True,
+                    screening=True,
+                    optimization=False,
+                    nprocs=max(1, PAL // 2),
+                    omp=2,
+                    working_dir=work,
+                )
+                if censo_result["returncode"] == 0:
+                    print("CENSO sorting completed.")
+                    # Use CENSO best structure if available
+                    censo_best = work / "censo_best.xyz"
+                    if censo_best.exists():
+                        crest_best = censo_best
+                        logging.info("Using CENSO best conformer instead of CREST best.")
+                else:
+                    logging.warning("CENSO returned exit code %d, using CREST best.", censo_result["returncode"])
+            else:
+                logging.info("CENSO not installed, skipping conformer sorting.")
+        except Exception as exc:
+            logging.warning("CENSO post-processing failed: %s. Using CREST best.", exc)
+
     # Ergebnis nach oben spiegeln (Header entfernen)
     tmp_xyz = cwd / "_tmp_crest.xyz"
     shutil.copyfile(crest_best, tmp_xyz)

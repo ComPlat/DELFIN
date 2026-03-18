@@ -1077,15 +1077,24 @@ def collect_runtime_diagnostics(
             multiwfn_available,
             censo_available,
             morfeus_available,
+            cclib_available,
+            nglview_available,
+            packmol_available,
             get_multiwfn_version,
             get_censo_version,
             get_morfeus_version,
+            get_cclib_version,
+            get_nglview_version,
+            get_packmol_version,
         )
 
         for check_fn, ver_fn, label in [
             (multiwfn_available, get_multiwfn_version, "multiwfn"),
             (censo_available, get_censo_version, "censo"),
             (morfeus_available, get_morfeus_version, "morfeus"),
+            (cclib_available, get_cclib_version, "cclib"),
+            (nglview_available, get_nglview_version, "nglview"),
+            (packmol_available, get_packmol_version, "packmol"),
         ]:
             ok = check_fn()
             ver = ver_fn() or ""
