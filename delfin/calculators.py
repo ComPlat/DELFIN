@@ -318,22 +318,30 @@ def _create_pyscf(method: str = "b3lyp", basis: str = "6-31G*",
 
 def _create_xtb(method: str = "GFN2-xTB", charge: int = 0,
                 mult: int = 1, **kwargs) -> Calculator:
-    from ase.calculators.orca import ORCA
-    # xTB through ORCA interface (most reliable)
-    orca_path = shutil.which("orca")
-    if orca_path:
-        calc = ORCA(
-            orcasimpleinput=f"{method}",
-            charge=charge,
-            mult=mult,
-            **kwargs,
-        )
-        logger.info("Created xTB calculator via ORCA (%s)", method)
+    # Try standalone xTB first (ase-xtb or tblite)
+    try:
+        from ase.calculators.xtb import XTB  # type: ignore[import-not-found]
+        calc = XTB(method=method, charge=charge, uhf=max(0, mult - 1), **kwargs)
+        logger.info("Created standalone xTB calculator (%s)", method)
         return calc
-    # Fallback: standalone xTB
-    from ase.calculators.xtb import XTB  # type: ignore[import-not-found]
-    calc = XTB(method=method, charge=charge, uhf=max(0, mult - 1), **kwargs)
-    logger.info("Created standalone xTB calculator (%s)", method)
+    except ImportError:
+        pass
+    # Fallback: xTB through ORCA interface
+    orca_path = shutil.which("orca")
+    if not orca_path:
+        raise FileNotFoundError(
+            "Neither standalone xTB (pip install xtb-ase) nor ORCA found in PATH"
+        )
+    from ase.calculators.orca import ORCA, OrcaProfile
+    profile = OrcaProfile(command=orca_path)
+    calc = ORCA(
+        profile=profile,
+        orcasimpleinput=method,
+        charge=charge,
+        mult=mult,
+        **kwargs,
+    )
+    logger.info("Created xTB calculator via ORCA (%s)", method)
     return calc
 
 
@@ -364,14 +372,10 @@ def _create_lammps(**kwargs) -> Calculator:
     return calc
 
 
-def _create_openmm(forcefield: str = "amber14-all.xml", **kwargs) -> Calculator:
-    try:
-        from openmm.app import ForceField
-        from openmmml import MLPotential
-    except ImportError:
-        raise ImportError("OpenMM not installed. Install via: conda install -c conda-forge openmm")
+def _create_openmm(**kwargs) -> Calculator:
     raise NotImplementedError(
         "OpenMM ASE calculator requires setup via openmmml. "
+        "Install: conda install -c conda-forge openmm openmm-ml\n"
         "See: https://github.com/openmm/openmm-ml"
     )
 

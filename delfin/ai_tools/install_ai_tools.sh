@@ -9,18 +9,23 @@ set -euo pipefail
 # All default to 0 (not installed) to keep the environment lean.
 #
 # Environment variables:
-#   INSTALL_MOLFORMER       (default: 0)  MoLFormer (HuggingFace transformers)
-#   INSTALL_CHEMBERTA       (default: 0)  ChemBERTa (HuggingFace transformers)
-#   INSTALL_UNIMOL          (default: 0)  Uni-Mol
-#   INSTALL_REINVENT        (default: 0)  REINVENT4
-#   INSTALL_AIZYNTHFINDER   (default: 0)  AiZynthFinder
-#   INSTALL_RXNMAPPER       (default: 0)  RXNMapper
-#   INSTALL_DEEPCHEM        (default: 0)  DeepChem
-#   INSTALL_MOLSIMPLIFY     (default: 0)  molSimplify
-#   INSTALL_ARCHITECTOR     (default: 0)  architector
-#   INSTALL_PLOTLY          (default: 0)  plotly
-#   INSTALL_ALL             (default: 0)  Install everything
-#   FORCE_REINSTALL         (default: 0)  Force reinstall
+#   INSTALL_MOLFORMER            (default: 0)  MoLFormer (HuggingFace transformers)
+#   INSTALL_CHEMBERTA            (default: 0)  ChemBERTa (HuggingFace transformers)
+#   INSTALL_UNIMOL               (default: 0)  Uni-Mol
+#   INSTALL_REINVENT             (default: 0)  REINVENT4
+#   INSTALL_SYNTHEMOL            (default: 0)  SyntheMol
+#   INSTALL_GEOMOL               (default: 0)  GeoMol
+#   INSTALL_TORSIONAL_DIFFUSION  (default: 0)  torsional-diffusion
+#   INSTALL_MATTERGEN            (default: 0)  MatterGen
+#   INSTALL_CDVAE                (default: 0)  CDVAE
+#   INSTALL_AIZYNTHFINDER        (default: 0)  AiZynthFinder
+#   INSTALL_RXNMAPPER            (default: 0)  RXNMapper
+#   INSTALL_DEEPCHEM             (default: 0)  DeepChem
+#   INSTALL_MOLSIMPLIFY          (default: 0)  molSimplify
+#   INSTALL_ARCHITECTOR          (default: 0)  architector
+#   INSTALL_PLOTLY               (default: 0)  plotly
+#   INSTALL_ALL                  (default: 0)  Install everything
+#   FORCE_REINSTALL              (default: 0)  Force reinstall
 # ---------------------------------------------------------------------------
 
 ROOT="${DELFIN_AI_TOOLS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
@@ -31,6 +36,11 @@ INSTALL_MOLFORMER="${INSTALL_MOLFORMER:-${INSTALL_ALL}}"
 INSTALL_CHEMBERTA="${INSTALL_CHEMBERTA:-${INSTALL_ALL}}"
 INSTALL_UNIMOL="${INSTALL_UNIMOL:-${INSTALL_ALL}}"
 INSTALL_REINVENT="${INSTALL_REINVENT:-${INSTALL_ALL}}"
+INSTALL_SYNTHEMOL="${INSTALL_SYNTHEMOL:-${INSTALL_ALL}}"
+INSTALL_GEOMOL="${INSTALL_GEOMOL:-${INSTALL_ALL}}"
+INSTALL_TORSIONAL_DIFFUSION="${INSTALL_TORSIONAL_DIFFUSION:-${INSTALL_ALL}}"
+INSTALL_MATTERGEN="${INSTALL_MATTERGEN:-${INSTALL_ALL}}"
+INSTALL_CDVAE="${INSTALL_CDVAE:-${INSTALL_ALL}}"
 INSTALL_AIZYNTHFINDER="${INSTALL_AIZYNTHFINDER:-${INSTALL_ALL}}"
 INSTALL_RXNMAPPER="${INSTALL_RXNMAPPER:-${INSTALL_ALL}}"
 INSTALL_DEEPCHEM="${INSTALL_DEEPCHEM:-${INSTALL_ALL}}"
@@ -93,8 +103,19 @@ main() {
   pip_install "${python_bin}" INSTALL_CHEMBERTA  "transformers" transformers torch
   pip_install "${python_bin}" INSTALL_UNIMOL     "unimol_tools" unimol_tools
 
-  # Generative & Retrosynthesis
+  # Generative
   pip_install "${python_bin}" INSTALL_REINVENT      "reinvent"       reinvent
+  pip_install "${python_bin}" INSTALL_SYNTHEMOL     "synthemol"      synthemol
+
+  # Conformers
+  pip_install "${python_bin}" INSTALL_GEOMOL               "geomol"               geomol
+  pip_install "${python_bin}" INSTALL_TORSIONAL_DIFFUSION  "torsional_diffusion"  torsional-diffusion
+
+  # Crystal Generation
+  pip_install "${python_bin}" INSTALL_MATTERGEN  "mattergen"  mattergen
+  pip_install "${python_bin}" INSTALL_CDVAE      "cdvae"      cdvae
+
+  # Retrosynthesis
   pip_install "${python_bin}" INSTALL_AIZYNTHFINDER "aizynthfinder"  aizynthfinder
   pip_install "${python_bin}" INSTALL_RXNMAPPER     "rxnmapper"      rxnmapper
 
@@ -116,6 +137,11 @@ main() {
     "transformers:MoLFormer/ChemBERTa" \
     "unimol_tools:Uni-Mol" \
     "reinvent:REINVENT4" \
+    "synthemol:SyntheMol" \
+    "geomol:GeoMol" \
+    "torsional_diffusion:torsional-diffusion" \
+    "mattergen:MatterGen" \
+    "cdvae:CDVAE" \
     "aizynthfinder:AiZynthFinder" \
     "rxnmapper:RXNMapper" \
     "deepchem:DeepChem" \
