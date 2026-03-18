@@ -43,6 +43,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+csp = [
+    "genarris @ git+https://github.com/Yi5817/Genarris.git",
+    "mpi4py",
+]
 dev = [
     "pytest>=6.0",
     "pytest-cov",
@@ -72,6 +76,7 @@ include = ["delfin*"]
     "qm_tools/bin/stda_v1.6.1",
     "qm_tools/bin/xtb4stda",
     "qm_tools/share/xtb4stda/*",
+    "csp_tools/*.sh",
     "submit_templates/*.sh",
 ]
 "delfin.notebooks" = ["*.ipynb"]

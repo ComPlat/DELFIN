@@ -45,6 +45,7 @@ _TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(name="stda", which_targets=("stda",)),
     ToolSpec(name="xtb4stda", which_targets=("xtb4stda",)),
     ToolSpec(name="dftb+", which_targets=("dftb+",), aliases=("dftbplus",)),
+    ToolSpec(name="gnrs", which_targets=("gnrs",), aliases=("genarris",), prefer_qm_tools=False),
 )
 
 _SPEC_BY_CANONICAL = {spec.name: spec for spec in _TOOL_SPECS}
@@ -67,6 +68,20 @@ def get_qm_tools_root() -> Path:
 
 def get_qm_tools_bin_dir() -> Path:
     return get_qm_tools_root() / "bin"
+
+
+def get_csp_tools_root() -> Path:
+    env_root = os.environ.get("DELFIN_CSP_TOOLS_ROOT")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    return (Path(__file__).resolve().parent / "csp_tools").resolve()
+
+
+def get_csp_tools_bin_dir() -> Path:
+    return get_csp_tools_root() / "bin"
+
+
+_CSP_TOOL_NAMES = frozenset({"gnrs", "genarris"})
 
 
 def get_xtb4stda_runtime_root(*, env: Optional[Mapping[str, str]] = None) -> Path:
@@ -139,6 +154,12 @@ def _iter_locator_candidates(locator: str) -> Iterable[str]:
 
 
 def _iter_tool_candidates(spec: ToolSpec) -> Iterable[tuple[str, str]]:
+    # Check csp_tools/bin for CSP-related tools
+    if spec.name in _CSP_TOOL_NAMES or any(a in _CSP_TOOL_NAMES for a in spec.aliases):
+        csp_bin = get_csp_tools_bin_dir() / spec.name
+        if csp_bin.exists():
+            yield str(csp_bin), "csp_tools"
+
     bin_dir = get_qm_tools_bin_dir()
     if spec.prefer_qm_tools:
         local_candidate = bin_dir / spec.name

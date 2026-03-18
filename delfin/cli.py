@@ -14,7 +14,7 @@ from dataclasses import asdict
 from typing import Optional
 from delfin.common.logging import configure_logging, get_logger
 from delfin.common.paths import resolve_path
-from .qm_runtime import check_tools as check_qm_tools, get_qm_tools_root, run_tool as run_qm_tool
+from .qm_runtime import check_tools as check_qm_tools, get_qm_tools_root, get_csp_tools_root, run_tool as run_qm_tool
 
 logger = get_logger(__name__)
 
@@ -258,6 +258,41 @@ def _run_qm_run_subcommand(argv: list[str]) -> int:
         if result.stderr:
             print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr)
     return int(result.returncode)
+
+
+def _run_csp_check_subcommand(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="delfin csp_check",
+        description="Inspect DELFIN CSP (Crystal Structure Prediction) tools availability.",
+    )
+    parser.parse_args(argv)
+
+    print(f"csp_tools root: {get_csp_tools_root()}")
+
+    try:
+        from delfin.csp_tools import genarris_available, get_genarris_version
+
+        if genarris_available():
+            print(f"genarris (gnrs): v{get_genarris_version() or 'unknown'} [installed]")
+            try:
+                from gnrs.cgenarris import pygenarris_mpi  # noqa: F401
+
+                print("cgenarris C extension: OK")
+            except ImportError as exc:
+                print(f"cgenarris C extension: FAILED ({exc})")
+        else:
+            print("genarris (gnrs): NOT INSTALLED")
+            print("  Install with: pip install delfin-complat[csp]")
+            print("            or: bash delfin/csp_tools/install_csp_tools.sh")
+    except ImportError:
+        print("csp_tools module not found")
+
+    for name, resolved in check_qm_tools(["gnrs"]):
+        if resolved is None:
+            print(f"{name} CLI: MISSING")
+        else:
+            print(f"{name} CLI: {resolved.path} [{resolved.source}]")
+    return 0
 
 
 def _run_tadf_xtb_subcommand(argv: list[str]) -> int:
@@ -1091,6 +1126,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_qm_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "qm_run":
         return _run_qm_run_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "csp_check":
+        return _run_csp_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "tadf_xtb":
         return _run_tadf_xtb_subcommand(arg_list[1:])
     if arg_list and arg_list[0] in {"hyperpol", "hyperpol_xtb"}:

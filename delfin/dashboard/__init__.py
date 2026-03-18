@@ -127,6 +127,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         apply_runtime_environment(
             qm_tools_root=runtime_settings.get('qm_tools_root', ''),
             orca_base=orca_base,
+            csp_tools_root=runtime_settings.get('csp_tools_root', ''),
         )
 
         backend_obj = SlurmJobBackend(
@@ -150,6 +151,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         apply_runtime_environment(
             qm_tools_root=runtime_settings.get('qm_tools_root', ''),
             orca_base=orca_base,
+            csp_tools_root=runtime_settings.get('csp_tools_root', ''),
         )
         backend_obj = LocalJobBackend(
             run_script=run_script,

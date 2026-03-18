@@ -11,7 +11,7 @@ import tarfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from delfin.qm_runtime import check_tools
+from delfin.qm_runtime import check_tools, get_csp_tools_root
 
 try:
     import psutil  # type: ignore
@@ -205,6 +205,10 @@ def get_packaged_qm_tools_dir() -> Path:
     return (Path(__file__).resolve().parent / "qm_tools").resolve()
 
 
+def get_packaged_csp_tools_dir() -> Path:
+    return (Path(__file__).resolve().parent / "csp_tools").resolve()
+
+
 def get_packaged_installers_dir() -> Path:
     return (Path(__file__).resolve().parent / "installers").resolve()
 
@@ -213,6 +217,12 @@ def get_user_qm_tools_dir(target_dir: str | Path | None = None) -> Path:
     if target_dir:
         return Path(target_dir).expanduser()
     return (Path.home() / ".delfin" / "qm_tools").expanduser()
+
+
+def get_user_csp_tools_dir(target_dir: str | Path | None = None) -> Path:
+    if target_dir:
+        return Path(target_dir).expanduser()
+    return (Path.home() / ".delfin" / "csp_tools").expanduser()
 
 
 def get_repo_submit_templates_dir(repo_dir: str | Path | None) -> Path | None:
@@ -630,6 +640,50 @@ def run_qm_tools_installer(
     return target, result
 
 
+def stage_packaged_csp_tools(target_dir: str | Path | None = None) -> Path:
+    source = get_packaged_csp_tools_dir()
+    if not source.is_dir():
+        raise FileNotFoundError(f"Packaged csp_tools directory not found: {source}")
+
+    target = get_user_csp_tools_dir(target_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".build"),
+    )
+    return target
+
+
+def run_csp_tools_installer(
+    target_dir: str | Path | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    target = stage_packaged_csp_tools(target_dir)
+    installer = target / "install_csp_tools.sh"
+    if not installer.is_file():
+        raise FileNotFoundError(f"csp_tools installer not found: {installer}")
+
+    env = os.environ.copy()
+    env["DELFIN_CSP_TOOLS_ROOT"] = str(target)
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    result = subprocess.run(
+        ["bash", str(installer)],
+        cwd=str(target),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=1200,
+    )
+    return target, result
+
+
 def _prepend_path_env_once(path_entry: str) -> None:
     normalized = str(Path(path_entry).expanduser())
     current_entries = [item for item in os.environ.get("PATH", "").split(os.pathsep) if item]
@@ -642,7 +696,7 @@ def _prepend_path_env_once(path_entry: str) -> None:
     )
 
 
-def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "") -> None:
+def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", csp_tools_root: str = "") -> None:
     qm_root = normalize_runtime_path(qm_tools_root)
     if qm_root:
         os.environ["DELFIN_QM_ROOT"] = qm_root
@@ -654,6 +708,13 @@ def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "") -
         if xtb4stda_share.exists():
             os.environ.setdefault("XTB4STDAHOME", str(xtb4stda_share))
         os.environ.setdefault("STD2HOME", qm_root)
+
+    csp_root = normalize_runtime_path(csp_tools_root)
+    if csp_root:
+        os.environ["DELFIN_CSP_TOOLS_ROOT"] = csp_root
+        csp_bin = Path(csp_root) / "bin"
+        if csp_bin.exists():
+            _prepend_path_env_once(str(csp_bin))
 
     orca_root = normalize_runtime_path(orca_base)
     if orca_root:
@@ -772,6 +833,58 @@ def collect_runtime_diagnostics(
                 "name": "qm_tools_root",
                 "status": "ok" if Path(qm_tools_root).exists() else "missing",
                 "detail": qm_tools_root,
+            }
+        )
+
+    # -- CSP tools (Genarris) diagnostics ---------------------------------
+    csp_tools_root = normalize_runtime_path(runtime_settings.get("csp_tools_root", ""))
+    try:
+        from delfin.csp_tools import genarris_available, get_genarris_version
+
+        genarris_ok = genarris_available()
+        genarris_ver = get_genarris_version() or ""
+        diagnostics.append(
+            {
+                "name": "genarris",
+                "status": "ok" if genarris_ok else "missing",
+                "detail": f"gnrs v{genarris_ver}" if genarris_ok else "not installed (pip install delfin-complat[csp])",
+            }
+        )
+        if genarris_ok:
+            try:
+                # Verify C extension loads
+                import gnrs.cgenarris  # noqa: F401
+
+                diagnostics.append(
+                    {"name": "cgenarris", "status": "ok", "detail": "C extension OK"}
+                )
+            except ImportError as exc:
+                diagnostics.append(
+                    {"name": "cgenarris", "status": "missing", "detail": f"C extension failed: {exc}"}
+                )
+    except ImportError:
+        pass
+
+    csp_env_updates: dict[str, str] = {}
+    if csp_tools_root:
+        csp_env_updates["DELFIN_CSP_TOOLS_ROOT"] = csp_tools_root
+    with temporary_environment(csp_env_updates):
+        gnrs_results = check_tools(["gnrs"])
+    for name, resolved in gnrs_results:
+        diagnostics.append(
+            {
+                "name": "gnrs-cli",
+                "status": "ok" if resolved else "missing",
+                "detail": resolved.path if resolved else "not found",
+            }
+        )
+
+    if csp_tools_root:
+        diagnostics.append(
+            {
+                "name": "csp_tools_root",
+                "status": "ok" if Path(csp_tools_root).exists() else "missing",
+                "detail": csp_tools_root,
             }
         )
 

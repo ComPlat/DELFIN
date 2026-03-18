@@ -35,6 +35,7 @@ DEFAULT_SETTINGS = {
         "backend": "auto",
         "orca_base": "",
         "qm_tools_root": "",
+        "csp_tools_root": "",
         "local": {
             "orca_base": "",
             "max_cores": _DEFAULT_LOCAL_CORES,
@@ -193,6 +194,10 @@ def _normalized_settings_dict(payload):
         "qm_tools_root": normalize_local_directory_setting(
             runtime.get("qm_tools_root", ""),
             "qm_tools root",
+        ),
+        "csp_tools_root": normalize_local_directory_setting(
+            runtime.get("csp_tools_root", ""),
+            "csp_tools root",
         ),
         "local": {
             "orca_base": normalize_local_directory_setting(

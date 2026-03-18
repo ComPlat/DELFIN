@@ -17,11 +17,14 @@ from delfin.runtime_setup import (
     run_bwunicluster_installer,
     get_packaged_submit_templates_dir,
     get_user_qm_tools_dir,
+    get_user_csp_tools_dir,
     run_qm_tools_installer,
+    run_csp_tools_installer,
     resolve_backend_choice,
     resolve_orca_base,
     resolve_submit_templates_dir,
     stage_packaged_qm_tools,
+    stage_packaged_csp_tools,
 )
 from delfin.user_settings import (
     get_settings_path,
@@ -70,6 +73,25 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     )
     update_qm_tools_btn = widgets.Button(
         description='Update qm_tools',
+        button_style='info',
+        layout=widgets.Layout(width='130px', height='28px'),
+    )
+    csp_tools_log = widgets.Textarea(
+        value='',
+        disabled=True,
+        layout=widgets.Layout(width='100%', height='160px'),
+    )
+    csp_tools_root_input = widgets.Text(
+        placeholder='Optional csp_tools root override',
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    install_csp_tools_btn = widgets.Button(
+        description='Install csp_tools',
+        button_style='warning',
+        layout=widgets.Layout(width='130px', height='28px'),
+    )
+    update_csp_tools_btn = widgets.Button(
+        description='Update csp_tools',
         button_style='info',
         layout=widgets.Layout(width='130px', height='28px'),
     )
@@ -310,6 +332,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             summary_parts.append(
                 f'qm_tools: <code>{html.escape(str(runtime_payload.get("qm_tools_root", "")))}</code>'
             )
+        if runtime_payload.get('csp_tools_root'):
+            summary_parts.append(
+                f'csp_tools: <code>{html.escape(str(runtime_payload.get("csp_tools_root", "")))}</code>'
+            )
         if effective_backend == 'slurm':
             summary_parts.append(
                 f'Submit templates: <code>{html.escape(str(submit_templates_dir))}</code>'
@@ -399,6 +425,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         backend_dropdown.value = runtime_payload.get('backend', 'auto')
         global_orca_input.value = str(runtime_payload.get('orca_base') or '')
         qm_tools_root_input.value = str(runtime_payload.get('qm_tools_root') or '')
+        csp_tools_root_input.value = str(runtime_payload.get('csp_tools_root') or '')
         local_orca_input.value = str(local_payload.get('orca_base') or '')
         local_max_cores_input.value = int(local_payload.get('max_cores', detected_local_cores))
         local_max_ram_input.value = int(local_payload.get('max_ram_mb', detected_local_ram_mb))
@@ -437,6 +464,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             'qm_tools_root': normalize_local_directory_setting(
                 qm_tools_root_input.value,
                 'qm_tools root',
+            ),
+            'csp_tools_root': normalize_local_directory_setting(
+                csp_tools_root_input.value,
+                'csp_tools root',
             ),
             'local': {
                 'orca_base': normalize_local_directory_setting(
@@ -492,6 +523,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         apply_runtime_environment(
             qm_tools_root=runtime_payload.get('qm_tools_root', ''),
             orca_base=effective_orca_base,
+            csp_tools_root=runtime_payload.get('csp_tools_root', ''),
         )
 
         if not backend_switch_required:
@@ -827,6 +859,74 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 color='#d32f2f',
             )
 
+    def _on_install_csp_tools(button):
+        try:
+            target, result = run_csp_tools_installer()
+            runtime_payload = _runtime_payload_from_widgets()
+            runtime_payload['csp_tools_root'] = str(target)
+            backend_switch_required, effective_backend, effective_orca_base = _persist_runtime_payload(
+                runtime_payload
+            )
+            csp_tools_log.value = result.stdout or '(no installer output)'
+            if result.returncode == 0:
+                _set_status(
+                    (
+                        f'csp_tools (Genarris) installed in <code>{html.escape(str(target))}</code>. '
+                        'Crystal structure prediction tools are now available.'
+                    ),
+                    color='#2e7d32',
+                )
+            else:
+                _set_status(
+                    (
+                        f'csp_tools installer failed with exit code {result.returncode}. '
+                        'Inspect the CSP tools log below. '
+                        'Common issues: missing SWIG, MPI mismatch (OpenMPI vs Intel MPI), '
+                        'or missing mpi4py.'
+                    ),
+                    color='#d32f2f',
+                )
+        except Exception as exc:
+            csp_tools_log.value = ''
+            _set_status(
+                f'Running csp_tools installer failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def _on_update_csp_tools(button):
+        try:
+            target, result = run_csp_tools_installer(
+                extra_env={'FORCE_REINSTALL': '1'}
+            )
+            runtime_payload = _runtime_payload_from_widgets()
+            runtime_payload['csp_tools_root'] = str(target)
+            backend_switch_required, effective_backend, effective_orca_base = _persist_runtime_payload(
+                runtime_payload
+            )
+            csp_tools_log.value = result.stdout or '(no updater output)'
+            if result.returncode == 0:
+                _set_status(
+                    (
+                        f'csp_tools (Genarris) updated in <code>{html.escape(str(target))}</code>. '
+                        'Genarris was rebuilt from latest source.'
+                    ),
+                    color='#2e7d32',
+                )
+            else:
+                _set_status(
+                    (
+                        f'csp_tools update failed with exit code {result.returncode}. '
+                        'Inspect the CSP tools log below.'
+                    ),
+                    color='#d32f2f',
+                )
+        except Exception as exc:
+            csp_tools_log.value = ''
+            _set_status(
+                f'Updating csp_tools failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
     def _on_setup_bwunicluster(button):
         try:
             calc_override, archive_override, effective_calc_dir, effective_archive_dir = _effective_paths_from_widgets()
@@ -1102,6 +1202,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     prepare_qm_tools_btn.on_click(_on_prepare_qm_tools)
     install_qm_tools_btn.on_click(_with_buttons_disabled(_on_install_qm_tools))
     update_qm_tools_btn.on_click(_with_buttons_disabled(_on_update_qm_tools))
+    install_csp_tools_btn.on_click(_with_buttons_disabled(_on_install_csp_tools))
+    update_csp_tools_btn.on_click(_with_buttons_disabled(_on_update_csp_tools))
     setup_bwunicluster_btn.on_click(_with_buttons_disabled(_on_setup_bwunicluster))
     verify_bwunicluster_btn.on_click(_with_buttons_disabled(_on_verify_bwunicluster))
     full_install_bwunicluster_btn.on_click(_with_buttons_disabled(_on_full_install_bwunicluster))
@@ -1237,6 +1339,40 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 ),
             ),
             qm_tools_log,
+            widgets.HTML('<b>CSP tools (Crystal Structure Prediction)</b>'),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>csp_tools root</b>'),
+                    csp_tools_root_input,
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HBox(
+                [
+                    install_csp_tools_btn,
+                    update_csp_tools_btn,
+                    widgets.HTML(
+                        (
+                            f'<span style="color:#616161;">'
+                            f'Installs Genarris into <code>{html.escape(str(get_user_csp_tools_dir()))}</code>. '
+                            'Requires SWIG, MPI (OpenMPI), and mpi4py in the current Python environment.'
+                            f'</span>'
+                        )
+                    ),
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            csp_tools_log,
             widgets.HTML('<b>Local overrides</b>'),
             widgets.HBox(
                 [
