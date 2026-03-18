@@ -19,6 +19,7 @@ from delfin.runtime_setup import (
     get_user_qm_tools_dir,
     get_user_csp_tools_dir,
     get_user_mlp_tools_dir,
+    run_pip_install_editable,
     run_qm_tools_installer,
     run_csp_tools_installer,
     run_mlp_tools_installer,
@@ -117,6 +118,22 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         button_style='info',
         layout=widgets.Layout(width='130px', height='28px'),
     )
+    mlp_status_html = widgets.HTML(value='')
+    refresh_mlp_status_btn = widgets.Button(
+        description='Refresh MLP status',
+        button_style='info',
+        layout=widgets.Layout(width='155px', height='28px'),
+    )
+    pip_install_log = widgets.Textarea(
+        value='',
+        disabled=True,
+        layout=widgets.Layout(width='100%', height='160px'),
+    )
+    pip_install_btn = widgets.Button(
+        description='pip install -e .',
+        button_style='warning',
+        layout=widgets.Layout(width='140px', height='28px'),
+    )
     detect_local_resources_btn = widgets.Button(
         description='Detect local resources',
         layout=widgets.Layout(width='165px', height='28px'),
@@ -213,7 +230,6 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         placeholder='Optional site profile label',
         layout=widgets.Layout(width='220px', min_width='200px', height='28px'),
     )
-
     state = {
         'remote_archive_enabled': False,
         'calculations_dir': str(ctx.calc_dir),
@@ -672,6 +688,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     _long_running_buttons = [
         install_qm_tools_btn, update_qm_tools_btn,
+        install_csp_tools_btn, update_csp_tools_btn,
+        install_mlp_tools_btn, update_mlp_tools_btn,
+        pip_install_btn,
         setup_bwunicluster_btn, verify_bwunicluster_btn,
         full_install_bwunicluster_btn,
     ]
@@ -1024,6 +1043,94 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 color='#d32f2f',
             )
 
+    def _refresh_mlp_status(button=None):
+        try:
+            from delfin.mlp_tools import collect_mlp_summary
+            info = collect_mlp_summary()
+
+            rows = []
+            for b in info['backends']:
+                if b['installed']:
+                    ver = f' v{b["version"]}' if b['version'] else ''
+                    icon = '&#x2705;'
+                    elems = ', '.join(b['elements'])
+                    rows.append(
+                        f'<tr><td>{icon} <b>{b["name"]}</b>{ver}</td>'
+                        f'<td style="color:#455a64;font-size:0.9em;">{elems}</td></tr>'
+                    )
+                else:
+                    rows.append(
+                        f'<tr><td>&#x274C; <b>{b["name"]}</b></td>'
+                        f'<td style="color:#9e9e9e;">not installed</td></tr>'
+                    )
+
+            torch_line = ''
+            if info['torch_version']:
+                cuda_badge = (
+                    '<span style="color:#2e7d32;font-weight:bold;">CUDA available</span>'
+                    if info['cuda']
+                    else '<span style="color:#ef6c00;">CPU only</span>'
+                )
+                torch_line = f'PyTorch {html.escape(info["torch_version"])} &mdash; {cuda_badge}'
+            else:
+                torch_line = '<span style="color:#d32f2f;">PyTorch not installed</span>'
+
+            gpu_line = ''
+            if info['gpu_partition']:
+                gpu_line = (
+                    f'<br>SLURM GPU partition detected: '
+                    f'<code>{html.escape(info["gpu_partition"])}</code> '
+                    '(MLP jobs will auto-request GPU)'
+                )
+
+            table = (
+                '<table style="border-collapse:collapse;margin:4px 0;">'
+                '<tr><th style="text-align:left;padding-right:16px;">Backend</th>'
+                '<th style="text-align:left;">Supported Elements</th></tr>'
+                + ''.join(rows) +
+                '</table>'
+            )
+            mlp_status_html.value = (
+                f'<div style="border:1px solid #d9dee3;border-radius:6px;padding:8px;background:#fafbfc;">'
+                f'{table}'
+                f'<div style="margin-top:6px;">{torch_line}{gpu_line}</div>'
+                f'</div>'
+            )
+        except Exception as exc:
+            mlp_status_html.value = (
+                f'<span style="color:#d32f2f;">Could not load MLP status: {html.escape(str(exc))}</span>'
+            )
+
+    def _on_pip_install_editable(button):
+        import sys
+
+        try:
+            result = run_pip_install_editable()
+            pip_install_log.value = result.stdout or '(no output)'
+            if result.returncode == 0:
+                _set_status(
+                    (
+                        f'<code>pip install -e .</code> completed successfully '
+                        f'using <code>{html.escape(sys.executable)}</code>. '
+                        'New CLI commands are now available.'
+                    ),
+                    color='#2e7d32',
+                )
+            else:
+                _set_status(
+                    (
+                        f'<code>pip install -e .</code> failed with exit code {result.returncode}. '
+                        'Inspect the pip install log below.'
+                    ),
+                    color='#d32f2f',
+                )
+        except Exception as exc:
+            pip_install_log.value = ''
+            _set_status(
+                f'pip install -e . failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
     def _on_setup_bwunicluster(button):
         try:
             calc_override, archive_override, effective_calc_dir, effective_archive_dir = _effective_paths_from_widgets()
@@ -1303,6 +1410,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     update_csp_tools_btn.on_click(_with_buttons_disabled(_on_update_csp_tools))
     install_mlp_tools_btn.on_click(_with_buttons_disabled(_on_install_mlp_tools))
     update_mlp_tools_btn.on_click(_with_buttons_disabled(_on_update_mlp_tools))
+    pip_install_btn.on_click(_with_buttons_disabled(_on_pip_install_editable))
+    refresh_mlp_status_btn.on_click(_refresh_mlp_status)
     setup_bwunicluster_btn.on_click(_with_buttons_disabled(_on_setup_bwunicluster))
     verify_bwunicluster_btn.on_click(_with_buttons_disabled(_on_verify_bwunicluster))
     full_install_bwunicluster_btn.on_click(_with_buttons_disabled(_on_full_install_bwunicluster))
@@ -1506,6 +1615,44 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 ),
             ),
             mlp_tools_log,
+            widgets.HBox(
+                [
+                    refresh_mlp_status_btn,
+                    widgets.HTML(
+                        '<span style="color:#616161;">Show installed backends, element coverage, PyTorch/CUDA and GPU partition.</span>'
+                    ),
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            mlp_status_html,
+            widgets.HTML('<b>Developer Install</b>'),
+            widgets.HBox(
+                [
+                    pip_install_btn,
+                    widgets.HTML(
+                        (
+                            '<span style="color:#616161;">'
+                            'Runs <code>pip install -e .</code> in the DELFIN repo root '
+                            'using the Python that is running this dashboard. '
+                            'Registers new CLI entry-points (e.g. <code>delfin-build</code>) '
+                            'without restarting.'
+                            '</span>'
+                        )
+                    ),
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            pip_install_log,
             widgets.HTML('<b>Local overrides</b>'),
             widgets.HBox(
                 [
@@ -1701,5 +1848,6 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     _apply_sensitive_visibility()
     _load_settings_to_widgets(set_status=True)
+    _refresh_mlp_status()
 
     return tab, {'reload_settings': _load_settings_to_widgets}

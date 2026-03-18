@@ -61,19 +61,34 @@ class SlurmJobBackend(JobBackend):
         return pal_used, mem_used
 
     def _sbatch(self, job_dir, env_vars, time_limit, pal, mem_mb,
-                job_name, submit_script):
-        """Run sbatch with the given parameters."""
+                job_name, submit_script, *, gpu=None, partition=None):
+        """Run sbatch with the given parameters.
+
+        Parameters
+        ----------
+        gpu : str or None
+            GRES GPU spec, e.g. ``"gpu:1"`` or ``"gpu:a100:1"``.
+            Passed as ``--gres=<gpu>`` when set.
+        partition : str or None
+            SLURM partition name, e.g. ``"gpu"`` or ``"gpu_4"``.
+            Passed as ``--partition=<partition>`` when set.
+        """
+        cmd = [
+            'sbatch',
+            f'--export=ALL,{env_vars}',
+            f'--time={time_limit}',
+            '--ntasks=1',
+            f'--cpus-per-task={pal}',
+            f'--mem={mem_mb}M',
+            f'--job-name={job_name}',
+        ]
+        if gpu:
+            cmd.append(f'--gres={gpu}')
+        if partition:
+            cmd.append(f'--partition={partition}')
+        cmd.append(str(submit_script))
         return subprocess.run(
-            [
-                'sbatch',
-                f'--export=ALL,{env_vars}',
-                f'--time={time_limit}',
-                '--ntasks=1',
-                f'--cpus-per-task={pal}',
-                f'--mem={mem_mb}M',
-                f'--job-name={job_name}',
-                str(submit_script),
-            ],
+            cmd,
             cwd=str(job_dir),
             capture_output=True,
             text=True,
@@ -171,6 +186,58 @@ class SlurmJobBackend(JobBackend):
         result = self._sbatch(
             job_dir, env_vars, time_limit, nprocs, mem_mb,
             job_name, self.submit_templates_dir / 'submit_turbomole.sh',
+        )
+        return SubmitResult(result.returncode, result.stdout, result.stderr)
+
+    @staticmethod
+    def _detect_gpu_partition() -> str:
+        """Auto-detect the first available GPU partition on this cluster."""
+        try:
+            result = subprocess.run(
+                ['sinfo', '-h', '-o', '%P', '--partition=gpu,gpu_4,gpu_8,gpu_a100'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # sinfo returns partition names, possibly with '*' for default
+                return result.stdout.strip().split('\n')[0].rstrip('*')
+        except Exception:
+            pass
+        # Fallback: try generic 'gpu'
+        try:
+            result = subprocess.run(
+                ['sinfo', '-h', '-o', '%P'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    name = line.strip().rstrip('*')
+                    if 'gpu' in name.lower():
+                        return name
+        except Exception:
+            pass
+        return ''
+
+    def submit_mlp(self, job_dir, job_name, xyz_file, backend='ani2x',
+                   time_limit='24:00:00', pal=4, maxcore=4000,
+                   charge=0, mult=1) -> SubmitResult:
+        """Submit an MLP job — automatically requests GPU if available."""
+        pal_used = max(1, int(pal))
+        maxcore_used = max(1, int(maxcore))
+        mem_used = pal_used * maxcore_used
+        env_vars = (
+            f'DELFIN_MODE=mlp,DELFIN_JOB_NAME={job_name},'
+            f'DELFIN_XYZ_FILE={xyz_file},'
+            f'DELFIN_MLP_BACKEND={backend},'
+            f'DELFIN_CHARGE={charge},DELFIN_MULT={mult},'
+            f'DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
+        )
+        # Auto-detect GPU partition — if found, request 1 GPU
+        gpu_partition = self._detect_gpu_partition()
+        result = self._sbatch(
+            job_dir, env_vars, time_limit, pal_used, mem_used,
+            job_name, self.submit_templates_dir / 'submit_delfin.sh',
+            gpu='gpu:1' if gpu_partition else None,
+            partition=gpu_partition or None,
         )
         return SubmitResult(result.returncode, result.stdout, result.stderr)
 

@@ -117,4 +117,58 @@ def require_any_mlp(feature: str = "ML potential evaluation") -> None:
 
 ANI2X_ELEMENTS = frozenset({"H", "C", "N", "O", "S", "F", "Cl"})
 AIMNET2_ELEMENTS = frozenset({"H", "B", "C", "N", "O", "F", "Si", "P", "S", "Cl", "As", "Se", "Br", "I"})
-# MACE-OFF supports most organic elements; we don't restrict here.
+MACE_OFF_ELEMENTS = frozenset({
+    "H", "B", "C", "N", "O", "F", "Na", "Mg", "Si", "P", "S", "Cl",
+    "K", "Ca", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Se", "Br", "I",
+})
+
+
+def collect_mlp_summary() -> dict:
+    """Return a dict summarising MLP backend status for dashboard display."""
+    backends_info = []
+    for label, avail_fn, ver_fn, elements in [
+        ("ANI-2x", torchani_available, get_torchani_version, ANI2X_ELEMENTS),
+        ("AIMNet2", aimnet2_available, get_aimnet2_version, AIMNET2_ELEMENTS),
+        ("MACE-OFF", mace_available, get_mace_version, MACE_OFF_ELEMENTS),
+    ]:
+        ok = avail_fn()
+        backends_info.append({
+            "name": label,
+            "installed": ok,
+            "version": ver_fn() or "" if ok else "",
+            "elements": sorted(elements, key=lambda e: (len(e), e)),
+        })
+
+    cuda = False
+    torch_version = ""
+    try:
+        import torch
+        torch_version = torch.__version__
+        cuda = torch.cuda.is_available()
+    except Exception:
+        pass
+
+    gpu_partition = ""
+    try:
+        import shutil
+        if shutil.which("sinfo"):
+            import subprocess
+            r = subprocess.run(
+                ["sinfo", "-h", "-o", "%P"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                for line in r.stdout.strip().split("\n"):
+                    name = line.strip().rstrip("*")
+                    if "gpu" in name.lower():
+                        gpu_partition = name
+                        break
+    except Exception:
+        pass
+
+    return {
+        "backends": backends_info,
+        "torch_version": torch_version,
+        "cuda": cuda,
+        "gpu_partition": gpu_partition,
+    }

@@ -116,14 +116,27 @@ def discover_orca_installations(
                 continue
             _add_candidate(entry)
 
-    return sorted(
-        candidates,
-        key=lambda value: (
-            "6.1.1" not in describe_orca_installation(value),
-            describe_orca_installation(value),
-            value,
-        ),
-    )
+    def _version_sort_key(value: str) -> tuple:
+        """Sort ORCA installations by version number, highest first."""
+        desc = describe_orca_installation(value)
+        match = _ORCA_VERSION_RE.search(desc)
+        if match:
+            parts = match.group(1).replace("_", ".").replace("-", ".").split(".")
+            # Pad to 4 parts, convert to ints for proper numeric sorting
+            nums = []
+            for p in parts:
+                try:
+                    nums.append(int(p))
+                except ValueError:
+                    nums.append(0)
+            while len(nums) < 4:
+                nums.append(0)
+            # Negate for descending order (highest version first)
+            return tuple(-n for n in nums)
+        # No version found — sort to the end
+        return (0, 0, 0, 0)
+
+    return sorted(candidates, key=_version_sort_key)
 
 
 def resolve_backend_choice(
@@ -738,6 +751,37 @@ def run_mlp_tools_installer(
     return target, result
 
 
+def run_pip_install_editable() -> subprocess.CompletedProcess[str]:
+    """Run ``pip install -e .`` in the DELFIN repo root using the current Python.
+
+    Detects the Python interpreter that is running DELFIN and the repository
+    root (the directory containing ``pyproject.toml``).  This ensures that
+    editable-mode install happens in the correct environment (venv / conda /
+    system) so that new CLI entry-points become available immediately.
+    """
+    import sys
+
+    python_bin = sys.executable
+    # Walk upward from this file to find the repo root (contains pyproject.toml)
+    repo_root = Path(__file__).resolve().parent.parent
+    pyproject = repo_root / "pyproject.toml"
+    if not pyproject.is_file():
+        raise FileNotFoundError(
+            f"Cannot locate pyproject.toml — expected at {pyproject}. "
+            "Make sure DELFIN is installed from a source checkout."
+        )
+
+    return subprocess.run(
+        [python_bin, "-m", "pip", "install", "-e", "."],
+        cwd=str(repo_root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+
+
 def _prepend_path_env_once(path_entry: str) -> None:
     normalized = str(Path(path_entry).expanduser())
     current_entries = [item for item in os.environ.get("PATH", "").split(os.pathsep) if item]
@@ -778,6 +822,9 @@ def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", c
         orca_plot = Path(orca_root) / "orca_plot"
         if orca_plot.exists():
             os.environ["ORCA_PLOT"] = str(orca_plot)
+
+    # Suppress noisy but harmless third-party warnings in the dashboard
+    os.environ.setdefault("TORCHANI_NO_WARN_EXTENSIONS", "1")
 
 
 @contextmanager
