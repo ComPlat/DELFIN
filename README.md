@@ -4,9 +4,27 @@
 [![PyPI version](https://img.shields.io/pypi/v/delfin-complat.svg)](https://pypi.org/project/delfin-complat/)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/delfin-complat.svg)](https://pypistats.org/packages/delfin-complat)
 
-> 📄 **Preprint**: *Hartmann, M. et al. “DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials”*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
+> 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
 
-This repository contains DELFIN, a comprehensive workflow tool for automated quantum chemistry calculations using ORCA, xTB, and CREST. DELFIN automates the identification of preferred electron configurations, tracks orbital occupation changes during redox processes, and calculates redox potentials.
+**DELFIN** is a modular computational chemistry platform that automates quantum chemical workflows — from SMILES input to publication-ready results. It combines DFT, semi-empirical methods, ML potentials, and AI tools behind a unified interface with an interactive browser-based dashboard.
+
+### What DELFIN can do
+
+| Capability | Description |
+|------------|-------------|
+| **Redox Potentials** | Automated spin-state prediction and redox potential calculation via OCCUPIER/classic workflows |
+| **Excited-State Dynamics** | ISC/RISC rates, fluorescence, phosphorescence, SOC coupling, E₀₀ energies, ΔE(S-T) gaps |
+| **TADF Screening** | xTB-based singlet-triplet gap estimation for OLED material discovery |
+| **Spectroscopy** | UV-Vis absorption, IR vibrational spectra, AFP (absorption/fluorescence/phosphorescence) plots |
+| **Hyperpolarizability** | Static and frequency-dependent β tensors for NLO materials |
+| **Structure Generation** | SMILES→3D for organic molecules and metal complexes (RDKit, Open Babel, architector, PSO builder) |
+| **Conformer Sampling** | GUPPY multi-start sampling, CREST conformer search, XTB-GOAT global optimization |
+| **ML Potentials** | 8 backends (ANI-2x, MACE, CHGNet, M3GNet, ...) for fast energy/force evaluation |
+| **Crystal Structure Prediction** | Genarris integration for random crystal generation |
+| **CO2 Coordination** | Automated CO2 placement, distance/rotation scans |
+| **Reporting** | DOCX reports with embedded spectra, JSON export, text summaries |
+
+---
 
 ## 🚀 Installation
 
@@ -17,6 +35,7 @@ This repository contains DELFIN, a comprehensive workflow tool for automated qua
 - **ORCA 6.1.1** in your `PATH` (`orca` and `orca_pltvib`) — [free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal)
 - **Optional:** `crest` and `xtb` (for CREST/xTB workflows)
 - **Optional:** `xtb4stda`, `stda`, and `std2` plus the required `xtb4stda` runtime files (for xTB-based response/screening workflows)
+- **Optional:** Any of the 88 supported computational tools — auto-detected via PATH, installable via Dashboard
 - **Optional (Dashboard):** JupyterLab/Notebook or Voila for interactive UI usage
 
 ### Install Methods
@@ -28,19 +47,14 @@ pip install delfin-complat
 
 **Development install (from source):**
 ```bash
-# Clone the repository
 git clone https://github.com/ComPlat/DELFIN.git
 cd DELFIN
-
-# Create virtual environment (recommended)
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install in editable mode
+source .venv/bin/activate
 pip install -e .
 ```
 
-All Python dependencies (e.g., RDKit/OpenBabel for SMILES workflows, ipywidgets/py3Dmol for dashboard visualisation) are installed automatically. Using a virtual environment keeps the scientific software stack reproducible and avoids system-wide modifications.
+All Python dependencies (e.g., RDKit/OpenBabel for SMILES workflows, ipywidgets/py3Dmol for dashboard visualisation) are installed automatically.
 
 This exposes the console command **`delfin`** and enables `python -m delfin`.
 
@@ -89,7 +103,7 @@ e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
 
 ---
 
-## 🧪 Dashboard Quick Start
+## 🧪 Dashboard
 
 Start in Jupyter/Voila and create the dashboard from Python:
 
@@ -100,148 +114,54 @@ ctx = create_dashboard(backend="auto")
 
 `backend="auto"` selects SLURM if available, otherwise local execution.
 
-Main tabs include:
-- Submit Job (SMILES/XYZ conversion, `CONVERT SMILES`, `QUICK CONVERT SMILES`, `CONVERT SMILES + UFF`, `BUILD COMPLEX`, `ARCHITECTOR`, `SUBMIT GUPPY`)
-- Recalc
-- ORCA Builder
-- TURBOMOLE Builder (SLURM backends)
-- ChemDarwin (if available)
-- Job Status
-- Calculations
-- Archive
+### Dashboard Tabs
+
+| Tab | Purpose |
+|-----|---------|
+| **Submit Job** | SMILES/XYZ input, 3D preview, `CONVERT SMILES`, `QUICK CONVERT`, `CONVERT + UFF`, `BUILD COMPLEX`, `ARCHITECTOR`, `SUBMIT GUPPY` |
+| **Recalc** | Edit and resubmit existing CONTROL.txt |
+| **ORCA Builder** | Interactive ORCA input generation with geometry preview |
+| **TURBOMOLE Builder** | Turbomole define workflow (SLURM backends) |
+| **ChemDarwin** | Metal complex design with ligand library and SMARTS matching |
+| **Job Status** | Real-time queue monitoring (local/SLURM), resource usage, job cancellation |
+| **Calculations** | File browser, search, recalculation trigger, energy statistics |
+| **Archive** | Archive browser with statistics |
+| **Settings** | Tool detection, per-tool Install/Update buttons, runtime configuration |
 
 ### GUI with Voila
 
-DELFIN can be used as a browser-based GUI without the classic Jupyter Notebook interface.
-
-**Recommended: `delfin-voila` CLI** (notebook is bundled with the package):
-
 ```bash
-pip install delfin-complat   # one-time setup (includes voila)
 delfin-voila                 # starts on port 8866
 delfin-voila --port 9000     # custom port
-delfin-voila --no-browser    # don't open browser, just print URL
 delfin-voila --dark          # dark theme
 ```
 
-Alternatively, run voila directly with your own notebook:
-
-```bash
-voila delfin_dashboard.ipynb --no-browser --port=8866
-```
-
-This serves the dashboard as a pure web application (suitable for local use and HPC Jupyter/Voila setups).
-
-Detailed documentation for the Settings tab, runtime resolution, qm tools, local setup, and bwUniCluster setup is available here:
-
-- [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
-
----
-
-## 📋 CLI Reference
-
-### Basic Commands
-
-- `delfin` — Run DELFIN workflow in current directory (requires `CONTROL.txt` and `input.txt`)
-- `delfin /path/to/project` — Run DELFIN workflow in specified directory
-- `python -m delfin` — Alternative way to run DELFIN
-
-### Companion CLI Tools
-
-- `delfin-build [input.txt]` — Build metal complexes stepwise from SMILES using ORCA/XTB Docker workflow
-- `delfin-guppy [input.txt]` — Multi-start SMILES sampling workflow with repeated XTB optimization and ranked trajectories
-- `delfin-voila` — Launch the DELFIN Dashboard as a standalone web app via Voila (requires `pip install delfin-complat[dashboard]`)
-- `delfin-json` — Collect DELFIN project outputs into JSON
-- `delfin_ESD` — Build/report ESD-focused summaries
-- `delfin_IR` — Build/report IR-focused summaries
-
-### Setup & Configuration
-
-- `delfin --define[=input.xyz] [--overwrite]` — Create/update `CONTROL.txt` and optionally convert XYZ to `input.txt`
-- `delfin /path/to/project --define[=input.xyz] [--overwrite]` — Same as above, but in a different workspace directory
-- `delfin --control /path/to/CONTROL.txt` — Run workflow from another directory while normalising all paths
-
-### Execution Control
-
-- `delfin --recalc` — Re-parse existing results and only restart missing or incomplete jobs
-- `delfin WORKSPACE --recalc --occupier-override STAGE=INDEX` — Force a specific OCCUPIER index for a stage during recalc (e.g., `--occupier-override red_step_2=1` uses index 1 for red_step_2_OCCUPIER instead of the automatically selected preferred index). Can be passed multiple times for different stages
-- `delfin --report` — Re-calculate redox potentials from existing output files without launching new calculations
-- `delfin --imag` — Eliminate imaginary modes from existing ORCA results (`*.out`/`*.hess`) and regenerate the summary report
-- `delfin stop --workspace PATH` — Send a graceful stop signal to running DELFIN processes associated with a workspace
-
-### Cleanup & Maintenance
-
-- `delfin --no-cleanup` — Keep temporary files and scratch folders after the pipeline finishes
-- `delfin --cleanup` — Remove previously generated intermediates and exit immediately
-- `delfin cleanup [--dry-run] [--workspace PATH] [--scratch PATH]` — Fine control over workspace/scratch cleanup; combine with `--dry-run` to preview deletions
-- `delfin cleanup --orca` — Stop running ORCA jobs in the current workspace, purge OCCUPIER scratch folders, and clean leftover temporary files
-- `delfin --purge` — Remove DELFIN-generated artifacts (OCCUPIER folders, ORCA inputs/outputs, logs) after confirmation while keeping CONTROL.txt, the configured input file, and any unrelated files
-
-### Export & Reporting
-
-- `delfin --json` — Collect key results into `DELFIN_Data.json` (useful for scripts/notebooks)
-- `delfin --report docx` — Generate a Word report in DOCX format
-- `delfin --afp` — Generate an AFP spectrum plot (`AFP_spectrum.png`) from existing ESD/S0/S1/T1 results if present
-
-### Information
-
-- `delfin --version` (or `-V`) — Print the installed DELFIN version
-- `delfin --help` — Print the full list of CLI flags, including the new pipeline/resource switches
-
-### Specialized Workflows
-
-- `delfin co2 ...` — CO2 Coordinator helper workflow for CO2 placement and scan generation/runs
-- `delfin ESD` — Run excited-state dynamics workflow (requires `ESD_modul=yes` in CONTROL)
-- `delfin-guppy --runs N --parallel-jobs M --pal P` — broadened start-structure sampling from SMILES for robust pre-optimization
-- `delfin-build --goat [--no-ligand-goat]` — ligand docking/build-up with optional GOAT optimization steps
-
----
-
-## ⚙️ Configuration (CONTROL.txt)
-
-DELFIN is configured via `CONTROL.txt` in your working directory. Key settings include:
-
-### Workflow Control
-* `method = OCCUPIER | classic | manually` (leave empty for ESD-only runs)
-* `OCCUPIER_method = auto | manually` (auto uses adaptive tree-based sequences)
-* `OCCUPIER_tree = flat | deep2 | deep3 | deep | own` (auto tree mode)
-* `calc_initial = yes | no`
-* `oxidation_steps = 1,2,3` / `reduction_steps = 1,2,3`
-* `parallel_workflows = yes | no | auto`
-
-### Resource Management
-* `pal_jobs = N` (number of parallel PAL processes; auto-detected from cluster if not set)
-* `orca_parallel_strategy = auto | threads | serial`
-
-### Optional Modules
-* `XTB_OPT = yes | no` / `XTB_GOAT = yes | no` / `CREST = yes | no`
-* `XTB_SOLVATOR = yes | no`
-* `ESD_modul = yes | no` (excited-state dynamics)
-  * `states = S0,S1,T1,T2`
-  * `ISCs = S1>T1,...` / `ICs = S1>S0,...`
-* `IMAG = yes | no` (imaginary frequency elimination)
-  * `IMAG_scope = initial | all`
-  * `allow_imaginary_freq = N`
-
-### Error Recovery
-* `enable_auto_recovery = yes | no` (intelligent ORCA error recovery with MOREAD)
-* `max_recovery_attempts = N` (default: 1)
-* `enable_job_timeouts = yes | no` (set to 'no' for unlimited runtime)
-
-For the complete list of settings, see the "Typical workflow switches" section below.
+Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
 
 ---
 
 ## ✨ Features
 
-### Excited-State Dynamics (ESD) Module
+### Redox Potential Prediction (OCCUPIER)
 
-> **Status:** Under active development
+DELFIN's core workflow automates spin-state identification and redox potential calculation:
 
-The optional ESD pipeline optimizes S0/S1/T1/T2 states and calculates intersystem
-crossing (ISC) / internal conversion (IC) inside a dedicated `ESD/` folder.
+- **OCCUPIER method**: Adaptive tree-based orbital occupation search (flat, deep2, deep3, deep)
+- **Broken-symmetry DFT**: Automatic BS state generation and evolution
+- **Multi-step redox**: Up to 3 sequential oxidation/reduction steps
+- **Parallel workflows**: Oxidation and reduction run simultaneously with automatic PAL splitting
+- **Smart recalc**: Fingerprint-based skip logic avoids unnecessary reruns
 
-Enable via `ESD_modul=yes` in `CONTROL.txt`. Minimal settings:
+### Excited-State Dynamics (ESD)
+
+The ESD module calculates photophysical properties for OLED and photochemistry research:
+
+- **Electronic states**: S0, S1, S2, T1, T2 geometry optimization
+- **ISC / RISC rates**: Intersystem and reverse intersystem crossing with spin-orbit coupling (SOC)
+- **Internal conversion (IC)**: Non-radiative decay rates
+- **Fluorescence & phosphorescence rates**: Radiative lifetimes including per-sublevel phosphorescence
+- **E₀₀ energies**: Adiabatic 0-0 transition energies
+- **ΔE(S-T)**: Singlet-triplet energy gaps for TADF evaluation
 
 ```ini
 ESD_modul=yes
@@ -250,47 +170,57 @@ ISCs=S1>T1,T1>S1
 ICs=S1>S0
 ```
 
-Geometries, GBW and Hessian files are staged under `ESD/` and reused automatically.
-All states inherit the system charge and use multiplicity 1 (triplets employ UKS internally).
+### TADF Screening (xTB-based)
 
-> Note: the %ESD `DELE` entry is currently omitted; ORCA falls back to its internal defaults.
-> Temperature is still taken from `temperature` (defaults to 298.15 K).
+Fast screening of TADF candidates using semi-empirical methods:
 
-Directory snapshot:
+- S0/T1 optimization via xTB, S1 estimation via Stokes shift
+- ΔE(S-T) gap calculation
+- First allowed singlet state detection
+- TADF efficiency metrics
 
+### Spectroscopy & Properties
+
+| Module | Output |
+|--------|--------|
+| **UV-Vis** | TD-DFT absorption spectra, oscillator strengths, transition analysis |
+| **IR** | Vibrational frequencies, intensities, Lorentzian broadening, transmittance |
+| **AFP** | Combined absorption/fluorescence/phosphorescence spectrum plot |
+| **Hyperpolarizability** | Static & frequency-dependent β tensors (NLO), dipole moments |
+
+### SMILES→3D Structure Generation
+
+DELFIN provides multiple conversion methods for organic and metal-containing systems:
+
+| Button | Method | Best for |
+|--------|--------|----------|
+| `CONVERT SMILES` | Full isomer/conformer search (RDKit + Open Babel) | Thorough exploration |
+| `QUICK CONVERT` | Fast single-conformer generation | Quick previews |
+| `CONVERT + UFF` | Full search + UFF force-field refinement | Refined geometries |
+| `BUILD COMPLEX` | ORCA/XTB DOCKER stepwise complex assembly | Metal complexes (job submission) |
+| `ARCHITECTOR` | [architector](https://github.com/lanl/Architector) automated 3D generation | Metal complexes (instant preview) |
+| `SUBMIT GUPPY` | Multi-start XTB sampling with ranked trajectories | Robust start structures |
+
+For coordination complexes, DELFIN combines Open Babel conformer pools, RDKit multi-seed embedding, topological isomer enumeration, and fragment sanity checks.
+
+### Metal Complex Builder (PSO)
+
+`delfin-build2` builds 3D metal complex structures from SMILES using particle swarm optimization:
+
+- Parses metal-complex SMILES into metal centers and ligand fragments
+- Enumerates coordination templates (octahedral, tetrahedral, square planar, ...)
+- PSO swarm places ligands as rigid bodies (6 DOF each)
+- VdW-based clash detection, Procrustes initialization for bidentate+ ligands
+- Optional xTB GFN2 re-ranking of candidates
+
+```bash
+delfin-build2 input.txt --swarm --swarm-particles 24 --swarm-iterations 200
+delfin-build2 input.txt --xtb --xtb-parallel 4
 ```
-ESD/
-  S0.inp/.out/.xyz/.gbw/.hess
-  S1.inp/.out/.xyz/.gbw/.hess
-  T1.inp/.out/.xyz/.gbw/.hess
-  T2.inp/.out/.xyz/.gbw/.hess
-  S1_T1_ISC.inp/.out
-  ...
-```
 
-### SMILES Conversion, Isomer Sampling, and UFF
+### ML Potentials & Unified Calculator Factory
 
-DELFIN supports robust SMILES-to-3D conversion for organic and metal-containing systems:
-
-- **`CONVERT SMILES`**: full isomer/conformer search
-- **`QUICK CONVERT SMILES`**: single fast start structure
-- **`CONVERT SMILES + UFF`**: full search plus UFF-refined geometries and a quick fallback structure
-
-For coordination complexes, DELFIN combines:
-
-- Open Babel conformer pools (including multiple restarts)
-- RDKit multi-seed embedding
-- topological isomer enumeration and linkage/binding-mode exploration
-- topology and fragment sanity checks before accepting structures
-
-For metal complexes, the **ARCHITECTOR** button uses the [architector](https://github.com/lanl/Architector) library for automated 3D structure generation from SMILES. Install via `pip install architector` or the Dashboard Settings tab.
-
-`delfin-guppy` reuses the same SMILES engine for multi-start XTB sampling and writes ranked trajectory outputs (`GUPPY_try.xyz`, `GUPPY_try_isomer.xyz`, `GUPPY_try_random.xyz`) plus `best_coordniation.xyz`.
-When GOAT refinement is enabled (`--goat-topk` or pipeline `GUPPY=yes` + `XTB_GOAT=yes`), the top-k XTB candidates are refined in parallel, compared by final GOAT energy, and the global winner is persisted as `best_coordniation.xyz` (with `best_coordniation_pre_goat.xyz`, `GUPPY_try_goat.xyz`, and `guppy_goat_summary.json` as trace artifacts).
-
-### ML Potentials & Computational Tools
-
-DELFIN integrates 34 computational backends through a unified ASE Calculator factory:
+34 computational backends accessible through a single interface returning standard ASE Calculator objects:
 
 ```python
 from delfin.calculators import create_calculator
@@ -298,16 +228,21 @@ from delfin.calculators import create_calculator
 calc = create_calculator("ani2x", device="cuda")       # ML potential
 calc = create_calculator("orca", method="B3LYP")       # DFT
 calc = create_calculator("xtb")                        # Semi-empirical
+calc = create_calculator("vasp", xc="PBE", kpts=[4,4,4])  # Periodic DFT
 
 atoms.calc = calc
 energy = atoms.get_potential_energy()
 ```
 
-**ML Potentials:** ANI-2x, AIMNet2, MACE-OFF, CHGNet, M3GNet, SchNetPack, NequIP, ALIGNN
-**QM Backends:** ORCA, Gaussian, VASP, Quantum ESPRESSO, CP2K, FHI-aims, Turbomole, NWChem, Q-Chem, GAMESS, Molpro, PySCF, and more
-**AI/ML Tools:** 21 tools for molecular generation, retrosynthesis, screening, and metal complex design
+Automatic CUDA validation with CPU fallback. All backends are lazily loaded — only imported when actually used.
 
-All tools are lazily loaded and individually installable via the Dashboard Settings tab. External programs (Gaussian, VASP, etc.) are auto-detected via PATH.
+### AI/ML Tools Integration
+
+21 AI/ML tools across molecular generation, retrosynthesis, screening, and metal complex design — all behind runtime validation with per-tool Install/Update buttons in the Dashboard Settings tab.
+
+### Auto-Detection of External Programs
+
+DELFIN automatically detects 88 computational chemistry programs via PATH search. This works seamlessly with cluster module systems (`module load gaussian/16` → DELFIN detects it). Programs that can't be pip-installed (Gaussian, VASP, Turbomole, ...) are detected and reported but not installed.
 
 <details>
 <summary><b>Full list of supported tools (88 total)</b></summary>
@@ -348,148 +283,174 @@ All tools are lazily loaded and individually installable via the Dashboard Setti
 
 </details>
 
+### Conformer Search & Sampling
+
+- **CREST**: Conformer-rotamer ensemble generation and sorting
+- **XTB-GOAT**: Gradient-based global optimization
+- **GUPPY**: Multi-start SMILES sampling with parallel XTB optimization and energy-ranked trajectories
+
+### Crystal Structure Prediction (CSP)
+
+Genarris integration for random crystal structure generation with configurable space groups, Z values, and MPI-parallel execution.
+
+### CO2 Coordinator
+
+Automated CO2 placement around metal centers with relaxed distance scans (1.6–4.0 Å) and rotation scans (±180°).
+
+### Reporting & Export
+
+| Format | Command | Content |
+|--------|---------|---------|
+| **Text** | automatic | `DELFIN.txt` (redox potentials), `OCCUPIER.txt` (occupation tracking), `ESD_report.txt` |
+| **DOCX** | `delfin --report docx` | Word document with embedded spectra plots and structured tables |
+| **JSON** | `delfin --json` | Machine-readable `DELFIN_Data.json` with all energies, rates, spectra |
+| **UV-Vis** | `delfin_ESD output.out` | Parsed UV-Vis spectrum with transitions and oscillator strengths |
+| **IR** | `delfin_IR output.out` | Parsed IR spectrum with vibrational modes and intensities |
+| **AFP** | `delfin --afp` | Absorption/fluorescence/phosphorescence combined plot |
+
 ---
 
-## Typical workflow switches (in CONTROL.txt)
+## 📋 CLI Reference
 
+### Basic Commands
+
+- `delfin` — Run DELFIN workflow in current directory (requires `CONTROL.txt` and `input.txt`)
+- `delfin /path/to/project` — Run DELFIN workflow in specified directory
+- `python -m delfin` — Alternative way to run DELFIN
+
+### Companion CLI Tools
+
+- `delfin-build [input.txt]` — Build metal complexes stepwise from SMILES using ORCA/XTB Docker workflow
+- `delfin-build2 [input.txt]` — PSO-based metal complex builder with swarm optimization
+- `delfin-guppy [input.txt]` — Multi-start SMILES sampling workflow with repeated XTB optimization and ranked trajectories
+- `delfin-voila` — Launch the DELFIN Dashboard as a standalone web app via Voila
+- `delfin-json` — Collect DELFIN project outputs into JSON
+- `delfin_ESD` — UV-Vis spectrum report from ORCA ESD output
+- `delfin_IR` — IR spectrum report from ORCA frequency output
+
+### Setup & Configuration
+
+- `delfin --define[=input.xyz] [--overwrite]` — Create/update `CONTROL.txt` and optionally convert XYZ to `input.txt`
+- `delfin /path/to/project --define[=input.xyz] [--overwrite]` — Same as above, but in a different workspace directory
+- `delfin --control /path/to/CONTROL.txt` — Run workflow from another directory while normalising all paths
+
+### Execution Control
+
+- `delfin --recalc` — Re-parse existing results and only restart missing or incomplete jobs
+- `delfin WORKSPACE --recalc --occupier-override STAGE=INDEX` — Force a specific OCCUPIER index for a stage during recalc
+- `delfin --report` — Re-calculate redox potentials from existing output files without launching new calculations
+- `delfin --imag` — Eliminate imaginary modes from existing ORCA results (`*.out`/`*.hess`) and regenerate the summary report
+- `delfin stop --workspace PATH` — Send a graceful stop signal to running DELFIN processes associated with a workspace
+
+### Cleanup & Maintenance
+
+- `delfin --no-cleanup` — Keep temporary files and scratch folders after the pipeline finishes
+- `delfin --cleanup` — Remove previously generated intermediates and exit immediately
+- `delfin cleanup [--dry-run] [--workspace PATH] [--scratch PATH]` — Fine control over workspace/scratch cleanup
+- `delfin cleanup --orca` — Stop running ORCA jobs, purge OCCUPIER scratch folders
+- `delfin --purge` — Remove DELFIN-generated artifacts after confirmation
+
+### Export & Reporting
+
+- `delfin --json` — Collect key results into `DELFIN_Data.json`
+- `delfin --report docx` — Generate a Word report in DOCX format
+- `delfin --afp` — Generate an AFP spectrum plot from existing ESD results
+
+### Specialized Workflows
+
+- `delfin co2 ...` — CO2 Coordinator helper workflow
+- `delfin ESD` — Run excited-state dynamics workflow (requires `ESD_modul=yes` in CONTROL)
+- `delfin-guppy --runs N --parallel-jobs M --pal P` — Broadened start-structure sampling
+- `delfin-build --goat [--no-ligand-goat]` — Ligand docking with optional GOAT optimization
+- `delfin-build2 input.txt --swarm --xtb` — PSO metal complex builder with xTB re-ranking
+
+---
+
+## ⚙️ Configuration (CONTROL.txt)
+
+DELFIN is configured via `CONTROL.txt` in your working directory. Key settings include:
+
+### Workflow Control
 * `method = OCCUPIER | classic | manually` (leave empty for ESD-only runs)
 * `OCCUPIER_method = auto | manually` (auto uses adaptive tree-based sequences)
-* `OCCUPIER_tree = flat | deep2 | deep3 | deep | own` (auto tree mode; `own` builds a custom adaptive tree from the CONTROL `OCCUPIER_sequence_profiles` block)
-  - `flat`: Legacy flat sequences with BS
-  - `deep2`: Only pure states (no BS), simple testing
-  - `deep`: Adaptive BS evolution (recommended)
-    - Reduction: BS(m-1,1) when pure wins; BS(M±1,N), BS(M,N±1) when BS wins
-    - Oxidation: Only pure states (no BS)
-    - Depth: 3 levels (0 → ±1 → ±2 → ±3)
+* `OCCUPIER_tree = flat | deep2 | deep3 | deep | own` (auto tree mode)
 * `calc_initial = yes | no`
-* `oxidation_steps = 1,2,3` (string; steps to compute)
-* `reduction_steps = 1,2,3` (string; steps to compute)
-* `parallel_workflows = yes | no | auto` (parallelization)
+* `oxidation_steps = 1,2,3` / `reduction_steps = 1,2,3`
+* `parallel_workflows = yes | no | auto`
+
+### Resource Management
 * `pal_jobs = N` (number of parallel PAL processes; auto-detected from cluster if not set)
-* `orca_parallel_strategy = auto | threads | serial` (ORCA parallelization mode)
-  - `auto` (default): Use MPI + OpenMP; FoBs run in parallel
-  - `threads`: Use only OpenMP (no MPI); FoBs still run in parallel, useful if MPI is unstable
-  - `serial`: Force sequential execution; only 1 FoB at a time
-* `XTB_OPT = yes | no`
-* `XTB_GOAT = yes | no`
-* `CREST = yes | no`
+* `orca_parallel_strategy = auto | threads | serial`
+
+### Optional Modules
+* `XTB_OPT = yes | no` / `XTB_GOAT = yes | no` / `CREST = yes | no`
 * `XTB_SOLVATOR = yes | no`
-* `ESD_modul = yes | no`
-  * `states = S0,S1,T1,T2` (comma-separated subset)
-  * `ISCs = S1>T1,...` (optional)
-  * `ICs = S1>S0,...` (optional)
-* `IMAG = yes | no`
-  - enable imaginary-frequency elimination for pipeline runs and unlock `delfin --imag`
-* `IMAG_scope = initial | all`
-  - `initial` (default): only the starting geometry runs the IMAG loop; `all` processes every redox step
-* `allow_imaginary_freq = N`
-  - number of imaginary modes tolerated before IMAG restarts the step (default: 0)
-* `IMAG_displacement_scale = float`
-  - optional scaling factor for the `orca_pltvib` displacement amplitude (default: 1.0)
-* `IMAG_sp_energy_window = float`
-  - minimum single-point energy improvement (Hartree) required to accept a displaced geometry (default: 1e-6)
-* `IMAG_optimize_candidates = yes | no`
-  - when `yes`, each displaced structure is geometry-optimised before evaluating the single-point energy (default: `no`)
+* `ESD_modul = yes | no` (excited-state dynamics)
+  * `states = S0,S1,T1,T2`
+  * `ISCs = S1>T1,...` / `ICs = S1>S0,...`
+* `IMAG = yes | no` (imaginary frequency elimination)
+  * `IMAG_scope = initial | all`
+  * `allow_imaginary_freq = N`
+
+### Error Recovery
+* `enable_auto_recovery = yes | no` (intelligent ORCA error recovery with MOREAD)
+* `max_recovery_attempts = N` (default: 1)
+* `enable_job_timeouts = yes | no` (set to 'no' for unlimited runtime)
 
 ---
 
-## Cluster & Workflow Integration
-
-* **Scratch directory:** set `DELFIN_SCRATCH=/path/to/scratch` before launching jobs. Temporary files, markers, and runtime artefacts are written there (directories are created automatically).
-* **Schema validation:** `delfin` validates `CONTROL.txt` on load (missing required keys, wrong types, inconsistent sequences) and aborts with a clear error message if something is off.
-* **Logging:** the CLI now writes a timestamped `delfin_run.log` in every working directory and OCCUPIER subprocesses produce an additional `occupier.log` inside their folders. Custom drivers can still call `delfin.common.logging.configure_logging(level, fmt, stream)` to adjust handlers or formats.
-* **Programmatic API:** use `delfin.api.run(control_file="CONTROL.txt")` for notebooks, workflow engines, or SLURM batch scripts. Add `cleanup=False` to preserve intermediates (`--no-cleanup`). Additional CLI flags can be provided through the `extra_args` parameter.
-* **Alternate CONTROL locations:** supply `--control path/to/CONTROL.txt` (or the `control_file` argument in `delfin.api.run`) to stage input files outside the working directory.
-* **XYZ geometry support:** if `input_file` in CONTROL (or the CLI/API) points to an `.xyz`, DELFIN converts it automatically to a matching `.txt` (header dropped) before the run.
-* **Cluster templates:** see `examples/` for submit scripts:
-  - `slurm_submit_example.sh` (SLURM)
-  - `pbs_submit_example.sh` (PBS/Torque)
-  - `lsf_submit_example.sh` (LSF)
-* **BwUniCluster install scripts:** see `scripts/` for automated setup:
-  - `install_delfin_bwu.sh` — full install (OpenMPI, ORCA, venv, DELFIN)
-  - `verify_delfin_bwu.sh` — verify and repair existing installation
-  - `check_delfin_orca.sh` — quick health check (read-only)
-* **Auto-resource detection:** DELFIN automatically detects available CPUs and memory on SLURM/PBS/LSF clusters and configures PAL/maxcore accordingly if not explicitly set in CONTROL.txt.
+## 🏗️ Architecture
 
 ### Global Resource Management
 
-DELFIN uses a **global job manager singleton** to coordinate all computational workflows and ensure that CPU resources (PAL) are never over-allocated:
+DELFIN uses a **global job manager singleton** to coordinate all computational workflows:
 
-* **Single source of truth:** PAL is read once from `CONTROL.txt` at startup and managed centrally throughout execution
-* **Automatic PAL splitting:** When oxidation and reduction workflows run in parallel, DELFIN automatically splits available cores between them (e.g., PAL=12 → 6 cores per workflow)
-* **Thread-safe execution:** All parallel workflows coordinate through a shared resource pool, preventing race conditions
-* **Subprocess coordination:** OCCUPIER subprocesses receive their allocated PAL via environment variables and respect global limits
-* **Sequential mode:** When workflows run sequentially (`parallel_workflows=no`), each workflow uses the full PAL
+* **Single source of truth:** PAL is read once from `CONTROL.txt` and managed centrally
+* **Automatic PAL splitting:** Parallel ox/red workflows share cores (PAL=12 → 6+6)
+* **Thread-safe execution:** Shared resource pool prevents race conditions
+* **Subprocess coordination:** OCCUPIER subprocesses inherit limits via environment variables
 
-This architecture ensures:
-- No double allocation of cores when ox/red workflows run simultaneously
-- Consistent resource limits across all ORCA jobs spawned by DELFIN
-- Proper coordination between main process and OCCUPIER subprocesses
-- Efficient utilization of cluster resources without exceeding allocation
+### Modular Tool Architecture
+
+```
+delfin/
+  calculators.py       ← Unified ASE calculator factory (34 backends)
+  mlp_tools/           ← ML potential backends with lazy loading
+  ai_tools/            ← AI/ML tools registry and per-tool installers
+  analysis_tools/      ← Analysis wrappers (cclib, Packmol, Multiwfn, CENSO, morfeus)
+  csp_tools/           ← Crystal structure prediction (Genarris)
+  runtime_setup.py     ← Auto-detection of 88 external programs
+  dashboard/           ← 10-tab interactive dashboard (Voila/JupyterLab)
+```
+
+All tool integrations follow the same pattern:
+1. **Lazy loading** — `importlib.util.find_spec()` for availability checks, no imports until use
+2. **Per-tool install** — Individual Install/Update buttons in Dashboard Settings
+3. **Auto-detection** — `shutil.which()` for binaries, compatible with cluster module systems
+4. **Unified interface** — All backends return standard ASE Calculator objects
+
+### Cluster & HPC Integration
+
+* **Backends:** Local execution, SLURM, SSH-based remote transfer
+* **Auto-resource detection:** CPUs and memory on SLURM/PBS/LSF clusters
+* **Scratch directory:** `DELFIN_SCRATCH=/path/to/scratch`
+* **Logging:** `delfin_run.log` per workspace, `occupier.log` per subprocess
+* **Programmatic API:** `delfin.api.run(control_file="CONTROL.txt")` for notebooks and workflow engines
+
+**Cluster templates:** see `examples/` for SLURM, PBS, and LSF submit scripts.
 
 ---
 
 ## 🔧 Automatic Error Recovery & Retry System
 
-**NEW**: DELFIN now includes an intelligent error recovery system that automatically detects and fixes common ORCA calculation failures.
-
-### Features
-
-- **Automatic Error Detection**: Identifies specific failure types (SCF convergence, TRAH crashes, geometry issues, etc.)
-- **MOREAD-Based Continuation**: Uses last `.gbw` file to continue from last successful state (no restart from scratch!)
-- **Progressive Escalation**: Applies increasingly aggressive fixes across retry attempts
-- **Zero Manual Intervention**: Fully automatic recovery process
-- **State Tracking**: Prevents infinite loops, tracks recovery history
+DELFIN includes an intelligent error recovery system that automatically detects and fixes common ORCA calculation failures.
 
 ### Quick Enable
 
-**For 99% of users** - just enable this in your `CONTROL.txt`:
-
 ```ini
-------------------------------------
-Automatic Error Recovery & Retry:
-enable_auto_recovery=yes            # ⭐ Intelligent recovery (RECOMMENDED!)
-max_recovery_attempts=1             # Retry once (2 runs total)
-------------------------------------
+enable_auto_recovery=yes
+max_recovery_attempts=1
 ```
-
-**Note**: Old parameter names (`orca_retry_enabled`, `orca_retry_max_attempts`) are still supported for backward compatibility.
-
-**Advanced** - Optional configurations:
-```ini
-# Job timeout control:
-enable_job_timeouts=yes             # Set to 'no' for unlimited runtime
-job_timeout_hours=24
-opt_timeout_hours=14
-frequency_timeout_hours=36
-sp_timeout_hours=3
-```
-
-💡 **What `auto_recovery` does**:
-- Uses MOREAD to continue from last state (not from scratch!)
-- Automatically updates geometry from latest .xyz file
-- Creates GBW backup to prevent ORCA deletion on failure
-- Modifies input with intelligent fixes based on error type
-- Handles transient system errors with exponential backoff (2s, 4s, 8s, ...)
-- Works for many cases (SCF, TRAH, geometry, MPI, memory, disk/network errors)
-
-💡 **Timeout Management**:
-- Set `enable_job_timeouts=no` for difficult systems requiring >24h runtime
-- Jobs will run indefinitely until completion or error
-- Useful for highly correlated calculations or large systems
-
-### Supported Error Types
-
-| Error | Automatic Fix |
-|-------|--------------|
-| **SCF not converged** | SlowConv → VerySlowConv + KDIIS|
-| **TRAH segfault** | NoAutoTRAH |
-| **DIIS errors** | Switch to KDIIS |
-| **Geometry not converged** | Smaller trust radius → Loose criteria |
-| **MPI crashes** | Reduce cores |
-| **Memory errors** | Reduce maxcore and PAL |
-| **Frequency failures** | Alternative methods or skip |
-| **Transient system errors** | Exponential backoff retry (disk full, network timeout, I/O errors) |
 
 ### How It Works
 
@@ -497,62 +458,26 @@ sp_timeout_hours=3
 ORCA fails → Detect error type → Modify input with fixes → Continue from last .gbw and xyz → Retry
 ```
 
-**Example Recovery**:
-```
-Original:  complex.inp (SCF not converged)
-    ↓
-Recovery:  complex.retry1.inp (adds MOREAD + SlowConv)
-    ↓
-Success:   Converges using last wavefunction and xyz!
-```
+| Error | Automatic Fix |
+|-------|--------------|
+| **SCF not converged** | SlowConv → VerySlowConv + KDIIS |
+| **TRAH segfault** | NoAutoTRAH |
+| **Geometry not converged** | Smaller trust radius → Loose criteria |
+| **MPI crashes** | Reduce cores |
+| **Memory errors** | Reduce maxcore and PAL |
+| **Transient system errors** | Exponential backoff retry |
 
-### Detailed Documentation
-
-See **[docs/RETRY_LOGIC.md](docs/RETRY_LOGIC.md)** for:
-- Complete configuration guide
-- Recovery strategies for each error type
-- Examples and troubleshooting
-- Best practices
-
-### When to Use
-
-✅ **Enable auto_recovery when:**
-- Running difficult systems (high spin, heavy metals, high redox states)
-- Batch processing multiple jobs
-- Using OCCUPIER or --recalc mode (automatically uses latest xyz/gbw)
-- Geometry optimizations (automatically continues from last optimized structure)
-
-✅ **Disable job_timeouts when:**
-- Running very long calculations (>24h)
-- Highly correlated methods (CCSD(T), NEVPT2, etc.)
-- Large systems with slow SCF convergence
-
-❌ **Disable auto_recovery when:**
-- Testing new methods
-- Need strict convergence criteria
-- Publication-quality results requiring manual verification
+See **[docs/RETRY_LOGIC.md](docs/RETRY_LOGIC.md)** for the complete guide.
 
 ---
 
 ## Troubleshooting
 
-* **`CONTROL.txt` not found**
-  DELFIN exits gracefully and tells you what to do. Create it via `delfin --define` (or copy your own).
-
-* **Input file not found**
-  DELFIN exits gracefully and explains how to create/convert it.
-  If you have a full `.xyz`, run: `delfin --define=your.xyz` → creates `input.txt` (drops the first two header lines) and sets `input_file=input.txt` in CONTROL.
-
-* **ORCA not found**
-  Ensure `orca` is callable in your shell: `which orca` (Linux/macOS) or `where orca` (Windows).
-  Add the ORCA bin directory to your `PATH`.
-
-* **`ModuleNotFoundError` for internal modules**
-  Reinstall the package after copying files:
-
-
-* **CREST/xTB tools missing**
-  Disable the corresponding flags in `CONTROL.txt` or install the tools and put them in `PATH`.
+* **`CONTROL.txt` not found** — Create it via `delfin --define` (or copy your own).
+* **Input file not found** — Run `delfin --define=your.xyz` to auto-convert.
+* **ORCA not found** — Ensure `orca` is in your PATH: `which orca`.
+* **CREST/xTB tools missing** — Disable corresponding flags in `CONTROL.txt` or install and add to PATH.
+* **Optional tool not detected** — Check Dashboard Settings tab or run `delfin --diagnostics`.
 
 ---
 
@@ -570,7 +495,7 @@ Please always check the output files—at the end, you will find a list of relev
 [original papers](https://www.faccts.de/docs/orca/6.0/manual/contents/public.html) that report the development and ORCA implementation of the methods DELFIN has used! The publications that describe the functionality implemented in ORCA are
 given in the manual.
 
-
+---
 
 # Dependencies and Legal Notice
 
@@ -650,74 +575,56 @@ If you use DELFIN in a scientific publication, please cite:
 ```
 delfin/
   __init__.py
-  __main__.py       # enables `python -m delfin`
-  cli.py            # main CLI entry point orchestrating the full workflow
-  cli_helpers.py    # CLI argument parsing and helper functions
-  cli_recalc.py     # recalc mode wrapper functions for computational tools
-  cli_banner.py     # banner display and file validation utilities
-  cli_calculations.py # redox potential calculation methods (M1, M2, M3)
-  main.py           # optional small loader (may delegate to cli.main)
-  pipeline.py       # high-level orchestration across workflow phases (classic/manually/OCCUPIER)
-  esd_module.py     # optional excited-state dynamics workflow (states, ISC/IC scheduling)
-  esd_input_generator.py # ORCA input builders for ESD states/ISC/IC jobs
-  config_manager.py # shared configuration utilities used by new pipeline helpers
-  safe.py           # lightweight sandbox helpers for robust filesystem ops
-  define.py         # CONTROL template generator (+ .xyz → input.txt conversion, path normalisation + logging hooks)
-  cleanup.py        # delete temporary files
-  config.py         # CONTROL.txt parsing & helpers
-  utils.py          # common helpers (transition metal scan, basis-set selection, electron counts)
-  orca.py           # ORCA executable discovery & runs
-  imag.py           # IMAG workflow (plotvib helpers, imaginary-mode loop, freq-first order for optional output blocks)
-  xyz_io.py         # XYZ/ORCA-input read/write helpers (freq block comes before any optional %output sections)
-  xtb_crest.py      # xTB / GOAT / CREST / ALPB solvation workflows
-  energies.py       # extractors for energies (FSPE, Gibbs, ZPE, electronic energies)
-  parser.py         # parser utilities for ORCA output files
-  occupier.py       # OCCUPIER workflow (sequence execution + summary)
-  occupier_auto.py  # Auto OCCUPIER sequence management and tree navigation
-  deep_auto_tree.py # Deep tree: adaptive BS evolution (reduction: BS(m-1,1) or BS(M±1,N); oxidation: pure only)
-  deep2_auto_tree.py # Deep2 tree: only pure states (no BS), simple 3×3 branching
-  deep3_auto_tree.py # Deep3 tree: recursive depth expansion up to ±3
-  generate_deep2_tree.py # Generator for deep2 (pure states only)
-  generate_deep_tree.py # Generator for deep tree with adaptive BS evolution
-  copy_helpers.py   # file passing between OCCUPIER steps (prepare/copy/select)
-  thread_safe_helpers.py  # thread-safe workflow execution with PAL management
-  global_manager.py       # singleton global job manager for resource coordination
-  global_scheduler.py     # scheduler helpers for dynamic shared resource usage
-  dynamic_pool.py         # dynamic core pool for job scheduling
-  parallel_classic_manually.py     # parallel execution for classic/manually modes
-  parallel_occupier.py  # parallel OCCUPIER workflow integration
-  smart_recalc.py       # smart recalc fingerprint checks for existing job outputs
-  guppy_sampling.py     # delfin-guppy CLI (SMILES multi-start sampling + ranking)
-  build_up_complex.py   # delfin-build CLI (stepwise metal-complex assembly)
-  verify_global_manager.py  # smoke tests for the global resource orchestration
-  cluster_utils.py        # cluster resource detection (SLURM/PBS/LSF)
-  api.py            # programmatic API (e.g. `delfin.api.run(...)` for notebooks/workflows)
-  calculators.py    # unified ASE calculator factory (34 backends)
-  dashboard/        # Jupyter/Voila dashboard tabs and backends
-  mlp_tools/        # ML potential backends (ANI-2x, AIMNet2, MACE, CHGNet, M3GNet, ...)
-  ai_tools/         # AI/ML tools registry and installers
-  analysis_tools/   # analysis wrappers (cclib, Packmol, Multiwfn, CENSO, morfeus)
-  co2/              # CO2 coordinator helper workflows
-  tests/            # test modules
-  common/           # shared utilities
-    __init__.py     # exposes common helpers
-    banners.py      # CLI banner art + static strings
-    logging.py      # logging configuration/get_logger helpers (cluster-friendly)
-    orca_blocks.py  # reusable ORCA block assembly utilities
-    paths.py        # central path & scratch-directory helpers (`DELFIN_SCRATCH` aware)
-  reporting/        # modular report generation
-    __init__.py     # reporting submodule exports
-    occupier_reports.py  # OCCUPIER-specific report generation functions
-    delfin_reports.py    # DELFIN-specific report generation functions
-    occupier_selection.py # OCCUPIER selection helpers used by reports
+  __main__.py              # enables `python -m delfin`
+  cli.py                   # main CLI entry point
+  pipeline.py              # high-level orchestration (classic/manually/OCCUPIER)
+  config.py                # CONTROL.txt parsing & helpers
+  calculators.py           # unified ASE calculator factory (34 backends)
+  api.py                   # programmatic API for notebooks/workflows
+
+  # ── Core Workflows ──
+  occupier.py              # OCCUPIER workflow (sequence execution + summary)
+  occupier_auto.py         # auto OCCUPIER sequence management and tree navigation
+  deep_auto_tree.py        # adaptive BS evolution tree
+  esd_module.py            # excited-state dynamics (ISC/IC/fluorescence/phosphorescence)
+  esd_input_generator.py   # ORCA input builders for ESD states
+  tadf_xtb.py              # TADF screening via xTB
+  hyperpol.py              # hyperpolarizability (NLO)
+  xtb_crest.py             # xTB / GOAT / CREST / ALPB solvation workflows
+  imag.py                  # imaginary frequency elimination
+  guppy_sampling.py        # multi-start SMILES sampling + ranking
+  build_up_complex.py      # stepwise metal-complex assembly (ORCA/XTB DOCKER)
+  build_up_complex2.py     # PSO-based metal complex builder
+
+  # ── Resource Management ──
+  global_manager.py        # singleton global job manager
+  global_scheduler.py      # dynamic shared resource scheduling
+  dynamic_pool.py          # dynamic core pool for job scheduling
+  cluster_utils.py         # SLURM/PBS/LSF resource detection
+  runtime_setup.py         # auto-detection of 88 external programs
+
+  # ── Tool Integrations ──
+  mlp_tools/               # ML potentials (ANI-2x, MACE, CHGNet, M3GNet, ...)
+  ai_tools/                # AI/ML tools (21 tools across 9 categories)
+  analysis_tools/          # analysis wrappers (cclib, Packmol, Multiwfn, CENSO, morfeus)
+  csp_tools/               # crystal structure prediction (Genarris)
+  qm_tools/                # external QM binary management
+
+  # ── Dashboard ──
+  dashboard/               # 10-tab interactive dashboard (Voila/JupyterLab)
+
+  # ── Reporting ──
+  reporting/               # DOCX, JSON, text report generation
+  co2/                     # CO2 coordinator workflows
+
+  # ── Shared ──
+  common/                  # logging, paths, ORCA block assembly
 ```
 
 ### Development Notes
 
-* CLI entry point is defined in `pyproject.toml`: `"[project.scripts] delfin = \"delfin.main:main\""`
-* Additional script entry points are also defined there (`delfin-guppy`, `delfin-build`, `delfin-voila`, `delfin-json`, `delfin_ESD`, `delfin_IR`)
-* Build a wheel: `pip wheel .` (inside `delfin/`)
-* Run tests/workflow locally using a fresh virtual environment to catch missing deps
+* CLI entry points are defined in `pyproject.toml`
+* Build a wheel: `pip wheel .`
 * Install development tools: `pip install -e '.[dev]'`
 * Format code: `black .` / Lint code: `ruff check .`
 
@@ -727,11 +634,8 @@ delfin/
 
 This project is licensed under the GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later).
 
-You should have received a copy of the GNU Lesser General Public License along with this repository in the files `COPYING` and `COPYING.LESSER`.  
+You should have received a copy of the GNU Lesser General Public License along with this repository in the files `COPYING` and `COPYING.LESSER`.
 If not, see <https://www.gnu.org/licenses/>.
 
-Non-binding citation request:  
+Non-binding citation request:
 If you use this software in research, please cite the associated paper (see [CITATION.cff](./CITATION.cff)).
-
-
-  
