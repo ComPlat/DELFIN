@@ -151,15 +151,13 @@ DELFIN's core workflow automates spin-state identification and redox potential c
 
 ### Excited-State Dynamics (ESD)
 
-The ESD module calculates photophysical properties for OLED and photochemistry research:
+The ESD module calculates photophysical properties:
 
 - **Electronic states**: S0, S1, S2, T1, T2 geometry optimization
-- **ISC / RISC rates**: Intersystem and reverse intersystem crossing with spin-orbit coupling (SOC)
-- **Internal conversion (IC)**: Non-radiative decay rates
+- **ISC / RISC rates**: Intersystem and reverse intersystem crossing - **Internal conversion (IC)**: Non-radiative decay rates
 - **Fluorescence & phosphorescence rates**: Radiative lifetimes including per-sublevel phosphorescence
 - **E₀₀ energies**: Adiabatic 0-0 transition energies
-- **ΔE(S-T)**: Singlet-triplet energy gaps for TADF evaluation
-
+- **ΔE(S-T)**: Singlet-triplet energy gaps
 ```ini
 ESD_modul=yes
 states=S0,S1,T1,T2
