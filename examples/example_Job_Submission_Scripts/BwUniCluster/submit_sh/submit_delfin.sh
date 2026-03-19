@@ -247,9 +247,9 @@ VENV_LOCAL=""
 if [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
     VENV_LOCAL="$STAGE_BASE/delfin_venv_${SLURM_JOB_ID}"
     if [ ! -f "$VENV_TAR" ]; then
-        echo "ERROR: Required runtime tarball not found: $VENV_TAR"
-        echo "       Create it once after install: cd $DELFIN_DIR && tar -cf delfin_venv.tar .venv/"
-        exit 1
+        echo "WARNING: $VENV_TAR not found, creating it now (one-time)..."
+        tar -cf "$VENV_TAR" -C "$DELFIN_DIR" .venv/
+        echo "Created $VENV_TAR"
     fi
     echo "Unpacking venv tarball to local SSD ($VENV_LOCAL) to minimise HOME I/O..."
     mkdir -p "$VENV_LOCAL"
