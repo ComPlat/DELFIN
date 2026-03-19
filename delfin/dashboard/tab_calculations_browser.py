@@ -78,6 +78,10 @@ def create_tab(ctx):
     CALC_SEARCH_MAX_MATCHES = 2000
     CALC_HIGHLIGHT_MAX_CHARS = 400_000
     CALC_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
+    CALC_XYZ_MAX_READ_BYTES = 50 * 1024 * 1024          # 50 MB – skip full read for huge trajectories
+    CALC_CUBE_MAX_READ_BYTES = 100 * 1024 * 1024         # 100 MB – skip full read for huge cube files
+    CALC_IMAGE_MAX_READ_BYTES = 20 * 1024 * 1024         # 20 MB – skip inline base64 for huge images
+    CALC_LOG_XYZ_EXTRACT_MAX = 50 * 1024 * 1024          # 50 MB – skip XYZ extraction from huge logs
     # Trajectories with more frames than this use single-frame mode
     # (avoids embedding the full XYZ in a JS template literal via comm)
     CALC_XYZ_LARGE_TRAJ_FRAMES = 2000
@@ -9381,6 +9385,46 @@ def create_tab(ctx):
 
         # --- XYZ file (with trajectory support) ---
         if suffix == '.xyz':
+            if size > CALC_XYZ_MAX_READ_BYTES:
+                # Large trajectory: read only enough for the first frame(s)
+                # to show in 3D viewer, and use chunked text for the rest.
+                _set_view_toggle(True, False)
+                calc_mol_container.layout.display = 'block'
+                calc_content_area.layout.display = 'none'
+                calc_update_view()
+                try:
+                    head_bytes = min(CALC_TEXT_CHUNK_BYTES, size)
+                    with open(str(full_path), 'r', errors='ignore') as fh:
+                        head_text = fh.read(head_bytes)
+                    head_frames = parse_xyz_frames(head_text)
+                    _calc_load_text_preview_chunk(full_path, size, 0)
+                    calc_copy_btn.disabled = False
+                    calc_copy_path_btn.disabled = False
+                    if head_frames:
+                        state['xyz_frames'].clear()
+                        state['xyz_frames'].extend(head_frames)
+                        state['xyz_current_frame'][0] = 0
+                        n_head = len(head_frames)
+                        calc_xyz_frame_input.max = n_head
+                        calc_xyz_frame_input.value = 1
+                        calc_xyz_frame_total.value = f"<b>/ {n_head}+</b>"
+                        calc_xyz_controls.layout.display = 'flex'
+                        calc_coord_controls.layout.display = 'none'
+                        _calc_update_xyz_traj_control_state()
+                        calc_update_xyz_viewer(initial_load=True)
+                        calc_file_info.value = (
+                            f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                            f' ({size_str}, showing first {n_head} frames, file too large for full load)'
+                        )
+                    else:
+                        calc_file_info.value = (
+                            f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                            f' ({size_str}, chunked view)'
+                        )
+                    _set_view_toggle(False, False)
+                except Exception as e:
+                    calc_set_message(f'Error: {e}')
+                return
             _set_view_toggle(True, False)
             calc_mol_container.layout.display = 'block'
             calc_content_area.layout.display = 'none'
@@ -9496,6 +9540,13 @@ def create_tab(ctx):
 
         # --- PNG image ---
         if suffix == '.png':
+            if size > CALC_IMAGE_MAX_READ_BYTES:
+                calc_file_info.value = (
+                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                    f' ({size_str})'
+                )
+                calc_set_message(f'Image too large for inline display ({size_str}).')
+                return
             try:
                 data = full_path.read_bytes()
                 b64 = base64.b64encode(data).decode('ascii')
@@ -9518,6 +9569,20 @@ def create_tab(ctx):
 
         # --- Cube/Cub volumetric data ---
         if suffix in ['.cube', '.cub']:
+            if size > CALC_CUBE_MAX_READ_BYTES:
+                calc_file_info.value = (
+                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                    f' ({size_str})'
+                )
+                calc_set_message(
+                    f'Cube file too large for live preview ({size_str}).\n\n'
+                    f'Use chunked text view instead.'
+                )
+                _calc_load_text_preview_chunk(full_path, size, 0)
+                calc_copy_btn.disabled = False
+                calc_copy_path_btn.disabled = False
+                calc_update_view()
+                return
             _set_view_toggle(True, False)
             calc_mol_container.layout.display = 'block'
             calc_content_area.layout.display = 'none'
@@ -9574,7 +9639,14 @@ def create_tab(ctx):
             return
 
         # --- Binary files ---
-        if suffix in ['.gbw', '.cis', '.densities', '.tmp']:
+        _BINARY_SUFFIXES = {
+            '.gbw', '.cis', '.densities', '.tmp', '.rwf', '.chk', '.fchk',
+            '.wfn', '.wfx', '.molden', '.nat', '.hess', '.engrad',
+            '.zip', '.gz', '.tar', '.bz2', '.xz', '.7z',
+            '.so', '.o', '.a', '.exe', '.dll', '.pyc', '.pyo',
+            '.db', '.sqlite', '.sqlite3',
+        }
+        if suffix in _BINARY_SUFFIXES:
             calc_file_info.value = (
                 f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
                 f' ({size_str})'
@@ -9676,7 +9748,13 @@ def create_tab(ctx):
                     calc_recalc_btn.disabled = False
                 elif suffix in ['.out', '.log']:
                     try:
-                        xyz_source = full_path.read_text(errors='ignore')
+                        if size > CALC_LOG_XYZ_EXTRACT_MAX:
+                            # Read only the tail of large logs (XYZ blocks are near the end)
+                            with open(str(full_path), 'r', errors='ignore') as fh:
+                                fh.seek(max(0, size - CALC_TEXT_CHUNK_BYTES))
+                                xyz_source = fh.read()
+                        else:
+                            xyz_source = full_path.read_text(errors='ignore')
                         xyz_content = calc_extract_orca_xyz_block(xyz_source)
                         if xyz_content:
                             state['xyz_frames'].clear()
