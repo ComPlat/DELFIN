@@ -216,6 +216,8 @@ def _run_response(
 ) -> tuple[Path, Path, Path]:
     output_path = workdir / f"{engine}_hyperpol.out"
     with output_path.open("w", encoding="utf-8") as log_file:
+        # std2 returns non-zero exit codes (e.g. 191) even on success;
+        # rely on output file checks below instead of check=True.
         run_tool(
             engine,
             ["-xtb", "-e", str(energy_window_ev), "-resp", str(wavelength_count)],
@@ -223,7 +225,7 @@ def _run_response(
             env=_tool_env(cores),
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            check=True,
+            check=False,
             track_process=True,
         )
 
