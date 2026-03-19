@@ -660,6 +660,7 @@ def run_qm_tools_installer(
     target_dir: str | Path | None = None,
     *,
     extra_env: dict[str, str] | None = None,
+    tools: list[str] | None = None,
 ) -> tuple[Path, subprocess.CompletedProcess[str]]:
     target = stage_packaged_qm_tools(target_dir)
     installer = target / "install_qm_tools.sh"
@@ -672,8 +673,12 @@ def run_qm_tools_installer(
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
 
+    cmd = ["bash", str(installer)]
+    if tools:
+        cmd.extend(tools)
+
     result = subprocess.run(
-        ["bash", str(installer)],
+        cmd,
         cwd=str(target),
         env=env,
         stdout=subprocess.PIPE,

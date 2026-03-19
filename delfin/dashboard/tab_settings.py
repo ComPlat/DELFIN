@@ -85,6 +85,18 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         button_style='info',
         layout=widgets.Layout(width='130px', height='28px'),
     )
+    # Individual qm_tool install buttons
+    _qm_tool_btn_layout = widgets.Layout(width='100px', height='26px')
+    install_xtb_btn = widgets.Button(description='xtb', button_style='', layout=_qm_tool_btn_layout)
+    install_crest_btn = widgets.Button(description='crest', button_style='', layout=_qm_tool_btn_layout)
+    install_dftbplus_btn = widgets.Button(description='dftb+', button_style='', layout=_qm_tool_btn_layout)
+    install_stda_btn = widgets.Button(description='xtb4stda', button_style='', layout=_qm_tool_btn_layout)
+    install_std2_btn = widgets.Button(description='std2', button_style='', layout=_qm_tool_btn_layout)
+    install_micromamba_btn = widgets.Button(
+        description='Install micromamba',
+        button_style='',
+        layout=widgets.Layout(width='145px', height='26px'),
+    )
     csp_tools_log = widgets.Textarea(
         value='',
         disabled=True,
@@ -947,6 +959,73 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             qm_tools_log.value = ''
             _set_status(
                 f'Updating qm_tools failed: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def _make_single_qm_tool_handler(tool_name):
+        def _handler(button):
+            try:
+                target, result = run_qm_tools_installer(tools=[tool_name])
+                runtime_payload = _runtime_payload_from_widgets()
+                runtime_payload['qm_tools_root'] = str(target)
+                _persist_runtime_payload(runtime_payload)
+                qm_tools_log.value = result.stdout or '(no installer output)'
+                if result.returncode == 0:
+                    _set_status(
+                        f'<code>{html.escape(tool_name)}</code> installed in '
+                        f'<code>{html.escape(str(target))}</code>.',
+                        color='#2e7d32',
+                    )
+                else:
+                    _set_status(
+                        f'Installing <code>{html.escape(tool_name)}</code> failed '
+                        f'(exit code {result.returncode}). Check log below.',
+                        color='#d32f2f',
+                    )
+            except Exception as exc:
+                qm_tools_log.value = ''
+                _set_status(
+                    f'Installing {html.escape(tool_name)} failed: {html.escape(str(exc))}',
+                    color='#d32f2f',
+                )
+        return _handler
+
+    def _on_install_micromamba(button):
+        try:
+            import shutil, subprocess
+            if shutil.which('micromamba') or shutil.which('conda'):
+                _set_status('micromamba/conda is already available.', color='#2e7d32')
+                return
+            local_bin = Path.home() / '.local' / 'bin'
+            local_bin.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run(
+                ['bash', '-c',
+                 'curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest '
+                 '| tar -xvj -C "$HOME/.local/bin/" --strip-components=1 bin/micromamba'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+            qm_tools_log.value = result.stdout or ''
+            mamba_path = local_bin / 'micromamba'
+            if result.returncode == 0 and mamba_path.is_file():
+                os.environ['PATH'] = f'{local_bin}:{os.environ.get("PATH", "")}'
+                _set_status(
+                    f'micromamba installed to <code>{html.escape(str(mamba_path))}</code>. '
+                    'You can now install xtb, crest, and dftb+.',
+                    color='#2e7d32',
+                )
+            else:
+                _set_status(
+                    f'micromamba install failed (exit code {result.returncode}). Check log below.',
+                    color='#d32f2f',
+                )
+        except Exception as exc:
+            qm_tools_log.value = ''
+            _set_status(
+                f'Installing micromamba failed: {html.escape(str(exc))}',
                 color='#d32f2f',
             )
 
@@ -1876,6 +1955,12 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     prepare_qm_tools_btn.on_click(_on_prepare_qm_tools)
     install_qm_tools_btn.on_click(_with_buttons_disabled(_on_install_qm_tools))
     update_qm_tools_btn.on_click(_with_buttons_disabled(_on_update_qm_tools))
+    install_xtb_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('xtb')))
+    install_crest_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('crest')))
+    install_dftbplus_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('dftb+')))
+    install_stda_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('xtb4stda')))
+    install_std2_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('std2')))
+    install_micromamba_btn.on_click(_with_buttons_disabled(_on_install_micromamba))
     install_csp_tools_btn.on_click(_with_buttons_disabled(_on_install_csp_tools))
     update_csp_tools_btn.on_click(_with_buttons_disabled(_on_update_csp_tools))
     install_mlp_tools_btn.on_click(_with_buttons_disabled(_on_install_mlp_tools))
@@ -2016,6 +2101,29 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 layout=widgets.Layout(
                     width='100%',
                     gap='8px',
+                    align_items='center',
+                    flex_flow='row wrap',
+                ),
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<span style="color:#616161;">Install single tool:</span>'),
+                    install_xtb_btn,
+                    install_crest_btn,
+                    install_dftbplus_btn,
+                    install_stda_btn,
+                    install_std2_btn,
+                    widgets.HTML('<span style="color:#9e9e9e;">|</span>'),
+                    install_micromamba_btn,
+                    widgets.HTML(
+                        '<span style="color:#616161; font-size:0.85em;">'
+                        '(required for xtb, crest, dftb+)'
+                        '</span>'
+                    ),
+                ],
+                layout=widgets.Layout(
+                    width='100%',
+                    gap='6px',
                     align_items='center',
                     flex_flow='row wrap',
                 ),

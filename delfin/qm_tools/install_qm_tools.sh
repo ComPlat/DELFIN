@@ -299,11 +299,37 @@ summary() {
 
 main() {
   ensure_dirs
-  install_xtb
-  install_crest
-  install_dftbplus
-  install_xtb4stda_bundle
-  install_std2
+
+  if [[ $# -eq 0 ]]; then
+    # No arguments: install everything (legacy behavior).
+    install_xtb
+    install_crest
+    install_dftbplus
+    install_xtb4stda_bundle
+    install_std2
+  else
+    # Selective install: only the requested tools.
+    for tool in "$@"; do
+      case "${tool}" in
+        xtb)          install_xtb ;;
+        crest)        install_crest ;;
+        dftb+|dftbplus) install_dftbplus ;;
+        xtb4stda|stda) install_xtb4stda_bundle ;;
+        std2)         install_std2 ;;
+        all)
+          install_xtb
+          install_crest
+          install_dftbplus
+          install_xtb4stda_bundle
+          install_std2
+          ;;
+        *)
+          die "Unknown tool: ${tool}. Available: xtb, crest, dftb+, xtb4stda, stda, std2, all"
+          ;;
+      esac
+    done
+  fi
+
   summary
 }
 
