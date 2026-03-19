@@ -20,6 +20,181 @@ from .input_processing import (
 )
 
 
+def _smiles_to_architector_input(smiles):
+    """Decompose a metal-complex SMILES into an architector input dict.
+
+    Uses RDKit to parse the SMILES, identify the metal center, split
+    ligands, and track coordinating atom indices (coordList) for each
+    ligand fragment.
+
+    Returns ``{'core': {...}, 'ligands': [...], 'parameters': {}}``
+    or ``None`` on failure.
+    """
+    try:
+        from rdkit import Chem
+    except ImportError:
+        return None
+
+    from delfin.build_up_complex import _METALS
+
+    mol = Chem.MolFromSmiles(smiles, sanitize=False)
+    if mol is None:
+        return None
+
+    # ── Identify metal atoms ──
+    metal_indices = []
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() in _METALS:
+            metal_indices.append(atom.GetIdx())
+    if not metal_indices:
+        return None
+
+    # Use first metal (mononuclear)
+    metal_idx = metal_indices[0]
+    metal_atom = mol.GetAtomWithIdx(metal_idx)
+    metal_symbol = metal_atom.GetSymbol()
+    metal_charge = metal_atom.GetFormalCharge()
+
+    # ── Find coordinating atoms and their bonds ──
+    coord_atom_to_metal = {}  # old_idx -> metal_idx it was bonded to
+    bonds_to_remove = []
+    for bond in mol.GetBonds():
+        a = bond.GetBeginAtomIdx()
+        b = bond.GetEndAtomIdx()
+        if a in metal_indices:
+            coord_atom_to_metal[b] = a
+            bonds_to_remove.append((a, b))
+        elif b in metal_indices:
+            coord_atom_to_metal[a] = b
+            bonds_to_remove.append((a, b))
+
+    # ── Remove metal bonds and atoms, track index mapping ──
+    edit_mol = Chem.RWMol(mol)
+
+    # Save original atom properties
+    orig_props = {}
+    for atom in mol.GetAtoms():
+        idx = atom.GetIdx()
+        orig_props[idx] = {
+            'formal_charge': atom.GetFormalCharge(),
+            'explicit_h': atom.GetNumExplicitHs(),
+            'no_implicit': atom.GetNoImplicit(),
+            'rad_e': atom.GetNumRadicalElectrons(),
+        }
+
+    for a, b in bonds_to_remove:
+        edit_mol.RemoveBond(a, b)
+
+    # Build old→new index map before removing atoms
+    metal_set = set(metal_indices)
+    idx_map = {}
+    removed = 0
+    for old_idx in range(mol.GetNumAtoms()):
+        if old_idx in metal_set:
+            removed += 1
+        else:
+            idx_map[old_idx] = old_idx - removed
+
+    for mi in sorted(metal_indices, reverse=True):
+        edit_mol.RemoveAtom(mi)
+
+    mol_no_metal = edit_mol.GetMol()
+
+    # Restore atom properties on non-metal atoms
+    for old_idx, props in orig_props.items():
+        if old_idx in metal_set:
+            continue
+        new_idx = idx_map.get(old_idx)
+        if new_idx is None:
+            continue
+        try:
+            a = mol_no_metal.GetAtomWithIdx(new_idx)
+            a.SetNumRadicalElectrons(props['rad_e'])
+            a.SetFormalCharge(props['formal_charge'])
+            if old_idx in coord_atom_to_metal:
+                a.SetNumExplicitHs(0)
+                a.SetNoImplicit(True)
+            else:
+                a.SetNumExplicitHs(props['explicit_h'])
+                a.SetNoImplicit(props['no_implicit'])
+        except Exception:
+            pass
+    try:
+        mol_no_metal.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+
+    # ── Split into fragments and track coordList per fragment ──
+    frag_atom_lists = Chem.GetMolFrags(mol_no_metal, asMols=False)
+    frag_mols = Chem.GetMolFrags(mol_no_metal, asMols=True, sanitizeFrags=False)
+
+    # Map new_idx (in mol_no_metal) back to old_idx
+    new_to_old = {v: k for k, v in idx_map.items()}
+
+    ligands = []
+    for frag_atoms, frag_mol in zip(frag_atom_lists, frag_mols):
+        # frag_atoms: tuple of atom indices in mol_no_metal
+        # Find which of these were coordinating atoms
+        coord_positions = []
+        for pos_in_frag, new_idx in enumerate(frag_atoms):
+            old_idx = new_to_old.get(new_idx)
+            if old_idx is not None and old_idx in coord_atom_to_metal:
+                coord_positions.append(pos_in_frag)
+
+        # Get canonical SMILES and map fragment-local coord positions
+        # to atom indices in the canonical mol.
+        # Tag each atom with its fragment-local index, then re-parse
+        # the canonical SMILES to find where the tagged atoms ended up.
+        for atom in frag_mol.GetAtoms():
+            atom.SetAtomMapNum(atom.GetIdx() + 1)  # 1-based
+
+        mapped_smiles = Chem.MolToSmiles(frag_mol, canonical=True)
+
+        # Parse the mapped SMILES to get old→new index mapping
+        mapped_mol = Chem.MolFromSmiles(mapped_smiles, sanitize=False)
+        if mapped_mol is None:
+            continue
+
+        # Build mapping: fragment-local index → canonical index
+        frag_to_canon = {}
+        for atom in mapped_mol.GetAtoms():
+            orig_frag_idx = atom.GetAtomMapNum() - 1
+            frag_to_canon[orig_frag_idx] = atom.GetIdx()
+
+        canon_coord = []
+        for pos in coord_positions:
+            mapped_idx = frag_to_canon.get(pos)
+            if mapped_idx is not None:
+                canon_coord.append(mapped_idx)
+
+        if not canon_coord:
+            continue
+
+        # Clean SMILES: strip map numbers from the SAME canonical mol
+        # to ensure atom ordering matches coordList.
+        for atom in mapped_mol.GetAtoms():
+            atom.SetAtomMapNum(0)
+        canon_smiles = Chem.MolToSmiles(mapped_mol, canonical=False)
+
+        lig_dict = {'smiles': canon_smiles, 'coordList': sorted(canon_coord)}
+        ligands.append(lig_dict)
+
+    if not ligands:
+        return None
+
+    # ── Compute total charge ──
+    total_charge = metal_charge
+    for atom in mol.GetAtoms():
+        if atom.GetIdx() not in metal_set:
+            total_charge += atom.GetFormalCharge()
+
+    return {
+        'core': {'metal': metal_symbol},
+        'ligands': ligands,
+        'parameters': {'full_charge': total_charge},
+    }
+
+
 def create_tab(ctx):
     """Create the Submit Job tab.
 
@@ -483,35 +658,26 @@ def create_tab(ctx):
             from architector.io_process_input import inparse
             from architector import io_ptable
 
-            # Convert SMILES → mol2 via OpenBabel so architector can
-            # detect metal and split ligands correctly.
-            from openbabel import openbabel as ob
-
-            conv = ob.OBConversion()
-            conv.SetInFormat('smi')
-            conv.SetOutFormat('mol2')
-            obmol = ob.OBMol()
-            conv.ReadString(obmol, cleaned_data)
-            if obmol.NumAtoms() == 0:
+            # ── Decompose SMILES into core + ligands via RDKit ──
+            input_dict = _smiles_to_architector_input(cleaned_data)
+            if input_dict is None:
                 with mol_output:
                     clear_output()
-                    print('OpenBabel could not parse this SMILES.')
+                    print('Could not decompose SMILES into metal + ligands.\n'
+                          'Try CONVERT SMILES or BUILD COMPLEX instead.')
                 return
-            builder = ob.OBBuilder()
-            builder.Build(obmol)
-            ff = ob.OBForceField.FindForceField('UFF')
-            if ff:
-                ff.Setup(obmol)
-                ff.ConjugateGradients(200)
-                ff.GetCoordinates(obmol)
-            mol2string = conv.WriteString(obmol)
 
-            input_dict = inparse({'mol2string': mol2string, 'parameters': {}})
+            with mol_output:
+                clear_output()
+                metal = input_dict['core'].get('metal', '?')
+                n_lig = len(input_dict.get('ligands', []))
+                print(f'Running architector: {metal} + {n_lig} ligands...')
+
+            input_dict = inparse(input_dict)
             results = build_complex_driver(input_dict)
 
             # Retry with scaled radii when no results and has
-            # multidentate ligands (reimplements build_complex logic
-            # but guards against max()-on-empty-list bug).
+            # multidentate ligands.
             real_keys = [k for k in results if '_init_only' not in k]
             ligands = input_dict.get('ligands', [])
             max_dent = max((len(l.get('coordList', [])) for l in ligands), default=0)
