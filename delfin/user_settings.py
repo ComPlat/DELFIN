@@ -29,7 +29,9 @@ def _detect_default_local_limits():
 
 _DEFAULT_LOCAL_CORES, _DEFAULT_LOCAL_RAM_MB = _detect_default_local_limits()
 DEFAULT_SETTINGS = {
-    "transfer": {},
+    "transfer": {
+        "ssh_control_path": "",
+    },
     "paths": {},
     "runtime": {
         "backend": "auto",

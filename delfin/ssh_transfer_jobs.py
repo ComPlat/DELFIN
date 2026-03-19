@@ -57,21 +57,103 @@ def remote_source_spec(user, host, remote_path):
     return f"{user}@{host}:{quote_remote_path(remote_path)}"
 
 
-def build_ssh_command_base(host, user, port):
+def _default_control_path():
+    """Default SSH ControlMaster socket path template."""
+    return str(Path.home() / ".ssh" / "cm-delfin-%r@%h:%p")
+
+
+def _resolve_control_path(host, user, port, template=None):
+    """Expand a ControlPath template to the actual socket path for a connection."""
+    tpl = str(template or _default_control_path())
+    return tpl.replace("%r", user).replace("%h", host).replace("%p", str(port))
+
+
+def check_ssh_control_socket(host, user, port, control_path=None):
+    """Return True if an active ControlMaster socket exists for this connection."""
+    tpl = control_path or _default_control_path()
+    result = subprocess.run(
+        [
+            "ssh", "-p", str(port),
+            "-o", f"ControlPath={tpl}",
+            "-O", "check",
+            f"{user}@{host}",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def open_ssh_control_master(host, user, port, control_path=None):
+    """Open a persistent ControlMaster connection (interactive, for 2FA/TOTP).
+
+    Call this once from a terminal where the user can enter their TOTP code
+    and password.  The connection stays open in the background; all subsequent
+    SSH/rsync calls from DELFIN will multiplex through it automatically.
+
+    Returns the subprocess so the caller can manage it, or raises on failure.
+    """
+    tpl = control_path or _default_control_path()
+    # Ensure the .ssh directory exists
+    socket_dir = Path(_resolve_control_path(host, user, port, tpl)).parent
+    socket_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cmd = [
+        "ssh", "-p", str(port),
+        "-o", f"ControlPath={tpl}",
+        "-o", "ControlMaster=auto",
+        "-o", "ControlPersist=yes",
+        "-o", "ServerAliveInterval=60",
+        "-o", "ServerAliveCountMax=5",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-fN",
+        f"{user}@{host}",
+    ]
+    return subprocess.Popen(cmd)
+
+
+def close_ssh_control_master(host, user, port, control_path=None):
+    """Close an active ControlMaster socket."""
+    tpl = control_path or _default_control_path()
+    return subprocess.run(
+        [
+            "ssh", "-p", str(port),
+            "-o", f"ControlPath={tpl}",
+            "-O", "exit",
+            f"{user}@{host}",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def build_ssh_command_base(host, user, port, control_path=None):
+    """Build base SSH command with automatic ControlMaster multiplexing.
+
+    Always uses ControlMaster=auto + ControlPersist=yes + BatchMode=yes:
+    - If key-based auth works: automatically opens a persistent master
+      connection that all subsequent calls reuse.
+    - If a master already exists (e.g. from a manual 2FA/TOTP login):
+      multiplexes through it without any auth prompt.
+    - If neither: fails cleanly (user must open a master session manually).
+    """
+    tpl = control_path or _default_control_path()
+    # Ensure the socket directory exists.
+    socket_dir = Path(_resolve_control_path(host, user, port, tpl)).parent
+    socket_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
     return [
         "ssh",
-        "-p",
-        str(port),
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=20",
-        "-o",
-        "ServerAliveInterval=60",
-        "-o",
-        "ServerAliveCountMax=5",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
+        "-p", str(port),
+        "-o", f"ControlPath={tpl}",
+        "-o", "ControlMaster=auto",
+        "-o", "ControlPersist=yes",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=20",
+        "-o", "ServerAliveInterval=60",
+        "-o", "ServerAliveCountMax=5",
+        "-o", "StrictHostKeyChecking=accept-new",
         f"{user}@{host}",
     ]
 
