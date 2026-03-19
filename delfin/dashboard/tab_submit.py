@@ -110,10 +110,33 @@ def _smiles_to_architector_input(smiles):
         try:
             a = mol_no_metal.GetAtomWithIdx(new_idx)
             a.SetNumRadicalElectrons(props['rad_e'])
-            a.SetFormalCharge(props['formal_charge'])
             if old_idx in coord_atom_to_metal:
-                a.SetNumExplicitHs(0)
-                a.SetNoImplicit(True)
+                # Distinguish covalent vs dative M-L bonds:
+                # Count non-metal heavy-atom bonds of this atom in the
+                # original complex.  Atoms with ≥1 such bond are part
+                # of a ligand framework and lost an H to bond to the
+                # metal → anionic (C→[C-], O→[O-]).
+                # Atoms with 0 heavy-atom bonds are pure donors
+                # (H₂O, NH₃, Cl⁻, …) → dative, keep original charge.
+                n_heavy = sum(
+                    1 for bond in mol.GetBonds()
+                    if old_idx in (bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
+                    and bond.GetBeginAtomIdx() not in metal_set
+                    and bond.GetEndAtomIdx() not in metal_set
+                )
+                if n_heavy > 0 and props['formal_charge'] == 0:
+                    # Covalent: lost H → anionic
+                    a.SetFormalCharge(-1)
+                    a.SetNumExplicitHs(0)
+                    a.SetNoImplicit(True)
+                elif n_heavy == 0:
+                    # Dative donor: keep original charge, allow implicit H
+                    a.SetFormalCharge(props['formal_charge'])
+                else:
+                    # Already charged (e.g. N+, O+) → keep
+                    a.SetFormalCharge(props['formal_charge'])
+                    a.SetNumExplicitHs(0)
+                    a.SetNoImplicit(True)
             else:
                 a.SetNumExplicitHs(props['explicit_h'])
                 a.SetNoImplicit(props['no_implicit'])
