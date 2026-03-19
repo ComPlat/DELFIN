@@ -894,7 +894,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     def _on_install_qm_tools(button):
         try:
-            target, result = run_qm_tools_installer()
+            target, result = run_qm_tools_installer(
+                extra_env={'INSTALL_STD2_FROM_SOURCE': '1'},
+            )
             runtime_payload = _runtime_payload_from_widgets()
             runtime_payload['qm_tools_root'] = str(target)
             backend_switch_required, effective_backend, effective_orca_base = _persist_runtime_payload(
@@ -983,7 +985,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     def _make_single_qm_tool_handler(tool_name):
         def _handler(button):
             try:
-                target, result = run_qm_tools_installer(tools=[tool_name])
+                extra = {'INSTALL_STD2_FROM_SOURCE': '1'} if tool_name == 'std2' else None
+                target, result = run_qm_tools_installer(tools=[tool_name], extra_env=extra)
                 runtime_payload = _runtime_payload_from_widgets()
                 runtime_payload['qm_tools_root'] = str(target)
                 _persist_runtime_payload(runtime_payload)
