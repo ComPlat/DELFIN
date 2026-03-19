@@ -515,7 +515,7 @@ def create_tab(ctx):
             real_keys = [k for k in results if '_init_only' not in k]
             ligands = input_dict.get('ligands', [])
             max_dent = max((len(l.get('coordList', [])) for l in ligands), default=0)
-            if not real_keys and max_dent > 2:
+            if not real_keys and max_dent >= 2:
                 for larger in (True, False):
                     scaled = io_ptable.map_metal_radii(
                         inparse(input_dict), larger=larger,
