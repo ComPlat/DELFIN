@@ -20,34 +20,6 @@ from pathlib import Path
 os.environ.setdefault("TORCHANI_NO_WARN_EXTENSIONS", "1")
 warnings.filterwarnings("ignore", message="PySisiphus is not installed", module="aimnet2calc")
 
-import ipywidgets as widgets
-from IPython.display import clear_output, display
-
-from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
-from .context import DashboardContext
-from .helpers import create_busy_css, disable_spellcheck_global
-from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
-from delfin.runtime_setup import (
-    apply_runtime_environment,
-    detect_local_runtime_limits,
-    get_packaged_submit_templates_dir,
-    resolve_backend_choice,
-    resolve_orca_base,
-    resolve_submit_templates_dir,
-)
-from delfin.user_settings import load_remote_archive_enabled, load_settings
-
-from . import (
-    tab_archive_statistics,
-    tab_calculations_browser,
-    tab_remote_archive,
-    tab_settings,
-    tab_job_status,
-    tab_orca_builder,
-    tab_recalc,
-    tab_submit,
-)
-
 
 def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     """Create and display the full DELFIN Dashboard.
@@ -66,6 +38,35 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     DashboardContext
         The context object (useful for programmatic access / debugging).
     """
+    # -- lazy imports (keep dashboard importable without ipywidgets) --------
+    import ipywidgets as widgets
+    from IPython.display import clear_output, display
+
+    from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
+    from .context import DashboardContext
+    from .helpers import create_busy_css, disable_spellcheck_global
+    from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
+    from delfin.runtime_setup import (
+        apply_runtime_environment,
+        detect_local_runtime_limits,
+        get_packaged_submit_templates_dir,
+        resolve_backend_choice,
+        resolve_orca_base,
+        resolve_submit_templates_dir,
+    )
+    from delfin.user_settings import load_remote_archive_enabled, load_settings
+
+    from . import (
+        tab_archive_statistics,
+        tab_calculations_browser,
+        tab_remote_archive,
+        tab_settings,
+        tab_job_status,
+        tab_orca_builder,
+        tab_recalc,
+        tab_submit,
+    )
+
     # -- ensure delfin is importable & up-to-date --------------------------
     _ensure_delfin_importable()
     _force_reload_delfin()
@@ -608,6 +609,7 @@ def _find_run_script(notebook_dir):
 
 def _build_orca_version_widget(orca_base, orca_candidates):
     """Build an ORCA version dropdown or label widget."""
+    import ipywidgets as widgets
     if orca_candidates and len(orca_candidates) > 1:
         options = []
         for p in orca_candidates:
@@ -640,6 +642,7 @@ def _build_orca_version_widget(orca_base, orca_candidates):
 
 def _build_home_usage_widget(home_dir, warn_threshold_gb=400):
     """Build an asynchronously refreshed HOME usage widget."""
+    import ipywidgets as widgets
     label = widgets.HTML(
         '<span style="font-family:monospace; color:#455a64; '
         'padding:2px 6px; border:1px solid #cfd8dc; border-radius:4px;">'
