@@ -1185,6 +1185,57 @@ def collect_runtime_diagnostics(
                 "detail": f"Python module '{mod_name}'" if found else "not installed",
             }
         )
+    # -- bwHPC / HPC cluster fallback paths ----------------------------------
+    # Map diagnostic label -> (env_var, base_dirs, binary_name_or_glob_pattern)
+    # Used when shutil.which() fails (programs behind 'module load').
+    _BWHPC_ROOTS = ["/opt/bwhpc/common/chem", "/opt/bwhpc/common/phys",
+                    "/opt/bwhpc/common/bio"]
+    _CLUSTER_FALLBACKS: dict[str, tuple[str, list[str], str]] = {
+        "turbomole": ("TURBODIR", ["/opt/bwhpc/common/chem/turbomole"], "ridft"),
+        "gaussian":  ("g16root",  ["/opt/bwhpc/common/chem/gaussian"], "g16"),
+        "vasp":      ("VASP_DIR", ["/opt/bwhpc/common/chem/vasp"], "vasp_std"),
+        "nwchem":    ("NWCHEM_TOP", ["/opt/bwhpc/common/chem/nwchem"], "nwchem"),
+        "cp2k":      ("CP2K_DIR", ["/opt/bwhpc/common/chem/cp2k"], "cp2k.psmp"),
+        "gromacs":   ("GMXBIN",   ["/opt/bwhpc/common/chem/gromacs",
+                                    "/opt/bwhpc/common/bio/gromacs"], "gmx"),
+        "lammps":    ("LAMMPS_DIR", ["/opt/bwhpc/common/chem/lammps"], "lmp"),
+        "amber":     ("AMBERHOME", ["/opt/bwhpc/common/chem/amber",
+                                     "/opt/bwhpc/common/bio/amber"], "sander"),
+        "namd":      ("NAMDDIR",  ["/opt/bwhpc/common/chem/namd",
+                                    "/opt/bwhpc/common/bio/namd"], "namd2"),
+        "quantum-espresso": ("ESPRESSO_ROOT", ["/opt/bwhpc/common/chem/quantum-espresso",
+                                               "/opt/bwhpc/common/phys/quantum-espresso"], "pw.x"),
+        "abinit":    ("ABINIT_DIR", ["/opt/bwhpc/common/phys/abinit",
+                                      "/opt/bwhpc/common/chem/abinit"], "abinit"),
+        "molpro":    ("MOLPRO_DIR", ["/opt/bwhpc/common/chem/molpro"], "molpro"),
+        "openmolcas": ("MOLCAS",   ["/opt/bwhpc/common/chem/openmolcas",
+                                     "/opt/bwhpc/common/chem/molcas"], "pymolcas"),
+    }
+
+    def _find_binary_recursive(base_dir: Path, binary_name: str, max_depth: int = 5) -> str | None:
+        """Walk up to *max_depth* levels under *base_dir* looking for *binary_name*."""
+        if not base_dir.is_dir():
+            return None
+        try:
+            for item in sorted(base_dir.iterdir(), reverse=True):
+                if item.is_file() and item.name == binary_name and os.access(str(item), os.X_OK):
+                    return str(item)
+                if item.is_dir() and max_depth > 0:
+                    # Prioritise bin/ directories
+                    if item.name == "bin":
+                        result = _find_binary_recursive(item, binary_name, max_depth - 1)
+                        if result:
+                            return result
+            # Second pass: recurse into non-bin dirs
+            for item in sorted(base_dir.iterdir(), reverse=True):
+                if item.is_dir() and item.name != "bin" and max_depth > 0:
+                    result = _find_binary_recursive(item, binary_name, max_depth - 1)
+                    if result:
+                        return result
+        except PermissionError:
+            pass
+        return None
+
     for binaries, label in _EXT_QM_PROGRAMS:
         found_path = None
         for name in binaries:
@@ -1192,36 +1243,22 @@ def collect_runtime_diagnostics(
             if path:
                 found_path = path
                 break
-        # Turbomole: also check $TURBODIR and known cluster paths
-        if not found_path and label == "turbomole":
-            import os as _os_diag
-            turbodir = _os_diag.environ.get("TURBODIR", "")
-            _tm_search_dirs = [turbodir] if turbodir else []
-            _tm_search_dirs.append("/opt/bwhpc/common/chem/turbomole")
-            for _tdir in _tm_search_dirs:
-                if not _tdir:
-                    continue
-                _tbase = Path(_tdir)
-                # Direct TURBODIR with bin/ subdirectories
-                for _arch in ("x86_64-unknown-linux-gnu_smp", "em64t-unknown-linux-gnu_smp",
-                              "x86_64-unknown-linux-gnu", "em64t-unknown-linux-gnu"):
-                    _candidate = _tbase / "bin" / _arch / "ridft"
-                    if _candidate.is_file():
-                        found_path = str(_candidate)
+        # Fallback: check environment variables and known HPC cluster paths
+        if not found_path and label in _CLUSTER_FALLBACKS:
+            env_var, base_dirs, target_bin = _CLUSTER_FALLBACKS[label]
+            # Check environment variable first
+            env_val = os.environ.get(env_var, "")
+            if env_val:
+                result = _find_binary_recursive(Path(env_val), target_bin)
+                if result:
+                    found_path = result
+            # Then check known cluster paths
+            if not found_path:
+                for bdir in base_dirs:
+                    result = _find_binary_recursive(Path(bdir), target_bin)
+                    if result:
+                        found_path = result
                         break
-                if found_path:
-                    break
-                # Nested layout: TmoleX*/TURBOMOLE/bin/...
-                for _sub in sorted(_tbase.glob("Tmole*/TURBOMOLE"), reverse=True):
-                    for _arch in ("x86_64-unknown-linux-gnu_smp", "em64t-unknown-linux-gnu_smp"):
-                        _candidate = _sub / "bin" / _arch / "ridft"
-                        if _candidate.is_file():
-                            found_path = str(_candidate.parent)
-                            break
-                    if found_path:
-                        break
-                if found_path:
-                    break
         diagnostics.append(
             {
                 "name": label,
