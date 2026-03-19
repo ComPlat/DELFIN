@@ -20,6 +20,17 @@ from pathlib import Path
 os.environ.setdefault("TORCHANI_NO_WARN_EXTENSIONS", "1")
 warnings.filterwarnings("ignore", message="PySisiphus is not installed", module="aimnet2calc")
 
+# These imports are safe without ipywidgets and needed by module-level helpers
+from delfin.runtime_setup import (
+    apply_runtime_environment,
+    detect_local_runtime_limits,
+    get_packaged_submit_templates_dir,
+    resolve_backend_choice,
+    resolve_orca_base,
+    resolve_submit_templates_dir,
+)
+from delfin.user_settings import load_remote_archive_enabled, load_settings
+
 
 def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     """Create and display the full DELFIN Dashboard.
@@ -46,15 +57,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     from .context import DashboardContext
     from .helpers import create_busy_css, disable_spellcheck_global
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
-    from delfin.runtime_setup import (
-        apply_runtime_environment,
-        detect_local_runtime_limits,
-        get_packaged_submit_templates_dir,
-        resolve_backend_choice,
-        resolve_orca_base,
-        resolve_submit_templates_dir,
-    )
-    from delfin.user_settings import load_remote_archive_enabled, load_settings
 
     from . import (
         tab_archive_statistics,
