@@ -479,20 +479,32 @@ def create_tab(ctx):
                           'Or use the Install button in Settings → AI Tools.')
                 return
 
-            from architector import build_complex
+            from architector.complex_construction import build_complex_driver
+            from architector.io_process_input import inparse
+            from architector import io_ptable
 
             input_dict = {'mol2string': cleaned_data}
-            try:
-                results = build_complex(input_dict)
-            except ValueError as exc:
-                if 'max()' in str(exc) or 'empty sequence' in str(exc):
-                    # Architector bug: max() on empty ligands list.
-                    # Fall back to first-pass results only.
-                    from architector.io_process_input import inparse
-                    from architector.complex_construction import build_complex_driver
-                    results = build_complex_driver(inparse(input_dict))
-                else:
-                    raise
+            # build_complex_driver calls inparse internally, which
+            # populates input_dict with 'parameters', 'ligands', etc.
+            results = build_complex_driver(input_dict)
+
+            # Retry with scaled radii when no results and has
+            # multidentate ligands (reimplements build_complex logic
+            # but guards against max()-on-empty-list bug).
+            real_keys = [k for k in results if '_init_only' not in k]
+            ligands = input_dict.get('ligands', [])
+            max_dent = max((len(l.get('coordList', [])) for l in ligands), default=0)
+            if not real_keys and max_dent > 2:
+                for larger in (True, False):
+                    scaled = io_ptable.map_metal_radii(
+                        inparse(input_dict), larger=larger,
+                    )
+                    extra = build_complex_driver(scaled)
+                    suffix = '_larger_scaled' if larger else '_smaller_scaled'
+                    for k, v in extra.items():
+                        results[k + suffix] = v
+                    if any('_init_only' not in k for k in extra):
+                        break
 
             if not results:
                 with mol_output:
