@@ -483,9 +483,30 @@ def create_tab(ctx):
             from architector.io_process_input import inparse
             from architector import io_ptable
 
-            input_dict = {'mol2string': cleaned_data}
-            # build_complex_driver calls inparse internally, which
-            # populates input_dict with 'parameters', 'ligands', etc.
+            # Convert SMILES → mol2 via OpenBabel so architector can
+            # detect metal and split ligands correctly.
+            from openbabel import openbabel as ob
+
+            conv = ob.OBConversion()
+            conv.SetInFormat('smi')
+            conv.SetOutFormat('mol2')
+            obmol = ob.OBMol()
+            conv.ReadString(obmol, cleaned_data)
+            if obmol.NumAtoms() == 0:
+                with mol_output:
+                    clear_output()
+                    print('OpenBabel could not parse this SMILES.')
+                return
+            builder = ob.OBBuilder()
+            builder.Build(obmol)
+            ff = ob.OBForceField.FindForceField('UFF')
+            if ff:
+                ff.Setup(obmol)
+                ff.ConjugateGradients(200)
+                ff.GetCoordinates(obmol)
+            mol2string = conv.WriteString(obmol)
+
+            input_dict = inparse({'mol2string': mol2string, 'parameters': {}})
             results = build_complex_driver(input_dict)
 
             # Retry with scaled radii when no results and has
