@@ -204,6 +204,22 @@ def get_packmol_version() -> Optional[str]:
         return "installed"
 
 
+# ── xtb-python (Python bindings for xTB) ─────────────────────────────
+
+def xtb_python_available() -> bool:
+    """Check if the xtb Python module is importable."""
+    return importlib.util.find_spec("xtb") is not None
+
+
+def get_xtb_python_version() -> str:
+    """Return xtb-python version string."""
+    try:
+        mod = importlib.import_module("xtb")
+        return getattr(mod, "__version__", "installed")
+    except Exception:
+        return "installed"
+
+
 # ── summary ───────────────────────────────────────────────────────────
 
 def available_tools() -> list[str]:
@@ -221,6 +237,8 @@ def available_tools() -> list[str]:
         tools.append("nglview")
     if packmol_available():
         tools.append("packmol")
+    if xtb_python_available():
+        tools.append("xtb-python")
     return tools
 
 
@@ -240,6 +258,8 @@ def collect_analysis_summary() -> dict:
          "Interactive 3D molecular viewer for Jupyter/Voilà notebooks"),
         ("Packmol", packmol_available, get_packmol_version,
          "Packing molecules for MD simulation initial configurations"),
+        ("xtb-python", xtb_python_available, get_xtb_python_version,
+         "Python bindings for xTB (required by architector)"),
     ]:
         ok = avail_fn()
         tools_info.append({

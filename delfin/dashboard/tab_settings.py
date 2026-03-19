@@ -1149,21 +1149,26 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             if not _outdated_cache:
                 _check_outdated_packages()
 
+            # (pip_install_cmd, pip_pkg_name, conda_cmd)
             _ANALYSIS_PKGS = {
-                'Multiwfn': ('', ''),           # manual binary
-                'CENSO':    ('censo', 'censo'),
-                'morfeus':  ('morfeus-ml', 'morfeus-ml'),
-                'cclib':    ('cclib', 'cclib'),
-                'nglview':  ('nglview', 'nglview'),
-                'Packmol':  ('', ''),           # conda install
+                'Multiwfn': ('', '', ''),                    # manual binary
+                'CENSO':    ('censo', 'censo', ''),
+                'morfeus':  ('morfeus-ml', 'morfeus-ml', ''),
+                'cclib':    ('cclib', 'cclib', ''),
+                'nglview':  ('nglview', 'nglview', ''),
+                'Packmol':  ('', '', 'packmol'),             # conda only
+                'xtb-python': ('', '', 'xtb-python'),        # conda only
             }
 
             rows = []
             for t in info['tools']:
-                cmd, pkg = _ANALYSIS_PKGS.get(t['name'], (t['name'].lower(), t['name'].lower()))
+                cmd, pkg, conda = _ANALYSIS_PKGS.get(
+                    t['name'], (t['name'].lower(), t['name'].lower(), ''),
+                )
                 rows.append(_make_tool_row(
                     t['name'], t['installed'], t.get('version', ''),
-                    t['description'], cmd, _refresh_analysis_status, pip_pkg_name=pkg,
+                    t['description'], cmd, _refresh_analysis_status,
+                    pip_pkg_name=pkg, conda_cmd=conda,
                 ))
 
             analysis_status_box.children = rows
@@ -1172,6 +1177,26 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             analysis_status_box.children = [widgets.HTML(
                 f'<span style="color:#d32f2f;">Could not load analysis tools status: {html.escape(str(exc))}</span>'
             )]
+
+    # ── conda/mamba environment detection ─────────────────────────────────
+
+    def _detect_conda():
+        """Detect conda/mamba executable and active environment name.
+
+        Returns (exe, env_name) or (None, None) if not in a conda env.
+        """
+        import os
+        import shutil
+
+        env_name = os.environ.get('CONDA_DEFAULT_ENV', '')
+        if not env_name:
+            return None, None
+
+        for cmd in ('micromamba', 'mamba', 'conda'):
+            path = shutil.which(cmd)
+            if path:
+                return path, env_name
+        return None, None
 
     # ── pip helpers for install / update ──────────────────────────────────
 
@@ -1245,22 +1270,110 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         _outdated_cache.clear()
         refresh_fn()
 
+    def _conda_install_tool(conda_spec, label, refresh_fn, channel='conda-forge'):
+        """Run conda/mamba install in the active environment."""
+        import subprocess
+
+        conda_exe, env_name = _detect_conda()
+        if not conda_exe:
+            tool_install_log.value = (
+                f'Cannot install {label}: no conda/mamba found '
+                'or not running inside a conda environment.\n'
+            )
+            _set_status(
+                f'{label}: no conda/mamba environment detected.',
+                color='#d32f2f',
+            )
+            return
+
+        tool_install_log.value = (
+            f'Installing {label} via {conda_exe} '
+            f'into environment "{env_name}"...\n'
+        )
+        try:
+            result = subprocess.run(
+                [conda_exe, 'install', '-n', env_name, '-c', channel, '-y']
+                + shlex.split(conda_spec),
+                capture_output=True, text=True, timeout=600,
+            )
+            tool_install_log.value += result.stdout or ''
+            if result.stderr:
+                tool_install_log.value += result.stderr
+            if result.returncode == 0:
+                _set_status(f'{label} installed successfully.', color='#2e7d32')
+            else:
+                _set_status(
+                    f'{label} installation failed (exit {result.returncode}).',
+                    color='#d32f2f',
+                )
+        except Exception as exc:
+            tool_install_log.value += f'\nError: {exc}'
+            _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+        _outdated_cache.clear()
+        refresh_fn()
+
+    def _conda_update_tool(conda_spec, label, refresh_fn, channel='conda-forge'):
+        """Run conda/mamba update for a specific package."""
+        import subprocess
+
+        conda_exe, env_name = _detect_conda()
+        if not conda_exe:
+            tool_install_log.value = (
+                f'Cannot update {label}: no conda/mamba found '
+                'or not running inside a conda environment.\n'
+            )
+            _set_status(
+                f'{label}: no conda/mamba environment detected.',
+                color='#d32f2f',
+            )
+            return
+
+        tool_install_log.value = (
+            f'Updating {label} via {conda_exe} '
+            f'in environment "{env_name}"...\n'
+        )
+        try:
+            result = subprocess.run(
+                [conda_exe, 'update', '-n', env_name, '-c', channel, '-y']
+                + shlex.split(conda_spec),
+                capture_output=True, text=True, timeout=600,
+            )
+            tool_install_log.value += result.stdout or ''
+            if result.stderr:
+                tool_install_log.value += result.stderr
+            if result.returncode == 0:
+                _set_status(f'{label} updated successfully.', color='#2e7d32')
+            else:
+                _set_status(
+                    f'{label} update failed (exit {result.returncode}).',
+                    color='#d32f2f',
+                )
+        except Exception as exc:
+            tool_install_log.value += f'\nError: {exc}'
+            _set_status(f'{label} update error: {exc}', color='#d32f2f')
+        _outdated_cache.clear()
+        refresh_fn()
+
     def _make_tool_row(name, installed, version, detail_text, install_cmd, refresh_fn,
-                       pip_pkg_name=''):
+                       pip_pkg_name='', conda_cmd='', conda_channel='conda-forge'):
         """Create a widget row with Install or Update button.
 
         Parameters
         ----------
         pip_pkg_name : the pip package name used to check for updates
                        (e.g. 'cclib', 'torchani'). If empty, uses install_cmd.
+        conda_cmd : conda/mamba package spec (e.g. 'xtb-python'). When set,
+                     the Install/Update buttons use conda/mamba instead of pip.
+        conda_channel : conda channel (default 'conda-forge').
         """
+        use_conda = bool(conda_cmd)
         _raw = pip_pkg_name or install_cmd or ''
         pkg_key = shlex.split(_raw)[0].lower() if _raw.strip() else ''
 
         if installed:
             ver = f' v{version}' if version else ''
-            # Check if an update is available
-            latest = _outdated_cache.get(pkg_key, '')
+            # Check if an update is available (pip-based check only)
+            latest = _outdated_cache.get(pkg_key, '') if not use_conda else ''
 
             if latest and version and latest != version:
                 # Update available — show update button
@@ -1272,14 +1385,24 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     f'{html.escape(detail_text)}</span></span>',
                     layout=widgets.Layout(min_width='300px'),
                 )
-                btn = widgets.Button(
-                    description='Update',
-                    button_style='info',
-                    layout=widgets.Layout(width='80px', height='24px'),
-                    tooltip=f'pip install --upgrade {pkg_key}',
-                )
-                btn.on_click(lambda b, pkg=pip_pkg_name or install_cmd, lbl=name, fn=refresh_fn:
-                             _pip_update_tool(pkg, lbl, fn))
+                if use_conda:
+                    btn = widgets.Button(
+                        description='Update',
+                        button_style='info',
+                        layout=widgets.Layout(width='80px', height='24px'),
+                        tooltip=f'conda update {conda_cmd}',
+                    )
+                    btn.on_click(lambda b, spec=conda_cmd, lbl=name, fn=refresh_fn, ch=conda_channel:
+                                 _conda_update_tool(spec, lbl, fn, channel=ch))
+                else:
+                    btn = widgets.Button(
+                        description='Update',
+                        button_style='info',
+                        layout=widgets.Layout(width='80px', height='24px'),
+                        tooltip=f'pip install --upgrade {pkg_key}',
+                    )
+                    btn.on_click(lambda b, pkg=pip_pkg_name or install_cmd, lbl=name, fn=refresh_fn:
+                                 _pip_update_tool(pkg, lbl, fn))
                 return widgets.HBox(
                     [label, btn],
                     layout=widgets.Layout(width='100%', margin='1px 0', align_items='center'),
@@ -1301,15 +1424,27 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 f'{html.escape(detail_text)}</span></span>',
                 layout=widgets.Layout(min_width='300px'),
             )
-            if install_cmd:
-                btn = widgets.Button(
-                    description='Install',
-                    button_style='warning',
-                    layout=widgets.Layout(width='80px', height='24px'),
-                    tooltip=f'pip install {install_cmd}',
-                )
-                btn.on_click(lambda b, cmd=install_cmd, lbl=name, fn=refresh_fn:
-                             _pip_install_tool(cmd, lbl, fn))
+            has_cmd = conda_cmd if use_conda else install_cmd
+            if has_cmd:
+                if use_conda:
+                    conda_exe_name = (_detect_conda()[0] or 'conda').rsplit('/', 1)[-1]
+                    btn = widgets.Button(
+                        description='Install',
+                        button_style='warning',
+                        layout=widgets.Layout(width='80px', height='24px'),
+                        tooltip=f'{conda_exe_name} install {conda_cmd}',
+                    )
+                    btn.on_click(lambda b, spec=conda_cmd, lbl=name, fn=refresh_fn, ch=conda_channel:
+                                 _conda_install_tool(spec, lbl, fn, channel=ch))
+                else:
+                    btn = widgets.Button(
+                        description='Install',
+                        button_style='warning',
+                        layout=widgets.Layout(width='80px', height='24px'),
+                        tooltip=f'pip install {install_cmd}',
+                    )
+                    btn.on_click(lambda b, cmd=install_cmd, lbl=name, fn=refresh_fn:
+                                 _pip_install_tool(cmd, lbl, fn))
                 return widgets.HBox(
                     [label, btn],
                     layout=widgets.Layout(width='100%', margin='1px 0', align_items='center'),

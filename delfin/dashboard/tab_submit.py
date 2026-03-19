@@ -480,8 +480,10 @@ def create_tab(ctx):
                 return
 
             from architector import build_complex
+            from architector.io_process_input import inparse
 
-            results = build_complex(cleaned_data)
+            input_dict = inparse({'mol2string': cleaned_data})
+            results = build_complex(input_dict)
 
             if not results:
                 with mol_output:
@@ -490,18 +492,10 @@ def create_tab(ctx):
                 return
 
             isomers = []
-            for i, mol in enumerate(results):
-                atoms = mol.ase_atoms if hasattr(mol, 'ase_atoms') else None
-                if atoms is None and hasattr(mol, 'mol'):
-                    # Try to extract from RDKit mol or dict
-                    try:
-                        from ase import Atoms
-                        atoms = Atoms(
-                            symbols=[a.GetSymbol() for a in mol.mol.GetAtoms()],
-                            positions=mol.mol.GetConformer().GetPositions(),
-                        )
-                    except Exception:
-                        continue
+            for i, (key, mol) in enumerate(results.items()):
+                if '_init_only' in key:
+                    continue
+                atoms = mol.get('ase_atoms')
                 if atoms is None:
                     continue
 
@@ -510,7 +504,9 @@ def create_tab(ctx):
                     xyz_lines.append(f'{atom}  {pos[0]:.6f}  {pos[1]:.6f}  {pos[2]:.6f}')
                 xyz_string = '\n'.join(xyz_lines)
                 num_atoms = len(atoms)
-                label = f'architector-{i + 1}'
+                energy = mol.get('energy', None)
+                e_str = f' ({energy:.4f} Ha)' if energy is not None else ''
+                label = f'{key}{e_str}'
                 isomers.append((xyz_string, num_atoms, label))
 
             if not isomers:
