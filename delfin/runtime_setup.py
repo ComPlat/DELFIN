@@ -1192,6 +1192,36 @@ def collect_runtime_diagnostics(
             if path:
                 found_path = path
                 break
+        # Turbomole: also check $TURBODIR and known cluster paths
+        if not found_path and label == "turbomole":
+            import os as _os_diag
+            turbodir = _os_diag.environ.get("TURBODIR", "")
+            _tm_search_dirs = [turbodir] if turbodir else []
+            _tm_search_dirs.append("/opt/bwhpc/common/chem/turbomole")
+            for _tdir in _tm_search_dirs:
+                if not _tdir:
+                    continue
+                _tbase = Path(_tdir)
+                # Direct TURBODIR with bin/ subdirectories
+                for _arch in ("x86_64-unknown-linux-gnu_smp", "em64t-unknown-linux-gnu_smp",
+                              "x86_64-unknown-linux-gnu", "em64t-unknown-linux-gnu"):
+                    _candidate = _tbase / "bin" / _arch / "ridft"
+                    if _candidate.is_file():
+                        found_path = str(_candidate)
+                        break
+                if found_path:
+                    break
+                # Nested layout: TmoleX*/TURBOMOLE/bin/...
+                for _sub in sorted(_tbase.glob("Tmole*/TURBOMOLE"), reverse=True):
+                    for _arch in ("x86_64-unknown-linux-gnu_smp", "em64t-unknown-linux-gnu_smp"):
+                        _candidate = _sub / "bin" / _arch / "ridft"
+                        if _candidate.is_file():
+                            found_path = str(_candidate.parent)
+                            break
+                    if found_path:
+                        break
+                if found_path:
+                    break
         diagnostics.append(
             {
                 "name": label,

@@ -949,6 +949,20 @@ def run_cli(argv: list[str]) -> int:
     if args.t1_multiplicity < 1:
         parser.error("--t1-multiplicity must be >= 1")
 
+    # Load user settings and apply runtime environment (qm_tools PATH, ORCA, etc.)
+    try:
+        from delfin.user_settings import load_settings
+        from delfin.runtime_setup import apply_runtime_environment
+        _settings = load_settings()
+        _runtime = _settings.get("runtime", {}) or {}
+        apply_runtime_environment(
+            qm_tools_root=_runtime.get("qm_tools_root", ""),
+            orca_base=_runtime.get("orca_base", ""),
+            csp_tools_root=_runtime.get("csp_tools_root", ""),
+        )
+    except Exception:
+        pass  # non-fatal: tools may still be in PATH
+
     preflight_checks = _collect_preflight_checks(
         need_rdkit=bool(args.smiles or args.smiles_file) or not bool(args.xyz or args.xyz_file),
         need_xtb=(not args.goat) or args.t1_opt or args.crest,

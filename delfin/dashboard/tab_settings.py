@@ -87,11 +87,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     )
     # Individual qm_tool install buttons
     _qm_tool_btn_layout = widgets.Layout(width='100px', height='26px')
-    install_xtb_btn = widgets.Button(description='xtb', button_style='', layout=_qm_tool_btn_layout)
-    install_crest_btn = widgets.Button(description='crest', button_style='', layout=_qm_tool_btn_layout)
-    install_dftbplus_btn = widgets.Button(description='dftb+', button_style='', layout=_qm_tool_btn_layout)
-    install_stda_btn = widgets.Button(description='xtb4stda', button_style='', layout=_qm_tool_btn_layout)
-    install_std2_btn = widgets.Button(description='std2', button_style='', layout=_qm_tool_btn_layout)
+    install_xtb_btn = widgets.Button(description='xtb', button_style='warning', layout=_qm_tool_btn_layout)
+    install_crest_btn = widgets.Button(description='crest', button_style='warning', layout=_qm_tool_btn_layout)
+    install_dftbplus_btn = widgets.Button(description='dftb+', button_style='warning', layout=_qm_tool_btn_layout)
+    install_stda_btn = widgets.Button(description='xtb4stda', button_style='warning', layout=_qm_tool_btn_layout)
+    install_std2_btn = widgets.Button(description='std2', button_style='warning', layout=_qm_tool_btn_layout)
     install_micromamba_btn = widgets.Button(
         description='Install micromamba',
         button_style='',
@@ -149,6 +149,18 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         description='Update analysis_tools',
         button_style='info',
         layout=widgets.Layout(width='160px', height='28px'),
+    )
+    qm_status_box = widgets.VBox(layout=widgets.Layout(width='100%'))
+    refresh_qm_status_btn = widgets.Button(
+        description='Refresh QM status',
+        button_style='info',
+        layout=widgets.Layout(width='155px', height='28px'),
+    )
+    csp_status_box = widgets.VBox(layout=widgets.Layout(width='100%'))
+    refresh_csp_status_btn = widgets.Button(
+        description='Refresh CSP status',
+        button_style='info',
+        layout=widgets.Layout(width='155px', height='28px'),
     )
     analysis_status_html = widgets.HTML(value='')
     analysis_status_box = widgets.VBox(layout=widgets.Layout(width='100%'))
@@ -208,6 +220,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     save_btn = widgets.Button(
         description='Save Settings',
         button_style='primary',
+        disabled=True,
         layout=widgets.Layout(width='120px', height='28px'),
     )
     remote_archive_toggle = widgets.Checkbox(
@@ -760,6 +773,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     btn.disabled = False
         return wrapper
 
+    def _mark_dirty(change=None):
+        """Enable the Save button when any setting widget changes."""
+        save_btn.disabled = False
+
     def _on_toggle_sensitive(change):
         if change.get('name') != 'value':
             return
@@ -767,6 +784,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     def _on_reload(button):
         _load_settings_to_widgets(set_status=True)
+        save_btn.disabled = True
 
     def _on_validate_runtime(button):
         try:
@@ -1221,6 +1239,141 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 f'Updating analysis_tools failed: {html.escape(str(exc))}',
                 color='#d32f2f',
             )
+
+    def _refresh_qm_status(button=None):
+        """Refresh the QM tools status box with checkmarks/crosses and install buttons."""
+        try:
+            runtime_payload = _runtime_payload_from_widgets()
+            effective_backend, effective_orca_base, submit_templates_dir = _resolve_runtime_effective_values(
+                runtime_payload
+            )
+            diagnostics = collect_runtime_diagnostics(
+                runtime_payload,
+                backend=effective_backend,
+                effective_orca_base=effective_orca_base,
+                submit_templates_dir=submit_templates_dir if effective_backend == 'slurm' else None,
+            )
+
+            _QM_TOOL_NAMES = {'xtb', 'crest', 'std2', 'stda', 'xtb4stda', 'dftb+'}
+            _QM_DESCRIPTIONS = {
+                'xtb': 'Extended tight-binding semi-empirical method (GFN-xTB)',
+                'crest': 'Conformer-Rotamer Ensemble Sampling Tool',
+                'std2': 'Simplified TD-DFT v2 for UV/Vis spectra',
+                'stda': 'Simplified Tamm-Dancoff approximation for UV/Vis',
+                'xtb4stda': 'xTB optimized for sTDA input generation',
+                'dftb+': 'Density-functional tight-binding method',
+            }
+            # Maps diagnostic name to install_qm_tools.sh argument
+            _QM_INSTALL_ARGS = {
+                'xtb': 'xtb',
+                'crest': 'crest',
+                'dftb+': 'dftb+',
+                'stda': 'xtb4stda',
+                'xtb4stda': 'xtb4stda',
+                'std2': 'std2',
+            }
+
+            rows = []
+            for item in diagnostics:
+                name = item.get('name', '')
+                if name not in _QM_TOOL_NAMES:
+                    continue
+                installed = item.get('status') == 'ok'
+                detail = item.get('detail', '')
+                desc = _QM_DESCRIPTIONS.get(name, '')
+                if installed and detail:
+                    desc = f'{desc} — <code>{html.escape(detail)}</code>' if desc else html.escape(detail)
+
+                icon = '&#x2705;' if installed else '&#x274C;'
+                color = '#455a64' if installed else '#9e9e9e'
+                label = widgets.HTML(
+                    f'<span>{icon} <b>{html.escape(name)}</b>'
+                    f' &mdash; <span style="color:{color};font-size:0.9em;">'
+                    f'{desc}</span></span>',
+                    layout=widgets.Layout(min_width='300px'),
+                )
+
+                install_arg = _QM_INSTALL_ARGS.get(name)
+                if not installed and install_arg:
+                    btn = widgets.Button(
+                        description='Install',
+                        button_style='warning',
+                        layout=widgets.Layout(width='80px', height='24px'),
+                    )
+                    btn.on_click(lambda b, tool=install_arg: _with_buttons_disabled(
+                        _make_single_qm_tool_handler(tool)
+                    )(b))
+                    rows.append(widgets.HBox(
+                        [label, btn],
+                        layout=widgets.Layout(width='100%', margin='1px 0', align_items='center'),
+                    ))
+                else:
+                    rows.append(widgets.HBox(
+                        [label],
+                        layout=widgets.Layout(width='100%', margin='1px 0'),
+                    ))
+
+            qm_status_box.children = rows if rows else [
+                widgets.HTML('<span style="color:#616161;">No QM tool status available.</span>')
+            ]
+        except Exception as exc:
+            logging.exception("Failed to refresh QM tools status")
+            qm_status_box.children = [widgets.HTML(
+                f'<span style="color:#d32f2f;">Could not load QM tools status: {html.escape(str(exc))}</span>'
+            )]
+
+    def _refresh_csp_status(button=None):
+        """Refresh the CSP tools status box with checkmarks/crosses."""
+        try:
+            runtime_payload = _runtime_payload_from_widgets()
+            effective_backend, effective_orca_base, submit_templates_dir = _resolve_runtime_effective_values(
+                runtime_payload
+            )
+            diagnostics = collect_runtime_diagnostics(
+                runtime_payload,
+                backend=effective_backend,
+                effective_orca_base=effective_orca_base,
+                submit_templates_dir=submit_templates_dir if effective_backend == 'slurm' else None,
+            )
+
+            _CSP_NAMES = {'genarris', 'gnrs-cli', 'cgenarris'}
+            _CSP_DESCRIPTIONS = {
+                'genarris': 'Crystal structure prediction with random sampling',
+                'gnrs-cli': 'Genarris command-line interface',
+                'cgenarris': 'Genarris C extension for fast structure generation',
+            }
+
+            rows = []
+            for item in diagnostics:
+                name = item.get('name', '')
+                if name not in _CSP_NAMES:
+                    continue
+                installed = item.get('status') == 'ok'
+                detail = item.get('detail', '')
+                desc = _CSP_DESCRIPTIONS.get(name, '')
+                if installed and detail:
+                    desc = f'{desc} — <code>{html.escape(detail)}</code>' if desc else html.escape(detail)
+
+                icon = '&#x2705;' if installed else '&#x274C;'
+                color = '#455a64' if installed else '#9e9e9e'
+                rows.append(widgets.HBox(
+                    [widgets.HTML(
+                        f'<span>{icon} <b>{html.escape(name)}</b>'
+                        f' &mdash; <span style="color:{color};font-size:0.9em;">'
+                        f'{desc}</span></span>',
+                        layout=widgets.Layout(min_width='300px'),
+                    )],
+                    layout=widgets.Layout(width='100%', margin='1px 0'),
+                ))
+
+            csp_status_box.children = rows if rows else [
+                widgets.HTML('<span style="color:#616161;">No CSP tool status available.</span>')
+            ]
+        except Exception as exc:
+            logging.exception("Failed to refresh CSP tools status")
+            csp_status_box.children = [widgets.HTML(
+                f'<span style="color:#d32f2f;">Could not load CSP tools status: {html.escape(str(exc))}</span>'
+            )]
 
     def _refresh_analysis_status(button=None):
         try:
@@ -1948,6 +2101,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             ),
             color='#2e7d32',
         )
+        save_btn.disabled = True
+
+    # ── dirty-tracking: enable Save button when any setting widget changes ──
+    _settings_widgets_to_watch = [
+        calc_path_input, archive_path_input,
+        backend_dropdown, global_orca_input, qm_tools_root_input,
+        csp_tools_root_input, mlp_tools_root_input,
+        local_orca_input, local_max_cores_input, local_max_ram_input,
+        slurm_orca_input, slurm_templates_input, slurm_profile_input,
+        host_hidden, host_visible, user_hidden, user_visible,
+        path_hidden, path_visible, port_input,
+        remote_archive_toggle,
+    ]
+    for _w in _settings_widgets_to_watch:
+        _w.observe(_mark_dirty, names='value')
 
     show_sensitive_btn.observe(_on_toggle_sensitive, names='value')
     reload_btn.on_click(_on_reload)
@@ -1969,6 +2137,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     update_mlp_tools_btn.on_click(_with_buttons_disabled(_on_update_mlp_tools))
     install_analysis_tools_btn.on_click(_with_buttons_disabled(_on_install_analysis_tools))
     update_analysis_tools_btn.on_click(_with_buttons_disabled(_on_update_analysis_tools))
+    refresh_qm_status_btn.on_click(_refresh_qm_status)
+    refresh_csp_status_btn.on_click(_refresh_csp_status)
     refresh_analysis_status_btn.on_click(_refresh_analysis_status)
     pip_install_btn.on_click(_with_buttons_disabled(_on_pip_install_editable))
     refresh_mlp_status_btn.on_click(_refresh_mlp_status)
@@ -1997,38 +2167,45 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             '</div>'
         )
     )
-    workspace_header = widgets.HTML('<h3 style="margin:0;">Workspace Paths</h3>')
-    workspace_rows = widgets.VBox(
+    # ── helper: standard row layout ─────────────────────────────────────
+    _row_layout = widgets.Layout(width='100%', gap='8px', align_items='center', flex_flow='row wrap')
+    _section_layout = widgets.Layout(width='100%', gap='10px')
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Top bar: always-visible buttons + status
+    # ══════════════════════════════════════════════════════════════════════
+    top_bar = widgets.VBox(
         [
             widgets.HBox(
-                [
-                    widgets.HTML('<b>Calculations</b>'),
-                    calc_path_input,
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                [save_btn, reload_btn, show_sensitive_btn, validate_runtime_btn],
+                layout=widgets.Layout(gap='8px', align_items='center', flex_flow='row wrap'),
+            ),
+            status_html,
+        ],
+        layout=_section_layout,
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Section 1: Workspace Paths
+    # ══════════════════════════════════════════════════════════════════════
+    workspace_section = widgets.VBox(
+        [
+            widgets.HBox(
+                [widgets.HTML('<b>Calculations</b>'), calc_path_input],
+                layout=_row_layout,
             ),
             widgets.HBox(
-                [
-                    widgets.HTML('<b>Archive</b>'),
-                    archive_path_input,
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                [widgets.HTML('<b>Archive</b>'), archive_path_input],
+                layout=_row_layout,
             ),
         ],
-        layout=widgets.Layout(width='100%', gap='10px'),
+        layout=_section_layout,
     )
-    runtime_header = widgets.HTML('<h3 style="margin:0;">Runtime / Execution</h3>')
-    runtime_rows = widgets.VBox(
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Section 2: Runtime Backend
+    # ══════════════════════════════════════════════════════════════════════
+    runtime_section = widgets.VBox(
         [
             widgets.HBox(
                 [
@@ -2038,25 +2215,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                         '<span style="color:#616161;">Auto chooses SLURM when <code>sbatch</code> is available.</span>'
                     ),
                 ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                layout=_row_layout,
             ),
             widgets.HBox(
-                [
-                    widgets.HTML('<b>ORCA path</b>'),
-                    global_orca_input,
-                    scan_orca_btn,
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                [widgets.HTML('<b>ORCA path</b>'), global_orca_input, scan_orca_btn],
+                layout=_row_layout,
             ),
             widgets.HBox(
                 [
@@ -2066,179 +2229,174 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                         '<span style="color:#616161;">Choose a detected installation to fill the ORCA path automatically.</span>'
                     ),
                 ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                layout=_row_layout,
+            ),
+            widgets.HTML(
+                '<hr style="border:none; border-top:1px solid #e0e0e0; margin:4px 0;">'
+                '<b style="color:#455a64;">Local overrides</b>'
+            ),
+            widgets.HBox(
+                [widgets.HTML('<b>Local ORCA</b>'), local_orca_input],
+                layout=_row_layout,
             ),
             widgets.HBox(
                 [
-                    widgets.HTML('<b>qm_tools root</b>'),
-                    qm_tools_root_input,
+                    widgets.HTML('<b>Local max cores</b>'),
+                    local_max_cores_input,
+                    widgets.HTML('<b>Local max RAM (MB)</b>'),
+                    local_max_ram_input,
+                    detect_local_resources_btn,
                 ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                layout=_row_layout,
+            ),
+            widgets.HTML(
+                '<hr style="border:none; border-top:1px solid #e0e0e0; margin:4px 0;">'
+                '<b style="color:#455a64;">SLURM / Cluster</b>'
+            ),
+            widgets.HBox(
+                [
+                    setup_bwunicluster_btn,
+                    verify_bwunicluster_btn,
+                    full_install_bwunicluster_btn,
+                    widgets.HTML(
+                        '<span style="color:#616161;">'
+                        '<b>Setup</b> prepares an existing DELFIN install for bwUniCluster. '
+                        '<b>Verify</b> is read-only. '
+                        '<b>Full install</b> runs the packaged installer.'
+                        '</span>'
+                    ),
+                ],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
+                [widgets.HTML('<b>SLURM ORCA</b>'), slurm_orca_input],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
+                [widgets.HTML('<b>Submit templates</b>'), slurm_templates_input],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
+                [widgets.HTML('<b>Site profile</b>'), slurm_profile_input],
+                layout=_row_layout,
+            ),
+            runtime_diagnostics_html,
+        ],
+        layout=_section_layout,
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Section 3: Tool Installation (sub-accordion)
+    # ══════════════════════════════════════════════════════════════════════
+
+    # -- QM Tools --
+    qm_tools_section = widgets.VBox(
+        [
+            widgets.HBox(
+                [widgets.HTML('<b>qm_tools root</b>'), qm_tools_root_input],
+                layout=_row_layout,
             ),
             widgets.HBox(
                 [
                     prepare_qm_tools_btn,
                     install_qm_tools_btn,
                     update_qm_tools_btn,
+                    refresh_qm_status_btn,
                     widgets.HTML(
-                        (
-                            f'<span style="color:#616161;">'
-                            f'Installs into <code>{html.escape(str(get_user_qm_tools_dir()))}</code>, '
-                            'not into the Python package directory. '
-                            'ORCA and site modules stay external; PATH/.venv tools are reused.'
-                            f'</span>'
-                        )
+                        f'<span style="color:#616161;">'
+                        f'Installs into <code>{html.escape(str(get_user_qm_tools_dir()))}</code>. '
+                        'ORCA stays external; PATH/.venv tools are reused.'
+                        f'</span>'
                     ),
                 ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                layout=_row_layout,
             ),
-            widgets.HBox(
-                [
-                    widgets.HTML('<span style="color:#616161;">Install single tool:</span>'),
-                    install_xtb_btn,
-                    install_crest_btn,
-                    install_dftbplus_btn,
-                    install_stda_btn,
-                    install_std2_btn,
-                    widgets.HTML('<span style="color:#9e9e9e;">|</span>'),
-                    install_micromamba_btn,
-                    widgets.HTML(
-                        '<span style="color:#616161; font-size:0.85em;">'
-                        '(required for xtb, crest, dftb+)'
-                        '</span>'
-                    ),
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='6px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
-            ),
+            qm_status_box,
             qm_tools_log,
-            widgets.HTML('<b>CSP tools (Crystal Structure Prediction)</b>'),
+        ],
+        layout=_section_layout,
+    )
+
+    # -- CSP Tools --
+    csp_tools_section = widgets.VBox(
+        [
             widgets.HBox(
-                [
-                    widgets.HTML('<b>csp_tools root</b>'),
-                    csp_tools_root_input,
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                [widgets.HTML('<b>csp_tools root</b>'), csp_tools_root_input],
+                layout=_row_layout,
             ),
             widgets.HBox(
                 [
                     install_csp_tools_btn,
                     update_csp_tools_btn,
+                    refresh_csp_status_btn,
                     widgets.HTML(
-                        (
-                            f'<span style="color:#616161;">'
-                            f'Installs Genarris into <code>{html.escape(str(get_user_csp_tools_dir()))}</code>. '
-                            'Requires SWIG, MPI (OpenMPI), and mpi4py in the current Python environment.'
-                            f'</span>'
-                        )
+                        f'<span style="color:#616161;">'
+                        f'Installs Genarris into <code>{html.escape(str(get_user_csp_tools_dir()))}</code>. '
+                        'Requires SWIG, MPI (OpenMPI), and mpi4py.'
+                        f'</span>'
                     ),
                 ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                layout=_row_layout,
             ),
+            csp_status_box,
             csp_tools_log,
-            widgets.HTML('<b>MLP tools (Machine Learning Potentials)</b>'),
+        ],
+        layout=_section_layout,
+    )
+
+    # -- MLP Tools --
+    mlp_tools_section = widgets.VBox(
+        [
             widgets.HBox(
-                [
-                    widgets.HTML('<b>mlp_tools root</b>'),
-                    mlp_tools_root_input,
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                [widgets.HTML('<b>mlp_tools root</b>'), mlp_tools_root_input],
+                layout=_row_layout,
             ),
             widgets.HBox(
                 [
                     install_mlp_tools_btn,
                     update_mlp_tools_btn,
-                    widgets.HTML(
-                        (
-                            f'<span style="color:#616161;">'
-                            f'Installs ANI-2x + AIMNet2 into <code>{html.escape(str(get_user_mlp_tools_dir()))}</code>. '
-                            'Requires PyTorch. Set <code>INSTALL_MACE=1</code> for MACE-OFF.'
-                            f'</span>'
-                        )
-                    ),
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
-            ),
-            mlp_tools_log,
-            widgets.HBox(
-                [
                     refresh_mlp_status_btn,
                     widgets.HTML(
-                        '<span style="color:#616161;">Show installed backends, element coverage, PyTorch/CUDA and GPU partition.</span>'
+                        f'<span style="color:#616161;">'
+                        f'Installs ANI-2x + AIMNet2 into <code>{html.escape(str(get_user_mlp_tools_dir()))}</code>. '
+                        'Requires PyTorch.'
+                        f'</span>'
                     ),
                 ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                layout=_row_layout,
             ),
             mlp_status_box,
-            widgets.HTML('<b>Analysis tools (Multiwfn, CENSO, morfeus, cclib, nglview, Packmol)</b>'),
+            mlp_tools_log,
+        ],
+        layout=_section_layout,
+    )
+
+    # -- Analysis Tools --
+    analysis_tools_section = widgets.VBox(
+        [
             widgets.HBox(
                 [
                     install_analysis_tools_btn,
                     update_analysis_tools_btn,
                     refresh_analysis_status_btn,
                     widgets.HTML(
-                        (
-                            f'<span style="color:#616161;">'
-                            f'Installs morfeus + CENSO into <code>{html.escape(str(get_user_analysis_tools_dir()))}</code>. '
-                            'Multiwfn requires manual binary download.'
-                            f'</span>'
-                        )
+                        f'<span style="color:#616161;">'
+                        f'Installs morfeus + CENSO into <code>{html.escape(str(get_user_analysis_tools_dir()))}</code>. '
+                        'Multiwfn requires manual binary download.'
+                        f'</span>'
                     ),
                 ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                layout=_row_layout,
             ),
             analysis_status_box,
             analysis_tools_log,
-            widgets.HTML('<b>AI/ML Tools (Foundation Models, Generative, Retrosynthesis, ADMET, Metal Complex ML)</b>'),
+        ],
+        layout=_section_layout,
+    )
+
+    # -- AI/ML Tools --
+    ai_tools_section = widgets.VBox(
+        [
             widgets.HBox(
                 [
                     refresh_ai_status_btn,
@@ -2249,149 +2407,166 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                         '</span>'
                     ),
                 ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                layout=_row_layout,
             ),
             ai_status_box,
             tool_install_log,
-            widgets.HTML('<b>Developer Install</b>'),
+        ],
+        layout=_section_layout,
+    )
+
+    # Sub-accordion for tool categories
+    tools_accordion = widgets.Accordion(
+        children=[
+            qm_tools_section,
+            csp_tools_section,
+            mlp_tools_section,
+            analysis_tools_section,
+            ai_tools_section,
+        ],
+    )
+    tools_accordion.set_title(0, 'QM Tools (xtb, crest, dftb+, stda, std2)')
+    tools_accordion.set_title(1, 'CSP Tools (Crystal Structure Prediction)')
+    tools_accordion.set_title(2, 'MLP Tools (Machine Learning Potentials)')
+    tools_accordion.set_title(3, 'Analysis Tools (Multiwfn, CENSO, morfeus, cclib, nglview, Packmol)')
+    tools_accordion.set_title(4, 'AI/ML Tools (Foundation Models, Generative, Retrosynthesis, ADMET)')
+    tools_accordion.selected_index = None  # all collapsed by default
+
+    tools_section = widgets.VBox(
+        [tools_accordion],
+        layout=_section_layout,
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Section 4: Developer
+    # ══════════════════════════════════════════════════════════════════════
+    developer_section = widgets.VBox(
+        [
             widgets.HBox(
                 [
                     pip_install_btn,
                     widgets.HTML(
-                        (
-                            '<span style="color:#616161;">'
-                            'Runs <code>pip install -e .</code> in the DELFIN repo root '
-                            'using the Python that is running this dashboard. '
-                            'Registers new CLI entry-points (e.g. <code>delfin-build</code>) '
-                            'without restarting.'
-                            '</span>'
-                        )
-                    ),
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
-            ),
-            pip_install_log,
-            widgets.HTML('<b>Local overrides</b>'),
-            widgets.HBox(
-                [
-                    widgets.HTML('<b>Local ORCA</b>'),
-                    local_orca_input,
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
-            ),
-            widgets.HBox(
-                [
-                    widgets.HTML('<b>Local max cores</b>'),
-                    local_max_cores_input,
-                    widgets.HTML('<b>Local max RAM (MB)</b>'),
-                    local_max_ram_input,
-                    detect_local_resources_btn,
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
-            ),
-            widgets.HTML('<b>SLURM / Cluster</b>'),
-            widgets.HBox(
-                [
-                    setup_bwunicluster_btn,
-                    verify_bwunicluster_btn,
-                    full_install_bwunicluster_btn,
-                    widgets.HTML(
                         '<span style="color:#616161;">'
-                        '<b>Setup</b> prepares an existing DELFIN install for bwUniCluster. '
-                        '<b>Verify</b> is read-only and only reports what is present or missing. '
-                        '<b>Full install</b> runs the packaged or repo installer for OpenMPI, repo/venv setup, runtime defaults, and environment wiring. '
-                        'ORCA itself still stays external, but an existing ORCA install or tarball is reused when found.'
+                        'Runs <code>pip install -e .</code> in the DELFIN repo root. '
+                        'Registers new CLI entry-points without restarting.'
                         '</span>'
                     ),
                 ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                layout=_row_layout,
             ),
-            widgets.HBox(
-                [
-                    widgets.HTML('<b>SLURM ORCA</b>'),
-                    slurm_orca_input,
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
-            ),
-            widgets.HBox(
-                [
-                    widgets.HTML('<b>Submit templates</b>'),
-                    slurm_templates_input,
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
-            ),
-            widgets.HBox(
-                [
-                    widgets.HTML('<b>Site profile</b>'),
-                    slurm_profile_input,
-                ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
-            ),
-            runtime_diagnostics_html,
-        ],
-        layout=widgets.Layout(width='100%', gap='10px'),
-    )
-    transfer_header = widgets.HTML('<h3 style="margin:0;">Transfer Target</h3>')
-    remote_archive_row = widgets.HBox(
-        [
-            widgets.HTML('<b>Remote Archive</b>'),
-            remote_archive_toggle,
+            pip_install_log,
             widgets.HTML(
-                '<span style="color:#616161;">'
-                'Controls the <code>Remote Archive</code> tab and remote buttons in <code>Archive</code>.'
-                '</span>'
+                '<hr style="border:none; border-top:1px solid #e0e0e0; margin:4px 0;">'
+                '<b style="color:#455a64;">Prerequisites</b>'
+            ),
+            widgets.HBox(
+                [
+                    install_micromamba_btn,
+                    widgets.HTML(
+                        '<span style="color:#616161;">'
+                        'Required for conda-based QM tools (xtb, crest, dftb+).'
+                        '</span>'
+                    ),
+                ],
+                layout=_row_layout,
             ),
         ],
-        layout=widgets.Layout(
-            width='100%',
-            gap='8px',
-            align_items='center',
-            flex_flow='row wrap',
-        ),
+        layout=_section_layout,
     )
-    transfer_rows = widgets.VBox(
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Section 5: SSH Transfer & Remote Archive
+    # ══════════════════════════════════════════════════════════════════════
+    ssh_help_box = widgets.Accordion(
+        children=[
+            widgets.HTML(
+                value=(
+                    '<div style="color:#455a64; padding:6px;">'
+                    '<b>Option A &ndash; SSH key (simple servers):</b><br>'
+                    'If the remote server accepts key-based login without 2FA:<br>'
+                    '<pre style="margin:8px 0 0 0; white-space:pre-wrap;">'
+                    'ssh-keygen -t ed25519\n'
+                    'ssh-copy-id USER@HOST\n'
+                    'ssh USER@HOST'
+                    '</pre>'
+                    'When running <code>ssh-copy-id</code>, enter the target account password once. '
+                    'If the final <code>ssh</code> test succeeds, DELFIN will work afterward.<br><br>'
+                    '<b>Option B &ndash; SSH ControlMaster (servers with 2FA/TOTP):</b><br>'
+                    'Some HPC systems require a one-time password (TOTP) at every login. '
+                    'SSH ControlMaster keeps one authenticated session open so that all '
+                    'subsequent transfers run without re-entering the code.<br><br>'
+                    '<b>Step 1 &ndash; Create an SSH key (skip if you already have one):</b><br>'
+                    '<pre style="margin:4px 0; white-space:pre-wrap;">'
+                    'ssh-keygen -t ed25519'
+                    '</pre>'
+                    'You will be asked three questions &ndash; just press <b>Enter</b> each time:<br>'
+                    '&nbsp;&nbsp;1. <code>Enter file in which to save the key (...)</code> &rarr; Enter<br>'
+                    '&nbsp;&nbsp;2. <code>Enter passphrase (empty for no passphrase)</code> &rarr; Enter<br>'
+                    '&nbsp;&nbsp;3. <code>Enter same passphrase again</code> &rarr; Enter<br><br>'
+                    '<b>Step 2 &ndash; Create or edit ~/.ssh/config:</b><br>'
+                    'Open the file in a terminal editor and add the block below. '
+                    'Replace <code>REMOTE_ALIAS</code>, <code>REMOTE_HOST</code>, '
+                    'and <code>YOUR_USERNAME</code> with your values.<br>'
+                    '<pre style="margin:4px 0; white-space:pre-wrap;">'
+                    'nano ~/.ssh/config'
+                    '</pre>'
+                    'Paste this block at the end of the file:<br>'
+                    '<pre style="margin:4px 0; white-space:pre-wrap;">'
+                    'Host REMOTE_ALIAS\n'
+                    '    HostName REMOTE_HOST\n'
+                    '    User YOUR_USERNAME\n'
+                    '    ControlMaster auto\n'
+                    '    ControlPath ~/.ssh/cm-delfin-%r@%h:%p\n'
+                    '    ControlPersist yes'
+                    '</pre>'
+                    'Save with <code>Ctrl+O</code>, <code>Enter</code>, <code>Ctrl+X</code>. '
+                    'Then set the correct permissions:<br>'
+                    '<pre style="margin:4px 0; white-space:pre-wrap;">'
+                    'chmod 600 ~/.ssh/config'
+                    '</pre><br>'
+                    '<b>Step 3 &ndash; Open the master connection:</b><br>'
+                    'Connect once manually. Enter your TOTP code and password when prompted.<br>'
+                    '<pre style="margin:4px 0; white-space:pre-wrap;">'
+                    'ssh REMOTE_ALIAS'
+                    '</pre>'
+                    'You should now be logged into the remote server. '
+                    'You can type <code>exit</code> &ndash; the master session stays open '
+                    'in the background.<br><br>'
+                    '<b>Step 4 &ndash; Verify:</b><br>'
+                    'This should connect <b>instantly</b> without asking for a password:<br>'
+                    '<pre style="margin:4px 0; white-space:pre-wrap;">'
+                    'ssh REMOTE_ALIAS hostname'
+                    '</pre>'
+                    'If it prints the remote hostname without a prompt, everything works.<br><br>'
+                    '<b>Step 5 &ndash; DELFIN settings:</b><br>'
+                    'In the transfer settings above, enter <code>REMOTE_ALIAS</code> as the '
+                    '<b>Host</b> (the same name you used in ~/.ssh/config).<br><br>'
+                    'The master session stays open until the remote server disconnects or '
+                    'you close it manually with <code>ssh -O exit REMOTE_ALIAS</code>.<br>'
+                    'If your local key has a passphrase, load it with '
+                    '<code>ssh-add ~/.ssh/id_ed25519</code>.'
+                    '</div>'
+                )
+            ),
+        ],
+    )
+    ssh_help_box.set_title(0, 'SSH Setup Guide (click to expand)')
+    ssh_help_box.selected_index = None  # collapsed by default
+
+    transfer_section = widgets.VBox(
         [
-            remote_archive_row,
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Remote Archive</b>'),
+                    remote_archive_toggle,
+                    widgets.HTML(
+                        '<span style="color:#616161;">'
+                        'Controls the <code>Remote Archive</code> tab and remote buttons in <code>Archive</code>.'
+                        '</span>'
+                    ),
+                ],
+                layout=_row_layout,
+            ),
             widgets.HBox(
                 [
                     widgets.HTML('<b>Host</b>'),
@@ -2401,12 +2576,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     widgets.HTML('<b>Port</b>'),
                     port_input,
                 ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                layout=_row_layout,
             ),
             widgets.HBox(
                 [
@@ -2416,120 +2586,48 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                         layout=widgets.Layout(flex='1 1 420px', min_width='280px'),
                     ),
                 ],
-                layout=widgets.Layout(
-                    width='100%',
-                    gap='8px',
-                    align_items='center',
-                    flex_flow='row wrap',
-                ),
+                layout=_row_layout,
             ),
-            widgets.HBox(
-                [show_sensitive_btn, reload_btn, validate_runtime_btn, save_btn],
-                layout=widgets.Layout(gap='8px', align_items='center', flex_flow='row wrap'),
-            ),
-            status_html,
+            ssh_help_box,
         ],
-        layout=widgets.Layout(width='100%', gap='10px'),
+        layout=_section_layout,
     )
-    future_box = widgets.HTML(
-        value=(
-            '<div style="color:#616161;">'
-            '<b>Future settings:</b> Additional DELFIN options can be added here later '
-            'without moving user-specific data into the repository.'
-            '</div>'
-        )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Main accordion
+    # ══════════════════════════════════════════════════════════════════════
+    main_accordion = widgets.Accordion(
+        children=[
+            workspace_section,
+            runtime_section,
+            tools_section,
+            developer_section,
+            transfer_section,
+        ],
     )
-    ssh_help_box = widgets.HTML(
-        value=(
-            '<div style="color:#455a64; border:1px solid #d9dee3; border-radius:6px; '
-            'padding:10px; background:#fafbfc;">'
-            '<b>Set up SSH once in the terminal:</b><br><br>'
-            '<b>Option A &ndash; SSH key (simple servers):</b><br>'
-            'If the remote server accepts key-based login without 2FA:<br>'
-            '<pre style="margin:8px 0 0 0; white-space:pre-wrap;">'
-            'ssh-keygen -t ed25519\n'
-            'ssh-copy-id USER@HOST\n'
-            'ssh USER@HOST'
-            '</pre>'
-            'When running <code>ssh-copy-id</code>, enter the target account password once. '
-            'If the final <code>ssh</code> test succeeds, DELFIN will work afterward.<br><br>'
-            '<b>Option B &ndash; SSH ControlMaster (servers with 2FA/TOTP):</b><br>'
-            'Some HPC systems require a one-time password (TOTP) at every login. '
-            'SSH ControlMaster keeps one authenticated session open so that all '
-            'subsequent transfers run without re-entering the code.<br><br>'
-            '<b>Step 1 &ndash; Create an SSH key (skip if you already have one):</b><br>'
-            '<pre style="margin:4px 0; white-space:pre-wrap;">'
-            'ssh-keygen -t ed25519'
-            '</pre>'
-            'You will be asked three questions &ndash; just press <b>Enter</b> each time:<br>'
-            '&nbsp;&nbsp;1. <code>Enter file in which to save the key (...)</code> &rarr; Enter<br>'
-            '&nbsp;&nbsp;2. <code>Enter passphrase (empty for no passphrase)</code> &rarr; Enter<br>'
-            '&nbsp;&nbsp;3. <code>Enter same passphrase again</code> &rarr; Enter<br><br>'
-            '<b>Step 2 &ndash; Create or edit ~/.ssh/config:</b><br>'
-            'Open the file in a terminal editor and add the block below. '
-            'Replace <code>REMOTE_ALIAS</code>, <code>REMOTE_HOST</code>, '
-            'and <code>YOUR_USERNAME</code> with your values.<br>'
-            '<pre style="margin:4px 0; white-space:pre-wrap;">'
-            'nano ~/.ssh/config'
-            '</pre>'
-            'Paste this block at the end of the file:<br>'
-            '<pre style="margin:4px 0; white-space:pre-wrap;">'
-            'Host REMOTE_ALIAS\n'
-            '    HostName REMOTE_HOST\n'
-            '    User YOUR_USERNAME\n'
-            '    ControlMaster auto\n'
-            '    ControlPath ~/.ssh/cm-delfin-%r@%h:%p\n'
-            '    ControlPersist yes'
-            '</pre>'
-            'Save with <code>Ctrl+O</code>, <code>Enter</code>, <code>Ctrl+X</code>. '
-            'Then set the correct permissions:<br>'
-            '<pre style="margin:4px 0; white-space:pre-wrap;">'
-            'chmod 600 ~/.ssh/config'
-            '</pre><br>'
-            '<b>Step 3 &ndash; Open the master connection:</b><br>'
-            'Connect once manually. Enter your TOTP code and password when prompted.<br>'
-            '<pre style="margin:4px 0; white-space:pre-wrap;">'
-            'ssh REMOTE_ALIAS'
-            '</pre>'
-            'You should now be logged into the remote server. '
-            'You can type <code>exit</code> &ndash; the master session stays open '
-            'in the background.<br><br>'
-            '<b>Step 4 &ndash; Verify:</b><br>'
-            'This should connect <b>instantly</b> without asking for a password:<br>'
-            '<pre style="margin:4px 0; white-space:pre-wrap;">'
-            'ssh REMOTE_ALIAS hostname'
-            '</pre>'
-            'If it prints the remote hostname without a prompt, everything works.<br><br>'
-            '<b>Step 5 &ndash; DELFIN settings:</b><br>'
-            'In the transfer settings above, enter <code>REMOTE_ALIAS</code> as the '
-            '<b>Host</b> (the same name you used in ~/.ssh/config).<br><br>'
-            'The master session stays open until the remote server disconnects or '
-            'you close it manually with <code>ssh -O exit REMOTE_ALIAS</code>.<br>'
-            'If your local key has a passphrase, load it with '
-            '<code>ssh-add ~/.ssh/id_ed25519</code>.'
-            '</div>'
-        )
-    )
+    main_accordion.set_title(0, 'Workspace Paths')
+    main_accordion.set_title(1, 'Runtime Backend')
+    main_accordion.set_title(2, 'Tool Installation')
+    main_accordion.set_title(3, 'Developer')
+    main_accordion.set_title(4, 'SSH Transfer & Remote Archive')
+    main_accordion.selected_index = 0  # Workspace open by default
 
     tab = widgets.VBox(
         [
             info_box,
-            workspace_header,
-            workspace_rows,
-            transfer_header,
-            transfer_rows,
-            ssh_help_box,
-            runtime_header,
-            runtime_rows,
-            future_box,
+            top_bar,
+            main_accordion,
         ],
         layout=widgets.Layout(width='100%', gap='12px', padding='10px'),
     )
 
     _apply_sensitive_visibility()
     _load_settings_to_widgets(set_status=True)
+    _refresh_qm_status()
+    _refresh_csp_status()
     _refresh_mlp_status()
     _refresh_analysis_status()
     _refresh_ai_status()
+    save_btn.disabled = True  # clean state after initial load
 
     return tab, {'reload_settings': _load_settings_to_widgets}
