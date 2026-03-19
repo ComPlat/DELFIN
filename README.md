@@ -351,7 +351,6 @@ DELFIN is configured via `CONTROL.txt` in your working directory. Key settings i
 ### Workflow Control
 * `method = OCCUPIER | classic | manually` (leave empty for ESD-only runs)
 * `OCCUPIER_method = auto | manually` (auto uses adaptive tree-based sequences)
-* `OCCUPIER_tree = flat | deep2 | deep3 | deep | own` (auto tree mode)
 * `calc_initial = yes | no`
 * `oxidation_steps = 1,2,3` / `reduction_steps = 1,2,3`
 * `parallel_workflows = yes | no | auto`
