@@ -479,11 +479,11 @@ def create_tab(ctx):
                           'Or use the Install button in Settings → AI Tools.')
                 return
 
-            from architector import build_complex
             from architector.io_process_input import inparse
+            from architector.complex_construction import build_complex_driver
 
             input_dict = inparse({'mol2string': cleaned_data})
-            results = build_complex(input_dict)
+            results = build_complex_driver(input_dict)
 
             if not results:
                 with mol_output:
