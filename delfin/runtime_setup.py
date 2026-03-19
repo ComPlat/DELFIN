@@ -1236,6 +1236,47 @@ def collect_runtime_diagnostics(
             pass
         return None
 
+    # -- Detect HPC modules via 'module avail' (cached, one call) ----------
+    # Maps diagnostic label -> module name pattern found via 'module avail'
+    _MODULE_LABEL_MAP: dict[str, list[str]] = {
+        "turbomole": ["chem/turbomole", "turbomole"],
+        "gaussian":  ["chem/gaussian", "gaussian"],
+        "vasp":      ["chem/vasp", "vasp"],
+        "nwchem":    ["chem/nwchem", "nwchem"],
+        "cp2k":      ["chem/cp2k", "cp2k"],
+        "gromacs":   ["chem/gromacs", "bio/gromacs", "gromacs"],
+        "lammps":    ["chem/lammps", "lammps"],
+        "amber":     ["chem/amber", "bio/amber", "amber"],
+        "namd":      ["chem/namd", "bio/namd", "namd"],
+        "quantum-espresso": ["chem/quantum-espresso", "chem/quantumespresso",
+                             "phys/quantum-espresso", "quantum-espresso"],
+        "abinit":    ["phys/abinit", "chem/abinit", "abinit"],
+        "molpro":    ["chem/molpro", "molpro"],
+        "openmolcas": ["chem/openmolcas", "chem/molcas", "openmolcas", "molcas"],
+        "psi4":      ["chem/psi4", "psi4"],
+        "dalton":    ["chem/dalton", "dalton"],
+        "gamess":    ["chem/gamess", "gamess"],
+        "cfour":     ["chem/cfour", "cfour"],
+    }
+    _available_modules: set[str] = set()
+    try:
+        _mod_result = subprocess.run(
+            ["bash", "-c", "module avail 2>&1"],
+            capture_output=True, text=True, timeout=10,
+        )
+        import re as _re_mod
+        for line in (_mod_result.stdout + _mod_result.stderr).splitlines():
+            # Skip header/separator lines
+            if line.startswith("---") or not line.strip():
+                continue
+            for token in line.split():
+                # Remove trailing markers like (D), (L), (default)
+                clean = _re_mod.sub(r'\s*\([^)]*\)\s*$', '', token).strip()
+                if clean and "/" in clean:
+                    _available_modules.add(clean.lower())
+    except Exception:
+        pass
+
     for binaries, label in _EXT_QM_PROGRAMS:
         found_path = None
         for name in binaries:
@@ -1259,11 +1300,23 @@ def collect_runtime_diagnostics(
                     if result:
                         found_path = result
                         break
+        # Last fallback: check if available as HPC module
+        _module_hint = ""
+        if not found_path and label in _MODULE_LABEL_MAP:
+            for pattern in _MODULE_LABEL_MAP[label]:
+                _matched_mods = sorted(
+                    (m for m in _available_modules if m.startswith(pattern.lower())),
+                    reverse=True,
+                )
+                if _matched_mods:
+                    # Use the latest version (sorted descending)
+                    _module_hint = f"available via 'module load {_matched_mods[0]}'"
+                    break
         diagnostics.append(
             {
                 "name": label,
-                "status": "ok" if found_path else "missing",
-                "detail": found_path or "not found",
+                "status": "ok" if found_path else ("module" if _module_hint else "missing"),
+                "detail": found_path or _module_hint or "not found",
             }
         )
 

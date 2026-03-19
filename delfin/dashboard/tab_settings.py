@@ -457,8 +457,12 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         rows = []
         for item in diagnostics:
             status = item.get('status', 'missing')
-            status_color = '#2e7d32' if status == 'ok' else '#d32f2f'
-            status_label = 'OK' if status == 'ok' else 'Missing'
+            if status == 'ok':
+                status_color, status_label = '#2e7d32', 'OK'
+            elif status == 'module':
+                status_color, status_label = '#e65100', 'Module'
+            else:
+                status_color, status_label = '#d32f2f', 'Missing'
             rows.append(
                 '<tr>'
                 f'<td style="padding:4px 8px;"><code>{html.escape(str(item.get("name", "")))}</code></td>'
@@ -1930,10 +1934,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             missing = 0
             for item in checks:
                 status = item.get("status", "missing")
-                if status != "ok":
+                if status not in ("ok", "module"):
                     missing += 1
-                status_color = "#2e7d32" if status == "ok" else "#d32f2f"
-                status_label = "OK" if status == "ok" else "Missing"
+                if status == "ok":
+                    status_color, status_label = "#2e7d32", "OK"
+                elif status == "module":
+                    status_color, status_label = "#e65100", "Module"
+                else:
+                    status_color, status_label = "#d32f2f", "Missing"
                 rows.append(
                     "<tr>"
                     f"<td style='padding:4px 8px;'><code>{html.escape(str(item.get('name', '')))}</code></td>"
