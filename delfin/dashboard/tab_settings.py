@@ -992,7 +992,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     def _on_install_micromamba(button):
         try:
-            import shutil, subprocess
+            import os, shutil, subprocess
             if shutil.which('micromamba') or shutil.which('conda'):
                 _set_status('micromamba/conda is already available.', color='#2e7d32')
                 return
