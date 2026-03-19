@@ -1000,8 +1000,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             local_bin.mkdir(parents=True, exist_ok=True)
             result = subprocess.run(
                 ['bash', '-c',
-                 'curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest '
-                 '| tar -xvj -C "$HOME/.local/bin/" --strip-components=1 bin/micromamba'],
+                 'URL=https://micro.mamba.pm/api/micromamba/linux-64/latest; '
+                 'DST="$HOME/.local/bin/"; '
+                 '{ curl -fsSL "$URL" || curl -fsSL --insecure "$URL"; } '
+                 '| tar -xvj -C "$DST" --strip-components=1 bin/micromamba'],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
