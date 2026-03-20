@@ -3211,10 +3211,29 @@ def create_tab(ctx):
         calc_mol_viewer.clear_output()
         scope_key_json = json.dumps(calc_scope_id)
         clear_views_flag = 'true' if reset_view_state else 'false'
+        current_view_scope_json = json.dumps(
+            f"{calc_scope_id}:{state.get('current_path') or '/'}"
+        )
         _run_js(
             f"""
             (function() {{
                 var scopeKey = {scope_key_json};
+                var currentViewScope = {current_view_scope_json};
+                window._calcMolViewStateByScope = window._calcMolViewStateByScope || {{}};
+                window._calcMolViewScopeKeyByScope = window._calcMolViewScopeKeyByScope || {{}};
+                if (!{clear_views_flag}) {{
+                    var currentViewer =
+                        (window._calcMolViewerByScope && window._calcMolViewerByScope[scopeKey])
+                        || (window._calcTrajViewerByScope && window._calcTrajViewerByScope[scopeKey])
+                        || null;
+                    var previousScope =
+                        window._calcMolViewScopeKeyByScope[scopeKey] || currentViewScope;
+                    if (currentViewer && typeof currentViewer.getView === 'function') {{
+                        try {{
+                            window._calcMolViewStateByScope[previousScope] = currentViewer.getView();
+                        }} catch (_e) {{}}
+                    }}
+                }}
                 var scopeRoot = document.querySelector('.{calc_scope_id}');
                 var wrappers = scopeRoot
                     ? scopeRoot.querySelectorAll('.calc-mol-stage-wrapper')
@@ -9281,7 +9300,7 @@ def create_tab(ctx):
         next_suffix = full_path.suffix.lower()
         next_name_lower = full_path.name.lower()
         keep_previous_viewer_during_load = (
-            next_name_lower == 'coord' or next_suffix in ['.cube', '.cub']
+            next_name_lower == 'coord' or next_suffix in ['.xyz', '.cube', '.cub']
         )
 
         # Reset display (avoid flashing text area before viewer is ready)
@@ -11281,11 +11300,11 @@ def create_tab(ctx):
         calc_xyz_batch_panel,
         calc_print_mode_panel,
         calc_mo_plot_panel,
+        calc_delete_confirm,
+        calc_delete_status,
         calc_mol_container,
         calc_content_label,
         calc_preselect_container,
-        calc_delete_confirm,
-        calc_delete_status,
         calc_move_archive_confirm,
         calc_move_archive_status,
         calc_ops_status,
@@ -11440,6 +11459,24 @@ def create_tab(ctx):
             var rightPanel = scopeRoot.querySelector('.calc-right');
             var mv = scopeRoot.querySelector('.calc-mol-viewer');
             if (!rightPanel || !mv || mv.offsetParent === null) return;
+            var scopeKey = {json.dumps(calc_scope_id)};
+            var savedView = null;
+            var savedViewScope = null;
+            window._calcMolViewStateByScope = window._calcMolViewStateByScope || {{}};
+            window._calcMolViewScopeKeyByScope = window._calcMolViewScopeKeyByScope || {{}};
+            var currentViewer =
+                (window._calcMolViewerByScope && window._calcMolViewerByScope[scopeKey])
+                || (window._calcTrajViewerByScope && window._calcTrajViewerByScope[scopeKey])
+                || null;
+            if (currentViewer && typeof currentViewer.getView === 'function') {{
+                try {{
+                    savedView = currentViewer.getView();
+                    savedViewScope = window._calcMolViewScopeKeyByScope[scopeKey] || null;
+                    if (savedView && savedViewScope) {{
+                        window._calcMolViewStateByScope[savedViewScope] = savedView;
+                    }}
+                }} catch (_e) {{}}
+            }}
             var container = mv.closest('.widget-vbox');
             if (!container || container.style.display === 'none') return;
             var mvRect = mv.getBoundingClientRect();
@@ -11485,12 +11522,21 @@ def create_tab(ctx):
             if (w < 120) w = 120;
             mv.style.width = w + 'px';
             mv.style.height = h + 'px';
-            var inner = mv.querySelector('[id^="3dmolviewer"], [id^="calc_trj"]');
-            if (inner) {{ inner.style.width = w + 'px'; inner.style.height = h + 'px'; }}
-            var v = (window._calcMolViewerByScope && window._calcMolViewerByScope[scopeKey])
-                || (window._calcTrajViewerByScope && window._calcTrajViewerByScope[scopeKey])
-                || null;
+            var stage = mv.querySelector(
+                '[id^="mol3d_"], [id^="calc_trj_viewer_"], [id^="3dmolviewer_"], [id^="calc_trj"]'
+            );
+            if (stage) {{
+                stage.style.width = w + 'px';
+                stage.style.height = h + 'px';
+            }}
+            var v = currentViewer;
             if (v && typeof v.resize === 'function') {{ v.resize(); v.render(); }}
+            if (savedView && v && typeof v.setView === 'function') {{
+                try {{
+                    v.setView(savedView);
+                    v.render();
+                }} catch (_e) {{}}
+            }}
         }};
         window._calcResizeMolViewerFns = window._calcResizeMolViewerFns || {{}};
         window._calcResizeMolViewerFns[scopeKey] = window["{calc_resize_mol_fn}"];
