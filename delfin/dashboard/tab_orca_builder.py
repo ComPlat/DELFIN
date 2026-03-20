@@ -207,6 +207,8 @@ def create_tab(ctx):
         'xyz_view_idx': 0,
         'numbering_check_active': False,
         'numbering_check_results': {},
+        'numbering_check_block_idx': 1,
+        'numbering_view_step': 0,
     }
 
     # -- helpers --------------------------------------------------------
@@ -478,7 +480,7 @@ def create_tab(ctx):
         }
 
     def _update_numbering_fix_button():
-        idx = int(state.get('xyz_view_idx', 0))
+        idx = int(state.get('numbering_check_block_idx', state.get('xyz_view_idx', 0)))
         result = (state.get('numbering_check_results') or {}).get(idx) or {}
         has_fix = bool(
             state.get('numbering_check_active')
@@ -574,17 +576,21 @@ def create_tab(ctx):
             orca_ri.value = 'RIJCOSX'
             orca_aux_basis.value = 'def2/J'
             orca_solvation_type.value = 'None'
-            orca_solvent.value = 'water'
+            orca_solvent.value = 'acetonitrile'
             orca_print_mos.value = False
             orca_print_basis.value = False
             orca_additional.value = ''
-            orca_pal.value = 40
+            orca_pal.value = 12
             orca_maxcore.value = 6000
             orca_slurm_time.value = '12:00:00'
             orca_path_files.value = ''
             orca_preview.value = ''
             state['extra_files'].clear()
             state['last_auto_keywords'] = ''
+            state['numbering_check_active'] = False
+            state['numbering_check_results'] = {}
+            state['numbering_check_block_idx'] = 1
+            state['numbering_view_step'] = 0
             try:
                 orca_file_upload.value = ()
             except Exception:
@@ -733,8 +739,41 @@ def create_tab(ctx):
             '</script>\n'
         )
 
+    def _numbering_check_view_html(reference_xyz, target_xyz, reordered_target_xyz, step, reset_view=False):
+        step = int(step)
+        if step == 1:
+            return _viewer_html(
+                reference_xyz,
+                _atom_labels_js(reference_xyz, var='viewer'),
+                reset_view=reset_view,
+            )
+        if step == 2:
+            return _viewer_html(
+                reordered_target_xyz,
+                _atom_labels_js(reordered_target_xyz, var='viewer'),
+                reset_view=reset_view,
+            )
+        return _overlay_viewer_html(reference_xyz, target_xyz, reset_view=reset_view)
+
     def _update_nav_label():
         blocks = state['xyz_blocks']
+        if state.get('numbering_check_active'):
+            block_idx = int(state.get('numbering_check_block_idx', 1))
+            step = int(state.get('numbering_view_step', 0))
+            labels = [
+                'Overlay',
+                'Aligned reference',
+                'Reordered target',
+            ]
+            block_name = blocks[block_idx][0] if 0 <= block_idx < len(blocks) else 'Comparison'
+            orca_mol_nav_label.value = (
+                f'<span style="font-size:12px;">'
+                f'{step + 1}&thinsp;/&thinsp;3: {labels[step]} for {block_name}'
+                f'</span>'
+            )
+            orca_mol_nav_row.layout.display = ''
+            return
+
         n = len(blocks)
         if n > 1:
             idx = state['xyz_view_idx']
@@ -753,19 +792,35 @@ def create_tab(ctx):
         blocks = state['xyz_blocks']
         _update_nav_label()
         _update_numbering_fix_button()
+        if state.get('numbering_check_active'):
+            orca_mol_output.layout.height = '560px'
+            orca_mol_output.layout.min_height = '560px'
+        else:
+            orca_mol_output.layout.height = '560px'
+            orca_mol_output.layout.min_height = '560px'
         with orca_mol_output:
             clear_output(wait=True)
             if blocks:
                 idx = state['xyz_view_idx']
-                block_name, full_xyz = blocks[idx]
+                _block_name, full_xyz = blocks[idx]
                 try:
-                    overlay_result = (state.get('numbering_check_results') or {}).get(idx)
-                    if state.get('numbering_check_active') and idx > 0 and overlay_result and overlay_result.get('aligned_reference_xyz'):
+                    overlay_idx = int(state.get('numbering_check_block_idx', 1))
+                    overlay_result = (state.get('numbering_check_results') or {}).get(overlay_idx)
+                    if (
+                        state.get('numbering_check_active')
+                        and overlay_idx > 0
+                        and overlay_result
+                        and overlay_result.get('aligned_reference_xyz')
+                    ):
+                        target_xyz = blocks[overlay_idx][1]
+                        reordered_target_xyz = overlay_result.get('reordered_target_xyz') or target_xyz
                         display(
                             HTML(
-                                _overlay_viewer_html(
+                                _numbering_check_view_html(
                                     overlay_result['aligned_reference_xyz'],
-                                    full_xyz,
+                                    target_xyz,
+                                    reordered_target_xyz,
+                                    state.get('numbering_view_step', 0),
                                     reset_view=reset_view,
                                 )
                             )
@@ -798,11 +853,18 @@ def create_tab(ctx):
         state['xyz_view_idx'] = 0
         state['numbering_check_active'] = False
         state['numbering_check_results'] = {}
+        state['numbering_check_block_idx'] = 1
+        state['numbering_view_step'] = 0
         _refresh_mol_view(reset_view=True)  # new coords → reset camera
 
     def on_mol_prev(btn):
         blocks = state['xyz_blocks']
         if not blocks:
+            return
+        if state.get('numbering_check_active'):
+            state['numbering_view_step'] = (int(state.get('numbering_view_step', 0)) - 1) % 3
+            _update_nav_label()
+            _refresh_mol_view(reset_view=False)
             return
         state['xyz_view_idx'] = (state['xyz_view_idx'] - 1) % len(blocks)
         _update_nav_label()
@@ -811,6 +873,11 @@ def create_tab(ctx):
     def on_mol_next(btn):
         blocks = state['xyz_blocks']
         if not blocks:
+            return
+        if state.get('numbering_check_active'):
+            state['numbering_view_step'] = (int(state.get('numbering_view_step', 0)) + 1) % 3
+            _update_nav_label()
+            _refresh_mol_view(reset_view=False)
             return
         state['xyz_view_idx'] = (state['xyz_view_idx'] + 1) % len(blocks)
         _update_nav_label()
@@ -972,18 +1039,20 @@ def create_tab(ctx):
         state['numbering_check_results'] = results
         if len(xyz_blocks) > 1:
             state['xyz_view_idx'] = min(max(state.get('xyz_view_idx', 1), 1), len(xyz_blocks) - 1)
+        state['numbering_check_block_idx'] = int(state.get('xyz_view_idx', 1)) if len(xyz_blocks) > 1 else 1
+        state['numbering_view_step'] = 0
         _refresh_mol_view(reset_view=True)
         with orca_output:
             clear_output()
             print('\n'.join(lines))
             print()
-            print('Molecule Preview shows red/blue overlay for the selected comparison block.')
+            print('Molecule Preview cycles through overlay, aligned reference, and reordered target for the selected comparison block.')
 
     orca_check_numbering_btn.on_click(handle_orca_check_numbering)
 
     def handle_orca_apply_numbering_fix(button):
         xyz_records = _orca_parse_xyz_block_records(orca_coords.value)
-        idx = int(state.get('xyz_view_idx', 0))
+        idx = int(state.get('numbering_check_block_idx', state.get('xyz_view_idx', 0)))
         result = (state.get('numbering_check_results') or {}).get(idx) or {}
         if not xyz_records or idx <= 0 or idx >= len(xyz_records):
             with orca_output:
