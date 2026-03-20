@@ -521,7 +521,7 @@ exec "{venv_delfin_voila}" --port {voila_port}
 """
 
     bashrc = Path.home() / ".bashrc"
-    repo_venv_activate = f"{repo_root / '.venv' / 'bin' / 'activate'}"
+    repo_venv = str(repo_root / ".venv")
 
     script = f"""\
 #!/usr/bin/env bash
@@ -533,10 +533,25 @@ echo "Repo:   {repo_root}"
 
 # --- Consolidate to single venv in the repo directory ---
 BASHRC="{bashrc}"
+DELFIN_VENV="{repo_venv}"
 if [ -f "$BASHRC" ]; then
-    if grep -q '\\$HOME/.venv/bin/activate' "$BASHRC"; then
-        echo "Patching .bashrc: \\$HOME/.venv -> repo .venv ..."
-        sed -i 's|\\$HOME/.venv/bin/activate|{repo_venv_activate}|g' "$BASHRC"
+    # Replace any old venv activation block with a robust one
+    if grep -q '.venv/bin/activate' "$BASHRC"; then
+        echo "Patching .bashrc venv activation block ..."
+        # Remove old block (between marker comments or the simple if-fi block)
+        sed -i '/# Auto-activate.*venv/,/^unset _DELFIN_VENV$/d' "$BASHRC"
+        sed -i '/# Auto-activate.*venv/,/^fi$/d' "$BASHRC"
+        # Append robust activation block
+        cat >> "$BASHRC" << 'BASHRC_BLOCK'
+
+# Auto-activate DELFIN venv (skip if already the correct one)
+_DELFIN_VENV="{repo_venv}"
+if [ "$VIRTUAL_ENV" != "$_DELFIN_VENV" ] && [ -f "$_DELFIN_VENV/bin/activate" ]; then
+    type deactivate &>/dev/null && deactivate
+    source "$_DELFIN_VENV/bin/activate"
+fi
+unset _DELFIN_VENV
+BASHRC_BLOCK
         echo ".bashrc updated."
     fi
 fi
