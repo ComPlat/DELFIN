@@ -344,23 +344,12 @@ def create_tab(ctx):
         '    }\n'
         '    __RESET__\n'
         '    window._orcaBuildViewState=window._orcaBuildViewState||null;\n'
-        '    var prev=window._orcaBuildViewer||null;\n'
-        '    if(prev&&typeof prev.getView==="function"){\n'
-        '      try{window._orcaBuildViewState=prev.getView();}catch(_e){}\n'
-        '    }\n'
-        '    var saved=window._orcaBuildViewState;\n'
         '    var viewer=$3Dmol.createViewer(el,{backgroundColor:"white"});\n'
         '    __MOUSE__\n'
         '    viewer.addModel(__XYZ__,"xyz");\n'
         '    viewer.setStyle({},__STYLE__);\n'
         '    __LABELS__\n'
-        '    if(saved&&typeof viewer.setView==="function"){\n'
-        '      try{viewer.setView(saved);}catch(_e){\n'
-        '        viewer.zoomTo();viewer.center();viewer.zoom(__ZOOM__);\n'
-        '      }\n'
-        '    }else{\n'
-        '      viewer.zoomTo();viewer.center();viewer.zoom(__ZOOM__);\n'
-        '    }\n'
+        '    viewer.zoomTo();viewer.center();viewer.zoom(__ZOOM__);\n'
         '    viewer.render();\n'
         '    window._orcaBuildViewer=viewer;\n'
         '  }\n'
@@ -395,10 +384,8 @@ def create_tab(ctx):
     def _viewer_html(xyz_data, label_js='', reset_view=False):
         """Build a self-contained HTML block that renders xyz_data in a $3Dmol viewer.
 
-        The viewer saves its orientation to ``window._orcaBuildViewState`` before
-        destroying itself, so the next call can restore it (orientation preserved
-        across prev/next navigation).  When *reset_view* is True the saved state
-        is cleared first (used when the user enters new coordinates).
+        The viewer is always re-centered for the current molecule so the preview
+        starts from a stable centered view.
         """
         div_id = 'orca-mol-' + uuid.uuid4().hex[:10]
         mouse_js = patch_viewer_mouse_controls_js('viewer', 'el')

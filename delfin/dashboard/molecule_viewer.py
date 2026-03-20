@@ -174,6 +174,25 @@ def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM):
                     'document.getElementById("3dmolviewer_UNIQUEID")',
                 )
                 + '\n'
+                + (
+                    '(function(){'
+                    'var __delfinRecenter=function(){'
+                    'try{'
+                    'viewer_UNIQUEID.zoomTo();'
+                    'viewer_UNIQUEID.center();'
+                    + (
+                        f'viewer_UNIQUEID.zoom({zoom});'
+                        if zoom is not None
+                        else ''
+                    )
+                    + 'viewer_UNIQUEID.render();'
+                    '}catch(_e){}'
+                    '};'
+                    'setTimeout(__delfinRecenter,0);'
+                    'setTimeout(__delfinRecenter,120);'
+                    '})();'
+                )
+                + '\n'
             )
     view.setStyle({}, DEFAULT_3DMOL_STYLE)
     view.setBackgroundColor(DEFAULT_3DMOL_BACKGROUND)
