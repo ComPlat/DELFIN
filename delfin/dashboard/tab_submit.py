@@ -1,5 +1,6 @@
 """Submit Job tab: main DELFIN job submission form."""
 
+import json
 import re
 
 import py3Dmol
@@ -461,11 +462,39 @@ def create_tab(ctx):
         if not content:
             xyz_copy_status.value = '<span style="color:#d32f2f;">No XYZ to copy</span>'
             return
-        escaped = content.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
+        text_payload = json.dumps(str(content))
         js_code = (
-            "navigator.clipboard.writeText('" + escaped + "')"
-            ".then(() => console.log('Copied XYZ'))"
-            ".catch(err => console.error('Copy failed:', err));"
+            "(function(){"
+            f"const text={text_payload};"
+            "function _manualPrompt(){"
+            "try{window.prompt('Copy to clipboard (Cmd+C/Ctrl+C, Enter):', text);}catch(_e){}"
+            "}"
+            "function _legacyCopy(){"
+            "try{"
+            "const ta=document.createElement('textarea');"
+            "ta.value=text;"
+            "ta.setAttribute('readonly','readonly');"
+            "ta.style.position='fixed';"
+            "ta.style.top='-1000px';"
+            "ta.style.left='-1000px';"
+            "ta.style.opacity='0';"
+            "document.body.appendChild(ta);"
+            "ta.focus();"
+            "ta.select();"
+            "ta.setSelectionRange(0, ta.value.length);"
+            "const ok=document.execCommand('copy');"
+            "document.body.removeChild(ta);"
+            "return !!ok;"
+            "}catch(_e){return false;}"
+            "}"
+            "if(navigator.clipboard && navigator.clipboard.writeText){"
+            "navigator.clipboard.writeText(text).catch(function(){"
+            "if(!_legacyCopy()) _manualPrompt();"
+            "});"
+            "}else{"
+            "if(!_legacyCopy()) _manualPrompt();"
+            "}"
+            "})();"
         )
         ctx.run_js(js_code)
         xyz_copy_status.value = '<span style="color:#388e3c;">Copied to clipboard</span>'

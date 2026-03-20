@@ -3,11 +3,14 @@
 import re
 import shutil
 from pathlib import Path
+from collections import Counter
+from itertools import permutations, product
 
 import py3Dmol
 import ipywidgets as widgets
 import json
 import uuid
+import numpy as np
 
 from IPython.display import clear_output, display, HTML
 
@@ -70,6 +73,17 @@ def create_tab(ctx):
         description='COPY COORDINATES',
         button_style='',
         layout=widgets.Layout(width='200px'),
+    )
+    orca_check_numbering_btn = widgets.Button(
+        description='CHECK NUMBERING',
+        button_style='warning',
+        layout=widgets.Layout(width='200px'),
+    )
+    orca_apply_numbering_btn = widgets.Button(
+        description='APPLY NUMBERING FIX',
+        button_style='success',
+        disabled=True,
+        layout=widgets.Layout(width='220px'),
     )
     orca_charge = widgets.IntText(value=0, description='Charge:',
                                   layout=widgets.Layout(width='200px'), style=ws)
@@ -191,19 +205,16 @@ def create_tab(ctx):
         'is_resetting': False,
         'xyz_blocks': [],
         'xyz_view_idx': 0,
+        'numbering_check_active': False,
+        'numbering_check_results': {},
     }
 
     # -- helpers --------------------------------------------------------
-    def parse_xyz_blocks(text):
-        """Parse named XYZ blocks like ``name.xyz;`` or shorthand ``1;comment``.
-
-        Returns a list of ``(filename, full_xyz_str)`` tuples, or *None* if
-        no named blocks are found.  The returned XYZ strings always include
-        the standard two-line header (atom count + empty comment line).
-        """
-        blocks = []
+    def _orca_parse_xyz_block_records(text):
+        """Parse named XYZ blocks like ``name.xyz;`` or shorthand ``1;comment``."""
+        records = []
         pattern = re.compile(
-            r'^([^;\n]+?)\s*;\s*([^\n]*)\n(.*?)^\s*\*\s*$',
+            r'^([^;\n]+?)\s*;[ \t]*([^\n]*)\n(.*?)^\s*\*\s*$',
             re.MULTILINE | re.DOTALL,
         )
         for m in pattern.finditer(text):
@@ -222,15 +233,261 @@ def create_tab(ctx):
                 continue
             try:
                 int(lines[0].strip())
-                # First line is an integer → XYZ header already present
                 full_xyz = content
             except ValueError:
-                # No header → count atom lines and prepend N + empty comment
                 n = len(lines)
                 comment = suffix_comment or safe_name
                 full_xyz = f'{n}\n{comment}\n' + '\n'.join(lines)
-            blocks.append((safe_name, full_xyz))
+            records.append(
+                {
+                    'filename': safe_name,
+                    'raw_name': raw_name,
+                    'suffix_comment': suffix_comment,
+                    'full_xyz': full_xyz,
+                }
+            )
+        return records
+
+    def parse_xyz_blocks(text):
+        """Parse named XYZ blocks like ``name.xyz;`` or shorthand ``1;comment``.
+
+        Returns a list of ``(filename, full_xyz_str)`` tuples, or *None* if
+        no named blocks are found.  The returned XYZ strings always include
+        the standard two-line header (atom count + empty comment line).
+        """
+        blocks = []
+        for record in _orca_parse_xyz_block_records(text):
+            blocks.append((record['filename'], record['full_xyz']))
         return blocks if blocks else None
+
+    def _orca_parse_xyz_symbols_coords(xyz_text):
+        lines = [line.rstrip() for line in str(xyz_text or '').splitlines()]
+        if len(lines) < 3:
+            raise ValueError('XYZ block is too short.')
+        try:
+            n_atoms = int(lines[0].strip())
+        except Exception as exc:
+            raise ValueError('First XYZ line must contain the atom count.') from exc
+        coord_lines = lines[2: 2 + n_atoms]
+        if len(coord_lines) != n_atoms:
+            raise ValueError('XYZ block does not contain the declared number of atoms.')
+        symbols = []
+        coords = []
+        for line in coord_lines:
+            parts = line.split()
+            if len(parts) < 4:
+                raise ValueError(f'Invalid XYZ coordinate line: {line}')
+            symbols.append(parts[0])
+            coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
+        return symbols, np.asarray(coords, dtype=float)
+
+    def _orca_build_xyz_from_symbols_coords(symbols, coords, comment=''):
+        arr = np.asarray(coords, dtype=float)
+        body = '\n'.join(
+            f'{sym:<2} {xyz[0]: .8f} {xyz[1]: .8f} {xyz[2]: .8f}'
+            for sym, xyz in zip(symbols, arr)
+        )
+        return f'{len(symbols)}\n{comment}\n{body}'
+
+    def _orca_kabsch_align(reference_coords, target_coords, mapping=None):
+        ref = np.asarray(reference_coords, dtype=float)
+        target = np.asarray(target_coords, dtype=float)
+        if ref.shape != target.shape:
+            raise ValueError(f'Coordinate shape mismatch: {ref.shape} vs {target.shape}.')
+        if mapping is not None:
+            map_idx = np.asarray(mapping, dtype=int)
+            if map_idx.ndim != 1 or map_idx.size != ref.shape[0]:
+                raise ValueError('Invalid mapping length for Kabsch alignment.')
+            target = target[map_idx]
+        ref_centroid = ref.mean(axis=0)
+        target_centroid = target.mean(axis=0)
+        ref_centered = ref - ref_centroid
+        target_centered = target - target_centroid
+        covariance = ref_centered.T @ target_centered
+        u, _s, vt = np.linalg.svd(covariance)
+        rotation = vt.T @ u.T
+        if np.linalg.det(rotation) < 0:
+            vt[-1, :] *= -1.0
+            rotation = vt.T @ u.T
+        aligned = ref_centered @ rotation + target_centroid
+        diff = aligned - target
+        rmsd = float(np.sqrt(np.mean(np.sum(diff * diff, axis=1))))
+        return aligned, rmsd
+
+    def _orca_sq_distance_matrix(a, b):
+        a = np.asarray(a, dtype=float)
+        b = np.asarray(b, dtype=float)
+        diff = a[:, None, :] - b[None, :, :]
+        return np.einsum('ijk,ijk->ij', diff, diff)
+
+    def _orca_element_assignment_for_rotation(ref_symbols_lc, target_symbols_lc, ref_rot_centered, target_centered):
+        try:
+            from scipy.optimize import linear_sum_assignment
+        except Exception:
+            return None
+
+        mapping = np.full(len(ref_symbols_lc), -1, dtype=int)
+        ref_groups = {}
+        target_groups = {}
+        for idx, symbol in enumerate(ref_symbols_lc):
+            ref_groups.setdefault(symbol, []).append(idx)
+        for idx, symbol in enumerate(target_symbols_lc):
+            target_groups.setdefault(symbol, []).append(idx)
+        if set(ref_groups) != set(target_groups):
+            return None
+
+        for symbol, ref_idx in ref_groups.items():
+            target_idx = target_groups.get(symbol, [])
+            if len(ref_idx) != len(target_idx):
+                return None
+            if len(ref_idx) == 1:
+                mapping[ref_idx[0]] = target_idx[0]
+                continue
+            costs = _orca_sq_distance_matrix(
+                ref_rot_centered[np.asarray(ref_idx, dtype=int)],
+                target_centered[np.asarray(target_idx, dtype=int)],
+            )
+            row_ind, col_ind = linear_sum_assignment(costs)
+            for row_pos, col_pos in zip(row_ind, col_ind):
+                mapping[int(ref_idx[row_pos])] = int(target_idx[col_pos])
+        if np.any(mapping < 0):
+            return None
+        return mapping
+
+    def _orca_generate_proper_axis_rotations():
+        mats = []
+        for perm in permutations((0, 1, 2)):
+            for signs in product((-1.0, 1.0), repeat=3):
+                mat = np.zeros((3, 3), dtype=float)
+                for new_axis, old_axis in enumerate(perm):
+                    mat[old_axis, new_axis] = signs[new_axis]
+                if np.linalg.det(mat) > 0.0:
+                    mats.append(mat)
+        return mats
+
+    def _orca_topology_mapping_from_xyz(ref_symbols, ref_coords, target_symbols, target_coords):
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import rdDetermineBonds, rdMolAlign
+        except Exception:
+            return None
+
+        ref_xyz = _orca_build_xyz_from_symbols_coords(ref_symbols, ref_coords, comment='Reference')
+        target_xyz = _orca_build_xyz_from_symbols_coords(target_symbols, target_coords, comment='Target')
+        ref_mol = Chem.MolFromXYZBlock(ref_xyz)
+        target_mol = Chem.MolFromXYZBlock(target_xyz)
+        if ref_mol is None or target_mol is None:
+            return None
+        try:
+            rdDetermineBonds.DetermineConnectivity(ref_mol)
+            rdDetermineBonds.DetermineConnectivity(target_mol)
+            _rmsd, _transform, atom_map = rdMolAlign.GetBestAlignmentTransform(
+                ref_mol, target_mol, maxMatches=20000, reflect=False
+            )
+        except Exception:
+            return None
+        if not atom_map:
+            return None
+        mapping = np.full(len(ref_symbols), -1, dtype=int)
+        for probe_idx, ref_idx in atom_map:
+            mapping[int(probe_idx)] = int(ref_idx)
+        if np.any(mapping < 0) or np.unique(mapping).size != len(ref_symbols):
+            return None
+        ref_seq = [s.lower() for s in ref_symbols]
+        target_seq = [s.lower() for s in target_symbols]
+        if not all(ref_seq[i] == target_seq[mapping[i]] for i in range(len(ref_seq))):
+            return None
+        return mapping
+
+    def _orca_check_numbering_pair(ref_symbols, ref_coords, target_symbols, target_coords):
+        if len(ref_symbols) != len(target_symbols):
+            raise ValueError(
+                f'Atom count mismatch: ref {len(ref_symbols)} vs target {len(target_symbols)}.'
+            )
+        ref_seq = [s.lower() for s in ref_symbols]
+        target_seq = [s.lower() for s in target_symbols]
+        if Counter(ref_seq) != Counter(target_seq):
+            raise ValueError('Element composition mismatch.')
+
+        n_atoms = len(ref_symbols)
+        direct_rmsd = None
+        direct_aligned = None
+        if ref_seq == target_seq:
+            direct_aligned, direct_rmsd = _orca_kabsch_align(ref_coords, target_coords)
+
+        best_mapping = np.arange(n_atoms, dtype=int)
+        best_source = 'direct'
+        best_aligned = direct_aligned
+        best_rmsd = float(direct_rmsd) if direct_rmsd is not None else float('inf')
+
+        topo_mapping = _orca_topology_mapping_from_xyz(ref_symbols, ref_coords, target_symbols, target_coords)
+        if topo_mapping is not None:
+            aligned, rmsd = _orca_kabsch_align(ref_coords, target_coords, mapping=topo_mapping)
+            if rmsd < best_rmsd - 1e-12:
+                best_mapping, best_source, best_aligned, best_rmsd = topo_mapping, 'rdkit-topology', aligned, float(rmsd)
+
+        ref_centered = np.asarray(ref_coords, dtype=float) - np.asarray(ref_coords, dtype=float).mean(axis=0)
+        target_centered = np.asarray(target_coords, dtype=float) - np.asarray(target_coords, dtype=float).mean(axis=0)
+        for rot_guess in _orca_generate_proper_axis_rotations():
+            mapping = _orca_element_assignment_for_rotation(
+                ref_seq,
+                target_seq,
+                ref_centered @ rot_guess,
+                target_centered,
+            )
+            if mapping is None:
+                continue
+            aligned, rmsd = _orca_kabsch_align(ref_coords, target_coords, mapping=mapping)
+            if rmsd < best_rmsd - 1e-12:
+                best_mapping, best_source, best_aligned, best_rmsd = mapping, 'global-permutation', aligned, float(rmsd)
+
+        identity = np.arange(n_atoms, dtype=int)
+        numbering_ok = bool(
+            np.array_equal(best_mapping, identity)
+            or (
+                direct_rmsd is not None
+                and best_rmsd >= float(direct_rmsd) - 1e-4
+            )
+        )
+        suspicious = bool(
+            not numbering_ok
+            and direct_rmsd is not None
+            and best_rmsd + 0.10 < float(direct_rmsd)
+            and best_rmsd <= 0.60
+        )
+        if direct_rmsd is None and not np.array_equal(best_mapping, identity) and best_rmsd <= 0.60:
+            suspicious = True
+
+        return {
+            'direct_rmsd': None if direct_rmsd is None else float(direct_rmsd),
+            'best_rmsd': float(best_rmsd),
+            'best_mapping': [int(v) for v in np.asarray(best_mapping, dtype=int).tolist()],
+            'best_source': best_source,
+            'numbering_ok': numbering_ok,
+            'suspicious': suspicious,
+            'reordered_target_xyz': _orca_build_xyz_from_symbols_coords(
+                [target_symbols[int(v)] for v in np.asarray(best_mapping, dtype=int).tolist()],
+                np.asarray(target_coords, dtype=float)[np.asarray(best_mapping, dtype=int)],
+                comment='Reordered target',
+            ),
+            'aligned_reference_xyz': _orca_build_xyz_from_symbols_coords(
+                ref_symbols,
+                best_aligned if best_aligned is not None else ref_coords,
+                comment='Aligned reference',
+            ),
+        }
+
+    def _update_numbering_fix_button():
+        idx = int(state.get('xyz_view_idx', 0))
+        result = (state.get('numbering_check_results') or {}).get(idx) or {}
+        has_fix = bool(
+            state.get('numbering_check_active')
+            and idx > 0
+            and result.get('best_mapping')
+            and result.get('best_mapping') != list(range(len(result.get('best_mapping') or [])))
+            and result.get('reordered_target_xyz')
+        )
+        orca_apply_numbering_btn.disabled = not has_fix
 
     def _build_keyword_line():
         keywords = [orca_method.value, orca_job_type.value, orca_basis.value]
@@ -430,6 +687,52 @@ def create_tab(ctx):
         )
         return html
 
+    def _overlay_viewer_html(reference_xyz, target_xyz, reset_view=False):
+        div_id = 'orca-overlay-' + uuid.uuid4().hex[:10]
+        mouse_js = patch_viewer_mouse_controls_js('viewer', 'el')
+        zoom = str(DEFAULT_3DMOL_ZOOM if DEFAULT_3DMOL_ZOOM is not None else 0.9)
+        reset_js = 'window._orcaBuildViewState=null;' if reset_view else ''
+        return (
+            '<div id="' + div_id + '" style="width:100%;height:560px;position:relative;margin:0;padding:0;"></div>\n'
+            '<script>\n'
+            'if(typeof $3Dmol==="undefined"){\n'
+            '  var _s=document.createElement("script");\n'
+            '  _s.src="https://3Dmol.org/build/3Dmol-min.js";\n'
+            '  document.head.appendChild(_s);\n'
+            '}\n'
+            '(function(){\n'
+            '  var tries=0;\n'
+            '  function init(){\n'
+            f'    var el=document.getElementById("{div_id}");\n'
+            '    if(!el||typeof $3Dmol==="undefined"){\n'
+            '      tries++;if(tries<80)setTimeout(init,50);return;\n'
+            '    }\n'
+            f'    {reset_js}\n'
+            '    window._orcaBuildViewState=window._orcaBuildViewState||null;\n'
+            '    var prev=window._orcaBuildViewer||null;\n'
+            '    if(!' + ('true' if reset_view else 'false') + '&&prev&&typeof prev.getView==="function"){\n'
+            '      try{window._orcaBuildViewState=prev.getView();}catch(_e){}\n'
+            '    }\n'
+            '    var saved=window._orcaBuildViewState;\n'
+            '    var viewer=$3Dmol.createViewer(el,{backgroundColor:"white"});\n'
+            f'    {mouse_js}\n'
+            f'    viewer.addModel({json.dumps(target_xyz)},"xyz");\n'
+            '    viewer.setStyle({model:0},{stick:{radius:0.18,color:"#1f5fff"},sphere:{scale:0.24,color:"#1f5fff"}});\n'
+            f'    viewer.addModel({json.dumps(reference_xyz)},"xyz");\n'
+            '    viewer.setStyle({model:1},{stick:{radius:0.18,color:"#d32f2f"},sphere:{scale:0.24,color:"#d32f2f"}});\n'
+            '    if(saved&&typeof viewer.setView==="function"){\n'
+            '      try{viewer.setView(saved);}catch(_e){viewer.zoomTo();viewer.center();viewer.zoom(' + zoom + ');}\n'
+            '    }else{\n'
+            '      viewer.zoomTo();viewer.center();viewer.zoom(' + zoom + ');\n'
+            '    }\n'
+            '    viewer.render();\n'
+            '    window._orcaBuildViewer=viewer;\n'
+            '  }\n'
+            '  setTimeout(init,0);\n'
+            '})();\n'
+            '</script>\n'
+        )
+
     def _update_nav_label():
         blocks = state['xyz_blocks']
         n = len(blocks)
@@ -449,14 +752,27 @@ def create_tab(ctx):
         """Re-render the molecule viewer, preserving orientation unless *reset_view*."""
         blocks = state['xyz_blocks']
         _update_nav_label()
+        _update_numbering_fix_button()
         with orca_mol_output:
             clear_output(wait=True)
             if blocks:
                 idx = state['xyz_view_idx']
-                _, full_xyz = blocks[idx]
+                block_name, full_xyz = blocks[idx]
                 try:
-                    label_js = _atom_labels_js(full_xyz)
-                    display(HTML(_viewer_html(full_xyz, label_js, reset_view=reset_view)))
+                    overlay_result = (state.get('numbering_check_results') or {}).get(idx)
+                    if state.get('numbering_check_active') and idx > 0 and overlay_result and overlay_result.get('aligned_reference_xyz'):
+                        display(
+                            HTML(
+                                _overlay_viewer_html(
+                                    overlay_result['aligned_reference_xyz'],
+                                    full_xyz,
+                                    reset_view=reset_view,
+                                )
+                            )
+                        )
+                    else:
+                        label_js = _atom_labels_js(full_xyz)
+                        display(HTML(_viewer_html(full_xyz, label_js, reset_view=reset_view)))
                 except Exception as e:
                     print(f'Could not visualize: {e}')
             else:
@@ -480,6 +796,8 @@ def create_tab(ctx):
     def update_orca_molecule_view(change=None):
         state['xyz_blocks'] = parse_xyz_blocks(orca_coords.value) or []
         state['xyz_view_idx'] = 0
+        state['numbering_check_active'] = False
+        state['numbering_check_results'] = {}
         _refresh_mol_view(reset_view=True)  # new coords → reset camera
 
     def on_mol_prev(btn):
@@ -604,6 +922,95 @@ def create_tab(ctx):
             print('Copied coordinates as XYZ to clipboard.')
 
     orca_copy_coords_btn.on_click(handle_orca_copy_coordinates)
+
+    def handle_orca_check_numbering(button):
+        xyz_blocks = parse_xyz_blocks(orca_coords.value) or []
+        if len(xyz_blocks) < 2:
+            with orca_output:
+                clear_output()
+                print('Check Numbering needs at least two named XYZ blocks.')
+            return
+
+        ref_name, ref_xyz = xyz_blocks[0]
+        try:
+            ref_symbols, ref_coords = _orca_parse_xyz_symbols_coords(ref_xyz)
+        except Exception as exc:
+            with orca_output:
+                clear_output()
+                print(f'Reference block could not be parsed: {exc}')
+            return
+
+        results = {}
+        lines = [f'Reference: {ref_name}']
+        for idx in range(1, len(xyz_blocks)):
+            name, xyz_text = xyz_blocks[idx]
+            try:
+                target_symbols, target_coords = _orca_parse_xyz_symbols_coords(xyz_text)
+                result = _orca_check_numbering_pair(ref_symbols, ref_coords, target_symbols, target_coords)
+                results[idx] = result
+                if result.get('suspicious'):
+                    verdict = 'numbering could be wrong'
+                elif result.get('numbering_ok'):
+                    verdict = 'numbering looks consistent'
+                else:
+                    verdict = 'mapping differs, please inspect overlay'
+                direct_text = (
+                    f"{result['direct_rmsd']:.4f} A"
+                    if result.get('direct_rmsd') is not None
+                    else 'n/a'
+                )
+                lines.append(
+                    f'- {name}: {verdict} '
+                    f'(direct={direct_text}, best={result["best_rmsd"]:.4f} A, '
+                    f'method={result["best_source"]})'
+                )
+            except Exception as exc:
+                results[idx] = {'error': str(exc)}
+                lines.append(f'- {name}: not comparable ({exc})')
+
+        state['numbering_check_active'] = True
+        state['numbering_check_results'] = results
+        if len(xyz_blocks) > 1:
+            state['xyz_view_idx'] = min(max(state.get('xyz_view_idx', 1), 1), len(xyz_blocks) - 1)
+        _refresh_mol_view(reset_view=True)
+        with orca_output:
+            clear_output()
+            print('\n'.join(lines))
+            print()
+            print('Molecule Preview shows red/blue overlay for the selected comparison block.')
+
+    orca_check_numbering_btn.on_click(handle_orca_check_numbering)
+
+    def handle_orca_apply_numbering_fix(button):
+        xyz_records = _orca_parse_xyz_block_records(orca_coords.value)
+        idx = int(state.get('xyz_view_idx', 0))
+        result = (state.get('numbering_check_results') or {}).get(idx) or {}
+        if not xyz_records or idx <= 0 or idx >= len(xyz_records):
+            with orca_output:
+                clear_output()
+                print('No checked block is selected for numbering fix.')
+            return
+        reordered_xyz = str(result.get('reordered_target_xyz') or '').strip()
+        if not reordered_xyz:
+            with orca_output:
+                clear_output()
+                print('No numbering fix is available for the selected block.')
+            return
+
+        xyz_records[idx]['full_xyz'] = reordered_xyz
+        rebuilt = []
+        for record in xyz_records:
+            label = record.get('raw_name') or record.get('filename') or 'block'
+            suffix = record.get('suffix_comment', '')
+            header = f'{label};{suffix}' if suffix else f'{label};'
+            rebuilt.append(f'{header}\n{record["full_xyz"].strip()}\n*')
+        orca_coords.value = '\n\n'.join(rebuilt)
+        with orca_output:
+            clear_output()
+            print(f'Applied numbering fix to block {idx + 1}.')
+            print('Please inspect the Molecule Preview again to confirm the reordered block looks correct.')
+
+    orca_apply_numbering_btn.on_click(handle_orca_apply_numbering_fix)
 
     def update_orca_preview(change=None):
         if state.get('is_resetting'):
@@ -814,7 +1221,7 @@ def create_tab(ctx):
     orca_left = widgets.VBox([
         _row([orca_job_name], wrap=False),
         _row([orca_coords], wrap=False),
-        _row([orca_convert_smiles_btn, orca_copy_coords_btn]),
+        _row([orca_convert_smiles_btn, orca_copy_coords_btn, orca_check_numbering_btn, orca_apply_numbering_btn]),
         _row([orca_charge, orca_multiplicity]),
         _row([orca_method, orca_job_type]),
         _row([orca_basis, orca_dispersion]),
