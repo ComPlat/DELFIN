@@ -66,6 +66,11 @@ def create_tab(ctx):
         description='CONVERT SMILES', button_style='info',
         layout=widgets.Layout(width='200px'),
     )
+    orca_copy_coords_btn = widgets.Button(
+        description='COPY COORDINATES',
+        button_style='',
+        layout=widgets.Layout(width='200px'),
+    )
     orca_charge = widgets.IntText(value=0, description='Charge:',
                                   layout=widgets.Layout(width='200px'), style=ws)
     orca_multiplicity = widgets.IntText(value=1, description='Multiplicity:',
@@ -161,9 +166,10 @@ def create_tab(ctx):
     orca_output = widgets.Output()
 
     orca_mol_output = widgets.Output(layout=widgets.Layout(
-        border='2px solid #1976d2', width='100%', min_height='440px', height='440px',
-        overflow='hidden', box_sizing='border-box',
+        border='2px solid #1976d2', width='100%', min_height='560px', height='560px',
+        overflow='hidden', box_sizing='border-box', padding='0', margin='0',
     ))
+    orca_mol_output.add_class('orca-mol-output')
 
     orca_mol_prev_btn = widgets.Button(
         description='◀', tooltip='Previous molecule',
@@ -189,7 +195,7 @@ def create_tab(ctx):
 
     # -- helpers --------------------------------------------------------
     def parse_xyz_blocks(text):
-        """Parse 'name.xyz;\\n<coords>\\n*' blocks.
+        """Parse named XYZ blocks like ``name.xyz;`` or shorthand ``1;comment``.
 
         Returns a list of ``(filename, full_xyz_str)`` tuples, or *None* if
         no named blocks are found.  The returned XYZ strings always include
@@ -197,12 +203,20 @@ def create_tab(ctx):
         """
         blocks = []
         pattern = re.compile(
-            r'^(\S+\.xyz)\s*;\s*\n(.*?)^\s*\*\s*$',
+            r'^([^;\n]+?)\s*;\s*([^\n]*)\n(.*?)^\s*\*\s*$',
             re.MULTILINE | re.DOTALL,
         )
         for m in pattern.finditer(text):
-            filename = m.group(1)
-            content = m.group(2).strip()
+            raw_name = str(m.group(1) or '').strip()
+            suffix_comment = str(m.group(2) or '').strip()
+            content = m.group(3).strip()
+            if not raw_name:
+                continue
+            safe_name = ''.join(ch for ch in raw_name if ch.isalnum() or ch in ('_', '-', '.')).strip('.')
+            if not safe_name:
+                continue
+            if not safe_name.lower().endswith('.xyz'):
+                safe_name += '.xyz'
             lines = [l for l in content.split('\n') if l.strip()]
             if not lines:
                 continue
@@ -213,8 +227,9 @@ def create_tab(ctx):
             except ValueError:
                 # No header → count atom lines and prepend N + empty comment
                 n = len(lines)
-                full_xyz = f'{n}\n\n' + '\n'.join(lines)
-            blocks.append((filename, full_xyz))
+                comment = suffix_comment or safe_name
+                full_xyz = f'{n}\n{comment}\n' + '\n'.join(lines)
+            blocks.append((safe_name, full_xyz))
         return blocks if blocks else None
 
     def _build_keyword_line():
@@ -328,7 +343,7 @@ def create_tab(ctx):
 
     # -- handlers -------------------------------------------------------
     _VIEWER_JS_TMPL = (
-        '<div id="__DIV__" style="width:100%;height:440px;position:relative;"></div>\n'
+        '<div id="__DIV__" style="width:100%;height:560px;position:relative;margin:0;padding:0;"></div>\n'
         '<script>\n'
         'if(typeof $3Dmol==="undefined"){\n'
         '  var _s=document.createElement("script");\n'
@@ -344,12 +359,23 @@ def create_tab(ctx):
         '    }\n'
         '    __RESET__\n'
         '    window._orcaBuildViewState=window._orcaBuildViewState||null;\n'
+        '    var prev=window._orcaBuildViewer||null;\n'
+        '    if(!__RESETFLAG__&&prev&&typeof prev.getView==="function"){\n'
+        '      try{window._orcaBuildViewState=prev.getView();}catch(_e){}\n'
+        '    }\n'
+        '    var saved=window._orcaBuildViewState;\n'
         '    var viewer=$3Dmol.createViewer(el,{backgroundColor:"white"});\n'
         '    __MOUSE__\n'
         '    viewer.addModel(__XYZ__,"xyz");\n'
         '    viewer.setStyle({},__STYLE__);\n'
         '    __LABELS__\n'
-        '    viewer.zoomTo();viewer.center();viewer.zoom(__ZOOM__);\n'
+        '    if(saved&&typeof viewer.setView==="function"){\n'
+        '      try{viewer.setView(saved);}catch(_e){\n'
+        '        viewer.zoomTo();viewer.center();viewer.zoom(__ZOOM__);\n'
+        '      }\n'
+        '    }else{\n'
+        '      viewer.zoomTo();viewer.center();viewer.zoom(__ZOOM__);\n'
+        '    }\n'
         '    viewer.render();\n'
         '    window._orcaBuildViewer=viewer;\n'
         '  }\n'
@@ -377,15 +403,15 @@ def create_tab(ctx):
             calls.append(
                 f'{var}.addLabel("{i + 1}",'
                 f'{{position:{{x:{x:.6f},y:{y:.6f},z:{z:.6f}}},'
-                f'fontSize:12,fontColor:"black",showBackground:false,inFront:true}});'
+                f'fontSize:15,fontColor:"black",showBackground:false,inFront:true}});'
             )
         return '\n    '.join(calls)
 
     def _viewer_html(xyz_data, label_js='', reset_view=False):
         """Build a self-contained HTML block that renders xyz_data in a $3Dmol viewer.
 
-        The viewer is always re-centered for the current molecule so the preview
-        starts from a stable centered view.
+        The viewer resets on new coordinates, but preserves the same camera view
+        while switching between multiple blocks of the same system.
         """
         div_id = 'orca-mol-' + uuid.uuid4().hex[:10]
         mouse_js = patch_viewer_mouse_controls_js('viewer', 'el')
@@ -395,6 +421,7 @@ def create_tab(ctx):
             _VIEWER_JS_TMPL
             .replace('__DIV__', div_id)
             .replace('__RESET__', reset_js)
+            .replace('__RESETFLAG__', 'true' if reset_view else 'false')
             .replace('__MOUSE__', mouse_js)
             .replace('__XYZ__', json.dumps(xyz_data))
             .replace('__STYLE__', DEFAULT_3DMOL_STYLE_JS)
@@ -513,6 +540,42 @@ def create_tab(ctx):
             print(f'Converted SMILES to {num_atoms} atoms.')
 
     orca_convert_smiles_btn.on_click(handle_orca_convert_smiles)
+
+    def _current_xyz_for_copy():
+        xyz_blocks = parse_xyz_blocks(orca_coords.value)
+        if xyz_blocks:
+            idx = min(max(int(state.get('xyz_view_idx', 0)), 0), len(xyz_blocks) - 1)
+            return xyz_blocks[idx][1]
+
+        raw = orca_coords.value.strip()
+        if not raw:
+            return ''
+        coords = strip_xyz_header(raw)
+        if not coords:
+            return ''
+        atom_lines = [line for line in coords.split('\n') if line.strip()]
+        if not atom_lines:
+            return ''
+        return f'{len(atom_lines)}\nORCA Builder Coordinates\n' + '\n'.join(atom_lines)
+
+    def handle_orca_copy_coordinates(button):
+        xyz_text = _current_xyz_for_copy()
+        if not xyz_text:
+            with orca_output:
+                clear_output()
+                print('No coordinates available to copy.')
+            return
+        escaped = json.dumps(xyz_text)
+        ctx.run_js(
+            f"navigator.clipboard.writeText({escaped})"
+            ".then(() => console.log('Copied ORCA coordinates'))"
+            ".catch(err => console.error('Copy failed:', err));"
+        )
+        with orca_output:
+            clear_output()
+            print('Copied coordinates as XYZ to clipboard.')
+
+    orca_copy_coords_btn.on_click(handle_orca_copy_coordinates)
 
     def update_orca_preview(change=None):
         if state.get('is_resetting'):
@@ -720,7 +783,7 @@ def create_tab(ctx):
     orca_left = widgets.VBox([
         _row([orca_job_name], wrap=False),
         _row([orca_coords], wrap=False),
-        _row([orca_convert_smiles_btn]),
+        _row([orca_convert_smiles_btn, orca_copy_coords_btn]),
         _row([orca_charge, orca_multiplicity]),
         _row([orca_method, orca_job_type]),
         _row([orca_basis, orca_dispersion]),
@@ -784,6 +847,25 @@ def create_tab(ctx):
         .orca-split-pane .jp-OutputArea-output {
             max-width: 100% !important;
             overflow-x: hidden !important;
+        }
+        .orca-mol-output .widget-output,
+        .orca-mol-output .output_area,
+        .orca-mol-output .output_subarea,
+        .orca-mol-output .output_wrapper,
+        .orca-mol-output .jp-OutputArea,
+        .orca-mol-output .jp-OutputArea-child,
+        .orca-mol-output .jp-OutputArea-output {
+            width: 100% !important;
+            height: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: 0 !important;
+            overflow: hidden !important;
+        }
+        .orca-mol-output canvas,
+        .orca-mol-output [id^="orca-mol-"] {
+            display: block !important;
+            margin: 0 !important;
         }
         </style>
         """
