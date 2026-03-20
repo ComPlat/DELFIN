@@ -421,6 +421,62 @@ def package_repo_venv(repo_dir: str | Path | None) -> tuple[Path | None, Path | 
     return tar_path, cache_dir
 
 
+def _python_version_ok(python_bin: str, min_ver: tuple[int, ...] = (3, 10),
+                       max_ver: tuple[int, ...] = (3, 12)) -> bool:
+    """Return True if *python_bin* reports a version in [min_ver, max_ver)."""
+    try:
+        out = subprocess.run(
+            [python_bin, "-c", "import sys; print(sys.version_info[:2])"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        major, minor = eval(out.stdout.strip())  # noqa: S307
+        return min_ver <= (major, minor) < max_ver
+    except Exception:
+        return False
+
+
+def _find_system_python(current_executable: str) -> str:
+    """Find a Python >=3.10,<3.12 binary outside any venv.
+
+    Resolution order:
+      1. base_prefix of the running interpreter (if version matches)
+      2. Well-known HPC module paths (bwUniCluster)
+      3. ``python3`` on PATH (if version matches)
+      4. Fall back to *current_executable* as last resort
+    """
+    import sys
+
+    # 1. base_prefix — the Python that created the current venv
+    in_venv = (
+        getattr(sys, "base_prefix", sys.prefix) != sys.prefix
+        or getattr(sys, "real_prefix", None) is not None
+    )
+    if in_venv:
+        base = getattr(sys, "base_prefix", None) or getattr(sys, "real_prefix", None)
+        if base:
+            candidate = str(Path(base) / "bin" / "python3")
+            if Path(candidate).is_file() and _python_version_ok(candidate):
+                return candidate
+
+    # 2. HPC module paths (bwUniCluster) — prefer 3.11 over 3.10
+    import glob as _glob
+    for pattern in (
+        "/opt/bwhpc/common/devel/python/3.11*/bin/python3",
+        "/opt/bwhpc/common/devel/python/3.10*/bin/python3",
+    ):
+        hits = sorted(_glob.glob(pattern), reverse=True)
+        for hit in hits:
+            if _python_version_ok(hit):
+                return hit
+
+    # 3. python3 on PATH
+    python3 = shutil.which("python3")
+    if python3 and _python_version_ok(python3):
+        return python3
+
+    return current_executable
+
+
 def rebuild_venv(
     repo_dir: str | Path | None = None,
     *,
@@ -447,17 +503,9 @@ def rebuild_venv(
     done_marker = repo_root / ".venv_rebuild_done"
     script_path = repo_root / ".venv_rebuild.sh"
 
-    # Resolve the Python binary *outside* the venv (the system/module one).
-    # sys.executable may point into .venv, so walk up to find the real one.
-    python_bin = sys.executable
-    venv_prefix = str(repo_root / ".venv")
-    if python_bin.startswith(venv_prefix):
-        # Try the base_prefix (the Python that created this venv)
-        base = getattr(sys, "base_prefix", None) or getattr(sys, "real_prefix", None)
-        if base:
-            candidate = Path(base) / "bin" / "python3"
-            if candidate.is_file():
-                python_bin = str(candidate)
+    # Resolve a Python >= 3.10 binary *outside* any venv.
+    # sys.executable may point into a venv that we are about to delete.
+    python_bin = _find_system_python(sys.executable)
 
     # Clean up any previous marker
     if done_marker.exists():
