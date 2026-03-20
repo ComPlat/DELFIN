@@ -111,30 +111,45 @@ def _smiles_to_architector_input(smiles):
             a = mol_no_metal.GetAtomWithIdx(new_idx)
             a.SetNumRadicalElectrons(props['rad_e'])
             if old_idx in coord_atom_to_metal:
-                # Distinguish covalent vs dative M-L bonds:
-                # Count non-metal heavy-atom bonds of this atom in the
-                # original complex.  Atoms with ≥1 such bond are part
-                # of a ligand framework and lost an H to bond to the
-                # metal → anionic (C→[C-], O→[O-]).
-                # Atoms with 0 heavy-atom bonds are pure donors
-                # (H₂O, NH₃, Cl⁻, …) → dative, keep original charge.
-                n_heavy = sum(
-                    1 for bond in mol.GetBonds()
-                    if old_idx in (bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
-                    and bond.GetBeginAtomIdx() not in metal_set
-                    and bond.GetEndAtomIdx() not in metal_set
-                )
-                if n_heavy > 0 and props['formal_charge'] == 0:
-                    # Covalent: lost H → anionic
-                    a.SetFormalCharge(-1)
-                    a.SetNumExplicitHs(0)
-                    a.SetNoImplicit(True)
-                elif n_heavy == 0:
-                    # Dative donor: keep original charge, allow implicit H
-                    a.SetFormalCharge(props['formal_charge'])
-                else:
+                # Distinguish covalent vs dative M-L bonds using bond
+                # order sum to non-metal neighbors + explicit H vs
+                # typical valence.
+                # If (bo_sum + explicit_h) >= valence → dative donor
+                #   (NH₃, H₂O, PPh₃ — valence fully satisfied)
+                # If (bo_sum + explicit_h) < valence → covalent, atom
+                #   lost an H to bond metal → anionic ([C-], [O-], etc.)
+                # Bond ORDER (not count) is critical: aromatic C has 3
+                # bonds but bo_sum ≈ 3.0 < typ_val 4 → correctly
+                # detected as covalent.
+                _TYPICAL_VALENCE = {
+                    'C': 4, 'N': 3, 'O': 2, 'S': 2, 'Se': 2,
+                    'P': 3, 'As': 3, 'Si': 4, 'B': 3, 'Te': 2,
+                    'F': 1, 'Cl': 1, 'Br': 1, 'I': 1,
+                }
+                sym = a.GetSymbol()
+                typ_val = _TYPICAL_VALENCE.get(sym, 2)
+                # Sum bond orders to non-metal neighbors only
+                bo_sum = 0.0
+                for bond in mol.GetBonds():
+                    ba, bb = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+                    if old_idx in (ba, bb):
+                        neighbor = bb if ba == old_idx else ba
+                        if neighbor not in metal_set:
+                            bo_sum += bond.GetBondTypeAsDouble()
+                saturated = (bo_sum + props['explicit_h']) >= typ_val
+
+                if props['formal_charge'] != 0:
                     # Already charged (e.g. N+, O+) → keep
                     a.SetFormalCharge(props['formal_charge'])
+                    a.SetNumExplicitHs(0)
+                    a.SetNoImplicit(True)
+                elif saturated:
+                    # Dative donor: valence already satisfied → keep
+                    # neutral and allow implicit H.
+                    a.SetFormalCharge(0)
+                else:
+                    # Covalent: lost H → anionic
+                    a.SetFormalCharge(-1)
                     a.SetNumExplicitHs(0)
                     a.SetNoImplicit(True)
             else:
