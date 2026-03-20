@@ -230,6 +230,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         disabled=True,
         layout=widgets.Layout(width='120px', height='28px'),
     )
+    tabs_status_html = widgets.HTML(value='')
+    tabs_rows_box = widgets.VBox(layout=widgets.Layout(width='100%', gap='6px'))
     remote_archive_toggle = widgets.Checkbox(
         value=False,
         description='Enabled',
@@ -306,6 +308,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         'remote_archive_enabled': False,
         'calculations_dir': str(ctx.calc_dir),
         'archive_dir': str(ctx.archive_dir),
+        'tab_prefs': {
+            'order': [],
+            'hidden': [],
+        },
     }
 
     host_hidden = widgets.Password(
@@ -706,6 +712,220 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         remote_archive_toggle.value = enabled
         state['remote_archive_enabled'] = enabled
 
+    def _available_tab_specs():
+        return list(getattr(ctx, 'tab_specs', []) or [])
+
+    def _tab_pref_lookup():
+        prefs = state.get('tab_prefs', {}) or {}
+        order = [str(item) for item in (prefs.get('order', []) or []) if str(item).strip()]
+        hidden = {str(item) for item in (prefs.get('hidden', []) or []) if str(item).strip()}
+        return order, hidden
+
+    def _normalized_tab_prefs():
+        specs = _available_tab_specs()
+        spec_map = {spec.get('id'): spec for spec in specs}
+        order, hidden = _tab_pref_lookup()
+        movable_defaults = [
+            spec['id']
+            for spec in sorted(specs, key=lambda item: item.get('default_order', 10_000))
+            if not spec.get('fixed')
+        ]
+        normalized_order = []
+        seen = set()
+        for tab_id in order + movable_defaults:
+            if tab_id in seen or tab_id not in spec_map or spec_map[tab_id].get('fixed'):
+                continue
+            seen.add(tab_id)
+            normalized_order.append(tab_id)
+        normalized_hidden = [
+            tab_id
+            for tab_id in normalized_order
+            if (
+                (tab_id in hidden or not bool(spec_map[tab_id].get('default_visible', True)))
+                and not spec_map[tab_id].get('fixed')
+            )
+        ]
+        return {
+            'order': normalized_order,
+            'hidden': normalized_hidden,
+        }
+
+    def _set_tab_preferences(settings_payload):
+        ui_payload = ((settings_payload or {}).get('ui') or {})
+        tabs_payload = (ui_payload.get('tabs') or {})
+        state['tab_prefs'] = {
+            'order': list(tabs_payload.get('order', []) or []),
+            'hidden': list(tabs_payload.get('hidden', []) or []),
+        }
+        _rebuild_tab_rows()
+
+    def _move_tab(tab_id, direction):
+        prefs = _normalized_tab_prefs()
+        order = list(prefs['order'])
+        try:
+            idx = order.index(tab_id)
+        except ValueError:
+            return
+        new_idx = idx + int(direction)
+        if new_idx < 0 or new_idx >= len(order):
+            return
+        order[idx], order[new_idx] = order[new_idx], order[idx]
+        state['tab_prefs'] = {
+            'order': order,
+            'hidden': list(prefs['hidden']),
+        }
+        _rebuild_tab_rows()
+        _mark_dirty()
+
+    def _toggle_tab_hidden(tab_id, visible):
+        prefs = _normalized_tab_prefs()
+        hidden = set(prefs['hidden'])
+        if visible:
+            hidden.discard(tab_id)
+        else:
+            hidden.add(tab_id)
+        state['tab_prefs'] = {
+            'order': list(prefs['order']),
+            'hidden': [item for item in prefs['order'] if item in hidden],
+        }
+        _rebuild_tab_rows()
+        _mark_dirty()
+
+    def _rebuild_tab_rows():
+        specs = _available_tab_specs()
+        if not specs:
+            tabs_rows_box.children = (
+                widgets.HTML('<span style="color:#616161;">No dashboard tabs registered.</span>'),
+            )
+            tabs_status_html.value = ''
+            return
+
+        prefs = _normalized_tab_prefs()
+        state['tab_prefs'] = prefs
+        spec_map = {spec['id']: spec for spec in specs}
+        rows = []
+        for idx, tab_id in enumerate(prefs['order']):
+            spec = spec_map.get(tab_id)
+            if not spec:
+                continue
+            is_hidden = tab_id in set(prefs['hidden'])
+            available = bool(spec.get('available'))
+            fixed = bool(spec.get('fixed'))
+            visible_checkbox = widgets.Checkbox(
+                value=(not is_hidden) if not fixed else True,
+                description='Visible',
+                indent=False,
+                disabled=fixed or False,
+                layout=widgets.Layout(width='85px'),
+            )
+            up_btn = widgets.Button(
+                description='Up',
+                layout=widgets.Layout(width='56px', height='26px'),
+                disabled=fixed or idx == 0,
+            )
+            down_btn = widgets.Button(
+                description='Down',
+                layout=widgets.Layout(width='64px', height='26px'),
+                disabled=fixed or idx == len(prefs['order']) - 1,
+            )
+            badge_parts = []
+            if fixed:
+                badge_parts.append('<span style="color:#1565c0;">fixed</span>')
+            elif is_hidden:
+                badge_parts.append('<span style="color:#ef6c00;">hidden</span>')
+            else:
+                badge_parts.append('<span style="color:#2e7d32;">visible</span>')
+            if not available:
+                badge_parts.append('<span style="color:#9e9e9e;">unavailable</span>')
+            detail = spec.get('reason', '')
+            label_html = (
+                f'<b>{html.escape(str(spec.get("title", tab_id)))}</b> '
+                + ' | '.join(badge_parts)
+            )
+            if detail:
+                label_html += (
+                    f'<br><span style="color:#616161; font-size:0.92em;">'
+                    f'{html.escape(str(detail))}</span>'
+                )
+            label = widgets.HTML(label_html, layout=widgets.Layout(flex='1 1 auto'))
+            visible_checkbox.observe(
+                lambda change, _tab_id=tab_id: (
+                    _toggle_tab_hidden(_tab_id, bool(change.get('new')))
+                    if change.get('name') == 'value'
+                    else None
+                ),
+                names='value',
+            )
+            up_btn.on_click(lambda _button, _tab_id=tab_id: _move_tab(_tab_id, -1))
+            down_btn.on_click(lambda _button, _tab_id=tab_id: _move_tab(_tab_id, 1))
+            rows.append(
+                widgets.HBox(
+                    [label, visible_checkbox, up_btn, down_btn],
+                    layout=widgets.Layout(
+                        width='100%',
+                        gap='8px',
+                        align_items='center',
+                        border='1px solid #e0e0e0',
+                        padding='8px 10px',
+                    ),
+                )
+            )
+
+        fixed_specs = [
+            spec for spec in sorted(specs, key=lambda item: item.get('default_order', 10_000))
+            if spec.get('fixed')
+        ]
+        for spec in fixed_specs:
+            if spec['id'] in prefs['order']:
+                continue
+            label = widgets.HTML(
+                f'<b>{html.escape(str(spec.get("title", spec["id"])))}</b> '
+                '<span style="color:#1565c0;">fixed</span><br>'
+                '<span style="color:#616161; font-size:0.92em;">Always visible.</span>',
+                layout=widgets.Layout(flex='1 1 auto'),
+            )
+            rows.append(
+                widgets.HBox(
+                    [
+                        label,
+                        widgets.Checkbox(
+                            value=True,
+                            description='Visible',
+                            indent=False,
+                            disabled=True,
+                            layout=widgets.Layout(width='85px'),
+                        ),
+                        widgets.Button(
+                            description='Up',
+                            disabled=True,
+                            layout=widgets.Layout(width='56px', height='26px'),
+                        ),
+                        widgets.Button(
+                            description='Down',
+                            disabled=True,
+                            layout=widgets.Layout(width='64px', height='26px'),
+                        ),
+                    ],
+                    layout=widgets.Layout(
+                        width='100%',
+                        gap='8px',
+                        align_items='center',
+                        border='1px solid #e0e0e0',
+                        padding='8px 10px',
+                    ),
+                )
+            )
+
+        hidden_count = len(prefs['hidden'])
+        tabs_status_html.value = (
+            f'<span style="color:#455a64;">'
+            f'{len(prefs["order"])} configurable tabs, '
+            f'{hidden_count} currently hidden. '
+            'Settings stays visible and pinned at the end.'
+            '</span>'
+        )
+        tabs_rows_box.children = tuple(rows)
+
     def _load_settings_to_widgets(set_status=True):
         try:
             settings_payload = load_settings()
@@ -714,6 +934,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             _set_path_widgets({})
             _set_runtime_widgets({})
             _set_remote_archive_widget({})
+            _set_tab_preferences({})
             _set_status(
                 (
                     f'Could not load <code>{html.escape(str(settings_path))}</code>: '
@@ -728,6 +949,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         _set_path_widgets(settings_payload)
         _set_runtime_widgets(settings_payload)
         _set_remote_archive_widget(settings_payload)
+        _set_tab_preferences(settings_payload)
         runtime_payload = settings_payload.get('runtime', {}) or {}
         effective_backend, effective_orca_base, _submit_templates_dir = _render_runtime_diagnostics(
             runtime_payload,
@@ -2111,6 +2333,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             settings_payload['runtime'] = runtime_payload
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
+            settings_payload.setdefault('ui', {})
+            settings_payload['ui']['tabs'] = _normalized_tab_prefs()
             settings_payload = save_settings(settings_payload, settings_path)
             _apply_workspace_paths(effective_calc_dir, effective_archive_dir)
             backend_switch_required, effective_backend, effective_orca_base = _apply_runtime_settings(
@@ -2131,11 +2355,28 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         _set_path_widgets(settings_payload)
         _set_runtime_widgets(settings_payload)
         _set_remote_archive_widget(settings_payload)
+        _set_tab_preferences(settings_payload)
         _render_runtime_diagnostics(
             settings_payload.get('runtime', {}) or {},
             reload_required=backend_switch_required,
         )
         reload_hint = ' Reload DELFIN to apply Remote Archive tab/button visibility.' if toggle_changed else ''
+        tabs_hint = ''
+        if callable(getattr(ctx, 'rebuild_dashboard_tabs', None)):
+            current_title = None
+            try:
+                selected_idx = ctx.tabs_widget.selected_index
+                current_title = next(
+                    title for title, index in (ctx.tab_indices or {}).items()
+                    if index == selected_idx
+                )
+            except Exception:
+                current_title = None
+            try:
+                ctx.rebuild_dashboard_tabs(selected_title=current_title or 'Settings')
+                tabs_hint = ' Tab visibility/order applied to the current session.'
+            except Exception:
+                tabs_hint = ' Reload DELFIN to apply tab visibility/order changes.'
         backend_hint = (
             f' Reload DELFIN to switch execution backend from '
             f'<code>{html.escape(ctx.runtime_backend)}</code> to '
@@ -2151,7 +2392,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 f'Archive now points to <code>{html.escape(str(effective_archive_dir))}</code>. '
                 f'Runtime resolves to <code>{html.escape(effective_backend)}</code> with ORCA '
                 f'<code>{html.escape(effective_orca_base or "PATH / auto-detect")}</code>.'
-                f'{backend_hint}{reload_hint}'
+                f'{backend_hint}{reload_hint}{tabs_hint}'
             ),
             color='#2e7d32',
         )
@@ -2253,6 +2494,20 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 [widgets.HTML('<b>Archive</b>'), archive_path_input],
                 layout=_row_layout,
             ),
+        ],
+        layout=_section_layout,
+    )
+
+    tabs_section = widgets.VBox(
+        [
+            widgets.HTML(
+                '<div style="color:#455a64;">'
+                'Choose which dashboard tabs are visible and in which order they appear. '
+                '<code>Settings</code> is always visible and stays at the end.'
+                '</div>'
+            ),
+            tabs_status_html,
+            tabs_rows_box,
         ],
         layout=_section_layout,
     )
@@ -2668,6 +2923,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     main_accordion = widgets.Accordion(
         children=[
             workspace_section,
+            tabs_section,
             runtime_section,
             tools_section,
             developer_section,
@@ -2675,10 +2931,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         ],
     )
     main_accordion.set_title(0, 'Workspace Paths')
-    main_accordion.set_title(1, 'Runtime Backend')
-    main_accordion.set_title(2, 'Tool Installation')
-    main_accordion.set_title(3, 'Developer')
-    main_accordion.set_title(4, 'SSH Transfer & Remote Archive')
+    main_accordion.set_title(1, 'Dashboard Tabs')
+    main_accordion.set_title(2, 'Runtime Backend')
+    main_accordion.set_title(3, 'Tool Installation')
+    main_accordion.set_title(4, 'Developer')
+    main_accordion.set_title(5, 'SSH Transfer & Remote Archive')
     main_accordion.selected_index = 0  # Workspace open by default
 
     tab = widgets.VBox(

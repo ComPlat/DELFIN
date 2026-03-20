@@ -53,6 +53,12 @@ DEFAULT_SETTINGS = {
     "features": {
         "remote_archive_enabled": False,
     },
+    "ui": {
+        "tabs": {
+            "order": [],
+            "hidden": [],
+        },
+    },
 }
 
 
@@ -115,6 +121,22 @@ def normalize_positive_int_setting(value, label, default, minimum=1):
         raise ValueError(f"{label} must be a whole number.") from exc
     if normalized < minimum:
         raise ValueError(f"{label} must be at least {minimum}.")
+    return normalized
+
+
+def normalize_string_list_setting(value, label):
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be a JSON array.")
+    normalized = []
+    seen = set()
+    for item in value:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
     return normalized
 
 
@@ -243,6 +265,30 @@ def _normalized_settings_dict(payload):
     if "remote_archive_enabled" in normalized_features:
         normalized_features["remote_archive_enabled"] = bool(normalized_features["remote_archive_enabled"])
     normalized["features"] = normalized_features
+    ui = normalized.get("ui", {})
+    if ui is None:
+        ui = {}
+    if not isinstance(ui, dict):
+        raise ValueError("Settings key 'ui' must be a JSON object.")
+    tabs = ui.get("tabs", {})
+    if tabs is None:
+        tabs = {}
+    if not isinstance(tabs, dict):
+        raise ValueError("Settings key 'ui.tabs' must be a JSON object.")
+    default_ui = DEFAULT_SETTINGS.get("ui", {}) or {}
+    default_tabs = default_ui.get("tabs", {}) or {}
+    normalized_ui = dict(ui)
+    normalized_ui["tabs"] = {
+        "order": normalize_string_list_setting(
+            tabs.get("order", default_tabs.get("order", [])),
+            "Tab order",
+        ),
+        "hidden": normalize_string_list_setting(
+            tabs.get("hidden", default_tabs.get("hidden", [])),
+            "Hidden tabs",
+        ),
+    }
+    normalized["ui"] = normalized_ui
     return normalized
 
 

@@ -223,7 +223,131 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
     tab6, refs6 = tab_archive_statistics.create_tab(ctx)
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
+
+    tab_specs = [
+        {
+            'id': 'submit',
+            'title': 'Submit Job',
+            'widget': tab1,
+            'default_order': 10,
+            'default_visible': True,
+            'available': True,
+            'fixed': False,
+            'reason': '',
+        },
+        {
+            'id': 'recalc',
+            'title': 'Recalc',
+            'widget': tab2,
+            'default_order': 20,
+            'default_visible': True,
+            'available': True,
+            'fixed': False,
+            'reason': '',
+        },
+        {
+            'id': 'orca_builder',
+            'title': 'ORCA Builder',
+            'widget': tab4,
+            'default_order': 30,
+            'default_visible': True,
+            'available': True,
+            'fixed': False,
+            'reason': '',
+        },
+        {
+            'id': 'turbomole_builder',
+            'title': 'TURBOMOLE Builder',
+            'widget': tab_tm,
+            'default_order': 40,
+            'default_visible': tab_tm is not None,
+            'available': tab_tm is not None,
+            'fixed': False,
+            'reason': '' if tab_tm is not None else 'Only available for supported SLURM backends.',
+        },
+        {
+            'id': 'chemdarwin',
+            'title': 'ChemDarwin',
+            'widget': None,
+            'default_order': 50,
+            'default_visible': False,
+            'available': False,
+            'fixed': False,
+            'reason': 'Only available when the ChemDarwin tab module is installed.',
+        },
+        {
+            'id': 'job_status',
+            'title': 'Job Status',
+            'widget': tab3,
+            'default_order': 60,
+            'default_visible': True,
+            'available': True,
+            'fixed': False,
+            'reason': '',
+        },
+        {
+            'id': 'calculations',
+            'title': 'Calculations',
+            'widget': tab5,
+            'default_order': 70,
+            'default_visible': True,
+            'available': True,
+            'fixed': False,
+            'reason': '',
+        },
+        {
+            'id': 'archive',
+            'title': 'Archive',
+            'widget': tab6,
+            'default_order': 80,
+            'default_visible': True,
+            'available': True,
+            'fixed': False,
+            'reason': '',
+        },
+        {
+            'id': 'remote_archive',
+            'title': 'Remote Archive',
+            'widget': tab7,
+            'default_order': 90,
+            'default_visible': False,
+            'available': tab7 is not None,
+            'fixed': False,
+            'reason': '' if tab7 is not None else 'Enable Remote Archive in Settings first.',
+        },
+        {
+            'id': 'settings',
+            'title': 'Settings',
+            'widget': None,
+            'default_order': 10_000,
+            'default_visible': True,
+            'available': True,
+            'fixed': True,
+            'reason': 'Always visible.',
+        },
+    ]
+
+    try:
+        from . import tab_chemdarwin
+        tab_cd, _ = tab_chemdarwin.create_tab(ctx)
+    except Exception:
+        tab_cd = None
+
+    for spec in tab_specs:
+        if spec['id'] == 'chemdarwin':
+            spec['widget'] = tab_cd
+            spec['available'] = tab_cd is not None
+            spec['reason'] = '' if tab_cd is not None else spec['reason']
+            if tab_cd is not None:
+                spec['default_visible'] = True
+            break
+
+    ctx.tab_specs = tab_specs
     tab8, _refs8 = tab_settings.create_tab(ctx, calc_refs=refs5, archive_refs=refs6)
+    for spec in ctx.tab_specs:
+        if spec['id'] == 'settings':
+            spec['widget'] = tab8
+            break
 
     # Run both calc-browser init scripts in ONE ctx.run_js() call.
     # If called separately, the second call's clear_output() would wipe the
@@ -242,56 +366,104 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     if _calc_init.strip():
         ctx.run_js(_calc_init)
 
-    # -- assemble tabs -----------------------------------------------------
-    children = [tab1, tab2, tab4]
-    titles = ['Submit Job', 'Recalc', 'ORCA Builder']
+    def _resolve_tab_preferences():
+        specs = ctx.tab_specs or []
+        spec_map = {spec.get('id'): spec for spec in specs}
+        try:
+            prefs = (load_settings().get('ui', {}) or {}).get('tabs', {}) or {}
+        except Exception:
+            prefs = {}
+        raw_order = [str(item) for item in (prefs.get('order', []) or []) if str(item).strip()]
+        raw_hidden = {str(item) for item in (prefs.get('hidden', []) or []) if str(item).strip()}
+        order = []
+        seen = set()
+        for tab_id in raw_order:
+            spec = spec_map.get(tab_id)
+            if not spec or spec.get('fixed') or tab_id in seen:
+                continue
+            seen.add(tab_id)
+            order.append(tab_id)
+        for spec in sorted(specs, key=lambda item: item.get('default_order', 10_000)):
+            tab_id = spec.get('id')
+            if not tab_id or spec.get('fixed') or tab_id in seen:
+                continue
+            seen.add(tab_id)
+            order.append(tab_id)
+        hidden = set()
+        for tab_id in order:
+            spec = spec_map.get(tab_id) or {}
+            if tab_id in raw_hidden or not bool(spec.get('default_visible', True)):
+                hidden.add(tab_id)
+        return order, hidden
 
-    if tab_tm is not None:
-        children.append(tab_tm)
-        titles.append('TURBOMOLE Builder')
+    def _sorted_visible_specs():
+        order, hidden = _resolve_tab_preferences()
+        order_index = {tab_id: idx for idx, tab_id in enumerate(order)}
+        visible_specs = []
+        fixed_specs = []
+        for spec in ctx.tab_specs:
+            if not spec.get('available'):
+                continue
+            if spec.get('fixed'):
+                fixed_specs.append(spec)
+                continue
+            if spec['id'] in hidden:
+                continue
+            visible_specs.append(spec)
+        visible_specs.sort(
+            key=lambda spec: (
+                0 if spec['id'] in order_index else 1,
+                order_index.get(spec['id'], spec.get('default_order', 10_000)),
+                spec.get('default_order', 10_000),
+            )
+        )
+        fixed_specs.sort(key=lambda spec: spec.get('default_order', 10_000))
+        return visible_specs + fixed_specs
 
-    # ChemDarwin tab (optional, local only)
-    tab_cd = None
-    try:
-        from . import tab_chemdarwin
-        tab_cd, _ = tab_chemdarwin.create_tab(ctx)
-    except Exception:
-        tab_cd = None
+    refresh_job_list = refs3.get('refresh_job_list')
+    _tab_change_state = {'handler': None}
 
-    if tab_cd is not None:
-        children.append(tab_cd)
-        titles.append('ChemDarwin')
+    def _install_tab_observer():
+        if not ctx.tabs_widget:
+            return
+        previous = _tab_change_state.get('handler')
+        if previous is not None:
+            try:
+                ctx.tabs_widget.unobserve(previous, names='selected_index')
+            except Exception:
+                pass
 
-    children.append(tab3)
-    titles.append('Job Status')
-    children.append(tab5)
-    titles.append('Calculations')
-    children.append(tab6)
-    titles.append('Archive')
-    if tab7 is not None:
-        children.append(tab7)
-        titles.append('Remote Archive')
-    children.append(tab8)
-    titles.append('Settings')
+        job_status_idx = ctx.tab_indices.get('Job Status')
+
+        def _on_tab_change(change):
+            if change.get('new') == job_status_idx and refresh_job_list:
+                refresh_job_list()
+
+        ctx.tabs_widget.observe(_on_tab_change, names='selected_index')
+        _tab_change_state['handler'] = _on_tab_change
+
+    def _rebuild_dashboard_tabs(selected_title=None):
+        specs = _sorted_visible_specs()
+        children = [spec['widget'] for spec in specs if spec.get('widget') is not None]
+        titles = [spec['title'] for spec in specs if spec.get('widget') is not None]
+        if ctx.tabs_widget is None:
+            ctx.tabs_widget = widgets.Tab(children=children)
+        else:
+            ctx.tabs_widget.children = tuple(children)
+        for i, title in enumerate(titles):
+            ctx.tabs_widget.set_title(i, title)
+        ctx.tab_indices = {title: i for i, title in enumerate(titles)}
+        _install_tab_observer()
+        if selected_title and selected_title in ctx.tab_indices:
+            ctx.tabs_widget.selected_index = ctx.tab_indices[selected_title]
+
+    ctx.rebuild_dashboard_tabs = _rebuild_dashboard_tabs
 
     # Disable spellcheck in all textareas (browser-level red underlines).
     disable_spellcheck_global(ctx)
 
-    tabs = widgets.Tab(children=children)
-    for i, title in enumerate(titles):
-        tabs.set_title(i, title)
-    ctx.tabs_widget = tabs
-    ctx.tab_indices = {title: i for i, title in enumerate(titles)}
-
-    # Auto-refresh job list when switching to Job Status tab
-    job_status_idx = titles.index('Job Status')
-    refresh_job_list = refs3.get('refresh_job_list')
-
-    def _on_tab_change(change):
-        if change['new'] == job_status_idx and refresh_job_list:
-            refresh_job_list()
-
-    tabs.observe(_on_tab_change, names='selected_index')
+    _rebuild_dashboard_tabs()
+    tabs = ctx.tabs_widget
 
     # -- header bar --------------------------------------------------------
     backend_label = 'Local' if backend == 'local' else 'BwUniCluster'

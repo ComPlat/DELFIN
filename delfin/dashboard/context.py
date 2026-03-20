@@ -64,6 +64,8 @@ class DashboardContext:
     )
     tabs_widget: Any = None
     tab_indices: dict = field(default_factory=dict)
+    tab_specs: list = field(default_factory=list)
+    rebuild_dashboard_tabs: Any = None
 
     # Templates
     default_control: str = ''

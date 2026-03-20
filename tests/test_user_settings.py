@@ -204,3 +204,25 @@ def test_load_runtime_settings_returns_defaults_when_missing(tmp_path):
     assert runtime["local"]["max_cores"] == _MODULE.DEFAULT_SETTINGS["runtime"]["local"]["max_cores"]
     assert runtime["local"]["max_ram_mb"] == _MODULE.DEFAULT_SETTINGS["runtime"]["local"]["max_ram_mb"]
     assert runtime["slurm"]["submit_templates_dir"] == ""
+
+
+def test_load_settings_normalizes_ui_tabs_payload(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "ui": {
+                    "tabs": {
+                        "order": ["submit", "archive", "submit", "", None],
+                        "hidden": ["archive", "archive", "", None],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_settings(settings_path)
+
+    assert loaded["ui"]["tabs"]["order"] == ["submit", "archive"]
+    assert loaded["ui"]["tabs"]["hidden"] == ["archive"]
