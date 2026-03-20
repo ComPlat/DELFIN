@@ -209,6 +209,7 @@ def main(argv=None):
     notebook = _stage_notebook_under_root(notebook, root_dir)
     env = _prepare_voila_env(open_browser=open_browser)
     env.setdefault("DELFIN_VOILA_ROOT_DIR", root_dir)
+    env["DELFIN_VOILA_PORT"] = str(args.port)
 
     # Trust the notebook so Voilà doesn't warn about untrusted content.
     _trust_notebook(notebook)

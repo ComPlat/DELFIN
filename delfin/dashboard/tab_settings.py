@@ -21,6 +21,7 @@ from delfin.runtime_setup import (
     get_user_qm_tools_dir,
     get_user_csp_tools_dir,
     get_user_mlp_tools_dir,
+    rebuild_venv,
     run_pip_install_editable,
     run_qm_tools_installer,
     run_csp_tools_installer,
@@ -196,6 +197,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     pip_install_btn = widgets.Button(
         description='pip install -e .',
         button_style='warning',
+        layout=widgets.Layout(width='140px', height='28px'),
+    )
+    rebuild_venv_btn = widgets.Button(
+        description='Rebuild .venv',
+        button_style='danger',
         layout=widgets.Layout(width='140px', height='28px'),
     )
     detect_local_resources_btn = widgets.Button(
@@ -760,7 +766,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         install_csp_tools_btn, update_csp_tools_btn,
         install_mlp_tools_btn, update_mlp_tools_btn,
         install_analysis_tools_btn, update_analysis_tools_btn,
-        pip_install_btn,
+        pip_install_btn, rebuild_venv_btn,
         setup_bwunicluster_btn, verify_bwunicluster_btn,
         full_install_bwunicluster_btn,
     ]
@@ -1842,6 +1848,42 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 color='#d32f2f',
             )
 
+    def _on_rebuild_venv(button):
+        try:
+            voila_port_str = os.environ.get('DELFIN_VOILA_PORT', '')
+            voila_port = int(voila_port_str) if voila_port_str.isdigit() else None
+            log_file = rebuild_venv(
+                repo_dir=getattr(ctx, 'repo_dir', None),
+                voila_port=voila_port,
+            )
+            if voila_port:
+                restart_msg = (
+                    f'The dashboard will restart automatically on port {voila_port}. '
+                    '<b>Reload this page</b> after ~2 minutes.'
+                )
+            else:
+                restart_msg = (
+                    'Could not detect the Voilà port — run '
+                    '<code>delfin-voila</code> manually after the rebuild.'
+                )
+            pip_install_log.value = (
+                f'Background rebuild started.\n'
+                f'Log: {log_file}\n\n'
+                'The dashboard will stop responding shortly because the\n'
+                'old .venv is being deleted.  This is expected.\n\n'
+                + (f'Voilà will restart on port {voila_port} when done.\n'
+                   'Just reload this browser tab.\n'
+                   if voila_port else
+                   'Run delfin-voila again after ~2 minutes.\n')
+            )
+            _set_status(restart_msg, color='#ef6c00')
+        except Exception as exc:
+            pip_install_log.value = ''
+            _set_status(
+                f'venv rebuild failed to launch: {html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
     def _on_setup_bwunicluster(button):
         try:
             calc_override, archive_override, effective_calc_dir, effective_archive_dir = _effective_paths_from_widgets()
@@ -2152,6 +2194,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     refresh_csp_status_btn.on_click(_refresh_csp_status)
     refresh_analysis_status_btn.on_click(_refresh_analysis_status)
     pip_install_btn.on_click(_with_buttons_disabled(_on_pip_install_editable))
+    rebuild_venv_btn.on_click(_with_buttons_disabled(_on_rebuild_venv))
     refresh_mlp_status_btn.on_click(_refresh_mlp_status)
     refresh_ai_status_btn.on_click(_refresh_ai_status)
     setup_bwunicluster_btn.on_click(_with_buttons_disabled(_on_setup_bwunicluster))
@@ -2453,6 +2496,20 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     # ══════════════════════════════════════════════════════════════════════
     developer_section = widgets.VBox(
         [
+            widgets.HBox(
+                [
+                    rebuild_venv_btn,
+                    widgets.HTML(
+                        '<span style="color:#616161;">'
+                        'Deletes <code>.venv</code>, recreates it, runs '
+                        '<code>pip install -e .</code>, and packages '
+                        '<code>delfin_venv.tar</code> for job staging. '
+                        'Use after upgrading Python or when the venv is broken.'
+                        '</span>'
+                    ),
+                ],
+                layout=_row_layout,
+            ),
             widgets.HBox(
                 [
                     pip_install_btn,

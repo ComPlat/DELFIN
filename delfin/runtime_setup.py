@@ -421,6 +421,123 @@ def package_repo_venv(repo_dir: str | Path | None) -> tuple[Path | None, Path | 
     return tar_path, cache_dir
 
 
+def rebuild_venv(
+    repo_dir: str | Path | None = None,
+    *,
+    voila_port: int | None = None,
+) -> Path:
+    """Spawn a detached background process that rebuilds ``.venv``.
+
+    Because the dashboard itself runs inside the venv, deleting it will kill
+    the running Voilà/Jupyter process.  We therefore write a small shell
+    script and launch it via ``setsid`` + ``nohup`` so it survives the parent
+    process dying.
+
+    If *voila_port* is given the script will restart ``delfin-voila`` on that
+    port after the rebuild so the user only needs to reload the browser tab.
+
+    Returns the path to the log file so the caller can display it.
+    """
+    import sys
+
+    repo_root = Path(repo_dir) if repo_dir else Path(__file__).resolve().parent.parent
+    repo_root = repo_root.expanduser()
+
+    log_file = repo_root / ".venv_rebuild.log"
+    done_marker = repo_root / ".venv_rebuild_done"
+    script_path = repo_root / ".venv_rebuild.sh"
+
+    # Resolve the Python binary *outside* the venv (the system/module one).
+    # sys.executable may point into .venv, so walk up to find the real one.
+    python_bin = sys.executable
+    venv_prefix = str(repo_root / ".venv")
+    if python_bin.startswith(venv_prefix):
+        # Try the base_prefix (the Python that created this venv)
+        base = getattr(sys, "base_prefix", None) or getattr(sys, "real_prefix", None)
+        if base:
+            candidate = Path(base) / "bin" / "python3"
+            if candidate.is_file():
+                python_bin = str(candidate)
+
+    # Clean up any previous marker
+    if done_marker.exists():
+        done_marker.unlink()
+
+    # Optional: restart voilà after rebuild
+    restart_block = ""
+    if voila_port is not None:
+        venv_delfin_voila = repo_root / ".venv" / "bin" / "delfin-voila"
+        restart_block = f"""
+echo "Restarting delfin-voila on port {voila_port} ..."
+exec "{venv_delfin_voila}" --port {voila_port}
+"""
+
+    bashrc = Path.home() / ".bashrc"
+    repo_venv_activate = f"{repo_root / '.venv' / 'bin' / 'activate'}"
+
+    script = f"""\
+#!/usr/bin/env bash
+set -e
+exec >> "{log_file}" 2>&1
+echo "=== venv rebuild started at $(date) ==="
+echo "Python: {python_bin}"
+echo "Repo:   {repo_root}"
+
+# --- Consolidate to single venv in the repo directory ---
+BASHRC="{bashrc}"
+if [ -f "$BASHRC" ]; then
+    if grep -q '\\$HOME/.venv/bin/activate' "$BASHRC"; then
+        echo "Patching .bashrc: \\$HOME/.venv -> repo .venv ..."
+        sed -i 's|\\$HOME/.venv/bin/activate|{repo_venv_activate}|g' "$BASHRC"
+        echo ".bashrc updated."
+    fi
+fi
+
+# Remove old HOME-level venv if it exists (replaced by repo venv)
+if [ -d "$HOME/.venv" ]; then
+    echo "Removing old \\$HOME/.venv (consolidated into repo) ..."
+    rm -rf "$HOME/.venv"
+    echo "Old \\$HOME/.venv removed."
+fi
+
+echo "Removing old repo .venv ..."
+rm -rf "{repo_root / '.venv'}"
+
+echo "Creating fresh venv ..."
+"{python_bin}" -m venv "{repo_root / '.venv'}"
+
+echo "Upgrading pip + wheel ..."
+"{repo_root / '.venv' / 'bin' / 'python'}" -m pip install --upgrade pip wheel
+
+echo "Installing DELFIN (pip install -e .) ..."
+"{repo_root / '.venv' / 'bin' / 'python'}" -m pip install -e "{repo_root}"
+
+echo "Packaging delfin_venv.tar ..."
+rm -f "{repo_root / 'delfin_venv.tar'}"
+tar -cf "{repo_root / 'delfin_venv.tar'}" -C "{repo_root}" .venv
+mkdir -p "{repo_root / '.runtime_cache'}"
+
+echo "=== venv rebuild finished at $(date) ==="
+touch "{done_marker}"
+{restart_block}"""
+    script_path.write_text(script)
+    script_path.chmod(0o755)
+
+    # Truncate old log
+    log_file.write_text("")
+
+    # Launch detached — survives parent (Voilà) dying
+    subprocess.Popen(
+        ["setsid", "nohup", str(script_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    return log_file
+
+
 def run_bwunicluster_installer(
     *,
     repo_dir: str | Path | None,
