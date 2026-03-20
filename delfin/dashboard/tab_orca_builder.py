@@ -102,7 +102,7 @@ def create_tab(ctx):
     orca_solvent = widgets.Dropdown(
         options=['water', 'acetonitrile', 'dmso', 'dmf', 'methanol',
                  'ethanol', 'thf', 'dichloromethane', 'chloroform', 'toluene', 'hexane'],
-        value='water', description='Solvent:',
+        value='acetonitrile', description='Solvent:',
         layout=widgets.Layout(width='250px'), style=ws,
     )
 
@@ -114,7 +114,7 @@ def create_tab(ctx):
                                    description='Additional:',
                                    layout=widgets.Layout(width='400px'), style=ws)
 
-    orca_pal = widgets.IntText(value=40, description='PAL (cores):',
+    orca_pal = widgets.IntText(value=12, description='PAL (cores):',
                                layout=widgets.Layout(width='250px'), style=ws)
     orca_maxcore = widgets.IntText(value=6000, description='MaxCore (MB):',
                                    layout=widgets.Layout(width='250px'), style=ws)
@@ -565,11 +565,39 @@ def create_tab(ctx):
                 clear_output()
                 print('No coordinates available to copy.')
             return
-        escaped = json.dumps(xyz_text)
+        text_payload = json.dumps(str(xyz_text))
         ctx.run_js(
-            f"navigator.clipboard.writeText({escaped})"
-            ".then(() => console.log('Copied ORCA coordinates'))"
-            ".catch(err => console.error('Copy failed:', err));"
+            "(function(){"
+            f"const text={text_payload};"
+            "function _manualPrompt(){"
+            "try{window.prompt('Copy to clipboard (Cmd+C/Ctrl+C, Enter):', text);}catch(_e){}"
+            "}"
+            "function _legacyCopy(){"
+            "try{"
+            "const ta=document.createElement('textarea');"
+            "ta.value=text;"
+            "ta.setAttribute('readonly','readonly');"
+            "ta.style.position='fixed';"
+            "ta.style.top='-1000px';"
+            "ta.style.left='-1000px';"
+            "ta.style.opacity='0';"
+            "document.body.appendChild(ta);"
+            "ta.focus();"
+            "ta.select();"
+            "ta.setSelectionRange(0, ta.value.length);"
+            "const ok=document.execCommand('copy');"
+            "document.body.removeChild(ta);"
+            "return !!ok;"
+            "}catch(_e){return false;}"
+            "}"
+            "if(navigator.clipboard && navigator.clipboard.writeText){"
+            "navigator.clipboard.writeText(text).catch(function(){"
+            "if(!_legacyCopy()) _manualPrompt();"
+            "});"
+            "}else{"
+            "if(!_legacyCopy()) _manualPrompt();"
+            "}"
+            "})();"
         )
         with orca_output:
             clear_output()
