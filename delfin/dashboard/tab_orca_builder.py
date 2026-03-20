@@ -808,6 +808,9 @@ def create_tab(ctx):
             ),
         )
 
+    orca_save_submit_row = _row([orca_save_btn, orca_submit_btn], wrap=False)
+    orca_save_submit_row.layout.margin = '14px 0 0 0'
+
     orca_left = widgets.VBox([
         _row([orca_job_name], wrap=False),
         _row([orca_coords], wrap=False),
@@ -825,7 +828,7 @@ def create_tab(ctx):
         widgets.VBox([orca_drop_zone, orca_file_upload, orca_uploaded_files_label],
                      layout=widgets.Layout(width='100%', min_width='0', overflow='hidden', padding='0 8px 0 0')),
         _row([orca_path_files], wrap=False),
-        _row([orca_save_btn, orca_submit_btn]),
+        orca_save_submit_row,
         orca_output,
     ], layout=widgets.Layout(
         flex='0 1 48%', max_width='48%', min_width='0', padding='8px', gap='6px',
