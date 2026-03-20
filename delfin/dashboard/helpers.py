@@ -201,3 +201,55 @@ def disable_spellcheck_global(ctx):
     })();
     """
     _append_js(ctx, script)
+
+
+def apply_branding(ctx, title='DELFIN Dashboard', favicon_data_uri=''):
+    """Set the browser title and favicon for the dashboard page."""
+    safe_title = (
+        str(title)
+        .replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace("\n", " ")
+    )
+    safe_icon = (
+        str(favicon_data_uri)
+        .replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace("\n", "")
+    )
+    script = f"""
+    (function() {{
+        document.title = '{safe_title}';
+        if (!window.__delfinBrandingObserver) {{
+            window.__delfinBrandingObserver = new MutationObserver(function() {{
+                if (document.title !== '{safe_title}') {{
+                    document.title = '{safe_title}';
+                }}
+            }});
+            window.__delfinBrandingObserver.observe(document.head || document.documentElement, {{
+                childList: true,
+                subtree: true,
+            }});
+        }}
+        if (!window.__delfinSetFavicon) {{
+            window.__delfinSetFavicon = function() {{
+                if (!'{safe_icon}') return;
+                var head = document.head || document.getElementsByTagName('head')[0];
+                if (!head) return;
+                var link = document.querySelector("link[rel='icon'][data-delfin-favicon='1']");
+                if (!link) {{
+                    link = document.createElement('link');
+                    link.setAttribute('rel', 'icon');
+                    link.setAttribute('data-delfin-favicon', '1');
+                    head.appendChild(link);
+                }}
+                if (link.getAttribute('href') !== '{safe_icon}') {{
+                    link.setAttribute('href', '{safe_icon}');
+                    link.setAttribute('type', 'image/png');
+                }}
+            }};
+        }}
+        window.__delfinSetFavicon();
+    }})();
+    """
+    _append_js(ctx, script)

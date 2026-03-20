@@ -111,6 +111,8 @@ include = ["delfin*"]
 [tool.setuptools.package-data]
 "delfin" = [
     "installers/*.sh",
+    "logo/*.png",
+    "logo/*.PNG",
     "qm_tools/*.txt",
     "qm_tools/*.sh",
     "qm_tools/bin/stda_v1.6.1",

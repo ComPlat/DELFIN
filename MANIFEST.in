@@ -4,6 +4,7 @@ include pyproject.toml
 
 recursive-include delfin *.py
 recursive-include delfin/notebooks *.ipynb
+recursive-include delfin/logo *.png *.PNG
 recursive-include tests *.py
 
 prune delfin/qm_tools/bin

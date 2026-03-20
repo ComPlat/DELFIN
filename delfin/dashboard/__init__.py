@@ -6,7 +6,9 @@ Usage::
     ctx = create_dashboard(backend='auto')
 """
 
+import base64
 import importlib
+import importlib.resources
 import html
 import os
 import shutil
@@ -55,7 +57,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
     from .context import DashboardContext
-    from .helpers import create_busy_css, disable_spellcheck_global
+    from .helpers import apply_branding, create_busy_css, disable_spellcheck_global
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
 
     from . import (
@@ -461,6 +463,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     # Disable spellcheck in all textareas (browser-level red underlines).
     disable_spellcheck_global(ctx)
+    logo_data_uri = _load_logo_data_uri()
+    apply_branding(ctx, title='DELFIN Dashboard', favicon_data_uri=logo_data_uri)
 
     _rebuild_dashboard_tabs()
     tabs = ctx.tabs_widget
@@ -572,13 +576,21 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     rollback_delfin_btn.on_click(handle_rollback_delfin)
 
     # -- display -----------------------------------------------------------
+    title_html = (
+        '<div style="display:flex; align-items:center; gap:12px;">'
+        + (
+            f'<img src="{logo_data_uri}" alt="DELFIN logo" '
+            'style="height:46px; width:46px; object-fit:contain;" />'
+            if logo_data_uri else ''
+        )
+        + f'<h2 style="color:#1976d2; margin:0;">DELFIN ({backend_label})</h2>'
+        + '</div>'
+    )
+
     display(widgets.VBox([
         busy_css,
         widgets.HBox([
-            widgets.HTML(
-                f'<h2 style="color:#1976d2; margin:0;">'
-                f'DELFIN ({backend_label})</h2>'
-            ),
+            widgets.HTML(title_html),
             widgets.HBox(
                 [
                     busy_indicator,
@@ -632,6 +644,37 @@ def _find_delfin_root():
         if (base / 'delfin' / '__init__.py').exists():
             return base
     return None
+
+
+def _load_logo_data_uri() -> str:
+    """Return the packaged DELFIN logo as a data URI when available."""
+    try:
+        logo_dir = importlib.resources.files('delfin').joinpath('logo')
+    except Exception:
+        return ''
+
+    try:
+        candidates = sorted(
+            [
+                entry for entry in logo_dir.iterdir()
+                if entry.is_file() and entry.name.lower().endswith('.png')
+            ],
+            key=lambda entry: entry.name.lower(),
+        )
+    except Exception:
+        return ''
+
+    if not candidates:
+        return ''
+
+    try:
+        data = candidates[0].read_bytes()
+    except Exception:
+        return ''
+    if not data:
+        return ''
+    encoded = base64.b64encode(data).decode('ascii')
+    return f'data:image/png;base64,{encoded}'
 
 
 def _ensure_delfin_importable():
