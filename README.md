@@ -1,6 +1,6 @@
 <h1>
-  <img src="delfin/logo/DELFIN_logo.png" alt="DELFIN logo" width="44" align="center">
-  DELFIN
+  <img src="delfin/logo/DELFIN_logo.png" alt="DELFIN logo" width="60" align="center">
+  <span style="color:#1976d2;">DELFIN</span>
 </h1>
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17208145.svg)](https://doi.org/10.5281/zenodo.17208145)
