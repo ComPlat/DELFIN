@@ -237,7 +237,7 @@ Install/update buttons for pip-installable integrations are available in the Das
 [AIMNet2](https://github.com/isayevlab/AIMNet2),
 [MACE-OFF](https://github.com/ACEsuit/mace),
 [CHGNet](https://github.com/CederGroupHub/chgnet),
-[M3GNet/MatGL](https://github.com/materialsvirtuallab/matgl),
+[M3GNet/MatGL](https://github.com/materialyzeai/matgl),
 [SchNetPack](https://github.com/atomistic-machine-learning/schnetpack),
 [NequIP/Allegro](https://github.com/mir-group/nequip),
 [ALIGNN](https://github.com/usnistgov/alignn)
@@ -248,7 +248,7 @@ Install/update buttons for pip-installable integrations are available in the Das
 [TURBOMOLE](https://www.turbomole.org/),
 [NWChem](https://www.nwchem-sw.org/),
 [Q-Chem](https://www.q-chem.com/),
-[GAMESS](https://www.msg.chem.iastate.edu/gamess/),
+[GAMESS](https://www.msg.chem.iastate.edu/GAMESS/),
 [Molpro](https://www.molpro.net/),
 [Dalton](https://daltonprogram.org/),
 [Psi4](https://psicode.org/),
@@ -264,7 +264,7 @@ Install/update buttons for pip-installable integrations are available in the Das
 [SIESTA](https://siesta-project.org/),
 [GPAW](https://gpaw.readthedocs.io/),
 [FLEUR](https://www.flapw.de/),
-[WIEN2k](https://www.wien2k.at/),
+[WIEN2k](https://www.tuwien.at/en/tch/tc/home-of-wien2k),
 [Elk](https://elk.sourceforge.io/),
 [ABINIT](https://www.abinit.org/)
 
@@ -276,7 +276,7 @@ Install/update buttons for pip-installable integrations are available in the Das
 **Semi-empirical & Workflow Helpers (8):**
 [xTB](https://github.com/grimme-lab/xtb),
 [CREST](https://github.com/crest-lab/crest),
-[MOPAC](http://openmopac.net/),
+[MOPAC](https://openmopac.net/),
 [Sparrow](https://scine.ethz.ch/download/sparrow),
 [DFTB+](https://dftbplus.org/),
 [xTB4STDA](https://github.com/grimme-lab/xtb4stda),
@@ -324,18 +324,18 @@ Install/update buttons for pip-installable integrations are available in the Das
 [cclib](https://cclib.github.io/),
 [Multiwfn](http://sobereva.com/multiwfn/),
 [CENSO](https://github.com/grimme-lab/CENSO),
-[morfeus](https://github.com/kjelljorner/morfeus),
+[morfeus](https://github.com/digital-chemistry-laboratory/morfeus),
 [nglview](https://github.com/nglviewer/nglview),
 [Packmol](https://m3g.github.io/packmol/userguide.shtml),
 [NBO](https://nbo6.chem.wisc.edu/),
 [AIMAll](https://aim.tkgristmill.com/),
 [critic2](https://aoterodelaroza.github.io/),
 [Chargemol](https://sourceforge.net/projects/ddec/),
-[LOBSTER](https://www.cohp.de/),
+[LOBSTER](http://www.cohp.de/),
 [phonopy](https://phonopy.github.io/phonopy/)
 
 **Wrapper Libraries (5):**
-[ASE](https://wiki.fysik.dtu.dk/ase/),
+[ASE](https://ase-lib.org/),
 [pymatgen](https://pymatgen.org/),
 [QCEngine](https://github.com/MolSSI/QCEngine),
 [MDAnalysis](https://www.mdanalysis.org/),
