@@ -1,5 +1,5 @@
 <h1>
-  <img src="delfin/logo/89CCB4B4-94F8-4B26-B265-E3540B778AC0.PNG" alt="DELFIN logo" width="44" align="center">
+  <img src="delfin/logo/DELFIN_logo.png" alt="DELFIN logo" width="44" align="center">
   DELFIN
 </h1>
 

@@ -654,13 +654,17 @@ def _load_logo_data_uri() -> str:
         return ''
 
     try:
-        candidates = sorted(
-            [
-                entry for entry in logo_dir.iterdir()
-                if entry.is_file() and entry.name.lower().endswith('.png')
-            ],
-            key=lambda entry: entry.name.lower(),
-        )
+        preferred = logo_dir.joinpath('DELFIN_logo.png')
+        if preferred.is_file():
+            candidates = [preferred]
+        else:
+            candidates = sorted(
+                [
+                    entry for entry in logo_dir.iterdir()
+                    if entry.is_file() and entry.name.lower().endswith('.png')
+                ],
+                key=lambda entry: entry.name.lower(),
+            )
     except Exception:
         return ''
 
