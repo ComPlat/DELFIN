@@ -225,44 +225,136 @@ Automatic CUDA validation with CPU fallback. All backends are lazily loaded — 
 
 ### Auto-Detection of External Programs
 
-DELFIN automatically detects 88 computational chemistry programs via PATH search. This works seamlessly with cluster module systems (`module load gaussian/16` → DELFIN detects it). Programs that can't be pip-installed (Gaussian, VASP, Turbomole, ...) are detected and reported but not installed.
+DELFIN automatically detects 88 computational chemistry programs via PATH search. This works seamlessly with cluster module systems (`module load gaussian/16` → DELFIN detects it). Programs that can't be pip-installed (ORCA, Gaussian, VASP, Turbomole, ...) are detected and reported but not installed.
+
+Install/update buttons for pip-installable integrations are available in the Dashboard under `Settings -> Tool Installation`. Licensed or externally managed binaries such as ORCA, Gaussian, VASP, and TURBOMOLE are detected and reported by DELFIN, but not installed by the dashboard.
 
 <details>
-<summary><b>Full list of supported tools (88 total)</b></summary>
+<summary><b>Linked overview of supported tools</b></summary>
 
-**ML Potentials (8):** ANI-2x, AIMNet2, MACE-OFF, CHGNet, M3GNet/MatGL, SchNetPack, NequIP/Allegro, ALIGNN
+**ML Potentials (8):**
+[ANI-2x](https://github.com/aiqm/torchani),
+[AIMNet2](https://github.com/isayevlab/AIMNet2),
+[MACE-OFF](https://github.com/ACEsuit/mace),
+[CHGNet](https://github.com/CederGroupHub/chgnet),
+[M3GNet/MatGL](https://github.com/materialsvirtuallab/matgl),
+[SchNetPack](https://github.com/atomistic-machine-learning/schnetpack),
+[NequIP/Allegro](https://github.com/mir-group/nequip),
+[ALIGNN](https://github.com/usnistgov/alignn)
 
-**QM Programs — Ab initio / DFT (11):** ORCA, Gaussian (g16/g09), Turbomole, NWChem, Q-Chem, GAMESS, Molpro, Dalton, Psi4, CFOUR, MRCC
+**QM Programs — Ab initio / DFT (11):**
+[ORCA](https://orcaforum.kofo.mpg.de/app.php/portal),
+[Gaussian (g16/g09)](https://gaussian.com/),
+[TURBOMOLE](https://www.turbomole.org/),
+[NWChem](https://www.nwchem-sw.org/),
+[Q-Chem](https://www.q-chem.com/),
+[GAMESS](https://www.msg.chem.iastate.edu/gamess/),
+[Molpro](https://www.molpro.net/),
+[Dalton](https://daltonprogram.org/),
+[Psi4](https://psicode.org/),
+[CFOUR](https://cfour.uni-mainz.de/),
+[MRCC](https://www.mrcc.hu/)
 
-**QM Programs — Periodic / Solid State (11):** VASP, Quantum ESPRESSO, CP2K, FHI-aims, CRYSTAL, SIESTA, GPAW, FLEUR, WIEN2k, Elk, ABINIT
+**QM Programs — Periodic / Solid State (11):**
+[VASP](https://www.vasp.at/),
+[Quantum ESPRESSO](https://www.quantum-espresso.org/),
+[CP2K](https://www.cp2k.org/),
+[FHI-aims](https://fhi-aims.org/),
+[CRYSTAL](https://www.crystal.unito.it/),
+[SIESTA](https://siesta-project.org/),
+[GPAW](https://gpaw.readthedocs.io/),
+[FLEUR](https://www.flapw.de/),
+[WIEN2k](https://www.wien2k.at/),
+[Elk](https://elk.sourceforge.io/),
+[ABINIT](https://www.abinit.org/)
 
-**QM Programs — Multireference (3):** OpenMolcas, BAGEL, Columbus
+**QM Programs — Multireference (3):**
+[OpenMolcas](https://openmolcas.org/),
+[BAGEL](https://nubakery.org/),
+[Columbus](https://www.univie.ac.at/columbus/)
 
-**Semi-empirical (3):** xTB, MOPAC, Sparrow
+**Semi-empirical & Workflow Helpers (8):**
+[xTB](https://github.com/grimme-lab/xtb),
+[CREST](https://github.com/crest-lab/crest),
+[MOPAC](http://openmopac.net/),
+[Sparrow](https://scine.ethz.ch/download/sparrow),
+[DFTB+](https://dftbplus.org/),
+[xTB4STDA](https://github.com/grimme-lab/xtb4stda),
+[sTDA](https://github.com/grimme-lab/std2),
+[sTD2](https://github.com/grimme-lab/std2)
 
-**MD Engines (5):** GROMACS, LAMMPS, AMBER, NAMD, OpenMM
+**MD Engines (5):**
+[GROMACS](https://www.gromacs.org/),
+[LAMMPS](https://www.lammps.org/),
+[AMBER](https://ambermd.org/),
+[NAMD](https://www.ks.uiuc.edu/Research/namd/),
+[OpenMM](https://openmm.org/)
 
-**AI/ML — Foundation Models (3):** MoLFormer, Uni-Mol, ChemBERTa
+**AI/ML — Foundation Models (3):**
+[MoLFormer](https://github.com/IBM/molformer),
+[Uni-Mol](https://github.com/deepmodeling/Uni-Mol),
+[ChemBERTa](https://huggingface.co/seyonec/ChemBERTa-zinc-base-v1)
 
-**AI/ML — Generative (2):** REINVENT4, SyntheMol
+**AI/ML — Generative (2):**
+[REINVENT4](https://github.com/MolecularAI/REINVENT4),
+[SyntheMol](https://github.com/swansonk14/SyntheMol)
 
-**AI/ML — Conformers (2):** GeoMol, torsional-diffusion
+**AI/ML — Conformers (2):**
+[GeoMol](https://github.com/PattanaikL/GeoMol),
+[torsional-diffusion](https://github.com/gcorso/torsional-diffusion)
 
-**AI/ML — Crystal Generation (2):** MatterGen, CDVAE
+**AI/ML — Crystal Generation (2):**
+[MatterGen](https://github.com/microsoft/mattergen),
+[CDVAE](https://github.com/txie-93/cdvae)
 
-**AI/ML — Retrosynthesis (3):** AiZynthFinder, RXNMapper, LocalRetro
+**AI/ML — Retrosynthesis (3):**
+[AiZynthFinder](https://github.com/MolecularAI/aizynthfinder),
+[RXNMapper](https://github.com/rxn4chemistry/rxnmapper),
+[LocalRetro](https://github.com/kaist-amsg/LocalRetro)
 
-**AI/ML — Screening / ADMET (2):** DeepChem, ADMETlab
+**AI/ML — Screening / ADMET (2):**
+[DeepChem](https://deepchem.io/),
+[ADMETlab](https://admetlab3.scbdd.com/)
 
-**AI/ML — Metal Complex ML (2):** molSimplify, architector
+**AI/ML — Metal Complex ML (2):**
+[molSimplify](https://molsimplify.mit.edu/),
+[architector](https://github.com/lanl/Architector)
 
-**Analysis / Post-Processing (12):** cclib, Multiwfn, CENSO, morfeus, nglview, Packmol, NBO, AIMAll, critic2, Chargemol, LOBSTER, phonopy
+**Analysis / Post-Processing (12):**
+[cclib](https://cclib.github.io/),
+[Multiwfn](http://sobereva.com/multiwfn/),
+[CENSO](https://github.com/grimme-lab/CENSO),
+[morfeus](https://github.com/kjelljorner/morfeus),
+[nglview](https://github.com/nglviewer/nglview),
+[Packmol](https://m3g.github.io/packmol/userguide.shtml),
+[NBO](https://nbo6.chem.wisc.edu/),
+[AIMAll](https://aim.tkgristmill.com/),
+[critic2](https://aoterodelaroza.github.io/),
+[Chargemol](https://sourceforge.net/projects/ddec/),
+[LOBSTER](https://www.cohp.de/),
+[phonopy](https://phonopy.github.io/phonopy/)
 
-**Wrapper Libraries (4):** pymatgen, QCEngine, MDAnalysis, pymolpro
+**Wrapper Libraries (5):**
+[ASE](https://wiki.fysik.dtu.dk/ase/),
+[pymatgen](https://pymatgen.org/),
+[QCEngine](https://github.com/MolSSI/QCEngine),
+[MDAnalysis](https://www.mdanalysis.org/),
+[pymolpro](https://github.com/molpro/pymolpro)
 
-**Visualization (6):** plotly, VMD, Avogadro, Jmol, ChimeraX, IQmol
+**Visualization (6):**
+[plotly](https://plotly.com/python/),
+[VMD](https://www.ks.uiuc.edu/Research/vmd/),
+[Avogadro](https://avogadro.cc/),
+[Jmol](https://jmol.sourceforge.net/),
+[ChimeraX](https://www.cgl.ucsf.edu/chimerax/),
+[IQmol](https://www.iqmol.org/index.html)
 
-**Python-Only Backends (3):** PySCF, OpenMM, PLAMS
+**Python-Only Backends (2):**
+[PySCF](https://pyscf.org/),
+[PLAMS](https://www.scm.com/doc/plams/)
+
+**Crystal Structure Prediction (1):**
+[Genarris](https://github.com/Yi5817/Genarris)
 
 </details>
 
