@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="delfin/logo/89CCB4B4-94F8-4B26-B265-E3540B778AC0.PNG" alt="DELFIN logo" width="180">
+</p>
+
 # DELFIN
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17208145.svg)](https://doi.org/10.5281/zenodo.17208145)
