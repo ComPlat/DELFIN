@@ -51,6 +51,10 @@ def _discover_builtin_workflows() -> None:
 
     _try_import("delfin.workflows.contrib.tadf_xtb_workflow")
     _try_import("delfin.workflows.contrib.hyperpol_workflow")
+    _try_import("delfin.workflows.contrib.occupier_workflow")
+    _try_import("delfin.workflows.contrib.esd_workflow")
+    _try_import("delfin.workflows.contrib.imag_workflow")
+    _try_import("delfin.workflows.contrib.co2_workflow")
 
 
 def _try_import(module_path: str) -> None:
