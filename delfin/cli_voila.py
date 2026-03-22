@@ -238,6 +238,7 @@ def main(argv=None):
         f"--Voila.root_dir={root_dir}",
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)",
         "--VoilaConfiguration.preheat_kernels=True",
+        "--Voila.tornado_settings=disable_check_xsrf=True",
     ]
 
     if open_browser:
@@ -247,10 +248,6 @@ def main(argv=None):
 
     if args.dark:
         cmd.append("--theme=dark")
-
-    # Voila's browser-triggered kernel shutdown POST can miss the _xsrf token
-    # in remote setups, which leaves noisy 403 shutdown errors on exit.
-    cmd.append("--ServerApp.disable_check_xsrf=True")
 
     bind_display = "localhost" if args.ip == "127.0.0.1" else args.ip
     print(f"Starting DELFIN Dashboard on http://{bind_display}:{args.port}")
