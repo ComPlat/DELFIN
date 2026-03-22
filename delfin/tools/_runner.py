@@ -52,6 +52,9 @@ def run_step(
         if not geom_path.is_file():
             raise FileNotFoundError(f"Geometry file not found: {geom_path}")
 
+    # Strip internal pipeline keys before validation/execution
+    kwargs.pop("_prev_artifacts", None)
+
     # Validate before creating work dir
     adapter.validate_params(**kwargs)
 

@@ -242,6 +242,9 @@ class _OrcaBase(StepAdapter):
         start: float,
         **kwargs: Any,
     ) -> StepResult:
+        # Pop internal pipeline keys that shouldn't leak into ORCA logic
+        kwargs.pop("_prev_artifacts", None)
+
         charge = kwargs["charge"]
         mult = kwargs.get("mult", 1)
         maxcore = kwargs.get("maxcore", 1000)
@@ -300,8 +303,23 @@ class _OrcaBase(StepAdapter):
         out_path = work_dir / f"{calc_name}.out"
         inp_path.write_text(inp_content)
 
-        from delfin.orca import run_orca
-        success = run_orca(str(inp_path), str(out_path), timeout=timeout, working_dir=work_dir)
+        # --- Smart recalc: skip if input unchanged and output complete ---
+        from delfin.smart_recalc import should_skip
+        if should_skip(inp_path, out_path):
+            logger.info("Smart recalc: skipping %s (unchanged input, complete output)", calc_name)
+            success = True
+        else:
+            # --- Run ORCA with intelligent error recovery if config provided ---
+            config = kwargs.get("config") or kwargs.get("_prev_artifacts", {}).get("_config")
+            if config and config.get("enable_auto_recovery", "").lower() in ("yes", "true", "1"):
+                from delfin.orca import run_orca_with_intelligent_recovery
+                success = run_orca_with_intelligent_recovery(
+                    str(inp_path), str(out_path), timeout=timeout,
+                    working_dir=work_dir, config=config,
+                )
+            else:
+                from delfin.orca import run_orca
+                success = run_orca(str(inp_path), str(out_path), timeout=timeout, working_dir=work_dir)
 
         # --- Collect results ---
         data: dict[str, Any] = {}

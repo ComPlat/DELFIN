@@ -109,6 +109,7 @@ class Pipeline:
         self._trunk: List[_StepSpec] = []
         self._branches: Dict[str, Pipeline] = {}
         self._on_step: Optional[Callable[[StepResult], None]] = None
+        self._inherited_artifacts: Dict[str, Path] = {}  # from parent trunk
 
     # ------------------------------------------------------------------
     # Building
@@ -189,11 +190,22 @@ class Pipeline:
 
         results: List[StepResult] = []
         current_geom: Optional[Path] = Path(geometry) if geometry else None
+        current_artifacts: Dict[str, Path] = dict(self._inherited_artifacts)  # start with inherited
 
         # --- Execute trunk sequentially ---
         for i, spec in enumerate(self._trunk):
             geom = spec.geometry_override or current_geom
             step_dir = base / f"{i:02d}_{spec.label}"
+
+            # Auto-inject artifacts from previous steps (MOREAD chaining)
+            merged_kwargs = dict(spec.kwargs)
+            if current_artifacts:
+                # Pass GBW for MOREAD if the step is an ORCA step and no explicit moread
+                if "moread" not in merged_kwargs and "gbw" in current_artifacts:
+                    if spec.step_name.startswith("orca_"):
+                        merged_kwargs["moread"] = str(current_artifacts["gbw"])
+                # Make all artifacts available via _prev_artifacts
+                merged_kwargs.setdefault("_prev_artifacts", dict(current_artifacts))
 
             logger.info("[%s] step %d/%d: %s", self.name, i + 1, len(self._trunk), spec.label)
 
@@ -202,15 +214,19 @@ class Pipeline:
                 geometry=geom,
                 cores=cores,
                 work_dir=step_dir,
-                **spec.kwargs,
+                **merged_kwargs,
             )
             results.append(result)
 
             if self._on_step:
                 self._on_step(result)
 
-            if result.ok and result.geometry:
-                current_geom = result.geometry
+            if result.ok:
+                if result.geometry:
+                    current_geom = result.geometry
+                # Accumulate artifacts for next steps
+                if result.artifacts:
+                    current_artifacts.update(result.artifacts)
             elif not result.ok:
                 logger.warning("[%s] step '%s' failed: %s", self.name, spec.label, result.error)
                 if stop_on_failure:
@@ -228,6 +244,8 @@ class Pipeline:
             branch_out: Dict[str, PipelineResult] = {}
 
             def _run_branch(bname: str, bpipe: Pipeline) -> None:
+                # Branches inherit trunk artifacts
+                bpipe._inherited_artifacts = dict(current_artifacts)
                 branch_out[bname] = bpipe.run(
                     cores=cores_per_branch,
                     geometry=current_geom,
