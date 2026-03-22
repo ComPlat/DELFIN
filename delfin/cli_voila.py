@@ -188,16 +188,23 @@ def main(argv=None):
         )
         sys.exit(1)
 
-    # Check port is free before launching Voilà.
+    # Find a free port, starting from the requested one.
     port = args.port
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        if sock.connect_ex(("127.0.0.1", port)) == 0:
-            print(
-                f"Error: port {port} is already in use.\n"
-                f"Stop the other process or use a different port:  delfin-voila --port {port + 1}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    max_port = port + 100
+    while port <= max_port:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            if sock.connect_ex(("127.0.0.1", port)) != 0:
+                break
+        if port == args.port:
+            print(f"Port {port} is in use, searching for a free port...")
+        port += 1
+    else:
+        print(
+            f"Error: no free port found in range {args.port}–{max_port}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    args.port = port
 
     open_browser = bool(args.open_browser)
     notebook = _find_notebook()
