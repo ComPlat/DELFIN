@@ -155,8 +155,181 @@ def _load_yaml(path: str) -> Dict[str, Any]:
     return data
 
 
+def _build_condition(expr: str) -> Any:
+    """Build a condition callable from a YAML expression string.
+
+    Supported expressions:
+        - ``last.data.key == value``
+        - ``last.data.key > value``
+        - ``last.data.key < value``
+        - ``last.data.key >= value``
+        - ``last.data.key != value``
+        - ``last.ok``
+        - ``not last.ok``
+    """
+    import re
+
+    expr = expr.strip()
+
+    # "not last.ok"
+    if expr == "not last.ok":
+        return lambda results, last: last is not None and not last.ok
+
+    # "last.ok"
+    if expr == "last.ok":
+        return lambda results, last: last is not None and last.ok
+
+    # "last.data.KEY OP VALUE"
+    m = re.match(r"last\.data\.(\w+)\s*(==|!=|>=|<=|>|<)\s*(.+)", expr)
+    if m:
+        key, op, raw_val = m.group(1), m.group(2), m.group(3).strip()
+        # Parse value
+        try:
+            val = int(raw_val)
+        except ValueError:
+            try:
+                val = float(raw_val)
+            except ValueError:
+                val = raw_val.strip("'\"")
+
+        ops = {
+            "==": lambda a, b: a == b,
+            "!=": lambda a, b: a != b,
+            ">": lambda a, b: a > b,
+            "<": lambda a, b: a < b,
+            ">=": lambda a, b: a >= b,
+            "<=": lambda a, b: a <= b,
+        }
+        op_fn = ops[op]
+        return lambda results, last, _k=key, _fn=op_fn, _v=val: (
+            last is not None and _fn(last.data.get(_k), _v)
+        )
+
+    raise ValueError(f"Cannot parse condition expression: {expr!r}")
+
+
+def _build_until(expr: str) -> Any:
+    """Build a loop-until callable from a YAML expression string.
+
+    Supported: ``result.data.KEY OP VALUE``
+    """
+    import re
+
+    m = re.match(r"result\.data\.(\w+)\s*(==|!=|>=|<=|>|<)\s*(.+)", expr.strip())
+    if m:
+        key, op, raw_val = m.group(1), m.group(2), m.group(3).strip()
+        try:
+            val = int(raw_val)
+        except ValueError:
+            try:
+                val = float(raw_val)
+            except ValueError:
+                val = raw_val.strip("'\"")
+        ops = {
+            "==": lambda a, b: a == b,
+            "!=": lambda a, b: a != b,
+            ">": lambda a, b: a > b,
+            "<": lambda a, b: a < b,
+            ">=": lambda a, b: a >= b,
+            "<=": lambda a, b: a <= b,
+        }
+        op_fn = ops[op]
+        return lambda result, iteration, _k=key, _fn=op_fn, _v=val: (
+            _fn(result.data.get(_k), _v)
+        )
+
+    raise ValueError(f"Cannot parse until expression: {expr!r}")
+
+
+def _add_step_to_pipeline(pipe, spec: dict) -> None:
+    """Add a step (possibly with flow control) to a Pipeline.
+
+    YAML step types:
+        - Normal: ``{step: xtb_opt, charge: 0}``
+        - Conditional: ``{step: imag_fix, type: if, condition: "last.data.n_imaginary > 0"}``
+        - Loop: ``{step: imag_fix, type: loop, until: "result.data.n_imaginary == 0", max_iter: 5}``
+        - Retry: ``{step: orca_sp, type: retry, max_attempts: 3}``
+        - Checkpoint: ``{type: checkpoint}``
+        - Compute: ``{type: compute, label: "calc_energy", module: "my_module", function: "calc"}``
+    """
+    spec = dict(spec)  # don't mutate original
+    step_type = spec.pop("type", "normal")
+
+    if step_type == "checkpoint":
+        label = spec.pop("label", "checkpoint")
+        pipe.add_checkpoint(label=label)
+        return
+
+    if step_type == "compute":
+        label = spec.pop("label", "compute")
+        module_name = spec.pop("module", None)
+        func_name = spec.pop("function", None)
+        if not module_name or not func_name:
+            raise ValueError("compute step requires 'module' and 'function'")
+        import importlib
+        mod = importlib.import_module(module_name)
+        fn = getattr(mod, func_name)
+        pipe.add_compute(fn, label=label)
+        return
+
+    if "step" not in spec:
+        raise ValueError(f"Step must have a 'step' key, got: {spec}")
+
+    step_name = spec.pop("step")
+    label = spec.pop("label", "")
+
+    if step_type == "if":
+        condition_expr = spec.pop("condition", None)
+        if not condition_expr:
+            raise ValueError("'if' step requires 'condition'")
+        cond_fn = _build_condition(condition_expr)
+        pipe.add_if(cond_fn, step_name, label=label, **spec)
+
+    elif step_type == "loop":
+        until_expr = spec.pop("until", None)
+        max_iter = spec.pop("max_iter", 10)
+        if not until_expr:
+            raise ValueError("'loop' step requires 'until'")
+        until_fn = _build_until(until_expr)
+        pipe.add_loop(step_name, until=until_fn, max_iter=max_iter, label=label, **spec)
+
+    elif step_type == "retry":
+        max_attempts = spec.pop("max_attempts", 3)
+        delay = spec.pop("delay", 0.0)
+        pipe.add_retry(step_name, max_attempts=max_attempts, delay=delay, label=label, **spec)
+
+    elif step_type == "normal" or step_type == "step":
+        pipe.add(step_name, label=label, **spec)
+
+    else:
+        raise ValueError(f"Unknown step type: {step_type!r}")
+
+
 def _build_pipeline_from_yaml(data: Dict[str, Any]):
-    """Build a Pipeline or PipelineTemplate from parsed YAML."""
+    """Build a Pipeline or PipelineTemplate from parsed YAML.
+
+    Supports flow control types in YAML::
+
+        steps:
+          - step: xtb_opt
+            charge: 0
+          - step: orca_freq
+            charge: 0
+          - step: imag_fix
+            type: if
+            condition: "last.data.n_imaginary > 0"
+            charge: 0
+          - step: orca_sp
+            type: retry
+            max_attempts: 3
+            charge: 0
+          - type: checkpoint
+          - step: orca_opt
+            type: loop
+            until: "result.data.energy_change < 0.0001"
+            max_iter: 10
+            charge: 0
+    """
     is_template = data.get("template", False)
     name = data["name"]
     defaults = data.get("defaults", {})
@@ -166,25 +339,38 @@ def _build_pipeline_from_yaml(data: Dict[str, Any]):
     if is_template:
         from delfin.tools.pipeline import PipelineTemplate
         pipe = PipelineTemplate(name, defaults=defaults)
+        # Templates only support basic add() — no flow control
+        for spec in steps:
+            if not isinstance(spec, dict) or "step" not in spec:
+                raise ValueError(f"Each step must be a dict with 'step' key, got: {spec}")
+            spec = dict(spec)
+            step_name = spec.pop("step")
+            spec.pop("type", None)  # ignore type for templates
+            label = spec.pop("label", "")
+            pipe.add(step_name, label=label, **spec)
     else:
         from delfin.tools.pipeline import Pipeline
         pipe = Pipeline(name, defaults=defaults)
-
-    for spec in steps:
-        if not isinstance(spec, dict) or "step" not in spec:
-            raise ValueError(f"Each step must be a dict with 'step' key, got: {spec}")
-        step_name = spec.pop("step")
-        label = spec.pop("label", "")
-        pipe.add(step_name, label=label, **spec)
+        for spec in steps:
+            if not isinstance(spec, dict):
+                raise ValueError(f"Each step must be a dict, got: {spec}")
+            _add_step_to_pipeline(pipe, spec)
 
     for bname, bsteps in branches.items():
         branch = pipe.branch(bname)
         for spec in bsteps:
-            if not isinstance(spec, dict) or "step" not in spec:
-                raise ValueError(f"Branch step must be a dict with 'step' key, got: {spec}")
-            step_name = spec.pop("step")
-            label = spec.pop("label", "")
-            branch.add(step_name, label=label, **spec)
+            if not isinstance(spec, dict):
+                raise ValueError(f"Branch step must be a dict, got: {spec}")
+            if is_template:
+                if "step" not in spec:
+                    raise ValueError(f"Branch step must have 'step' key, got: {spec}")
+                spec = dict(spec)
+                step_name = spec.pop("step")
+                spec.pop("type", None)
+                label = spec.pop("label", "")
+                branch.add(step_name, label=label, **spec)
+            else:
+                _add_step_to_pipeline(branch, spec)
 
     return pipe
 

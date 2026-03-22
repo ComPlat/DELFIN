@@ -910,3 +910,252 @@ class TestPipelineFanOut:
         result = p.run(geometry=xyz_file)
         assert len(result.results) == 1
         assert result.results[0].status == StepStatus.SKIPPED
+
+
+# ======================================================================
+#  Pipeline advanced: add_retry
+# ======================================================================
+
+class TestPipelineRetry:
+    def test_retry_succeeds_first_try(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add_retry("fake_step", max_attempts=3)
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert len(result.results) == 1
+
+    def test_retry_always_fails(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add_retry("fake_step", max_attempts=3, fail=True)
+        result = p.run(geometry=xyz_file, stop_on_failure=False)
+        assert not result.ok
+        assert result.results[0].status == StepStatus.FAILED
+
+    def test_retry_no_retry_on_success(self, tmp_path, xyz_file):
+        """When step succeeds, no additional attempts are made."""
+        from delfin.tools.pipeline import Pipeline
+        call_count = [0]
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add_retry("fake_step", max_attempts=5)
+        p.on_step(lambda r: call_count.__setitem__(0, call_count[0] + 1))
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert call_count[0] == 1  # only 1 callback (1 attempt)
+
+
+# ======================================================================
+#  Pipeline advanced: add_map
+# ======================================================================
+
+class TestPipelineMap:
+    def test_map_runs_on_items(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add_map(
+            "fake_step",
+            items_from=lambda results, last: [
+                {"smiles": "C"},
+                {"smiles": "CC"},
+                {"smiles": "CCC"},
+            ],
+            label="map_smiles",
+        )
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert result.results[0].data["map_count"] == 3
+        assert result.results[0].data["map_ok"] == 3
+
+    def test_map_empty_skips(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add_map(
+            "fake_step",
+            items_from=lambda results, last: [],
+            label="empty_map",
+        )
+        result = p.run(geometry=xyz_file)
+        assert len(result.results) == 1
+        assert result.results[0].status == StepStatus.SKIPPED
+
+    def test_map_with_geometry_override(self, tmp_path):
+        from delfin.tools.pipeline import Pipeline
+        geoms = []
+        for i in range(2):
+            g = tmp_path / f"mol_{i}.xyz"
+            g.write_text(f"1\nmol {i}\nH  0.0  0.0  {float(i)}\n")
+            geoms.append(g)
+
+        p = Pipeline("test", base_dir=tmp_path / "work")
+        p.add_map(
+            "fake_step",
+            items_from=lambda r, l: [{"geometry": str(g)} for g in geoms],
+            label="map_geom",
+        )
+        result = p.run()
+        assert result.ok
+        assert result.results[0].data["map_count"] == 2
+
+
+# ======================================================================
+#  Pipeline advanced: add_checkpoint / resume
+# ======================================================================
+
+class TestPipelineCheckpoint:
+    def test_checkpoint_saves_state(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add_checkpoint()
+        p.add("fake_analysis")
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert len(result.results) == 3
+        # checkpoint step itself succeeds
+        assert result.results[1].status == StepStatus.SUCCESS
+        assert "checkpoint_path" in result.results[1].data
+
+    def test_checkpoint_file_exists(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add_checkpoint()
+        result = p.run(geometry=xyz_file)
+        cp_path = result.results[1].data["checkpoint_path"]
+        assert Path(cp_path).is_file()
+
+    def test_resume_skips_completed(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+
+        # Run pipeline with checkpoint
+        p1 = Pipeline("test", base_dir=tmp_path / "run1")
+        p1.add("fake_step")
+        p1.add_checkpoint()
+        p1.add("fake_analysis")
+        r1 = p1.run(geometry=xyz_file)
+
+        # Load checkpoint and resume
+        cp_path = r1.results[1].data["checkpoint_path"]
+        state = Pipeline.resume(cp_path)
+        assert state["step_idx"] == 1  # checkpoint was at step 1
+
+        # Resume: skip steps 0 and 1, run step 2
+        p2 = Pipeline("test", base_dir=tmp_path / "run2")
+        p2.add("fake_step")
+        p2.add_checkpoint()
+        p2.add("fake_analysis")
+        r2 = p2.run(geometry=xyz_file, resume_from=state)
+        # Should have resumed results + new step
+        assert any(r.step_name == "fake_analysis" for r in r2.results)
+
+
+# ======================================================================
+#  Pipeline: collect (branch aggregation)
+# ======================================================================
+
+class TestPipelineCollect:
+    def test_collect_from_branches(self):
+        from delfin.tools.pipeline import PipelineResult
+        r = PipelineResult(
+            name="test",
+            results=[StepResult(step_name="trunk", status=StepStatus.SUCCESS)],
+            branch_results={
+                "ox": PipelineResult(
+                    name="ox",
+                    results=[StepResult(
+                        step_name="orca_sp", status=StepStatus.SUCCESS,
+                        data={"energy_Eh": -100.5},
+                    )],
+                    branch_results={},
+                ),
+                "red": PipelineResult(
+                    name="red",
+                    results=[StepResult(
+                        step_name="orca_sp", status=StepStatus.SUCCESS,
+                        data={"energy_Eh": -101.3},
+                    )],
+                    branch_results={},
+                ),
+            },
+        )
+        energies = r.collect("energy_Eh")
+        assert energies == {"ox": -100.5, "red": -101.3}
+        assert min(energies, key=energies.get) == "red"
+
+    def test_collect_all_multiple_keys(self):
+        from delfin.tools.pipeline import PipelineResult
+        r = PipelineResult(
+            name="test",
+            results=[],
+            branch_results={
+                "a": PipelineResult(
+                    name="a",
+                    results=[StepResult(
+                        step_name="x", status=StepStatus.SUCCESS,
+                        data={"energy_Eh": -10.0, "dipole": 2.5},
+                    )],
+                    branch_results={},
+                ),
+            },
+        )
+        data = r.collect_all("energy_Eh", "dipole")
+        assert data == {"a": {"energy_Eh": -10.0, "dipole": 2.5}}
+
+    def test_collect_skips_failed_branches(self):
+        from delfin.tools.pipeline import PipelineResult
+        r = PipelineResult(
+            name="test",
+            results=[],
+            branch_results={
+                "ok": PipelineResult(
+                    name="ok",
+                    results=[StepResult(
+                        step_name="x", status=StepStatus.SUCCESS,
+                        data={"val": 42},
+                    )],
+                    branch_results={},
+                ),
+                "bad": PipelineResult(
+                    name="bad",
+                    results=[StepResult(
+                        step_name="x", status=StepStatus.FAILED,
+                        data={"val": 0},
+                    )],
+                    branch_results={},
+                ),
+            },
+        )
+        collected = r.collect("val")
+        assert "ok" in collected
+        assert "bad" not in collected
+
+
+# ======================================================================
+#  Pipeline: provenance logging
+# ======================================================================
+
+class TestPipelineProvenance:
+    def test_provenance_written(self, tmp_path, xyz_file):
+        import json
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add("fake_analysis")
+        result = p.run(geometry=xyz_file, provenance=True)
+        assert result.ok
+
+        prov_path = tmp_path / "provenance.json"
+        assert prov_path.is_file()
+        prov = json.loads(prov_path.read_text())
+        assert prov["pipeline_name"] == "test"
+        assert prov["ok"] is True
+        assert len(prov["steps"]) == 2
+        assert prov["total_seconds"] >= 0
+
+    def test_provenance_not_written_by_default(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.run(geometry=xyz_file)
+        assert not (tmp_path / "provenance.json").exists()

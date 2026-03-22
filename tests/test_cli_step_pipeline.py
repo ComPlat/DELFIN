@@ -251,3 +251,59 @@ steps:
         assert rc == 1
         err = capsys.readouterr().err
         assert "name" in err
+
+    # -- YAML flow control tests --
+
+    def test_yaml_retry_step(self, tmp_path, capsys):
+        xyz = tmp_path / "mol.xyz"
+        xyz.write_text("1\ntest\nH  0.0  0.0  0.0\n")
+        yaml_path = self._write_yaml(tmp_path, """
+name: retry_test
+steps:
+  - step: fake_step
+    type: retry
+    max_attempts: 2
+""")
+        from delfin.cli_pipeline import main
+        rc = main([yaml_path, "--geometry", str(xyz),
+                    "--work-dir", str(tmp_path / "work"), "--json"])
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"]
+
+    def test_yaml_checkpoint_step(self, tmp_path, capsys):
+        xyz = tmp_path / "mol.xyz"
+        xyz.write_text("1\ntest\nH  0.0  0.0  0.0\n")
+        yaml_path = self._write_yaml(tmp_path, """
+name: cp_test
+steps:
+  - step: fake_step
+  - type: checkpoint
+  - step: fake_analysis
+""")
+        from delfin.cli_pipeline import main
+        rc = main([yaml_path, "--geometry", str(xyz),
+                    "--work-dir", str(tmp_path / "work"), "--json"])
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"]
+        assert len(data["steps"]) == 3
+
+    def test_yaml_if_step(self, tmp_path, capsys):
+        xyz = tmp_path / "mol.xyz"
+        xyz.write_text("1\ntest\nH  0.0  0.0  0.0\n")
+        yaml_path = self._write_yaml(tmp_path, """
+name: if_test
+steps:
+  - step: fake_step
+  - step: fake_analysis
+    type: if
+    condition: "last.ok"
+""")
+        from delfin.cli_pipeline import main
+        rc = main([yaml_path, "--geometry", str(xyz),
+                    "--work-dir", str(tmp_path / "work"), "--json"])
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"]
+        assert len(data["steps"]) == 2

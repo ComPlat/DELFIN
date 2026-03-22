@@ -175,6 +175,10 @@ class _StepSpec:
     loop_max: int = 1                          # max iterations (1 = no loop)
     fan_out_fn: Optional[Callable] = None      # (results, last) -> list[Path]
     compute_fn: Optional[Callable] = None      # (results, last, work_dir) -> dict
+    retry_max: int = 1                         # max attempts (1 = no retry)
+    retry_delay: float = 0.0                   # seconds between retries
+    map_items: Optional[Callable] = None       # (results, last) -> list[dict]
+    checkpoint: bool = False                   # save checkpoint after this step
 
 
 class Pipeline:
@@ -435,6 +439,103 @@ class Pipeline:
         self._trunk.append(spec)
         return self
 
+    def add_retry(
+        self,
+        step_name: str,
+        *,
+        max_attempts: int = 3,
+        delay: float = 0.0,
+        label: str = "",
+        **kwargs: Any,
+    ) -> "Pipeline":
+        """Add a step that retries on failure up to *max_attempts* times.
+
+        Example::
+
+            # Retry ORCA SP up to 3 times (transient SCF failures)
+            pipe.add_retry("orca_sp", max_attempts=3, charge=0, method="B3LYP")
+
+            # Retry with delay between attempts
+            pipe.add_retry("xtb_opt", max_attempts=5, delay=2.0, charge=0)
+        """
+        merged = {**self._defaults, **kwargs}
+        spec = _StepSpec(
+            step_name=step_name,
+            kwargs=merged,
+            label=label or f"{step_name}↻{max_attempts}",
+            retry_max=max_attempts,
+            retry_delay=delay,
+        )
+        self._trunk.append(spec)
+        return self
+
+    def add_map(
+        self,
+        step_name: str,
+        items_from: Callable,
+        *,
+        label: str = "",
+        **kwargs: Any,
+    ) -> "Pipeline":
+        """Run a step once per item from a list (high-throughput screening).
+
+        ``items_from(results, last_result)`` returns a list of dicts.
+        Each dict is merged into the step kwargs for that run.
+        If the dict contains ``"geometry"``, it overrides the input geometry.
+
+        Example::
+
+            # Screen 1000 SMILES through the same workflow
+            pipe.add_map(
+                "smiles_to_xyz",
+                items_from=lambda r, l: [{"smiles": s} for s in smiles_list],
+                label="screen_smiles",
+            )
+
+            # Run ORCA on multiple geometries with different charges
+            pipe.add_map(
+                "orca_sp",
+                items_from=lambda r, l: [
+                    {"geometry": p, "charge": 0} for p in Path("inputs").glob("*.xyz")
+                ],
+                method="B3LYP", basis="def2-SVP",
+                label="batch_sp",
+            )
+        """
+        merged = {**self._defaults, **kwargs}
+        spec = _StepSpec(
+            step_name=step_name,
+            kwargs=merged,
+            label=label or f"{step_name}[map]",
+            map_items=items_from,
+        )
+        self._trunk.append(spec)
+        return self
+
+    def add_checkpoint(self, label: str = "checkpoint") -> "Pipeline":
+        """Save pipeline state after this point for crash recovery.
+
+        Creates a ``checkpoint.json`` file in the working directory.
+        Use ``Pipeline.resume(checkpoint_path)`` to restart from last
+        successful checkpoint.
+
+        Example::
+
+            pipe.add("smiles_to_xyz", smiles="CCO")
+            pipe.add("xtb_opt", charge=0)
+            pipe.add_checkpoint()  # save state here
+            pipe.add("orca_opt", charge=0, method="B3LYP")  # expensive
+            pipe.add_checkpoint()  # save again after ORCA
+        """
+        spec = _StepSpec(
+            step_name="_checkpoint",
+            kwargs={},
+            label=label,
+            checkpoint=True,
+        )
+        self._trunk.append(spec)
+        return self
+
     # ------------------------------------------------------------------
     # Internal: fan-out execution
     # ------------------------------------------------------------------
@@ -521,6 +622,183 @@ class Pipeline:
             elapsed_seconds=_time.monotonic() - start,
         )
 
+    # ------------------------------------------------------------------
+    # Internal: map execution
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _execute_map(
+        spec: _StepSpec,
+        step_idx: int,
+        base: Path,
+        cores: int,
+        results: list,
+        last_result: Optional[StepResult],
+        current_geom: Optional[Path],
+        current_artifacts: dict,
+        run_step_fn: Callable,
+    ) -> StepResult:
+        """Run a single step once per item in parallel."""
+        import time as _time
+        start = _time.monotonic()
+
+        try:
+            items = spec.map_items(results, last_result)
+        except Exception as exc:
+            return StepResult(
+                step_name=spec.step_name, status=StepStatus.FAILED,
+                error=f"map items_from raised: {exc}",
+                elapsed_seconds=_time.monotonic() - start,
+            )
+
+        if not items:
+            return StepResult(
+                step_name=spec.step_name, status=StepStatus.SKIPPED,
+                error="map returned empty item list",
+                elapsed_seconds=_time.monotonic() - start,
+            )
+
+        map_results: List[StepResult] = []
+        cores_per = max(1, cores // len(items))
+
+        def _run_one(idx: int, item: dict) -> None:
+            merged = {**spec.kwargs, **item}
+            geom = merged.pop("geometry", current_geom)
+            if geom is not None:
+                geom = Path(geom)
+            r = run_step_fn(
+                spec.step_name,
+                geometry=geom,
+                cores=cores_per,
+                work_dir=base / f"{step_idx:02d}_{spec.label}" / f"item_{idx:04d}",
+                **merged,
+            )
+            map_results.append(r)
+
+        threads = []
+        for idx, item in enumerate(items):
+            t = threading.Thread(target=_run_one, args=(idx, dict(item)))
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Find best result (lowest energy) for geometry propagation
+        best = None
+        best_energy = float("inf")
+        for r in map_results:
+            if r.ok:
+                e = r.data.get("energy_Eh") or r.data.get("energy_eV") or float("inf")
+                if e < best_energy:
+                    best_energy = e
+                    best = r
+
+        n_ok = sum(1 for r in map_results if r.ok)
+        data = {
+            "map_count": len(items),
+            "map_ok": n_ok,
+            "map_failed": len(items) - n_ok,
+            "map_results": [
+                {"ok": r.ok, "data": r.data, "geometry": str(r.geometry) if r.geometry else None}
+                for r in map_results
+            ],
+        }
+        if best and best_energy < float("inf"):
+            data["best_energy"] = best_energy
+
+        return StepResult(
+            step_name=spec.step_name,
+            status=StepStatus.SUCCESS if n_ok > 0 else StepStatus.FAILED,
+            geometry=best.geometry if best else None,
+            work_dir=base / f"{step_idx:02d}_{spec.label}",
+            data=data,
+            artifacts=best.artifacts if best else {},
+            error=None if n_ok > 0 else "all map jobs failed",
+            elapsed_seconds=_time.monotonic() - start,
+        )
+
+    # ------------------------------------------------------------------
+    # Internal: checkpoint save/restore
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _save_checkpoint(
+        checkpoint_path: Path,
+        pipeline_name: str,
+        step_idx: int,
+        results: List[StepResult],
+        current_geom: Optional[Path],
+        current_artifacts: Dict[str, Path],
+    ) -> None:
+        """Save pipeline state to JSON for crash recovery."""
+        import json
+        state = {
+            "pipeline_name": pipeline_name,
+            "step_idx": step_idx,
+            "current_geometry": str(current_geom) if current_geom else None,
+            "current_artifacts": {k: str(v) for k, v in current_artifacts.items()},
+            "results": [
+                {
+                    "step_name": r.step_name,
+                    "status": r.status.value,
+                    "geometry": str(r.geometry) if r.geometry else None,
+                    "work_dir": str(r.work_dir) if r.work_dir else None,
+                    "data": r.data,
+                    "artifacts": {k: str(v) for k, v in r.artifacts.items()},
+                    "error": r.error,
+                    "elapsed_seconds": r.elapsed_seconds,
+                }
+                for r in results
+            ],
+        }
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_path.write_text(json.dumps(state, indent=2, default=str))
+        logger.info("Checkpoint saved: %s (after step %d)", checkpoint_path, step_idx)
+
+    @staticmethod
+    def _load_checkpoint(checkpoint_path: Path) -> dict:
+        """Load checkpoint state from JSON."""
+        import json
+        state = json.loads(checkpoint_path.read_text())
+        # Reconstruct StepResult objects
+        results = []
+        for rd in state["results"]:
+            results.append(StepResult(
+                step_name=rd["step_name"],
+                status=StepStatus(rd["status"]),
+                geometry=Path(rd["geometry"]) if rd["geometry"] else None,
+                work_dir=Path(rd["work_dir"]) if rd["work_dir"] else None,
+                data=rd.get("data", {}),
+                artifacts={k: Path(v) for k, v in rd.get("artifacts", {}).items()},
+                error=rd.get("error"),
+                elapsed_seconds=rd.get("elapsed_seconds", 0.0),
+            ))
+        state["results"] = results
+        if state["current_geometry"]:
+            state["current_geometry"] = Path(state["current_geometry"])
+        state["current_artifacts"] = {
+            k: Path(v) for k, v in state.get("current_artifacts", {}).items()
+        }
+        return state
+
+    @classmethod
+    def resume(cls, checkpoint_path: Path | str) -> dict:
+        """Load checkpoint data for resuming a pipeline.
+
+        Returns a dict with keys: ``pipeline_name``, ``step_idx``,
+        ``current_geometry``, ``current_artifacts``, ``results``.
+        Pass ``resume_from`` to :meth:`run` to continue from the checkpoint.
+
+        Example::
+
+            state = Pipeline.resume("work_dir/checkpoint.json")
+            pipe.run(
+                resume_from=state,
+                cores=8,
+            )
+        """
+        return cls._load_checkpoint(Path(checkpoint_path))
+
     def branch(self, name: str) -> "Pipeline":
         """Create a named branch that starts from the trunk's final geometry.
 
@@ -553,6 +831,8 @@ class Pipeline:
         geometry: Optional[str | Path] = None,
         stop_on_failure: bool = True,
         work_dir: Optional[Path] = None,
+        resume_from: Optional[dict] = None,
+        provenance: bool = False,
     ) -> PipelineResult:
         """Execute the pipeline sequentially, then branches in parallel.
 
@@ -563,6 +843,10 @@ class Pipeline:
         geometry : initial geometry for the first step
         stop_on_failure : abort remaining steps on first failure
         work_dir : root directory for all step working directories
+        resume_from : checkpoint state dict from ``Pipeline.resume()``
+                      — skips steps already completed in the checkpoint
+        provenance : if True, write a ``provenance.json`` log to *work_dir*
+                     after execution (all steps, timing, parameters)
 
         Returns
         -------
@@ -572,16 +856,58 @@ class Pipeline:
 
         cores = _resolve_cores(cores)
 
+        import time as _pipeline_time
+
+        pipeline_start = _pipeline_time.monotonic()
+
         base = Path(work_dir) if work_dir else (self.base_dir or Path.cwd())
         base.mkdir(parents=True, exist_ok=True)
 
         results: List[StepResult] = []
         current_geom: Optional[Path] = Path(geometry) if geometry else None
         current_artifacts: Dict[str, Path] = dict(self._inherited_artifacts)  # start with inherited
+        skip_until = -1  # for resume: skip steps already done
+
+        # --- Resume from checkpoint ---
+        if resume_from is not None:
+            skip_until = resume_from.get("step_idx", -1)
+            results = list(resume_from.get("results", []))
+            if resume_from.get("current_geometry"):
+                current_geom = resume_from["current_geometry"]
+            if resume_from.get("current_artifacts"):
+                current_artifacts.update(resume_from["current_artifacts"])
+            logger.info("[%s] resuming from checkpoint (step %d)", self.name, skip_until)
 
         # --- Execute trunk sequentially ---
         for i, spec in enumerate(self._trunk):
+            # Skip already-completed steps when resuming
+            if i <= skip_until:
+                continue
+
             last_result = results[-1] if results else None
+
+            # --- Checkpoint: save state ---
+            if spec.checkpoint:
+                import time as _time
+                _start = _time.monotonic()
+                cp_path = base / f"{i:02d}_{spec.label}" / "checkpoint.json"
+                try:
+                    self._save_checkpoint(cp_path, self.name, i, results,
+                                          current_geom, current_artifacts)
+                    result = StepResult(
+                        step_name="_checkpoint", status=StepStatus.SUCCESS,
+                        work_dir=cp_path.parent, data={"checkpoint_path": str(cp_path)},
+                        elapsed_seconds=_time.monotonic() - _start,
+                    )
+                except Exception as exc:
+                    result = StepResult(
+                        step_name="_checkpoint", status=StepStatus.FAILED,
+                        error=str(exc), elapsed_seconds=_time.monotonic() - _start,
+                    )
+                results.append(result)
+                if self._on_step:
+                    self._on_step(result)
+                continue
 
             # --- Conditional: skip if condition returns False ---
             if spec.condition is not None:
@@ -630,6 +956,24 @@ class Pipeline:
             if spec.fan_out_fn is not None:
                 result = self._execute_fan_out(
                     spec, i, base, cores, results, last_result, current_artifacts, run_step,
+                )
+                results.append(result)
+                if self._on_step:
+                    self._on_step(result)
+                if result.ok:
+                    if result.geometry:
+                        current_geom = result.geometry
+                    if result.artifacts:
+                        current_artifacts.update(result.artifacts)
+                elif stop_on_failure:
+                    return PipelineResult(name=self.name, results=results, branch_results={})
+                continue
+
+            # --- Map: run step once per item in parallel ---
+            if spec.map_items is not None:
+                result = self._execute_map(
+                    spec, i, base, cores, results, last_result,
+                    current_geom, current_artifacts, run_step,
                 )
                 results.append(result)
                 if self._on_step:
@@ -706,17 +1050,30 @@ class Pipeline:
                             return PipelineResult(name=self.name, results=results, branch_results={})
                 continue
 
-            # --- Normal step execution ---
+            # --- Normal step execution (with retry support) ---
             step_dir = base / f"{i:02d}_{spec.label}"
             logger.info("[%s] step %d/%d: %s", self.name, i + 1, len(self._trunk), spec.label)
 
-            result = run_step(
-                spec.step_name,
-                geometry=geom,
-                cores=cores,
-                work_dir=step_dir,
-                **merged_kwargs,
-            )
+            result = None
+            for attempt in range(spec.retry_max):
+                attempt_dir = step_dir if spec.retry_max == 1 else step_dir / f"attempt_{attempt}"
+                if attempt > 0:
+                    logger.info("[%s] retrying '%s' (attempt %d/%d)",
+                                self.name, spec.label, attempt + 1, spec.retry_max)
+                    if spec.retry_delay > 0:
+                        import time as _time
+                        _time.sleep(spec.retry_delay)
+
+                result = run_step(
+                    spec.step_name,
+                    geometry=geom,
+                    cores=cores,
+                    work_dir=attempt_dir,
+                    **merged_kwargs,
+                )
+                if result.ok:
+                    break
+
             results.append(result)
 
             if self._on_step:
@@ -766,11 +1123,18 @@ class Pipeline:
 
             branch_results = branch_out
 
-        return PipelineResult(
+        pipeline_result = PipelineResult(
             name=self.name,
             results=results,
             branch_results=branch_results,
         )
+
+        # --- Provenance logging ---
+        if provenance:
+            _write_provenance(base, self.name, pipeline_result,
+                              cores, _pipeline_time.monotonic() - pipeline_start)
+
+        return pipeline_result
 
     # ------------------------------------------------------------------
     # Execution — scheduler-integrated
@@ -1004,6 +1368,43 @@ class PipelineResult:
         """Get results for a named branch."""
         return self.branch_results[name]
 
+    def collect(self, key: str = "energy_Eh") -> Dict[str, Any]:
+        """Gather a value from all branches for comparison.
+
+        Returns a dict mapping branch name to the value of ``key``
+        from the last result of each branch.
+
+        Example::
+
+            result = pipe.run(cores=8)
+            energies = result.collect("energy_Eh")
+            # {"oxidation": -1234.56, "reduction": -1234.78}
+            best = min(energies, key=energies.get)
+        """
+        collected = {}
+        for bname, br in self.branch_results.items():
+            last = br.last
+            if last and last.ok:
+                collected[bname] = last.data.get(key)
+        return collected
+
+    def collect_all(self, *keys: str) -> Dict[str, Dict[str, Any]]:
+        """Gather multiple values from all branches.
+
+        Returns ``{branch_name: {key1: val1, key2: val2, ...}}``.
+
+        Example::
+
+            data = result.collect_all("energy_Eh", "dipole_Debye")
+            # {"ox": {"energy_Eh": -1234.56, "dipole_Debye": 3.2}, ...}
+        """
+        collected = {}
+        for bname, br in self.branch_results.items():
+            last = br.last
+            if last and last.ok:
+                collected[bname] = {k: last.data.get(k) for k in keys}
+        return collected
+
     def summary(self) -> str:
         """Human-readable summary of the pipeline execution."""
         lines = [f"Pipeline '{self.name}': {'OK' if self.ok else 'FAILED'}"]
@@ -1022,6 +1423,57 @@ class PipelineResult:
                 if not r.ok and r.error:
                     lines.append(f"           error: {r.error}")
         return "\n".join(lines)
+
+
+# ======================================================================
+#  Provenance logging
+# ======================================================================
+
+def _write_provenance(
+    base: Path,
+    pipeline_name: str,
+    result: "PipelineResult",
+    cores: int,
+    total_seconds: float,
+) -> None:
+    """Write a JSON provenance log after pipeline execution."""
+    import json
+    import datetime
+    import platform
+
+    def _result_to_record(r: StepResult) -> dict:
+        return {
+            "step_name": r.step_name,
+            "status": r.status.value,
+            "geometry_in": None,  # not tracked yet
+            "geometry_out": str(r.geometry) if r.geometry else None,
+            "work_dir": str(r.work_dir) if r.work_dir else None,
+            "data": r.data,
+            "artifacts": {k: str(v) for k, v in r.artifacts.items()},
+            "error": r.error,
+            "elapsed_seconds": round(r.elapsed_seconds, 3),
+        }
+
+    prov = {
+        "pipeline_name": pipeline_name,
+        "ok": result.ok,
+        "timestamp": datetime.datetime.now().isoformat(),
+        "hostname": platform.node(),
+        "python_version": platform.python_version(),
+        "cores": cores,
+        "total_seconds": round(total_seconds, 3),
+        "steps": [_result_to_record(r) for r in result.results],
+        "branches": {},
+    }
+    for bname, br in result.branch_results.items():
+        prov["branches"][bname] = {
+            "ok": br.ok,
+            "steps": [_result_to_record(r) for r in br.results],
+        }
+
+    prov_path = base / "provenance.json"
+    prov_path.write_text(json.dumps(prov, indent=2, default=str))
+    logger.info("Provenance log written: %s", prov_path)
 
 
 class _PipelineWorkflow:
