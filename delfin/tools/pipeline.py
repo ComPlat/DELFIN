@@ -63,6 +63,20 @@ Parametric template — define once, run on any system::
         cores=16,
     )
 
+Pipeline-level defaults (like CONTROL.txt for a pipeline)::
+
+    pipe = Pipeline("metal_opt", defaults={
+        "charge": 2, "mult": 3,
+        "method": "B3LYP", "basis": "def2-SVP",
+        "ri": "RIJCOSX", "aux_basis": "def2/J",
+        "solvent": "water", "solvent_model": "CPCM",
+    })
+    pipe.add("xtb_opt")              # inherits charge, mult
+    pipe.add("orca_opt")             # inherits all defaults
+    pipe.add("orca_freq")            # inherits all defaults
+    pipe.add("orca_sp", basis="def2-TZVP")  # override basis only
+    results = pipe.run(cores=8, geometry="input.xyz")
+
 Scheduler integration::
 
     pipe = Pipeline("scheduled")
@@ -103,9 +117,16 @@ class Pipeline:
     that share the geometry produced by the trunk.
     """
 
-    def __init__(self, name: str, *, base_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        name: str,
+        *,
+        base_dir: Optional[Path] = None,
+        defaults: Optional[Dict[str, Any]] = None,
+    ):
         self.name = name
         self.base_dir = base_dir
+        self._defaults: Dict[str, Any] = dict(defaults or {})
         self._trunk: List[_StepSpec] = []
         self._branches: Dict[str, Pipeline] = {}
         self._on_step: Optional[Callable[[StepResult], None]] = None
@@ -130,11 +151,14 @@ class Pipeline:
         step_name : registered adapter name (e.g. ``"xtb_opt"``)
         geometry : explicit input geometry (overrides auto-propagation)
         label : human-readable label for logging/UI
-        **kwargs : adapter-specific parameters
+        **kwargs : adapter-specific parameters (merged with pipeline defaults;
+                   explicit kwargs override defaults)
         """
+        # Merge: defaults ← step kwargs (step wins)
+        merged = {**self._defaults, **kwargs}
         spec = _StepSpec(
             step_name=step_name,
-            kwargs=kwargs,
+            kwargs=merged,
             geometry_override=Path(geometry) if geometry else None,
             label=label or step_name,
         )
@@ -149,7 +173,11 @@ class Pipeline:
         """
         if name in self._branches:
             return self._branches[name]
-        child = Pipeline(f"{self.name}/{name}", base_dir=self.base_dir)
+        child = Pipeline(
+            f"{self.name}/{name}",
+            base_dir=self.base_dir,
+            defaults=self._defaults,  # inherit parent defaults
+        )
         self._branches[name] = child
         return child
 
@@ -637,16 +665,18 @@ class PipelineTemplate:
                             solvent="dmf", cores=16)
     """
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, *, defaults: Optional[Dict[str, Any]] = None):
         self.name = name
+        self._defaults: Dict[str, Any] = dict(defaults or {})
         self._trunk: List[_StepSpec] = []
         self._branches: Dict[str, PipelineTemplate] = {}
 
     def add(self, step_name: str, *, label: str = "", **kwargs: Any) -> "PipelineTemplate":
         """Add a step to the template trunk (kwargs may contain ``{placeholders}``)."""
+        merged = {**self._defaults, **kwargs}
         self._trunk.append(_StepSpec(
             step_name=step_name,
-            kwargs=kwargs,
+            kwargs=merged,
             label=label or step_name,
         ))
         return self
@@ -654,7 +684,10 @@ class PipelineTemplate:
     def branch(self, name: str) -> "PipelineTemplate":
         """Create a named branch template."""
         if name not in self._branches:
-            self._branches[name] = PipelineTemplate(f"{self.name}/{name}")
+            self._branches[name] = PipelineTemplate(
+                f"{self.name}/{name}",
+                defaults=self._defaults,  # inherit parent defaults
+            )
         return self._branches[name]
 
     def build(self, **params: Any) -> Pipeline:
