@@ -68,9 +68,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--cores", "-j",
-        type=int,
-        default=1,
-        help="Number of CPU cores (default: 1)",
+        type=str,
+        default="1",
+        help='CPU cores (default: 1). Use "auto" to detect from cluster/system.',
     )
     parser.add_argument(
         "--geometry", "-g",
@@ -212,6 +212,17 @@ def _result_to_dict(result) -> dict:
     return d
 
 
+def _resolve_cores_arg(cores_str: str) -> int:
+    """Resolve --cores argument: integer or 'auto'."""
+    if cores_str.lower() == "auto":
+        from delfin.cluster_utils import detect_cluster_environment
+        info = detect_cluster_environment()
+        detected = info.get("cpus_available") or 1
+        print(f"Auto-detected {detected} cores ({info.get('scheduler', 'system')})")
+        return detected
+    return int(cores_str)
+
+
 def _submit_slurm(yaml_path: str, args) -> int:
     """Submit the pipeline as a SLURM job."""
     import shutil
@@ -222,8 +233,10 @@ def _submit_slurm(yaml_path: str, args) -> int:
         print("Error: sbatch not found. Is SLURM installed?", file=sys.stderr)
         return 1
 
-    # Build the delfin-pipeline command to run inside the SLURM job
-    cmd_parts = ["delfin-pipeline", yaml_path, f"--cores={args.cores}"]
+    cores = _resolve_cores_arg(args.cores)
+
+    # Inside SLURM job, use "auto" to detect allocated resources
+    cmd_parts = ["delfin-pipeline", yaml_path, "--cores=auto"]
     if args.geometry:
         cmd_parts.append(f"--geometry={args.geometry}")
     if args.work_dir:
@@ -247,7 +260,7 @@ def _submit_slurm(yaml_path: str, args) -> int:
     script = f"""#!/bin/bash
 #SBATCH --job-name={job_name}
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task={args.cores}
+#SBATCH --cpus-per-task={cores}
 #SBATCH --mem={mem}
 #SBATCH --time={time_limit}
 #SBATCH --nodes={nodes}
@@ -260,7 +273,7 @@ def _submit_slurm(yaml_path: str, args) -> int:
 #SBATCH --error={job_name}_%j.err
 
 echo "DELFIN pipeline: {job_name}"
-echo "Cores: {args.cores}"
+echo "Cores: {cores} (auto-detect inside job)"
 echo "Start: $(date)"
 
 {pipeline_cmd}

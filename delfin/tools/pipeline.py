@@ -98,6 +98,20 @@ from delfin.tools._types import StepResult, StepStatus, StepError
 logger = get_logger(__name__)
 
 
+def _resolve_cores(cores: int | str) -> int:
+    """Resolve ``cores`` argument — supports ``"auto"`` for cluster detection."""
+    if isinstance(cores, str) and cores.lower() == "auto":
+        from delfin.cluster_utils import detect_cluster_environment
+        info = detect_cluster_environment()
+        detected = info.get("cpus_available") or 1
+        logger.info(
+            "Auto-detected %d cores (%s scheduler)",
+            detected, info.get("scheduler", "unknown"),
+        )
+        return detected
+    return int(cores)
+
+
 @dataclass
 class _StepSpec:
     """Specification for a single step in a pipeline."""
@@ -193,7 +207,7 @@ class Pipeline:
     def run(
         self,
         *,
-        cores: int = 1,
+        cores: int | str = 1,
         geometry: Optional[str | Path] = None,
         stop_on_failure: bool = True,
         work_dir: Optional[Path] = None,
@@ -202,7 +216,8 @@ class Pipeline:
 
         Parameters
         ----------
-        cores : total CPU cores available
+        cores : total CPU cores available.  Pass ``"auto"`` to auto-detect
+                from the cluster environment (SLURM, PBS, or local system).
         geometry : initial geometry for the first step
         stop_on_failure : abort remaining steps on first failure
         work_dir : root directory for all step working directories
@@ -212,6 +227,8 @@ class Pipeline:
         PipelineResult with all step results
         """
         from delfin.tools._runner import run_step
+
+        cores = _resolve_cores(cores)
 
         base = Path(work_dir) if work_dir else (self.base_dir or Path.cwd())
         base.mkdir(parents=True, exist_ok=True)
@@ -307,7 +324,7 @@ class Pipeline:
     def run_scheduled(
         self,
         *,
-        cores: int = 1,
+        cores: int | str = 1,
         geometry: Optional[str | Path] = None,
         work_dir: Optional[Path] = None,
         config: Optional[Dict[str, Any]] = None,
@@ -330,6 +347,8 @@ class Pipeline:
         from delfin.tools._runner import step_as_workflow_job
         from delfin.workflows.engine.classic import _WorkflowManager, WorkflowRunResult
         from delfin.workflows.scheduling.manager import get_global_manager
+
+        cores = _resolve_cores(cores)
 
         base = Path(work_dir) if work_dir else (self.base_dir or Path.cwd())
         base.mkdir(parents=True, exist_ok=True)

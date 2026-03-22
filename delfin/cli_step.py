@@ -42,9 +42,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--cores", "-j",
-        type=int,
-        default=1,
-        help="Number of CPU cores (default: 1)",
+        type=str,
+        default="1",
+        help='CPU cores (default: 1). Use "auto" to detect from cluster/system.',
     )
     parser.add_argument(
         "--work-dir", "-d",
@@ -57,6 +57,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="json_output",
         help="Full JSON output instead of summary line",
+    )
+    parser.add_argument(
+        "--slurm",
+        action="store_true",
+        help="Submit as SLURM job instead of running locally",
     )
     return parser
 
@@ -129,6 +134,69 @@ def _result_to_dict(result) -> dict:
     }
 
 
+def _resolve_cores_arg(cores_str: str) -> int:
+    """Resolve --cores argument: integer or 'auto'."""
+    if cores_str.lower() == "auto":
+        from delfin.cluster_utils import detect_cluster_environment
+        info = detect_cluster_environment()
+        detected = info.get("cpus_available") or 1
+        print(f"Auto-detected {detected} cores ({info.get('scheduler', 'system')})")
+        return detected
+    return int(cores_str)
+
+
+def _submit_step_slurm(args, cores: int, extra: dict) -> int:
+    """Submit a single step as a SLURM job."""
+    import shutil
+    import subprocess
+
+    sbatch = shutil.which("sbatch")
+    if not sbatch:
+        print("Error: sbatch not found. Is SLURM installed?", file=sys.stderr)
+        return 1
+
+    # Build the command to run inside SLURM
+    cmd_parts = ["delfin-step", args.step_name, f"--cores={cores}"]
+    if args.geometry:
+        cmd_parts.append(f"--geometry={args.geometry}")
+    if args.work_dir:
+        cmd_parts.append(f"--work-dir={args.work_dir}")
+    for k, v in extra.items():
+        cmd_parts.append(f"--{k}={v}")
+
+    step_cmd = " ".join(cmd_parts)
+    job_name = f"delfin-{args.step_name}"
+
+    script = f"""#!/bin/bash
+#SBATCH --job-name={job_name}
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task={cores}
+#SBATCH --time=24:00:00
+#SBATCH --output={job_name}_%j.out
+#SBATCH --error={job_name}_%j.err
+
+echo "DELFIN step: {args.step_name}"
+echo "Cores: {cores}"
+echo "Start: $(date)"
+
+{step_cmd}
+
+echo "End: $(date)"
+"""
+    script_path = Path(args.work_dir or ".") / f"{job_name}_slurm.sh"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script)
+
+    result = subprocess.run([sbatch, str(script_path)], capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"SLURM job submitted: {result.stdout.strip()}")
+        print(f"Script: {script_path}")
+        return 0
+    else:
+        print(f"SLURM submission failed: {result.stderr}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args, remaining = parser.parse_known_args(argv)
@@ -153,13 +221,20 @@ def main(argv: list[str] | None = None) -> int:
     # Parse extra kwargs from remaining args
     extra = _parse_extra_kwargs(remaining)
 
+    # Resolve cores (supports "auto" for cluster detection)
+    cores = _resolve_cores_arg(args.cores)
+
+    # SLURM submission
+    if args.slurm:
+        return _submit_step_slurm(args, cores, extra)
+
     from delfin.tools import run_step
 
     try:
         result = run_step(
             args.step_name,
             geometry=args.geometry,
-            cores=args.cores,
+            cores=cores,
             work_dir=Path(args.work_dir) if args.work_dir else None,
             **extra,
         )
