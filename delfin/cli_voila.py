@@ -258,15 +258,18 @@ def main(argv=None):
         )
     print("Press Ctrl+C to stop.\n")
 
+    proc = subprocess.Popen(cmd, env=env)
     try:
-        proc = subprocess.run(
-            cmd,
-            env=env,
-            check=False,
-        )
-        sys.exit(proc.returncode)
+        sys.exit(proc.wait())
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print("\nStopping...")
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        print("Stopped.")
 
 
 if __name__ == "__main__":
