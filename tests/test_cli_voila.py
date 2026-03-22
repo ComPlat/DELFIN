@@ -53,10 +53,21 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
 
         return Result()
 
+    class FakeProc:
+        def wait(self):
+            return 0
+
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
     monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
+    monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
+    def fake_popen(cmd, env):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        return FakeProc()
+
+    monkeypatch.setattr(cli_voila.subprocess, "Popen", fake_popen)
     monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
 
     try:
@@ -79,6 +90,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)"
         in captured["cmd"]
     )
+    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
     assert captured["env"]["DELFIN_VOILA_ROOT_DIR"] == str(root_dir.resolve())
 
     stdout = capsys.readouterr().out
@@ -117,10 +129,20 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
 
         return Result()
 
+    class FakeProc:
+        def wait(self):
+            return 0
+
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
     monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
+    monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
+    def fake_popen(cmd, env):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(cli_voila.subprocess, "Popen", fake_popen)
     monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
 
     try:
@@ -129,6 +151,7 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
         assert exc.code == 0
 
     assert "--no-browser" in captured["cmd"]
+    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
     assert "--Voila.open_browser=True" not in captured["cmd"]
 
 
@@ -151,10 +174,20 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
 
         return Result()
 
+    class FakeProc:
+        def wait(self):
+            return 0
+
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
     monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
+    monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
+    def fake_popen(cmd, env):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(cli_voila.subprocess, "Popen", fake_popen)
     monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
 
     try:
@@ -163,4 +196,5 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
         assert exc.code == 0
 
     assert "--Voila.open_browser=True" in captured["cmd"]
+    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
     assert "--no-browser" not in captured["cmd"]
