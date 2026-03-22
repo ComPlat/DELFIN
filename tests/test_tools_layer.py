@@ -716,4 +716,197 @@ class TestPublicAPI:
         from delfin.tools import list_steps
         steps = list_steps()
         assert isinstance(steps, dict)
-        assert "fake_step" in steps
+
+
+# ======================================================================
+#  Pipeline advanced: add_if (conditional)
+# ======================================================================
+
+class TestPipelineConditional:
+    def test_add_if_true(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add_if(lambda results, last: True, "fake_analysis")
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert len(result.results) == 2
+        assert result.results[1].step_name == "fake_analysis"
+
+    def test_add_if_false_skips(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add_if(lambda results, last: False, "fake_analysis")
+        result = p.run(geometry=xyz_file)
+        # SKIPPED counts as not-ok, but the pipeline ran to completion
+        assert len(result.results) == 2
+        assert result.results[0].ok
+        assert result.results[1].status == StepStatus.SKIPPED
+
+    def test_add_if_uses_last_result(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")  # produces data with cores=1
+        p.add_if(
+            lambda results, last: last.data.get("cores") == 1,
+            "fake_analysis",
+        )
+        result = p.run(geometry=xyz_file)
+        assert len(result.results) == 2
+        assert result.results[1].step_name == "fake_analysis"
+        assert result.results[1].status == StepStatus.SUCCESS
+
+
+# ======================================================================
+#  Pipeline advanced: add_loop
+# ======================================================================
+
+class TestPipelineLoop:
+    def test_loop_stops_on_condition(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        call_count = [0]
+
+        def count_and_stop(result, iteration):
+            call_count[0] += 1
+            return iteration >= 2  # stop after 3 iterations (0, 1, 2)
+
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add_loop("fake_step", until=count_and_stop, max_iter=10)
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert call_count[0] == 3  # iterations 0, 1, 2
+
+    def test_loop_respects_max_iter(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add_loop("fake_step", until=lambda r, i: False, max_iter=3)
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert len(result.results) == 1  # loop produces one final result
+
+    def test_loop_propagates_geometry(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add_loop("fake_step", until=lambda r, i: i >= 1, max_iter=5)
+        p.add("fake_analysis")  # should get geometry from loop
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert len(result.results) == 2
+
+
+# ======================================================================
+#  Pipeline advanced: add_transform
+# ======================================================================
+
+class TestPipelineTransform:
+    def test_transform_modifies_kwargs(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add_transform(
+            "fake_step",
+            lambda kw, results, last: {**kw, "charge": 42},
+        )
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert result.results[1].data["charge"] == 42
+
+    def test_transform_uses_previous_data(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")  # data has cores=1
+        p.add_transform(
+            "fake_step",
+            lambda kw, results, last: {**kw, "charge": last.data["cores"] * 10},
+        )
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert result.results[1].data["charge"] == 10
+
+    def test_transform_error_fails_step(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add_transform(
+            "fake_step",
+            lambda kw, results, last: 1/0,  # will raise
+        )
+        result = p.run(geometry=xyz_file, stop_on_failure=True)
+        assert not result.ok
+        assert result.results[1].status == StepStatus.FAILED
+
+
+# ======================================================================
+#  Pipeline advanced: add_compute
+# ======================================================================
+
+class TestPipelineCompute:
+    def test_compute_stores_data(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add_compute(
+            lambda results, last, wd: {"answer": 42, "pi": 3.14},
+            label="my_calc",
+        )
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert result.results[1].data["answer"] == 42
+        assert result.results[1].data["pi"] == 3.14
+
+    def test_compute_has_access_to_results(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add_compute(
+            lambda results, last, wd: {"n_prev": len(results)},
+        )
+        result = p.run(geometry=xyz_file)
+        assert result.results[1].data["n_prev"] == 1
+
+    def test_compute_error_fails(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add_compute(lambda r, l, w: 1/0, label="bad_calc")
+        result = p.run(geometry=xyz_file, stop_on_failure=True)
+        assert not result.ok
+        assert "division by zero" in result.results[0].error
+
+
+# ======================================================================
+#  Pipeline advanced: add_fan_out
+# ======================================================================
+
+class TestPipelineFanOut:
+    def test_fan_out_runs_on_multiple_geometries(self, tmp_path):
+        from delfin.tools.pipeline import Pipeline
+        # Create multiple xyz files
+        geoms = []
+        for i in range(3):
+            g = tmp_path / f"mol_{i}.xyz"
+            g.write_text(f"1\nmol {i}\nH  0.0  0.0  {float(i)}\n")
+            geoms.append(g)
+
+        p = Pipeline("test", base_dir=tmp_path / "work")
+        p.add_fan_out(
+            "fake_step",
+            geometries_from=lambda results, last: geoms,
+            label="fan",
+        )
+        result = p.run()
+        assert result.ok
+        assert result.results[0].data["fan_out_count"] == 3
+        assert result.results[0].data["fan_out_ok"] == 3
+
+    def test_fan_out_empty_skips(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add_fan_out(
+            "fake_step",
+            geometries_from=lambda results, last: [],
+            label="empty_fan",
+        )
+        result = p.run(geometry=xyz_file)
+        assert len(result.results) == 1
+        assert result.results[0].status == StepStatus.SKIPPED

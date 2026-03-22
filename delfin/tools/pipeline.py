@@ -77,6 +77,55 @@ Pipeline-level defaults (like CONTROL.txt for a pipeline)::
     pipe.add("orca_sp", basis="def2-TZVP")  # override basis only
     results = pipe.run(cores=8, geometry="input.xyz")
 
+Conditional steps — only run if condition is met::
+
+    pipe = Pipeline("smart_opt")
+    pipe.add("xtb_opt", charge=0)
+    pipe.add("orca_freq", charge=0)
+    pipe.add_if(
+        lambda results, last: last.data.get("has_imaginary", False),
+        "imag_fix", charge=0,
+    )
+
+Loop until convergence::
+
+    pipe = Pipeline("imag_loop")
+    pipe.add("orca_opt", charge=0)
+    pipe.add_loop(
+        "imag_fix", charge=0,
+        until=lambda result, i: result.data.get("n_imaginary", 0) == 0,
+        max_iter=5,
+    )
+
+Dynamic kwargs from previous results::
+
+    pipe = Pipeline("adaptive")
+    pipe.add("smiles_to_xyz", smiles="CCO")
+    pipe.add_transform(
+        "orca_sp",
+        lambda kw, results, last: {**kw, "mult": 1 if last.data["n_atoms"] % 2 == 0 else 2},
+        charge=0, method="B3LYP",
+    )
+
+Post-processing — compute derived values::
+
+    def calc_redox(results, last, work_dir):
+        E0 = results[1].data["energy_Eh"]
+        E_ox = results[2].data["energy_Eh"]
+        return {"redox_V": -((E0 - E_ox) * 2625.5) / 96485 - 4.28}
+
+    pipe.add_compute(calc_redox, label="redox_potential")
+
+Fan-out — run on multiple geometries in parallel::
+
+    pipe.add("crest_conformers", charge=0)
+    pipe.add_fan_out(
+        "orca_sp",
+        geometries_from=lambda results, last: list(last.work_dir.glob("*.xyz")),
+        charge=0, method="B3LYP",
+        label="screen_conformers",
+    )
+
 Scheduler integration::
 
     pipe = Pipeline("scheduled")
@@ -119,6 +168,13 @@ class _StepSpec:
     kwargs: Dict[str, Any]
     geometry_override: Optional[Path] = None  # explicit input geometry
     label: str = ""  # human-readable label (defaults to step_name)
+    # --- Advanced flow control ---
+    condition: Optional[Callable] = None       # (results, last) -> bool
+    transform: Optional[Callable] = None       # (kwargs, results, last) -> kwargs
+    loop_until: Optional[Callable] = None      # (result, iteration) -> bool (True=stop)
+    loop_max: int = 1                          # max iterations (1 = no loop)
+    fan_out_fn: Optional[Callable] = None      # (results, last) -> list[Path]
+    compute_fn: Optional[Callable] = None      # (results, last, work_dir) -> dict
 
 
 class Pipeline:
@@ -178,6 +234,292 @@ class Pipeline:
         )
         self._trunk.append(spec)
         return self
+
+    def add_if(
+        self,
+        condition: Callable,
+        step_name: str,
+        *,
+        label: str = "",
+        **kwargs: Any,
+    ) -> "Pipeline":
+        """Add a step that only runs if ``condition(results, last_result)`` is True.
+
+        Example::
+
+            # Only run IMAG fix if imaginary frequencies were found
+            pipe.add("orca_freq", charge=0)
+            pipe.add_if(
+                lambda results, last: last.data.get("has_imaginary", False),
+                "imag_fix", charge=0,
+            )
+
+            # Only run expensive DFT if xTB energy is below threshold
+            pipe.add_if(
+                lambda results, last: last.data.get("energy_Eh", 0) < -100,
+                "orca_opt", charge=0,
+            )
+        """
+        merged = {**self._defaults, **kwargs}
+        spec = _StepSpec(
+            step_name=step_name,
+            kwargs=merged,
+            label=label or f"{step_name}?",
+            condition=condition,
+        )
+        self._trunk.append(spec)
+        return self
+
+    def add_loop(
+        self,
+        step_name: str,
+        *,
+        until: Callable,
+        max_iter: int = 10,
+        label: str = "",
+        **kwargs: Any,
+    ) -> "Pipeline":
+        """Add a step that repeats until ``until(result, iteration)`` returns True.
+
+        The output geometry of each iteration becomes the input for the next.
+
+        Example::
+
+            # IMAG elimination loop — repeat until no imaginary frequencies
+            pipe.add_loop(
+                "imag_fix", charge=0,
+                until=lambda result, i: result.data.get("n_imaginary", 0) == 0,
+                max_iter=5,
+            )
+
+            # Optimize until energy change < threshold
+            pipe.add_loop(
+                "orca_opt", charge=0, method="B3LYP",
+                until=lambda result, i: abs(result.data.get("energy_change", 1)) < 1e-6,
+                max_iter=20,
+            )
+        """
+        merged = {**self._defaults, **kwargs}
+        spec = _StepSpec(
+            step_name=step_name,
+            kwargs=merged,
+            label=label or f"{step_name}×{max_iter}",
+            loop_until=until,
+            loop_max=max_iter,
+        )
+        self._trunk.append(spec)
+        return self
+
+    def add_transform(
+        self,
+        step_name: str,
+        transform: Callable,
+        *,
+        label: str = "",
+        **kwargs: Any,
+    ) -> "Pipeline":
+        """Add a step whose kwargs are modified at runtime based on previous results.
+
+        ``transform(kwargs, results, last_result)`` should return the modified kwargs dict.
+
+        Example::
+
+            # Set charge from previous step's computed optimal charge
+            pipe.add_transform(
+                "orca_opt",
+                lambda kw, results, last: {**kw, "charge": last.data["optimal_charge"]},
+            )
+
+            # Set multiplicity based on electron count
+            pipe.add_transform(
+                "orca_sp",
+                lambda kw, results, last: {
+                    **kw,
+                    "mult": 1 if last.data["n_electrons"] % 2 == 0 else 2,
+                },
+                charge=0, method="B3LYP",
+            )
+        """
+        merged = {**self._defaults, **kwargs}
+        spec = _StepSpec(
+            step_name=step_name,
+            kwargs=merged,
+            label=label or f"{step_name}~",
+            transform=transform,
+        )
+        self._trunk.append(spec)
+        return self
+
+    def add_compute(
+        self,
+        compute: Callable,
+        *,
+        label: str = "compute",
+    ) -> "Pipeline":
+        """Add a pure-Python computation step (no tool, just a function).
+
+        ``compute(results, last_result, work_dir)`` should return a dict
+        that is stored in ``result.data``.
+
+        Example::
+
+            # Compute redox potential from branch energies
+            def calc_redox(results, last, work_dir):
+                E_neutral = results[2].data["energy_Eh"]
+                E_ox = results[3].data["energy_Eh"]
+                F = 96485.3329
+                E_redox = -((E_neutral - E_ox) * 2625.5) / F - 4.28
+                return {"E_redox_V": E_redox}
+
+            pipe.add_compute(calc_redox, label="redox_potential")
+
+            # Save CSV of all energies
+            def save_csv(results, last, work_dir):
+                import csv
+                path = work_dir / "energies.csv"
+                with open(path, "w", newline="") as f:
+                    w = csv.writer(f)
+                    w.writerow(["step", "energy_Eh"])
+                    for r in results:
+                        e = r.data.get("energy_Eh")
+                        if e is not None:
+                            w.writerow([r.step_name, e])
+                return {"csv_path": str(path)}
+
+            pipe.add_compute(save_csv, label="export_csv")
+        """
+        spec = _StepSpec(
+            step_name="_compute",
+            kwargs={},
+            label=label,
+            compute_fn=compute,
+        )
+        self._trunk.append(spec)
+        return self
+
+    def add_fan_out(
+        self,
+        step_name: str,
+        geometries_from: Callable,
+        *,
+        label: str = "",
+        **kwargs: Any,
+    ) -> "Pipeline":
+        """Run a step in parallel on multiple geometries (one-to-many).
+
+        ``geometries_from(results, last_result)`` should return a list of
+        Path objects.  The step runs once per geometry in parallel threads.
+        Results are collected as a list in ``result.data["fan_out_results"]``.
+        The best (lowest energy) geometry becomes the output geometry.
+
+        Example::
+
+            # CREST produces ensemble → run ORCA SP on each conformer
+            pipe.add("crest_conformers", charge=0)
+            pipe.add_fan_out(
+                "orca_sp",
+                geometries_from=lambda results, last: list(
+                    last.work_dir.glob("crest_conformers.xyz")  # or parse ensemble
+                ),
+                charge=0, method="B3LYP", basis="def2-SVP",
+                label="screen_conformers",
+            )
+        """
+        merged = {**self._defaults, **kwargs}
+        spec = _StepSpec(
+            step_name=step_name,
+            kwargs=merged,
+            label=label or f"{step_name}[*]",
+            fan_out_fn=geometries_from,
+        )
+        self._trunk.append(spec)
+        return self
+
+    # ------------------------------------------------------------------
+    # Internal: fan-out execution
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _execute_fan_out(
+        spec: _StepSpec,
+        step_idx: int,
+        base: Path,
+        cores: int,
+        results: list,
+        last_result: Optional[StepResult],
+        current_artifacts: dict,
+        run_step_fn: Callable,
+    ) -> StepResult:
+        """Run a single step on multiple geometries in parallel."""
+        import time as _time
+        start = _time.monotonic()
+
+        try:
+            geom_list = spec.fan_out_fn(results, last_result)
+        except Exception as exc:
+            return StepResult(
+                step_name=spec.step_name, status=StepStatus.FAILED,
+                error=f"fan_out geometries_from raised: {exc}",
+                elapsed_seconds=_time.monotonic() - start,
+            )
+
+        if not geom_list:
+            return StepResult(
+                step_name=spec.step_name, status=StepStatus.SKIPPED,
+                error="fan_out returned empty geometry list",
+                elapsed_seconds=_time.monotonic() - start,
+            )
+
+        fan_results: List[StepResult] = []
+        cores_per = max(1, cores // len(geom_list))
+
+        def _run_one(idx: int, geom: Path) -> None:
+            r = run_step_fn(
+                spec.step_name,
+                geometry=geom,
+                cores=cores_per,
+                work_dir=base / f"{step_idx:02d}_{spec.label}" / f"geom_{idx:03d}",
+                **spec.kwargs,
+            )
+            fan_results.append(r)
+
+        threads = []
+        for idx, geom in enumerate(geom_list):
+            t = threading.Thread(target=_run_one, args=(idx, Path(geom)))
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Find best result (lowest energy)
+        best = None
+        best_energy = float("inf")
+        for r in fan_results:
+            if r.ok:
+                e = r.data.get("energy_Eh") or r.data.get("energy_eV") or float("inf")
+                if e < best_energy:
+                    best_energy = e
+                    best = r
+
+        n_ok = sum(1 for r in fan_results if r.ok)
+        data = {
+            "fan_out_count": len(geom_list),
+            "fan_out_ok": n_ok,
+            "fan_out_failed": len(geom_list) - n_ok,
+        }
+        if best and best_energy < float("inf"):
+            data["best_energy"] = best_energy
+
+        return StepResult(
+            step_name=spec.step_name,
+            status=StepStatus.SUCCESS if n_ok > 0 else StepStatus.FAILED,
+            geometry=best.geometry if best else None,
+            work_dir=base / f"{step_idx:02d}_{spec.label}",
+            data=data,
+            artifacts=best.artifacts if best else {},
+            error=None if n_ok > 0 else "all fan-out jobs failed",
+            elapsed_seconds=_time.monotonic() - start,
+        )
 
     def branch(self, name: str) -> "Pipeline":
         """Create a named branch that starts from the trunk's final geometry.
@@ -239,19 +581,133 @@ class Pipeline:
 
         # --- Execute trunk sequentially ---
         for i, spec in enumerate(self._trunk):
+            last_result = results[-1] if results else None
+
+            # --- Conditional: skip if condition returns False ---
+            if spec.condition is not None:
+                try:
+                    should_run = spec.condition(results, last_result)
+                except Exception as exc:
+                    logger.warning("[%s] condition for '%s' raised: %s", self.name, spec.label, exc)
+                    should_run = False
+                if not should_run:
+                    logger.info("[%s] skipping '%s' (condition not met)", self.name, spec.label)
+                    results.append(StepResult(
+                        step_name=spec.step_name, status=StepStatus.SKIPPED,
+                        error="condition not met",
+                    ))
+                    continue
+
+            # --- Compute: pure Python function, no tool ---
+            if spec.compute_fn is not None:
+                import time as _time
+                _start = _time.monotonic()
+                compute_dir = base / f"{i:02d}_{spec.label}"
+                compute_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    data = spec.compute_fn(results, last_result, compute_dir)
+                    if not isinstance(data, dict):
+                        data = {"return_value": data}
+                    result = StepResult(
+                        step_name="_compute", status=StepStatus.SUCCESS,
+                        work_dir=compute_dir, data=data,
+                        elapsed_seconds=_time.monotonic() - _start,
+                    )
+                except Exception as exc:
+                    result = StepResult(
+                        step_name="_compute", status=StepStatus.FAILED,
+                        work_dir=compute_dir, error=str(exc),
+                        elapsed_seconds=_time.monotonic() - _start,
+                    )
+                results.append(result)
+                if self._on_step:
+                    self._on_step(result)
+                if not result.ok and stop_on_failure:
+                    return PipelineResult(name=self.name, results=results, branch_results={})
+                continue
+
+            # --- Fan-out: run step on multiple geometries in parallel ---
+            if spec.fan_out_fn is not None:
+                result = self._execute_fan_out(
+                    spec, i, base, cores, results, last_result, current_artifacts, run_step,
+                )
+                results.append(result)
+                if self._on_step:
+                    self._on_step(result)
+                if result.ok:
+                    if result.geometry:
+                        current_geom = result.geometry
+                    if result.artifacts:
+                        current_artifacts.update(result.artifacts)
+                elif stop_on_failure:
+                    return PipelineResult(name=self.name, results=results, branch_results={})
+                continue
+
             geom = spec.geometry_override or current_geom
-            step_dir = base / f"{i:02d}_{spec.label}"
+
+            # --- Transform: modify kwargs based on previous results ---
+            merged_kwargs = dict(spec.kwargs)
+            if spec.transform is not None:
+                try:
+                    merged_kwargs = spec.transform(merged_kwargs, results, last_result)
+                except Exception as exc:
+                    logger.error("[%s] transform for '%s' raised: %s", self.name, spec.label, exc)
+                    results.append(StepResult(
+                        step_name=spec.step_name, status=StepStatus.FAILED,
+                        error=f"transform raised: {exc}",
+                    ))
+                    if stop_on_failure:
+                        return PipelineResult(name=self.name, results=results, branch_results={})
+                    continue
 
             # Auto-inject artifacts from previous steps (MOREAD chaining)
-            merged_kwargs = dict(spec.kwargs)
             if current_artifacts:
-                # Pass GBW for MOREAD if the step is an ORCA step and no explicit moread
                 if "moread" not in merged_kwargs and "gbw" in current_artifacts:
                     if spec.step_name.startswith("orca_"):
                         merged_kwargs["moread"] = str(current_artifacts["gbw"])
-                # Make all artifacts available via _prev_artifacts
                 merged_kwargs.setdefault("_prev_artifacts", dict(current_artifacts))
 
+            # --- Loop: repeat step until condition met ---
+            if spec.loop_until is not None and spec.loop_max > 1:
+                loop_geom = geom
+                loop_result = None
+                for iteration in range(spec.loop_max):
+                    step_dir = base / f"{i:02d}_{spec.label}_iter{iteration}"
+                    logger.info("[%s] step %d/%d: %s (iter %d/%d)",
+                                self.name, i + 1, len(self._trunk), spec.label,
+                                iteration + 1, spec.loop_max)
+                    loop_result = run_step(
+                        spec.step_name, geometry=loop_geom, cores=cores,
+                        work_dir=step_dir, **merged_kwargs,
+                    )
+                    if self._on_step:
+                        self._on_step(loop_result)
+                    if not loop_result.ok:
+                        break
+                    if loop_result.geometry:
+                        loop_geom = loop_result.geometry
+                    if loop_result.artifacts:
+                        current_artifacts.update(loop_result.artifacts)
+                    try:
+                        if spec.loop_until(loop_result, iteration):
+                            break
+                    except Exception as exc:
+                        logger.warning("[%s] loop_until raised: %s", self.name, exc)
+                        break
+
+                result = loop_result
+                if result is not None:
+                    results.append(result)
+                    if result.ok and result.geometry:
+                        current_geom = result.geometry
+                    elif not result.ok:
+                        logger.warning("[%s] loop '%s' failed at iter %d", self.name, spec.label, iteration)
+                        if stop_on_failure:
+                            return PipelineResult(name=self.name, results=results, branch_results={})
+                continue
+
+            # --- Normal step execution ---
+            step_dir = base / f"{i:02d}_{spec.label}"
             logger.info("[%s] step %d/%d: %s", self.name, i + 1, len(self._trunk), spec.label)
 
             result = run_step(
@@ -269,7 +725,6 @@ class Pipeline:
             if result.ok:
                 if result.geometry:
                     current_geom = result.geometry
-                # Accumulate artifacts for next steps
                 if result.artifacts:
                     current_artifacts.update(result.artifacts)
             elif not result.ok:
