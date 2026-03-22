@@ -103,6 +103,8 @@ delfin-json = "delfin.cli_delfin_collect:main"
 delfin-build = "delfin.build_up_complex:main"
 delfin-guppy = "delfin.guppy_sampling:main"
 delfin-voila = "delfin.cli_voila:main"
+delfin-step = "delfin.cli_step:main"
+delfin-pipeline = "delfin.cli_pipeline:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
