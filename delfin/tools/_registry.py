@@ -58,6 +58,10 @@ def _discover_builtin_adapters() -> None:
         "delfin.tools.adapters.uv_vis",
         "delfin.tools.adapters.afp",
         "delfin.tools.adapters.reporting",
+        "delfin.tools.adapters.python_func",
+        "delfin.tools.adapters.ase_adapter",
+        "delfin.tools.adapters.turbomole",
+        "delfin.tools.adapters.openbabel",
     ):
         _try_import(mod)
 
