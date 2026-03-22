@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from datetime import datetime
 import warnings
 from pathlib import Path
 
@@ -476,6 +477,21 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         description='PULL DELFIN', button_style='info',
         layout=widgets.Layout(width='150px'),
     )
+    branch_options = [
+        ('main', 'main'),
+        ('tools-and-workflows @69e57b2', 'tools-and-workflows'),
+    ]
+    branch_switch_dropdown = widgets.Dropdown(
+        options=branch_options,
+        value='main',
+        description='Branch:',
+        layout=widgets.Layout(width='320px'),
+        style={'description_width': 'initial'},
+    )
+    switch_branch_btn = widgets.Button(
+        description='SWITCH', button_style='',
+        layout=widgets.Layout(width='110px'),
+    )
     rollback_delfin_btn = widgets.Button(
         description='HEAD -1', button_style='warning',
         layout=widgets.Layout(width='110px'),
@@ -490,8 +506,15 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         rd = ctx.repo_dir
         if not rd or not Path(rd).exists():
             git_status_label.value = '<span style="color:#666;">git: repo n/a</span>'
+            branch_switch_dropdown.disabled = True
+            switch_branch_btn.disabled = True
             return
         git_status_label.value = _format_git_status_html(rd)
+        branch_switch_dropdown.disabled = False
+        switch_branch_btn.disabled = False
+        current_branch = _get_current_git_branch(rd)
+        if current_branch in {value for _label, value in branch_options}:
+            branch_switch_dropdown.value = current_branch
 
     refresh_git_status_label()
 
@@ -518,6 +541,91 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 ctx.set_busy(False)
 
     pull_delfin_btn.on_click(handle_pull_delfin)
+
+    def handle_switch_branch(button):
+        with pull_delfin_output:
+            clear_output()
+            rd = ctx.repo_dir
+            if not rd or not Path(rd).exists():
+                print(f'Repo path not found: {rd}')
+                return
+
+            target_branch = str(branch_switch_dropdown.value or '').strip()
+            current_branch = _get_current_git_branch(rd)
+            if not target_branch:
+                print('No target branch selected.')
+                return
+            if target_branch == current_branch:
+                print(f'Already on {target_branch}.')
+                return
+
+            ctx.set_busy(True)
+            try:
+                stash_name = ''
+                status_result = subprocess.run(
+                    ['git', '-C', str(rd), 'status', '--porcelain'],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, check=False,
+                )
+                if status_result.returncode != 0:
+                    print(status_result.stdout.strip() or 'git status failed')
+                    return
+                if status_result.stdout.strip():
+                    stash_name = (
+                        'dashboard-switch-'
+                        f'{datetime.utcnow().strftime("%Y%m%d-%H%M%S")}-'
+                        f'{current_branch or "detached"}-to-{target_branch}'
+                    )
+                    print('Working tree is not clean.')
+                    print(f'Creating local safety stash: {stash_name}')
+                    stash_result = subprocess.run(
+                        [
+                            'git', '-C', str(rd), 'stash', 'push',
+                            '--include-untracked',
+                            '--message', stash_name,
+                        ],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, check=False,
+                    )
+                    print(stash_result.stdout.strip() or '(no output)')
+                    if stash_result.returncode != 0:
+                        print('Branch switch aborted: could not create safety stash.')
+                        return
+
+                available_branches = _list_local_git_branches(rd)
+                if target_branch not in available_branches:
+                    print(f'Branch not available locally: {target_branch}')
+                    if stash_name:
+                        print(f'Your changes are preserved locally in stash "{stash_name}".')
+                    return
+
+                print(f'Switching DELFIN branch: {current_branch or "?"} -> {target_branch}')
+                result = subprocess.run(
+                    ['git', '-C', str(rd), 'switch', target_branch],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, check=False,
+                )
+                print(result.stdout.strip() or '(no output)')
+                if result.returncode == 0:
+                    if stash_name:
+                        print(
+                            'Local changes were preserved in the stash above. '
+                            'They were not applied automatically on the target branch.'
+                        )
+                    refresh_git_status_label()
+                    print('Reloading dashboard to pick up code from the selected branch...')
+                    ctx.run_js('window.location.reload();')
+                elif stash_name:
+                    print(
+                        f'Branch switch failed, but your changes are still preserved locally in stash "{stash_name}".'
+                    )
+            except Exception as e:
+                print(f'Error: {e}')
+            finally:
+                refresh_git_status_label()
+                ctx.set_busy(False)
+
+    switch_branch_btn.on_click(handle_switch_branch)
 
     def handle_rollback_delfin(button):
         with pull_delfin_output:
@@ -596,6 +704,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     busy_indicator,
                     home_usage_label,
                     git_status_label,
+                    branch_switch_dropdown,
+                    switch_branch_btn,
                     pull_delfin_btn,
                     rollback_delfin_btn,
                     orca_version_label,
@@ -758,6 +868,23 @@ def _format_git_status_html(repo_dir):
         f'padding:2px 6px; border:1px solid #cfd8dc; border-radius:4px;">'
         f'{html.escape(text)}</span>'
     )
+
+
+def _get_current_git_branch(repo_dir):
+    """Return the current local branch name, or ``None`` when detached/unknown."""
+    result = _run_git_capture(repo_dir, 'branch', '--show-current')
+    if result.returncode != 0:
+        return None
+    branch = result.stdout.strip()
+    return branch or None
+
+
+def _list_local_git_branches(repo_dir):
+    """Return the set of local branch names available in the repo."""
+    result = _run_git_capture(repo_dir, 'for-each-ref', '--format=%(refname:short)', 'refs/heads')
+    if result.returncode != 0:
+        return set()
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
 def _find_submit_templates_dir(notebook_dir):
