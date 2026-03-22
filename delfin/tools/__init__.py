@@ -25,12 +25,13 @@ Pipeline usage::
 from delfin.tools._types import StepError, StepResult, StepStatus
 from delfin.tools._runner import run_step, step_as_workflow_job
 from delfin.tools._registry import list_steps, register
-from delfin.tools.pipeline import Pipeline, PipelineResult, PipelineTemplate
+from delfin.tools.pipeline import Pipeline, PipelineInserter, PipelineResult, PipelineTemplate
 
 __all__ = [
     "run_step",
     "step_as_workflow_job",
     "Pipeline",
+    "PipelineInserter",
     "PipelineTemplate",
     "PipelineResult",
     "StepResult",

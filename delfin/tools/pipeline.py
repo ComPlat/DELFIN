@@ -179,6 +179,47 @@ class _StepSpec:
     retry_delay: float = 0.0                   # seconds between retries
     map_items: Optional[Callable] = None       # (results, last) -> list[dict]
     checkpoint: bool = False                   # save checkpoint after this step
+    sub_pipeline: Optional[Any] = None         # Pipeline to run as a step
+    sub_pipeline_kwargs: Optional[Dict] = None # kwargs for sub-pipeline run()
+    reactive_fn: Optional[Callable] = None     # (results, last, pipeline) -> None
+
+
+class PipelineInserter:
+    """Helper passed to ``add_reactive()`` callbacks to insert steps dynamically.
+
+    Steps added via the inserter are collected and executed immediately
+    after the reactive callback returns.
+    """
+
+    def __init__(self, defaults: Dict[str, Any]):
+        self._steps: List[_StepSpec] = []
+        self._defaults = defaults
+
+    def add(self, step_name: str, *, label: str = "", geometry: Optional[str | Path] = None,
+            **kwargs: Any) -> "PipelineInserter":
+        """Insert a normal step."""
+        merged = {**self._defaults, **kwargs}
+        self._steps.append(_StepSpec(
+            step_name=step_name,
+            kwargs=merged,
+            label=label or step_name,
+            geometry_override=Path(geometry) if geometry else None,
+        ))
+        return self
+
+    def add_sub_pipeline(self, sub: "Pipeline", *, label: str = "",
+                         geometry: Optional[str | Path] = None,
+                         **run_kwargs: Any) -> "PipelineInserter":
+        """Insert a sub-pipeline."""
+        self._steps.append(_StepSpec(
+            step_name="_sub_pipeline",
+            kwargs={},
+            label=label or f"sub:{sub.name}",
+            geometry_override=Path(geometry) if geometry else None,
+            sub_pipeline=sub,
+            sub_pipeline_kwargs=run_kwargs,
+        ))
+        return self
 
 
 class Pipeline:
@@ -532,6 +573,109 @@ class Pipeline:
             kwargs={},
             label=label,
             checkpoint=True,
+        )
+        self._trunk.append(spec)
+        return self
+
+    def add_sub_pipeline(
+        self,
+        sub: "Pipeline",
+        *,
+        label: str = "",
+        pass_geometry: bool = True,
+        **run_kwargs: Any,
+    ) -> "Pipeline":
+        """Run an entire Pipeline as a single step (composition).
+
+        The sub-pipeline receives the current geometry and runs to
+        completion.  Its final geometry becomes this pipeline's current
+        geometry, and its full results are available in
+        ``result.data["sub_results"]``.
+
+        Example::
+
+            # Build a reusable IMAG-fix sub-pipeline
+            imag_fix = Pipeline("imag_fix")
+            imag_fix.add("orca_freq", charge=0)
+            imag_fix.add_loop("imag_fix", charge=0,
+                              until=lambda r, i: r.data.get("n_imaginary", 0) == 0,
+                              max_iter=5)
+
+            # Use it inside a larger workflow
+            main = Pipeline("main")
+            main.add("smiles_to_xyz", smiles="CCO")
+            main.add("xtb_opt", charge=0)
+            main.add("orca_opt", charge=0)
+            main.add_sub_pipeline(imag_fix, label="fix_imag")
+            main.add("orca_sp", charge=0, method="B3LYP", basis="def2-TZVP")
+
+            # OCCUPIER pattern: sub-pipeline per FoB stage
+            for fob in [0.0, 0.25, 0.5, 0.75, 1.0]:
+                stage = Pipeline(f"fob_{fob}")
+                stage.add("orca_opt", charge=0, fob=fob)
+                stage.add("orca_freq", charge=0, fob=fob)
+                main.add_sub_pipeline(stage, label=f"fob_{fob}")
+        """
+        spec = _StepSpec(
+            step_name="_sub_pipeline",
+            kwargs={},
+            label=label or f"sub:{sub.name}",
+            sub_pipeline=sub,
+            sub_pipeline_kwargs=run_kwargs,
+        )
+        self._trunk.append(spec)
+        return self
+
+    def add_reactive(
+        self,
+        callback: Callable,
+        *,
+        label: str = "reactive",
+    ) -> "Pipeline":
+        """Dynamically insert steps based on previous results.
+
+        ``callback(results, last_result, pipeline_inserter)`` receives a
+        :class:`PipelineInserter` that can add steps to be executed
+        immediately.  This enables patterns like OCCUPIER's
+        contamination-triggered branching or ESD's conditional state
+        population.
+
+        Example::
+
+            # OCCUPIER: add broken-symmetry job if contamination detected
+            def check_contamination(results, last, inserter):
+                s2 = last.data.get("s2_deviation", 0)
+                if s2 > 0.1:
+                    inserter.add("orca_sp", charge=0, broken_symmetry=True,
+                                 label="bs_correction")
+
+            pipe.add("orca_sp", charge=0)
+            pipe.add_reactive(check_contamination, label="contamination_check")
+
+            # ESD: populate state jobs based on config
+            def populate_states(results, last, inserter):
+                for state in ["S1", "S2", "T1"]:
+                    inserter.add("orca_opt", charge=0, root=state,
+                                 label=f"opt_{state}")
+
+            pipe.add_reactive(populate_states, label="state_population")
+
+            # Dynamic fan-out: create sub-pipelines on the fly
+            def dynamic_stages(results, last, inserter):
+                conformers = list(last.work_dir.glob("*.xyz"))
+                for conf in conformers:
+                    stage = Pipeline(f"refine_{conf.stem}")
+                    stage.add("orca_opt", charge=0)
+                    stage.add("orca_freq", charge=0)
+                    inserter.add_sub_pipeline(stage, geometry=conf)
+
+            pipe.add_reactive(dynamic_stages, label="dynamic_refine")
+        """
+        spec = _StepSpec(
+            step_name="_reactive",
+            kwargs={},
+            label=label,
+            reactive_fn=callback,
         )
         self._trunk.append(spec)
         return self
@@ -907,6 +1051,144 @@ class Pipeline:
                 results.append(result)
                 if self._on_step:
                     self._on_step(result)
+                continue
+
+            # --- Sub-pipeline: run an entire pipeline as one step ---
+            if spec.sub_pipeline is not None:
+                import time as _time
+                _start = _time.monotonic()
+                sub_dir = base / f"{i:02d}_{spec.label}"
+                sub_geom = spec.geometry_override or current_geom
+                sub_kwargs = dict(spec.sub_pipeline_kwargs or {})
+                sub_kwargs.setdefault("stop_on_failure", stop_on_failure)
+
+                try:
+                    sub_result = spec.sub_pipeline.run(
+                        cores=cores,
+                        geometry=sub_geom,
+                        work_dir=sub_dir,
+                        **sub_kwargs,
+                    )
+                    # Extract final geometry and data from sub-pipeline
+                    sub_last = sub_result.last
+                    sub_data = {
+                        "sub_pipeline": spec.sub_pipeline.name,
+                        "sub_ok": sub_result.ok,
+                        "sub_steps": len(sub_result.results),
+                        "sub_results": [
+                            {"step": r.step_name, "ok": r.ok,
+                             "data": r.data, "elapsed": r.elapsed_seconds}
+                            for r in sub_result.results
+                        ],
+                    }
+                    if sub_last and sub_last.data:
+                        sub_data.update(sub_last.data)
+
+                    result = StepResult(
+                        step_name=f"_sub:{spec.sub_pipeline.name}",
+                        status=StepStatus.SUCCESS if sub_result.ok else StepStatus.FAILED,
+                        geometry=sub_last.geometry if sub_last else None,
+                        work_dir=sub_dir,
+                        data=sub_data,
+                        artifacts=sub_last.artifacts if sub_last else {},
+                        error=None if sub_result.ok else f"sub-pipeline '{spec.sub_pipeline.name}' failed",
+                        elapsed_seconds=_time.monotonic() - _start,
+                    )
+                except Exception as exc:
+                    result = StepResult(
+                        step_name=f"_sub:{spec.sub_pipeline.name}",
+                        status=StepStatus.FAILED,
+                        work_dir=sub_dir,
+                        error=f"sub-pipeline raised: {exc}",
+                        elapsed_seconds=_time.monotonic() - _start,
+                    )
+
+                results.append(result)
+                if self._on_step:
+                    self._on_step(result)
+                if result.ok:
+                    if result.geometry:
+                        current_geom = result.geometry
+                    if result.artifacts:
+                        current_artifacts.update(result.artifacts)
+                elif stop_on_failure:
+                    return PipelineResult(name=self.name, results=results, branch_results={})
+                continue
+
+            # --- Reactive: dynamically insert steps ---
+            if spec.reactive_fn is not None:
+                import time as _time
+                _start = _time.monotonic()
+                inserter = PipelineInserter(self._defaults)
+                try:
+                    spec.reactive_fn(results, last_result, inserter)
+                except Exception as exc:
+                    logger.error("[%s] reactive '%s' raised: %s", self.name, spec.label, exc)
+                    results.append(StepResult(
+                        step_name="_reactive", status=StepStatus.FAILED,
+                        error=f"reactive callback raised: {exc}",
+                        elapsed_seconds=_time.monotonic() - _start,
+                    ))
+                    if stop_on_failure:
+                        return PipelineResult(name=self.name, results=results, branch_results={})
+                    continue
+
+                if not inserter._steps:
+                    # Reactive produced no steps — record as success with no-op
+                    results.append(StepResult(
+                        step_name="_reactive", status=StepStatus.SUCCESS,
+                        data={"reactive_label": spec.label, "steps_inserted": 0},
+                        elapsed_seconds=_time.monotonic() - _start,
+                    ))
+                    if self._on_step:
+                        self._on_step(results[-1])
+                    continue
+
+                # Execute inserted steps immediately
+                reactive_results = []
+                for j, rspec in enumerate(inserter._steps):
+                    r_geom = rspec.geometry_override or current_geom
+
+                    if rspec.sub_pipeline is not None:
+                        # Inserted sub-pipeline
+                        sub_dir = base / f"{i:02d}_{spec.label}" / f"sub_{j:02d}_{rspec.label}"
+                        sub_kwargs = dict(rspec.sub_pipeline_kwargs or {})
+                        sub_kwargs.setdefault("stop_on_failure", stop_on_failure)
+                        sub_result = rspec.sub_pipeline.run(
+                            cores=cores, geometry=r_geom, work_dir=sub_dir, **sub_kwargs,
+                        )
+                        sub_last = sub_result.last
+                        r = StepResult(
+                            step_name=f"_sub:{rspec.sub_pipeline.name}",
+                            status=StepStatus.SUCCESS if sub_result.ok else StepStatus.FAILED,
+                            geometry=sub_last.geometry if sub_last else None,
+                            work_dir=sub_dir,
+                            data={"sub_pipeline": rspec.sub_pipeline.name, "sub_ok": sub_result.ok},
+                            artifacts=sub_last.artifacts if sub_last else {},
+                            elapsed_seconds=sum(sr.elapsed_seconds for sr in sub_result.results),
+                        )
+                    else:
+                        # Inserted normal step
+                        r_dir = base / f"{i:02d}_{spec.label}" / f"step_{j:02d}_{rspec.label}"
+                        r = run_step(
+                            rspec.step_name, geometry=r_geom, cores=cores,
+                            work_dir=r_dir, **rspec.kwargs,
+                        )
+
+                    reactive_results.append(r)
+                    if self._on_step:
+                        self._on_step(r)
+                    if r.ok:
+                        if r.geometry:
+                            current_geom = r.geometry
+                        if r.artifacts:
+                            current_artifacts.update(r.artifacts)
+                    elif stop_on_failure:
+                        results.extend(reactive_results)
+                        return PipelineResult(name=self.name, results=results, branch_results={})
+
+                # Record all reactive results
+                results.extend(reactive_results)
                 continue
 
             # --- Conditional: skip if condition returns False ---

@@ -1159,3 +1159,282 @@ class TestPipelineProvenance:
         p.add("fake_step")
         p.run(geometry=xyz_file)
         assert not (tmp_path / "provenance.json").exists()
+
+
+# ======================================================================
+#  Pipeline advanced: add_sub_pipeline
+# ======================================================================
+
+class TestPipelineSubPipeline:
+    def test_sub_pipeline_runs(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        # Build sub-pipeline
+        sub = Pipeline("inner")
+        sub.add("fake_step")
+        sub.add("fake_analysis")
+
+        # Build outer pipeline
+        outer = Pipeline("outer", base_dir=tmp_path)
+        outer.add("fake_step")
+        outer.add_sub_pipeline(sub, label="inner_pipeline")
+        outer.add("fake_analysis")
+
+        result = outer.run(geometry=xyz_file)
+        assert result.ok
+        assert len(result.results) == 3
+        # Sub-pipeline step
+        sub_result = result.results[1]
+        assert sub_result.ok
+        assert sub_result.data["sub_pipeline"] == "inner"
+        assert sub_result.data["sub_steps"] == 2
+
+    def test_sub_pipeline_propagates_geometry(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        sub = Pipeline("inner")
+        sub.add("fake_step")  # produces geometry
+
+        outer = Pipeline("outer", base_dir=tmp_path)
+        outer.add_sub_pipeline(sub, label="inner")
+        outer.add("fake_step")  # should receive sub's output geometry
+
+        result = outer.run(geometry=xyz_file)
+        assert result.ok
+        assert result.results[1].geometry is not None
+
+    def test_sub_pipeline_failure_stops_outer(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        sub = Pipeline("inner")
+        sub.add("fake_step", fail=True)  # will fail
+
+        outer = Pipeline("outer", base_dir=tmp_path)
+        outer.add_sub_pipeline(sub, label="failing_inner")
+        outer.add("fake_step")  # should not run
+
+        result = outer.run(geometry=xyz_file, stop_on_failure=True)
+        assert not result.ok
+        assert len(result.results) == 1  # stopped after sub-pipeline failure
+
+    def test_nested_sub_pipelines(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        innermost = Pipeline("innermost")
+        innermost.add("fake_step")
+
+        middle = Pipeline("middle")
+        middle.add_sub_pipeline(innermost, label="deep")
+        middle.add("fake_analysis")
+
+        outer = Pipeline("outer", base_dir=tmp_path)
+        outer.add_sub_pipeline(middle, label="mid")
+
+        result = outer.run(geometry=xyz_file)
+        assert result.ok
+
+    def test_multiple_sub_pipelines_sequential(self, tmp_path, xyz_file):
+        """OCCUPIER pattern: multiple FoB stages as sub-pipelines."""
+        from delfin.tools.pipeline import Pipeline
+
+        outer = Pipeline("occupier", base_dir=tmp_path)
+        for fob in [0.0, 0.5, 1.0]:
+            stage = Pipeline(f"fob_{fob}")
+            stage.add("fake_step")
+            stage.add("fake_analysis")
+            outer.add_sub_pipeline(stage, label=f"fob_{fob}")
+
+        result = outer.run(geometry=xyz_file)
+        assert result.ok
+        assert len(result.results) == 3
+        for r in result.results:
+            assert r.ok
+            assert r.data["sub_steps"] == 2
+
+
+# ======================================================================
+#  Pipeline advanced: add_reactive
+# ======================================================================
+
+class TestPipelineReactive:
+    def test_reactive_adds_steps(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        def add_extra(results, last, inserter):
+            inserter.add("fake_step", label="injected_1")
+            inserter.add("fake_analysis", label="injected_2")
+
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add_reactive(add_extra, label="dynamic")
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        # 1 normal + 2 injected = 3
+        assert len(result.results) == 3
+        assert result.results[1].step_name == "fake_step"
+        assert result.results[2].step_name == "fake_analysis"
+
+    def test_reactive_no_steps_is_noop(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        def noop(results, last, inserter):
+            pass  # adds nothing
+
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add_reactive(noop, label="noop")
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert len(result.results) == 2  # normal + noop reactive
+        assert result.results[1].data["steps_inserted"] == 0
+
+    def test_reactive_conditional_injection(self, tmp_path, xyz_file):
+        """OCCUPIER pattern: inject BS correction if contamination detected."""
+        from delfin.tools.pipeline import Pipeline
+
+        def check_and_inject(results, last, inserter):
+            # Simulate: only inject if some condition
+            if last and last.data.get("cores") == 1:
+                inserter.add("fake_analysis", label="correction")
+
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")  # data has cores=1
+        p.add_reactive(check_and_inject, label="contam_check")
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert len(result.results) == 2  # normal + injected correction
+        assert result.results[1].step_name == "fake_analysis"
+
+    def test_reactive_error_handled(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        def bad_callback(results, last, inserter):
+            raise RuntimeError("callback crashed")
+
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add_reactive(bad_callback, label="bad")
+        result = p.run(geometry=xyz_file, stop_on_failure=True)
+        assert not result.ok
+        assert "callback crashed" in result.results[0].error
+
+    def test_reactive_inserts_sub_pipeline(self, tmp_path, xyz_file):
+        """Dynamic sub-pipeline injection (ESD state population pattern)."""
+        from delfin.tools.pipeline import Pipeline
+
+        def populate_states(results, last, inserter):
+            for state in ["S1", "T1"]:
+                stage = Pipeline(f"opt_{state}")
+                stage.add("fake_step")
+                inserter.add_sub_pipeline(stage, label=f"state_{state}")
+
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")
+        p.add_reactive(populate_states, label="state_pop")
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        # 1 normal + 2 sub-pipelines
+        assert len(result.results) == 3
+
+    def test_reactive_geometry_propagation(self, tmp_path, xyz_file):
+        from delfin.tools.pipeline import Pipeline
+        def inject_step(results, last, inserter):
+            inserter.add("fake_step", label="injected")
+
+        p = Pipeline("test", base_dir=tmp_path)
+        p.add("fake_step")  # produces geometry
+        p.add_reactive(inject_step, label="inject")
+        p.add("fake_analysis")  # should get geometry from injected step
+        result = p.run(geometry=xyz_file)
+        assert result.ok
+        assert len(result.results) == 3
+
+
+# ======================================================================
+#  Workflow templates (import + structure tests)
+# ======================================================================
+
+class TestWorkflowTemplates:
+    def test_classic_opt_freq_importable(self):
+        from delfin.tools.templates import classic_opt_freq
+        assert classic_opt_freq.name == "classic_opt_freq"
+        assert len(classic_opt_freq._trunk) == 4
+
+    def test_imag_sub_pipeline_builds(self):
+        from delfin.tools.templates import imag_sub_pipeline
+        pipe = imag_sub_pipeline(charge=0, method="B3LYP", basis="def2-SVP")
+        assert pipe.name == "imag_fix"
+        assert len(pipe._trunk) == 2  # freq + loop
+
+    def test_redox_potential_has_branches(self):
+        from delfin.tools.templates import redox_potential
+        assert len(redox_potential._branches) == 2
+        assert "oxidation" in redox_potential._branches
+        assert "reduction" in redox_potential._branches
+
+    def test_occupier_stages_builds(self):
+        from delfin.tools.templates import occupier_stages
+        pipe = occupier_stages(
+            charge=0, method="B3LYP", basis="def2-SVP",
+            fob_values=[0.0, 0.5, 1.0],
+        )
+        assert len(pipe._trunk) == 3  # 3 sub-pipelines
+
+    def test_occupier_with_contamination_check(self):
+        from delfin.tools.templates import occupier_stages
+        pipe = occupier_stages(
+            charge=2, mult=5, method="B3LYP", basis="def2-SVP",
+            fob_values=[0.0, 1.0],
+            check_contamination=True,
+        )
+        # 2 sub-pipelines + 2 contamination checks
+        assert len(pipe._trunk) == 4
+
+    def test_esd_tddft_has_branches(self):
+        from delfin.tools.templates import esd_states
+        pipe = esd_states(
+            charge=0, method="B3LYP", basis="def2-SVP",
+            states=["S0", "S1", "T1"],
+            mode="tddft",
+        )
+        assert "S1" in pipe._branches
+        assert "T1" in pipe._branches
+
+    def test_esd_deltascf_is_sequential(self):
+        from delfin.tools.templates import esd_states
+        pipe = esd_states(
+            charge=0, method="B3LYP", basis="def2-SVP",
+            states=["S0", "S1", "T1"],
+            mode="deltascf",
+        )
+        # S0 opt + S1 opt + T1 opt = 3 steps (no branches)
+        assert len(pipe._branches) == 0
+        assert len(pipe._trunk) >= 3
+
+    def test_occupier_pattern_runs_with_fake_adapters(self, tmp_path, xyz_file):
+        """Integration test: OCCUPIER pattern (sub-pipelines) runs end-to-end."""
+        from delfin.tools.pipeline import Pipeline
+
+        # Recreate occupier pattern using fake adapters
+        pipe = Pipeline("occupier", base_dir=tmp_path)
+        for fob in [0.0, 0.5, 1.0]:
+            stage = Pipeline(f"fob_{fob}")
+            stage.add("fake_step")    # simulates orca_opt
+            stage.add("fake_analysis")  # simulates orca_freq
+            pipe.add_sub_pipeline(stage, label=f"fob_{fob}")
+
+        result = pipe.run(geometry=xyz_file, cores=2)
+        assert result.ok
+        assert len(result.results) == 3
+        for r in result.results:
+            assert r.data["sub_steps"] == 2
+
+    def test_all_templates_importable(self):
+        from delfin.tools.templates import (
+            classic_opt_freq,
+            imag_elimination,
+            imag_sub_pipeline,
+            redox_potential,
+            conformer_screening,
+            multi_level_opt,
+            occupier_stages,
+            esd_states,
+        )
+        # Just verify all are callable/have expected types
+        assert callable(occupier_stages)
+        assert callable(esd_states)
+        assert callable(imag_sub_pipeline)
+        assert hasattr(classic_opt_freq, "run")
+        assert hasattr(redox_potential, "run")
