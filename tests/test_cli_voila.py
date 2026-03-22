@@ -90,7 +90,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)"
         in captured["cmd"]
     )
-    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
+    assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
     assert captured["env"]["DELFIN_VOILA_ROOT_DIR"] == str(root_dir.resolve())
 
     stdout = capsys.readouterr().out
@@ -151,7 +151,7 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
         assert exc.code == 0
 
     assert "--no-browser" in captured["cmd"]
-    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
+    assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
     assert "--Voila.open_browser=True" not in captured["cmd"]
 
 
@@ -196,5 +196,5 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
         assert exc.code == 0
 
     assert "--Voila.open_browser=True" in captured["cmd"]
-    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
+    assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
     assert "--no-browser" not in captured["cmd"]
