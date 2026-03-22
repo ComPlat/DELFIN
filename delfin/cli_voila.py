@@ -109,6 +109,23 @@ def _voila_is_available() -> bool:
     return importlib.util.find_spec("voila") is not None
 
 
+def _select_port(requested_port: int) -> int:
+    """Return the first free TCP port starting at requested_port."""
+    port = requested_port
+    max_port = port + 100
+    while port <= max_port:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            if sock.connect_ex(("127.0.0.1", port)) != 0:
+                return port
+        if port == requested_port:
+            print(f"Port {port} is in use, searching for a free port...")
+        port += 1
+
+    raise RuntimeError(
+        f"Error: no free port found in range {requested_port}–{max_port}."
+    )
+
+
 def _stage_notebook_under_root(notebook: str, root_dir: str) -> str:
     """Copy packaged notebooks into root_dir so Voila can serve them safely."""
     notebook_path = Path(notebook).resolve()
@@ -189,22 +206,11 @@ def main(argv=None):
         sys.exit(1)
 
     # Find a free port, starting from the requested one.
-    port = args.port
-    max_port = port + 100
-    while port <= max_port:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            if sock.connect_ex(("127.0.0.1", port)) != 0:
-                break
-        if port == args.port:
-            print(f"Port {port} is in use, searching for a free port...")
-        port += 1
-    else:
-        print(
-            f"Error: no free port found in range {args.port}–{max_port}.",
-            file=sys.stderr,
-        )
+    try:
+        args.port = _select_port(args.port)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
         sys.exit(1)
-    args.port = port
 
     open_browser = bool(args.open_browser)
     notebook = _find_notebook()
@@ -241,6 +247,10 @@ def main(argv=None):
 
     if args.dark:
         cmd.append("--theme=dark")
+
+    # Voila's browser-triggered kernel shutdown POST can miss the _xsrf token
+    # in remote setups, which leaves noisy 403 shutdown errors on exit.
+    cmd.append("--ServerApp.disable_check_xsrf=True")
 
     bind_display = "localhost" if args.ip == "127.0.0.1" else args.ip
     print(f"Starting DELFIN Dashboard on http://{bind_display}:{args.port}")
