@@ -485,6 +485,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     branch_options = [
         ('main', 'main'),
         ('tools-and-workflows', 'tools-and-workflows'),
+        ('GUPPY', 'GUPPY'),
     ]
     branch_switch_dropdown = widgets.Dropdown(
         options=branch_options,
