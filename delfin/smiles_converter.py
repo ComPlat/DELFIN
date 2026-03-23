@@ -8,6 +8,7 @@ GOAT/xTB before running ORCA calculations.
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 import math
 import os
 import re
@@ -17,6 +18,44 @@ from typing import Dict, List, Optional, Tuple
 from delfin.common.logging import get_logger
 
 logger = get_logger(__name__)
+_HAPTO_QUICK_PREVIEW_CACHE: Dict[str, List[Tuple[str, str]]] = {}
+
+
+@dataclass
+class _HybridHaptoFragment:
+    """Metal-free fragment plus atom mappings for hybrid hapto assembly."""
+
+    atom_indices: List[int]
+    donor_atom_indices: List[int]
+    metal_neighbor_indices: List[int]
+    bridging_donor_indices: List[int]
+    hapto_group_ids: List[int]
+    anchor_atom_indices: List[int]
+    original_to_fragment: Dict[int, int]
+    fragment_to_original: Dict[int, int]
+    fragment_mol: object
+    use_scaffold_only: bool = False
+
+
+@dataclass
+class _HybridHaptoDecomposition:
+    """Fragmented view of a metal complex with hapto metadata preserved."""
+
+    metal_indices: List[int]
+    donor_atom_indices: List[int]
+    hapto_groups: List[Tuple[int, List[int]]]
+    fragments: List[_HybridHaptoFragment]
+
+
+@dataclass
+class _PrimaryOrganometalModule:
+    """Primary hapto-metal module with eligible non-hapto donor fragments."""
+
+    metal_idx: int
+    hapto_group_ids: List[int]
+    donor_atom_indices: List[int]
+    correlated_fragment_indices: List[int]
+    terminal_fragment_indices: List[int]
 
 # Try to import RDKit
 try:
@@ -191,7 +230,127 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     # Actinides
     ('U', 'N'): 2.55, ('U', 'O'): 2.30, ('U', 'Cl'): 2.65,
     ('Th', 'N'): 2.55, ('Th', 'O'): 2.35, ('Th', 'Cl'): 2.70,
+    # Yttrium
+    ('Y', 'C'): 2.55, ('Y', 'N'): 2.35, ('Y', 'O'): 2.25, ('Y', 'Cl'): 2.60,
+    # Scandium
+    ('Sc', 'C'): 2.30, ('Sc', 'N'): 2.15, ('Sc', 'O'): 2.05, ('Sc', 'Cl'): 2.40,
+    # Chromium (carbon)
+    ('Cr', 'C'): 2.05,
+    # Vanadium
+    ('V', 'C'): 2.15, ('V', 'N'): 2.10, ('V', 'O'): 2.00, ('V', 'Cl'): 2.35,
+    # Manganese (carbon)
+    ('Mn', 'C'): 2.10,
+    # Titanium (carbon)
+    ('Ti', 'C'): 2.25,
+    # Zirconium (carbon)
+    ('Zr', 'C'): 2.40,
+    # Hafnium
+    ('Hf', 'C'): 2.35, ('Hf', 'N'): 2.20, ('Hf', 'O'): 2.10, ('Hf', 'Cl'): 2.40,
+    # Ruthenium (S)
+    ('Ru', 'S'): 2.35,
 }
+
+# ---------------------------------------------------------------------------
+# Crystallographic Metal-Centroid distances (Å) for hapto coordination.
+# Keyed as (metal_symbol, eta) → centroid distance.
+# Values from CSD averages / literature data.
+# ---------------------------------------------------------------------------
+_HAPTO_CENTROID_DISTANCES: Dict[Tuple[str, int], float] = {
+    # Iron
+    ('Fe', 5): 1.65, ('Fe', 6): 1.55, ('Fe', 3): 1.90, ('Fe', 2): 2.05,
+    ('Fe', 4): 1.75,
+    # Ruthenium
+    ('Ru', 5): 1.82, ('Ru', 6): 1.70, ('Ru', 3): 2.00, ('Ru', 2): 2.10,
+    # Osmium
+    ('Os', 5): 1.84, ('Os', 6): 1.72,
+    # Chromium
+    ('Cr', 5): 1.80, ('Cr', 6): 1.61, ('Cr', 3): 1.95, ('Cr', 2): 2.10,
+    # Manganese
+    ('Mn', 5): 1.78, ('Mn', 6): 1.65,
+    # Vanadium
+    ('V', 5): 1.90, ('V', 6): 1.75,
+    # Titanium
+    ('Ti', 5): 2.04, ('Ti', 6): 1.90, ('Ti', 3): 2.15,
+    # Zirconium
+    ('Zr', 5): 2.20, ('Zr', 6): 2.05, ('Zr', 3): 2.30,
+    # Hafnium
+    ('Hf', 5): 2.18, ('Hf', 6): 2.03,
+    # Yttrium
+    ('Y', 5): 2.35, ('Y', 6): 2.30, ('Y', 3): 2.45,
+    # Scandium
+    ('Sc', 5): 2.15, ('Sc', 6): 2.00,
+    # Cobalt
+    ('Co', 5): 1.66, ('Co', 3): 1.88, ('Co', 2): 2.02,
+    # Rhodium
+    ('Rh', 5): 1.85, ('Rh', 6): 1.75, ('Rh', 3): 1.95, ('Rh', 2): 2.05,
+    # Iridium
+    ('Ir', 5): 1.85, ('Ir', 6): 1.75, ('Ir', 3): 1.95, ('Ir', 2): 2.05,
+    # Nickel
+    ('Ni', 5): 1.74, ('Ni', 3): 1.88, ('Ni', 2): 1.98,
+    # Palladium
+    ('Pd', 3): 2.00, ('Pd', 2): 2.10,
+    # Platinum
+    ('Pt', 2): 2.02, ('Pt', 3): 2.00,
+    # Molybdenum
+    ('Mo', 5): 1.95, ('Mo', 6): 1.78, ('Mo', 3): 2.05,
+    # Tungsten
+    ('W', 5): 1.95, ('W', 6): 1.78,
+    # Rhenium
+    ('Re', 5): 1.90,
+    # Lanthanides
+    ('La', 5): 2.55, ('Ce', 5): 2.50, ('Nd', 5): 2.45, ('Sm', 5): 2.40,
+    ('Gd', 5): 2.38, ('Lu', 5): 2.25,
+    # Actinides
+    ('U', 5): 2.45, ('U', 8): 1.92, ('Th', 5): 2.50, ('Th', 8): 2.00,
+}
+
+
+def _target_mc_dist(metal_sym: str, eta: int) -> float:
+    """Return target metal-centroid distance for a hapto group.
+
+    Lookup order:
+    1. Exact match in _HAPTO_CENTROID_DISTANCES
+    2. Geometric estimate from M-C bond length and ring radius
+    3. Conservative fallback based on covalent radius
+    """
+    key = (metal_sym, eta)
+    if key in _HAPTO_CENTROID_DISTANCES:
+        return _HAPTO_CENTROID_DISTANCES[key]
+
+    # Geometric estimate: M-Centroid = sqrt(M_C^2 - R_ring^2)
+    try:
+        base_mc = float(_get_ml_bond_length(metal_sym, 'C'))
+    except Exception:
+        base_mc = 2.20
+    if not math.isfinite(base_mc):
+        base_mc = 2.20
+
+    if eta >= 3:
+        ring_radius = 1.40 / (2.0 * math.sin(math.pi / eta))
+        mc_sq = base_mc * base_mc - ring_radius * ring_radius
+        if mc_sq > 0:
+            dist = math.sqrt(mc_sq)
+        else:
+            dist = 0.80 * base_mc
+    else:
+        # eta2: offset from midpoint of C=C bond (~1.38 A / 2 = 0.69 A)
+        mc_sq = base_mc * base_mc - 0.69 * 0.69
+        if mc_sq > 0:
+            dist = math.sqrt(mc_sq)
+        else:
+            dist = 0.85 * base_mc
+
+    # Eta-specific clamps
+    if eta >= 5:
+        dist = max(dist, 1.50)
+    elif eta == 4:
+        dist = max(dist, 1.45)
+    elif eta == 3:
+        dist = max(dist, 1.40)
+    else:
+        dist = max(dist, 1.35)
+
+    return dist
 
 
 def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
@@ -210,6 +369,107 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
     if r_m is not None and r_d is not None:
         return r_m + r_d + 0.5
     return 2.0
+
+
+def _secondary_donor_target_length(mol, metal_symbol: str, donor_idx: int) -> float:
+    """Return an environment-adjusted secondary-metal donor distance.
+
+    The base value comes from the generic metal-ligand table and is then nudged
+    toward common experimental average distances for planar N/O donors, anionic
+    donors, and carbon donors in conjugated coordination environments.
+    """
+    if mol is None:
+        return float(_get_ml_bond_length(metal_symbol, 'C'))
+
+    atom = mol.GetAtomWithIdx(donor_idx)
+    donor_sym = atom.GetSymbol()
+    target = float(_get_ml_bond_length(metal_symbol, donor_sym))
+    formal_charge = int(atom.GetFormalCharge())
+    aromatic = bool(atom.GetIsAromatic())
+    try:
+        hyb = atom.GetHybridization()
+    except Exception:
+        hyb = None
+    planar_like = aromatic or hyb in {
+        Chem.rdchem.HybridizationType.SP,
+        Chem.rdchem.HybridizationType.SP2,
+    }
+    conjugated = any(bond.GetIsConjugated() for bond in atom.GetBonds())
+    multiple_bonded = any(bond.GetBondTypeAsDouble() >= 1.5 for bond in atom.GetBonds())
+
+    if donor_sym == 'N':
+        if planar_like:
+            target -= 0.02
+        if formal_charge < 0:
+            target -= 0.04
+        elif formal_charge > 0 and not aromatic:
+            target += 0.03
+    elif donor_sym == 'O':
+        if planar_like or conjugated or multiple_bonded:
+            target -= 0.03
+        if formal_charge < 0:
+            target -= 0.07
+        elif formal_charge > 0 and not conjugated:
+            target += 0.02
+    elif donor_sym == 'S':
+        if planar_like or conjugated:
+            target -= 0.02
+        if formal_charge < 0:
+            target -= 0.05
+    elif donor_sym == 'P':
+        if formal_charge < 0:
+            target -= 0.03
+    elif donor_sym == 'C':
+        if planar_like:
+            target -= 0.01
+        if formal_charge < 0:
+            target -= 0.05
+        elif formal_charge > 0:
+            target += 0.03
+
+    base = float(_get_ml_bond_length(metal_symbol, donor_sym))
+    return float(min(max(target, base - 0.12), base + 0.08))
+
+
+def _secondary_donor_fit_weight(mol, metal_symbol: str, donor_idx: int) -> float:
+    """Return a relative fit weight for secondary-metal donors.
+
+    Experimental averages are typically tighter for heterodonors in planar
+    conjugated fragments than for carbon donors in bridged organometallic arms.
+    """
+    if mol is None:
+        return 1.0
+
+    atom = mol.GetAtomWithIdx(donor_idx)
+    donor_sym = atom.GetSymbol()
+    if donor_sym == 'C':
+        weight = 0.85
+    elif donor_sym == 'N':
+        weight = 1.30
+    elif donor_sym == 'O':
+        weight = 1.35
+    elif donor_sym in {'S', 'P'}:
+        weight = 1.15
+    else:
+        weight = 1.00
+
+    formal_charge = int(atom.GetFormalCharge())
+    aromatic = bool(atom.GetIsAromatic())
+    try:
+        hyb = atom.GetHybridization()
+    except Exception:
+        hyb = None
+    planar_like = aromatic or hyb in {
+        Chem.rdchem.HybridizationType.SP,
+        Chem.rdchem.HybridizationType.SP2,
+    }
+    if planar_like and donor_sym in {'N', 'O', 'S'}:
+        weight += 0.20
+    if donor_sym == 'O' and formal_charge < 0:
+        weight += 0.20
+    if donor_sym == 'C' and formal_charge < 0:
+        weight += 0.10
+    return float(weight)
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +585,10 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
                         if result != 0:
                             continue
 
+                    try:
+                        _enforce_donor_pi_coplanarity(mol)
+                    except Exception:
+                        pass
                     xyz_content = _mol_to_xyz(mol)
                     if output_path:
                         Path(output_path).write_text(xyz_content, encoding='utf-8')
@@ -349,6 +613,10 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
                 params.useRandomCoords = True
                 result = AllChem.EmbedMolecule(mol, params)
                 if result == 0:
+                    try:
+                        _enforce_donor_pi_coplanarity(mol)
+                    except Exception:
+                        pass
                     xyz_content = _mol_to_xyz(mol)
                     if output_path:
                         Path(output_path).write_text(xyz_content, encoding='utf-8')
@@ -1311,14 +1579,10 @@ def _fix_organometallic_carbon_h(mol):
 
 
 def _fix_hapto_donor_h(mol):
-    """Adjust H on hapto donor carbons to satisfy a valence-4 model.
+    """Adjust H on hapto donor carbons so each C has at most 4 bonding partners.
 
-    For eta-bound carbon donors, estimate occupied valence from:
-    - non-hydrogen bond orders excluding metal coordination,
-    - optional odd-eta conjugation bonus when the parsed graph
-      underrepresents delocalized pi bonding.
-
-    Then add/remove explicit H so each donor C trends toward valence 4.
+    Simple rule: desired_h = max(0, 4 - number_of_non_H_neighbors).
+    Metal neighbors ARE counted (they occupy a coordination site).
     """
     if not RDKIT_AVAILABLE or mol is None:
         return mol
@@ -1329,28 +1593,11 @@ def _fix_hapto_donor_h(mol):
     if not hapto_groups:
         return mol
 
-    def _bond_order_value(bond) -> float:
-        if bond is None:
-            return 1.0
-        bt = bond.GetBondType()
-        if bt == Chem.BondType.SINGLE:
-            return 1.0
-        if bt == Chem.BondType.DOUBLE:
-            return 2.0
-        if bt == Chem.BondType.TRIPLE:
-            return 3.0
-        if bt == Chem.BondType.AROMATIC:
-            return 1.5
-        if bt == Chem.BondType.DATIVE:
-            return 1.0
-        return 1.0
-
     rwmol = Chem.RWMol(mol)
     to_remove = []
     to_add: List[int] = []
     for _metal_idx, grp in hapto_groups:
-        eta = len(grp)
-        if eta < 3:
+        if len(grp) < 2:
             continue
         for c_idx in grp:
             atom = rwmol.GetAtomWithIdx(c_idx)
@@ -1358,33 +1605,8 @@ def _fix_hapto_donor_h(mol):
                 continue
             nbrs = list(atom.GetNeighbors())
             h_nbrs = [n for n in nbrs if n.GetSymbol() == 'H']
-            non_h_valence = 0.0
-            cc_valence = 0.0
-            for nbr in nbrs:
-                ns = nbr.GetSymbol()
-                if ns == 'H':
-                    continue
-                if ns in _METAL_SET:
-                    continue
-                bond = rwmol.GetBondBetweenAtoms(c_idx, nbr.GetIdx())
-                bo = _bond_order_value(bond)
-                non_h_valence += bo
-                if ns == 'C':
-                    cc_valence += bo
-
-            if eta >= 4:
-                # Keep higher-hapticity Cp-like donor carbons H-free to avoid
-                # over-hydrogenation in bridged/multihapto systems.
-                desired_h = 0
-            else:
-                # Eta3 allyl/propenyl-like donor: treat as conjugated anionic
-                # system. Metal coordination itself does not consume sigma
-                # valence for H counting; add one pi-equivalent if needed.
-                pi_bonus = 1.0 if cc_valence < 2.5 else 0.0
-                used_valence = non_h_valence + pi_bonus
-                remaining = 4.0 - used_valence
-                desired_h = int(max(0.0, round(remaining)))
-                desired_h = max(0, min(3, desired_h))
+            non_h_count = sum(1 for n in nbrs if n.GetSymbol() != 'H')
+            desired_h = max(0, 4 - non_h_count)
 
             if len(h_nbrs) > desired_h:
                 remove_count = len(h_nbrs) - desired_h
@@ -1653,34 +1875,71 @@ def _hapto_failfast_error(hapto_groups: List[Tuple[int, List[int]]]) -> str:
     )
 
 
-def _hapto_approx_supported(hapto_groups: List[Tuple[int, List[int]]]) -> Tuple[bool, str]:
-    """Return whether the current experimental approximation is considered safe."""
-    if not hapto_groups:
-        return True, ""
-    by_metal: Dict[int, int] = {}
-    for metal_idx, grp in hapto_groups:
-        if len(grp) >= 2:
-            by_metal[metal_idx] = by_metal.get(metal_idx, 0) + 1
-    max_groups = max(by_metal.values()) if by_metal else 0
-    if max_groups > 1:
-        return (
-            False,
-            "Experimental hapto approximation is currently limited to one eta-fragment "
-            "per metal center. Multi-hapto systems are blocked to avoid broken structures.",
-        )
-    return True, ""
+def _select_multihapto_anchors(
+    mol,
+    metal_idx: int,
+    metal_groups: List[List[int]],
+) -> List[int]:
+    """Choose one anchor per hapto group, maximally spread around metal_idx.
+
+    For metals with 2+ groups: pick anchors from opposite ends of the graph
+    to avoid two anchors being direct neighbours.
+    """
+    if len(metal_groups) <= 1:
+        # Single group: just pick best anchor
+        grp = metal_groups[0]
+        grp_set = set(grp)
+
+        def _akey(idx: int) -> Tuple[int, int, int, int]:
+            a = mol.GetAtomWithIdx(idx)
+            aromatic = 1 if a.GetIsAromatic() else 0
+            in_ring = 1 if a.IsInRing() else 0
+            c_in_grp = sum(
+                1 for n in a.GetNeighbors() if n.GetAtomicNum() == 6 and n.GetIdx() in grp_set
+            )
+            return (aromatic, in_ring, c_in_grp, -idx)
+        return [max(grp, key=_akey)]
+
+    # For each group, compute a "position score" = average graph distance
+    # from the metal through the group members.  Pick anchors that are
+    # maximally spread by assigning them greedily.
+    anchors: List[int] = []
+    used_anchors: set = set()
+    for grp in metal_groups:
+        grp_set = set(grp)
+
+        def _anchor_score(idx: int) -> Tuple[float, int, int, int, int]:
+            a = mol.GetAtomWithIdx(idx)
+            aromatic = 1 if a.GetIsAromatic() else 0
+            in_ring = 1 if a.IsInRing() else 0
+            c_in_grp = sum(
+                1 for n in a.GetNeighbors() if n.GetAtomicNum() == 6 and n.GetIdx() in grp_set
+            )
+            # Penalty for being adjacent to an already-chosen anchor
+            adj_penalty = 0
+            for n in a.GetNeighbors():
+                if n.GetIdx() in used_anchors:
+                    adj_penalty = -2
+                    break
+            return (adj_penalty, aromatic, in_ring, c_in_grp, -idx)
+
+        anchor = max(grp, key=_anchor_score)
+        anchors.append(anchor)
+        used_anchors.add(anchor)
+
+    return anchors
 
 
 def _apply_hapto_approximation(
     mol,
     hapto_groups: Optional[List[Tuple[int, List[int]]]] = None,
 ):
-    """Experimental eta→anchor approximation for embedding/optimization.
+    """Experimental eta->anchor approximation for embedding/optimization.
 
     For each contiguous metal-bound carbon block, keep one representative
     metal-carbon bond as a normal bond and convert the other M-C contacts to
-    dative bonds (C->M). This preserves multi-contact hapticity information
-    while reducing valence pressure during embedding.
+    dative bonds (C->M). For metals with multiple hapto groups, anchors are
+    chosen to be maximally spread to improve embedding convergence.
     """
     if not RDKIT_AVAILABLE or mol is None:
         return mol, 0
@@ -1689,26 +1948,44 @@ def _apply_hapto_approximation(
     if not groups:
         return mol, 0
 
-    rw = Chem.RWMol(mol)
-    converted = 0
-    for metal_idx, grp in groups:
+    # Group hapto groups by metal for coordinated anchor selection
+    by_metal: Dict[int, List[List[int]]] = {}
+    by_metal_order: Dict[int, List[int]] = {}  # track group indices
+    for gi, (metal_idx, grp) in enumerate(groups):
         if len(grp) < 2:
             continue
-        grp_set = set(grp)
+        by_metal.setdefault(metal_idx, []).append(grp)
+        by_metal_order.setdefault(metal_idx, []).append(gi)
 
-        def _anchor_key(idx: int) -> Tuple[int, int, int, int]:
-            a = rw.GetAtomWithIdx(idx)
-            aromatic = 1 if a.GetIsAromatic() else 0
-            in_ring = 1 if a.IsInRing() else 0
-            c_in_grp = sum(
-                1 for n in a.GetNeighbors() if n.GetAtomicNum() == 6 and n.GetIdx() in grp_set
-            )
-            return (aromatic, in_ring, c_in_grp, -idx)
+    # Compute coordinated anchors per metal
+    anchor_map: Dict[int, int] = {}  # group_index -> anchor_atom_idx
+    for metal_idx, metal_groups in by_metal.items():
+        anchors = _select_multihapto_anchors(mol, metal_idx, metal_groups)
+        for i, anchor in enumerate(anchors):
+            gi = by_metal_order[metal_idx][i]
+            anchor_map[gi] = anchor
 
-        anchor = max(grp, key=_anchor_key)
+    rw = Chem.RWMol(mol)
+    converted = 0
+    for gi, (metal_idx, grp) in enumerate(groups):
+        if len(grp) < 2:
+            continue
+        anchor = anchor_map.get(gi)
+        if anchor is None:
+            grp_set = set(grp)
+
+            def _anchor_key(idx: int) -> Tuple[int, int, int, int]:
+                a = rw.GetAtomWithIdx(idx)
+                aromatic = 1 if a.GetIsAromatic() else 0
+                in_ring = 1 if a.IsInRing() else 0
+                c_in_grp = sum(
+                    1 for n in a.GetNeighbors() if n.GetAtomicNum() == 6 and n.GetIdx() in grp_set
+                )
+                return (aromatic, in_ring, c_in_grp, -idx)
+            anchor = max(grp, key=_anchor_key)
+
         for c_idx in grp:
             c_atom = rw.GetAtomWithIdx(c_idx)
-            # Let downstream dative/H logic decide H treatment by eta size.
             c_atom.SetNoImplicit(False)
             if c_idx == anchor:
                 continue
@@ -1727,6 +2004,5389 @@ def _apply_hapto_approximation(
     except Exception:
         pass
     return out, converted
+
+
+def _copy_fragment_atom(atom, atom_map_num: int):
+    """Create a detached copy of an atom with its valence/H metadata."""
+    new_atom = Chem.Atom(atom.GetAtomicNum())
+    new_atom.SetFormalCharge(atom.GetFormalCharge())
+    new_atom.SetNumExplicitHs(atom.GetNumExplicitHs())
+    new_atom.SetNoImplicit(atom.GetNoImplicit())
+    new_atom.SetNumRadicalElectrons(atom.GetNumRadicalElectrons())
+    new_atom.SetIsAromatic(atom.GetIsAromatic())
+    new_atom.SetChiralTag(atom.GetChiralTag())
+    new_atom.SetAtomMapNum(atom_map_num)
+    try:
+        new_atom.SetHybridization(atom.GetHybridization())
+    except Exception:
+        pass
+    try:
+        new_atom.SetIsotope(atom.GetIsotope())
+    except Exception:
+        pass
+    return new_atom
+
+
+def _extract_fragment_mol(mol, atom_indices: List[int]):
+    """Copy a connected metal-free fragment out of ``mol``."""
+    if not RDKIT_AVAILABLE or mol is None or not atom_indices:
+        return None, {}, {}
+
+    atom_set = set(atom_indices)
+    rw = Chem.RWMol()
+    original_to_fragment: Dict[int, int] = {}
+    fragment_to_original: Dict[int, int] = {}
+
+    for old_idx in atom_indices:
+        old_atom = mol.GetAtomWithIdx(old_idx)
+        new_idx = rw.AddAtom(_copy_fragment_atom(old_atom, old_idx + 1))
+        original_to_fragment[old_idx] = new_idx
+        fragment_to_original[new_idx] = old_idx
+
+    for bond in mol.GetBonds():
+        begin_idx = bond.GetBeginAtomIdx()
+        end_idx = bond.GetEndAtomIdx()
+        if begin_idx not in atom_set or end_idx not in atom_set:
+            continue
+        new_begin = original_to_fragment[begin_idx]
+        new_end = original_to_fragment[end_idx]
+        rw.AddBond(new_begin, new_end, bond.GetBondType())
+        new_bond = rw.GetBondBetweenAtoms(new_begin, new_end)
+        if new_bond is None:
+            continue
+        new_bond.SetIsAromatic(bond.GetIsAromatic())
+        new_bond.SetIsConjugated(bond.GetIsConjugated())
+        try:
+            new_bond.SetBondDir(bond.GetBondDir())
+            new_bond.SetStereo(bond.GetStereo())
+            stereo_atoms = list(bond.GetStereoAtoms())
+            if len(stereo_atoms) == 2:
+                new_bond.SetStereoAtoms(
+                    original_to_fragment[stereo_atoms[0]],
+                    original_to_fragment[stereo_atoms[1]],
+                )
+        except Exception:
+            pass
+
+    frag = rw.GetMol()
+    try:
+        frag.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+    try:
+        Chem.FastFindRings(frag)
+    except Exception:
+        pass
+    return frag, original_to_fragment, fragment_to_original
+
+
+def _choose_fragment_anchor_atoms(
+    mol,
+    frag_atoms: List[int],
+    donor_indices: set,
+    hapto_groups: List[Tuple[int, List[int]]],
+    hapto_atom_to_group: Dict[int, int],
+) -> Tuple[List[int], List[int], List[int]]:
+    """Choose chemically meaningful anchors for rigid fragment alignment."""
+    frag_set = set(frag_atoms)
+    frag_donors = sorted(idx for idx in frag_atoms if idx in donor_indices)
+    frag_group_ids = sorted({hapto_atom_to_group[idx] for idx in frag_atoms if idx in hapto_atom_to_group})
+
+    anchors: List[int] = []
+    for gid in frag_group_ids:
+        for atom_idx in hapto_groups[gid][1]:
+            if atom_idx in frag_set and atom_idx not in anchors:
+                anchors.append(atom_idx)
+
+    for atom_idx in frag_donors:
+        if atom_idx not in anchors:
+            anchors.append(atom_idx)
+
+    seed_atoms = list(anchors) if anchors else list(frag_donors) if frag_donors else list(frag_atoms)
+    for atom_idx in seed_atoms:
+        for nbr in mol.GetAtomWithIdx(atom_idx).GetNeighbors():
+            nbr_idx = nbr.GetIdx()
+            if nbr_idx in frag_set and nbr_idx not in anchors and nbr.GetAtomicNum() > 1:
+                anchors.append(nbr_idx)
+                if len(anchors) >= 6:
+                    break
+        if len(anchors) >= 6:
+            break
+
+    if len(anchors) < 3:
+        for atom_idx in frag_atoms:
+            atom = mol.GetAtomWithIdx(atom_idx)
+            if atom.GetAtomicNum() <= 1 or atom_idx in anchors:
+                continue
+            anchors.append(atom_idx)
+            if len(anchors) >= 6:
+                break
+
+    return frag_donors, frag_group_ids, anchors
+
+
+def _decompose_hapto_complex(
+    mol,
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> Optional[_HybridHaptoDecomposition]:
+    """Split a metal complex into ligand fragments while keeping hapto metadata."""
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
+        return None
+
+    metal_indices = sorted(
+        atom.GetIdx() for atom in mol.GetAtoms() if atom.GetSymbol() in _METAL_SET
+    )
+    if not metal_indices:
+        return None
+
+    metal_set = set(metal_indices)
+    donor_indices: set = set()
+    bonds_to_remove: List[Tuple[int, int]] = []
+    hapto_atom_to_group: Dict[int, int] = {}
+    for group_idx, (_metal_idx, group_atoms) in enumerate(hapto_groups):
+        for atom_idx in group_atoms:
+            hapto_atom_to_group[atom_idx] = group_idx
+
+    for bond in mol.GetBonds():
+        begin_idx = bond.GetBeginAtomIdx()
+        end_idx = bond.GetEndAtomIdx()
+        if begin_idx in metal_set:
+            donor_indices.add(end_idx)
+            bonds_to_remove.append((begin_idx, end_idx))
+        elif end_idx in metal_set:
+            donor_indices.add(begin_idx)
+            bonds_to_remove.append((begin_idx, end_idx))
+
+    if not bonds_to_remove:
+        return None
+
+    rw = Chem.RWMol(mol)
+    for begin_idx, end_idx in bonds_to_remove:
+        if rw.GetBondBetweenAtoms(begin_idx, end_idx) is not None:
+            rw.RemoveBond(begin_idx, end_idx)
+    for metal_idx in sorted(metal_indices, reverse=True):
+        rw.RemoveAtom(metal_idx)
+
+    metal_free = rw.GetMol()
+    try:
+        metal_free.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+
+    old_to_new: Dict[int, int] = {}
+    new_to_old: Dict[int, int] = {}
+    removed_count = 0
+    for old_idx in range(mol.GetNumAtoms()):
+        if old_idx in metal_set:
+            removed_count += 1
+            continue
+        new_idx = old_idx - removed_count
+        old_to_new[old_idx] = new_idx
+        new_to_old[new_idx] = old_idx
+
+    try:
+        frags = list(Chem.GetMolFrags(metal_free, asMols=False, sanitizeFrags=False))
+    except Exception:
+        frags = []
+
+    fragments: List[_HybridHaptoFragment] = []
+    for frag_new in frags:
+        frag_atoms = sorted(new_to_old[idx] for idx in frag_new if idx in new_to_old)
+        if not frag_atoms:
+            continue
+        fragment_mol, original_to_fragment, fragment_to_original = _extract_fragment_mol(mol, frag_atoms)
+        if fragment_mol is None:
+            continue
+        frag_donors, frag_group_ids, anchors = _choose_fragment_anchor_atoms(
+            mol,
+            frag_atoms,
+            donor_indices,
+            hapto_groups,
+            hapto_atom_to_group,
+        )
+        metal_neighbors = sorted({
+            nbr.GetIdx()
+            for atom_idx in frag_donors
+            for nbr in mol.GetAtomWithIdx(atom_idx).GetNeighbors()
+            if nbr.GetSymbol() in _METAL_SET
+        })
+        bridging_donors = sorted(
+            atom_idx
+            for atom_idx in frag_donors
+            if sum(
+                1
+                for nbr in mol.GetAtomWithIdx(atom_idx).GetNeighbors()
+                if nbr.GetSymbol() in _METAL_SET
+            ) >= 2
+        )
+        use_scaffold_only = len(metal_neighbors) >= 2 or bool(bridging_donors)
+        fragments.append(
+            _HybridHaptoFragment(
+                atom_indices=frag_atoms,
+                donor_atom_indices=frag_donors,
+                metal_neighbor_indices=metal_neighbors,
+                bridging_donor_indices=bridging_donors,
+                hapto_group_ids=frag_group_ids,
+                anchor_atom_indices=anchors,
+                original_to_fragment=original_to_fragment,
+                fragment_to_original=fragment_to_original,
+                fragment_mol=fragment_mol,
+                use_scaffold_only=use_scaffold_only,
+            )
+        )
+
+    if not fragments:
+        return None
+
+    fragments.sort(
+        key=lambda frag: (
+            frag.use_scaffold_only,
+            -len(frag.hapto_group_ids),
+            -len(frag.anchor_atom_indices),
+            -len(frag.donor_atom_indices),
+            -len(frag.atom_indices),
+        )
+    )
+    return _HybridHaptoDecomposition(
+        metal_indices=metal_indices,
+        donor_atom_indices=sorted(donor_indices),
+        hapto_groups=hapto_groups,
+        fragments=fragments,
+    )
+
+
+def _embed_hybrid_fragment(fragment_mol):
+    """Embed a detached ligand fragment while preserving its local chemistry."""
+    if not RDKIT_AVAILABLE or fragment_mol is None:
+        return None
+
+    work = Chem.Mol(fragment_mol)
+    work.RemoveAllConformers()
+
+    for atom in work.GetAtoms():
+        if atom.GetDegree() < 3 and atom.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED:
+            atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+        if (
+            atom.GetSymbol() == 'O'
+            and atom.GetFormalCharge() == -1
+            and any(b.GetBondType() == Chem.BondType.DOUBLE for b in atom.GetBonds())
+        ):
+            atom.SetFormalCharge(0)
+
+    try:
+        work.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+
+    seeds = [42, 1337, 7]
+    embedded = False
+    for seed in seeds:
+        try:
+            params = AllChem.ETKDGv3()
+            params.randomSeed = seed
+            params.useRandomCoords = True
+            params.enforceChirality = False
+            result = AllChem.EmbedMolecule(work, params)
+        except Exception:
+            result = -1
+        if result == 0:
+            embedded = True
+            break
+
+    if not embedded:
+        try:
+            result = AllChem.EmbedMolecule(work, useRandomCoords=True, randomSeed=42)
+        except Exception:
+            result = -1
+        embedded = result == 0
+
+    if not embedded:
+        return None
+
+    try:
+        AllChem.UFFOptimizeMolecule(work, maxIters=200)
+    except Exception:
+        try:
+            AllChem.MMFFOptimizeMolecule(work, maxIters=200)
+        except Exception:
+            pass
+
+    return work
+
+
+def _detect_primary_organometal_module(
+    decomposition: Optional[_HybridHaptoDecomposition],
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> Optional[_PrimaryOrganometalModule]:
+    """Detect a primary hapto center with buildable non-hapto donor blocks."""
+    if decomposition is None or not hapto_groups:
+        return None
+
+    hapto_metals = sorted({metal_idx for metal_idx, _grp in hapto_groups})
+    if len(hapto_metals) != 1:
+        return None
+
+    metal_idx = hapto_metals[0]
+    hapto_group_ids = [
+        group_idx for group_idx, (group_metal_idx, _group_atoms) in enumerate(hapto_groups)
+        if group_metal_idx == metal_idx
+    ]
+    if not hapto_group_ids:
+        return None
+
+    correlated_fragment_indices: List[int] = []
+    terminal_fragment_indices: List[int] = []
+    donor_atom_indices: List[int] = []
+    for frag_idx, fragment in enumerate(decomposition.fragments):
+        if metal_idx not in fragment.metal_neighbor_indices:
+            continue
+        if any(group_id in hapto_group_ids for group_id in fragment.hapto_group_ids):
+            continue
+        if fragment.use_scaffold_only:
+            continue
+        if any(neighbor_idx != metal_idx for neighbor_idx in fragment.metal_neighbor_indices):
+            continue
+        frag_donors = [
+            donor_idx for donor_idx in fragment.donor_atom_indices
+            if donor_idx not in donor_atom_indices
+        ]
+        if not frag_donors:
+            continue
+        donor_atom_indices.extend(frag_donors)
+        if len(fragment.donor_atom_indices) >= 2:
+            correlated_fragment_indices.append(frag_idx)
+        elif len(fragment.donor_atom_indices) == 1:
+            terminal_fragment_indices.append(frag_idx)
+
+    if not correlated_fragment_indices and not terminal_fragment_indices:
+        return None
+
+    return _PrimaryOrganometalModule(
+        metal_idx=metal_idx,
+        hapto_group_ids=hapto_group_ids,
+        donor_atom_indices=sorted(donor_atom_indices),
+        correlated_fragment_indices=correlated_fragment_indices,
+        terminal_fragment_indices=terminal_fragment_indices,
+    )
+
+
+def _primary_organometal_module_quality_ok(
+    mol,
+    decomposition: Optional[_HybridHaptoDecomposition],
+    module: Optional[_PrimaryOrganometalModule],
+) -> bool:
+    """Cheap quality gate for the primary-metal organometal module path."""
+    if not RDKIT_AVAILABLE or mol is None or decomposition is None or module is None:
+        return False
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+
+    try:
+        conf = mol.GetConformer(0)
+    except Exception:
+        return False
+
+    metal_idx = int(module.metal_idx)
+    metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+    metal_pos = np.array(conf.GetAtomPosition(metal_idx), dtype=float)
+
+    donor_set = set(module.donor_atom_indices)
+    for donor_idx in sorted(donor_set):
+        donor_pos = np.array(conf.GetAtomPosition(donor_idx), dtype=float)
+        target_len = float(_get_ml_bond_length(metal_sym, mol.GetAtomWithIdx(donor_idx).GetSymbol()))
+        dist = float(np.linalg.norm(donor_pos - metal_pos))
+        max_err = 0.70 if mol.GetAtomWithIdx(donor_idx).GetSymbol() == 'C' else 0.60
+        if abs(dist - target_len) > max_err:
+            return False
+
+    inspected_atoms: set = set()
+    for frag_idx in module.correlated_fragment_indices + module.terminal_fragment_indices:
+        if not (0 <= int(frag_idx) < len(decomposition.fragments)):
+            continue
+        fragment = decomposition.fragments[int(frag_idx)]
+        for atom_idx in fragment.atom_indices:
+            if atom_idx in donor_set or atom_idx in inspected_atoms:
+                continue
+            atom = mol.GetAtomWithIdx(atom_idx)
+            if atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+                continue
+            inspected_atoms.add(atom_idx)
+            atom_pos = np.array(conf.GetAtomPosition(atom_idx), dtype=float)
+            dist = float(np.linalg.norm(atom_pos - metal_pos))
+            min_allowed = max(
+                1.65,
+                0.90 * float(_get_ml_bond_length(metal_sym, atom.GetSymbol())),
+            )
+            if atom.GetIsAromatic():
+                min_allowed = max(min_allowed, 1.85)
+            elif atom.GetSymbol() in {'C', 'N', 'O'}:
+                min_allowed = max(min_allowed, 1.75)
+            if dist < min_allowed - 0.08:
+                return False
+
+    return True
+
+
+def _append_hapto_preview_xyz(
+    mol,
+    preview_store: Optional[List[Tuple[str, str]]],
+    *,
+    label: str,
+) -> None:
+    """Append the current XYZ of a preview candidate if available."""
+    if preview_store is None or mol is None:
+        return
+    try:
+        preview_xyz = _mol_to_xyz(mol)
+    except Exception:
+        return
+    preview_entry = (preview_xyz, label)
+    if preview_entry not in preview_store:
+        preview_store.append(preview_entry)
+
+
+def _store_hapto_preview_candidate(
+    mol,
+    hapto_groups: List[Tuple[int, List[int]]],
+    preview_store: Optional[List[Tuple[str, str]]],
+    *,
+    label: str,
+) -> None:
+    """Store a preview XYZ for a hapto scaffold candidate if available."""
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups or preview_store is None:
+        return
+    try:
+        preview_mol = Chem.Mol(mol)
+        if not _build_hapto_scaffold(preview_mol, hapto_groups):
+            return
+        try:
+            _correct_hapto_geometry(preview_mol, 0, hapto_groups)
+        except Exception:
+            pass
+        try:
+            _propagate_non_hapto_atoms(
+                preview_mol,
+                0,
+                hapto_groups,
+                extra_fixed_indices=_hapto_primary_donor_indices(preview_mol, hapto_groups),
+            )
+        except Exception:
+            pass
+        _append_hapto_preview_xyz(
+            preview_mol,
+            preview_store,
+            label=label,
+        )
+    except Exception:
+        pass
+
+
+def _rotation_matrix_from_vectors(vec_a, vec_b):
+    """Return a rotation matrix that maps ``vec_a`` onto ``vec_b``."""
+    import numpy as np
+
+    a = np.asarray(vec_a, dtype=float)
+    b = np.asarray(vec_b, dtype=float)
+    norm_a = float(np.linalg.norm(a))
+    norm_b = float(np.linalg.norm(b))
+    if norm_a < 1e-12 or norm_b < 1e-12:
+        return np.eye(3)
+
+    a /= norm_a
+    b /= norm_b
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))
+    s = float(np.linalg.norm(v))
+
+    if s < 1e-12:
+        if c > 0.0:
+            return np.eye(3)
+        axis = np.array([1.0, 0.0, 0.0])
+        if abs(a[0]) > 0.8:
+            axis = np.array([0.0, 1.0, 0.0])
+        v = np.cross(a, axis)
+        v /= max(float(np.linalg.norm(v)), 1e-12)
+        vx = np.array([
+            [0.0, -v[2], v[1]],
+            [v[2], 0.0, -v[0]],
+            [-v[1], v[0], 0.0],
+        ])
+        return np.eye(3) + 2.0 * vx @ vx
+
+    vx = np.array([
+        [0.0, -v[2], v[1]],
+        [v[2], 0.0, -v[0]],
+        [-v[1], v[0], 0.0],
+    ])
+    return np.eye(3) + vx + vx @ vx * ((1.0 - c) / (s * s))
+
+
+def _align_hybrid_fragment_onto_scaffold(
+    scaffold_mol,
+    fragment: _HybridHaptoFragment,
+    embedded_fragment,
+) -> bool:
+    """Rigidly align an embedded fragment onto scaffold anchor coordinates."""
+    if not RDKIT_AVAILABLE or scaffold_mol is None or embedded_fragment is None:
+        return False
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+
+    try:
+        scaffold_conf = scaffold_mol.GetConformer()
+        fragment_conf = embedded_fragment.GetConformer()
+    except Exception:
+        return False
+
+    anchor_pairs: List[Tuple[int, int]] = []
+    for original_idx in fragment.anchor_atom_indices:
+        fragment_idx = fragment.original_to_fragment.get(original_idx)
+        if fragment_idx is None:
+            continue
+        scaffold_pos = scaffold_conf.GetAtomPosition(original_idx)
+        target_vec = np.array([scaffold_pos.x, scaffold_pos.y, scaffold_pos.z], dtype=float)
+        if not np.all(np.isfinite(target_vec)):
+            continue
+        anchor_pairs.append((fragment_idx, original_idx))
+
+    if not anchor_pairs:
+        return False
+
+    source = []
+    target = []
+    for fragment_idx, original_idx in anchor_pairs:
+        frag_pos = fragment_conf.GetAtomPosition(fragment_idx)
+        source.append([frag_pos.x, frag_pos.y, frag_pos.z])
+        scaf_pos = scaffold_conf.GetAtomPosition(original_idx)
+        target.append([scaf_pos.x, scaf_pos.y, scaf_pos.z])
+
+    src = np.asarray(source, dtype=float)
+    tgt = np.asarray(target, dtype=float)
+    all_coords = np.asarray(
+        [
+            [
+                fragment_conf.GetAtomPosition(i).x,
+                fragment_conf.GetAtomPosition(i).y,
+                fragment_conf.GetAtomPosition(i).z,
+            ]
+            for i in range(embedded_fragment.GetNumAtoms())
+        ],
+        dtype=float,
+    )
+
+    if len(anchor_pairs) == 1:
+        delta = tgt[0] - src[0]
+        aligned = all_coords + delta
+    elif len(anchor_pairs) == 2:
+        rot = _rotation_matrix_from_vectors(src[1] - src[0], tgt[1] - tgt[0])
+        aligned = (all_coords - src[0]) @ rot.T + tgt[0]
+    else:
+        src_centroid = src.mean(axis=0)
+        tgt_centroid = tgt.mean(axis=0)
+        covariance = (src - src_centroid).T @ (tgt - tgt_centroid)
+        try:
+            u, _s, vt = np.linalg.svd(covariance)
+        except Exception:
+            return False
+        rot = vt.T @ u.T
+        if float(np.linalg.det(rot)) < 0.0:
+            vt[-1, :] *= -1.0
+            rot = vt.T @ u.T
+        aligned = (all_coords - src_centroid) @ rot.T + tgt_centroid
+
+    # Keep scaffold-defining anchors exact and let the subsequent hapto-only
+    # local relaxation repair nearby internal strain.
+    for pair_idx, (fragment_idx, _original_idx) in enumerate(anchor_pairs):
+        aligned[fragment_idx] = tgt[pair_idx]
+
+    for fragment_idx, original_idx in fragment.fragment_to_original.items():
+        scaffold_conf.SetAtomPosition(
+            original_idx,
+            Point3D(
+                float(aligned[fragment_idx, 0]),
+                float(aligned[fragment_idx, 1]),
+                float(aligned[fragment_idx, 2]),
+            ),
+        )
+    return True
+
+
+def _align_hybrid_fragment_to_targets(
+    scaffold_mol,
+    fragment: _HybridHaptoFragment,
+    embedded_fragment,
+    target_atom_indices: List[int],
+    target_positions: Dict[int, object],
+    reference_center=None,
+    metal_idx: Optional[int] = None,
+    exact_target_count: int = 0,
+) -> bool:
+    """Rigidly align a fragment to explicit target coordinates."""
+    if not RDKIT_AVAILABLE or scaffold_mol is None or embedded_fragment is None:
+        return False
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+
+    try:
+        scaffold_conf = scaffold_mol.GetConformer()
+        fragment_conf = embedded_fragment.GetConformer()
+    except Exception:
+        return False
+
+    anchor_pairs: List[Tuple[int, int]] = []
+    seen_original: set = set()
+    for original_idx in target_atom_indices:
+        if original_idx in seen_original:
+            continue
+        seen_original.add(original_idx)
+        fragment_idx = fragment.original_to_fragment.get(original_idx)
+        if fragment_idx is None:
+            continue
+        target_value = target_positions.get(original_idx)
+        if target_value is None:
+            continue
+        target_vec = np.asarray(target_value, dtype=float)
+        if target_vec.shape != (3,) or not np.all(np.isfinite(target_vec)):
+            continue
+        anchor_pairs.append((fragment_idx, original_idx))
+
+    if not anchor_pairs:
+        return False
+
+    src = np.asarray(
+        [
+            [
+                fragment_conf.GetAtomPosition(fragment_idx).x,
+                fragment_conf.GetAtomPosition(fragment_idx).y,
+                fragment_conf.GetAtomPosition(fragment_idx).z,
+            ]
+            for fragment_idx, _original_idx in anchor_pairs
+        ],
+        dtype=float,
+    )
+    tgt = np.asarray(
+        [np.asarray(target_positions[original_idx], dtype=float) for _fragment_idx, original_idx in anchor_pairs],
+        dtype=float,
+    )
+    all_coords = np.asarray(
+        [
+            [
+                fragment_conf.GetAtomPosition(i).x,
+                fragment_conf.GetAtomPosition(i).y,
+                fragment_conf.GetAtomPosition(i).z,
+            ]
+            for i in range(embedded_fragment.GetNumAtoms())
+        ],
+        dtype=float,
+    )
+    src_coord_map = {
+        original_idx: all_coords[fragment_idx]
+        for fragment_idx, original_idx in fragment.fragment_to_original.items()
+    }
+    src_planar_frame = _fragment_planar_donor_frame(
+        scaffold_mol,
+        fragment.atom_indices,
+        target_atom_indices,
+        src_coord_map,
+    )
+
+    if len(anchor_pairs) == 1:
+        if reference_center is not None:
+            ref = np.asarray(reference_center, dtype=float)
+            frag_center = all_coords.mean(axis=0)
+            if src_planar_frame is not None:
+                src_dir = np.asarray(src_planar_frame["outward"], dtype=float)
+                tgt_dir = ref - tgt[0]
+            else:
+                src_dir = frag_center - src[0]
+                tgt_dir = tgt[0] - ref
+            rot = _rotation_matrix_from_vectors(src_dir, tgt_dir)
+            aligned = (all_coords - src[0]) @ rot.T + tgt[0]
+        else:
+            aligned = all_coords + (tgt[0] - src[0])
+    elif len(anchor_pairs) == 2:
+        rot = _rotation_matrix_from_vectors(src[1] - src[0], tgt[1] - tgt[0])
+        src_mid = 0.5 * (src[0] + src[1])
+        tgt_mid = 0.5 * (tgt[0] + tgt[1])
+        aligned = (all_coords - src_mid) @ rot.T + tgt_mid
+    else:
+        src_centroid = src.mean(axis=0)
+        tgt_centroid = tgt.mean(axis=0)
+        covariance = (src - src_centroid).T @ (tgt - tgt_centroid)
+        try:
+            u, _s, vt = np.linalg.svd(covariance)
+        except Exception:
+            return False
+        rot = vt.T @ u.T
+        if float(np.linalg.det(rot)) < 0.0:
+            vt[-1, :] *= -1.0
+            rot = vt.T @ u.T
+        aligned = (all_coords - src_centroid) @ rot.T + tgt_centroid
+
+    if reference_center is not None and metal_idx is not None and len(anchor_pairs) in (1, 2):
+        ref = np.asarray(reference_center, dtype=float)
+
+        def _alignment_score(candidate_coords) -> float:
+            donor_err = 0.0
+            coord_map = {}
+            donor_original_indices = []
+            for pair_idx, (fragment_idx, original_idx) in enumerate(anchor_pairs):
+                donor_original_indices.append(original_idx)
+                donor_err += float(np.sum((candidate_coords[fragment_idx] - tgt[pair_idx]) ** 2))
+            for fragment_idx, original_idx in fragment.fragment_to_original.items():
+                coord_map[original_idx] = np.asarray(candidate_coords[fragment_idx], dtype=float)
+            return (
+                25.0 * donor_err
+                + _secondary_non_donor_contact_penalty(
+                    scaffold_mol,
+                    metal_idx,
+                    ref,
+                    fragment.atom_indices,
+                    donor_original_indices,
+                    coord_map,
+                )
+                + _fragment_donor_selectivity_penalty(
+                    scaffold_mol,
+                    metal_idx,
+                    ref,
+                    fragment.atom_indices,
+                    donor_original_indices,
+                    coord_map,
+                )
+                + _fragment_environment_clash_penalty(
+                    scaffold_mol,
+                    fragment.atom_indices,
+                    coord_map,
+                    ignore_atom_indices={metal_idx},
+                    primary_metal_idx=metal_idx,
+                )
+                + _planar_fragment_metal_coplanarity_penalty(
+                    scaffold_mol,
+                    fragment.atom_indices,
+                    donor_original_indices,
+                    ref,
+                    coord_map,
+                )
+                + _planar_fragment_donor_approach_penalty(
+                    scaffold_mol,
+                    fragment.atom_indices,
+                    donor_original_indices,
+                    ref,
+                    coord_map,
+                )
+                + _fragment_bite_direction_penalty(
+                    scaffold_mol,
+                    fragment.atom_indices,
+                    donor_original_indices,
+                    coord_map,
+                    ref,
+                )
+            )
+
+        aligned_coord_map = {
+            original_idx: np.asarray(aligned[fragment_idx], dtype=float)
+            for fragment_idx, original_idx in fragment.fragment_to_original.items()
+        }
+        aligned_planar_frame = _fragment_planar_donor_frame(
+            scaffold_mol,
+            fragment.atom_indices,
+            [original_idx for _fragment_idx, original_idx in anchor_pairs],
+            aligned_coord_map,
+        )
+
+        if len(anchor_pairs) == 1:
+            pivot = tgt[0]
+            axis = ref - tgt[0]
+        else:
+            pivot = tgt[0]
+            axis = tgt[1] - tgt[0]
+        axis_candidates = []
+        axis_norm = float(np.linalg.norm(axis))
+        if axis_norm > 1e-12:
+            axis_candidates.append(axis / axis_norm)
+        if aligned_planar_frame is not None:
+            normal = np.asarray(aligned_planar_frame["normal"], dtype=float)
+            normal_norm = float(np.linalg.norm(normal))
+            if normal_norm > 1e-12:
+                axis_candidates.append(normal / normal_norm)
+            outward = np.asarray(aligned_planar_frame["outward"], dtype=float)
+            outward_norm = float(np.linalg.norm(outward))
+            if outward_norm > 1e-12:
+                axis_candidates.append(outward / outward_norm)
+            if axis_candidates:
+                cross_axis = np.cross(axis_candidates[0], normal if normal_norm > 1e-12 else outward)
+                cross_norm = float(np.linalg.norm(cross_axis))
+                if cross_norm > 1e-12:
+                    axis_candidates.append(cross_axis / cross_norm)
+
+        if axis_candidates:
+            best_aligned = aligned.copy()
+            best_score = _alignment_score(best_aligned)
+            step = 5 if aligned_planar_frame is not None else 15
+            for axis in axis_candidates:
+                for angle_deg in range(-180, 181, step):
+                    if angle_deg == 0:
+                        continue
+                    rot = _axis_angle_rotation_matrix(axis, math.radians(float(angle_deg)))
+                    trial = (aligned - pivot) @ rot.T + pivot
+                    trial_score = _alignment_score(trial)
+                    if trial_score + 1e-9 < best_score:
+                        best_score = trial_score
+                        best_aligned = trial
+            aligned = best_aligned
+
+    for pair_idx, (fragment_idx, _original_idx) in enumerate(anchor_pairs[:max(0, exact_target_count)]):
+        aligned[fragment_idx] = tgt[pair_idx]
+
+    for fragment_idx, original_idx in fragment.fragment_to_original.items():
+        scaffold_conf.SetAtomPosition(
+            original_idx,
+            Point3D(
+                float(aligned[fragment_idx, 0]),
+                float(aligned[fragment_idx, 1]),
+                float(aligned[fragment_idx, 2]),
+            ),
+        )
+    return True
+
+
+def _hapto_primary_donor_indices(
+    mol,
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> set:
+    """Return non-metal donors bound directly to hapto metal centers."""
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
+        return set()
+
+    hapto_metals = {metal_idx for metal_idx, _grp in hapto_groups}
+    donors: set = set()
+    for metal_idx in hapto_metals:
+        for nbr in mol.GetAtomWithIdx(metal_idx).GetNeighbors():
+            if nbr.GetSymbol() not in _METAL_SET:
+                donors.add(nbr.GetIdx())
+    return donors
+
+
+def _secondary_metal_geometry_codes(n_coord: int, metal_symbol: str) -> List[str]:
+    """Return geometry candidates for explicit secondary-metal placement."""
+    if n_coord <= 1:
+        return []
+    if n_coord == 2:
+        return ['LIN']
+    if n_coord == 3:
+        return ['TP', 'TS']
+    if n_coord == 4:
+        pref = _PREFERRED_CN4_GEOMETRY.get(metal_symbol, 'SQ')
+        other = 'TH' if pref == 'SQ' else 'SQ'
+        return [pref, other]
+    if n_coord == 5:
+        return ['TBP', 'SP']
+    if n_coord == 6:
+        return ['OH']
+    if n_coord == 7:
+        return ['PBP']
+    if n_coord == 8:
+        return ['SAP', 'DD']
+    return []
+
+
+def _fit_secondary_metal_model_to_targets(
+    model_positions,
+    target_positions,
+    fit_indices: List[int],
+):
+    """Fit a full coordination model onto explicit donor targets."""
+    import numpy as np
+
+    model = np.asarray(model_positions, dtype=float)
+    targets = np.asarray(target_positions, dtype=float)
+    if model.ndim != 2 or targets.ndim != 2 or model.shape != targets.shape:
+        return None
+    if not fit_indices:
+        return None
+
+    model_fit = model[fit_indices]
+    target_fit = targets[fit_indices]
+
+    if len(fit_indices) == 1:
+        delta = target_fit[0] - model_fit[0]
+        transformed = model + delta
+        metal_pos = delta
+        return transformed, metal_pos
+
+    if len(fit_indices) == 2:
+        rot = _rotation_matrix_from_vectors(
+            model_fit[1] - model_fit[0],
+            target_fit[1] - target_fit[0],
+        )
+        model_mid = 0.5 * (model_fit[0] + model_fit[1])
+        target_mid = 0.5 * (target_fit[0] + target_fit[1])
+        transformed = (model - model_mid) @ rot.T + target_mid
+        metal_pos = (-model_mid) @ rot.T + target_mid
+        return transformed, metal_pos
+
+    model_centroid = model_fit.mean(axis=0)
+    target_centroid = target_fit.mean(axis=0)
+    covariance = (model_fit - model_centroid).T @ (target_fit - target_centroid)
+    try:
+        u, _s, vt = np.linalg.svd(covariance)
+    except Exception:
+        return None
+    rot = vt.T @ u.T
+    if float(np.linalg.det(rot)) < 0.0:
+        vt[-1, :] *= -1.0
+        rot = vt.T @ u.T
+    transformed = (model - model_centroid) @ rot.T + target_centroid
+    metal_pos = (-model_centroid) @ rot.T + target_centroid
+    return transformed, metal_pos
+
+
+def _axis_angle_rotation_matrix(axis, angle_rad: float):
+    """Return the rotation matrix for a rotation around ``axis``."""
+    import numpy as np
+
+    axis_arr = np.asarray(axis, dtype=float)
+    norm = float(np.linalg.norm(axis_arr))
+    if norm < 1e-12:
+        return np.eye(3)
+    axis_arr /= norm
+    ux, uy, uz = axis_arr
+    c = math.cos(angle_rad)
+    s = math.sin(angle_rad)
+    one_c = 1.0 - c
+    return np.array([
+        [c + ux * ux * one_c, ux * uy * one_c - uz * s, ux * uz * one_c + uy * s],
+        [uy * ux * one_c + uz * s, c + uy * uy * one_c, uy * uz * one_c - ux * s],
+        [uz * ux * one_c - uy * s, uz * uy * one_c + ux * s, c + uz * uz * one_c],
+    ], dtype=float)
+
+
+def _project_displacements_to_rigid_body(
+    positions: Dict[int, object],
+    displacement_map: Dict[int, object],
+    atom_indices: List[int],
+) -> Dict[int, object]:
+    """Approximate a set of atomic displacements by one rigid-body motion."""
+    import numpy as np
+
+    ordered = [atom_idx for atom_idx in atom_indices if atom_idx in positions]
+    if len(ordered) < 2:
+        return {
+            atom_idx: np.asarray(
+                displacement_map.get(atom_idx, np.zeros(3, dtype=float)),
+                dtype=float,
+            )
+            for atom_idx in ordered
+        }
+
+    pts = np.asarray([positions[atom_idx] for atom_idx in ordered], dtype=float)
+    disp = np.asarray(
+        [displacement_map.get(atom_idx, np.zeros(3, dtype=float)) for atom_idx in ordered],
+        dtype=float,
+    )
+    centroid = pts.mean(axis=0)
+
+    a = np.zeros((3 * len(ordered), 6), dtype=float)
+    b = disp.reshape(-1)
+    ident = np.eye(3, dtype=float)
+    for row_idx, atom_idx in enumerate(ordered):
+        rel = np.asarray(positions[atom_idx], dtype=float) - centroid
+        cross_block = np.array(
+            [
+                [0.0, rel[2], -rel[1]],
+                [-rel[2], 0.0, rel[0]],
+                [rel[1], -rel[0], 0.0],
+            ],
+            dtype=float,
+        )
+        start = 3 * row_idx
+        a[start:start + 3, 0:3] = ident
+        a[start:start + 3, 3:6] = cross_block
+
+    try:
+        sol, *_rest = np.linalg.lstsq(a, b, rcond=None)
+    except Exception:
+        return {
+            atom_idx: np.asarray(
+                displacement_map.get(atom_idx, np.zeros(3, dtype=float)),
+                dtype=float,
+            )
+            for atom_idx in ordered
+        }
+
+    trans = np.asarray(sol[:3], dtype=float)
+    omega = np.asarray(sol[3:6], dtype=float)
+    projected: Dict[int, object] = {}
+    for atom_idx in ordered:
+        rel = np.asarray(positions[atom_idx], dtype=float) - centroid
+        projected[atom_idx] = trans + np.cross(omega, rel)
+    return projected
+
+
+def _secondary_non_donor_contact_penalty(
+    mol,
+    metal_idx: int,
+    candidate_metal_pos,
+    atom_indices: List[int],
+    donor_indices: List[int],
+    coord_map: Dict[int, object],
+) -> float:
+    """Penalty for non-donor atoms collapsing onto a secondary metal center."""
+    import numpy as np
+
+    if mol is None or not atom_indices:
+        return 0.0
+
+    metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+    donor_set = set(donor_indices)
+    atom_set = set(atom_indices)
+    alpha_atoms: set = set()
+    beta_atoms: set = set()
+
+    for donor_idx in donor_indices:
+        atom = mol.GetAtomWithIdx(donor_idx)
+        for nbr in atom.GetNeighbors():
+            nbr_idx = nbr.GetIdx()
+            if nbr_idx in atom_set and nbr_idx not in donor_set and nbr.GetAtomicNum() > 1:
+                alpha_atoms.add(nbr_idx)
+    for atom_idx in alpha_atoms:
+        atom = mol.GetAtomWithIdx(atom_idx)
+        for nbr in atom.GetNeighbors():
+            nbr_idx = nbr.GetIdx()
+            if nbr_idx in atom_set and nbr_idx not in donor_set and nbr_idx not in alpha_atoms and nbr.GetAtomicNum() > 1:
+                beta_atoms.add(nbr_idx)
+
+    def _is_planar_like(atom) -> bool:
+        if atom is None or atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+            return False
+        if atom.GetIsAromatic():
+            return True
+        try:
+            hyb = atom.GetHybridization()
+        except Exception:
+            return False
+        return hyb in {
+            Chem.rdchem.HybridizationType.SP,
+            Chem.rdchem.HybridizationType.SP2,
+        }
+
+    def _min_allowed(atom_idx: int, atom_sym: str) -> float:
+        ml_ref = float(_get_ml_bond_length(metal_sym, atom_sym))
+        min_allowed = max(1.70, 0.92 * ml_ref)
+        if atom_idx in alpha_atoms:
+            min_allowed = max(min_allowed, 2.05)
+        elif atom_idx in beta_atoms:
+            min_allowed = max(min_allowed, 1.85)
+        atom = mol.GetAtomWithIdx(atom_idx)
+        if _is_planar_like(atom):
+            if atom_idx in alpha_atoms:
+                min_allowed = max(min_allowed, 2.18)
+            elif atom_idx in beta_atoms:
+                min_allowed = max(min_allowed, 1.98)
+            else:
+                min_allowed = max(min_allowed, 1.82)
+        return min_allowed
+
+    metal_pos = np.asarray(candidate_metal_pos, dtype=float)
+    penalty = 0.0
+    for atom_idx in atom_indices:
+        if atom_idx in donor_set:
+            continue
+        atom = mol.GetAtomWithIdx(atom_idx)
+        if atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+            continue
+        coord = coord_map.get(atom_idx)
+        if coord is None:
+            continue
+        atom_pos = np.asarray(coord, dtype=float)
+        dist = float(np.linalg.norm(atom_pos - metal_pos))
+        min_allowed = _min_allowed(atom_idx, atom.GetSymbol())
+        if dist < min_allowed:
+            gap = min_allowed - dist
+            if _is_planar_like(atom):
+                weight = 40.0 if atom_idx in alpha_atoms else 26.0
+            else:
+                weight = 28.0 if atom_idx in alpha_atoms else 18.0
+            penalty += weight * gap * gap
+        if dist < 1.55:
+            penalty += 120.0 * (1.55 - dist) ** 2
+    return penalty
+
+
+def _secondary_fragment_donor_selectivity_penalty(
+    mol,
+    metal_idx: int,
+    candidate_metal_pos,
+    donor_indices: List[int],
+    donor_to_fragment: Dict[int, _HybridHaptoFragment],
+    coord_map: Dict[int, object],
+) -> float:
+    """Penalize non-donor atoms approaching a secondary metal as closely as the true donor."""
+    import numpy as np
+
+    if mol is None or not donor_indices or not coord_map:
+        return 0.0
+
+    metal_pos = np.asarray(candidate_metal_pos, dtype=float)
+    donor_set = set(donor_indices)
+    penalty = 0.0
+
+    def _is_planar_like(atom) -> bool:
+        if atom is None or atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+            return False
+        if atom.GetIsAromatic():
+            return True
+        try:
+            hyb = atom.GetHybridization()
+        except Exception:
+            return False
+        return hyb in {
+            Chem.rdchem.HybridizationType.SP,
+            Chem.rdchem.HybridizationType.SP2,
+        }
+
+    def _is_carbonyl_like_carbon(atom_idx: int) -> bool:
+        atom = mol.GetAtomWithIdx(atom_idx)
+        if atom.GetSymbol() != 'C':
+            return False
+        for bond in atom.GetBonds():
+            if bond.GetBondTypeAsDouble() < 1.5:
+                continue
+            nbr = bond.GetOtherAtom(atom)
+            if nbr.GetSymbol() == 'O':
+                return True
+        return False
+
+    for donor_idx in donor_indices:
+        donor_pos = coord_map.get(donor_idx)
+        fragment = donor_to_fragment.get(donor_idx)
+        if donor_pos is None or fragment is None:
+            continue
+        donor_atom = mol.GetAtomWithIdx(donor_idx)
+        donor_sym = donor_atom.GetSymbol()
+        donor_dist = float(np.linalg.norm(np.asarray(donor_pos, dtype=float) - metal_pos))
+
+        for atom_idx in fragment.atom_indices:
+            if atom_idx in donor_set or atom_idx == metal_idx:
+                continue
+            atom = mol.GetAtomWithIdx(atom_idx)
+            if atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+                continue
+            atom_pos = coord_map.get(atom_idx)
+            if atom_pos is None:
+                continue
+            atom_dist = float(np.linalg.norm(np.asarray(atom_pos, dtype=float) - metal_pos))
+            try:
+                topo_sep = len(Chem.GetShortestPath(mol, donor_idx, atom_idx)) - 1
+            except Exception:
+                topo_sep = 99
+            if topo_sep < 1 or topo_sep > 3:
+                continue
+
+            planar_like = _is_planar_like(atom)
+            delta = 0.14
+            weight = 10.0
+            if topo_sep == 1:
+                delta = 0.28 if donor_sym == 'O' else 0.32
+                weight = 28.0 if donor_sym == 'O' else 34.0
+            elif topo_sep == 2:
+                delta = 0.20 if donor_sym == 'O' else 0.24
+                weight = 18.0 if donor_sym == 'O' else 24.0
+            elif topo_sep == 3:
+                delta = 0.10 if donor_sym == 'O' else 0.12
+                weight = 10.0 if donor_sym == 'O' else 12.0
+
+            if planar_like:
+                delta += 0.08
+                weight += 10.0
+            if donor_sym == 'N' and atom.GetSymbol() == 'C':
+                delta += 0.06
+                weight += 8.0
+            if donor_sym == 'O' and atom.GetSymbol() == 'C':
+                delta += 0.05
+                weight += 6.0
+                if _is_carbonyl_like_carbon(atom_idx):
+                    delta += 0.16
+                    weight += 18.0
+
+            preferred_min = donor_dist + delta
+            if atom_dist < preferred_min:
+                gap = preferred_min - atom_dist
+                penalty += weight * gap * gap
+            if atom_dist < donor_dist + 0.02:
+                gap = donor_dist + 0.02 - atom_dist
+                penalty += (34.0 + weight) * gap * gap
+
+    return penalty
+
+
+def _fragment_donor_selectivity_penalty(
+    mol,
+    metal_idx: int,
+    candidate_metal_pos,
+    fragment_atom_indices: List[int],
+    donor_indices: List[int],
+    coord_map: Dict[int, object],
+) -> float:
+    """Penalize non-donor atoms in one donor fragment approaching as closely as the true donor."""
+    import numpy as np
+
+    if mol is None or not fragment_atom_indices or not donor_indices or not coord_map:
+        return 0.0
+
+    metal_pos = np.asarray(candidate_metal_pos, dtype=float)
+    donor_set = set(donor_indices)
+    fragment_set = set(fragment_atom_indices)
+    penalty = 0.0
+
+    def _is_planar_like(atom) -> bool:
+        if atom is None or atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+            return False
+        if atom.GetIsAromatic():
+            return True
+        try:
+            hyb = atom.GetHybridization()
+        except Exception:
+            return False
+        return hyb in {
+            Chem.rdchem.HybridizationType.SP,
+            Chem.rdchem.HybridizationType.SP2,
+        }
+
+    def _is_carbonyl_like_carbon(atom_idx: int) -> bool:
+        atom = mol.GetAtomWithIdx(atom_idx)
+        if atom.GetSymbol() != 'C':
+            return False
+        for bond in atom.GetBonds():
+            if bond.GetBondTypeAsDouble() < 1.5:
+                continue
+            nbr = bond.GetOtherAtom(atom)
+            if nbr.GetSymbol() == 'O':
+                return True
+        return False
+
+    for donor_idx in donor_indices:
+        donor_pos = coord_map.get(donor_idx)
+        if donor_pos is None:
+            continue
+        donor_atom = mol.GetAtomWithIdx(donor_idx)
+        donor_sym = donor_atom.GetSymbol()
+        donor_dist = float(np.linalg.norm(np.asarray(donor_pos, dtype=float) - metal_pos))
+        for atom_idx in fragment_atom_indices:
+            if atom_idx not in fragment_set or atom_idx in donor_set or atom_idx == metal_idx:
+                continue
+            atom = mol.GetAtomWithIdx(atom_idx)
+            if atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+                continue
+            atom_pos = coord_map.get(atom_idx)
+            if atom_pos is None:
+                continue
+            atom_dist = float(np.linalg.norm(np.asarray(atom_pos, dtype=float) - metal_pos))
+            try:
+                topo_sep = len(Chem.GetShortestPath(mol, donor_idx, atom_idx)) - 1
+            except Exception:
+                topo_sep = 99
+            if topo_sep < 1 or topo_sep > 3:
+                continue
+
+            planar_like = _is_planar_like(atom)
+            delta = 0.14
+            weight = 10.0
+            if topo_sep == 1:
+                delta = 0.28 if donor_sym == 'O' else 0.32
+                weight = 28.0 if donor_sym == 'O' else 34.0
+            elif topo_sep == 2:
+                delta = 0.20 if donor_sym == 'O' else 0.24
+                weight = 18.0 if donor_sym == 'O' else 24.0
+            elif topo_sep == 3:
+                delta = 0.10 if donor_sym == 'O' else 0.12
+                weight = 10.0 if donor_sym == 'O' else 12.0
+
+            if planar_like:
+                delta += 0.08
+                weight += 10.0
+            if donor_sym == 'N' and atom.GetSymbol() == 'C':
+                delta += 0.06
+                weight += 8.0
+            if donor_sym == 'O' and atom.GetSymbol() == 'C':
+                delta += 0.05
+                weight += 6.0
+                if _is_carbonyl_like_carbon(atom_idx):
+                    delta += 0.16
+                    weight += 18.0
+
+            preferred_min = donor_dist + delta
+            if atom_dist < preferred_min:
+                gap = preferred_min - atom_dist
+                penalty += weight * gap * gap
+            if atom_dist < donor_dist + 0.02:
+                gap = donor_dist + 0.02 - atom_dist
+                penalty += (34.0 + weight) * gap * gap
+
+    return penalty
+
+
+def _planar_fragment_metal_coplanarity_penalty(
+    mol,
+    fragment_atom_indices: List[int],
+    donor_indices: List[int],
+    metal_pos,
+    coord_map: Dict[int, object],
+) -> float:
+    """Penalty when a planar donor fragment is not approximately coplanar with the metal."""
+    import numpy as np
+
+    if mol is None or not fragment_atom_indices or not donor_indices or not coord_map:
+        return 0.0
+
+    donor_set = set(donor_indices)
+
+    def _is_planar_like(atom) -> bool:
+        if atom is None or atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+            return False
+        if atom.GetIsAromatic():
+            return True
+        try:
+            hyb = atom.GetHybridization()
+        except Exception:
+            return False
+        return hyb in {
+            Chem.rdchem.HybridizationType.SP,
+            Chem.rdchem.HybridizationType.SP2,
+        }
+
+    planar_atoms = tuple(
+        atom_idx for atom_idx in fragment_atom_indices
+        if _is_planar_like(mol.GetAtomWithIdx(atom_idx))
+    )
+    donor_overlap = [
+        donor_idx for donor_idx in donor_indices
+        if donor_idx in set(planar_atoms)
+    ]
+    if len(planar_atoms) < 4 or not donor_overlap:
+        return 0.0
+
+    pts = []
+    for atom_idx in planar_atoms:
+        arr = coord_map.get(atom_idx)
+        if arr is None:
+            return 0.0
+        pts.append(np.asarray(arr, dtype=float))
+    pts_arr = np.asarray(pts, dtype=float)
+    centroid = pts_arr.mean(axis=0)
+    try:
+        _u, _s, vt = np.linalg.svd(pts_arr - centroid)
+    except Exception:
+        return 0.0
+    normal = vt[-1]
+    normal_norm = float(np.linalg.norm(normal))
+    if normal_norm < 1e-12:
+        return 0.0
+    normal = normal / normal_norm
+
+    weight = 42.0 + 12.0 * len(donor_overlap)
+    if any(mol.GetAtomWithIdx(donor_idx).GetSymbol() == 'N' for donor_idx in donor_overlap):
+        weight += 14.0
+    if any(mol.GetAtomWithIdx(donor_idx).GetSymbol() == 'O' for donor_idx in donor_overlap):
+        weight += 14.0
+    if any(mol.GetAtomWithIdx(donor_idx).GetIsAromatic() for donor_idx in donor_overlap):
+        weight += 12.0
+
+    plane_offset = float(np.dot(np.asarray(metal_pos, dtype=float) - centroid, normal))
+    penalty = weight * plane_offset * plane_offset
+    if abs(plane_offset) > 0.28:
+        penalty += 75.0 * (abs(plane_offset) - 0.28) ** 2
+    return penalty
+
+
+def _fragment_planar_donor_frame(
+    mol,
+    fragment_atom_indices: List[int],
+    donor_indices: List[int],
+    coord_map: Dict[int, object],
+):
+    """Return a simple planar donor frame for rigid early docking."""
+    import numpy as np
+
+    if mol is None or not fragment_atom_indices or not donor_indices or not coord_map:
+        return None
+
+    fragment_set = set(fragment_atom_indices)
+
+    def _is_planar_like(atom) -> bool:
+        if atom is None or atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+            return False
+        if atom.GetIsAromatic():
+            return True
+        try:
+            hyb = atom.GetHybridization()
+        except Exception:
+            return False
+        return hyb in {
+            Chem.rdchem.HybridizationType.SP,
+            Chem.rdchem.HybridizationType.SP2,
+        }
+
+    planar_atoms = [
+        atom_idx for atom_idx in fragment_atom_indices
+        if _is_planar_like(mol.GetAtomWithIdx(atom_idx))
+    ]
+    donor_overlap = [
+        donor_idx for donor_idx in donor_indices
+        if donor_idx in fragment_set and donor_idx in planar_atoms
+    ]
+    if len(planar_atoms) < 4 or not donor_overlap:
+        return None
+
+    pts = []
+    for atom_idx in planar_atoms:
+        arr = coord_map.get(atom_idx)
+        if arr is None:
+            return None
+        pts.append(np.asarray(arr, dtype=float))
+    pts_arr = np.asarray(pts, dtype=float)
+    centroid = pts_arr.mean(axis=0)
+    try:
+        _u, _s, vt = np.linalg.svd(pts_arr - centroid)
+    except Exception:
+        return None
+    normal = vt[-1]
+    normal_norm = float(np.linalg.norm(normal))
+    if normal_norm < 1e-12:
+        return None
+    normal = normal / normal_norm
+
+    donor_pts = np.asarray([coord_map[atom_idx] for atom_idx in donor_overlap], dtype=float)
+    donor_centroid = donor_pts.mean(axis=0)
+
+    body_pts = []
+    for atom_idx in planar_atoms:
+        if atom_idx in donor_overlap:
+            continue
+        body_pts.append(np.asarray(coord_map[atom_idx], dtype=float))
+    if body_pts:
+        body_centroid = np.asarray(body_pts, dtype=float).mean(axis=0)
+    else:
+        body_centroid = centroid
+
+    outward = donor_centroid - body_centroid
+    outward = outward - float(np.dot(outward, normal)) * normal
+    outward_norm = float(np.linalg.norm(outward))
+    if outward_norm < 1e-12:
+        outward = donor_centroid - centroid
+        outward = outward - float(np.dot(outward, normal)) * normal
+        outward_norm = float(np.linalg.norm(outward))
+    if outward_norm < 1e-12:
+        return None
+    outward = outward / outward_norm
+
+    return {
+        "planar_atoms": tuple(planar_atoms),
+        "donor_overlap": tuple(donor_overlap),
+        "centroid": centroid,
+        "donor_centroid": donor_centroid,
+        "normal": normal,
+        "outward": outward,
+    }
+
+
+def _planar_fragment_donor_approach_penalty(
+    mol,
+    fragment_atom_indices: List[int],
+    donor_indices: List[int],
+    metal_pos,
+    coord_map: Dict[int, object],
+) -> float:
+    """Penalty when a planar donor fragment presents adjacent pi atoms instead of the donor side."""
+    import numpy as np
+
+    if mol is None or not fragment_atom_indices or not donor_indices or not coord_map:
+        return 0.0
+
+    fragment_set = set(fragment_atom_indices)
+
+    def _is_planar_like(atom) -> bool:
+        if atom is None or atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+            return False
+        if atom.GetIsAromatic():
+            return True
+        try:
+            hyb = atom.GetHybridization()
+        except Exception:
+            return False
+        return hyb in {
+            Chem.rdchem.HybridizationType.SP,
+            Chem.rdchem.HybridizationType.SP2,
+        }
+
+    planar_atoms = tuple(
+        atom_idx for atom_idx in fragment_atom_indices
+        if _is_planar_like(mol.GetAtomWithIdx(atom_idx))
+    )
+    donor_overlap = [
+        donor_idx for donor_idx in donor_indices
+        if donor_idx in fragment_set and donor_idx in planar_atoms
+    ]
+    if len(planar_atoms) < 4 or not donor_overlap:
+        return 0.0
+
+    pts = []
+    for atom_idx in planar_atoms:
+        arr = coord_map.get(atom_idx)
+        if arr is None:
+            return 0.0
+        pts.append(np.asarray(arr, dtype=float))
+    pts_arr = np.asarray(pts, dtype=float)
+    centroid = pts_arr.mean(axis=0)
+    try:
+        _u, _s, vt = np.linalg.svd(pts_arr - centroid)
+    except Exception:
+        return 0.0
+    normal = vt[-1]
+    normal_norm = float(np.linalg.norm(normal))
+    if normal_norm < 1e-12:
+        return 0.0
+    normal = normal / normal_norm
+
+    penalty = 0.0
+    metal_vec_ref = np.asarray(metal_pos, dtype=float)
+    for donor_idx in donor_overlap:
+        donor_atom = mol.GetAtomWithIdx(donor_idx)
+        donor_pos = coord_map.get(donor_idx)
+        if donor_pos is None:
+            continue
+        donor_pos = np.asarray(donor_pos, dtype=float)
+
+        outward_terms = []
+        for nbr in donor_atom.GetNeighbors():
+            nbr_idx = nbr.GetIdx()
+            if nbr_idx not in fragment_set:
+                continue
+            nbr_atom = mol.GetAtomWithIdx(nbr_idx)
+            if not _is_planar_like(nbr_atom):
+                continue
+            nbr_pos = coord_map.get(nbr_idx)
+            if nbr_pos is None:
+                continue
+            vec = donor_pos - np.asarray(nbr_pos, dtype=float)
+            vec = vec - float(np.dot(vec, normal)) * normal
+            vec_norm = float(np.linalg.norm(vec))
+            if vec_norm < 1e-8:
+                continue
+            outward_terms.append(vec / vec_norm)
+
+        if outward_terms:
+            outward_vec = np.sum(np.asarray(outward_terms, dtype=float), axis=0)
+        else:
+            outward_vec = donor_pos - centroid
+            outward_vec = outward_vec - float(np.dot(outward_vec, normal)) * normal
+        outward_norm = float(np.linalg.norm(outward_vec))
+        if outward_norm < 1e-8:
+            continue
+        outward_unit = outward_vec / outward_norm
+
+        metal_vec = metal_vec_ref - donor_pos
+        metal_in_plane = metal_vec - float(np.dot(metal_vec, normal)) * normal
+        metal_in_plane_norm = float(np.linalg.norm(metal_in_plane))
+        if metal_in_plane_norm < 1e-8:
+            continue
+        metal_unit = metal_in_plane / metal_in_plane_norm
+
+        cosang = float(np.dot(outward_unit, metal_unit))
+        donor_sym = donor_atom.GetSymbol()
+        min_cos = 0.18
+        weight = 10.0
+        if donor_sym == 'N':
+            min_cos = 0.34 if donor_atom.GetIsAromatic() else 0.26
+            weight = 18.0 if donor_atom.GetIsAromatic() else 14.0
+        elif donor_sym == 'O':
+            min_cos = 0.28
+            weight = 16.0
+            if any(bond.GetIsConjugated() for bond in donor_atom.GetBonds()):
+                min_cos += 0.06
+                weight += 6.0
+        elif donor_sym == 'S':
+            min_cos = 0.22
+            weight = 12.0
+
+        if cosang < min_cos:
+            penalty += weight * (min_cos - cosang) ** 2
+        if cosang < -0.05:
+            penalty += (weight + 18.0) * (abs(cosang) + 0.05) ** 2
+
+    return penalty
+
+
+def _fragment_environment_clash_penalty(
+    mol,
+    fragment_atom_indices: List[int],
+    coord_map: Dict[int, object],
+    ignore_atom_indices: Optional[set] = None,
+    primary_metal_idx: Optional[int] = None,
+) -> float:
+    """Penalty for a candidate rigid fragment pose colliding with the fixed environment."""
+    import numpy as np
+
+    if mol is None or not fragment_atom_indices or not coord_map:
+        return 0.0
+
+    try:
+        conf = mol.GetConformer()
+    except Exception:
+        return 0.0
+
+    ignore = set(ignore_atom_indices or set())
+    fragment_set = set(fragment_atom_indices)
+    penalty = 0.0
+
+    for atom_idx in fragment_atom_indices:
+        if atom_idx in ignore:
+            continue
+        atom = mol.GetAtomWithIdx(atom_idx)
+        sym_i = atom.GetSymbol()
+        if atom.GetAtomicNum() <= 1 or sym_i in _METAL_SET:
+            continue
+        pos_i = coord_map.get(atom_idx)
+        if pos_i is None:
+            continue
+        pos_i = np.asarray(pos_i, dtype=float)
+        if pos_i.shape != (3,) or not np.all(np.isfinite(pos_i)):
+            continue
+        for other_idx in range(mol.GetNumAtoms()):
+            if other_idx in fragment_set or other_idx in ignore:
+                continue
+            other = mol.GetAtomWithIdx(other_idx)
+            sym_j = other.GetSymbol()
+            if other.GetAtomicNum() <= 1 or sym_j in _METAL_SET:
+                continue
+            if mol.GetBondBetweenAtoms(atom_idx, other_idx) is not None:
+                continue
+            other_pos = conf.GetAtomPosition(other_idx)
+            pos_j = np.array([other_pos.x, other_pos.y, other_pos.z], dtype=float)
+            dist = float(np.linalg.norm(pos_i - pos_j))
+            other_metal_bound = any(
+                nbr.GetSymbol() in _METAL_SET and nbr.GetIdx() != primary_metal_idx
+                for nbr in other.GetNeighbors()
+            )
+            min_dist = max(
+                1.76,
+                _COVALENT_RADII.get(sym_i, 0.76) + _COVALENT_RADII.get(sym_j, 0.76) + 0.34,
+            )
+            if sym_i in {'N', 'O', 'S', 'P'} or sym_j in {'N', 'O', 'S', 'P'}:
+                min_dist = max(min_dist, 1.90)
+            if other_metal_bound:
+                min_dist = max(min_dist, 2.12)
+            if dist < min_dist:
+                weight = 18.0 if other_metal_bound else 10.0
+                penalty += weight * (min_dist - dist) ** 2
+            if dist < 1.55:
+                weight = 120.0 if other_metal_bound else 70.0
+                penalty += weight * (1.55 - dist) ** 2
+
+    return penalty
+
+
+def _fragment_bite_direction_penalty(
+    mol,
+    fragment_atom_indices: List[int],
+    donor_indices: List[int],
+    coord_map: Dict[int, object],
+    metal_pos,
+) -> float:
+    """Penalty when a multidentate rigid fragment presents its back side to the metal."""
+    import numpy as np
+
+    if mol is None or len(donor_indices) < 2 or not coord_map:
+        return 0.0
+
+    donor_coords = []
+    body_coords = []
+    fallback_coords = []
+    for atom_idx in fragment_atom_indices:
+        coord = coord_map.get(atom_idx)
+        if coord is None:
+            continue
+        arr = np.asarray(coord, dtype=float)
+        if arr.shape != (3,) or not np.all(np.isfinite(arr)):
+            continue
+        atom = mol.GetAtomWithIdx(atom_idx)
+        if atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+            continue
+        fallback_coords.append(arr)
+        if atom_idx in donor_indices:
+            donor_coords.append(arr)
+        else:
+            body_coords.append(arr)
+
+    if len(donor_coords) < 2:
+        return 0.0
+    if not body_coords:
+        body_coords = fallback_coords
+    if not body_coords:
+        return 0.0
+
+    donor_centroid = np.mean(np.asarray(donor_coords, dtype=float), axis=0)
+    body_centroid = np.mean(np.asarray(body_coords, dtype=float), axis=0)
+    pocket_vec = donor_centroid - body_centroid
+    metal_vec = np.asarray(metal_pos, dtype=float) - donor_centroid
+    pocket_norm = float(np.linalg.norm(pocket_vec))
+    metal_norm = float(np.linalg.norm(metal_vec))
+    if pocket_norm < 1e-8 or metal_norm < 1e-8:
+        return 0.0
+
+    pocket_unit = pocket_vec / pocket_norm
+    metal_unit = metal_vec / metal_norm
+    cosang = float(np.dot(pocket_unit, metal_unit))
+    if cosang >= 0.55:
+        return 0.0
+    gap = 0.55 - cosang
+    return 6.0 * gap * gap
+
+
+def _fit_secondary_metal_geometry_from_donors(
+    donor_positions,
+    donor_symbols: List[str],
+    metal_symbol: str,
+    constrained_indices: Optional[List[int]] = None,
+    bite_distance_constraints: Optional[List[Tuple[int, int, float]]] = None,
+    donor_target_lengths: Optional[List[float]] = None,
+    donor_fit_weights: Optional[List[float]] = None,
+):
+    """Fit an ideal coordination geometry while optionally honoring anchor donors."""
+    try:
+        import itertools
+        import numpy as np
+    except ImportError:
+        return None
+
+    donors = np.asarray(donor_positions, dtype=float)
+    if donors.ndim != 2 or donors.shape[0] != len(donor_symbols) or donors.shape[0] < 2:
+        return None
+
+    n_coord = donors.shape[0]
+    target_lengths = [
+        float(donor_target_lengths[i]) if donor_target_lengths and i < len(donor_target_lengths)
+        else float(_get_ml_bond_length(metal_symbol, donor_symbols[i]))
+        for i in range(n_coord)
+    ]
+    fit_weights = np.asarray(
+        [
+            float(donor_fit_weights[i]) if donor_fit_weights and i < len(donor_fit_weights) else 1.0
+            for i in range(n_coord)
+        ],
+        dtype=float,
+    )
+    geometry_codes = _secondary_metal_geometry_codes(n_coord, metal_symbol)
+    if not geometry_codes:
+        return None
+
+    fit_indices = sorted({
+        int(idx) for idx in (constrained_indices or [])
+        if 0 <= int(idx) < n_coord
+    })
+    if len(fit_indices) < 2:
+        fit_indices = list(range(n_coord))
+
+    nonpreferred_cn4_penalty = 0.0
+    if n_coord == 4:
+        preferred_cn4 = _PREFERRED_CN4_GEOMETRY.get(metal_symbol)
+        if preferred_cn4:
+            if metal_symbol in {'Pt', 'Pd', 'Rh', 'Ir', 'Au'}:
+                nonpreferred_cn4_penalty = 0.24
+            elif metal_symbol == 'Ni':
+                nonpreferred_cn4_penalty = 0.12
+            else:
+                nonpreferred_cn4_penalty = 0.16
+        else:
+            preferred_cn4 = None
+    else:
+        preferred_cn4 = None
+
+    best = None
+    for geom_code in geometry_codes:
+        vectors = _TOPO_GEOMETRY_VECTORS.get(geom_code)
+        if not vectors or len(vectors) != n_coord:
+            continue
+        normed_vectors = []
+        for vec in vectors:
+            arr = np.asarray(vec, dtype=float)
+            norm = float(np.linalg.norm(arr))
+            if norm < 1e-12:
+                break
+            normed_vectors.append(arr / norm)
+        if len(normed_vectors) != n_coord:
+            continue
+
+        if n_coord <= 6:
+            permutations = itertools.permutations(range(n_coord))
+        else:
+            identity = tuple(range(n_coord))
+            permutations = [identity, tuple(reversed(identity))]
+
+        for perm in permutations:
+            model = np.asarray(
+                [
+                    normed_vectors[perm[i]] * target_lengths[i]
+                    for i in range(n_coord)
+                ],
+                dtype=float,
+            )
+            fitted = _fit_secondary_metal_model_to_targets(model, donors, fit_indices)
+            if fitted is None:
+                continue
+            transformed, metal_pos = fitted
+            fit_resid = np.sum((transformed[fit_indices] - donors[fit_indices]) ** 2, axis=1)
+            fit_w = fit_weights[fit_indices]
+            rmsd_fit = float(np.sqrt(np.sum(fit_w * fit_resid) / max(np.sum(fit_w), 1e-12)))
+            all_resid = np.sum((transformed - donors) ** 2, axis=1)
+            rmsd_all = float(np.sqrt(np.sum(fit_weights * all_resid) / max(np.sum(fit_weights), 1e-12)))
+            bite_rmsd = 0.0
+            if bite_distance_constraints:
+                bite_errors = []
+                for idx_i, idx_j, expected_dist in bite_distance_constraints:
+                    if idx_i < 0 or idx_j < 0 or idx_i >= n_coord or idx_j >= n_coord:
+                        continue
+                    actual_dist = float(np.linalg.norm(transformed[idx_i] - transformed[idx_j]))
+                    bite_errors.append((actual_dist - expected_dist) ** 2)
+                if bite_errors:
+                    bite_rmsd = float(np.sqrt(np.mean(bite_errors)))
+            score = rmsd_fit + 0.10 * rmsd_all + 0.55 * bite_rmsd
+            if preferred_cn4 is not None and geom_code != preferred_cn4:
+                score += nonpreferred_cn4_penalty
+            if best is None or score < best[0]:
+                best = (score, metal_pos, geom_code, transformed)
+
+    return None if best is None else best[1:]
+
+
+def _fit_secondary_metal_position_from_donors(
+    donor_positions,
+    donor_symbols: List[str],
+    metal_symbol: str,
+    donor_target_lengths: Optional[List[float]] = None,
+    donor_fit_weights: Optional[List[float]] = None,
+):
+    """Fit a secondary metal center to already-placed donor atoms."""
+    try:
+        import itertools
+        import numpy as np
+    except ImportError:
+        return None
+
+    donors = np.asarray(donor_positions, dtype=float)
+    if donors.ndim != 2 or donors.shape[0] != len(donor_symbols) or donors.shape[0] < 2:
+        return None
+
+    n_coord = donors.shape[0]
+    target_lengths = [
+        float(donor_target_lengths[i]) if donor_target_lengths and i < len(donor_target_lengths)
+        else float(_get_ml_bond_length(metal_symbol, donor_symbols[i]))
+        for i in range(n_coord)
+    ]
+    fit_weights = np.asarray(
+        [
+            float(donor_fit_weights[i]) if donor_fit_weights and i < len(donor_fit_weights) else 1.0
+            for i in range(n_coord)
+        ],
+        dtype=float,
+    )
+    geometry_codes = _secondary_metal_geometry_codes(n_coord, metal_symbol)
+    if not geometry_codes:
+        return None
+
+    best = None
+    for geom_code in geometry_codes:
+        vectors = _TOPO_GEOMETRY_VECTORS.get(geom_code)
+        if not vectors or len(vectors) != n_coord:
+            continue
+        normed_vectors = []
+        for vec in vectors:
+            arr = np.asarray(vec, dtype=float)
+            norm = float(np.linalg.norm(arr))
+            if norm < 1e-12:
+                break
+            normed_vectors.append(arr / norm)
+        if len(normed_vectors) != n_coord:
+            continue
+
+        if n_coord <= 6:
+            permutations = itertools.permutations(range(n_coord))
+        else:
+            identity = tuple(range(n_coord))
+            permutations = [identity, tuple(reversed(identity))]
+
+        for perm in permutations:
+            model = np.asarray(
+                [
+                    normed_vectors[perm[i]] * target_lengths[i]
+                    for i in range(n_coord)
+                ],
+                dtype=float,
+            )
+            model_centroid = model.mean(axis=0)
+            donor_centroid = donors.mean(axis=0)
+            covariance = (model - model_centroid).T @ (donors - donor_centroid)
+            try:
+                u, _s, vt = np.linalg.svd(covariance)
+            except Exception:
+                continue
+            rot = vt.T @ u.T
+            if float(np.linalg.det(rot)) < 0.0:
+                vt[-1, :] *= -1.0
+                rot = vt.T @ u.T
+            fitted = (model - model_centroid) @ rot.T + donor_centroid
+            resid = np.sum((fitted - donors) ** 2, axis=1)
+            rmsd = float(np.sqrt(np.sum(fit_weights * resid) / max(np.sum(fit_weights), 1e-12)))
+            metal_pos = donor_centroid - model_centroid @ rot.T
+            score = rmsd
+            if best is None or score < best[0]:
+                best = (score, metal_pos, geom_code)
+
+    return None if best is None else best[1:]
+
+
+def _secondary_module_fragment_is_movable(
+    fragment: _HybridHaptoFragment,
+    metal_idx: int,
+) -> bool:
+    """Return whether a fragment may be moved as part of one secondary-metal module."""
+    return (
+        metal_idx in fragment.metal_neighbor_indices
+        and len(fragment.metal_neighbor_indices) == 1
+        and not fragment.bridging_donor_indices
+        and not fragment.hapto_group_ids
+    )
+
+
+def _find_scaffold_secondary_branch(
+    mol,
+    fragment: _HybridHaptoFragment,
+    hapto_groups: List[Tuple[int, List[int]]],
+    donor_idx: int,
+) -> Optional[Tuple[int, set]]:
+    """Return a rotatable donor branch off a fixed hapto/bridge scaffold, if present."""
+    if not RDKIT_AVAILABLE or mol is None or fragment is None:
+        return None
+    if donor_idx not in fragment.atom_indices or donor_idx in fragment.bridging_donor_indices:
+        return None
+
+    fragment_atoms = set(fragment.atom_indices)
+    core_seed_atoms: set = set(fragment.bridging_donor_indices)
+    for group_id in fragment.hapto_group_ids:
+        if 0 <= int(group_id) < len(hapto_groups):
+            _metal_idx, group_atoms = hapto_groups[int(group_id)]
+            core_seed_atoms.update(atom_idx for atom_idx in group_atoms if atom_idx in fragment_atoms)
+    for other_donor in fragment.donor_atom_indices:
+        if other_donor != donor_idx and other_donor in fragment_atoms:
+            core_seed_atoms.add(other_donor)
+    if donor_idx in core_seed_atoms:
+        return None
+
+    movable_pool = fragment_atoms - core_seed_atoms
+    if donor_idx not in movable_pool:
+        return None
+
+    branch_atoms: set = set()
+    queue = [donor_idx]
+    while queue:
+        atom_idx = queue.pop()
+        if atom_idx in branch_atoms or atom_idx not in movable_pool:
+            continue
+        branch_atoms.add(atom_idx)
+        atom = mol.GetAtomWithIdx(atom_idx)
+        for nbr in atom.GetNeighbors():
+            nbr_idx = nbr.GetIdx()
+            if nbr_idx in movable_pool and nbr_idx not in branch_atoms:
+                queue.append(nbr_idx)
+
+    if donor_idx not in branch_atoms or len(branch_atoms) < 2:
+        return None
+
+    attachment_atoms: set = set()
+    for atom_idx in branch_atoms:
+        atom = mol.GetAtomWithIdx(atom_idx)
+        for nbr in atom.GetNeighbors():
+            nbr_idx = nbr.GetIdx()
+            if nbr_idx in core_seed_atoms:
+                attachment_atoms.add(nbr_idx)
+    interface_atoms = {
+        atom_idx
+        for atom_idx in branch_atoms
+        if any(nbr.GetIdx() in core_seed_atoms for nbr in mol.GetAtomWithIdx(atom_idx).GetNeighbors())
+    }
+    if len(interface_atoms) == 1:
+        pivot_idx = next(iter(interface_atoms))
+        branch_atoms = set(branch_atoms)
+        branch_atoms.discard(pivot_idx)
+    else:
+        if len(attachment_atoms) != 1:
+            return None
+        pivot_idx = next(iter(attachment_atoms))
+
+    if donor_idx == pivot_idx or donor_idx not in branch_atoms:
+        return None
+    return pivot_idx, branch_atoms
+
+
+def _reorient_scaffold_secondary_branch(
+    mol,
+    fragment: _HybridHaptoFragment,
+    hapto_groups: List[Tuple[int, List[int]]],
+    metal_idx: int,
+    donor_idx: int,
+    donor_target,
+) -> bool:
+    """Rotate a branch off a fixed hapto/bridge core toward a secondary-metal target."""
+    if not RDKIT_AVAILABLE or mol is None or fragment is None:
+        return False
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+
+    try:
+        conf = mol.GetConformer(0)
+    except Exception:
+        return False
+
+    branch_info = _find_scaffold_secondary_branch(
+        mol,
+        fragment,
+        hapto_groups,
+        donor_idx,
+    )
+    if branch_info is None:
+        return False
+    pivot_idx, branch_atoms = branch_info
+
+    pivot_pos = np.array(conf.GetAtomPosition(pivot_idx), dtype=float)
+    current_coords = {
+        atom_idx: np.array(conf.GetAtomPosition(atom_idx), dtype=float)
+        for atom_idx in branch_atoms
+    }
+    donor_target_vec = np.asarray(donor_target, dtype=float)
+    if donor_target_vec.shape != (3,) or not np.all(np.isfinite(donor_target_vec)):
+        return False
+
+    current_donor_vec = current_coords[donor_idx] - pivot_pos
+    target_donor_vec = donor_target_vec - pivot_pos
+    if float(np.linalg.norm(current_donor_vec)) < 1e-12 or float(np.linalg.norm(target_donor_vec)) < 1e-12:
+        return False
+
+    metal_pos = np.array(conf.GetAtomPosition(metal_idx), dtype=float)
+    base_rot = _rotation_matrix_from_vectors(current_donor_vec, target_donor_vec)
+    rotated_coords = {
+        atom_idx: (coord - pivot_pos) @ base_rot.T + pivot_pos
+        for atom_idx, coord in current_coords.items()
+    }
+    branch_frame = _fragment_planar_donor_frame(
+        mol,
+        sorted(branch_atoms),
+        [donor_idx],
+        rotated_coords,
+    )
+    if branch_frame is not None:
+        outward_src = np.asarray(branch_frame["outward"], dtype=float)
+        metal_dir = metal_pos - donor_target_vec
+        metal_dir = metal_dir - float(np.dot(metal_dir, branch_frame["normal"])) * np.asarray(branch_frame["normal"], dtype=float)
+        if float(np.linalg.norm(metal_dir)) > 1e-8:
+            outward_tgt = metal_dir / float(np.linalg.norm(metal_dir))
+            donor_center = rotated_coords[donor_idx]
+            branch_rot = _rotation_matrix_from_vectors(outward_src, outward_tgt)
+            trial_coords = {
+                atom_idx: (coord - donor_center) @ branch_rot.T + donor_center
+                for atom_idx, coord in rotated_coords.items()
+            }
+            if donor_idx in trial_coords:
+                donor_shift = donor_target_vec - trial_coords[donor_idx]
+                trial_coords = {
+                    atom_idx: coord + donor_shift
+                    for atom_idx, coord in trial_coords.items()
+                }
+            rotated_coords = trial_coords
+
+    def _score(coord_map: Dict[int, object]) -> Tuple[float, float]:
+        donor_err = float(np.linalg.norm(coord_map[donor_idx] - donor_target_vec))
+        penalty = _secondary_non_donor_contact_penalty(
+            mol,
+            metal_idx,
+            metal_pos,
+            sorted(branch_atoms),
+            [donor_idx],
+            coord_map,
+        )
+        penalty += _fragment_donor_selectivity_penalty(
+            mol,
+            metal_idx,
+            metal_pos,
+            sorted(branch_atoms),
+            [donor_idx],
+            coord_map,
+        )
+        penalty += _planar_fragment_metal_coplanarity_penalty(
+            mol,
+            sorted(branch_atoms),
+            [donor_idx],
+            metal_pos,
+            coord_map,
+        )
+        penalty += _planar_fragment_donor_approach_penalty(
+            mol,
+            sorted(branch_atoms),
+            [donor_idx],
+            metal_pos,
+            coord_map,
+        )
+        return donor_err, 30.0 * donor_err * donor_err + penalty
+
+    current_err, current_score = _score(current_coords)
+    best_coords = rotated_coords
+    best_err, best_score = _score(rotated_coords)
+
+    axis = rotated_coords[donor_idx] - pivot_pos
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm > 1e-12:
+        axis /= axis_norm
+        step = 5 if branch_frame is not None else 15
+        for angle_deg in range(-180, 181, step):
+            if angle_deg == 0:
+                continue
+            rot = _axis_angle_rotation_matrix(axis, math.radians(float(angle_deg)))
+            trial_coords = {
+                atom_idx: (coord - pivot_pos) @ rot.T + pivot_pos
+                for atom_idx, coord in rotated_coords.items()
+            }
+            trial_err, trial_score = _score(trial_coords)
+            if (
+                trial_score + 1e-9 < best_score
+                or (
+                    abs(trial_score - best_score) < 1e-9
+                    and trial_err + 1e-6 < best_err
+                )
+            ):
+                best_coords = trial_coords
+                best_err = trial_err
+                best_score = trial_score
+
+    if best_score + 1e-9 >= current_score and best_err + 1e-6 >= current_err:
+        return False
+
+    for atom_idx, coord in best_coords.items():
+        conf.SetAtomPosition(atom_idx, Point3D(float(coord[0]), float(coord[1]), float(coord[2])))
+    return True
+
+
+def _optimize_secondary_fragment_pose(
+    mol,
+    fragment: _HybridHaptoFragment,
+    metal_idx: int,
+    donor_target_map: Dict[int, object],
+) -> bool:
+    """Improve a rigid donor fragment around one anchored donor without distorting it."""
+    if not RDKIT_AVAILABLE or mol is None or fragment is None or not donor_target_map:
+        return False
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+
+    try:
+        conf = mol.GetConformer(0)
+    except Exception:
+        return False
+
+    metal_pos = np.array(conf.GetAtomPosition(metal_idx), dtype=float)
+    donor_indices = [
+        donor_idx for donor_idx in fragment.donor_atom_indices
+        if donor_idx in donor_target_map
+    ]
+    if len(donor_indices) < 2:
+        return False
+
+    base_coords = {
+        atom_idx: np.array(conf.GetAtomPosition(atom_idx), dtype=float)
+        for atom_idx in fragment.atom_indices
+    }
+    metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+    target_lengths = {
+        donor_idx: float(_get_ml_bond_length(metal_sym, mol.GetAtomWithIdx(donor_idx).GetSymbol()))
+        for donor_idx in donor_indices
+    }
+
+    donor_errors = {
+        donor_idx: abs(float(np.linalg.norm(base_coords[donor_idx] - metal_pos)) - target_lengths[donor_idx])
+        for donor_idx in donor_indices
+    }
+    pivot_idx = min(donor_indices, key=lambda donor_idx: donor_errors[donor_idx])
+    pivot_pos = np.array(base_coords[pivot_idx], dtype=float)
+    current_errors = donor_errors.copy()
+
+    def _score(coord_map: Dict[int, object]) -> float:
+        score = 0.0
+        for donor_idx in donor_indices:
+            donor_pos = coord_map[donor_idx]
+            target_len = target_lengths[donor_idx]
+            err = float(np.linalg.norm(donor_pos - metal_pos)) - target_len
+            weight = 0.3 if donor_idx == pivot_idx else 3.0
+            score += weight * err * err
+        score += _secondary_non_donor_contact_penalty(
+            mol,
+            metal_idx,
+            metal_pos,
+            fragment.atom_indices,
+            donor_indices,
+            coord_map,
+        )
+        score += _fragment_donor_selectivity_penalty(
+            mol,
+            metal_idx,
+            metal_pos,
+            fragment.atom_indices,
+            donor_indices,
+            coord_map,
+        )
+        score += _fragment_environment_clash_penalty(
+            mol,
+            fragment.atom_indices,
+            coord_map,
+            ignore_atom_indices={metal_idx},
+            primary_metal_idx=metal_idx,
+        )
+        score += _planar_fragment_metal_coplanarity_penalty(
+            mol,
+            fragment.atom_indices,
+            donor_indices,
+            metal_pos,
+            coord_map,
+        )
+        score += _planar_fragment_donor_approach_penalty(
+            mol,
+            fragment.atom_indices,
+            donor_indices,
+            metal_pos,
+            coord_map,
+        )
+        score += _fragment_bite_direction_penalty(
+            mol,
+            fragment.atom_indices,
+            donor_indices,
+            coord_map,
+            metal_pos,
+        )
+        return score
+
+    best_coords = {idx: vec.copy() for idx, vec in base_coords.items()}
+    best_score = _score(best_coords)
+    best_errors = current_errors.copy()
+    donor_axis = metal_pos - pivot_pos
+    donor_axis_norm = float(np.linalg.norm(donor_axis))
+    if donor_axis_norm < 1e-12:
+        return False
+    donor_axis /= donor_axis_norm
+
+    rng = np.random.default_rng(
+        int((metal_idx + 1) * 1000 + min(fragment.atom_indices) + len(fragment.atom_indices))
+    )
+    axes = [donor_axis]
+    for donor_idx in donor_indices:
+        if donor_idx == pivot_idx:
+            continue
+        pair_axis = np.asarray(base_coords[donor_idx] - pivot_pos, dtype=float)
+        pair_norm = float(np.linalg.norm(pair_axis))
+        if pair_norm < 1e-12:
+            continue
+        axes.insert(0, pair_axis / pair_norm)
+        break
+    for _ in range(192):
+        axis = rng.normal(size=3)
+        norm = float(np.linalg.norm(axis))
+        if norm < 1e-12:
+            continue
+        axes.append(axis / norm)
+
+    improved = False
+    for axis in axes:
+        for angle_rad in (
+            math.radians(v) for v in (-180, -150, -120, -90, -75, -60, -45, -30, -20, -10, 10, 20, 30, 45, 60, 75, 90, 120, 150, 180)
+        ):
+            rot = _axis_angle_rotation_matrix(axis, angle_rad)
+            trial_coords = {}
+            for atom_idx, vec in base_coords.items():
+                if atom_idx == pivot_idx:
+                    trial_coords[atom_idx] = vec.copy()
+                    continue
+                trial_coords[atom_idx] = (vec - pivot_pos) @ rot.T + pivot_pos
+            trial_score = _score(trial_coords)
+            trial_errors = {
+                donor_idx: abs(float(np.linalg.norm(trial_coords[donor_idx] - metal_pos)) - target_lengths[donor_idx])
+                for donor_idx in donor_indices
+            }
+            trial_max_nonpivot = max(
+                (err for donor_idx, err in trial_errors.items() if donor_idx != pivot_idx),
+                default=0.0,
+            )
+            best_max_nonpivot = max(
+                (err for donor_idx, err in best_errors.items() if donor_idx != pivot_idx),
+                default=0.0,
+            )
+            if (
+                trial_score + 1e-9 < best_score
+                and trial_max_nonpivot <= best_max_nonpivot + 1e-4
+            ):
+                best_score = trial_score
+                best_coords = trial_coords
+                best_errors = trial_errors
+                improved = True
+
+    if not improved:
+        return False
+
+    for atom_idx, vec in best_coords.items():
+        conf.SetAtomPosition(
+            atom_idx,
+            Point3D(float(vec[0]), float(vec[1]), float(vec[2])),
+        )
+    return True
+
+
+def _secondary_fragment_prefers_rigid_pose(
+    mol,
+    fragment: _HybridHaptoFragment,
+    targeted_donor_indices: List[int],
+) -> bool:
+    """Return whether a CN=4 secondary-metal fragment should keep its rigid aligned pose."""
+    if not RDKIT_AVAILABLE or mol is None or fragment is None or not targeted_donor_indices:
+        return False
+
+    targeted_donor_set = set(targeted_donor_indices)
+    if len(targeted_donor_set) >= 2:
+        return True
+
+    planar_like_atoms = 0
+    for atom_idx in fragment.atom_indices:
+        atom = mol.GetAtomWithIdx(atom_idx)
+        if atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+            continue
+        if atom.GetIsAromatic():
+            planar_like_atoms += 1
+            continue
+        try:
+            hyb = atom.GetHybridization()
+        except Exception:
+            continue
+        if hyb in {
+            Chem.rdchem.HybridizationType.SP,
+            Chem.rdchem.HybridizationType.SP2,
+        }:
+            planar_like_atoms += 1
+
+    return planar_like_atoms >= 4 and bool(targeted_donor_set & set(fragment.donor_atom_indices))
+
+
+_HAPTO_SECONDARY_CN4_GEOMETRIES = {'SQ', 'TH', 'TET'}
+_HAPTO_SECONDARY_CN4_OPTIMIZER_GEOMETRIES = {'SQ', 'TET'}
+
+
+def _relieve_secondary_oo_chelate_contacts(
+    mol,
+    fragment: _HybridHaptoFragment,
+    metal_idx: int,
+    donor_target_map: Dict[int, object],
+) -> bool:
+    """Rotate a rigid O,O chelate around the O-O axis to relieve non-donor contacts."""
+    if not RDKIT_AVAILABLE or mol is None or fragment is None or not donor_target_map:
+        return False
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+
+    try:
+        conf = mol.GetConformer(0)
+    except Exception:
+        return False
+
+    donor_indices = [
+        donor_idx for donor_idx in fragment.donor_atom_indices
+        if donor_idx in donor_target_map and mol.GetAtomWithIdx(donor_idx).GetSymbol() == 'O'
+    ]
+    if len(donor_indices) < 2:
+        return False
+
+    axis_start = np.array(conf.GetAtomPosition(donor_indices[0]), dtype=float)
+    axis_end = np.array(conf.GetAtomPosition(donor_indices[1]), dtype=float)
+    axis = axis_end - axis_start
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm < 1e-12:
+        return False
+    axis = axis / axis_norm
+
+    rotatable_atoms = [
+        atom_idx for atom_idx in fragment.atom_indices
+        if atom_idx not in donor_indices
+        and mol.GetAtomWithIdx(atom_idx).GetAtomicNum() > 1
+        and mol.GetAtomWithIdx(atom_idx).GetSymbol() not in _METAL_SET
+    ]
+    if not rotatable_atoms:
+        return False
+
+    base_coords = {
+        atom_idx: np.array(conf.GetAtomPosition(atom_idx), dtype=float)
+        for atom_idx in fragment.atom_indices
+    }
+    metal_pos = np.array(conf.GetAtomPosition(metal_idx), dtype=float)
+
+    def _score(coord_map: Dict[int, object]) -> float:
+        return (
+            _secondary_non_donor_contact_penalty(
+                mol,
+                metal_idx,
+                metal_pos,
+                fragment.atom_indices,
+                donor_indices,
+                coord_map,
+            )
+            + _fragment_donor_selectivity_penalty(
+                mol,
+                metal_idx,
+                metal_pos,
+                fragment.atom_indices,
+                donor_indices,
+                coord_map,
+            )
+            + _planar_fragment_metal_coplanarity_penalty(
+                mol,
+                fragment.atom_indices,
+                donor_indices,
+                metal_pos,
+                coord_map,
+            )
+            + _planar_fragment_donor_approach_penalty(
+                mol,
+                fragment.atom_indices,
+                donor_indices,
+                metal_pos,
+                coord_map,
+            )
+            + _fragment_environment_clash_penalty(
+                mol,
+                fragment.atom_indices,
+                coord_map,
+                ignore_atom_indices={metal_idx},
+                primary_metal_idx=metal_idx,
+            )
+            + _fragment_bite_direction_penalty(
+                mol,
+                fragment.atom_indices,
+                donor_indices,
+                coord_map,
+                metal_pos,
+            )
+            + _planar_fragment_metal_coplanarity_penalty(
+                mol,
+                fragment.atom_indices,
+                donor_indices,
+                metal_pos,
+                coord_map,
+            )
+            + _planar_fragment_donor_approach_penalty(
+                mol,
+                fragment.atom_indices,
+                donor_indices,
+                metal_pos,
+                coord_map,
+            )
+        )
+
+    best_coords = {atom_idx: vec.copy() for atom_idx, vec in base_coords.items()}
+    best_score = _score(best_coords)
+    improved = False
+    pivot = 0.5 * (axis_start + axis_end)
+
+    for angle_deg in (-30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25, 30):
+        rot = _axis_angle_rotation_matrix(axis, math.radians(float(angle_deg)))
+        trial_coords = {atom_idx: vec.copy() for atom_idx, vec in base_coords.items()}
+        for atom_idx in rotatable_atoms:
+            trial_coords[atom_idx] = (base_coords[atom_idx] - pivot) @ rot.T + pivot
+        trial_score = _score(trial_coords)
+        if trial_score + 1e-9 < best_score:
+            best_score = trial_score
+            best_coords = trial_coords
+            improved = True
+
+    if not improved:
+        return False
+
+    for atom_idx, vec in best_coords.items():
+        conf.SetAtomPosition(atom_idx, Point3D(float(vec[0]), float(vec[1]), float(vec[2])))
+    return True
+
+
+def _restore_secondary_rigid_fragment_geometry(
+    mol,
+    fragment: _HybridHaptoFragment,
+    metal_idx: int,
+    donor_target_map: Dict[int, object],
+    reference_coords: Dict[int, object],
+) -> bool:
+    """Restore a rigid secondary fragment against its saved pre-optimizer geometry."""
+    if (
+        not RDKIT_AVAILABLE
+        or mol is None
+        or fragment is None
+        or not donor_target_map
+        or not reference_coords
+    ):
+        return False
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+
+    try:
+        conf = mol.GetConformer(0)
+    except Exception:
+        return False
+
+    donor_indices = [
+        donor_idx
+        for donor_idx in fragment.donor_atom_indices
+        if donor_idx in donor_target_map and donor_idx in reference_coords
+    ]
+    if len(donor_indices) < 2:
+        return False
+
+    atom_indices = [
+        atom_idx for atom_idx in fragment.atom_indices
+        if atom_idx in reference_coords
+    ]
+    if len(atom_indices) < 3:
+        return False
+
+    src = np.asarray([reference_coords[donor_idx] for donor_idx in donor_indices], dtype=float)
+    tgt = np.asarray(
+        [np.array(conf.GetAtomPosition(donor_idx), dtype=float) for donor_idx in donor_indices],
+        dtype=float,
+    )
+    all_ref = np.asarray([reference_coords[atom_idx] for atom_idx in atom_indices], dtype=float)
+
+    if len(donor_indices) == 2:
+        rot = _rotation_matrix_from_vectors(src[1] - src[0], tgt[1] - tgt[0])
+        src_mid = 0.5 * (src[0] + src[1])
+        tgt_mid = 0.5 * (tgt[0] + tgt[1])
+        aligned = (all_ref - src_mid) @ rot.T + tgt_mid
+    else:
+        src_centroid = src.mean(axis=0)
+        tgt_centroid = tgt.mean(axis=0)
+        covariance = (src - src_centroid).T @ (tgt - tgt_centroid)
+        try:
+            u, _s, vt = np.linalg.svd(covariance)
+        except Exception:
+            return False
+        rot = vt.T @ u.T
+        if float(np.linalg.det(rot)) < 0.0:
+            vt[-1, :] *= -1.0
+            rot = vt.T @ u.T
+        aligned = (all_ref - src_centroid) @ rot.T + tgt_centroid
+
+    donor_set = set(donor_indices)
+    current_coords = {
+        atom_idx: np.array(conf.GetAtomPosition(atom_idx), dtype=float)
+        for atom_idx in atom_indices
+    }
+    rigid_coords = {
+        atom_idx: aligned[idx].copy()
+        for idx, atom_idx in enumerate(atom_indices)
+    }
+    for row_idx, donor_idx in enumerate(donor_indices):
+        rigid_coords[donor_idx] = tgt[row_idx].copy()
+
+    heavy_atoms = [
+        atom_idx for atom_idx in atom_indices
+        if mol.GetAtomWithIdx(atom_idx).GetAtomicNum() > 1
+        and mol.GetAtomWithIdx(atom_idx).GetSymbol() not in _METAL_SET
+    ]
+    if len(heavy_atoms) < 3:
+        return False
+
+    ref_pair_targets: List[Tuple[int, int, float]] = []
+    for i in range(len(heavy_atoms)):
+        for j in range(i + 1, len(heavy_atoms)):
+            atom_i = heavy_atoms[i]
+            atom_j = heavy_atoms[j]
+            ref_pair_targets.append(
+                (
+                    atom_i,
+                    atom_j,
+                    float(
+                        np.linalg.norm(
+                            np.asarray(reference_coords[atom_i], dtype=float)
+                            - np.asarray(reference_coords[atom_j], dtype=float)
+                        )
+                    ),
+                )
+            )
+
+    metal_pos = np.array(conf.GetAtomPosition(metal_idx), dtype=float)
+    planar_atoms: List[int] = []
+    for atom_idx in heavy_atoms:
+        atom = mol.GetAtomWithIdx(atom_idx)
+        if atom.GetIsAromatic():
+            planar_atoms.append(atom_idx)
+            continue
+        try:
+            hyb = atom.GetHybridization()
+        except Exception:
+            continue
+        if hyb in {
+            Chem.rdchem.HybridizationType.SP,
+            Chem.rdchem.HybridizationType.SP2,
+        }:
+            planar_atoms.append(atom_idx)
+
+    def _external_score(coord_map: Dict[int, object]) -> float:
+        return (
+            _secondary_non_donor_contact_penalty(
+                mol,
+                metal_idx,
+                metal_pos,
+                fragment.atom_indices,
+                donor_indices,
+                coord_map,
+            )
+            + _fragment_donor_selectivity_penalty(
+                mol,
+                metal_idx,
+                metal_pos,
+                fragment.atom_indices,
+                donor_indices,
+                coord_map,
+            )
+            + _fragment_environment_clash_penalty(
+                mol,
+                fragment.atom_indices,
+                coord_map,
+                ignore_atom_indices={metal_idx},
+                primary_metal_idx=metal_idx,
+            )
+            + _fragment_bite_direction_penalty(
+                mol,
+                fragment.atom_indices,
+                donor_indices,
+                coord_map,
+                metal_pos,
+            )
+        )
+
+    def _shape_penalty(coord_map: Dict[int, object]) -> float:
+        penalty = 0.0
+        for atom_i, atom_j, target_len in ref_pair_targets:
+            vec_i = np.asarray(coord_map.get(atom_i), dtype=float)
+            vec_j = np.asarray(coord_map.get(atom_j), dtype=float)
+            if vec_i.shape != (3,) or vec_j.shape != (3,):
+                continue
+            penalty += (float(np.linalg.norm(vec_i - vec_j)) - target_len) ** 2
+        return penalty
+
+    def _planarity_penalty(coord_map: Dict[int, object]) -> float:
+        if len(planar_atoms) < 4:
+            return 0.0
+        pts = np.asarray([coord_map[atom_idx] for atom_idx in planar_atoms], dtype=float)
+        if pts.shape[0] < 4:
+            return 0.0
+        centroid = pts.mean(axis=0)
+        try:
+            _u, _s, vt = np.linalg.svd(pts - centroid)
+        except Exception:
+            return 0.0
+        normal = vt[-1]
+        normal_norm = float(np.linalg.norm(normal))
+        if normal_norm < 1e-12:
+            return 0.0
+        normal = normal / normal_norm
+        rms = float(np.sqrt(np.mean(((pts - centroid) @ normal) ** 2)))
+        return rms * rms
+
+    def _total_score(coord_map: Dict[int, object]) -> float:
+        return (
+            _external_score(coord_map)
+            + 6.0 * _shape_penalty(coord_map)
+            + 28.0 * _planarity_penalty(coord_map)
+        )
+
+    current_score = _total_score(current_coords)
+    best_coords = {atom_idx: vec.copy() for atom_idx, vec in rigid_coords.items()}
+    best_score = _total_score(best_coords)
+
+    if len(donor_indices) == 2:
+        axis = tgt[1] - tgt[0]
+        axis_norm = float(np.linalg.norm(axis))
+        if axis_norm > 1e-12:
+            axis = axis / axis_norm
+            pivot = 0.5 * (tgt[0] + tgt[1])
+            rotatable_atoms = [atom_idx for atom_idx in atom_indices if atom_idx not in donor_set]
+            for angle_deg in range(-180, 181, 15):
+                if angle_deg == 0:
+                    continue
+                rot = _axis_angle_rotation_matrix(axis, math.radians(float(angle_deg)))
+                trial_coords = {
+                    atom_idx: vec.copy() for atom_idx, vec in rigid_coords.items()
+                }
+                for atom_idx in rotatable_atoms:
+                    trial_coords[atom_idx] = (rigid_coords[atom_idx] - pivot) @ rot.T + pivot
+                trial_score = _total_score(trial_coords)
+                if trial_score + 1e-9 < best_score:
+                    best_score = trial_score
+                    best_coords = trial_coords
+
+    if best_score + 1e-9 >= current_score:
+        return False
+
+    for row_idx, donor_idx in enumerate(donor_indices):
+        best_coords[donor_idx] = tgt[row_idx].copy()
+    for atom_idx, vec in best_coords.items():
+        conf.SetAtomPosition(atom_idx, Point3D(float(vec[0]), float(vec[1]), float(vec[2])))
+    return True
+
+
+def _optimize_secondary_metal_module_local(
+    mol,
+    fragments: List[_HybridHaptoFragment],
+    hapto_groups: List[Tuple[int, List[int]]],
+    metal_idx: int,
+    donor_indices: List[int],
+    donor_to_fragment: Dict[int, _HybridHaptoFragment],
+    geometry_code: Optional[str] = None,
+    geometry_metal_pos=None,
+    geometry_target_map: Optional[Dict[int, object]] = None,
+) -> set:
+    """Locally relax one hapto-coupled secondary-metal module with the hapto core fixed."""
+    if not RDKIT_AVAILABLE or mol is None or not donor_indices:
+        return set()
+    try:
+        import numpy as np
+    except ImportError:
+        return set()
+
+    try:
+        conf = mol.GetConformer(0)
+    except Exception:
+        return set()
+
+    metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+    donor_set = set(donor_indices)
+    module_atoms: set = {metal_idx} | donor_set
+    movable_atoms: set = {metal_idx}
+    donor_pair_targets: List[Tuple[int, int, float]] = []
+    rigid_pair_targets: List[Tuple[int, int, float, float]] = []
+    seen_donor_pairs: set = set()
+    rigid_units: List[Tuple[int, ...]] = []
+    seen_units: set = set()
+    metal_repulsion_targets: List[Tuple[int, float]] = []
+    atom_to_fragment_idx: Dict[int, int] = {}
+
+    hapto_metals = {idx for idx, _grp in hapto_groups}
+    hapto_atoms = {atom_idx for _idx, grp in hapto_groups for atom_idx in grp}
+    for frag_idx, fragment in enumerate(fragments):
+        for atom_idx in fragment.atom_indices:
+            atom_to_fragment_idx[atom_idx] = frag_idx
+    for atom in mol.GetAtoms():
+        other_idx = atom.GetIdx()
+        if other_idx == metal_idx or atom.GetSymbol() not in _METAL_SET:
+            continue
+        min_dist = max(
+            3.05,
+            _COVALENT_RADII.get(metal_sym, 1.35) + _COVALENT_RADII.get(atom.GetSymbol(), 1.35) + 0.45,
+        )
+        metal_repulsion_targets.append((other_idx, float(min_dist)))
+
+    for donor_idx in donor_indices:
+        fragment = donor_to_fragment.get(donor_idx)
+        if fragment is None:
+            continue
+        module_atoms.update(fragment.atom_indices)
+        fragment_donors = [
+            idx for idx in fragment.donor_atom_indices
+            if idx in donor_set
+        ]
+        for i in range(len(fragment_donors)):
+            for j in range(i + 1, len(fragment_donors)):
+                pair = tuple(sorted((fragment_donors[i], fragment_donors[j])))
+                if pair in seen_donor_pairs:
+                    continue
+                pos_i = np.array(conf.GetAtomPosition(pair[0]), dtype=float)
+                pos_j = np.array(conf.GetAtomPosition(pair[1]), dtype=float)
+                donor_pair_targets.append((pair[0], pair[1], float(np.linalg.norm(pos_i - pos_j))))
+                seen_donor_pairs.add(pair)
+
+        if _secondary_module_fragment_is_movable(fragment, metal_idx):
+            movable_atoms.update(fragment.atom_indices)
+            unit = tuple(
+                sorted(
+                    atom_idx for atom_idx in fragment.atom_indices
+                    if mol.GetAtomWithIdx(atom_idx).GetAtomicNum() > 1
+                    and mol.GetAtomWithIdx(atom_idx).GetSymbol() not in _METAL_SET
+                )
+            )
+            if len(unit) >= 3 and unit not in seen_units:
+                rigid_units.append(unit)
+                seen_units.add(unit)
+            continue
+        if fragment.use_scaffold_only:
+            branch_info = _find_scaffold_secondary_branch(
+                mol,
+                fragment,
+                hapto_groups,
+                donor_idx,
+            )
+            if branch_info is not None:
+                pivot_idx, branch_atoms = branch_info
+                module_atoms.add(pivot_idx)
+                module_atoms.update(branch_atoms)
+                movable_atoms.update(branch_atoms)
+                unit = tuple(
+                    sorted(
+                        atom_idx for atom_idx in ({pivot_idx} | set(branch_atoms))
+                        if mol.GetAtomWithIdx(atom_idx).GetAtomicNum() > 1
+                        and mol.GetAtomWithIdx(atom_idx).GetSymbol() not in _METAL_SET
+                    )
+                )
+                if len(unit) >= 3 and unit not in seen_units:
+                    rigid_units.append(unit)
+                    seen_units.add(unit)
+
+    movable_atoms -= hapto_atoms
+    movable_atoms -= (hapto_metals - {metal_idx})
+    movable_atoms.add(metal_idx)
+    movable_atoms &= module_atoms
+    if len(movable_atoms) <= 1:
+        return set()
+
+    bonded_pairs: set = set()
+    bond_targets: List[Tuple[int, int, float]] = []
+    for bond in mol.GetBonds():
+        begin_idx = bond.GetBeginAtomIdx()
+        end_idx = bond.GetEndAtomIdx()
+        if begin_idx not in module_atoms or end_idx not in module_atoms:
+            continue
+        bonded_pairs.add((min(begin_idx, end_idx), max(begin_idx, end_idx)))
+        if begin_idx in movable_atoms or end_idx in movable_atoms:
+            bond_targets.append((begin_idx, end_idx, _hybrid_bond_target_length(bond)))
+
+    def _donor_target_profile(donor_idx: int) -> Tuple[float, float]:
+        atom = mol.GetAtomWithIdx(donor_idx)
+        donor_sym = atom.GetSymbol()
+        target_len = float(_secondary_donor_target_length(mol, metal_sym, donor_idx))
+        weight = 2.0 * float(_secondary_donor_fit_weight(mol, metal_sym, donor_idx))
+        formal_charge = int(atom.GetFormalCharge())
+        aromatic = bool(atom.GetIsAromatic())
+        try:
+            hyb = atom.GetHybridization()
+        except Exception:
+            hyb = None
+        planar_like = aromatic or hyb in {
+            Chem.rdchem.HybridizationType.SP,
+            Chem.rdchem.HybridizationType.SP2,
+        }
+
+        if donor_sym == 'N':
+            if planar_like:
+                weight += 0.35
+            if formal_charge > 0:
+                target_len += 0.05
+                weight -= 0.45
+            elif formal_charge < 0:
+                target_len -= 0.04
+                weight += 0.20
+        elif donor_sym == 'O':
+            if any(b.GetBondTypeAsDouble() >= 1.5 for b in atom.GetBonds()):
+                weight += 0.20
+            if any(b.GetIsConjugated() for b in atom.GetBonds()):
+                weight += 0.15
+            if formal_charge < 0:
+                target_len -= 0.08
+                weight += 0.70
+            elif formal_charge > 0:
+                target_len += 0.04
+                weight -= 0.20
+        elif donor_sym == 'C':
+            if formal_charge < 0:
+                target_len -= 0.06
+                weight += 0.40
+            elif formal_charge > 0:
+                target_len += 0.05
+                weight -= 0.30
+
+        return target_len, max(weight, 0.85)
+
+    ml_targets = [
+        (
+            donor_idx,
+            *_donor_target_profile(donor_idx),
+        )
+        for donor_idx in donor_indices
+    ]
+    cn4_geometry_pair_targets: List[Tuple[int, int, float, float]] = []
+    cn4_square_planar_normal = None
+    if (
+        geometry_code in _HAPTO_SECONDARY_CN4_OPTIMIZER_GEOMETRIES
+        and len(donor_indices) == 4
+        and geometry_metal_pos is not None
+        and geometry_target_map
+    ):
+        pair_weight = 0.55 if geometry_code == 'SQ' else 0.42
+        for i in range(len(donor_indices)):
+            pos_i = geometry_target_map.get(donor_indices[i])
+            if pos_i is None:
+                cn4_geometry_pair_targets = []
+                break
+            pos_i = np.asarray(pos_i, dtype=float)
+            if pos_i.shape != (3,) or not np.all(np.isfinite(pos_i)):
+                cn4_geometry_pair_targets = []
+                break
+            for j in range(i + 1, len(donor_indices)):
+                pos_j = geometry_target_map.get(donor_indices[j])
+                if pos_j is None:
+                    cn4_geometry_pair_targets = []
+                    break
+                pos_j = np.asarray(pos_j, dtype=float)
+                if pos_j.shape != (3,) or not np.all(np.isfinite(pos_j)):
+                    cn4_geometry_pair_targets = []
+                    break
+                target_dist = float(np.linalg.norm(pos_i - pos_j))
+                cn4_geometry_pair_targets.append(
+                    (donor_indices[i], donor_indices[j], target_dist, pair_weight)
+                )
+            if not cn4_geometry_pair_targets and i > 0:
+                break
+        if geometry_code == 'SQ' and len(cn4_geometry_pair_targets) >= 2:
+            target_vecs = []
+            for donor_idx in donor_indices:
+                target_pos = geometry_target_map.get(donor_idx)
+                if target_pos is None:
+                    target_vecs = []
+                    break
+                target_arr = np.asarray(target_pos, dtype=float) - np.asarray(geometry_metal_pos, dtype=float)
+                if target_arr.shape != (3,) or not np.all(np.isfinite(target_arr)):
+                    target_vecs = []
+                    break
+                target_vecs.append(target_arr)
+            best_norm = 0.0
+            for i in range(len(target_vecs)):
+                for j in range(i + 1, len(target_vecs)):
+                    normal = np.cross(target_vecs[i], target_vecs[j])
+                    norm = float(np.linalg.norm(normal))
+                    if norm > best_norm:
+                        best_norm = norm
+                        cn4_square_planar_normal = normal / norm
+
+    initial_positions = {
+        atom_idx: np.array(conf.GetAtomPosition(atom_idx), dtype=float)
+        for atom_idx in movable_atoms
+    }
+    initial_positions.update(
+        {
+            atom_idx: np.array(conf.GetAtomPosition(atom_idx), dtype=float)
+            for unit in rigid_units
+            for atom_idx in unit
+            if atom_idx not in initial_positions
+        }
+    )
+
+    for unit in rigid_units:
+        unit_atoms = list(unit)
+        unit_planar = False
+        planar_like_count = 0
+        for atom_idx in unit_atoms:
+            atom = mol.GetAtomWithIdx(atom_idx)
+            if atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+                continue
+            if atom.GetIsAromatic():
+                planar_like_count += 1
+                continue
+            try:
+                hyb = atom.GetHybridization()
+            except Exception:
+                continue
+            if hyb in {
+                Chem.rdchem.HybridizationType.SP,
+                Chem.rdchem.HybridizationType.SP2,
+            }:
+                planar_like_count += 1
+        unit_planar = planar_like_count >= 4
+
+        if len(unit_atoms) <= 6 or (unit_planar and len(unit_atoms) <= 14):
+            pair_iter = [
+                (unit_atoms[i], unit_atoms[j])
+                for i in range(len(unit_atoms))
+                for j in range(i + 1, len(unit_atoms))
+            ]
+        else:
+            pair_iter = []
+            unit_set = set(unit_atoms)
+            for atom_idx in unit_atoms:
+                atom = mol.GetAtomWithIdx(atom_idx)
+                for nbr in atom.GetNeighbors():
+                    nbr_idx = nbr.GetIdx()
+                    if nbr_idx in unit_set and nbr_idx > atom_idx:
+                        pair_iter.append((atom_idx, nbr_idx))
+                    if nbr_idx not in unit_set:
+                        continue
+                    for nbr2 in nbr.GetNeighbors():
+                        nbr2_idx = nbr2.GetIdx()
+                        if nbr2_idx in unit_set and nbr2_idx > atom_idx and nbr2_idx != atom_idx:
+                            pair = (atom_idx, nbr2_idx)
+                            if pair not in pair_iter:
+                                pair_iter.append(pair)
+        seen_pairs = set()
+        for atom_i, atom_j in pair_iter:
+            pair = (min(atom_i, atom_j), max(atom_i, atom_j))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            target = float(np.linalg.norm(initial_positions[pair[0]] - initial_positions[pair[1]]))
+            bond = mol.GetBondBetweenAtoms(pair[0], pair[1])
+            if bond is not None:
+                weight = 1.60
+            else:
+                weight = 0.85 if unit_planar else 0.55
+            rigid_pair_targets.append((pair[0], pair[1], target, weight))
+
+    def _is_planar_like_atom(atom) -> bool:
+        if atom is None or atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+            return False
+        if atom.GetIsAromatic():
+            return True
+        try:
+            hyb = atom.GetHybridization()
+        except Exception:
+            return False
+        return hyb in {
+            Chem.rdchem.HybridizationType.SP,
+            Chem.rdchem.HybridizationType.SP2,
+        }
+
+    planar_units: List[Tuple[Tuple[int, ...], Tuple[int, ...]]] = []
+    for unit in rigid_units:
+        unit_set = set(unit)
+        movable_overlap = unit_set & movable_atoms
+        if len(movable_overlap) < 2:
+            continue
+        donor_overlap = [
+            donor_idx for donor_idx in donor_indices
+            if donor_idx in unit_set and _is_planar_like_atom(mol.GetAtomWithIdx(donor_idx))
+        ]
+        if not donor_overlap:
+            continue
+        planar_atoms = tuple(
+            atom_idx for atom_idx in unit
+            if _is_planar_like_atom(mol.GetAtomWithIdx(atom_idx))
+        )
+        if len(planar_atoms) < 4:
+            continue
+        pts = np.asarray([initial_positions[atom_idx] for atom_idx in planar_atoms], dtype=float)
+        centroid = pts.mean(axis=0)
+        try:
+            _u, _s, vt = np.linalg.svd(pts - centroid)
+        except Exception:
+            continue
+        normal = vt[-1]
+        rms_offset = float(np.sqrt(np.mean(((pts - centroid) @ normal) ** 2)))
+        if rms_offset <= 0.18:
+            planar_units.append((tuple(sorted(unit)), planar_atoms))
+
+    metal_coplanar_units: List[Tuple[Tuple[int, ...], float]] = []
+    seen_metal_coplanar_units: set = set()
+    for unit in rigid_units:
+        unit_set = set(unit)
+        donor_overlap = [
+            donor_idx for donor_idx in donor_indices
+            if donor_idx in unit_set and _is_planar_like_atom(mol.GetAtomWithIdx(donor_idx))
+        ]
+        if not donor_overlap:
+            continue
+        planar_atoms = tuple(
+            atom_idx for atom_idx in unit
+            if _is_planar_like_atom(mol.GetAtomWithIdx(atom_idx))
+        )
+        if len(planar_atoms) < 4:
+            continue
+        planar_key = tuple(sorted(planar_atoms))
+        if planar_key in seen_metal_coplanar_units:
+            continue
+        seen_metal_coplanar_units.add(planar_key)
+        weight = 34.0 + 10.0 * len(donor_overlap)
+        if any(mol.GetAtomWithIdx(donor_idx).GetSymbol() == 'N' for donor_idx in donor_overlap):
+            weight += 12.0
+        if any(mol.GetAtomWithIdx(donor_idx).GetSymbol() == 'O' for donor_idx in donor_overlap):
+            weight += 12.0
+        if any(mol.GetAtomWithIdx(donor_idx).GetIsAromatic() for donor_idx in donor_overlap):
+            weight += 10.0
+        metal_coplanar_units.append((planar_key, weight))
+
+    def _gp(atom_idx: int):
+        pos = conf.GetAtomPosition(atom_idx)
+        return np.array([pos.x, pos.y, pos.z], dtype=float)
+
+    def _sp(atom_idx: int, vec):
+        conf.SetAtomPosition(atom_idx, Point3D(float(vec[0]), float(vec[1]), float(vec[2])))
+
+    def _score() -> float:
+        metal_pos = _gp(metal_idx)
+        coord_map = {
+            atom_idx: _gp(atom_idx)
+            for atom_idx in module_atoms
+            if atom_idx != metal_idx
+        }
+        score = 0.0
+        for begin_idx, end_idx, target_len in bond_targets:
+            dist = float(np.linalg.norm(_gp(begin_idx) - _gp(end_idx)))
+            score += 0.45 * (dist - target_len) ** 2
+        for donor_idx, target_len, weight in ml_targets:
+            dist = float(np.linalg.norm(_gp(donor_idx) - metal_pos))
+            score += weight * (dist - target_len) ** 2
+        for donor_i, donor_j, target_len in donor_pair_targets:
+            dist = float(np.linalg.norm(_gp(donor_i) - _gp(donor_j)))
+            score += 0.20 * (dist - target_len) ** 2
+        for donor_i, donor_j, target_len, weight in cn4_geometry_pair_targets:
+            dist = float(np.linalg.norm(_gp(donor_i) - _gp(donor_j)))
+            score += weight * (dist - target_len) ** 2
+        if cn4_square_planar_normal is not None:
+            normal = np.asarray(cn4_square_planar_normal, dtype=float)
+            for donor_idx in donor_indices:
+                offset = float(np.dot(_gp(donor_idx) - metal_pos, normal))
+                score += 0.35 * offset * offset
+        for planar_atoms, weight in metal_coplanar_units:
+            pts = []
+            for atom_idx in planar_atoms:
+                arr = coord_map.get(atom_idx)
+                if arr is None:
+                    arr = _gp(atom_idx)
+                pts.append(np.asarray(arr, dtype=float))
+            if len(pts) < 4:
+                continue
+            pts_arr = np.asarray(pts, dtype=float)
+            centroid = pts_arr.mean(axis=0)
+            try:
+                _u, _s, vt = np.linalg.svd(pts_arr - centroid)
+            except Exception:
+                continue
+            normal = vt[-1]
+            normal_norm = float(np.linalg.norm(normal))
+            if normal_norm < 1e-12:
+                continue
+            normal = normal / normal_norm
+            plane_offset = float(np.dot(metal_pos - centroid, normal))
+            score += weight * plane_offset * plane_offset
+            if abs(plane_offset) > 0.28:
+                score += 75.0 * (abs(plane_offset) - 0.28) ** 2
+        seen_fragment_planes: set = set()
+        for donor_idx in donor_indices:
+            fragment = donor_to_fragment.get(donor_idx)
+            if fragment is None:
+                continue
+            fragment_key = tuple(sorted(fragment.atom_indices))
+            if fragment_key in seen_fragment_planes:
+                continue
+            seen_fragment_planes.add(fragment_key)
+            fragment_donors = [
+                idx for idx in fragment.donor_atom_indices
+                if idx in donor_set
+            ]
+            if not fragment_donors:
+                continue
+            score += _planar_fragment_donor_approach_penalty(
+                mol,
+                fragment.atom_indices,
+                fragment_donors,
+                metal_pos,
+                coord_map,
+            )
+        for atom_i, atom_j, target_len, weight in rigid_pair_targets:
+            dist = float(np.linalg.norm(_gp(atom_i) - _gp(atom_j)))
+            score += weight * (dist - target_len) ** 2
+        for other_metal_idx, min_dist in metal_repulsion_targets:
+            dist = float(np.linalg.norm(_gp(other_metal_idx) - metal_pos))
+            if dist < min_dist:
+                score += 16.0 * (min_dist - dist) ** 2
+        module_atom_list = sorted(module_atoms - {metal_idx})
+        for idx_i, atom_i in enumerate(module_atom_list):
+            frag_i = atom_to_fragment_idx.get(atom_i, -1)
+            sym_i = mol.GetAtomWithIdx(atom_i).GetSymbol()
+            if sym_i == 'H' or sym_i in _METAL_SET:
+                continue
+            pos_i = _gp(atom_i)
+            for atom_j in module_atom_list[idx_i + 1:]:
+                if (min(atom_i, atom_j), max(atom_i, atom_j)) in bonded_pairs:
+                    continue
+                frag_j = atom_to_fragment_idx.get(atom_j, -1)
+                if frag_i == frag_j:
+                    continue
+                sym_j = mol.GetAtomWithIdx(atom_j).GetSymbol()
+                if sym_j == 'H' or sym_j in _METAL_SET:
+                    continue
+                pos_j = _gp(atom_j)
+                dist = float(np.linalg.norm(pos_i - pos_j))
+                min_dist = max(
+                    1.78,
+                    _COVALENT_RADII.get(sym_i, 0.76) + _COVALENT_RADII.get(sym_j, 0.76) + 0.36,
+                )
+                if sym_i in {'N', 'O', 'S', 'P'} or sym_j in {'N', 'O', 'S', 'P'}:
+                    min_dist = max(min_dist, 1.90)
+                if dist < min_dist:
+                    score += 12.0 * (min_dist - dist) ** 2
+        score += _secondary_non_donor_contact_penalty(
+            mol,
+            metal_idx,
+            metal_pos,
+            sorted(module_atoms - {metal_idx}),
+            donor_indices,
+            coord_map,
+        )
+        score += _secondary_fragment_donor_selectivity_penalty(
+            mol,
+            metal_idx,
+            metal_pos,
+            donor_indices,
+            donor_to_fragment,
+            coord_map,
+        )
+        return score
+
+    def _cn4_geometry_deviation() -> float:
+        if len(donor_indices) != 4 or geometry_code not in _HAPTO_SECONDARY_CN4_OPTIMIZER_GEOMETRIES:
+            return 0.0
+        deviation = 0.0
+        metal_pos = _gp(metal_idx)
+        for donor_i, donor_j, target_len, _weight in cn4_geometry_pair_targets:
+            dist = float(np.linalg.norm(_gp(donor_i) - _gp(donor_j)))
+            deviation += (dist - target_len) ** 2
+        if cn4_square_planar_normal is not None:
+            normal = np.asarray(cn4_square_planar_normal, dtype=float)
+            for donor_idx in donor_indices:
+                offset = float(np.dot(_gp(donor_idx) - metal_pos, normal))
+                deviation += 0.5 * offset * offset
+        return deviation
+
+    best_positions = {atom_idx: vec.copy() for atom_idx, vec in initial_positions.items()}
+    start_score = _score()
+    best_score = start_score
+    start_geometry_deviation = _cn4_geometry_deviation()
+    best_geometry_deviation = start_geometry_deviation
+    rng = np.random.default_rng(int(1009 * (metal_idx + 1) + len(module_atoms)))
+
+    alpha_atoms: set = set()
+    beta_atoms: set = set()
+    for donor_idx in donor_indices:
+        atom = mol.GetAtomWithIdx(donor_idx)
+        for nbr in atom.GetNeighbors():
+            nbr_idx = nbr.GetIdx()
+            if nbr_idx in module_atoms and nbr_idx not in donor_set and nbr.GetAtomicNum() > 1:
+                alpha_atoms.add(nbr_idx)
+    for atom_idx in list(alpha_atoms):
+        atom = mol.GetAtomWithIdx(atom_idx)
+        for nbr in atom.GetNeighbors():
+            nbr_idx = nbr.GetIdx()
+            if (
+                nbr_idx in module_atoms
+                and nbr_idx not in donor_set
+                and nbr_idx not in alpha_atoms
+                and nbr.GetAtomicNum() > 1
+            ):
+                beta_atoms.add(nbr_idx)
+
+    for _pass in range(120):
+        displacements: Dict[int, np.ndarray] = {
+            atom_idx: np.zeros(3, dtype=float) for atom_idx in movable_atoms
+        }
+        active = False
+
+        for begin_idx, end_idx, target_len in bond_targets:
+            begin_pos = _gp(begin_idx)
+            end_pos = _gp(end_idx)
+            diff = end_pos - begin_pos
+            dist = float(np.linalg.norm(diff))
+            if dist < 1e-8:
+                diff = rng.standard_normal(3)
+                dist = float(np.linalg.norm(diff))
+            unit = diff / max(dist, 1e-12)
+            delta = dist - target_len
+            if abs(delta) < 0.01:
+                continue
+            active = True
+            strength = 0.42 if ((begin_idx in movable_atoms) ^ (end_idx in movable_atoms)) else 0.24
+            move = strength * delta * unit
+            if begin_idx in movable_atoms and end_idx in movable_atoms:
+                displacements[begin_idx] = displacements[begin_idx] + 0.5 * move
+                displacements[end_idx] = displacements[end_idx] - 0.5 * move
+            elif begin_idx in movable_atoms:
+                displacements[begin_idx] = displacements[begin_idx] + move
+            elif end_idx in movable_atoms:
+                displacements[end_idx] = displacements[end_idx] - move
+
+        metal_pos = _gp(metal_idx)
+        for donor_idx, target_len, _weight in ml_targets:
+            donor_pos = _gp(donor_idx)
+            diff = donor_pos - metal_pos
+            dist = float(np.linalg.norm(diff))
+            if dist < 1e-8:
+                diff = rng.standard_normal(3)
+                dist = float(np.linalg.norm(diff))
+            unit = diff / max(dist, 1e-12)
+            delta = dist - target_len
+            if abs(delta) < 0.01:
+                continue
+            active = True
+            strength = 0.40 if donor_idx not in movable_atoms else 0.22
+            move = strength * delta * unit
+            if metal_idx in movable_atoms and donor_idx in movable_atoms:
+                displacements[metal_idx] = displacements[metal_idx] + 0.55 * move
+                displacements[donor_idx] = displacements[donor_idx] - 0.45 * move
+            elif metal_idx in movable_atoms:
+                displacements[metal_idx] = displacements[metal_idx] + move
+            elif donor_idx in movable_atoms:
+                displacements[donor_idx] = displacements[donor_idx] - move
+
+        for donor_i, donor_j, target_len in donor_pair_targets:
+            pos_i = _gp(donor_i)
+            pos_j = _gp(donor_j)
+            diff = pos_j - pos_i
+            dist = float(np.linalg.norm(diff))
+            if dist < 1e-8:
+                diff = rng.standard_normal(3)
+                dist = float(np.linalg.norm(diff))
+            unit = diff / max(dist, 1e-12)
+            delta = dist - target_len
+            if abs(delta) < 0.015:
+                continue
+            active = True
+            move = 0.12 * delta * unit
+            if donor_i in movable_atoms and donor_j in movable_atoms:
+                displacements[donor_i] = displacements[donor_i] + 0.5 * move
+                displacements[donor_j] = displacements[donor_j] - 0.5 * move
+            elif donor_i in movable_atoms:
+                displacements[donor_i] = displacements[donor_i] + move
+            elif donor_j in movable_atoms:
+                displacements[donor_j] = displacements[donor_j] - move
+
+        for donor_i, donor_j, target_len, weight in cn4_geometry_pair_targets:
+            pos_i = _gp(donor_i)
+            pos_j = _gp(donor_j)
+            diff = pos_j - pos_i
+            dist = float(np.linalg.norm(diff))
+            if dist < 1e-8:
+                diff = rng.standard_normal(3)
+                dist = float(np.linalg.norm(diff))
+            unit = diff / max(dist, 1e-12)
+            delta = dist - target_len
+            if abs(delta) < 0.01:
+                continue
+            active = True
+            move = min(0.18, 0.08 + 0.10 * weight) * delta * unit
+            if donor_i in movable_atoms and donor_j in movable_atoms:
+                displacements[donor_i] = displacements[donor_i] + 0.5 * move
+                displacements[donor_j] = displacements[donor_j] - 0.5 * move
+            elif donor_i in movable_atoms:
+                displacements[donor_i] = displacements[donor_i] + move
+            elif donor_j in movable_atoms:
+                displacements[donor_j] = displacements[donor_j] - move
+
+        if cn4_square_planar_normal is not None:
+            normal = np.asarray(cn4_square_planar_normal, dtype=float)
+            metal_pos = _gp(metal_idx)
+            for donor_idx in donor_indices:
+                donor_pos = _gp(donor_idx)
+                offset = float(np.dot(donor_pos - metal_pos, normal))
+                if abs(offset) < 0.01:
+                    continue
+                active = True
+                move = 0.16 * offset * normal
+                if donor_idx in movable_atoms and metal_idx in movable_atoms:
+                    displacements[donor_idx] = displacements[donor_idx] - 0.55 * move
+                    displacements[metal_idx] = displacements[metal_idx] + 0.45 * move
+                elif donor_idx in movable_atoms:
+                    displacements[donor_idx] = displacements[donor_idx] - move
+                elif metal_idx in movable_atoms:
+                    displacements[metal_idx] = displacements[metal_idx] + move
+
+        for atom_i, atom_j, target_len, weight in rigid_pair_targets:
+            pos_i = _gp(atom_i)
+            pos_j = _gp(atom_j)
+            diff = pos_j - pos_i
+            dist = float(np.linalg.norm(diff))
+            if dist < 1e-8:
+                diff = rng.standard_normal(3)
+                dist = float(np.linalg.norm(diff))
+            unit = diff / max(dist, 1e-12)
+            delta = dist - target_len
+            if abs(delta) < 0.008:
+                continue
+            active = True
+            move = min(0.18, 0.10 + 0.04 * weight) * delta * unit
+            if atom_i in movable_atoms and atom_j in movable_atoms:
+                displacements[atom_i] = displacements[atom_i] + 0.5 * move
+                displacements[atom_j] = displacements[atom_j] - 0.5 * move
+            elif atom_i in movable_atoms:
+                displacements[atom_i] = displacements[atom_i] + move
+            elif atom_j in movable_atoms:
+                displacements[atom_j] = displacements[atom_j] - move
+
+        metal_pos = _gp(metal_idx)
+        for other_metal_idx, min_dist in metal_repulsion_targets:
+            other_pos = _gp(other_metal_idx)
+            diff = metal_pos - other_pos
+            dist = float(np.linalg.norm(diff))
+            if dist < 1e-8:
+                diff = rng.standard_normal(3)
+                dist = float(np.linalg.norm(diff))
+            if dist >= min_dist:
+                continue
+            active = True
+            unit = diff / max(dist, 1e-12)
+            gap = min_dist - dist
+            displacements[metal_idx] = displacements[metal_idx] + 0.70 * gap * unit
+
+        for atom_idx in sorted(module_atoms - donor_set - {metal_idx}):
+            atom = mol.GetAtomWithIdx(atom_idx)
+            if atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+                continue
+            atom_pos = _gp(atom_idx)
+            diff = atom_pos - metal_pos
+            dist = float(np.linalg.norm(diff))
+            if dist < 1e-8:
+                diff = rng.standard_normal(3)
+                dist = float(np.linalg.norm(diff))
+            unit = diff / max(dist, 1e-12)
+            min_allowed = max(1.70, 0.92 * float(_get_ml_bond_length(metal_sym, atom.GetSymbol())))
+            if atom_idx in alpha_atoms:
+                if _is_planar_like_atom(atom):
+                    min_allowed = max(min_allowed, 2.18)
+                else:
+                    min_allowed = max(min_allowed, 2.05)
+            elif atom_idx in beta_atoms:
+                if _is_planar_like_atom(atom):
+                    min_allowed = max(min_allowed, 1.96)
+                else:
+                    min_allowed = max(min_allowed, 1.85)
+            if dist >= min_allowed:
+                continue
+            active = True
+            gap = min_allowed - dist
+            move = 0.60 * gap * unit
+            if metal_idx in movable_atoms and atom_idx in movable_atoms:
+                displacements[metal_idx] = displacements[metal_idx] - 0.65 * move
+                displacements[atom_idx] = displacements[atom_idx] + 0.35 * move
+            elif metal_idx in movable_atoms:
+                displacements[metal_idx] = displacements[metal_idx] - move
+            elif atom_idx in movable_atoms:
+                displacements[atom_idx] = displacements[atom_idx] + move
+
+        for atom_i in sorted(module_atoms):
+            for atom_j in sorted(module_atoms):
+                if atom_j <= atom_i:
+                    continue
+                if (min(atom_i, atom_j), max(atom_i, atom_j)) in bonded_pairs:
+                    continue
+                if atom_i not in movable_atoms and atom_j not in movable_atoms:
+                    continue
+                pos_i = _gp(atom_i)
+                pos_j = _gp(atom_j)
+                diff = pos_j - pos_i
+                dist = float(np.linalg.norm(diff))
+                if dist < 1e-8:
+                    diff = rng.standard_normal(3)
+                    dist = float(np.linalg.norm(diff))
+                unit = diff / max(dist, 1e-12)
+                sym_i = mol.GetAtomWithIdx(atom_i).GetSymbol()
+                sym_j = mol.GetAtomWithIdx(atom_j).GetSymbol()
+                if sym_i in _METAL_SET or sym_j in _METAL_SET:
+                    min_dist = 2.0
+                elif sym_i == 'H' and sym_j == 'H':
+                    min_dist = 1.5
+                elif sym_i == 'H' or sym_j == 'H':
+                    min_dist = 1.0
+                else:
+                    min_dist = 1.18
+                    frag_i = atom_to_fragment_idx.get(atom_i, -1)
+                    frag_j = atom_to_fragment_idx.get(atom_j, -1)
+                    if frag_i != frag_j:
+                        min_dist = max(
+                            min_dist,
+                            _COVALENT_RADII.get(sym_i, 0.76) + _COVALENT_RADII.get(sym_j, 0.76) + 0.36,
+                            1.78,
+                        )
+                        if sym_i in {'N', 'O', 'S', 'P'} or sym_j in {'N', 'O', 'S', 'P'}:
+                            min_dist = max(min_dist, 1.90)
+                if dist >= min_dist:
+                    continue
+                active = True
+                gap = min_dist - dist
+                move_scale = 0.38 if atom_to_fragment_idx.get(atom_i, -1) != atom_to_fragment_idx.get(atom_j, -1) else 0.18
+                move = move_scale * gap * unit
+                if atom_i in movable_atoms and atom_j in movable_atoms:
+                    displacements[atom_i] = displacements[atom_i] - 0.5 * move
+                    displacements[atom_j] = displacements[atom_j] + 0.5 * move
+                elif atom_i in movable_atoms:
+                    displacements[atom_i] = displacements[atom_i] - move
+                elif atom_j in movable_atoms:
+                    displacements[atom_j] = displacements[atom_j] + move
+
+        if not active:
+            break
+
+        capped_displacements: Dict[int, np.ndarray] = {}
+        for atom_idx, disp in displacements.items():
+            norm = float(np.linalg.norm(disp))
+            if norm < 1e-8:
+                continue
+            if norm > 0.22:
+                disp = disp * (0.22 / norm)
+            capped_displacements[atom_idx] = disp
+
+        for unit, planar_atoms in planar_units:
+            if not any(atom_idx in capped_displacements for atom_idx in unit):
+                continue
+            unit_positions = {
+                atom_idx: _gp(atom_idx)
+                for atom_idx in unit
+            }
+            unit_displacements = {
+                atom_idx: capped_displacements.get(atom_idx, np.zeros(3, dtype=float))
+                for atom_idx in unit
+            }
+            rigid_projected = _project_displacements_to_rigid_body(
+                unit_positions,
+                unit_displacements,
+                list(unit),
+            )
+            for atom_idx in unit:
+                if atom_idx in capped_displacements and atom_idx in rigid_projected:
+                    capped_displacements[atom_idx] = np.asarray(rigid_projected[atom_idx], dtype=float)
+
+        for atom_idx, disp in capped_displacements.items():
+            _sp(atom_idx, _gp(atom_idx) + disp)
+
+        trial_score = _score()
+        if trial_score + 1e-9 < best_score:
+            best_score = trial_score
+            best_geometry_deviation = _cn4_geometry_deviation()
+            best_positions = {
+                atom_idx: _gp(atom_idx).copy()
+                for atom_idx in movable_atoms
+            }
+
+    if best_score + 1e-6 >= start_score:
+        for atom_idx, vec in initial_positions.items():
+            _sp(atom_idx, vec)
+        return set()
+
+    if len(donor_indices) == 4 and geometry_code in _HAPTO_SECONDARY_CN4_OPTIMIZER_GEOMETRIES:
+        allowed_geometry_deviation = max(
+            start_geometry_deviation + 0.03,
+            1.35 * start_geometry_deviation + 1e-6,
+        )
+        if best_geometry_deviation > allowed_geometry_deviation:
+            for atom_idx, vec in initial_positions.items():
+                _sp(atom_idx, vec)
+            logger.info(
+                "Hybrid hapto rejected local secondary metal module optimization for %s%d: CN=4 %s geometry deviation %.3f -> %.3f",
+                metal_sym,
+                metal_idx,
+                geometry_code,
+                start_geometry_deviation,
+                best_geometry_deviation,
+            )
+            return set()
+
+    for atom_idx, vec in best_positions.items():
+        _sp(atom_idx, vec)
+
+    logger.info(
+        "Hybrid hapto locally optimized secondary metal module %s%d: %.3f -> %.3f",
+        metal_sym,
+        metal_idx,
+        start_score,
+        best_score,
+    )
+    return set(movable_atoms)
+
+
+def _assemble_secondary_metal_coordination_modules(
+    mol,
+    decomposition: _HybridHaptoDecomposition,
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> Tuple[set, set, set]:
+    """Build secondary metal coordination spheres from donor fragments."""
+    if not RDKIT_AVAILABLE or mol is None or decomposition is None or not hapto_groups:
+        return set(), set(), set()
+    try:
+        import numpy as np
+    except ImportError:
+        return set(), set(), set()
+
+    try:
+        conf = mol.GetConformer(0)
+    except Exception:
+        return set(), set(), set()
+
+    hapto_metals = {metal_idx for metal_idx, _grp in hapto_groups}
+    placed_secondary: set = set()
+    module_atoms: set = set()
+    relaxable_atoms: set = set()
+
+    donor_to_fragment: Dict[int, _HybridHaptoFragment] = {}
+    embedded_fragment_cache: Dict[Tuple[int, ...], object] = {}
+    for fragment in decomposition.fragments:
+        for donor_idx in fragment.donor_atom_indices:
+            donor_to_fragment[donor_idx] = fragment
+
+    for atom in mol.GetAtoms():
+        metal_idx = atom.GetIdx()
+        metal_sym = atom.GetSymbol()
+        if metal_sym not in _METAL_SET or metal_idx in hapto_metals:
+            continue
+
+        donor_indices = [
+            nbr.GetIdx()
+            for nbr in atom.GetNeighbors()
+            if nbr.GetSymbol() not in _METAL_SET and nbr.GetAtomicNum() > 1
+        ]
+        if len(donor_indices) < 2:
+            continue
+
+        donor_positions = []
+        donor_symbols = []
+        donor_target_lengths = []
+        donor_fit_weights = []
+        heterodonor_count = 0
+        carbon_donor_count = 0
+        for donor_idx in donor_indices:
+            pos = conf.GetAtomPosition(donor_idx)
+            donor_positions.append(np.array([pos.x, pos.y, pos.z], dtype=float))
+            donor_sym = mol.GetAtomWithIdx(donor_idx).GetSymbol()
+            donor_symbols.append(donor_sym)
+            donor_target_lengths.append(_secondary_donor_target_length(mol, metal_sym, donor_idx))
+            donor_fit_weights.append(_secondary_donor_fit_weight(mol, metal_sym, donor_idx))
+            if donor_sym == 'C':
+                carbon_donor_count += 1
+            elif donor_sym in {'N', 'O', 'S', 'P'}:
+                heterodonor_count += 1
+
+        movable_fragments: List[_HybridHaptoFragment] = []
+        seen_fragments: set = set()
+        anchored_slots: List[int] = []
+        supplemental_fit_slots: List[int] = []
+        bite_distance_constraints: List[Tuple[int, int, float]] = []
+        for slot_idx, donor_idx in enumerate(donor_indices):
+            fragment = donor_to_fragment.get(donor_idx)
+            donor_sym = mol.GetAtomWithIdx(donor_idx).GetSymbol()
+            if fragment is None:
+                anchored_slots.append(slot_idx)
+                continue
+            if heterodonor_count and carbon_donor_count and donor_sym == 'C':
+                if fragment.bridging_donor_indices or fragment.use_scaffold_only:
+                    donor_fit_weights[slot_idx] *= 0.72
+                elif len(fragment.hapto_group_ids) > 0:
+                    donor_fit_weights[slot_idx] *= 0.82
+            if donor_sym in {'N', 'O', 'S', 'P'}:
+                if len(fragment.donor_atom_indices) >= 2:
+                    donor_fit_weights[slot_idx] *= 1.12
+                if any(
+                    mol.GetAtomWithIdx(atom_idx).GetIsAromatic()
+                    or mol.GetAtomWithIdx(atom_idx).GetHybridization() in {
+                        Chem.rdchem.HybridizationType.SP,
+                        Chem.rdchem.HybridizationType.SP2,
+                    }
+                    for atom_idx in fragment.atom_indices
+                    if mol.GetAtomWithIdx(atom_idx).GetAtomicNum() > 1
+                    and mol.GetAtomWithIdx(atom_idx).GetSymbol() not in _METAL_SET
+                ):
+                    donor_fit_weights[slot_idx] *= 1.08
+            if _secondary_module_fragment_is_movable(fragment, metal_idx):
+                frag_key = tuple(fragment.atom_indices)
+                if frag_key not in seen_fragments:
+                    movable_fragments.append(fragment)
+                    seen_fragments.add(frag_key)
+                supplemental_fit_slots.append(slot_idx)
+                continue
+            if (
+                fragment.use_scaffold_only
+                and _find_scaffold_secondary_branch(
+                    mol,
+                    fragment,
+                    hapto_groups,
+                    donor_idx,
+                ) is not None
+            ):
+                supplemental_fit_slots.append(slot_idx)
+                continue
+            anchored_slots.append(slot_idx)
+
+        fit_slot_indices: Optional[List[int]]
+        if anchored_slots:
+            fit_slot_indices = list(anchored_slots)
+            for slot_idx in supplemental_fit_slots:
+                if slot_idx not in fit_slot_indices:
+                    fit_slot_indices.append(slot_idx)
+                if len(fit_slot_indices) >= 2:
+                    break
+        else:
+            fit_slot_indices = None
+
+        has_multidentate_movable_fragment = any(
+            len([
+                donor_idx
+                for donor_idx in fragment.donor_atom_indices
+                if donor_idx in donor_indices
+            ]) >= 2
+            for fragment in movable_fragments
+        )
+        has_secondary_bridge_branch = any(
+            fragment.use_scaffold_only and metal_idx in fragment.metal_neighbor_indices
+            for fragment in decomposition.fragments
+        )
+        if (
+            len(donor_indices) == 4
+            and has_multidentate_movable_fragment
+            and has_secondary_bridge_branch
+        ):
+            fit_slot_indices = None
+
+        for fragment in movable_fragments:
+            frag_key = tuple(fragment.atom_indices)
+            embedded_fragment = embedded_fragment_cache.get(frag_key)
+            if embedded_fragment is None:
+                embedded_fragment = _embed_hybrid_fragment(fragment.fragment_mol)
+                if embedded_fragment is not None:
+                    embedded_fragment_cache[frag_key] = embedded_fragment
+            if embedded_fragment is None:
+                continue
+            try:
+                frag_conf = embedded_fragment.GetConformer()
+            except Exception:
+                continue
+            frag_donors = [
+                donor_idx for donor_idx in fragment.donor_atom_indices
+                if donor_idx in donor_indices
+            ]
+            if len(frag_donors) < 2:
+                continue
+            donor_slots = {
+                donor_idx: donor_indices.index(donor_idx)
+                for donor_idx in frag_donors
+            }
+            for i in range(len(frag_donors)):
+                for j in range(i + 1, len(frag_donors)):
+                    donor_i = frag_donors[i]
+                    donor_j = frag_donors[j]
+                    frag_i = fragment.original_to_fragment.get(donor_i)
+                    frag_j = fragment.original_to_fragment.get(donor_j)
+                    if frag_i is None or frag_j is None:
+                        continue
+                    pos_i = frag_conf.GetAtomPosition(frag_i)
+                    pos_j = frag_conf.GetAtomPosition(frag_j)
+                    expected_dist = math.sqrt(
+                        (pos_i.x - pos_j.x) ** 2
+                        + (pos_i.y - pos_j.y) ** 2
+                        + (pos_i.z - pos_j.z) ** 2
+                    )
+                    bite_distance_constraints.append(
+                        (donor_slots[donor_i], donor_slots[donor_j], float(expected_dist))
+                    )
+
+        fit = _fit_secondary_metal_geometry_from_donors(
+            donor_positions,
+            donor_symbols,
+            metal_sym,
+            constrained_indices=fit_slot_indices,
+            bite_distance_constraints=bite_distance_constraints,
+            donor_target_lengths=donor_target_lengths,
+            donor_fit_weights=donor_fit_weights,
+        )
+        if fit is None:
+            fallback = _fit_secondary_metal_position_from_donors(
+                donor_positions,
+                donor_symbols,
+                metal_sym,
+                donor_target_lengths=donor_target_lengths,
+                donor_fit_weights=donor_fit_weights,
+            )
+            if fallback is None:
+                continue
+            metal_pos, geom_code = fallback
+            conf.SetAtomPosition(
+                metal_idx,
+                Point3D(float(metal_pos[0]), float(metal_pos[1]), float(metal_pos[2])),
+            )
+            placed_secondary.add(metal_idx)
+            module_atoms.add(metal_idx)
+            logger.info(
+                "Hybrid hapto built secondary metal %s%d via fallback %s fit to %d donor(s)",
+                metal_sym,
+                metal_idx,
+                geom_code,
+                len(donor_indices),
+            )
+            continue
+
+        metal_pos, geom_code, target_positions = fit
+        donor_target_map: Dict[int, np.ndarray] = {
+            donor_idx: np.asarray(target_positions[slot_idx], dtype=float)
+            for slot_idx, donor_idx in enumerate(donor_indices)
+        }
+        conf.SetAtomPosition(
+            metal_idx,
+            Point3D(float(metal_pos[0]), float(metal_pos[1]), float(metal_pos[2])),
+        )
+
+        reoriented_scaffold_branches = 0
+        for fragment in decomposition.fragments:
+            if not fragment.use_scaffold_only or metal_idx not in fragment.metal_neighbor_indices:
+                continue
+            for donor_idx in fragment.donor_atom_indices:
+                if donor_idx not in donor_target_map:
+                    continue
+                branch_info = _find_scaffold_secondary_branch(
+                    mol,
+                    fragment,
+                    hapto_groups,
+                    donor_idx,
+                )
+                if branch_info is None:
+                    continue
+                try:
+                    if _reorient_scaffold_secondary_branch(
+                        mol,
+                        fragment,
+                        hapto_groups,
+                        metal_idx,
+                        donor_idx,
+                        donor_target_map[donor_idx],
+                    ):
+                        reoriented_scaffold_branches += 1
+                        pivot_idx, branch_atoms = branch_info
+                        module_atoms.add(pivot_idx)
+                        module_atoms.update(branch_atoms)
+                        relaxable_atoms.update(branch_atoms)
+                except Exception:
+                    continue
+
+        if reoriented_scaffold_branches:
+            donor_positions = []
+            for donor_idx in donor_indices:
+                pos = conf.GetAtomPosition(donor_idx)
+                donor_positions.append(np.array([pos.x, pos.y, pos.z], dtype=float))
+            refit = _fit_secondary_metal_geometry_from_donors(
+                donor_positions,
+                donor_symbols,
+                metal_sym,
+                constrained_indices=fit_slot_indices,
+                bite_distance_constraints=bite_distance_constraints,
+                donor_target_lengths=donor_target_lengths,
+                donor_fit_weights=donor_fit_weights,
+            )
+            if refit is not None:
+                metal_pos, geom_code, target_positions = refit
+                donor_target_map = {
+                    donor_idx: np.asarray(target_positions[slot_idx], dtype=float)
+                    for slot_idx, donor_idx in enumerate(donor_indices)
+                }
+                conf.SetAtomPosition(
+                    metal_idx,
+                    Point3D(float(metal_pos[0]), float(metal_pos[1]), float(metal_pos[2])),
+                )
+
+        moved_fragments = 0
+        has_multidentate_movable_fragment = False
+        rigid_reference_fragments: List[Tuple[_HybridHaptoFragment, Dict[int, np.ndarray]]] = []
+        oo_relief_fragments: List[_HybridHaptoFragment] = []
+        for fragment in movable_fragments:
+            frag_key = tuple(fragment.atom_indices)
+            embedded_fragment = embedded_fragment_cache.get(frag_key)
+            if embedded_fragment is None:
+                embedded_fragment = _embed_hybrid_fragment(fragment.fragment_mol)
+                if embedded_fragment is not None:
+                    embedded_fragment_cache[frag_key] = embedded_fragment
+            if embedded_fragment is None:
+                continue
+            frag_target_indices = [
+                donor_idx for donor_idx in fragment.donor_atom_indices
+                if donor_idx in donor_target_map
+            ]
+            if not frag_target_indices:
+                continue
+            if len(frag_target_indices) >= 2:
+                has_multidentate_movable_fragment = True
+            if _align_hybrid_fragment_to_targets(
+                mol,
+                fragment,
+                embedded_fragment,
+                frag_target_indices,
+                donor_target_map,
+                reference_center=metal_pos,
+                metal_idx=metal_idx,
+                exact_target_count=0,
+            ):
+                moved_fragments += 1
+                module_atoms.update(fragment.atom_indices)
+                relaxable_atoms.update(fragment.atom_indices)
+                keep_rigid_pose = (
+                    len(donor_indices) == 4
+                    and geom_code in _HAPTO_SECONDARY_CN4_GEOMETRIES
+                    and has_secondary_bridge_branch
+                    and _secondary_fragment_prefers_rigid_pose(
+                        mol,
+                        fragment,
+                        frag_target_indices,
+                    )
+                )
+                if not keep_rigid_pose:
+                    try:
+                        _optimize_secondary_fragment_pose(
+                            mol,
+                            fragment,
+                            metal_idx,
+                        donor_target_map,
+                    )
+                    except Exception:
+                        pass
+                else:
+                    rigid_reference_fragments.append(
+                        (
+                            fragment,
+                            {
+                                atom_idx: np.array(conf.GetAtomPosition(atom_idx), dtype=float)
+                                for atom_idx in fragment.atom_indices
+                            },
+                        )
+                    )
+                if keep_rigid_pose and sum(
+                    1 for donor_idx in frag_target_indices
+                    if mol.GetAtomWithIdx(donor_idx).GetSymbol() == 'O'
+                ) >= 2:
+                    oo_relief_fragments.append(fragment)
+
+        allow_post_fragment_refit = not (
+            len(donor_indices) == 4
+            and geom_code in {'SQ', 'TET'}
+            and has_multidentate_movable_fragment
+            and has_secondary_bridge_branch
+        )
+
+        if moved_fragments and allow_post_fragment_refit:
+            def _module_error(candidate_metal_pos) -> float:
+                err = 0.0
+                metal_arr = np.asarray(candidate_metal_pos, dtype=float)
+                coord_map: Dict[int, np.ndarray] = {}
+                for fragment in decomposition.fragments:
+                    if metal_idx not in fragment.metal_neighbor_indices:
+                        continue
+                    for atom_idx in fragment.atom_indices:
+                        if atom_idx in coord_map:
+                            continue
+                        pos = conf.GetAtomPosition(atom_idx)
+                        coord_map[atom_idx] = np.array([pos.x, pos.y, pos.z], dtype=float)
+                for donor_idx in donor_indices:
+                    donor_pos = np.array(conf.GetAtomPosition(donor_idx), dtype=float)
+                    target_len = float(_secondary_donor_target_length(mol, metal_sym, donor_idx))
+                    weight = 2.0 * float(_secondary_donor_fit_weight(mol, metal_sym, donor_idx))
+                    err += weight * (float(np.linalg.norm(donor_pos - metal_arr)) - target_len) ** 2
+                seen_fragments: set = set()
+                for donor_idx in donor_indices:
+                    fragment = donor_to_fragment.get(donor_idx)
+                    if fragment is None:
+                        continue
+                    frag_key = tuple(fragment.atom_indices)
+                    if frag_key in seen_fragments:
+                        continue
+                    seen_fragments.add(frag_key)
+                    fragment_donors = [
+                        idx for idx in fragment.donor_atom_indices
+                        if idx in set(donor_indices)
+                    ]
+                    if not fragment_donors:
+                        continue
+                    err += _secondary_non_donor_contact_penalty(
+                        mol,
+                        metal_idx,
+                        metal_arr,
+                        fragment.atom_indices,
+                        fragment_donors,
+                        coord_map,
+                    )
+                    err += _planar_fragment_metal_coplanarity_penalty(
+                        mol,
+                        fragment.atom_indices,
+                        fragment_donors,
+                        metal_arr,
+                        coord_map,
+                    )
+                    err += _planar_fragment_donor_approach_penalty(
+                        mol,
+                        fragment.atom_indices,
+                        fragment_donors,
+                        metal_arr,
+                        coord_map,
+                    )
+                    if len(fragment_donors) >= 2:
+                        err += _fragment_bite_direction_penalty(
+                            mol,
+                            fragment.atom_indices,
+                            fragment_donors,
+                            coord_map,
+                            metal_arr,
+                        )
+                return err
+
+            current_metal_pos = np.array(conf.GetAtomPosition(metal_idx), dtype=float)
+            best_metal_pos = current_metal_pos
+            best_metal_err = _module_error(current_metal_pos)
+            donor_positions = []
+            for donor_idx in donor_indices:
+                pos = conf.GetAtomPosition(donor_idx)
+                donor_positions.append(np.array([pos.x, pos.y, pos.z], dtype=float))
+            refit = _fit_secondary_metal_geometry_from_donors(
+                donor_positions,
+                donor_symbols,
+                metal_sym,
+                constrained_indices=fit_slot_indices,
+                bite_distance_constraints=bite_distance_constraints,
+                donor_target_lengths=donor_target_lengths,
+                donor_fit_weights=donor_fit_weights,
+            )
+            if refit is not None:
+                refit_metal_pos, refit_geom_code, _target_positions = refit
+                refit_err = _module_error(refit_metal_pos)
+                if refit_err + 1e-9 < best_metal_err:
+                    best_metal_pos = np.asarray(refit_metal_pos, dtype=float)
+                    best_metal_err = refit_err
+                    geom_code = refit_geom_code
+            metal_pos = best_metal_pos
+        elif moved_fragments and not allow_post_fragment_refit:
+            logger.info(
+                "Hybrid hapto kept pre-fragment-fit metal position for %s%d: skipped post-fragment refit for bridged CN=4 module",
+                metal_sym,
+                metal_idx,
+            )
+
+        conf.SetAtomPosition(
+            metal_idx,
+            Point3D(float(metal_pos[0]), float(metal_pos[1]), float(metal_pos[2])),
+        )
+        optimized_atoms: set = set()
+        try:
+            optimized_atoms = _optimize_secondary_metal_module_local(
+                mol,
+                decomposition.fragments,
+                hapto_groups,
+                metal_idx,
+                donor_indices,
+                donor_to_fragment,
+                geometry_code=geom_code,
+                geometry_metal_pos=metal_pos,
+                geometry_target_map=donor_target_map,
+            )
+        except Exception as e:
+            logger.debug("Hybrid hapto local secondary-metal optimization skipped: %s", e)
+            optimized_atoms = set()
+        if optimized_atoms:
+            module_atoms.update(optimized_atoms)
+            relaxable_atoms.update(optimized_atoms - {metal_idx})
+            pos = conf.GetAtomPosition(metal_idx)
+            metal_pos = np.array([pos.x, pos.y, pos.z], dtype=float)
+        restored_rigid_count = 0
+        for fragment, reference_coords in rigid_reference_fragments:
+            try:
+                if _restore_secondary_rigid_fragment_geometry(
+                    mol,
+                    fragment,
+                    metal_idx,
+                    donor_target_map,
+                    reference_coords,
+                ):
+                    restored_rigid_count += 1
+            except Exception:
+                continue
+        oo_relief_count = 0
+        for fragment in oo_relief_fragments:
+            try:
+                if _relieve_secondary_oo_chelate_contacts(
+                    mol,
+                    fragment,
+                    metal_idx,
+                    donor_target_map,
+                ):
+                    oo_relief_count += 1
+            except Exception:
+                continue
+        placed_secondary.add(metal_idx)
+        module_atoms.add(metal_idx)
+        module_atoms.update(donor_indices)
+        logger.info(
+            "Hybrid hapto built secondary metal module %s%d via %s fit to %d donor(s); moved %d fragment(s), reoriented %d scaffold branch(es), locally optimized %d atom(s), restored %d rigid fragment(s), relieved %d O,O chelate(s)",
+            metal_sym,
+            metal_idx,
+            geom_code,
+            len(donor_indices),
+            moved_fragments,
+            reoriented_scaffold_branches,
+            len(optimized_atoms),
+            restored_rigid_count,
+            oo_relief_count,
+        )
+
+    return placed_secondary, module_atoms, relaxable_atoms
+
+
+def _build_primary_organometal_hapto_module(
+    mol,
+    decomposition: Optional[_HybridHaptoDecomposition],
+    hapto_groups: List[Tuple[int, List[int]]],
+    module: Optional[_PrimaryOrganometalModule],
+    preview_only: bool = False,
+    preview_store: Optional[List[Tuple[str, str]]] = None,
+):
+    """Build a single-metal hapto organometal module before falling back to the legacy path."""
+    if (
+        not RDKIT_AVAILABLE
+        or mol is None
+        or decomposition is None
+        or module is None
+        or not hapto_groups
+    ):
+        return None
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+
+    scaffold_mol = Chem.Mol(mol)
+    if not _build_hapto_scaffold(scaffold_mol, hapto_groups):
+        return None
+
+    try:
+        _correct_hapto_geometry(scaffold_mol, 0, hapto_groups)
+    except Exception:
+        pass
+
+    try:
+        conf = scaffold_mol.GetConformer(0)
+    except Exception:
+        return None
+
+    metal_idx = int(module.metal_idx)
+    metal_pos = np.array(conf.GetAtomPosition(metal_idx), dtype=float)
+    donor_target_map: Dict[int, np.ndarray] = {}
+    for donor_idx in module.donor_atom_indices:
+        pos = conf.GetAtomPosition(donor_idx)
+        donor_target_map[donor_idx] = np.array([pos.x, pos.y, pos.z], dtype=float)
+
+    trusted_atoms: set = {
+        atom_idx
+        for group_idx in module.hapto_group_ids
+        if 0 <= int(group_idx) < len(hapto_groups)
+        for atom_idx in hapto_groups[int(group_idx)][1]
+    }
+    aligned_fragments = 0
+    aligned_correlated = 0
+
+    target_fragment_indices = set(module.correlated_fragment_indices) | set(module.terminal_fragment_indices)
+    for frag_idx, fragment in enumerate(decomposition.fragments):
+        if frag_idx not in target_fragment_indices:
+            if any(group_id in module.hapto_group_ids for group_id in fragment.hapto_group_ids):
+                trusted_atoms.update(fragment.atom_indices)
+            continue
+
+        embedded_fragment = _embed_hybrid_fragment(fragment.fragment_mol)
+        if embedded_fragment is None:
+            if frag_idx in module.correlated_fragment_indices:
+                return None
+            continue
+
+        frag_target_indices = [
+            donor_idx for donor_idx in fragment.donor_atom_indices
+            if donor_idx in donor_target_map
+        ]
+        if not frag_target_indices:
+            if frag_idx in module.correlated_fragment_indices:
+                return None
+            continue
+
+        if not _align_hybrid_fragment_to_targets(
+            scaffold_mol,
+            fragment,
+            embedded_fragment,
+            frag_target_indices,
+            donor_target_map,
+            reference_center=metal_pos,
+            metal_idx=metal_idx,
+            exact_target_count=0,
+        ):
+            if frag_idx in module.correlated_fragment_indices:
+                return None
+            continue
+
+        aligned_fragments += 1
+        if frag_idx in module.correlated_fragment_indices:
+            aligned_correlated += 1
+        trusted_atoms.update(fragment.atom_indices)
+
+        if (
+            len(frag_target_indices) >= 2
+            and not _secondary_fragment_prefers_rigid_pose(
+                scaffold_mol,
+                fragment,
+                frag_target_indices,
+            )
+        ):
+            try:
+                _optimize_secondary_fragment_pose(
+                    scaffold_mol,
+                    fragment,
+                    metal_idx,
+                    donor_target_map,
+                )
+            except Exception:
+                pass
+
+    if aligned_correlated < len(module.correlated_fragment_indices):
+        return None
+    if aligned_fragments == 0:
+        return None
+
+    try:
+        _propagate_non_hapto_atoms(
+            scaffold_mol,
+            0,
+            hapto_groups,
+            extra_fixed_indices=trusted_atoms | _hapto_primary_donor_indices(scaffold_mol, hapto_groups),
+        )
+    except Exception:
+        pass
+
+    if preview_store is not None:
+        try:
+            preview_xyz = _mol_to_xyz(scaffold_mol)
+            preview_entry = (preview_xyz, 'quick-primary-preview')
+            if preview_entry not in preview_store:
+                preview_store.append(preview_entry)
+        except Exception:
+            pass
+
+    if (
+        not preview_only
+        and not _primary_organometal_module_quality_ok(
+            scaffold_mol,
+            decomposition,
+            module,
+        )
+    ):
+        return None
+
+    logger.info(
+        "Hybrid hapto primary organometal module builder succeeded for %s%d with %d correlated fragment(s)%s",
+        mol.GetAtomWithIdx(metal_idx).GetSymbol(),
+        metal_idx,
+        len(module.correlated_fragment_indices),
+        " [preview]" if preview_only else "",
+    )
+    return scaffold_mol
+
+
+def _place_secondary_metals_in_hapto_fragments(
+    mol,
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> set:
+    """Place non-hapto metals from their donor clouds in hapto-coupled systems."""
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
+        return set()
+    try:
+        import numpy as np
+    except ImportError:
+        return set()
+
+    try:
+        conf = mol.GetConformer(0)
+    except Exception:
+        return set()
+
+    hapto_metals = {metal_idx for metal_idx, _grp in hapto_groups}
+    placed_secondary: set = set()
+
+    for atom in mol.GetAtoms():
+        metal_idx = atom.GetIdx()
+        metal_sym = atom.GetSymbol()
+        if metal_sym not in _METAL_SET or metal_idx in hapto_metals:
+            continue
+
+        donor_indices = [
+            nbr.GetIdx()
+            for nbr in atom.GetNeighbors()
+            if nbr.GetSymbol() not in _METAL_SET and nbr.GetAtomicNum() > 1
+        ]
+        if len(donor_indices) < 2:
+            continue
+
+        donor_positions = []
+        donor_symbols = []
+        donor_target_lengths = []
+        donor_fit_weights = []
+        skip = False
+        for donor_idx in donor_indices:
+            pos = conf.GetAtomPosition(donor_idx)
+            arr = np.array([pos.x, pos.y, pos.z], dtype=float)
+            if not np.all(np.isfinite(arr)):
+                skip = True
+                break
+            donor_positions.append(arr)
+            donor_symbols.append(mol.GetAtomWithIdx(donor_idx).GetSymbol())
+            donor_target_lengths.append(_secondary_donor_target_length(mol, metal_sym, donor_idx))
+            donor_fit_weights.append(_secondary_donor_fit_weight(mol, metal_sym, donor_idx))
+        if skip:
+            continue
+
+        fit = _fit_secondary_metal_position_from_donors(
+            donor_positions,
+            donor_symbols,
+            metal_sym,
+            donor_target_lengths=donor_target_lengths,
+            donor_fit_weights=donor_fit_weights,
+        )
+        if fit is None:
+            continue
+        metal_pos, geom_code = fit
+        conf.SetAtomPosition(
+            metal_idx,
+            Point3D(float(metal_pos[0]), float(metal_pos[1]), float(metal_pos[2])),
+        )
+        placed_secondary.add(metal_idx)
+        logger.info(
+            "Hybrid hapto placed secondary metal %s%d via %s fit to %d donor(s)",
+            metal_sym,
+            metal_idx,
+            geom_code,
+            len(donor_indices),
+        )
+
+    return placed_secondary
+
+
+def _hybrid_bond_target_length(bond) -> float:
+    """Approximate covalent bond target length for hybrid hapto relaxation."""
+    begin_atom = bond.GetBeginAtom()
+    end_atom = bond.GetEndAtom()
+    begin_sym = begin_atom.GetSymbol()
+    end_sym = end_atom.GetSymbol()
+
+    if begin_sym in _METAL_SET or end_sym in _METAL_SET:
+        metal_sym = begin_sym if begin_sym in _METAL_SET else end_sym
+        donor_sym = end_sym if begin_sym in _METAL_SET else begin_sym
+        return float(_get_ml_bond_length(metal_sym, donor_sym))
+
+    pair = frozenset([begin_sym, end_sym])
+    bond_type = bond.GetBondType()
+
+    if 'H' in pair:
+        other = end_sym if begin_sym == 'H' else begin_sym
+        return {'C': 1.08, 'N': 1.01, 'O': 0.96, 'Si': 1.48, 'B': 1.19}.get(other, 1.08)
+
+    if bond.GetIsAromatic() or bond_type == Chem.BondType.AROMATIC:
+        aromatic_map = {
+            frozenset(['C', 'C']): 1.39,
+            frozenset(['C', 'N']): 1.35,
+            frozenset(['C', 'O']): 1.36,
+        }
+        if pair in aromatic_map:
+            return aromatic_map[pair]
+        return max(_COVALENT_RADII.get(begin_sym, 0.76) + _COVALENT_RADII.get(end_sym, 0.76) - 0.12, 0.95)
+
+    if bond_type == Chem.BondType.TRIPLE:
+        triple_map = {
+            frozenset(['C', 'C']): 1.20,
+            frozenset(['C', 'N']): 1.16,
+            frozenset(['N', 'N']): 1.10,
+        }
+        if pair in triple_map:
+            return triple_map[pair]
+        return max(_COVALENT_RADII.get(begin_sym, 0.76) + _COVALENT_RADII.get(end_sym, 0.76) - 0.22, 0.90)
+
+    if bond_type == Chem.BondType.DOUBLE:
+        double_map = {
+            frozenset(['C', 'C']): 1.34,
+            frozenset(['C', 'N']): 1.29,
+            frozenset(['C', 'O']): 1.23,
+            frozenset(['N', 'O']): 1.22,
+            frozenset(['N', 'N']): 1.25,
+        }
+        if pair in double_map:
+            return double_map[pair]
+        return max(_COVALENT_RADII.get(begin_sym, 0.76) + _COVALENT_RADII.get(end_sym, 0.76) - 0.12, 0.95)
+
+    single_map = {
+        frozenset(['Si', 'C']): 1.87,
+        frozenset(['C', 'C']): 1.50,
+        frozenset(['C', 'N']): 1.47,
+        frozenset(['C', 'O']): 1.43,
+        frozenset(['C', 'Si']): 1.87,
+        frozenset(['C', 'S']): 1.82,
+        frozenset(['C', 'P']): 1.84,
+        frozenset(['N', 'N']): 1.45,
+        frozenset(['N', 'O']): 1.40,
+        frozenset(['Si', 'Si']): 2.34,
+    }
+    if pair in single_map:
+        return single_map[pair]
+    return _COVALENT_RADII.get(begin_sym, 0.76) + _COVALENT_RADII.get(end_sym, 0.76)
+
+
+def _refine_hybrid_hapto_complex(
+    mol,
+    decomposition: _HybridHaptoDecomposition,
+    hapto_groups: List[Tuple[int, List[int]]],
+    trusted_atom_indices: Optional[set] = None,
+    secondary_metal_indices: Optional[set] = None,
+    apply_final_hapto_correction: bool = True,
+) -> bool:
+    """Local hapto-only relaxation around a fixed coordination scaffold."""
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
+        return False
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+    try:
+        conf = mol.GetConformer(0)
+    except Exception:
+        return False
+
+    metals = set(decomposition.metal_indices)
+    if secondary_metal_indices:
+        metals = metals | set(secondary_metal_indices)
+    hapto_atoms = {idx for _metal_idx, grp in hapto_groups for idx in grp}
+    primary_hapto_donors = _hapto_primary_donor_indices(mol, hapto_groups)
+    fixed = metals | hapto_atoms | primary_hapto_donors
+    if trusted_atom_indices:
+        fixed = fixed | set(trusted_atom_indices)
+    movable = {idx for idx in range(mol.GetNumAtoms()) if idx not in fixed}
+    if not movable:
+        return True
+
+    def _gp(idx):
+        pos = conf.GetAtomPosition(idx)
+        return np.array([pos.x, pos.y, pos.z], dtype=float)
+
+    def _sp(idx, arr):
+        conf.SetAtomPosition(idx, Point3D(float(arr[0]), float(arr[1]), float(arr[2])))
+
+    bond_targets = []
+    bonded_pairs: set = set()
+    for bond in mol.GetBonds():
+        begin_idx = bond.GetBeginAtomIdx()
+        end_idx = bond.GetEndAtomIdx()
+        bonded_pairs.add((begin_idx, end_idx))
+        bonded_pairs.add((end_idx, begin_idx))
+        if begin_idx not in movable and end_idx not in movable:
+            continue
+        bond_targets.append((begin_idx, end_idx, _hybrid_bond_target_length(bond)))
+
+    rng = np.random.default_rng(42)
+    for _pass in range(80):
+        displacements: Dict[int, np.ndarray] = {idx: np.zeros(3, dtype=float) for idx in movable}
+        max_err = 0.0
+        for begin_idx, end_idx, target in bond_targets:
+            begin_pos = _gp(begin_idx)
+            end_pos = _gp(end_idx)
+            diff = end_pos - begin_pos
+            dist = float(np.linalg.norm(diff))
+            if dist < 1e-8:
+                diff = rng.standard_normal(3)
+                dist = float(np.linalg.norm(diff))
+            unit = diff / max(dist, 1e-12)
+            delta = dist - target
+            if abs(delta) < 0.01:
+                continue
+            max_err = max(max_err, abs(delta))
+            strength = 0.35 if ((begin_idx in fixed) ^ (end_idx in fixed)) else 0.22
+            move = strength * delta * unit
+            if begin_idx in movable and end_idx in movable:
+                displacements[begin_idx] = displacements[begin_idx] + 0.5 * move
+                displacements[end_idx] = displacements[end_idx] - 0.5 * move
+            elif begin_idx in movable:
+                displacements[begin_idx] = displacements[begin_idx] + move
+            elif end_idx in movable:
+                displacements[end_idx] = displacements[end_idx] - move
+
+        if max_err < 0.04:
+            break
+        for atom_idx, disp in displacements.items():
+            if float(np.linalg.norm(disp)) < 1e-6:
+                continue
+            _sp(atom_idx, _gp(atom_idx) + disp)
+
+    for _pass in range(24):
+        any_push = False
+        for i in range(mol.GetNumAtoms()):
+            for j in range(i + 1, mol.GetNumAtoms()):
+                if (i, j) in bonded_pairs:
+                    continue
+                if i not in movable and j not in movable:
+                    continue
+                pi = _gp(i)
+                pj = _gp(j)
+                dist = float(np.linalg.norm(pi - pj))
+                sym_i = mol.GetAtomWithIdx(i).GetSymbol()
+                sym_j = mol.GetAtomWithIdx(j).GetSymbol()
+
+                if sym_i in _METAL_SET or sym_j in _METAL_SET:
+                    min_dist = 2.0
+                elif sym_i == 'H' and sym_j == 'H':
+                    min_dist = 1.5
+                elif sym_i == 'H' or sym_j == 'H':
+                    min_dist = 1.0
+                else:
+                    min_dist = 1.18
+
+                if dist >= min_dist:
+                    continue
+                if dist < 1e-8:
+                    direction = rng.standard_normal(3)
+                    direction /= max(float(np.linalg.norm(direction)), 1e-12)
+                else:
+                    direction = (pj - pi) / dist
+
+                gap = min_dist - dist
+                if i in movable and j in movable:
+                    _sp(i, pi - 0.5 * gap * direction)
+                    _sp(j, pj + 0.5 * gap * direction)
+                elif i in movable:
+                    _sp(i, pi - gap * direction)
+                elif j in movable:
+                    _sp(j, pj + gap * direction)
+                any_push = True
+        if not any_push:
+            break
+
+    try:
+        ff = AllChem.UFFGetMoleculeForceField(mol, confId=0)
+        if ff is not None:
+            for atom_idx in sorted(fixed):
+                ff.AddFixedPoint(atom_idx)
+            ff.Minimize(maxIts=250)
+    except Exception:
+        pass
+
+    if apply_final_hapto_correction:
+        try:
+            _correct_hapto_geometry(mol, 0, hapto_groups)
+        except Exception:
+            pass
+    return True
+
+
+def _enforce_donor_pi_coplanarity(
+    mol,
+    conf_id: int = 0,
+    hapto_groups: Optional[List[Tuple[int, List[int]]]] = None,
+    max_rotation_deg: float = 75.0,
+) -> bool:
+    """Rigidly rotate planar donor fragments so the metal lies in the pi-plane.
+
+    For each metal, identifies planar (aromatic / sp2-conjugated) fragments
+    that bear donor atoms, then rotates each fragment as a rigid body so that
+    the metal atom ends up in (or very near) the fragment's best-fit plane.
+
+    * Bidentate+ donors  -> rotation around the donor-donor axis.
+    * Monodentate donor   -> rotation around the single donor atom.
+
+    Donor-metal bond lengths are preserved exactly because the rotation axis
+    passes through the donor atom(s).
+    """
+    if not RDKIT_AVAILABLE or mol is None:
+        return False
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+    try:
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return False
+
+    hapto_atom_set: set = set()
+    hapto_metal_set: set = set()
+    if hapto_groups:
+        for _mi, grp in hapto_groups:
+            hapto_atom_set.update(grp)
+            hapto_metal_set.add(_mi)
+
+    max_rot = np.radians(max_rotation_deg)
+
+    def _gp(idx):
+        p = conf.GetAtomPosition(idx)
+        return np.array([p.x, p.y, p.z], dtype=float)
+
+    def _sp(idx, arr):
+        conf.SetAtomPosition(
+            idx, Point3D(float(arr[0]), float(arr[1]), float(arr[2])))
+
+    def _rod(v, k, angle):
+        c, s = np.cos(angle), np.sin(angle)
+        return v * c + np.cross(k, v) * s + k * float(np.dot(k, v)) * (1.0 - c)
+
+    def _is_planar_atom(a):
+        if a.GetIsAromatic():
+            return True
+        try:
+            hyb = a.GetHybridization()
+        except Exception:
+            return False
+        if hyb in {Chem.rdchem.HybridizationType.SP,
+                    Chem.rdchem.HybridizationType.SP2}:
+            return True
+        for bond in a.GetBonds():
+            if bond.GetBondTypeAsDouble() >= 1.5 or bond.GetIsConjugated():
+                return True
+        return False
+
+    changed = False
+
+    for atom in mol.GetAtoms():
+        metal_idx = atom.GetIdx()
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+        # Skip hapto metals: piano-stool geometry should not be coplanarised
+        if metal_idx in hapto_metal_set:
+            continue
+
+        # Non-hapto, non-metal, heavy-atom neighbours = candidate donors
+        donors = []
+        for nbr in atom.GetNeighbors():
+            ni = nbr.GetIdx()
+            if ni in hapto_atom_set or nbr.GetSymbol() in _METAL_SET or nbr.GetAtomicNum() <= 1:
+                continue
+            donors.append(ni)
+        if not donors:
+            continue
+
+        m_pos = _gp(metal_idx)
+        processed: set = set()
+
+        for start_donor in donors:
+            if start_donor in processed:
+                continue
+
+            if not _is_planar_atom(mol.GetAtomWithIdx(start_donor)):
+                processed.add(start_donor)
+                continue
+
+            # --- BFS: find connected planar core ---
+            planar_core: set = {start_donor}
+            bfs_q = [start_donor]
+            while bfs_q:
+                cur = bfs_q.pop(0)
+                for nbr in mol.GetAtomWithIdx(cur).GetNeighbors():
+                    ni = nbr.GetIdx()
+                    if ni in planar_core or ni in hapto_atom_set:
+                        continue
+                    if nbr.GetSymbol() in _METAL_SET or nbr.GetAtomicNum() <= 1:
+                        continue
+                    if _is_planar_atom(nbr):
+                        planar_core.add(ni)
+                        bfs_q.append(ni)
+
+            if len(planar_core) < 3:
+                processed.add(start_donor)
+                continue
+
+            frag_donors = [d for d in donors if d in planar_core]
+            processed.update(frag_donors)
+            frag_donor_set = set(frag_donors)
+
+            # --- Best-fit plane (SVD) ---
+            core_list = sorted(planar_core)
+            pts = np.array([_gp(i) for i in core_list])
+            centroid = pts.mean(axis=0)
+            q = pts - centroid
+            try:
+                _u, _s, vh = np.linalg.svd(q, full_matrices=False)
+            except np.linalg.LinAlgError:
+                continue
+            normal = vh[-1].copy()
+            n_len = float(np.linalg.norm(normal))
+            if n_len < 1e-12:
+                continue
+            normal /= n_len
+
+            # --- Rigid body: planar core + direct substituents + their H ---
+            rigid_body: set = set(planar_core)
+            for ci in list(planar_core):
+                for nbr in mol.GetAtomWithIdx(ci).GetNeighbors():
+                    ni = nbr.GetIdx()
+                    if ni in rigid_body or ni in hapto_atom_set or nbr.GetSymbol() in _METAL_SET:
+                        continue
+                    rigid_body.add(ni)
+                    if nbr.GetAtomicNum() > 1:
+                        for nbr2 in nbr.GetNeighbors():
+                            ni2 = nbr2.GetIdx()
+                            if ni2 not in rigid_body and nbr2.GetAtomicNum() == 1:
+                                rigid_body.add(ni2)
+
+            # ==========================================================
+            # Bidentate+: rotate around the donor-donor axis
+            # ==========================================================
+            if len(frag_donors) >= 2:
+                d1, d2 = frag_donors[0], frag_donors[1]
+                d1_pos, d2_pos = _gp(d1), _gp(d2)
+                axis = d2_pos - d1_pos
+                axis_len = float(np.linalg.norm(axis))
+                if axis_len < 1e-8:
+                    continue
+                u_ax = axis / axis_len
+
+                # Gram-Schmidt: make normal exactly perpendicular to axis
+                normal = normal - float(np.dot(normal, u_ax)) * u_ax
+                n_len = float(np.linalg.norm(normal))
+                if n_len < 1e-8:
+                    continue
+                normal /= n_len
+
+                # a*cos(t) + b*sin(t) = 0  =>  t = atan2(-a, b)
+                v_M = m_pos - d1_pos
+                a_coeff = float(np.dot(v_M, normal))
+                b_dir = np.cross(u_ax, normal)
+                b_coeff = float(np.dot(v_M, b_dir))
+
+                if abs(a_coeff) < 0.05:
+                    continue
+
+                theta = float(np.arctan2(-a_coeff, b_coeff))
+
+                # Outward-side check: metal should face donors, not ring body
+                body_atoms = [i for i in planar_core if i not in frag_donor_set]
+                if body_atoms:
+                    body_ctr = np.mean([_gp(i) for i in body_atoms], axis=0)
+                    body_rot = d1_pos + _rod(body_ctr - d1_pos, u_ax, theta)
+                    d_ctr = (d1_pos + d2_pos) / 2.0
+                    outward = d_ctr - body_rot
+                    if float(np.dot(m_pos - d_ctr, outward)) < 0:
+                        theta += np.pi
+
+                if abs(theta) > max_rot:
+                    theta = float(np.sign(theta)) * max_rot
+
+                for ai in rigid_body:
+                    p = _gp(ai) - d1_pos
+                    _sp(ai, d1_pos + _rod(p, u_ax, theta))
+                changed = True
+
+            # ==========================================================
+            # Monodentate: rotate around the single donor
+            # ==========================================================
+            else:
+                d_idx = frag_donors[0]
+                d_pos = _gp(d_idx)
+
+                v = m_pos - d_pos
+                v_len = float(np.linalg.norm(v))
+                if v_len < 1e-8:
+                    continue
+
+                h = float(np.dot(v, normal))
+                if abs(h) < 0.05:
+                    continue
+
+                # Desired normal: component of normal perpendicular to v
+                n_proj = normal - (float(np.dot(normal, v)) / (v_len ** 2)) * v
+                n_proj_len = float(np.linalg.norm(n_proj))
+                if n_proj_len < 1e-8:
+                    continue
+                desired = n_proj / n_proj_len
+
+                rot_axis = np.cross(normal, desired)
+                ra_len = float(np.linalg.norm(rot_axis))
+                if ra_len < 1e-10:
+                    continue
+                rot_axis /= ra_len
+                cos_a = float(np.clip(np.dot(normal, desired), -1.0, 1.0))
+                theta = float(np.arccos(cos_a))
+
+                if theta > max_rot:
+                    theta = max_rot
+
+                for ai in rigid_body:
+                    p = _gp(ai) - d_pos
+                    _sp(ai, d_pos + _rod(p, rot_axis, theta))
+                changed = True
+
+    return changed
+
+
+def _build_hybrid_hapto_complex(
+    mol,
+    hapto_groups: List[Tuple[int, List[int]]],
+    preview_store: Optional[List[Tuple[str, str]]] = None,
+):
+    """Assemble a hapto complex from a scaffold plus rigid ligand fragments."""
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
+        return None
+
+    decomposition = _decompose_hapto_complex(mol, hapto_groups)
+    if decomposition is None:
+        return None
+
+    primary_module = _detect_primary_organometal_module(decomposition, hapto_groups)
+    if primary_module is not None:
+        try:
+            primary_candidate = _build_primary_organometal_hapto_module(
+                mol,
+                decomposition,
+                hapto_groups,
+                primary_module,
+                preview_store=preview_store,
+            )
+        except Exception as e:
+            logger.debug("Hybrid hapto primary organometal builder skipped: %s", e)
+            primary_candidate = None
+        if primary_candidate is not None:
+            return primary_candidate
+        logger.info(
+            "Hybrid hapto primary organometal module builder fell back to standard scaffold assembly for %s%d",
+            mol.GetAtomWithIdx(primary_module.metal_idx).GetSymbol(),
+            primary_module.metal_idx,
+        )
+        if preview_store is not None and not preview_store:
+            _store_hapto_preview_candidate(
+                mol,
+                hapto_groups,
+                preview_store,
+                label='quick-hapto-preview',
+            )
+    elif preview_store is not None:
+        _store_hapto_preview_candidate(
+            mol,
+            hapto_groups,
+            preview_store,
+            label='quick-hapto-preview',
+        )
+
+    scaffold_mol = Chem.Mol(mol)
+    if not _build_hapto_scaffold(scaffold_mol, hapto_groups):
+        return None
+
+    aligned_fragments = 0
+    scaffold_only_fragments = 0
+    deferred_secondary_fragments = 0
+    trusted_atoms: set = set()
+    hapto_metal_indices = {metal_idx for metal_idx, _grp in hapto_groups}
+    for fragment in decomposition.fragments:
+        if fragment.use_scaffold_only:
+            scaffold_only_fragments += 1
+            trusted_atoms.update(fragment.atom_indices)
+            logger.debug(
+                "Hybrid hapto: keeping scaffold geometry for fragment "
+                "(atoms=%d, metals=%d, bridging_donors=%d)",
+                len(fragment.atom_indices),
+                len(fragment.metal_neighbor_indices),
+                len(fragment.bridging_donor_indices),
+            )
+            continue
+        if any(metal_idx not in hapto_metal_indices for metal_idx in fragment.metal_neighbor_indices):
+            deferred_secondary_fragments += 1
+            logger.debug(
+                "Hybrid hapto: deferring fragment with secondary-metal coordination "
+                "(atoms=%d, metals=%s) to secondary module assembly",
+                len(fragment.atom_indices),
+                sorted(fragment.metal_neighbor_indices),
+            )
+            continue
+        embedded_fragment = _embed_hybrid_fragment(fragment.fragment_mol)
+        if embedded_fragment is None:
+            continue
+        if _align_hybrid_fragment_onto_scaffold(scaffold_mol, fragment, embedded_fragment):
+            aligned_fragments += 1
+            trusted_atoms.update(fragment.atom_indices)
+
+    if aligned_fragments == 0 and scaffold_only_fragments == 0:
+        return None
+
+    try:
+        _correct_hapto_geometry(scaffold_mol, 0, hapto_groups)
+    except Exception:
+        pass
+
+    secondary_metals, secondary_module_atoms, relaxable_secondary_atoms = _assemble_secondary_metal_coordination_modules(
+        scaffold_mol,
+        decomposition,
+        hapto_groups,
+    )
+    trusted_atoms |= secondary_module_atoms
+
+    if not secondary_metals:
+        secondary_metals = _place_secondary_metals_in_hapto_fragments(
+            scaffold_mol,
+            hapto_groups,
+        )
+
+    if secondary_metals:
+        logger.debug(
+            "Hybrid hapto built %d explicit secondary metal module(s)",
+            len(secondary_metals),
+        )
+    else:
+        logger.debug("Hybrid hapto used donor-cloud fallback for secondary metals")
+
+    if aligned_fragments + scaffold_only_fragments < len(decomposition.fragments):
+        try:
+            _propagate_non_hapto_atoms(
+                scaffold_mol,
+                0,
+                hapto_groups,
+                extra_fixed_indices=trusted_atoms | _hapto_primary_donor_indices(scaffold_mol, hapto_groups) | secondary_metals,
+            )
+        except Exception as e:
+            logger.debug("Hybrid hapto non-hapto propagation skipped: %s", e)
+        if not secondary_metals:
+            secondary_metals |= _place_secondary_metals_in_hapto_fragments(
+                scaffold_mol,
+                hapto_groups,
+            )
+
+    try:
+        _enforce_donor_pi_coplanarity(scaffold_mol, 0, hapto_groups)
+    except Exception:
+        pass
+
+    try:
+        _refine_hybrid_hapto_complex(
+            scaffold_mol,
+            decomposition,
+            hapto_groups,
+            trusted_atom_indices=trusted_atoms,
+            secondary_metal_indices=secondary_metals,
+            apply_final_hapto_correction=not bool(secondary_metals),
+        )
+    except Exception as e:
+        logger.debug("Hybrid hapto local refinement skipped: %s", e)
+
+    try:
+        _enforce_donor_pi_coplanarity(scaffold_mol, 0, hapto_groups)
+    except Exception:
+        pass
+
+    if not secondary_metals:
+        try:
+            _correct_hapto_geometry(scaffold_mol, 0, hapto_groups)
+        except Exception:
+            pass
+
+    # Final clash resolution: _enforce_donor_pi_coplanarity may have moved
+    # atoms (especially H) into metal clash zones.
+    try:
+        _final_clash_resolution(scaffold_mol, 0, hapto_groups)
+    except Exception:
+        pass
+
+    logger.info(
+        "Hybrid hapto assembly aligned %d fragment(s), scaffold-kept %d, deferred-secondary %d/%d",
+        aligned_fragments,
+        scaffold_only_fragments,
+        deferred_secondary_fragments,
+        len(decomposition.fragments),
+    )
+
+    # Bond-length repair for severely distorted non-metal bonds, then quality gate
+    try:
+        import numpy as np
+        conf = scaffold_mol.GetConformer(0)
+        _expected = {
+            frozenset(['C', 'C']): 1.45, frozenset(['C', 'N']): 1.40,
+            frozenset(['C', 'O']): 1.35, frozenset(['C', 'S']): 1.78,
+            frozenset(['N', 'N']): 1.40, frozenset(['N', 'O']): 1.35,
+            frozenset(['O', 'O']): 1.45, frozenset(['C', 'Si']): 1.87,
+        }
+        hapto_frozen = set()
+        for _mi, catoms in hapto_groups:
+            hapto_frozen.add(_mi)
+            hapto_frozen.update(catoms)
+        for _ai in range(scaffold_mol.GetNumAtoms()):
+            if scaffold_mol.GetAtomWithIdx(_ai).GetSymbol() in _METAL_SET:
+                hapto_frozen.add(_ai)
+
+        def _gp2(i):
+            p = conf.GetAtomPosition(i)
+            return np.array([p.x, p.y, p.z])
+        def _sp2(i, pos):
+            conf.SetAtomPosition(i, Point3D(float(pos[0]), float(pos[1]), float(pos[2])))
+
+        # Build H groups
+        h_of2: Dict[int, List[int]] = {}
+        for _ai in range(scaffold_mol.GetNumAtoms()):
+            a = scaffold_mol.GetAtomWithIdx(_ai)
+            if a.GetAtomicNum() == 1:
+                for nbr in a.GetNeighbors():
+                    if nbr.GetAtomicNum() > 1:
+                        h_of2.setdefault(nbr.GetIdx(), []).append(_ai)
+                        break
+
+        # Iterative bond-length repair (60 iterations)
+        for _rep_pass in range(60):
+            max_err = 0.0
+            for bond in scaffold_mol.GetBonds():
+                bi = bond.GetBeginAtomIdx()
+                bj = bond.GetEndAtomIdx()
+                si = scaffold_mol.GetAtomWithIdx(bi).GetSymbol()
+                sj = scaffold_mol.GetAtomWithIdx(bj).GetSymbol()
+                if si in _METAL_SET or sj in _METAL_SET:
+                    continue
+                pi, pj = _gp2(bi), _gp2(bj)
+                d = float(np.linalg.norm(pj - pi))
+                if si == 'H' or sj == 'H':
+                    expected = 1.08
+                else:
+                    expected = _expected.get(frozenset([si, sj]), 1.50)
+                err = abs(d - expected)
+                if err < 0.05:
+                    continue
+                if err > max_err:
+                    max_err = err
+                if d < 1e-8:
+                    continue
+                direction = (pj - pi) / d
+                correction = 0.3 * (d - expected)
+                bi_frozen = bi in hapto_frozen
+                bj_frozen = bj in hapto_frozen
+                if bi_frozen and bj_frozen:
+                    continue
+                if bi_frozen:
+                    delta = -correction * direction
+                    _sp2(bj, pj + delta)
+                    for hi in h_of2.get(bj, []):
+                        if hi not in hapto_frozen:
+                            _sp2(hi, _gp2(hi) + delta)
+                elif bj_frozen:
+                    delta = correction * direction
+                    _sp2(bi, pi + delta)
+                    for hi in h_of2.get(bi, []):
+                        if hi not in hapto_frozen:
+                            _sp2(hi, _gp2(hi) + delta)
+                else:
+                    _sp2(bi, pi + 0.5 * correction * direction)
+                    _sp2(bj, pj - 0.5 * correction * direction)
+            if max_err < 0.1:
+                break
+
+        # Re-center secondary metals after bond repair shifted donors
+        _fix_secondary_metal_distances(scaffold_mol, 0, hapto_groups)
+
+        # Re-run clash resolution after bond repair + metal recentering
+        _final_clash_resolution(scaffold_mol, 0, hapto_groups)
+
+        # Quality gate after repair
+        for bond in scaffold_mol.GetBonds():
+            bi = bond.GetBeginAtomIdx()
+            bj = bond.GetEndAtomIdx()
+            si = scaffold_mol.GetAtomWithIdx(bi).GetSymbol()
+            sj = scaffold_mol.GetAtomWithIdx(bj).GetSymbol()
+            if si in _METAL_SET or sj in _METAL_SET:
+                continue
+            pi, pj = _gp2(bi), _gp2(bj)
+            d = float(np.linalg.norm(pj - pi))
+            if si == 'H' or sj == 'H':
+                expected = 1.08
+            else:
+                expected = _expected.get(frozenset([si, sj]), 1.50)
+            ratio = d / expected
+            if ratio < 0.50 or ratio > 3.00:
+                logger.info(
+                    "Hybrid hapto rejected: bond %s[%d]-%s[%d] = %.3f A (expected ~%.2f)",
+                    si, bi, sj, bj, d, expected,
+                )
+                return None
+    except Exception:
+        pass
+
+    return scaffold_mol
+
+
+def _final_clash_resolution(
+    mol,
+    conf_id: int,
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> None:
+    """Push apart non-bonded atoms that are too close after all geometry steps.
+
+    Metals and hapto ring atoms are frozen; everything else can move.
+    When a heavy atom is pushed, its bonded H atoms move rigidly with it.
+    Runs after _enforce_donor_pi_coplanarity which may introduce clashes.
+    """
+    import numpy as np
+
+    try:
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return
+
+    def _gp(i):
+        p = conf.GetAtomPosition(i)
+        return np.array([p.x, p.y, p.z])
+
+    def _sp(i, pos):
+        conf.SetAtomPosition(i, Point3D(float(pos[0]), float(pos[1]), float(pos[2])))
+
+    def _move_with_h(ai, displacement):
+        """Move atom ai and its bonded H atoms by displacement."""
+        _sp(ai, _gp(ai) + displacement)
+        for hi in h_of.get(ai, []):
+            if hi not in frozen:
+                _sp(hi, _gp(hi) + displacement)
+
+    frozen = set()
+    for mi, catoms in hapto_groups:
+        frozen.add(mi)
+        frozen.update(catoms)
+    for ai in range(mol.GetNumAtoms()):
+        if mol.GetAtomWithIdx(ai).GetSymbol() in _METAL_SET:
+            frozen.add(ai)
+
+    bonded_pairs = set()
+    for bond in mol.GetBonds():
+        bi, bj = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        bonded_pairs.add((bi, bj))
+        bonded_pairs.add((bj, bi))
+
+    # Build H→parent and parent→H maps
+    h_of: Dict[int, List[int]] = {}
+    h_parent: Dict[int, int] = {}
+    for ai in range(mol.GetNumAtoms()):
+        a = mol.GetAtomWithIdx(ai)
+        if a.GetAtomicNum() == 1:
+            for nbr in a.GetNeighbors():
+                if nbr.GetAtomicNum() > 1:
+                    h_parent[ai] = nbr.GetIdx()
+                    h_of.setdefault(nbr.GetIdx(), []).append(ai)
+                    break
+
+    # Only check heavy atoms (H moves with parent)
+    heavy = [i for i in range(mol.GetNumAtoms()) if mol.GetAtomWithIdx(i).GetAtomicNum() > 1]
+    n_atoms = mol.GetNumAtoms()
+    rng = np.random.default_rng(99)
+
+    for _pass in range(30):
+        any_push = False
+        # Heavy-heavy clashes
+        for ii, i in enumerate(heavy):
+            for j in heavy[ii + 1:]:
+                if (i, j) in bonded_pairs:
+                    continue
+                if i in frozen and j in frozen:
+                    continue
+                pi, pj = _gp(i), _gp(j)
+                d = float(np.linalg.norm(pi - pj))
+                si = mol.GetAtomWithIdx(i).GetSymbol()
+                sj = mol.GetAtomWithIdx(j).GetSymbol()
+                if si in _METAL_SET or sj in _METAL_SET:
+                    min_d = 2.0
+                else:
+                    min_d = 1.2
+                if d >= min_d:
+                    continue
+                if d < 1e-8:
+                    direction = rng.standard_normal(3)
+                    direction /= max(float(np.linalg.norm(direction)), 1e-12)
+                else:
+                    direction = (pj - pi) / d
+                gap = min_d - d
+                if i in frozen:
+                    _move_with_h(j, gap * direction)
+                elif j in frozen:
+                    _move_with_h(i, -gap * direction)
+                else:
+                    _move_with_h(i, -0.5 * gap * direction)
+                    _move_with_h(j, 0.5 * gap * direction)
+                any_push = True
+
+        # H-metal clashes: move the parent heavy atom (+ all its H) so
+        # the offending H clears the metal without breaking C-H bonds.
+        for i in range(n_atoms):
+            a = mol.GetAtomWithIdx(i)
+            if a.GetAtomicNum() != 1 or i in frozen:
+                continue
+            parent = h_parent.get(i)
+            if parent is not None and parent in frozen:
+                continue  # parent is frozen, can't fix
+            for j in frozen:
+                if (i, j) in bonded_pairs:
+                    continue
+                if mol.GetAtomWithIdx(j).GetSymbol() not in _METAL_SET:
+                    continue
+                pi, pj = _gp(i), _gp(j)
+                d = float(np.linalg.norm(pi - pj))
+                if d >= 2.0:
+                    continue
+                if d < 1e-8:
+                    direction = rng.standard_normal(3)
+                    direction /= max(float(np.linalg.norm(direction)), 1e-12)
+                else:
+                    direction = (pi - pj) / d
+                displacement = (2.0 - d) * direction
+                if parent is not None and parent not in frozen:
+                    _move_with_h(parent, displacement)
+                else:
+                    _sp(i, _gp(i) + displacement)
+                any_push = True
+
+        if not any_push:
+            break
+
+
+def _fix_secondary_metal_distances(
+    mol,
+    conf_id: int,
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> None:
+    """Fix non-hapto metal positions by moving them into their donor cloud.
+
+    ETKDG doesn't understand metal-ligand bonds, so metal positions are random.
+    For each non-hapto metal, compute the optimal position given its donors'
+    current positions and target M-L distances, then move the metal there.
+    This avoids moving donor atoms (which may share fragments).
+    """
+    import numpy as np
+
+    try:
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return
+
+    def _gp(i):
+        p = conf.GetAtomPosition(i)
+        return np.array([p.x, p.y, p.z])
+
+    def _sp(i, pos):
+        conf.SetAtomPosition(i, Point3D(float(pos[0]), float(pos[1]), float(pos[2])))
+
+    hapto_metals = {mi for mi, _ in hapto_groups}
+
+    for atom in mol.GetAtoms():
+        mi = atom.GetIdx()
+        msym = atom.GetSymbol()
+        if msym not in _METAL_SET or mi in hapto_metals:
+            continue
+
+        donors = []
+        targets = []
+        for nbr in atom.GetNeighbors():
+            ni = nbr.GetIdx()
+            if nbr.GetSymbol() in _METAL_SET or nbr.GetAtomicNum() <= 1:
+                continue
+            dsym = nbr.GetSymbol()
+            donors.append(ni)
+            targets.append(float(_get_ml_bond_length(msym, dsym)))
+
+        if len(donors) < 2:
+            continue
+
+        # Iteratively move metal toward the position that minimizes
+        # sum of (actual_dist - target_dist)^2
+        mpos = _gp(mi)
+        for _it in range(80):
+            grad = np.zeros(3)
+            for di, target in zip(donors, targets):
+                dpos = _gp(di)
+                vec = mpos - dpos
+                dist = float(np.linalg.norm(vec))
+                if dist < 1e-8:
+                    continue
+                grad += 2.0 * (dist - target) * vec / dist
+            step = -0.15 * grad
+            if float(np.linalg.norm(step)) < 0.001:
+                break
+            mpos = mpos + step
+
+        _sp(mi, mpos)
+
+        # If any donor is still >30% off target, move it toward the metal.
+        # Use a limited BFS (max 6 atoms) to avoid dragging shared fragments.
+        for di, target in zip(donors, targets):
+            dpos = _gp(di)
+            dist = float(np.linalg.norm(dpos - mpos))
+            if dist < 1e-8 or abs(dist - target) / target < 0.30:
+                continue
+            direction = (dpos - mpos) / dist
+            delta = direction * (target - dist)
+            # Limited BFS: donor + up to 5 non-metal, non-hapto neighbors
+            local_frag = {di}
+            bfs_q = [di]
+            while bfs_q and len(local_frag) < 7:
+                cur = bfs_q.pop(0)
+                for nbr in mol.GetAtomWithIdx(cur).GetNeighbors():
+                    ni2 = nbr.GetIdx()
+                    if ni2 in local_frag or ni2 in hapto_metals:
+                        continue
+                    if nbr.GetSymbol() in _METAL_SET:
+                        continue
+                    # Don't cross into another donor's territory
+                    if ni2 in set(donors) and ni2 != di:
+                        continue
+                    local_frag.add(ni2)
+                    bfs_q.append(ni2)
+            for ai in local_frag:
+                _sp(ai, _gp(ai) + delta)
+
+
+def _find_ansa_bridges(
+    mol,
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> List[Tuple[int, int, int]]:
+    """Find bridging atoms (Si, C, Ge, etc.) connecting two hapto groups on the same metal.
+
+    Returns list of (bridge_atom_idx, group_index_1, group_index_2).
+    """
+    if not RDKIT_AVAILABLE or mol is None or len(hapto_groups) < 2:
+        return []
+
+    # Build map: atom_idx -> list of (group_index, metal_idx)
+    atom_to_groups: Dict[int, List[Tuple[int, int]]] = {}
+    for gi, (metal_idx, grp) in enumerate(hapto_groups):
+        for a_idx in grp:
+            atom_to_groups.setdefault(a_idx, []).append((gi, metal_idx))
+
+    bridges: List[Tuple[int, int, int]] = []
+    seen_bridges: set = set()
+    for atom in mol.GetAtoms():
+        sym = atom.GetSymbol()
+        if sym in _METAL_SET or sym == 'H':
+            continue
+        a_idx = atom.GetIdx()
+        if a_idx in atom_to_groups:
+            continue  # skip hapto ring atoms themselves
+
+        # Check if this atom connects to atoms from 2+ different groups on the same metal
+        connected_groups: Dict[int, set] = {}  # metal_idx -> set of group indices
+        for nbr in atom.GetNeighbors():
+            ni = nbr.GetIdx()
+            if ni in atom_to_groups:
+                for gi, mi in atom_to_groups[ni]:
+                    connected_groups.setdefault(mi, set()).add(gi)
+
+        for _mi, group_set in connected_groups.items():
+            if len(group_set) >= 2:
+                glist = sorted(group_set)
+                for i in range(len(glist)):
+                    for j in range(i + 1, len(glist)):
+                        key = (a_idx, glist[i], glist[j])
+                        if key not in seen_bridges:
+                            seen_bridges.add(key)
+                            bridges.append(key)
+
+    return bridges
+
 
 
 def _apply_hapto_centroid_bias(
@@ -1763,23 +7423,6 @@ def _apply_hapto_centroid_bias(
         for idx in indices:
             p = conf.GetAtomPosition(idx)
             conf.SetAtomPosition(idx, Point3D(p.x + dx, p.y + dy, p.z + dz))
-
-    def _target_mc_dist(metal_sym: str, eta: int) -> float:
-        # Conservative M-centroid target derived from M-C with tight clamps.
-        try:
-            base_mc = float(_get_ml_bond_length(metal_sym, 'C'))
-        except Exception:
-            base_mc = 2.35
-        if not math.isfinite(base_mc):
-            base_mc = 2.35
-        dist = max(1.80, min(2.10, 0.76 * base_mc))
-        if eta >= 5:
-            dist = max(dist, 1.92)
-        elif eta == 4:
-            dist = max(dist, 1.88)
-        elif eta == 3:
-            dist = max(dist, 1.84)
-        return dist
 
     def _group_min_distance(a: List[int], b: List[int]) -> float:
         out = float("inf")
@@ -1833,6 +7476,15 @@ def _apply_hapto_centroid_bias(
                 _translate(atoms, ux * shift, uy * shift, uz * shift)
                 moved = True
 
+    # Detect ansa bridges for separation limits
+    ansa_bridged_pairs: set = set()
+    try:
+        bridges = _find_ansa_bridges(mol, hapto_groups)
+        for _bridge_atom, g1, g2 in bridges:
+            ansa_bridged_pairs.add((min(g1, g2), max(g1, g2)))
+    except Exception:
+        pass
+
     # Step 2: light anti-collapse guard: only separate groups that are too close.
     safe_min_cc = max(1.85, min(2.20, float(min_centroid_sep)))
     for metal_idx, gidxs in by_metal.items():
@@ -1867,6 +7519,14 @@ def _apply_hapto_centroid_bias(
                         pair_min_cc = max(pair_min_cc, 2.60)
                     else:  # eta3/eta3
                         pair_min_cc = max(pair_min_cc, 2.30)
+
+                    # Ansa-bridged pairs: limit max centroid separation
+                    # Si-C bond ~1.88 A -> max separation ~ 2*1.88 + ring_radii
+                    pair_key = (min(gi, gj), max(gi, gj))
+                    max_sep = float('inf')
+                    if pair_key in ansa_bridged_pairs:
+                        max_sep = 5.0  # conservative limit for Si-bridged systems
+
                     min_cc = _group_min_distance(
                         list(group_entries[gi]["atoms"]),
                         list(group_entries[gj]["atoms"]),
@@ -1880,6 +7540,9 @@ def _apply_hapto_centroid_bias(
                         ux, uy, uz = (dx / dcc, dy / dcc, dz / dcc)
 
                     shift = min(0.45, 0.5 * float(pair_min_cc - min_cc))
+                    # Limit shift for ansa-bridged pairs
+                    if pair_key in ansa_bridged_pairs and dcc + 2 * shift > max_sep:
+                        shift = max(0.0, 0.5 * (max_sep - dcc))
                     _translate(list(group_entries[gi]["atoms"]), -ux * shift, -uy * shift, -uz * shift)
                     _translate(list(group_entries[gj]["atoms"]), ux * shift, uy * shift, uz * shift)
                     changed = True
@@ -1891,229 +7554,2592 @@ def _apply_hapto_centroid_bias(
     return moved
 
 
-def _apply_hapto_centroid_bias_to_xyz(
-    xyz_delfin: str,
-    mol_template,
-    hapto_groups: List[Tuple[int, List[int]]],
-    min_centroid_sep: float = 2.2,
-) -> str:
-    """Apply centroid bias on XYZ using a template graph/atom order."""
-    if not RDKIT_AVAILABLE or mol_template is None or not hapto_groups:
-        return xyz_delfin
-    try:
-        mol_tmp = Chem.RWMol(mol_template)
-        mol_tmp.RemoveAllConformers()
-        conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_delfin)
-        if conf is None:
-            return xyz_delfin
-        cid = mol_tmp.AddConformer(conf, assignId=True)
-        if not _apply_hapto_centroid_bias(
-            mol_tmp.GetMol(), cid, hapto_groups, min_centroid_sep=min_centroid_sep
-        ):
-            return xyz_delfin
-        return _mol_to_xyz_conformer(mol_tmp.GetMol(), cid)
-    except Exception:
-        return xyz_delfin
 
 
-def _hapto_geometry_penalty(
+def _enforce_hapto_ring_planarity(
     mol,
     conf_id: int,
     hapto_groups: List[Tuple[int, List[int]]],
-) -> float:
-    """Penalty for collapsed/implausible eta-group arrangements (lower better)."""
+    target_cc: float = 1.40,
+    n_iter: int = 5,
+) -> bool:
+    """Place hapto ring atoms as regular polygon with correct C-C distances.
+
+    For cyclic groups (eta>=3, all atoms have >=2 intra-group neighbors):
+      constructs a regular polygon in the plane perpendicular to the
+      metal-centroid axis with C-C = target_cc.
+    For chain groups: iteratively regularizes C-C distances.
+    Substituent atoms (H + direct non-ring neighbors) are rigidly
+    translated along with their parent ring atom.
+    """
     if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
-        return 0.0
+        return False
+    try:
+        import numpy as np
+    except ImportError:
+        return False
     try:
         conf = mol.GetConformer(conf_id)
     except Exception:
-        return 0.0
+        return False
 
-    def _norm(vx: float, vy: float, vz: float) -> float:
-        return math.sqrt(vx * vx + vy * vy + vz * vz)
-
-    def _centroid(indices: List[int]) -> Tuple[float, float, float]:
-        pts = [conf.GetAtomPosition(i) for i in indices]
-        return (
-            sum(p.x for p in pts) / len(pts),
-            sum(p.y for p in pts) / len(pts),
-            sum(p.z for p in pts) / len(pts),
-        )
-
-    def _group_min_distance(a: List[int], b: List[int]) -> float:
-        out = float("inf")
-        for ai in a:
-            pa = conf.GetAtomPosition(ai)
-            for bi in b:
-                pb = conf.GetAtomPosition(bi)
-                d = _norm(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z)
-                if d < out:
-                    out = d
-        return out if math.isfinite(out) else 999.0
-
-    def _planarity_rms(indices: List[int]) -> float:
-        if len(indices) < 3:
-            return 0.0
-        pts = [conf.GetAtomPosition(i) for i in indices]
-        cx = sum(p.x for p in pts) / len(pts)
-        cy = sum(p.y for p in pts) / len(pts)
-        cz = sum(p.z for p in pts) / len(pts)
-        vecs = [(p.x - cx, p.y - cy, p.z - cz) for p in pts]
-        nx = ny = nz = 0.0
-        n = len(vecs)
-        for vi in range(n):
-            a = vecs[vi]
-            b = vecs[(vi + 1) % n]
-            nx += a[1] * b[2] - a[2] * b[1]
-            ny += a[2] * b[0] - a[0] * b[2]
-            nz += a[0] * b[1] - a[1] * b[0]
-        nm = _norm(nx, ny, nz)
-        if nm < 1e-8:
-            return 0.0
-        nx, ny, nz = (nx / nm, ny / nm, nz / nm)
-        dev = [abs(v[0] * nx + v[1] * ny + v[2] * nz) for v in vecs]
-        return math.sqrt(sum(d * d for d in dev) / len(dev))
-
-    group_entries: List[Dict[str, object]] = []
+    moved_substituents: set = set()
+    changed = False
     for metal_idx, grp in hapto_groups:
+        atoms = sorted(set(i for i in grp if 0 <= i < mol.GetNumAtoms()))
+        eta = len(atoms)
+        if eta < 3:
+            continue
         if metal_idx < 0 or metal_idx >= mol.GetNumAtoms():
             continue
-        atoms = sorted(set(i for i in grp if 0 <= i < mol.GetNumAtoms()))
-        if len(atoms) < 2:
-            continue
-        group_entries.append({"metal": metal_idx, "atoms": atoms})
-    if not group_entries:
-        return 0.0
 
-    by_metal: Dict[int, List[int]] = {}
-    for gi, ge in enumerate(group_entries):
-        by_metal.setdefault(int(ge["metal"]), []).append(gi)
+        # Current positions
+        pts = np.array([
+            [conf.GetAtomPosition(i).x,
+             conf.GetAtomPosition(i).y,
+             conf.GetAtomPosition(i).z]
+            for i in atoms
+        ], dtype=float)
+        mpos = np.array([
+            conf.GetAtomPosition(metal_idx).x,
+            conf.GetAtomPosition(metal_idx).y,
+            conf.GetAtomPosition(metal_idx).z,
+        ])
+        centroid = pts.mean(axis=0)
 
-    penalty = 0.0
-    for ge in group_entries:
-        metal_idx = int(ge["metal"])
-        atoms = list(ge["atoms"])
-        m = conf.GetAtomPosition(metal_idx)
-        cx, cy, cz = _centroid(atoms)
-        d_mc = _norm(cx - m.x, cy - m.y, cz - m.z)
-        if d_mc < 1.88:
-            penalty += (1.88 - d_mc) * 900.0
-        elif d_mc > 2.45:
-            penalty += (d_mc - 2.45) * 120.0
-        if len(atoms) >= 4:
-            rms = _planarity_rms(atoms)
-            if rms > 0.22:
-                penalty += (rms - 0.22) * 180.0
-
-    for _metal_idx, gidxs in by_metal.items():
-        for ii in range(len(gidxs)):
-            gi = gidxs[ii]
-            ai = list(group_entries[gi]["atoms"])
-            ci = _centroid(ai)
-            for jj in range(ii + 1, len(gidxs)):
-                gj = gidxs[jj]
-                aj = list(group_entries[gj]["atoms"])
-                if set(ai).intersection(aj):
-                    continue
-                cj = _centroid(aj)
-                eta_i = len(ai)
-                eta_j = len(aj)
-                pair_min_cc = 2.20
-                pair_min_cent = 2.85
-                if eta_i >= 4 and eta_j >= 4:
-                    pair_min_cc = 3.00
-                    pair_min_cent = 3.35
-                elif eta_i >= 4 or eta_j >= 4:
-                    pair_min_cc = 2.60
-                    pair_min_cent = 3.00
-                d_cent = _norm(cj[0] - ci[0], cj[1] - ci[1], cj[2] - ci[2])
-                min_cc = _group_min_distance(ai, aj)
-                if min_cc < pair_min_cc:
-                    penalty += (pair_min_cc - min_cc) * 1500.0
-                if d_cent < pair_min_cent:
-                    penalty += (pair_min_cent - d_cent) * 260.0
-
-    return penalty
-
-
-def _score_hapto_xyz_candidate(
-    xyz_delfin: str,
-    smiles: str,
-    mol_template,
-    hapto_groups: List[Tuple[int, List[int]]],
-) -> float:
-    """Score a hapto XYZ candidate (lower is better)."""
-    if not xyz_delfin:
-        return float("inf")
-
-    score = 0.0
-
-    strict_topology = _fragment_topology_ok(xyz_delfin, smiles)
-    if not strict_topology:
-        if _fragment_topology_relaxed_fallback_ok(xyz_delfin, smiles):
-            score += 2500.0
+        # Normal = metal -> centroid direction
+        mc_vec = centroid - mpos
+        mc_dist = float(np.linalg.norm(mc_vec))
+        if mc_dist < 1e-8:
+            q = pts - centroid
+            try:
+                _u, _s, vh = np.linalg.svd(q, full_matrices=False)
+            except np.linalg.LinAlgError:
+                continue
+            normal = vh[-1].copy()
         else:
-            return float("inf")
+            normal = mc_vec / mc_dist
+        n_norm = float(np.linalg.norm(normal))
+        if n_norm < 1e-12:
+            continue
+        normal = normal / n_norm
 
-    if mol_template is None or not RDKIT_AVAILABLE:
-        return score
+        # In-plane orthonormal basis
+        if abs(normal[0]) < 0.9:
+            ref = np.array([1.0, 0.0, 0.0])
+        else:
+            ref = np.array([0.0, 1.0, 0.0])
+        u = np.cross(normal, ref)
+        u /= np.linalg.norm(u)
+        v = np.cross(normal, u)
+        v /= np.linalg.norm(v)
 
+        # Build intra-group adjacency
+        atom_set = set(atoms)
+        idx_map = {a: i for i, a in enumerate(atoms)}
+        adj = [[] for _ in range(eta)]
+        for i_local, atom_idx in enumerate(atoms):
+            a = mol.GetAtomWithIdx(atom_idx)
+            for nbr in a.GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni in atom_set and ni != atom_idx:
+                    j_local = idx_map[ni]
+                    if j_local not in adj[i_local]:
+                        adj[i_local].append(j_local)
+
+        is_cyclic = all(len(adj[i]) >= 2 for i in range(eta))
+
+        metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+        target_mc = _target_mc_dist(metal_sym, eta)
+
+        if is_cyclic:
+            # --- Regular polygon placement for cyclic rings ---
+            # Find ring traversal order via graph walk
+            order = []
+            visited_r = [False] * eta
+            cur, prev = 0, -1
+            for _ in range(eta):
+                order.append(cur)
+                visited_r[cur] = True
+                nxt = -1
+                for nb in adj[cur]:
+                    if nb != prev and not visited_r[nb]:
+                        nxt = nb
+                        break
+                if nxt == -1:
+                    break
+                prev, cur = cur, nxt
+
+            if len(order) != eta:
+                # Fallback: angular ordering
+                rel = pts - centroid
+                angles = np.arctan2(rel @ v, rel @ u)
+                order = list(np.argsort(angles))
+
+            # Circumradius for regular polygon with side = target_cc
+            R = target_cc / (2.0 * np.sin(np.pi / eta))
+
+            # Starting angle: preserve first atom's angular position
+            rel0 = pts[order[0]] - centroid
+            start_angle = float(np.arctan2(rel0 @ v, rel0 @ u))
+
+            new_centroid = mpos + normal * target_mc
+
+            pts_new = np.zeros_like(pts)
+            for k, idx_in_order in enumerate(order):
+                angle = start_angle + 2.0 * np.pi * k / eta
+                pts_new[idx_in_order] = (
+                    new_centroid
+                    + R * np.cos(angle) * u
+                    + R * np.sin(angle) * v
+                )
+        else:
+            # --- Chain/non-cyclic: project + iterative regularization ---
+            q = pts - centroid
+            proj = q - np.outer(q @ normal, normal)
+            pts_new = proj + centroid
+
+            edges = []
+            for i_local in range(eta):
+                for j_local in adj[i_local]:
+                    if j_local > i_local:
+                        edges.append((i_local, j_local))
+
+            if edges:
+                for _it in range(20):
+                    for i_l, j_l in edges:
+                        pi = pts_new[i_l]
+                        pj = pts_new[j_l]
+                        vec = pj - pi
+                        dist = float(np.linalg.norm(vec))
+                        if dist < 1e-8:
+                            vec = np.random.default_rng(42).standard_normal(3)
+                            dist = float(np.linalg.norm(vec))
+                        correction = 0.5 * (dist - target_cc) / dist
+                        pts_new[i_l] = pi + correction * vec
+                        pts_new[j_l] = pj - correction * vec
+
+                ctr2 = pts_new.mean(axis=0)
+                q2 = pts_new - ctr2
+                proj2 = q2 - np.outer(q2 @ normal, normal)
+                pts_new = proj2 + ctr2
+
+            # Adjust M-centroid distance
+            centroid_new = pts_new.mean(axis=0)
+            mc_v = centroid_new - mpos
+            mc_d = float(np.linalg.norm(mc_v))
+            if mc_d > 1e-8:
+                shift = (target_mc / mc_d - 1.0) * mc_v
+                pts_new = pts_new + shift
+
+        # Write back ring atom coordinates
+        new_centroid_final = pts_new.mean(axis=0)
+        for i_local, atom_idx in enumerate(atoms):
+            conf.SetAtomPosition(
+                atom_idx,
+                Point3D(float(pts_new[i_local, 0]),
+                        float(pts_new[i_local, 1]),
+                        float(pts_new[i_local, 2])),
+            )
+
+        # Place substituents: correct bond distance + radial outward direction
+        all_hapto_atoms = set()
+        for _mi, _gi in hapto_groups:
+            all_hapto_atoms.update(_gi)
+
+        # Detect bridge atoms (bonded to ring atoms in 2+ different groups)
+        bridge_atoms: set = set()
+        for pot in range(mol.GetNumAtoms()):
+            if pot in all_hapto_atoms:
+                continue
+            pa = mol.GetAtomWithIdx(pot)
+            grps_connected: set = set()
+            for pnbr in pa.GetNeighbors():
+                pni = pnbr.GetIdx()
+                for g_idx, (_gm, g_atoms) in enumerate(hapto_groups):
+                    if pni in set(g_atoms):
+                        grps_connected.add(g_idx)
+            if len(grps_connected) >= 2:
+                bridge_atoms.add(pot)
+
+        for i_local, atom_idx in enumerate(atoms):
+            ring_pos = pts_new[i_local]
+            outward = ring_pos - new_centroid_final
+            outward_len = float(np.linalg.norm(outward))
+            if outward_len > 1e-8:
+                outward_unit = outward / outward_len
+            else:
+                outward_unit = u  # fallback
+
+            a = mol.GetAtomWithIdx(atom_idx)
+            subs = []
+            for nbr in a.GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni in atom_set or ni == metal_idx or ni in moved_substituents:
+                    continue
+                if ni in all_hapto_atoms or ni in bridge_atoms:
+                    continue
+                subs.append(nbr)
+
+            if not subs:
+                continue
+
+            # For single substituent: place radially outward
+            # For multiple: spread in a fan around the outward direction
+            for s_k, nbr in enumerate(subs):
+                ni = nbr.GetIdx()
+                nbr_sym = nbr.GetSymbol()
+                if nbr_sym == 'H':
+                    bond_d = 1.08
+                elif nbr_sym == 'Si':
+                    bond_d = 1.87
+                else:
+                    bond_d = 1.50
+
+                if len(subs) == 1:
+                    # Single sub: radially outward, tilted away from metal
+                    direction = outward_unit + 0.3 * normal
+                    d_norm = float(np.linalg.norm(direction))
+                    if d_norm > 1e-8:
+                        direction = direction / d_norm
+                    else:
+                        direction = outward_unit
+                else:
+                    # Multiple subs: spread around outward direction
+                    tilt_angle = (s_k - (len(subs) - 1) / 2.0) * 1.2
+                    direction = (
+                        outward_unit * np.cos(tilt_angle)
+                        + normal * np.sin(tilt_angle)
+                    )
+                    d_norm = float(np.linalg.norm(direction))
+                    if d_norm > 1e-8:
+                        direction = direction / d_norm
+
+                sub_pos = ring_pos + bond_d * direction
+                conf.SetAtomPosition(
+                    ni,
+                    Point3D(float(sub_pos[0]),
+                            float(sub_pos[1]),
+                            float(sub_pos[2])),
+                )
+                moved_substituents.add(ni)
+        changed = True
+
+    # --- Post-processing: ansa bridge constraint + bridge atom placement ---
+    if changed:
+        try:
+            import numpy as np
+            conf = mol.GetConformer(conf_id)
+        except Exception:
+            return changed
+
+        all_hapto_set = set()
+        group_of_atom: dict = {}
+        for g_idx, (_mi, _gi) in enumerate(hapto_groups):
+            all_hapto_set.update(_gi)
+            for ai in _gi:
+                group_of_atom[ai] = g_idx
+
+        # Find bridge atoms connecting different hapto groups
+        bridges = []
+        bridge_atom_set: set = set()
+        for pot in range(mol.GetNumAtoms()):
+            if pot in all_hapto_set:
+                continue
+            pa = mol.GetAtomWithIdx(pot)
+            connections = []
+            for pnbr in pa.GetNeighbors():
+                pni = pnbr.GetIdx()
+                if pni in group_of_atom:
+                    connections.append((pni, group_of_atom[pni]))
+            groups_seen = set(gi for _, gi in connections)
+            if len(groups_seen) >= 2:
+                bridges.append((pot, connections))
+                bridge_atom_set.add(pot)
+
+        # Collect movable atoms per group (ring + substituents, excluding bridges)
+        group_atom_sets: dict = {}
+        for g_idx, (_mi, _gi) in enumerate(hapto_groups):
+            g_set = set(_gi)
+            for ai in _gi:
+                a = mol.GetAtomWithIdx(ai)
+                for nbr in a.GetNeighbors():
+                    ni = nbr.GetIdx()
+                    if ni not in all_hapto_set and ni != _mi and ni not in bridge_atom_set:
+                        g_set.add(ni)
+            group_atom_sets[g_idx] = g_set
+
+        def _get_pos(idx):
+            p = conf.GetAtomPosition(idx)
+            return np.array([p.x, p.y, p.z])
+
+        def _set_pos(idx, arr):
+            conf.SetAtomPosition(idx, Point3D(float(arr[0]),
+                                               float(arr[1]),
+                                               float(arr[2])))
+
+        def _rodrigues_rotate(points, center, axis, angle):
+            k = axis / np.linalg.norm(axis)
+            cos_a, sin_a = np.cos(angle), np.sin(angle)
+            result = []
+            for p in points:
+                v = p - center
+                v_rot = (v * cos_a + np.cross(k, v) * sin_a
+                         + k * np.dot(k, v) * (1.0 - cos_a))
+                result.append(center + v_rot)
+            return result
+
+        def _orient_bridge_atom_inward(ring_atoms, all_atoms, c_bridge,
+                                        centroid_self, centroid_other, normal):
+            """Rotate ring around its normal so c_bridge faces toward other ring."""
+            toward = centroid_other - centroid_self
+            toward_proj = toward - np.dot(toward, normal) * normal
+            tp_len = float(np.linalg.norm(toward_proj))
+            if tp_len < 0.1:
+                return  # can't determine direction
+            toward_proj /= tp_len
+
+            v_bridge = _get_pos(c_bridge) - centroid_self
+            v_proj = v_bridge - np.dot(v_bridge, normal) * normal
+            vp_len = float(np.linalg.norm(v_proj))
+            if vp_len < 1e-8:
+                return
+            v_proj /= vp_len
+
+            cos_r = float(np.clip(np.dot(v_proj, toward_proj), -1.0, 1.0))
+            sin_r = float(np.dot(np.cross(v_proj, toward_proj), normal))
+            rot_angle = np.arctan2(sin_r, cos_r)
+            if abs(rot_angle) < 0.01:
+                return
+
+            pts = [_get_pos(a) for a in all_atoms]
+            pts_rot = _rodrigues_rotate(pts, centroid_self, normal, rot_angle)
+            for ai, new_p in zip(all_atoms, pts_rot):
+                _set_pos(ai, new_p)
+
+        # Process each ansa bridge using analytical tilt angle
+        for bridge_idx, connections in bridges:
+            bridge_sym = mol.GetAtomWithIdx(bridge_idx).GetSymbol()
+            if bridge_sym == 'Si':
+                bridge_bond = 1.87
+                bridge_angle_deg = 93.0
+            elif bridge_sym == 'C':
+                bridge_bond = 1.54
+                bridge_angle_deg = 109.5
+            else:
+                bridge_bond = 1.80
+                bridge_angle_deg = 100.0
+            d_target = 2.0 * bridge_bond * np.sin(np.radians(bridge_angle_deg) / 2.0)
+
+            by_group: dict = {}
+            for ring_atom, g_idx in connections:
+                by_group.setdefault(g_idx, []).append(ring_atom)
+            group_indices = list(by_group.keys())
+            if len(group_indices) < 2:
+                continue
+            gi, gj = group_indices[0], group_indices[1]
+            c_a = by_group[gi][0]
+            c_b = by_group[gj][0]
+            metal_idx = hapto_groups[gi][0]
+            metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+            grp_i = hapto_groups[gi][1]
+            grp_j = hapto_groups[gj][1]
+            atoms_i = list(group_atom_sets.get(gi, set(grp_i)))
+            atoms_j = list(group_atom_sets.get(gj, set(grp_j)))
+
+            eta_i = len(grp_i)
+            eta_j = len(grp_j)
+            r_i = _target_mc_dist(metal_sym, eta_i)
+            r_j = _target_mc_dist(metal_sym, eta_j)
+            R_i = target_cc / (2.0 * np.sin(np.pi / max(eta_i, 3)))
+            R_j = target_cc / (2.0 * np.sin(np.pi / max(eta_j, 3)))
+            r = (r_i + r_j) / 2.0
+            R = (R_i + R_j) / 2.0
+
+            # Analytical tilt: psi = arctan(R/r) + arcsin(d_target/(2*sqrt(r²+R²)))
+            hyp = np.sqrt(r ** 2 + R ** 2)
+            ratio = d_target / (2.0 * hyp)
+            if abs(ratio) > 1.0:
+                continue  # bridge too long for ring geometry
+            psi_target = np.arctan2(R, r) + np.arcsin(ratio)
+            alpha_target = 2.0 * psi_target
+
+            pos_m = _get_pos(metal_idx)
+            cent_i = np.mean([_get_pos(a) for a in grp_i], axis=0)
+            cent_j = np.mean([_get_pos(a) for a in grp_j], axis=0)
+            n_i = cent_i - pos_m
+            n_j = cent_j - pos_m
+            ni_len = float(np.linalg.norm(n_i))
+            nj_len = float(np.linalg.norm(n_j))
+            if ni_len < 1e-8 or nj_len < 1e-8:
+                continue
+            n_i /= ni_len
+            n_j /= nj_len
+
+            cos_alpha_cur = float(np.dot(n_i, n_j))
+            alpha_current = np.arccos(np.clip(cos_alpha_cur, -1.0, 1.0))
+
+            delta_tilt = (alpha_current - alpha_target) / 2.0
+            if delta_tilt < 0.01:
+                pass  # skip tilt, go straight to orient + place bridge
+            else:
+                # Tilt axis: perpendicular to plane of M, cent_i, cent_j
+                rot_axis = np.cross(n_i, n_j)
+                ra_len = float(np.linalg.norm(rot_axis))
+                if ra_len < 1e-8:
+                    if abs(n_i[0]) < 0.9:
+                        rot_axis = np.cross(n_i, np.array([1.0, 0.0, 0.0]))
+                    else:
+                        rot_axis = np.cross(n_i, np.array([0.0, 1.0, 0.0]))
+                    ra_len = float(np.linalg.norm(rot_axis))
+                rot_axis /= ra_len
+
+                # Check direction: +delta should increase n_i·n_j (reduce angle)
+                test_ci = _rodrigues_rotate([cent_i], pos_m, rot_axis, 0.01)[0]
+                test_ni = test_ci - pos_m
+                test_ni /= np.linalg.norm(test_ni)
+                if float(np.dot(test_ni, n_j)) < cos_alpha_cur:
+                    rot_axis = -rot_axis
+
+                # Apply single tilt to ring_i (+delta_tilt)
+                pts_i = [_get_pos(a) for a in atoms_i]
+                pts_i_rot = _rodrigues_rotate(pts_i, pos_m, rot_axis, +delta_tilt)
+                for ai, new_p in zip(atoms_i, pts_i_rot):
+                    _set_pos(ai, new_p)
+
+                # Apply single tilt to ring_j (-delta_tilt)
+                pts_j = [_get_pos(a) for a in atoms_j]
+                pts_j_rot = _rodrigues_rotate(pts_j, pos_m, rot_axis, -delta_tilt)
+                for aj, new_p in zip(atoms_j, pts_j_rot):
+                    _set_pos(aj, new_p)
+
+            # Orient bridge atoms to face each other (now that rings are tilted)
+            cent_i = np.mean([_get_pos(a) for a in grp_i], axis=0)
+            cent_j = np.mean([_get_pos(a) for a in grp_j], axis=0)
+            n_i = cent_i - pos_m
+            ni_len = float(np.linalg.norm(n_i))
+            n_j = cent_j - pos_m
+            nj_len = float(np.linalg.norm(n_j))
+            if ni_len > 1e-8:
+                n_i /= ni_len
+            if nj_len > 1e-8:
+                n_j /= nj_len
+            _orient_bridge_atom_inward(
+                grp_i, atoms_i, c_a, cent_i, cent_j, n_i)
+            _orient_bridge_atom_inward(
+                grp_j, atoms_j, c_b, cent_j, cent_i, n_j)
+
+            # --- Place bridge atom with correct geometry ---
+            pos_a = _get_pos(c_a)
+            pos_b = _get_pos(c_b)
+            mid = (pos_a + pos_b) / 2.0
+            d_ab = float(np.linalg.norm(pos_a - pos_b))
+            half_d = d_ab / 2.0
+            h_sq = bridge_bond ** 2 - half_d ** 2
+            h = float(np.sqrt(max(h_sq, 0.01)))
+
+            away = mid - _get_pos(metal_idx)
+            a_norm = float(np.linalg.norm(away))
+            if a_norm > 1e-8:
+                away = away / a_norm
+            else:
+                away = np.array([0.0, 1.0, 0.0])
+            bridge_pos = mid + h * away
+            _set_pos(bridge_idx, bridge_pos)
+
+            # Place bridge substituents in local frame
+            pa = mol.GetAtomWithIdx(bridge_idx)
+            ca_cb = pos_b - pos_a
+            x_ax = ca_cb / max(d_ab, 1e-8)
+            z_ax = away
+            y_ax = np.cross(z_ax, x_ax)
+            y_norm = float(np.linalg.norm(y_ax))
+            if y_norm > 1e-8:
+                y_ax = y_ax / y_norm
+            else:
+                y_ax = np.array([0.0, 0.0, 1.0])
+
+            sub_count = 0
+            for pnbr in pa.GetNeighbors():
+                pni = pnbr.GetIdx()
+                if pni in all_hapto_set:
+                    continue
+                if pnbr.GetSymbol() == 'C':
+                    sub_bond = 1.87
+                elif pnbr.GetSymbol() == 'H':
+                    sub_bond = 1.48
+                else:
+                    sub_bond = 1.50
+                sub_angle = (sub_count - 0.5) * 2.1
+                direction = (np.cos(sub_angle) * y_ax
+                             + np.sin(sub_angle) * z_ax)
+                d_norm = float(np.linalg.norm(direction))
+                if d_norm > 1e-8:
+                    direction /= d_norm
+                sub_pos = bridge_pos + sub_bond * direction
+                _set_pos(pni, sub_pos)
+                sub_count += 1
+
+    return changed
+
+
+def _correct_hapto_geometry(
+    mol,
+    conf_id: int,
+    hapto_groups: List[Tuple[int, List[int]]],
+    target_cc: float = 1.40,
+) -> bool:
+    """Topology-preserving hapto geometry correction for ETKDG embeddings.
+
+    Uses rigid-body transforms on connected fragments to fix M-centroid
+    distances and ring orientations while preserving all non-metal bond
+    lengths and angles from the ETKDG embedding.
+
+    Steps:
+      1. Identify fragment for each hapto group (BFS from ring atoms,
+         excluding metal and other groups' ring atoms).
+      2. For groups on the same metal, enforce angular separation
+         (opposite sides for 2 groups, ~120° for 3, etc.).
+      3. Rigid-body translate each fragment so M-centroid = target distance.
+      4. Flatten ring atoms onto plane perpendicular to M-centroid axis (SVD).
+      5. Gentle C-C regularization via spring iterations.
+      6. For ansa-bridged systems, adjust tilt and place bridge atoms.
+    """
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
+        return False
     try:
-        expected_atoms = mol_template.GetNumAtoms()
-        got_atoms = sum(1 for ln in xyz_delfin.splitlines() if ln.strip())
-        if got_atoms != expected_atoms:
-            score += 1800.0 + 10.0 * abs(got_atoms - expected_atoms)
+        import numpy as np
+    except ImportError:
+        return False
+    try:
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return False
+
+    def _gp(i):
+        p = conf.GetAtomPosition(i)
+        return np.array([p.x, p.y, p.z])
+
+    def _sp(i, arr):
+        conf.SetAtomPosition(i, Point3D(float(arr[0]), float(arr[1]),
+                                         float(arr[2])))
+
+    # -- Collect all hapto atoms and bridge atoms --
+    all_hapto = set()
+    group_of = {}
+    for gi, (mi, catoms) in enumerate(hapto_groups):
+        for a in catoms:
+            all_hapto.add(a)
+            group_of[a] = gi
+
+    metals = set(mi for mi, _ in hapto_groups)
+    # Also include ALL metal atoms (not just hapto metals) so that
+    # BFS fragments don't cross into other metals' coordination spheres.
+    for ai in range(mol.GetNumAtoms()):
+        if mol.GetAtomWithIdx(ai).GetSymbol() in _METAL_SET:
+            metals.add(ai)
+
+    bridge_atoms: set = set()
+    for ai in range(mol.GetNumAtoms()):
+        if ai in all_hapto or ai in metals:
+            continue
+        a = mol.GetAtomWithIdx(ai)
+        groups_seen = set()
+        for nbr in a.GetNeighbors():
+            ni = nbr.GetIdx()
+            if ni in group_of:
+                groups_seen.add(group_of[ni])
+        if len(groups_seen) >= 2:
+            bridge_atoms.add(ai)
+
+    # -- Build exclusion set: atoms in rings containing sigma donors to
+    #    other metals.  These must NOT be pulled along when rotating
+    #    a hapto fragment, as they belong to another metal's coordination
+    #    sphere (e.g. pyridine ring bonded to Pt in an Fe/Pt complex). --
+    sigma_ring_exclude: set = set()
+    ri = mol.GetRingInfo()
+    try:
+        all_rings = ri.AtomRings()
+    except Exception:
+        all_rings = []
+    for m_idx in metals:
+        for nbr in mol.GetAtomWithIdx(m_idx).GetNeighbors():
+            ni = nbr.GetIdx()
+            if ni in all_hapto or ni in metals:
+                continue
+            # ni is a sigma donor to metal m_idx
+            # Exclude all ring atoms of rings containing ni
+            for ring in all_rings:
+                if ni in ring:
+                    sigma_ring_exclude.update(ring)
+
+    # -- Find fragment for each group (BFS, excluding metal/other groups/bridges) --
+    fragments: List[set] = []
+    for gi, (mi, catoms) in enumerate(hapto_groups):
+        frag = set(catoms)
+        queue = list(catoms)
+        while queue:
+            cur = queue.pop(0)
+            for nbr in mol.GetAtomWithIdx(cur).GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni in frag or ni in metals or ni in bridge_atoms:
+                    continue
+                if ni in all_hapto and group_of.get(ni) != gi:
+                    continue
+                # Exclude sigma donors to other metals and their ring atoms
+                if ni in sigma_ring_exclude:
+                    continue
+                bonded_to_other = False
+                for nn in mol.GetAtomWithIdx(ni).GetNeighbors():
+                    nni = nn.GetIdx()
+                    if nni in metals and nni != mi:
+                        bonded_to_other = True
+                        break
+                if bonded_to_other:
+                    continue
+                frag.add(ni)
+                queue.append(ni)
+        fragments.append(frag)
+
+    # -- Group hapto entries by metal --
+    by_metal: Dict[int, List[int]] = {}
+    for gi, (mi, _) in enumerate(hapto_groups):
+        by_metal.setdefault(mi, []).append(gi)
+
+    changed = False
+
+    # =====================================================================
+    # STEP 1: Place hapto groups at analytically ideal positions on the
+    # coordination sphere.  Uses rigid-body rotation around the metal
+    # centre (preserves ALL internal distances within each fragment).
+    #
+    # 2 groups without ansa bridge → sandwich (~175°)
+    # 2 groups with ansa bridge   → bent (~130°)
+    # 3+ groups                   → evenly distributed in a plane
+    # =====================================================================
+
+    def _rodrigues(v, k, angle):
+        """Rodrigues rotation of vector *v* around unit axis *k*."""
+        ca, sa = np.cos(angle), np.sin(angle)
+        return v * ca + np.cross(k, v) * sa + k * np.dot(k, v) * (1.0 - ca)
+
+    def _rotate_fragment(frag_indices, centre, cur_dir, tgt_dir):
+        """Rigid-body rotation of fragment so *cur_dir* maps to *tgt_dir*."""
+        cd = np.asarray(cur_dir, dtype=float)
+        td = np.asarray(tgt_dir, dtype=float)
+        cos_a = float(np.clip(np.dot(cd, td), -1.0, 1.0))
+        if cos_a > 0.9999:
+            return  # already aligned
+        cross = np.cross(cd, td)
+        cl = float(np.linalg.norm(cross))
+        if cl < 1e-8:
+            # Anti-parallel – pick any perpendicular axis
+            perp = np.array([1, 0, 0]) if abs(cd[0]) < 0.9 else np.array([0, 1, 0])
+            cross = np.cross(cd, perp)
+            cl = float(np.linalg.norm(cross))
+        k = cross / cl
+        rot_angle = np.arccos(cos_a)
+        for ai in frag_indices:
+            v = _gp(ai) - centre
+            _sp(ai, centre + _rodrigues(v, k, rot_angle))
+
+    def _groups_bridged(gi, gj):
+        """True if groups *gi* and *gj* share an ansa bridge atom."""
+        for bi in bridge_atoms:
+            gs = set()
+            for nbr in mol.GetAtomWithIdx(bi).GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni in group_of:
+                    gs.add(group_of[ni])
+            if gi in gs and gj in gs:
+                return True
+        return False
+
+    for mi, gidxs in by_metal.items():
+        if len(gidxs) < 2:
+            continue
+        mpos = _gp(mi)
+        n_grp = len(gidxs)
+
+        # Current centroid unit-directions from metal
+        cur_dirs: Dict[int, np.ndarray] = {}
+        for gi in gidxs:
+            c = np.mean([_gp(a) for a in hapto_groups[gi][1]], axis=0)
+            v = c - mpos
+            d = float(np.linalg.norm(v))
+            cur_dirs[gi] = v / d if d > 1e-8 else np.array([1.0, 0, 0])
+
+        # --- Compute ideal directions on sphere ---
+        ideal_dirs: Dict[int, np.ndarray] = {}
+
+        if n_grp == 2:
+            gi, gj = gidxs
+            bridged = _groups_bridged(gi, gj)
+            target_angle = np.radians(130.0 if bridged else 175.0)
+
+            d_i = cur_dirs[gi]
+            ideal_dirs[gi] = d_i  # keep group i fixed
+
+            # Rotation axis: perpendicular to d_i in the (d_i, d_j) plane
+            cross = np.cross(d_i, cur_dirs[gj])
+            cl = float(np.linalg.norm(cross))
+            if cl < 1e-8:
+                perp = np.array([1, 0, 0]) if abs(d_i[0]) < 0.9 else np.array([0, 1, 0])
+                cross = np.cross(d_i, perp)
+                cl = float(np.linalg.norm(cross))
+            rot_ax = cross / cl
+            ideal_dirs[gj] = _rodrigues(d_i, rot_ax, target_angle)
+
+        elif n_grp >= 3:
+            # Best-fit plane through current centroid directions
+            pts = np.array([cur_dirs[gi] for gi in gidxs])
+            try:
+                _, _, vh = np.linalg.svd(
+                    pts - pts.mean(axis=0), full_matrices=False)
+                px = vh[0] / np.linalg.norm(vh[0])
+                py = vh[1] / np.linalg.norm(vh[1])
+            except np.linalg.LinAlgError:
+                px = np.array([1, 0, 0])
+                py = np.array([0, 1, 0])
+
+            # Starting angle from first group's projection
+            start = np.arctan2(
+                float(np.dot(cur_dirs[gidxs[0]], py)),
+                float(np.dot(cur_dirs[gidxs[0]], px)),
+            )
+            for k, gi in enumerate(gidxs):
+                a = start + 2.0 * np.pi * k / n_grp
+                d = np.cos(a) * px + np.sin(a) * py
+                dl = float(np.linalg.norm(d))
+                ideal_dirs[gi] = d / dl if dl > 1e-8 else px
+
+        # --- Rotate each fragment to its ideal direction ---
+        for gi in gidxs:
+            if gi not in ideal_dirs:
+                continue
+            _rotate_fragment(fragments[gi], mpos, cur_dirs[gi], ideal_dirs[gi])
+            changed = True
+
+    # =====================================================================
+    # STEP 2: Rigid-body translate fragments to target M-centroid distance
+    # =====================================================================
+    for gi, (mi, catoms) in enumerate(hapto_groups):
+        mpos = _gp(mi)
+        centroid = np.mean([_gp(a) for a in catoms], axis=0)
+        mc_vec = centroid - mpos
+        mc_dist = float(np.linalg.norm(mc_vec))
+        if mc_dist < 1e-8:
+            mc_dir = np.array([1.0, 0.0, 0.0])
+            mc_dist = 1e-8
+        else:
+            mc_dir = mc_vec / mc_dist
+
+        metal_sym = mol.GetAtomWithIdx(mi).GetSymbol()
+        target_mc = _target_mc_dist(metal_sym, len(catoms))
+
+        shift = mc_dir * (target_mc - mc_dist)
+        if abs(target_mc - mc_dist) > 0.01:
+            for ai in fragments[gi]:
+                _sp(ai, _gp(ai) + shift)
+            changed = True
+
+    # =====================================================================
+    # STEP 3: Rotate ring plane to be perpendicular to M-centroid axis
+    # Uses rigid-body rotation (preserves ALL internal distances).
+    # =====================================================================
+    for gi, (mi, catoms) in enumerate(hapto_groups):
+        atoms = sorted(set(catoms))
+        eta = len(atoms)
+        if eta < 3:
+            continue
+        mpos = _gp(mi)
+        pts = np.array([_gp(a) for a in atoms])
+        centroid = pts.mean(axis=0)
+        mc_vec = centroid - mpos
+        mc_dist = float(np.linalg.norm(mc_vec))
+        if mc_dist < 1e-8:
+            continue
+        target_normal = mc_vec / mc_dist
+
+        # Find current ring plane normal via SVD
+        q = pts - centroid
+        try:
+            _u, _s, vh = np.linalg.svd(q, full_matrices=False)
+        except np.linalg.LinAlgError:
+            continue
+        ring_normal = vh[-1].copy()
+        # Ensure ring_normal points same way as target_normal
+        if np.dot(ring_normal, target_normal) < 0:
+            ring_normal = -ring_normal
+
+        # Compute rotation from ring_normal to target_normal
+        cos_a = float(np.clip(np.dot(ring_normal, target_normal), -1, 1))
+        if cos_a > 0.9999:
+            continue  # already aligned
+        rot_axis = np.cross(ring_normal, target_normal)
+        ra_len = float(np.linalg.norm(rot_axis))
+        if ra_len < 1e-10:
+            continue
+        rot_axis /= ra_len
+        angle = np.arccos(cos_a)
+        cos_r = np.cos(angle)
+        sin_r = np.sin(angle)
+        k = rot_axis
+
+        # Apply Rodrigues rotation to entire fragment (centered at centroid)
+        for ai in fragments[gi]:
+            v = _gp(ai) - centroid
+            v_rot = (v * cos_r + np.cross(k, v) * sin_r
+                     + k * np.dot(k, v) * (1.0 - cos_r))
+            _sp(ai, centroid + v_rot)
+        changed = True
+
+    # =====================================================================
+    # STEP 4: Ring shape correction.
+    # For cyclic rings: reconstruct as regular polygon (optimal geometry
+    # for Cp/arene hapto groups).  For non-cyclic: gentle spring correction.
+    # Only ring atoms + their direct H substituents are moved.
+    # Polygon starting angle optimized to minimize clashes with environment.
+    # =====================================================================
+    # Determine max number of groups on a single metal (for adaptive behavior)
+    max_groups_per_metal = max(
+        (len(gidxs) for gidxs in by_metal.values()), default=1
+    )
+
+    for gi, (mi, catoms) in enumerate(hapto_groups):
+        atoms = sorted(set(catoms))
+        eta = len(atoms)
+        if eta < 3:
+            continue
+        atom_set = set(atoms)
+
+        # Build edges (intra-ring bonds)
+        edges = []
+        for ai in atoms:
+            for nbr in mol.GetAtomWithIdx(ai).GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni in atom_set and ni > ai:
+                    edges.append((ai, ni))
+
+        if not edges:
+            continue
+
+        # Collect H substituents for each ring atom
+        h_subs: Dict[int, List[int]] = {}
+        for ai in atoms:
+            hs = []
+            for nbr in mol.GetAtomWithIdx(ai).GetNeighbors():
+                ni = nbr.GetIdx()
+                if nbr.GetSymbol() == 'H' and ni not in all_hapto:
+                    hs.append(ni)
+            h_subs[ai] = hs
+
+        # Reconstruct cyclic rings as regular polygons.
+        # Choose starting angle to minimize clashes with non-ring atoms.
+        mpos = _gp(mi)
+        ring_pts = np.array([_gp(a) for a in atoms])
+        ring_centroid = ring_pts.mean(axis=0)
+        mc_vec = ring_centroid - mpos
+        mc_norm = float(np.linalg.norm(mc_vec))
+        if mc_norm < 1e-8:
+            continue
+        plane_normal = mc_vec / mc_norm
+
+        # In-plane basis
+        if abs(plane_normal[0]) < 0.9:
+            ref = np.array([1.0, 0.0, 0.0])
+        else:
+            ref = np.array([0.0, 1.0, 0.0])
+        u = np.cross(plane_normal, ref)
+        u /= np.linalg.norm(u)
+        v = np.cross(plane_normal, u)
+        v /= np.linalg.norm(v)
+
+        # Build adjacency for ring traversal
+        adj_r = [[] for _ in range(eta)]
+        idx_map = {a: i for i, a in enumerate(atoms)}
+        for ai in atoms:
+            for nbr in mol.GetAtomWithIdx(ai).GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni in atom_set and ni != ai:
+                    jl = idx_map[ni]
+                    il = idx_map[ai]
+                    if jl not in adj_r[il]:
+                        adj_r[il].append(jl)
+
+        is_cyclic = all(len(adj_r[i]) >= 2 for i in range(eta))
+
+        if not is_cyclic:
+            # Non-cyclic groups (rare): gentle spring-based C-C correction
+            for _it in range(30):
+                max_err = 0.0
+                for ai, aj in edges:
+                    pi = _gp(ai)
+                    pj = _gp(aj)
+                    vec = pj - pi
+                    d = float(np.linalg.norm(vec))
+                    if d < 1e-8:
+                        continue
+                    err = d - target_cc
+                    max_err = max(max_err, abs(err))
+                    c = 0.15 * err / d * vec
+                    c = c - np.dot(c, plane_normal) * plane_normal
+                    _sp(ai, pi + c)
+                    _sp(aj, pj - c)
+                if max_err < 0.1:
+                    break
+            changed = True
+            continue
+
+        # -- Cyclic rings: always reconstruct as regular polygon --
+        # For each ring atom, find its "branch" — all fragment atoms
+        # reachable exclusively through that ring atom.  These move
+        # rigidly with the ring atom (preserves substituent bond lengths).
+
+        # Build branch for each ring atom (BFS into fragment, not
+        # crossing other ring atoms or metal or bridges)
+        branches: Dict[int, List[int]] = {a: [] for a in atoms}
+        for ai in atoms:
+            visited_br: set = set(atoms) | metals | bridge_atoms | sigma_ring_exclude
+            queue_br = []
+            for nbr in mol.GetAtomWithIdx(ai).GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni not in visited_br:
+                    queue_br.append(ni)
+                    visited_br.add(ni)
+            while queue_br:
+                cur_br = queue_br.pop(0)
+                branches[ai].append(cur_br)
+                for nbr in mol.GetAtomWithIdx(cur_br).GetNeighbors():
+                    ni = nbr.GetIdx()
+                    if ni not in visited_br:
+                        visited_br.add(ni)
+                        queue_br.append(ni)
+
+        # Ring traversal order
+        order = []
+        visited_r = [False] * eta
+        cur, prev = 0, -1
+        for _ in range(eta):
+            order.append(cur)
+            visited_r[cur] = True
+            nxt = -1
+            for nb in adj_r[cur]:
+                if nb != prev and not visited_r[nb]:
+                    nxt = nb
+                    break
+            if nxt == -1:
+                break
+            prev, cur = cur, nxt
+
+        if len(order) != eta:
+            rel = ring_pts - ring_centroid
+            angles_f = np.arctan2(rel @ v, rel @ u)
+            order = list(np.argsort(angles_f))
+
+        # Circumradius for regular polygon
+        R = target_cc / (2.0 * np.sin(np.pi / eta))
+
+        # Collect atom indices that belong to THIS group's branches
+        # (these move with the ring, so exclude from clash scoring)
+        own_branch_atoms = set(atoms)
+        for ai in atoms:
+            own_branch_atoms.update(branches[ai])
+
+        # Collect non-ring, non-metal, non-own-branch heavy atom positions
+        # for clash scoring
+        env_atoms = []
+        for eidx in range(mol.GetNumAtoms()):
+            if eidx in own_branch_atoms or eidx in metals or eidx in bridge_atoms:
+                continue
+            if mol.GetAtomWithIdx(eidx).GetSymbol() == 'H':
+                continue
+            env_atoms.append(_gp(eidx))
+
+        # Try multiple starting angles, pick the one with fewest clashes
+        best_pts = None
+        best_clash_score = float('inf')
+        n_angles = 12
+        for a_try in range(n_angles):
+            start_angle = 2.0 * np.pi * a_try / n_angles
+            pts_try = np.zeros((eta, 3))
+            for k, idx_in_order in enumerate(order):
+                angle = start_angle + 2.0 * np.pi * k / eta
+                pts_try[idx_in_order] = (
+                    ring_centroid
+                    + R * np.cos(angle) * u
+                    + R * np.sin(angle) * v
+                )
+            # Score: sum of 1/d for close contacts with environment
+            clash_score = 0.0
+            for ep in env_atoms:
+                for pi in pts_try:
+                    d = float(np.linalg.norm(pi - ep))
+                    if d < 1.5:
+                        clash_score += (1.5 - d) ** 2
+            if clash_score < best_clash_score:
+                best_clash_score = clash_score
+                best_pts = pts_try
+
+        if best_pts is None:
+            continue
+
+        # Apply polygon positions, moving entire branches with each ring atom
+        for i_loc, ai in enumerate(atoms):
+            delta = best_pts[i_loc] - _gp(ai)
+            if float(np.linalg.norm(delta)) < 0.001:
+                continue
+            _sp(ai, best_pts[i_loc])
+            for bi in branches[ai]:
+                _sp(bi, _gp(bi) + delta)
+
+        # Orient branches outward: if a branch root atom is closer to the
+        # ring centroid than its ring parent, reflect it across the parent
+        # in the outward direction (away from centroid).
+        for ai in atoms:
+            if not branches[ai]:
+                continue
+            ring_pos = _gp(ai)
+            outward = ring_pos - ring_centroid
+            outward_len = float(np.linalg.norm(outward))
+            if outward_len < 1e-8:
+                continue
+            outward_unit = outward / outward_len
+            # Check first branch atom (root of substituent)
+            root = branches[ai][0]
+            root_pos = _gp(root)
+            branch_dir = root_pos - ring_pos
+            # If branch points inward (toward centroid), reflect it
+            if float(np.dot(branch_dir, outward_unit)) < 0:
+                # Reflect all branch atoms across the plane perpendicular
+                # to outward through the ring atom
+                for bi in branches[ai]:
+                    bp = _gp(bi)
+                    v = bp - ring_pos
+                    proj = float(np.dot(v, outward_unit))
+                    # Reflect across plane perpendicular to outward
+                    _sp(bi, bp - 2.0 * proj * outward_unit)
+
+        changed = True
+
+    # =====================================================================
+    # STEP 5: Ansa bridge handling
+    # =====================================================================
+    if bridge_atoms and changed:
+        for bridge_idx in bridge_atoms:
+            ba = mol.GetAtomWithIdx(bridge_idx)
+            bridge_sym = ba.GetSymbol()
+            if bridge_sym == 'Si':
+                bridge_bond = 1.87
+            elif bridge_sym == 'C':
+                bridge_bond = 1.54
+            else:
+                bridge_bond = 1.80
+
+            # Find ring atoms this bridge connects
+            ring_nbrs = []
+            for nbr in ba.GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni in all_hapto:
+                    ring_nbrs.append((ni, group_of[ni]))
+            if len(ring_nbrs) < 2:
+                continue
+
+            # Place bridge at midpoint of connected ring atoms, pushed outward
+            ring_pos = [_gp(rn) for rn, _ in ring_nbrs]
+            mid = np.mean(ring_pos, axis=0)
+
+            # Find the metal for outward direction
+            mi_bridge = hapto_groups[ring_nbrs[0][1]][0]
+            mpos = _gp(mi_bridge)
+            away = mid - mpos
+            aw_len = float(np.linalg.norm(away))
+            if aw_len > 1e-8:
+                away /= aw_len
+            else:
+                away = np.array([0.0, 1.0, 0.0])
+
+            # Distance between the two ring attachment points
+            if len(ring_pos) >= 2:
+                d_ab = float(np.linalg.norm(ring_pos[0] - ring_pos[1]))
+                half_d = d_ab / 2.0
+                h_sq = bridge_bond ** 2 - half_d ** 2
+                h = float(np.sqrt(max(h_sq, 0.01)))
+            else:
+                h = bridge_bond * 0.7
+
+            bridge_pos = mid + h * away
+
+            # Ensure bridge atom is at least 2.5A from metal
+            bm_vec = bridge_pos - mpos
+            bm_dist = float(np.linalg.norm(bm_vec))
+            min_bridge_metal = 2.5
+            if bm_dist < min_bridge_metal and bm_dist > 1e-8:
+                bridge_pos = mpos + bm_vec / bm_dist * min_bridge_metal
+            elif bm_dist < 1e-8:
+                bridge_pos = mpos + away * min_bridge_metal
+
+            _sp(bridge_idx, bridge_pos)
+            changed = True
+
+            # Place non-hapto substituents on the bridge atom
+            sub_count = 0
+            ca_cb = ring_pos[1] - ring_pos[0] if len(ring_pos) >= 2 else np.array([1, 0, 0])
+            ca_cb_len = float(np.linalg.norm(ca_cb))
+            if ca_cb_len > 1e-8:
+                x_ax = ca_cb / ca_cb_len
+            else:
+                x_ax = np.array([1.0, 0.0, 0.0])
+            z_ax = away
+            y_ax = np.cross(z_ax, x_ax)
+            y_norm = float(np.linalg.norm(y_ax))
+            if y_norm > 1e-8:
+                y_ax /= y_norm
+            else:
+                y_ax = np.array([0.0, 0.0, 1.0])
+
+            for nbr in ba.GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni in all_hapto:
+                    continue
+                nsym = nbr.GetSymbol()
+                if nsym == 'C':
+                    sub_bond = 1.87
+                elif nsym == 'H':
+                    sub_bond = 1.48
+                else:
+                    sub_bond = 1.50
+                sub_angle = (sub_count - 0.5) * 2.1
+                direction = (np.cos(sub_angle) * y_ax
+                             + np.sin(sub_angle) * z_ax)
+                d_n = float(np.linalg.norm(direction))
+                if d_n > 1e-8:
+                    direction /= d_n
+                _sp(ni, bridge_pos + sub_bond * direction)
+                sub_count += 1
+
+    # =====================================================================
+    # STEP 6: Fix H orientations on ring carbons (radially outward + tilt)
+    # =====================================================================
+    for gi, (mi, catoms) in enumerate(hapto_groups):
+        atoms = sorted(set(catoms))
+        mpos = _gp(mi)
+        centroid = np.mean([_gp(a) for a in atoms], axis=0)
+        mc_vec = centroid - mpos
+        mc_dist = float(np.linalg.norm(mc_vec))
+        if mc_dist < 1e-8:
+            continue
+        normal = mc_vec / mc_dist
+
+        for ai in atoms:
+            ring_pos = _gp(ai)
+            outward = ring_pos - centroid
+            out_len = float(np.linalg.norm(outward))
+            if out_len > 1e-8:
+                outward_unit = outward / out_len
+            else:
+                continue
+
+            a = mol.GetAtomWithIdx(ai)
+            h_nbrs = []
+            for nbr in a.GetNeighbors():
+                ni = nbr.GetIdx()
+                if nbr.GetSymbol() == 'H' and ni not in all_hapto:
+                    h_nbrs.append(ni)
+
+            if not h_nbrs:
+                continue
+
+            # Place H atoms radially outward, tilted away from metal
+            direction = outward_unit + 0.3 * normal
+            d_n = float(np.linalg.norm(direction))
+            if d_n > 1e-8:
+                direction /= d_n
+            for hi in h_nbrs:
+                _sp(hi, ring_pos + 1.08 * direction)
+                changed = True
+
+    # =====================================================================
+    # STEP 7: Clash resolution — push apart any non-bonded atoms that
+    # are too close.  Hapto ring atoms are frozen; only non-ring atoms
+    # are pushed outward from the metal or from each other.
+    # Also enforce minimum distance from metals for non-bonded atoms.
+    # =====================================================================
+    if changed:
+        # Determine minimum allowed distances
+        frozen = set()
+        for _mi, catoms in hapto_groups:
+            frozen.update(catoms)
+            frozen.add(_mi)
+
+        # Build set of atom pairs that are directly bonded (should not be
+        # pushed apart — bond length is the embedding's responsibility)
+        bonded_pairs: set = set()
+        for bond in mol.GetBonds():
+            ai, aj = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+            bonded_pairs.add((min(ai, aj), max(ai, aj)))
+
+        # Build "rigid group" for each non-frozen heavy atom: the atom
+        # itself plus all its directly bonded H atoms that are also not
+        # frozen.  When a heavy atom is pushed, its H group moves with it.
+        rigid_group: Dict[int, List[int]] = {}
+        h_parent: Dict[int, int] = {}  # H atom → parent heavy atom
+        for ai in range(mol.GetNumAtoms()):
+            if ai in frozen:
+                continue
+            a = mol.GetAtomWithIdx(ai)
+            if a.GetSymbol() == 'H':
+                continue
+            hs = []
+            for nbr in a.GetNeighbors():
+                ni = nbr.GetIdx()
+                if nbr.GetSymbol() == 'H' and ni not in frozen:
+                    hs.append(ni)
+                    h_parent[ni] = ai
+            rigid_group[ai] = hs
+
+        def _push_atom(idx, displacement):
+            """Push atom + its bonded H group by displacement vector.
+            If idx is an H atom, redirect to its parent heavy atom
+            (unless the parent is frozen)."""
+            if idx in h_parent:
+                parent = h_parent[idx]
+                if parent not in frozen:
+                    idx = parent
+                # else: push H directly (parent frozen, can't move it)
+            if idx in frozen:
+                return  # safety: never move frozen atoms
+            _sp(idx, _gp(idx) + displacement)
+            if idx in rigid_group:
+                for hi in rigid_group[idx]:
+                    _sp(hi, _gp(hi) + displacement)
+
+        n_atoms = mol.GetNumAtoms()
+        for _pass in range(40):
+            any_push = False
+            for i in range(n_atoms):
+                for j in range(i + 1, n_atoms):
+                    i_frozen = i in frozen
+                    j_frozen = j in frozen
+                    if i_frozen and j_frozen:
+                        continue
+                    if (i, j) in bonded_pairs:
+                        continue
+
+                    pi = _gp(i)
+                    pj = _gp(j)
+                    d = float(np.linalg.norm(pi - pj))
+
+                    si = mol.GetAtomWithIdx(i).GetSymbol()
+                    sj = mol.GetAtomWithIdx(j).GetSymbol()
+
+                    i_is_metal = i in metals
+                    j_is_metal = j in metals
+                    if i_is_metal or j_is_metal:
+                        other_sym = sj if i_is_metal else si
+                        min_d = 2.5 if other_sym == 'H' else 2.2
+                    elif si == 'H' and sj == 'H':
+                        min_d = 1.5
+                    elif si == 'H' or sj == 'H':
+                        min_d = 1.0
+                    else:
+                        min_d = 1.2
+
+                    if d >= min_d:
+                        continue
+
+                    if d < 1e-8:
+                        direction = np.random.default_rng(
+                            42 + _pass).standard_normal(3)
+                        direction /= np.linalg.norm(direction)
+                    else:
+                        direction = (pj - pi) / d
+
+                    gap = min_d - d
+                    if i_frozen:
+                        _push_atom(j, gap * direction)
+                    elif j_frozen:
+                        _push_atom(i, -gap * direction)
+                    else:
+                        _push_atom(i, -0.5 * gap * direction)
+                        _push_atom(j, 0.5 * gap * direction)
+                    any_push = True
+
+            if not any_push:
+                break
+
+        # Final bond repair: fix any bonds distorted by the clash pushes.
+        # For each bond, if the distance deviates >20% from the expected
+        # bond length, move the lighter/non-frozen atom to correct it.
+        for bond in mol.GetBonds():
+            ai = bond.GetBeginAtomIdx()
+            aj = bond.GetEndAtomIdx()
+            si = mol.GetAtomWithIdx(ai).GetSymbol()
+            sj = mol.GetAtomWithIdx(aj).GetSymbol()
+            if si in _METAL_SET or sj in _METAL_SET:
+                continue  # skip metal bonds
+            pi = _gp(ai)
+            pj = _gp(aj)
+            d = float(np.linalg.norm(pi - pj))
+            # Expected bond lengths
+            if si == 'H' or sj == 'H':
+                expected = 1.08
+            elif si == 'Si' or sj == 'Si':
+                expected = 1.87
+            else:
+                expected = 1.50
+            if d < 1e-8 or abs(d - expected) / expected < 0.20:
+                continue
+            # Move the non-frozen (or lighter) atom
+            direction = (pj - pi) / d
+            correction = expected - d
+            ai_frozen = ai in frozen
+            aj_frozen = aj in frozen
+            if ai_frozen and not aj_frozen:
+                _sp(aj, pj + correction * direction)
+            elif aj_frozen and not ai_frozen:
+                _sp(ai, pi - correction * direction)
+            elif not ai_frozen and not aj_frozen:
+                # Move H toward its parent, or split equally
+                if si == 'H':
+                    _sp(ai, pi - correction * direction)
+                elif sj == 'H':
+                    _sp(aj, pj + correction * direction)
+                else:
+                    _sp(ai, pi - 0.5 * correction * direction)
+                    _sp(aj, pj + 0.5 * correction * direction)
+
+    return changed
+
+
+# ---------------------------------------------------------------------------
+# BFS propagation for non-hapto atoms after Phase 1 correction
+# ---------------------------------------------------------------------------
+
+def _propagate_non_hapto_atoms(
+    mol,
+    conf_id,
+    hapto_groups,
+    extra_fixed_indices: Optional[set] = None,
+):
+    """Re-place non-hapto atoms using BFS from the fixed hapto scaffold.
+
+    After Phase 1 corrects hapto ring geometry, atoms NOT reachable from
+    hapto rings (without crossing metals) may still be in bad ETKDG positions.
+    These are typically sigma ligands and their substituents.  This function
+    identifies them and re-places them using VSEPR-based local geometry,
+    followed by bond-length relaxation and clash resolution.
+    """
+    from collections import deque
+    import numpy as np
+
+    conf = mol.GetConformer(conf_id)
+    n_atoms = mol.GetNumAtoms()
+
+    def _gp(i):
+        p = conf.GetAtomPosition(i)
+        return np.array([p.x, p.y, p.z])
+
+    def _sp(i, pos):
+        conf.SetAtomPosition(i, Point3D(
+            float(pos[0]), float(pos[1]), float(pos[2])))
+
+    # Identify metals and hapto ring atoms
+    metals = set()
+    hapto_ring_atoms = set()
+    for mi, catoms in hapto_groups:
+        metals.add(mi)
+        for a in catoms:
+            hapto_ring_atoms.add(a)
+
+    # Compute hapto-reachable set: BFS from ring atoms, not crossing metals.
+    # These atoms were already corrected by branch-aware rotation in Phase 1.
+    hapto_reachable = set(hapto_ring_atoms)
+    bfs_q = deque(list(hapto_ring_atoms))
+    while bfs_q:
+        cur = bfs_q.popleft()
+        for nbr in mol.GetAtomWithIdx(cur).GetNeighbors():
+            ni = nbr.GetIdx()
+            if ni not in hapto_reachable and ni not in metals:
+                hapto_reachable.add(ni)
+                bfs_q.append(ni)
+
+    # Fixed = metals + hapto_reachable (already in correct positions)
+    fixed = metals | hapto_reachable
+    if extra_fixed_indices:
+        fixed = fixed | set(extra_fixed_indices)
+
+    # Find atoms that need re-placement
+    needs_placement = set()
+    for ai in range(n_atoms):
+        if ai not in fixed:
+            needs_placement.add(ai)
+
+    if not needs_placement:
+        return  # all atoms already in good positions
+
+    # Bond length helper
+    def _bl(sym_a, sym_b):
+        if sym_a == 'H' or sym_b == 'H':
+            other = sym_b if sym_a == 'H' else sym_a
+            return {'C': 1.08, 'N': 1.01, 'O': 0.96, 'Si': 1.48,
+                    'S': 1.34, 'P': 1.42}.get(other, 1.08)
+        pair = frozenset([sym_a, sym_b])
+        _bl_map = {
+            frozenset(['C', 'C']): 1.50, frozenset(['C', 'N']): 1.47,
+            frozenset(['C', 'O']): 1.43, frozenset(['C', 'Si']): 1.87,
+            frozenset(['C', 'S']): 1.82, frozenset(['C', 'P']): 1.84,
+            frozenset(['N', 'N']): 1.45, frozenset(['N', 'O']): 1.40,
+            frozenset(['Si', 'Si']): 2.34,
+        }
+        if pair in _bl_map:
+            return _bl_map[pair]
+        r1 = _COVALENT_RADII.get(sym_a, 0.76)
+        r2 = _COVALENT_RADII.get(sym_b, 0.76)
+        return r1 + r2
+
+    # BFS from fixed atoms to place non-hapto atoms
+    placed = set(fixed)
+    queue = deque()
+    in_queue = set()
+
+    for ai in fixed:
+        for nbr in mol.GetAtomWithIdx(ai).GetNeighbors():
+            ni = nbr.GetIdx()
+            if ni not in placed and ni not in in_queue:
+                queue.append((ni, ai))
+                in_queue.add(ni)
+
+    while queue:
+        ai, parent_idx = queue.popleft()
+        if ai in placed:
+            continue
+
+        parent_pos = _gp(parent_idx)
+        child_sym = mol.GetAtomWithIdx(ai).GetSymbol()
+        parent_sym = mol.GetAtomWithIdx(parent_idx).GetSymbol()
+
+        if parent_sym in _METAL_SET:
+            bond_len = float(_get_ml_bond_length(parent_sym, child_sym))
+        elif child_sym in _METAL_SET:
+            bond_len = float(_get_ml_bond_length(child_sym, parent_sym))
+        else:
+            bond_len = _bl(parent_sym, child_sym)
+
+        # VSEPR: direction away from already-placed neighbors of parent
+        parent_atom = mol.GetAtomWithIdx(parent_idx)
+        used_dirs = []
+        for pnbr in parent_atom.GetNeighbors():
+            pni = pnbr.GetIdx()
+            if pni in placed and pni != ai:
+                d = _gp(pni) - parent_pos
+                d_len = float(np.linalg.norm(d))
+                if d_len > 1e-8:
+                    used_dirs.append(d / d_len)
+
+        if len(used_dirs) == 0:
+            direction = np.array([0.0, 0.0, 1.0])
+        elif len(used_dirs) == 1:
+            d0 = used_dirs[0]
+            ref = (np.array([1.0, 0.0, 0.0]) if abs(d0[0]) < 0.9
+                   else np.array([0.0, 1.0, 0.0]))
+            perp = np.cross(d0, ref)
+            perp = perp / max(float(np.linalg.norm(perp)), 1e-12)
+            # ~109.5° from existing bond (tetrahedral)
+            direction = (-d0 * np.cos(np.radians(70.5))
+                         + perp * np.sin(np.radians(70.5)))
+        elif len(used_dirs) == 2:
+            avg = (used_dirs[0] + used_dirs[1]) / 2.0
+            avg_len = float(np.linalg.norm(avg))
+            if avg_len > 1e-8:
+                direction = -avg / avg_len
+            else:
+                perp = np.cross(used_dirs[0], used_dirs[1])
+                p_len = float(np.linalg.norm(perp))
+                direction = (perp / p_len if p_len > 1e-8
+                             else np.array([0.0, 0.0, 1.0]))
+        else:
+            avg = sum(used_dirs) / len(used_dirs)
+            avg_len = float(np.linalg.norm(avg))
+            direction = (-avg / avg_len if avg_len > 1e-8
+                         else np.array([0.0, 0.0, 1.0]))
+
+        d_norm = float(np.linalg.norm(direction))
+        if d_norm > 1e-8:
+            direction = direction / d_norm
+
+        _sp(ai, parent_pos + bond_len * direction)
+        placed.add(ai)
+
+        for nbr in mol.GetAtomWithIdx(ai).GetNeighbors():
+            ni = nbr.GetIdx()
+            if ni not in placed and ni not in in_queue:
+                queue.append((ni, ai))
+                in_queue.add(ni)
+
+    # Bond-length relaxation for non-metal bonds
+    bond_targets = []
+    for bond in mol.GetBonds():
+        bi = bond.GetBeginAtomIdx()
+        bj = bond.GetEndAtomIdx()
+        si = mol.GetAtomWithIdx(bi).GetSymbol()
+        sj = mol.GetAtomWithIdx(bj).GetSymbol()
+        if si in _METAL_SET or sj in _METAL_SET:
+            continue
+        # Only relax bonds involving at least one re-placed atom
+        if bi not in needs_placement and bj not in needs_placement:
+            continue
+        bond_targets.append((bi, bj, _bl(si, sj)))
+
+    rng = np.random.default_rng(42)
+    for _relax_pass in range(60):
+        max_err = 0.0
+        forces = {}
+        for bi, bj, target in bond_targets:
+            diff = _gp(bj) - _gp(bi)
+            d = float(np.linalg.norm(diff))
+            err = abs(d - target)
+            if err < 0.01:
+                continue
+            if d < 1e-8:
+                diff = rng.standard_normal(3)
+                d = float(np.linalg.norm(diff))
+            unit = diff / d
+            force = 0.3 * (d - target) * unit
+            forces.setdefault(bi, np.zeros(3))
+            forces.setdefault(bj, np.zeros(3))
+            forces[bi] = forces[bi] + force
+            forces[bj] = forces[bj] - force
+            if err > max_err:
+                max_err = err
+        if max_err < 0.05:
+            break
+        for ai, f in forces.items():
+            if ai in metals:
+                continue
+            w = 0.1 if ai in hapto_ring_atoms else 1.0
+            _sp(ai, _gp(ai) + f * w)
+
+    # Clash resolution for re-placed atoms
+    bonded_pairs = set()
+    for bond in mol.GetBonds():
+        bi, bj = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        bonded_pairs.add((bi, bj))
+        bonded_pairs.add((bj, bi))
+
+    for _pass in range(20):
+        any_push = False
+        for i in range(n_atoms):
+            for j in range(i + 1, n_atoms):
+                if (i, j) in bonded_pairs:
+                    continue
+                # At least one must be a re-placed atom
+                if i not in needs_placement and j not in needs_placement:
+                    continue
+                pi = _gp(i)
+                pj = _gp(j)
+                d = float(np.linalg.norm(pi - pj))
+
+                si = mol.GetAtomWithIdx(i).GetSymbol()
+                sj = mol.GetAtomWithIdx(j).GetSymbol()
+
+                if si in _METAL_SET or sj in _METAL_SET:
+                    min_d = 2.0
+                elif si == 'H' and sj == 'H':
+                    min_d = 1.5
+                elif si == 'H' or sj == 'H':
+                    min_d = 1.0
+                else:
+                    min_d = 1.2
+
+                if d >= min_d:
+                    continue
+                if d < 1e-8:
+                    direction = rng.standard_normal(3)
+                    direction /= max(float(np.linalg.norm(direction)), 1e-12)
+                else:
+                    direction = (pj - pi) / d
+
+                gap = min_d - d
+                i_fixed = i in fixed
+                j_fixed = j in fixed
+                if i_fixed:
+                    _sp(j, pj + gap * direction)
+                elif j_fixed:
+                    _sp(i, pi - gap * direction)
+                else:
+                    _sp(i, pi - 0.5 * gap * direction)
+                    _sp(j, pj + 0.5 * gap * direction)
+                any_push = True
+        if not any_push:
+            break
+
+
+# ---------------------------------------------------------------------------
+# Sphere-based constructive hapto scaffold builder
+# ---------------------------------------------------------------------------
+
+def _build_hapto_scaffold(
+    mol,
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> bool:
+    """Construct hapto complex geometry using sphere-based ligand placement.
+
+    Instead of relying on RDKit's distance geometry (ETKDG), which has no
+    knowledge of eta-coordination, this builds the geometry analytically:
+
+    1. Place each metal at a fixed position
+    2. Distribute hapto-group centroids on a sphere (r = M-centroid distance)
+    3. Construct each hapto ring as a regular polygon perpendicular to M->centroid
+    4. Place sigma-bonded ligands in remaining coordination directions
+    5. Place substituents with correct bond lengths and angles
+    6. BFS-propagate remaining atoms with local VSEPR geometry rules
+
+    The mol gets a new conformer with the constructed coordinates.
+    Returns True on success.
+    """
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
+        return False
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+
+    n_atoms = mol.GetNumAtoms()
+    coords = np.full((n_atoms, 3), np.nan)
+    placed: set = set()
+
+    # ---- Classify atoms ----
+    by_metal: Dict[int, List[List[int]]] = {}
+    all_hapto_atoms: set = set()
+    atom_to_hapto_group: Dict[int, int] = {}  # atom_idx -> group index
+    for g_idx, (metal_idx, grp) in enumerate(hapto_groups):
+        by_metal.setdefault(metal_idx, []).append(grp)
+        all_hapto_atoms.update(grp)
+        for a in grp:
+            atom_to_hapto_group[a] = g_idx
+    metal_indices = sorted(by_metal.keys())
+
+    sigma_donors: Dict[int, List[int]] = {}
+    for mi in metal_indices:
+        donors = []
+        for nbr in mol.GetAtomWithIdx(mi).GetNeighbors():
+            ni = nbr.GetIdx()
+            if ni not in all_hapto_atoms and nbr.GetSymbol() not in _METAL_SET:
+                donors.append(ni)
+        sigma_donors[mi] = donors
+
+    # Detect ansa bridges (multiple bridges per group pair supported)
+    ansa_bridge_map: Dict[Tuple[int, int], List[int]] = {}
+    all_bridge_atoms: set = set()
+    try:
+        bridges = _find_ansa_bridges(mol, hapto_groups)
+        for bridge_atom, gi, gj in bridges:
+            key = (min(gi, gj), max(gi, gj))
+            ansa_bridge_map.setdefault(key, []).append(bridge_atom)
+            all_bridge_atoms.add(bridge_atom)
     except Exception:
         pass
 
-    if not _xyz_passes_final_geometry_checks(xyz_delfin, mol_template):
-        score += 1500.0
+    # ---- Helper functions ----
+    def _ortho_basis(normal):
+        n = normal / max(float(np.linalg.norm(normal)), 1e-12)
+        ref = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        u = np.cross(n, ref)
+        u = u / max(float(np.linalg.norm(u)), 1e-12)
+        v = np.cross(n, u)
+        v = v / max(float(np.linalg.norm(v)), 1e-12)
+        return u, v
 
-    try:
-        mol_tmp = Chem.RWMol(mol_template)
-        mol_tmp.RemoveAllConformers()
-        conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_delfin)
-        if conf is None:
-            conf = _xyz_to_rdkit_conformer_via_ob_mapping(mol_tmp.GetMol(), xyz_delfin)
-        if conf is None:
-            return score + 1000.0
-        cid = mol_tmp.AddConformer(conf, assignId=True)
-        score += _geometry_quality_score(mol_tmp.GetMol(), cid)
-        score += _hapto_geometry_penalty(mol_tmp.GetMol(), cid, hapto_groups)
-        if _has_ligand_intertwining(mol_tmp.GetMol(), cid, threshold=0.35):
-            score += 900.0
-    except Exception:
-        score += 1000.0
+    def _sphere_dirs(n):
+        if n <= 0:
+            return []
+        if n == 1:
+            return [np.array([0.0, 0.0, 1.0])]
+        if n == 2:
+            return [np.array([0.0, 0.0, 1.0]), np.array([0.0, 0.0, -1.0])]
+        dirs = []
+        golden = (1.0 + np.sqrt(5.0)) / 2.0
+        for k in range(n):
+            theta = np.arccos(1.0 - 2.0 * (k + 0.5) / n)
+            phi = 2.0 * np.pi * k / golden
+            dirs.append(np.array([
+                np.sin(theta) * np.cos(phi),
+                np.sin(theta) * np.sin(phi),
+                np.cos(theta),
+            ]))
+        return dirs
 
-    return score
+    def _ring_traversal(grp):
+        atom_set = set(grp)
+        idx_map = {a: i for i, a in enumerate(grp)}
+        eta = len(grp)
+        adj = [[] for _ in range(eta)]
+        for i_loc, atom_idx in enumerate(grp):
+            for nbr in mol.GetAtomWithIdx(atom_idx).GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni in atom_set and ni != atom_idx:
+                    j_loc = idx_map[ni]
+                    if j_loc not in adj[i_loc]:
+                        adj[i_loc].append(j_loc)
+        is_cyclic = all(len(adj[i]) >= 2 for i in range(eta))
+        if is_cyclic and eta >= 3:
+            order = []
+            visited = [False] * eta
+            cur, prev = 0, -1
+            for _ in range(eta):
+                order.append(cur)
+                visited[cur] = True
+                nxt = -1
+                for nb in adj[cur]:
+                    if nb != prev and not visited[nb]:
+                        nxt = nb
+                        break
+                if nxt == -1:
+                    break
+                prev, cur = cur, nxt
+            if len(order) == eta:
+                return [grp[i] for i in order]
+        return grp
 
+    def _build_chain_order(grp, mol_ref):
+        """Order a non-cyclic hapto group as a chain following molecular topology.
 
-def _select_best_hapto_xyz(
-    smiles: str,
-    mol_template,
-    hapto_groups: List[Tuple[int, List[int]]],
-    candidates: List[Tuple[str, str]],
-) -> Tuple[Optional[str], Optional[str], Optional[float]]:
-    """Pick the best valid hapto XYZ candidate from labeled candidates."""
-    best_xyz: Optional[str] = None
-    best_label: Optional[str] = None
-    best_score: Optional[float] = None
-    for label, xyz in candidates:
-        if not xyz:
+        For disconnected hapto groups (e.g., two eta2 pairs bridged by
+        non-hapto atoms), determines ordering by shortest path through
+        the full molecular graph.
+        """
+        grp_set = set(grp)
+        adj_intra: Dict[int, List[int]] = {a: [] for a in grp}
+        for a in grp:
+            for nb in mol_ref.GetAtomWithIdx(a).GetNeighbors():
+                if nb.GetIdx() in grp_set:
+                    adj_intra[a].append(nb.GetIdx())
+
+        # Find connected components within the group
+        comp_id: Dict[int, int] = {}
+        components: List[List[int]] = []
+        for a in grp:
+            if a in comp_id:
+                continue
+            comp: List[int] = []
+            stack = [a]
+            while stack:
+                cur = stack.pop()
+                if cur in comp_id:
+                    continue
+                comp_id[cur] = len(components)
+                comp.append(cur)
+                for nb in adj_intra[cur]:
+                    if nb not in comp_id:
+                        stack.append(nb)
+            components.append(comp)
+
+        if len(components) == 1:
+            # Single connected component: simple chain walk
+            start = grp[0]
+            for a in grp:
+                if len(adj_intra[a]) <= 1:
+                    start = a
+                    break
+            chain = [start]
+            visited = {start}
+            while len(chain) < len(grp):
+                cur = chain[-1]
+                nxt = None
+                for nb in adj_intra[cur]:
+                    if nb not in visited:
+                        nxt = nb
+                        break
+                if nxt is None:
+                    break
+                chain.append(nxt)
+                visited.add(nxt)
+            return chain
+
+        # Multiple disconnected components: order them by BFS shortest
+        # path through non-hapto atoms in the molecular graph
+        def _bfs_dist(src, tgt_set):
+            """BFS from src to any atom in tgt_set, through non-metal atoms."""
+            from collections import deque
+            q = deque([(src, 0)])
+            seen = {src}
+            while q:
+                cur, d = q.popleft()
+                if cur in tgt_set:
+                    return d
+                for nb in mol_ref.GetAtomWithIdx(cur).GetNeighbors():
+                    ni = nb.GetIdx()
+                    if ni not in seen and nb.GetSymbol() not in _METAL_SET:
+                        seen.add(ni)
+                        q.append((ni, d + 1))
+            return 999
+
+        # Order components by shortest path between consecutive pairs
+        ordered_comps = [components[0]]
+        remaining = list(range(1, len(components)))
+        while remaining:
+            last_comp = ordered_comps[-1]
+            best_ci = remaining[0]
+            best_d = 999
+            for ci in remaining:
+                # Find min BFS distance from any atom in last_comp to comp[ci]
+                comp_set = set(components[ci])
+                for a in last_comp:
+                    d = _bfs_dist(a, comp_set)
+                    if d < best_d:
+                        best_d = d
+                        best_ci = ci
+            ordered_comps.append(components[best_ci])
+            remaining.remove(best_ci)
+
+        # Within each component, order as chain from endpoint
+        chain = []
+        for comp in ordered_comps:
+            if len(comp) == 1:
+                chain.append(comp[0])
+                continue
+            start = comp[0]
+            for a in comp:
+                if len(adj_intra[a]) <= 1:
+                    start = a
+                    break
+            sub = [start]
+            visited = {start}
+            while len(sub) < len(comp):
+                cur = sub[-1]
+                nxt = None
+                for nb in adj_intra[cur]:
+                    if nb not in visited:
+                        nxt = nb
+                        break
+                if nxt is None:
+                    break
+                sub.append(nxt)
+                visited.add(nxt)
+            # Orient: if previous chain end is closer to sub[-1], reverse
+            if chain:
+                prev_end = chain[-1]
+                d_fwd = _bfs_dist(prev_end, {sub[0]})
+                d_rev = _bfs_dist(prev_end, {sub[-1]})
+                if d_rev < d_fwd:
+                    sub = sub[::-1]
+            chain.extend(sub)
+        return chain
+
+    def _bond_len(sym1, sym2):
+        pair = frozenset([sym1, sym2])
+        if 'H' in pair:
+            other = sym2 if sym1 == 'H' else sym1
+            return {'C': 1.08, 'N': 1.01, 'O': 0.96, 'Si': 1.48, 'B': 1.19}.get(other, 1.08)
+        if pair == frozenset(['Si', 'C']):
+            return 1.87
+        if pair == frozenset(['C', 'C']):
+            return 1.50
+        if pair == frozenset(['C', 'N']):
+            return 1.47
+        if pair == frozenset(['C', 'O']):
+            return 1.43
+        r1 = _COVALENT_RADII.get(sym1, 0.76)
+        r2 = _COVALENT_RADII.get(sym2, 0.76)
+        return r1 + r2
+
+    def _rodrigues(points, center, axis, angle):
+        k = axis / max(float(np.linalg.norm(axis)), 1e-12)
+        c, s = np.cos(angle), np.sin(angle)
+        out = []
+        for p in points:
+            v = p - center
+            v_rot = v * c + np.cross(k, v) * s + k * float(np.dot(k, v)) * (1.0 - c)
+            out.append(center + v_rot)
+        return out
+
+    # ---- Place metals ----
+    if len(metal_indices) == 1:
+        coords[metal_indices[0]] = [0.0, 0.0, 0.0]
+        placed.add(metal_indices[0])
+    else:
+        for i, mi in enumerate(metal_indices):
+            if i == 0:
+                coords[mi] = [0.0, 0.0, 0.0]
+            else:
+                prev_mi = metal_indices[i - 1]
+                si = mol.GetAtomWithIdx(mi).GetSymbol()
+                sj = mol.GetAtomWithIdx(prev_mi).GetSymbol()
+                bond = mol.GetBondBetweenAtoms(mi, prev_mi)
+                d = (_COVALENT_RADII.get(si, 1.5) + _COVALENT_RADII.get(sj, 1.5) + 0.1
+                     if bond is not None else 3.5)
+                coords[mi] = coords[prev_mi] + np.array([d, 0.0, 0.0])
+            placed.add(mi)
+
+    # ---- Build global group list ----
+    group_list: List[Tuple[int, List[int]]] = []
+    for mi in metal_indices:
+        for grp in by_metal[mi]:
+            group_list.append((mi, grp))
+
+    # ---- For each metal: build coordination sphere ----
+    for mi in metal_indices:
+        m_pos = coords[mi].copy()
+        m_sym = mol.GetAtomWithIdx(mi).GetSymbol()
+        groups = by_metal[mi]
+        n_hapto = len(groups)
+        n_sigma = len(sigma_donors.get(mi, []))
+        n_total = n_hapto + n_sigma
+        if n_total == 0:
             continue
-        score = _score_hapto_xyz_candidate(
-            xyz_delfin=xyz,
-            smiles=smiles,
-            mol_template=mol_template,
-            hapto_groups=hapto_groups,
-        )
-        if not math.isfinite(score):
-            continue
-        if best_score is None or score < best_score:
-            best_xyz = xyz
-            best_label = label
-            best_score = score
-    return best_xyz, best_label, best_score
+
+        # Map local group indices -> global
+        local_to_global = []
+        for g_global, (gm, _) in enumerate(group_list):
+            if gm == mi:
+                local_to_global.append(g_global)
+
+        # Detect ansa constraints for this metal
+        ansa_angle = None
+        ansa_local_i = None
+        ansa_local_j = None
+        ansa_bridge_indices: List[int] = []
+        for (gi_g, gj_g), br_list in ansa_bridge_map.items():
+            try:
+                li = local_to_global.index(gi_g)
+                lj = local_to_global.index(gj_g)
+            except ValueError:
+                continue
+            ansa_local_i, ansa_local_j = li, lj
+            ansa_bridge_indices = list(br_list)
+            g_i, g_j = groups[li], groups[lj]
+            eta_i, eta_j = len(g_i), len(g_j)
+            r_i = _target_mc_dist(m_sym, eta_i)
+            r_j = _target_mc_dist(m_sym, eta_j)
+            R_i = 1.40 / (2.0 * np.sin(np.pi / max(eta_i, 3)))
+            R_j = 1.40 / (2.0 * np.sin(np.pi / max(eta_j, 3)))
+            r_avg = (r_i + r_j) / 2.0
+            R_avg = (R_i + R_j) / 2.0
+            # Use first bridge for angle computation
+            br_sym = mol.GetAtomWithIdx(br_list[0]).GetSymbol()
+            br_bond = {'Si': 1.87, 'C': 1.54, 'Ge': 1.94}.get(br_sym, 1.80)
+            br_angle_deg = {'Si': 93.0, 'C': 109.5, 'Ge': 95.0}.get(br_sym, 100.0)
+            d_target = 2.0 * br_bond * np.sin(np.radians(br_angle_deg) / 2.0)
+            hyp = np.sqrt(r_avg ** 2 + R_avg ** 2)
+            ratio = d_target / (2.0 * hyp)
+            if abs(ratio) <= 1.0:
+                psi = np.arctan2(R_avg, r_avg) + np.arcsin(ratio)
+                ansa_angle = 2.0 * psi
+            else:
+                ansa_angle = np.radians(140.0)
+            break
+
+        # Generate direction vectors
+        hapto_dirs: List[Optional[np.ndarray]] = [None] * n_hapto
+
+        if ansa_angle is not None and ansa_local_i is not None:
+            half = ansa_angle / 2.0
+            d1 = np.array([0.0, np.sin(half), np.cos(half)])
+            d2 = np.array([0.0, -np.sin(half), np.cos(half)])
+            hapto_dirs[ansa_local_i] = d1 / float(np.linalg.norm(d1))
+            hapto_dirs[ansa_local_j] = d2 / float(np.linalg.norm(d2))
+
+        # Linked groups: hapto pairs connected through short non-hapto paths
+        # (e.g., COD eta2+eta2 bridged by CH2-CH2).
+        # Detect and mark for combined rectangular placement.
+        linked_pairs: List[Tuple[int, int]] = []  # (local_i, local_j)
+        if n_hapto >= 2:
+            from collections import deque
+            linked_used: set = set()
+            for li in range(n_hapto):
+                if li in linked_used or hapto_dirs[li] is not None:
+                    continue
+                for lj in range(li + 1, n_hapto):
+                    if lj in linked_used or hapto_dirs[lj] is not None:
+                        continue
+                    grp_i_set = set(groups[li])
+                    grp_j_set = set(groups[lj])
+                    linked = False
+                    for start in groups[li]:
+                        q = deque([(start, 0)])
+                        seen = {start}
+                        while q:
+                            cur, d_bfs = q.popleft()
+                            if cur in grp_j_set:
+                                linked = True
+                                break
+                            if d_bfs >= 4:
+                                continue
+                            for nb in mol.GetAtomWithIdx(cur).GetNeighbors():
+                                ni = nb.GetIdx()
+                                if ni not in seen and nb.GetSymbol() not in _METAL_SET:
+                                    seen.add(ni)
+                                    q.append((ni, d_bfs + 1))
+                        if linked:
+                            break
+                    if linked:
+                        linked_pairs.append((li, lj))
+                        linked_used.add(li)
+                        linked_used.add(lj)
+                        # Assign same direction (will be placed as rectangle)
+                        hapto_dirs[li] = np.array([0.0, 0.0, 1.0])
+                        hapto_dirs[lj] = np.array([0.0, 0.0, 1.0])
+                        break
+
+        # ---- Assign ideal directions for unassigned hapto groups ----
+        unassigned_hapto = [i for i in range(n_hapto) if hapto_dirs[i] is None]
+        assigned_dirs = [hapto_dirs[i] for i in range(n_hapto)
+                         if hapto_dirs[i] is not None]
+
+        if unassigned_hapto:
+            if not assigned_dirs:
+                # All hapto groups unassigned: use analytical placement
+                if len(unassigned_hapto) == 1:
+                    hapto_dirs[unassigned_hapto[0]] = np.array([0.0, 0.0, 1.0])
+                elif len(unassigned_hapto) == 2:
+                    # Sandwich: ~175° apart (nearly anti-parallel)
+                    hapto_dirs[unassigned_hapto[0]] = np.array([0.0, 0.0, 1.0])
+                    a175 = np.radians(175.0)
+                    hapto_dirs[unassigned_hapto[1]] = np.array(
+                        [0.0, np.sin(a175), np.cos(a175)])
+                else:
+                    # Evenly distributed in a plane (120° for 3, 90° for 4, …)
+                    for k, ui in enumerate(unassigned_hapto):
+                        a = 2.0 * np.pi * k / len(unassigned_hapto)
+                        hapto_dirs[ui] = np.array(
+                            [np.cos(a), np.sin(a), 0.0])
+            else:
+                # Some already assigned (ansa/linked): place rest maximally
+                # separated from all existing directions.
+                used = list(assigned_dirs)
+                candidates = _sphere_dirs(60)
+                for ui in unassigned_hapto:
+                    best_dir = None
+                    best_max_dot = 1.0
+                    for cd in candidates:
+                        max_dot = max(float(np.dot(cd, ud)) for ud in used)
+                        if max_dot < best_max_dot:
+                            best_max_dot = max_dot
+                            best_dir = cd
+                    hapto_dirs[ui] = (best_dir if best_dir is not None
+                                      else np.array([0.0, 0.0, 1.0]))
+                    used.append(hapto_dirs[ui])
+
+        # Fill sigma donor directions, maximally separated from hapto dirs
+        sigma_dir_list = []
+        if n_sigma > 0:
+            all_used = [hd for hd in hapto_dirs if hd is not None]
+            candidates = _sphere_dirs(n_sigma + len(all_used) + 8)
+            for cd in candidates:
+                if len(sigma_dir_list) >= n_sigma:
+                    break
+                ok = True
+                for ud in all_used + sigma_dir_list:
+                    if float(np.dot(cd, ud)) > 0.70:
+                        ok = False
+                        break
+                if ok:
+                    sigma_dir_list.append(cd)
+            while len(sigma_dir_list) < n_sigma:
+                sigma_dir_list.append(np.array([1.0, 0.0, 0.0]))
+
+        for i in range(n_hapto):
+            if hapto_dirs[i] is None:
+                hapto_dirs[i] = np.array([0.0, 0.0, 1.0])
+
+        # ---- Place linked pairs as rectangles first ----
+        linked_placed_locals: set = set()
+        for li, lj in linked_pairs:
+            direction = hapto_dirs[li]
+            grp_i, grp_j = groups[li], groups[lj]
+            mc_i = _target_mc_dist(m_sym, len(grp_i))
+            mc_j = _target_mc_dist(m_sym, len(grp_j))
+            mc_avg = (mc_i + mc_j) / 2.0
+            combined_centroid = m_pos + direction * mc_avg
+            u_lnk, v_lnk = _ortho_basis(direction)
+
+            # Find which atoms bridge the two groups, to orient the rectangle
+            # Chain order: build chain for combined atoms through mol graph
+            all_linked = list(grp_i) + list(grp_j)
+            chain_i = _build_chain_order(grp_i, mol)
+            chain_j = _build_chain_order(grp_j, mol)
+
+            # Orient chains: find which ends face each other (BFS shortest)
+            from collections import deque
+            def _bfs_d(src, tgt):
+                q = deque([(src, 0)])
+                seen = {src}
+                while q:
+                    cur, dd = q.popleft()
+                    if cur == tgt:
+                        return dd
+                    if dd >= 6:
+                        return 99
+                    for nb in mol.GetAtomWithIdx(cur).GetNeighbors():
+                        ni = nb.GetIdx()
+                        if ni not in seen and nb.GetSymbol() not in _METAL_SET:
+                            seen.add(ni)
+                            q.append((ni, dd + 1))
+                return 99
+
+            # Find the pair of endpoints with shortest BFS distance
+            best_di, best_dj = 0, 0
+            best_bfs = 99
+            for di_end in [0, -1]:
+                for dj_end in [0, -1]:
+                    bd = _bfs_d(chain_i[di_end], chain_j[dj_end])
+                    if bd < best_bfs:
+                        best_bfs = bd
+                        best_di, best_dj = di_end, dj_end
+            # Orient chains so facing ends are the last atoms
+            if best_di == 0:
+                chain_i = chain_i[::-1]
+            if best_dj == 0:
+                chain_j = chain_j[::-1]
+
+            # Place as rectangle: two parallel rows separated by bridge gap
+            # Bridge gap ≈ n_bridge_atoms * 1.54A with 109.5° angles
+            bridge_gap = max(best_bfs * 1.00, 2.2)  # empirical
+            half_gap = bridge_gap / 2.0
+            cc = 1.40  # C-C distance within each pair
+
+            for k, atom_idx in enumerate(chain_i):
+                offset_v = (k - (len(chain_i) - 1) / 2.0) * cc
+                coords[atom_idx] = combined_centroid + half_gap * u_lnk + offset_v * v_lnk
+                placed.add(atom_idx)
+            for k, atom_idx in enumerate(chain_j):
+                offset_v = (k - (len(chain_j) - 1) / 2.0) * cc
+                coords[atom_idx] = combined_centroid - half_gap * u_lnk + offset_v * v_lnk
+                placed.add(atom_idx)
+            linked_placed_locals.add(li)
+            linked_placed_locals.add(lj)
+
+        # ---- Build hapto rings/chains on sphere ----
+        for g_local, grp in enumerate(groups):
+            if g_local in linked_placed_locals:
+                continue  # already placed as linked rectangle
+            direction = hapto_dirs[g_local]
+            eta = len(grp)
+            mc_dist = _target_mc_dist(m_sym, eta)
+            centroid = m_pos + direction * mc_dist
+
+            if eta >= 3:
+                R_ring = 1.40 / (2.0 * np.sin(np.pi / eta))
+            else:
+                R_ring = 0.69
+
+            u, v = _ortho_basis(direction)
+            ordered = _ring_traversal(grp)
+
+            # Check if group is cyclic (all atoms have >=2 intra-group bonds)
+            grp_set = set(grp)
+            is_cyclic = True
+            for a_idx in grp:
+                intra = sum(1 for nb in mol.GetAtomWithIdx(a_idx).GetNeighbors()
+                            if nb.GetIdx() in grp_set)
+                if intra < 2:
+                    is_cyclic = False
+                    break
+
+            if eta == 2:
+                coords[ordered[0]] = centroid + R_ring * u
+                coords[ordered[1]] = centroid - R_ring * u
+            elif is_cyclic:
+                # Regular polygon (closed ring)
+                for k, atom_idx in enumerate(ordered):
+                    angle = 2.0 * np.pi * k / eta
+                    coords[atom_idx] = centroid + R_ring * (
+                        np.cos(angle) * u + np.sin(angle) * v
+                    )
+            else:
+                # Non-cyclic group: check for disconnected components
+                # (e.g., COD eta4 = two eta2 pairs bridged by CH2-CH2)
+                chain = _build_chain_order(grp, mol)
+                # Find connected components within the hapto group
+                comp_list = []
+                cur_comp = [chain[0]]
+                for k in range(1, len(chain)):
+                    # Check if chain[k] bonds to chain[k-1] within grp
+                    bonded = False
+                    for nb in mol.GetAtomWithIdx(chain[k]).GetNeighbors():
+                        if nb.GetIdx() == chain[k - 1]:
+                            bonded = True
+                            break
+                    if bonded:
+                        cur_comp.append(chain[k])
+                    else:
+                        comp_list.append(cur_comp)
+                        cur_comp = [chain[k]]
+                comp_list.append(cur_comp)
+
+                if len(comp_list) >= 2:
+                    # Disconnected components: place as parallel pairs
+                    # on a rectangle to keep both gaps bridgeable
+                    n_comp = len(comp_list)
+                    for ci, comp in enumerate(comp_list):
+                        # Angle offset for this component on the circle
+                        comp_center_angle = 2.0 * np.pi * ci / n_comp
+                        cc_half = 1.40 * (len(comp) - 1) / 2.0
+                        for k, atom_idx in enumerate(comp):
+                            # Spread atoms within component along v axis
+                            offset = (k - (len(comp) - 1) / 2.0) * 1.40
+                            pos = centroid + (
+                                R_ring * np.cos(comp_center_angle) * u
+                                + offset * v
+                            )
+                            coords[atom_idx] = pos
+                else:
+                    # Single connected chain: place along arc
+                    step_angle = 2.0 * np.arcsin(
+                        min(1.40 / (2.0 * R_ring), 1.0))
+                    total_span = step_angle * (eta - 1)
+                    start_angle = -total_span / 2.0
+                    for k, atom_idx in enumerate(chain):
+                        angle = start_angle + k * step_angle
+                        coords[atom_idx] = centroid + R_ring * (
+                            np.cos(angle) * u + np.sin(angle) * v
+                        )
+            for atom_idx in grp:
+                placed.add(atom_idx)
+
+        # ---- Orient ansa-bridged rings so bridge carbons face each other ----
+        if ansa_bridge_indices and ansa_local_i is not None:
+            grp_i = groups[ansa_local_i]
+            grp_j = groups[ansa_local_j]
+            # Collect all neighbors of ALL bridge atoms
+            br_nbrs: set = set()
+            for _bi in ansa_bridge_indices:
+                for _bn in mol.GetAtomWithIdx(_bi).GetNeighbors():
+                    br_nbrs.add(_bn.GetIdx())
+            for grp_src, dir_src, grp_tgt_local in [
+                (grp_i, hapto_dirs[ansa_local_i], ansa_local_j),
+                (grp_j, hapto_dirs[ansa_local_j], ansa_local_i),
+            ]:
+                c_src = next((a for a in grp_src if a in br_nbrs), None)
+                if c_src is None:
+                    continue
+                cent_src = m_pos + dir_src * _target_mc_dist(m_sym, len(grp_src))
+                dir_tgt = hapto_dirs[grp_tgt_local]
+                cent_tgt = m_pos + dir_tgt * _target_mc_dist(
+                    m_sym, len(groups[grp_tgt_local])
+                )
+                toward = cent_tgt - cent_src
+                toward_proj = toward - float(np.dot(toward, dir_src)) * dir_src
+                tp_len = float(np.linalg.norm(toward_proj))
+                if tp_len < 1e-8:
+                    continue
+                toward_proj = toward_proj / tp_len
+                vc = coords[c_src] - cent_src
+                vc_proj = vc - float(np.dot(vc, dir_src)) * dir_src
+                vp_len = float(np.linalg.norm(vc_proj))
+                if vp_len < 1e-8:
+                    continue
+                vc_proj = vc_proj / vp_len
+                cos_r = float(np.clip(np.dot(vc_proj, toward_proj), -1.0, 1.0))
+                sin_r = float(np.dot(np.cross(vc_proj, toward_proj), dir_src))
+                rot_angle = float(np.arctan2(sin_r, cos_r))
+                if abs(rot_angle) > 0.01:
+                    pts = [coords[a].copy() for a in grp_src]
+                    pts_rot = _rodrigues(pts, cent_src, dir_src, rot_angle)
+                    for a_idx, new_p in zip(grp_src, pts_rot):
+                        coords[a_idx] = new_p
+
+        # ---- Place sigma donors ----
+        for s_idx, donor_idx in enumerate(sigma_donors.get(mi, [])):
+            if donor_idx in placed:
+                continue
+            direction = (sigma_dir_list[s_idx] if s_idx < len(sigma_dir_list)
+                         else np.array([1.0, 0.0, 0.0]))
+            donor_sym = mol.GetAtomWithIdx(donor_idx).GetSymbol()
+            bl = _get_ml_bond_length(m_sym, donor_sym)
+            coords[donor_idx] = m_pos + direction * bl
+            placed.add(donor_idx)
+
+    # ---- Place substituents on hapto ring atoms ----
+    for metal_idx, grp in hapto_groups:
+        ring_set = set(grp)
+        m_pos = coords[metal_idx]
+        centroid = np.mean([coords[a] for a in grp], axis=0)
+        mc_dir = centroid - m_pos
+        mc_len = float(np.linalg.norm(mc_dir))
+        normal = mc_dir / mc_len if mc_len > 1e-8 else np.array([0.0, 0.0, 1.0])
+
+        for atom_idx in grp:
+            ring_pos = coords[atom_idx]
+            outward = ring_pos - centroid
+            outward_len = float(np.linalg.norm(outward))
+            outward_unit = (outward / outward_len if outward_len > 1e-8
+                            else np.array([1.0, 0.0, 0.0]))
+            subs = []
+            for nbr in mol.GetAtomWithIdx(atom_idx).GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni in ring_set or ni == metal_idx or ni in placed:
+                    continue
+                if ni in all_bridge_atoms:
+                    continue
+                subs.append(nbr)
+
+            for s_k, nbr in enumerate(subs):
+                ni = nbr.GetIdx()
+                bl = _bond_len(
+                    mol.GetAtomWithIdx(atom_idx).GetSymbol(), nbr.GetSymbol()
+                )
+                if len(subs) == 1:
+                    direction = outward_unit + 0.3 * normal
+                else:
+                    tilt = (s_k - (len(subs) - 1) / 2.0) * 1.2
+                    direction = outward_unit * np.cos(tilt) + normal * np.sin(tilt)
+                d_norm = float(np.linalg.norm(direction))
+                if d_norm > 1e-8:
+                    direction = direction / d_norm
+                coords[ni] = ring_pos + bl * direction
+                placed.add(ni)
+
+    # ---- Place ALL ansa bridge atoms ----
+    for (gi, gj), bridge_list in ansa_bridge_map.items():
+        grp_i = hapto_groups[gi][1]
+        grp_j = hapto_groups[gj][1]
+        metal_idx = hapto_groups[gi][0]
+
+        for bridge_idx in bridge_list:
+            if bridge_idx in placed:
+                continue
+            bridge_atom = mol.GetAtomWithIdx(bridge_idx)
+            bridge_sym = bridge_atom.GetSymbol()
+            br_nbrs = set(n.GetIdx() for n in bridge_atom.GetNeighbors())
+
+            c_i = next((a for a in grp_i if a in br_nbrs), None)
+            c_j = next((a for a in grp_j if a in br_nbrs), None)
+            if c_i is not None and c_j is not None:
+                pos_a, pos_b = coords[c_i], coords[c_j]
+                mid = (pos_a + pos_b) / 2.0
+                bl = _bond_len(bridge_sym, 'C')
+                d_ab = float(np.linalg.norm(pos_a - pos_b))
+                h_sq = bl ** 2 - (d_ab / 2.0) ** 2
+                h = float(np.sqrt(max(h_sq, 0.01)))
+                away = mid - coords[metal_idx]
+                a_norm = float(np.linalg.norm(away))
+                away = away / a_norm if a_norm > 1e-8 else np.array([0.0, 1.0, 0.0])
+                coords[bridge_idx] = mid + h * away
+                placed.add(bridge_idx)
+
+                # Place bridge substituents using robust local frame
+                ca_cb = pos_b - pos_a
+                x_ax = ca_cb / max(d_ab, 1e-8)
+                z_ax = away
+                y_ax = np.cross(z_ax, x_ax)
+                y_norm = float(np.linalg.norm(y_ax))
+                if y_norm < 1e-8:
+                    # Degenerate: z_ax parallel to x_ax, pick perpendicular
+                    ref = (np.array([1.0, 0.0, 0.0]) if abs(z_ax[0]) < 0.9
+                           else np.array([0.0, 1.0, 0.0]))
+                    y_ax = np.cross(z_ax, ref)
+                    y_norm = float(np.linalg.norm(y_ax))
+                y_ax = y_ax / max(y_norm, 1e-12)
+
+                sub_count = 0
+                for pnbr in bridge_atom.GetNeighbors():
+                    pni = pnbr.GetIdx()
+                    if pni in placed or pni in all_hapto_atoms:
+                        continue
+                    sub_bl = _bond_len(bridge_sym, pnbr.GetSymbol())
+                    sub_angle = (sub_count - 0.5) * 2.1
+                    direction = np.cos(sub_angle) * y_ax + np.sin(sub_angle) * z_ax
+                    d_norm = float(np.linalg.norm(direction))
+                    if d_norm > 1e-8:
+                        direction = direction / d_norm
+                    coords[pni] = coords[bridge_idx] + sub_bl * direction
+                    placed.add(pni)
+                    sub_count += 1
+                sub_count += 1
+
+    # ---- BFS propagate remaining atoms with VSEPR local geometry ----
+    for _iteration in range(n_atoms * 3):
+        progress = False
+        for atom in mol.GetAtoms():
+            ai = atom.GetIdx()
+            if ai in placed:
+                continue
+            parent = None
+            for nbr in atom.GetNeighbors():
+                if nbr.GetIdx() in placed:
+                    parent = nbr
+                    break
+            if parent is None:
+                continue
+
+            pi = parent.GetIdx()
+            parent_pos = coords[pi]
+            child_sym = atom.GetSymbol()
+            parent_sym = parent.GetSymbol()
+
+            if parent_sym in _METAL_SET:
+                bl = _get_ml_bond_length(parent_sym, child_sym)
+            elif child_sym in _METAL_SET:
+                bl = _get_ml_bond_length(child_sym, parent_sym)
+            else:
+                bl = _bond_len(parent_sym, child_sym)
+
+            # VSEPR: direction away from already-placed neighbors of parent
+            used_dirs = []
+            for pnbr in parent.GetNeighbors():
+                if pnbr.GetIdx() in placed and pnbr.GetIdx() != ai:
+                    d = coords[pnbr.GetIdx()] - parent_pos
+                    d_len = float(np.linalg.norm(d))
+                    if d_len > 1e-8:
+                        used_dirs.append(d / d_len)
+
+            if len(used_dirs) == 0:
+                direction = np.array([0.0, 0.0, 1.0])
+            elif len(used_dirs) == 1:
+                d0 = used_dirs[0]
+                ref = (np.array([1.0, 0.0, 0.0]) if abs(d0[0]) < 0.9
+                       else np.array([0.0, 1.0, 0.0]))
+                perp = np.cross(d0, ref)
+                perp = perp / max(float(np.linalg.norm(perp)), 1e-12)
+                # ~109.5 deg from existing bond
+                direction = (-d0 * np.cos(np.radians(70.5))
+                             + perp * np.sin(np.radians(70.5)))
+            elif len(used_dirs) == 2:
+                avg = (used_dirs[0] + used_dirs[1]) / 2.0
+                avg_len = float(np.linalg.norm(avg))
+                if avg_len > 1e-8:
+                    direction = -avg / avg_len
+                else:
+                    perp = np.cross(used_dirs[0], used_dirs[1])
+                    p_len = float(np.linalg.norm(perp))
+                    direction = (perp / p_len if p_len > 1e-8
+                                 else np.array([0.0, 0.0, 1.0]))
+            else:
+                avg = sum(used_dirs) / len(used_dirs)
+                avg_len = float(np.linalg.norm(avg))
+                direction = (-avg / avg_len if avg_len > 1e-8
+                             else np.array([0.0, 0.0, 1.0]))
+
+            d_norm = float(np.linalg.norm(direction))
+            if d_norm > 1e-8:
+                direction = direction / d_norm
+
+            coords[ai] = parent_pos + bl * direction
+            placed.add(ai)
+            progress = True
+
+        if not progress:
+            break
+
+    # Handle orphan atoms
+    rng = np.random.default_rng(42)
+    for ai in range(n_atoms):
+        if ai not in placed:
+            coords[ai] = rng.standard_normal(3) * 3.0
+
+    # ---- Bond-length relaxation (fix topology) ----
+    # BFS only uses one parent per atom; bonds to other placed atoms may be
+    # stretched.  Iteratively correct all bond lengths toward their targets.
+    bond_targets: List[Tuple[int, int, float]] = []
+    for bond in mol.GetBonds():
+        bi = bond.GetBeginAtomIdx()
+        bj = bond.GetEndAtomIdx()
+        si = mol.GetAtomWithIdx(bi).GetSymbol()
+        sj = mol.GetAtomWithIdx(bj).GetSymbol()
+        if si in _METAL_SET or sj in _METAL_SET:
+            continue  # skip metal bonds - already placed correctly
+        target_bl = _bond_len(si, sj)
+        bond_targets.append((bi, bj, target_bl))
+
+    # Spring-based relaxation: accumulate all bond forces, then apply
+    for _relax_pass in range(120):
+        forces = np.zeros_like(coords)
+        max_err = 0.0
+        for bi, bj, target_bl in bond_targets:
+            diff = coords[bj] - coords[bi]
+            d = float(np.linalg.norm(diff))
+            err = abs(d - target_bl)
+            if err < 0.01:
+                continue
+            if d < 1e-8:
+                diff = rng.standard_normal(3)
+                d = float(np.linalg.norm(diff))
+            unit = diff / d
+            # Spring force proportional to displacement
+            force = 0.3 * (d - target_bl) * unit
+            forces[bi] += force
+            forces[bj] -= force
+            if err > max_err:
+                max_err = err
+        if max_err < 0.05:
+            break
+        # Apply forces with reduced weight for hapto atoms
+        for ai in range(n_atoms):
+            if mol.GetAtomWithIdx(ai).GetSymbol() in _METAL_SET:
+                continue  # metals frozen
+            w = 0.12 if ai in all_hapto_atoms else 1.0
+            coords[ai] = coords[ai] + forces[ai] * w
+
+    # ---- Clash resolution (push apart, preserve intra-ring geometry) ----
+    # Build metal bond set for metal proximity check
+    metal_bonded: set = set()
+    for mi in metal_indices:
+        for nbr in mol.GetAtomWithIdx(mi).GetNeighbors():
+            metal_bonded.add((mi, nbr.GetIdx()))
+            metal_bonded.add((nbr.GetIdx(), mi))
+
+    rng_clash = np.random.default_rng(123)
+    for _pass in range(15):
+        moved = False
+        for i in range(n_atoms):
+            is_metal_i = mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET
+            for j in range(i + 1, n_atoms):
+                is_metal_j = mol.GetAtomWithIdx(j).GetSymbol() in _METAL_SET
+                if is_metal_i and is_metal_j:
+                    continue
+                diff = coords[j] - coords[i]
+                d = float(np.linalg.norm(diff))
+                # Metal proximity: non-bonded atoms too close to metal
+                if (is_metal_i or is_metal_j) and (i, j) not in metal_bonded:
+                    min_ml = 1.8  # minimum non-bonded M-X distance
+                    if d < min_ml:
+                        if d < 1e-8:
+                            direction = rng_clash.standard_normal(3)
+                            direction /= max(np.linalg.norm(direction), 1e-12)
+                            push = 0.5 * direction
+                        else:
+                            push = 0.5 * (min_ml - d) / d * diff
+                        non_metal = j if is_metal_i else i
+                        sign = 1.0 if non_metal == j else -1.0
+                        if non_metal not in all_hapto_atoms:
+                            coords[non_metal] = coords[non_metal] + sign * push
+                            moved = True
+                    continue
+                if is_metal_i or is_metal_j:
+                    continue
+                if d < 0.8:
+                    if d < 1e-8:
+                        direction = rng_clash.standard_normal(3)
+                        direction /= max(np.linalg.norm(direction), 1e-12)
+                        push = 0.4 * direction
+                    else:
+                        push = 0.5 * (0.8 - d) / d * diff
+                    gi = atom_to_hapto_group.get(i, -1)
+                    gj = atom_to_hapto_group.get(j, -2)
+                    same_group = (gi == gj and gi >= 0)
+                    if not same_group:
+                        can_move_i = (i not in all_hapto_atoms) or (gi != gj)
+                        can_move_j = (j not in all_hapto_atoms) or (gi != gj)
+                        if can_move_i:
+                            coords[i] = coords[i] - push * 0.5
+                            moved = True
+                        if can_move_j:
+                            coords[j] = coords[j] + push * 0.5
+                            moved = True
+        if not moved:
+            break
+
+    # ---- Write conformer to mol ----
+    conf = Chem.Conformer(n_atoms)
+    for i in range(n_atoms):
+        conf.SetAtomPosition(i, Point3D(
+            float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2])))
+    mol.RemoveAllConformers()
+    mol.AddConformer(conf, assignId=True)
+    return True
+
 
 
 def mol_from_smiles_rdkit(smiles: str, allow_metal: bool = False):
@@ -6090,6 +14116,15 @@ def smiles_to_xyz_isomers(
     return results, None
 
 
+def smiles_to_xyz_quick_hapto_previews(
+    smiles: str,
+    hapto_approx: Optional[bool] = None,
+) -> List[Tuple[str, str]]:
+    """Return extra quick-convert preview structures for hapto-specific builders."""
+    _ = _hapto_approx_enabled(hapto_approx)
+    return list(_HAPTO_QUICK_PREVIEW_CACHE.get(smiles, []))
+
+
 def smiles_to_xyz_quick(
     smiles: str,
     hapto_approx: Optional[bool] = None,
@@ -6170,22 +14205,23 @@ def smiles_to_xyz(
         has_metal = contains_metal(smiles)
         hapto_mode = _hapto_approx_enabled(hapto_approx)
         hapto_groups = _probe_hapto_groups_from_smiles(smiles) if has_metal else []
+        _HAPTO_QUICK_PREVIEW_CACHE[smiles] = []
         legacy_hapto_xyz: Optional[str] = None
         if hapto_groups and not hapto_mode:
             error = _hapto_failfast_error(hapto_groups)
             logger.warning(error)
             return None, error
         if has_metal and hapto_mode and hapto_groups:
-            # Prefer the pre-hapto legacy path first. This preserves behavior
-            # that already worked for some polyhapto systems and only falls
-            # back to experimental approximation when legacy generation fails.
-            legacy_xyz, legacy_err = _try_multiple_strategies(smiles)
-            if legacy_err is None and legacy_xyz:
-                legacy_hapto_xyz = legacy_xyz
-                logger.info(
-                    "Hapto detected: collected legacy multi-strategy candidate "
-                    "for universal candidate selection."
-                )
+            # For single-hapto systems, try legacy path as backup.
+            # For multi-hapto (>=2 groups), skip the slow legacy path.
+            if len(hapto_groups) <= 1:
+                legacy_xyz, legacy_err = _try_multiple_strategies(smiles)
+                if legacy_err is None and legacy_xyz:
+                    legacy_hapto_xyz = legacy_xyz
+                    logger.info(
+                        "Hapto detected: collected legacy multi-strategy candidate "
+                        "for universal candidate selection."
+                    )
         method = None
 
         # For metal-nitrogen coordination complexes (both neutral and charged notation),
@@ -6200,7 +14236,8 @@ def smiles_to_xyz(
         # (e.g., neutral Cu complexes rewritten as Cu+2).
         mol = None
         normalized_smiles = _normalize_metal_smiles(smiles)
-        if has_metal and STK_AVAILABLE:
+        if has_metal and STK_AVAILABLE and len(hapto_groups) <= 1:
+            # Skip STK for multi-hapto systems (slow and usually fails)
             try:
                 bb = stk.BuildingBlock(smiles)
                 mol = bb.to_rdkit_mol()
@@ -6237,14 +14274,35 @@ def smiles_to_xyz(
                             rdkit_note = None
 
                 if rdkit_note and ("Explicit valence" in rdkit_note or "kekulize" in rdkit_note):
-                    legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
-                    if legacy_err is None and legacy_xyz:
-                        if output_path:
-                            Path(output_path).write_text(legacy_xyz, encoding='utf-8')
-                            logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
-                        return legacy_xyz, None
+                    # For hapto complexes: try unsanitized mol (no valence check)
+                    # so we can still go through the hapto correction path.
+                    if hapto_groups and hapto_mode:
+                        try:
+                            mol_unsan = Chem.MolFromSmiles(smiles, sanitize=False)
+                            if mol_unsan is not None:
+                                mol_unsan.UpdatePropertyCache(strict=False)
+                                mol = mol_unsan
+                                method = "RDKit (unsanitized for hapto)"
+                                rdkit_note = None
+                                logger.info(
+                                    "Using unsanitized mol for hapto path "
+                                    "(valence error bypassed)")
+                        except Exception:
+                            pass  # fall through to legacy
+
+                    if mol is None:
+                        legacy_xyz, legacy_err = _smiles_to_xyz_unsanitized_fallback(smiles)
+                        if legacy_err is None and legacy_xyz:
+                            if hapto_groups and hapto_mode:
+                                # Save as fallback but don't return yet —
+                                # try hapto path first via unsanitized mol
+                                legacy_hapto_xyz = legacy_xyz
+                            else:
+                                if output_path:
+                                    Path(output_path).write_text(legacy_xyz, encoding='utf-8')
+                                return legacy_xyz, None
                 # Last resort: try multi-strategy approach for metal complexes
-                if has_metal:
+                if has_metal and mol is None:
                     if hapto_groups and hapto_mode:
                         error = (
                             "Failed to parse hapto complex for experimental approximation. "
@@ -6333,49 +14391,242 @@ def smiles_to_xyz(
                         return legacy_xyz, None
                 pass
 
-        # Experimental fast path for eta/hapto approximation: avoid the costly
-        # metal multi-conformer search and build a deterministic best-of-seeds
-        # start structure from the adjusted (anchor+dative) coordination graph.
+        # Hapto path: ETKDG for topology preservation + sphere correction
+        # for correct hapto geometry.  Sphere scaffold only as last fallback.
         if has_metal and hapto_mode and hapto_groups:
-            seed_candidates = [42, 1337, 2027, 31415, 271828, 1618033]
+            # Re-identify hapto groups on the current mol (atom indices may have
+            # shifted due to RemoveHs/AddHs/dative bond conversion above).
+            hapto_groups = _find_hapto_groups(mol)
+            if not hapto_groups:
+                hapto_groups = _probe_hapto_groups_from_smiles(smiles)
             best_mol = None
-            best_score = float("inf")
+            preview_candidates: List[Tuple[str, str]] = []
 
-            for seed in seed_candidates:
-                try:
-                    mol_try = Chem.Mol(mol)
-                    params = AllChem.ETKDGv3()
-                    params.randomSeed = int(seed)
-                    params.useRandomCoords = True
-                    params.enforceChirality = False
-                    result = AllChem.EmbedMolecule(mol_try, params)
-                    if result != 0:
-                        result = AllChem.EmbedMolecule(
-                            mol_try, useRandomCoords=True, randomSeed=int(seed)
-                        )
-                    if result != 0:
-                        continue
-                    cid = int(result)
+            # Primary hybrid path: analytical hapto scaffold plus rigidly
+            # aligned ligand fragments. This avoids global ETKDG on the full
+            # metal graph where multi-hapto systems are most brittle.
+            try:
+                hybrid_mol = _build_hybrid_hapto_complex(
+                    mol,
+                    hapto_groups,
+                    preview_store=preview_candidates,
+                )
+                if hybrid_mol is not None:
+                    best_mol = hybrid_mol
+                    logger.info("Hybrid hapto scaffold/fragment builder succeeded")
+            except Exception as e:
+                logger.debug("Hybrid hapto scaffold/fragment builder failed: %s", e)
+            _HAPTO_QUICK_PREVIEW_CACHE[smiles] = list(preview_candidates)
+
+            if best_mol is None:
+                # Fix O- atoms with double bonds that cause valence errors
+                # during ETKDG embedding (e.g. C=[O-] in metal chelates).
+                # Temporarily neutralize for embedding; formal charges don't
+                # affect distance geometry.
+                _fixed_o_atoms = []
+                for _oa in mol.GetAtoms():
+                    if (_oa.GetSymbol() == 'O'
+                            and _oa.GetFormalCharge() == -1
+                            and any(b.GetBondType() == Chem.BondType.DOUBLE
+                                    for b in _oa.GetBonds())):
+                        _oa.SetFormalCharge(0)
+                        _fixed_o_atoms.append(_oa.GetIdx())
+                if _fixed_o_atoms:
                     try:
-                        _apply_hapto_centroid_bias(
-                            mol_try, cid, hapto_groups, min_centroid_sep=2.2
-                        )
+                        mol.UpdatePropertyCache(strict=False)
                     except Exception:
                         pass
 
-                    score = _geometry_quality_score(mol_try, cid)
-                    score += _hapto_geometry_penalty(mol_try, cid, hapto_groups)
+                # SECONDARY: Two-phase ETKDG embedding
+                # Phase 1: ETKDG + analytical hapto correction → fix hapto atoms
+                # Phase 2: UFF relaxation with fixed hapto scaffold
+                etkdg_seeds = [42, 1337, 2027, 7, 97, 13]
+                for seed in etkdg_seeds:
                     try:
-                        if _has_ligand_intertwining(mol_try, cid, threshold=0.35):
-                            score += 800.0
-                    except Exception:
-                        pass
+                        mol_try = Chem.Mol(mol)
+                        params = AllChem.ETKDGv3()
+                        params.randomSeed = seed
+                        params.useRandomCoords = True
+                        params.enforceChirality = False
+                        r = AllChem.EmbedMolecule(mol_try, params)
+                        if r != 0:
+                            r = AllChem.EmbedMolecule(
+                                mol_try, useRandomCoords=True, randomSeed=seed
+                            )
+                        if r != 0:
+                            continue
+                        cid = int(r)
 
-                    if score < best_score:
-                        best_score = score
+                        # Phase 1: Analytical hapto correction
+                        try:
+                            _correct_hapto_geometry(mol_try, cid, hapto_groups)
+                        except Exception:
+                            pass
+
+                        # Phase 1.5: Fix sigma metal-ligand distances.
+                        # ETKDG treats M-L bonds like organic bonds (~1.5Å)
+                        # which is too short.  Scale entire ligand fragments
+                        # rigidly to correct M-L distances.
+                        try:
+                            from collections import deque as _deque
+                            _conf = mol_try.GetConformer(cid)
+                            hapto_atom_set = set()
+                            metal_set_idx = set()
+                            for _mi, catoms in hapto_groups:
+                                metal_set_idx.add(_mi)
+                                for _ca in catoms:
+                                    hapto_atom_set.add(_ca)
+                            for _ai in range(mol_try.GetNumAtoms()):
+                                if mol_try.GetAtomWithIdx(_ai).GetSymbol() in _METAL_SET:
+                                    metal_set_idx.add(_ai)
+
+                            for _ai in metal_set_idx:
+                                _atom = mol_try.GetAtomWithIdx(_ai)
+                                m_sym = _atom.GetSymbol()
+                                mp = _conf.GetAtomPosition(_ai)
+                                m_pos = np.array([mp.x, mp.y, mp.z])
+                                for _nbr in _atom.GetNeighbors():
+                                    _ni = _nbr.GetIdx()
+                                    if _ni in hapto_atom_set:
+                                        continue  # handled by Phase 1
+                                    if _ni in metal_set_idx:
+                                        continue  # M-M bonds
+                                    l_sym = _nbr.GetSymbol()
+                                    lp = _conf.GetAtomPosition(_ni)
+                                    l_pos = np.array([lp.x, lp.y, lp.z])
+                                    cur_d = float(np.linalg.norm(l_pos - m_pos))
+                                    if cur_d < 1e-8:
+                                        continue
+                                    target_d = float(
+                                        _get_ml_bond_length(m_sym, l_sym))
+                                    if abs(cur_d - target_d) / target_d < 0.15:
+                                        continue
+                                    # BFS to find entire fragment attached to
+                                    # this donor (not crossing metals)
+                                    frag = set()
+                                    q = _deque([_ni])
+                                    frag.add(_ni)
+                                    while q:
+                                        cur = q.popleft()
+                                        for fn in mol_try.GetAtomWithIdx(
+                                                cur).GetNeighbors():
+                                            fi = fn.GetIdx()
+                                            if (fi not in frag
+                                                    and fi not in metal_set_idx
+                                                    and fi not in hapto_atom_set):
+                                                frag.add(fi)
+                                                q.append(fi)
+                                    # Rigid translation of entire fragment
+                                    delta = (target_d - cur_d) / cur_d * (
+                                        l_pos - m_pos)
+                                    for fi in frag:
+                                        fp = _conf.GetAtomPosition(fi)
+                                        fv = np.array([fp.x, fp.y, fp.z])
+                                        new_fv = fv + delta
+                                        _conf.SetAtomPosition(
+                                            fi, Point3D(float(new_fv[0]),
+                                                        float(new_fv[1]),
+                                                        float(new_fv[2])))
+                        except Exception:
+                            pass
+
+                        # Phase 1.6: BFS propagation for non-hapto atoms
+                        try:
+                            _propagate_non_hapto_atoms(mol_try, cid, hapto_groups)
+                        except Exception:
+                            pass
+
+                        # Phase 2: UFF force-field relaxation with fixed hapto
+                        # scaffold.  This corrects organic ligand geometry
+                        # (angles, torsions, ring conformations) while preserving
+                        # the analytically placed coordination sphere.
+                        try:
+                            ff = AllChem.UFFGetMoleculeForceField(mol_try, confId=cid)
+                            if ff is not None:
+                                # Fix ALL metal atoms + hapto ring atoms
+                                fixed_set = set()
+                                for _ai in range(mol_try.GetNumAtoms()):
+                                    if mol_try.GetAtomWithIdx(_ai).GetSymbol() in _METAL_SET:
+                                        ff.AddFixedPoint(_ai)
+                                        fixed_set.add(_ai)
+                                for _mi, catoms in hapto_groups:
+                                    for ai in catoms:
+                                        if ai not in fixed_set:
+                                            ff.AddFixedPoint(ai)
+                                            fixed_set.add(ai)
+                                ff.Minimize(maxIts=500)
+                                logger.info(
+                                    "Hapto phase-1 + UFF relax (seed=%d)", seed)
+                            else:
+                                logger.info(
+                                    "Hapto phase-1 only (UFF=None, seed=%d)", seed)
+                        except Exception:
+                            logger.info(
+                                "Hapto phase-1 only (UFF failed, seed=%d)", seed)
+
+                        try:
+                            _enforce_donor_pi_coplanarity(
+                                mol_try, cid, hapto_groups)
+                        except Exception:
+                            pass
+
+                        # Fix secondary metal positions AFTER UFF/coplanarity
+                        try:
+                            _fix_secondary_metal_distances(
+                                mol_try, cid, hapto_groups)
+                        except Exception:
+                            pass
+
+                        try:
+                            _final_clash_resolution(
+                                mol_try, cid, hapto_groups)
+                        except Exception:
+                            pass
+
                         best_mol = mol_try
-                except Exception:
-                    continue
+                        break
+                    except Exception:
+                        continue
+
+            # FALLBACK: Sphere-based constructive scaffold builder
+            if best_mol is None:
+                try:
+                    mol_scaffold = Chem.Mol(mol)
+                    if _build_hapto_scaffold(mol_scaffold, hapto_groups):
+                        # UFF relaxation on scaffold result
+                        try:
+                            ff = AllChem.UFFGetMoleculeForceField(mol_scaffold)
+                            if ff is not None:
+                                for _mi, catoms in hapto_groups:
+                                    ff.AddFixedPoint(_mi)
+                                    for ai in catoms:
+                                        ff.AddFixedPoint(ai)
+                                ff.Minimize(maxIts=500)
+                                try:
+                                    _correct_hapto_geometry(
+                                        mol_scaffold, 0, hapto_groups)
+                                except Exception:
+                                    pass
+                                logger.info(
+                                    "Hapto scaffold + UFF relax")
+                            else:
+                                logger.info(
+                                    "Hapto scaffold (UFF=None)")
+                        except Exception:
+                            logger.info("Hapto scaffold (UFF failed)")
+                        try:
+                            _enforce_donor_pi_coplanarity(
+                                mol_scaffold, 0, hapto_groups)
+                        except Exception:
+                            pass
+                        try:
+                            _final_clash_resolution(
+                                mol_scaffold, 0, hapto_groups)
+                        except Exception:
+                            pass
+                        best_mol = mol_scaffold
+                except Exception as e:
+                    logger.debug("Sphere scaffold failed: %s", e)
 
             if best_mol is None:
                 if legacy_hapto_xyz:
@@ -6383,39 +14634,9 @@ def smiles_to_xyz(
                         Path(output_path).write_text(legacy_hapto_xyz, encoding='utf-8')
                     return legacy_hapto_xyz, None
                 return None, "Hapto-approx embedding failed"
+
             mol = best_mol
             xyz_content = _mol_to_xyz(mol)
-            if apply_uff:
-                logger.info(
-                    "Skipping OB-UFF for hapto candidate generation; "
-                    "using hapto-specific geometry guards to preserve ligand bonding."
-                )
-            # Final Cp-like post-correction: bias metal toward eta-group
-            # centroid(s), i.e. coordination to ring middle instead of one C.
-            xyz_content = _apply_hapto_centroid_bias_to_xyz(
-                xyz_content, mol, hapto_groups, min_centroid_sep=2.2
-            )
-            candidates: List[Tuple[str, str]] = [("hapto-approx", xyz_content)]
-            if legacy_hapto_xyz:
-                candidates.append(("legacy", legacy_hapto_xyz))
-            sel_xyz, sel_label, sel_score = _select_best_hapto_xyz(
-                smiles=smiles,
-                mol_template=mol,
-                hapto_groups=hapto_groups,
-                candidates=candidates,
-            )
-            if sel_xyz:
-                xyz_content = sel_xyz
-                logger.info(
-                    "Hapto candidate selected: %s (score=%.2f)",
-                    sel_label or "unknown",
-                    float(sel_score) if sel_score is not None else float("nan"),
-                )
-            # Final universal hapto geometry guard on the selected candidate
-            # (including cases where legacy candidate wins).
-            xyz_content = _apply_hapto_centroid_bias_to_xyz(
-                xyz_content, mol, hapto_groups, min_centroid_sep=2.2
-            )
             if output_path:
                 Path(output_path).write_text(xyz_content, encoding='utf-8')
             return xyz_content, None
@@ -6567,6 +14788,14 @@ def smiles_to_xyz(
                 logger.debug("RDKit UFF optimization successful")
             except Exception as e:
                 logger.info(f"RDKit UFF optimization skipped: {e}")
+
+        # Enforce donor pi-coplanarity for all metal complexes:
+        # rotate planar donor fragments so the metal lies in the pi-plane.
+        if has_metal:
+            try:
+                _enforce_donor_pi_coplanarity(mol)
+            except Exception:
+                pass
 
         # Convert to XYZ format
         xyz_content = _mol_to_xyz(mol)
