@@ -4212,6 +4212,7 @@ def create_tab(ctx):
         "display:flex; flex-direction:column; overflow:hidden !important; }}"
         f".{scope_id} .remote-left {{ display:flex !important; flex-direction:column !important; }}"
         f".{scope_id} .remote-right {{ display:flex !important; flex-direction:column !important; overflow:hidden !important; }}"
+        f".{scope_id} .widget-vbox, .{scope_id} .widget-hbox {{ overflow-y:hidden !important; }}"
         f".{scope_id} .remote-content-area {{ flex:1 1 0 !important; min-height:0 !important; overflow-x:hidden !important; }}"
         f".{scope_id} .remote-content-area .widget-html-content {{ height:100%; overflow:hidden !important; }}"
         f".{scope_id} #remote-content-box {{ overflow-y:auto !important; overflow-x:hidden !important; }}"

@@ -385,6 +385,29 @@ def create_tab(ctx):
         ],
         layout=widgets.Layout(display='none', gap='6px', align_items='center'),
     )
+    calc_new_folder_prompt_label = widgets.HTML('<b>New folder name:</b>')
+    calc_new_folder_prompt_input = widgets.Text(
+        placeholder='Folder name',
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
+    )
+    calc_new_folder_prompt_ok_btn = widgets.Button(
+        description='Create',
+        button_style='primary',
+        layout=widgets.Layout(width='70px', height='26px'),
+    )
+    calc_new_folder_prompt_cancel_btn = widgets.Button(
+        description='Cancel',
+        layout=widgets.Layout(width='78px', height='26px'),
+    )
+    calc_new_folder_prompt_row = widgets.HBox(
+        [
+            calc_new_folder_prompt_label,
+            calc_new_folder_prompt_input,
+            calc_new_folder_prompt_ok_btn,
+            calc_new_folder_prompt_cancel_btn,
+        ],
+        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+    )
     calc_transfer_jobs_btn = widgets.Button(
         description='Running Transfers',
         layout=widgets.Layout(
@@ -437,6 +460,7 @@ def create_tab(ctx):
     calc_refresh_btn.add_class('calc-cmd-refresh-btn')
     calc_new_folder_input.add_class('calc-cmd-new-folder-input')
     calc_new_folder_btn.add_class('calc-cmd-new-folder-btn')
+    calc_explorer_new_btn.add_class('calc-cmd-explorer-new-btn')
     calc_rename_input.add_class('calc-cmd-rename-input')
     calc_rename_btn.add_class('calc-cmd-rename-btn')
     calc_move_target_input.add_class('calc-cmd-move-target')
@@ -2355,6 +2379,8 @@ def create_tab(ctx):
         state['duplicate_source_path'] = ''
         calc_duplicate_prompt_input.value = ''
         calc_duplicate_prompt_row.layout.display = 'none'
+        calc_new_folder_prompt_input.value = ''
+        calc_new_folder_prompt_row.layout.display = 'none'
 
     def _calc_clipboard_store():
         store = getattr(ctx, 'shared_clipboard', None)
@@ -8468,8 +8494,22 @@ def create_tab(ctx):
 
     def calc_on_explorer_new_folder(button=None):
         _calc_hide_rename_prompt()
-        calc_new_folder_input.value = ''
+        calc_new_folder_prompt_input.value = ''
+        calc_new_folder_prompt_row.layout.display = 'flex'
+        _calc_set_ops_status('Enter folder name and confirm with Create.', color='#555')
+
+    def calc_on_new_folder_prompt_ok(button=None):
+        raw_name = str(calc_new_folder_prompt_input.value or '').strip()
+        calc_new_folder_prompt_row.layout.display = 'none'
+        if not raw_name:
+            _calc_set_ops_status('Folder name cannot be empty.', color='#d32f2f')
+            return
+        calc_new_folder_input.value = raw_name
         calc_on_new_folder()
+
+    def calc_on_new_folder_prompt_cancel(button=None):
+        _calc_hide_rename_prompt()
+        _calc_set_ops_status('New folder canceled.', color='#555')
 
     def calc_on_explorer_start_rename(button=None):
         try:
@@ -10034,6 +10074,8 @@ def create_tab(ctx):
     calc_rename_prompt_cancel_btn.on_click(calc_on_explorer_rename_cancel)
     calc_duplicate_prompt_yes_btn.on_click(calc_on_explorer_duplicate_yes)
     calc_duplicate_prompt_cancel_btn.on_click(calc_on_explorer_duplicate_cancel)
+    calc_new_folder_prompt_ok_btn.on_click(calc_on_new_folder_prompt_ok)
+    calc_new_folder_prompt_cancel_btn.on_click(calc_on_new_folder_prompt_cancel)
     calc_new_folder_btn.on_click(calc_on_new_folder)
     calc_rename_btn.on_click(calc_on_rename)
     calc_move_btn.on_click(calc_on_move_items)
@@ -10058,6 +10100,11 @@ def create_tab(ctx):
     if hasattr(calc_duplicate_prompt_input, 'on_submit'):
         try:
             calc_duplicate_prompt_input.on_submit(calc_on_explorer_duplicate_yes)
+        except Exception:
+            pass
+    if hasattr(calc_new_folder_prompt_input, 'on_submit'):
+        try:
+            calc_new_folder_prompt_input.on_submit(calc_on_new_folder_prompt_ok)
         except Exception:
             pass
     if _is_archive_tab:
@@ -10493,8 +10540,7 @@ def create_tab(ctx):
 
             menu.appendChild(makeItem('New Folder', function(menuEl){
                 var root = menuEl._root;
-                _setWidgetInput(root, 'calc-cmd-new-folder-input', '');
-                _clickWidgetButton(root, 'calc-cmd-new-folder-btn');
+                _clickWidgetButton(root, 'calc-cmd-explorer-new-btn');
             }));
             menu.appendChild(makeItem('Rename', function(menuEl){
                 var root = menuEl._root;
@@ -11111,6 +11157,7 @@ def create_tab(ctx):
         calc_path_label,
         calc_nav_controls_row,
         calc_nav_selection_row,
+        calc_new_folder_prompt_row,
         calc_rename_prompt_row,
         calc_duplicate_prompt_row,
         calc_hidden_upload,
