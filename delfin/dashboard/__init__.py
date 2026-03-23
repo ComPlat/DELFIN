@@ -590,8 +590,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                         backup_dir.mkdir(parents=True, exist_ok=True)
                         copied = 0
                         for line in status_result.stdout.strip().splitlines():
-                            # status lines: "XY filename" or "XY filename -> newname"
-                            entry = line[3:].split(' -> ')[0].strip().strip('"')
+                            # porcelain format: "XY filename" or "XY filename -> newname"
+                            # With git -C the prefix can be 2 or 3 chars; strip status flags safely.
+                            entry = line.lstrip(' MADRCU?!').lstrip()
+                            entry = entry.split(' -> ')[0].strip().strip('"')
+                            if not entry:
+                                continue
                             src = Path(rd) / entry
                             if src.is_file():
                                 dst = backup_dir / entry
