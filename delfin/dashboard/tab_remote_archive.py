@@ -20,15 +20,19 @@ import ipywidgets as widgets
 from IPython.display import HTML, clear_output, display
 
 from delfin.remote_archive import (
+    REMOTE_TEXT_CHUNK_BYTES as REMOTE_BACKEND_TEXT_CHUNK_BYTES,
     TEXT_PREVIEW_MAX_BYTES,
     fetch_remote_file,
+    line_col_from_remote_file_offset,
     list_remote_entries,
     normalize_remote_relative_path,
+    read_remote_text_chunk,
     read_remote_text_preview,
     remote_delete,
     remote_duplicate,
     remote_mkdir,
     remote_rename,
+    search_remote_file,
 )
 from delfin.ssh_transfer_jobs import (
     create_download_job,
@@ -56,6 +60,12 @@ from .molecule_viewer import (
 )
 
 REMOTE_FULL_FETCH_MAX_BYTES = 128 * 1024 * 1024
+REMOTE_TEXT_FULL_READ_BYTES = TEXT_PREVIEW_MAX_BYTES
+REMOTE_TEXT_CHUNK_BYTES = max(TEXT_PREVIEW_MAX_BYTES, REMOTE_BACKEND_TEXT_CHUNK_BYTES)
+REMOTE_XYZ_MAX_READ_BYTES = 50 * 1024 * 1024
+REMOTE_CUBE_MAX_READ_BYTES = 100 * 1024 * 1024
+REMOTE_IMAGE_MAX_READ_BYTES = 20 * 1024 * 1024
+REMOTE_LOG_XYZ_EXTRACT_MAX = 50 * 1024 * 1024
 REMOTE_TEXT_RENDER_MAX_CHARS = 400_000
 REMOTE_MOL_SIZE = 450
 REMOTE_MOL_DYNAMIC_SCALE = 0.9725
@@ -69,6 +79,14 @@ REMOTE_XYZ_PLAY_FPS_MAX = 60
 REMOTE_SEARCH_MAX_MATCHES = 2000
 REMOTE_HIGHLIGHT_MAX_CHARS = 400_000
 REMOTE_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
+
+REMOTE_BINARY_SUFFIXES = {
+    ".gbw", ".cis", ".densities", ".tmp", ".rwf", ".chk", ".fchk",
+    ".wfn", ".wfx", ".molden", ".nat", ".hess", ".engrad",
+    ".zip", ".gz", ".tar", ".bz2", ".xz", ".7z",
+    ".so", ".o", ".a", ".exe", ".dll", ".pyc", ".pyo",
+    ".db", ".sqlite", ".sqlite3",
+}
 
 
 def create_tab(ctx):
@@ -96,6 +114,12 @@ def create_tab(ctx):
         "search_truncated": False,
         "selected_file_path": None,
         "selected_file_size": 0,
+        "selected_file_relative_path": "",
+        "selected_file_chunk_raw": b"",
+        "file_is_preview": False,
+        "file_chunk_start": 0,
+        "file_chunk_end": 0,
+        "chunk_dom_initialized": False,
         # Table extraction state
         "table_col_defs": [
             {"name": "Value 1", "type": "regex", "pattern": "", "occ": "last"},
@@ -235,7 +259,7 @@ def create_tab(ctx):
     search_input = widgets.Text(
         placeholder="Search in file...",
         continuous_update=True,
-        layout=widgets.Layout(width="140px", min_width="140px", height="26px"),
+        layout=widgets.Layout(width="240px", min_width="180px", height="26px", flex="1 1 220px"),
     )
     search_input.add_class("remote-search-input")
     search_suggest = widgets.Dropdown(
@@ -271,6 +295,37 @@ def create_tab(ctx):
         description="⬇ End",
         layout=widgets.Layout(width="78px", min_width="78px", height="26px"),
     )
+    chunk_prev_btn = widgets.Button(
+        description="◀ Part",
+        layout=widgets.Layout(width="85px", min_width="85px", height="26px"),
+        disabled=True,
+    )
+    chunk_prev_btn.add_class("remote-chunk-prev-trigger")
+    chunk_next_btn = widgets.Button(
+        description="Part ▶",
+        layout=widgets.Layout(width="85px", min_width="85px", height="26px"),
+        disabled=True,
+    )
+    chunk_next_btn.add_class("remote-chunk-next-trigger")
+    chunk_label = widgets.HTML(
+        value="",
+        layout=widgets.Layout(width="190px", min_width="190px"),
+    )
+    chunk_request_start = widgets.IntText(
+        value=0,
+        layout=widgets.Layout(width="1px", height="1px"),
+    )
+    chunk_request_start.add_class("remote-chunk-start-input")
+    chunk_request_ratio = widgets.FloatText(
+        value=0.0,
+        layout=widgets.Layout(width="1px", height="1px"),
+    )
+    chunk_request_ratio.add_class("remote-chunk-ratio-input")
+    chunk_request_btn = widgets.Button(
+        description="chunk-load",
+        layout=widgets.Layout(width="1px", height="1px"),
+    )
+    chunk_request_btn.add_class("remote-chunk-load-trigger")
 
     # -- Download widgets -------------------------------------------------------
     download_btn = widgets.Button(
@@ -803,6 +858,19 @@ def create_tab(ctx):
             f"""
             (function() {{
                 var scopeKey = {scope_key_json};
+                var previousViewer =
+                    (window._remoteMolViewerByScope && window._remoteMolViewerByScope[scopeKey])
+                    || (window._remoteTrajViewerByScope && window._remoteTrajViewerByScope[scopeKey])
+                    || null;
+                var previousScope =
+                    (window._remoteMolViewScopeKeyByScope && window._remoteMolViewScopeKeyByScope[scopeKey])
+                    || null;
+                if (previousViewer && previousScope && typeof previousViewer.getView === 'function') {{
+                    try {{
+                        window._remoteMolViewStateByScope = window._remoteMolViewStateByScope || {{}};
+                        window._remoteMolViewStateByScope[previousScope] = previousViewer.getView();
+                    }} catch (_e) {{}}
+                }}
                 if (window._remoteMolViewerByScope) delete window._remoteMolViewerByScope[scopeKey];
                 if (window._remoteTrajViewerByScope) delete window._remoteTrajViewerByScope[scopeKey];
             }})();
@@ -844,6 +912,33 @@ def create_tab(ctx):
             _clear_viewer()
         _update_traj_control_state()
 
+    def _selected_relative_path():
+        relative_path = normalize_remote_relative_path(
+            state.get("selected_file_relative_path", "")
+        )
+        if relative_path:
+            return relative_path
+        entry = state.get("selected_entry") or {}
+        return normalize_remote_relative_path(entry.get("relative_path", ""))
+
+    def _hide_chunk_controls():
+        chunk_prev_btn.disabled = True
+        chunk_next_btn.disabled = True
+        chunk_label.value = ""
+
+    def _update_chunk_controls():
+        size = int(state.get("selected_file_size") or 0)
+        if not _is_chunk_mode() or size <= REMOTE_TEXT_FULL_READ_BYTES:
+            _hide_chunk_controls()
+            return
+        start = int(state.get("file_chunk_start") or 0)
+        end = int(state.get("file_chunk_end") or 0)
+        total_parts = max(1, (size + REMOTE_TEXT_CHUNK_BYTES - 1) // REMOTE_TEXT_CHUNK_BYTES)
+        part_idx = min(total_parts, max(1, (start // REMOTE_TEXT_CHUNK_BYTES) + 1))
+        chunk_prev_btn.disabled = (start <= 0)
+        chunk_next_btn.disabled = (end >= size or end <= start)
+        chunk_label.value = f"<span style='display:none;'>Part {part_idx}/{total_parts}</span>"
+
     def _clear_preview(message="Select a remote file to preview."):
         file_info_html.value = ""
         selected_path_html.value = ""
@@ -851,6 +946,12 @@ def create_tab(ctx):
         state["file_preview_note"] = ""
         state["selected_file_path"] = None
         state["selected_file_size"] = 0
+        state["selected_file_relative_path"] = ""
+        state["selected_file_chunk_raw"] = b""
+        state["file_is_preview"] = False
+        state["file_chunk_start"] = 0
+        state["file_chunk_end"] = 0
+        state["chunk_dom_initialized"] = False
         preview_html.value = (
             "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
             "padding:12px; background:#fafafa;'>"
@@ -861,20 +962,16 @@ def create_tab(ctx):
         download_btn.disabled = True
         download_status_html.value = ""
         content_toolbar.layout.display = "none"
+        _hide_chunk_controls()
         _reset_search_state()
         _reset_visualization_state()
 
-    def _render_text_preview(text, *, note=""):
+    def _render_text_preview(text, *, note="", scroll_to=None):
         content = str(text or "")
-        truncated = False
-        if len(content) > REMOTE_TEXT_RENDER_MAX_CHARS:
-            content = content[:REMOTE_TEXT_RENDER_MAX_CHARS]
-            truncated = True
+        chunk_mode = _is_chunk_mode()
         note_parts = []
         if note:
             note_parts.append(note)
-        if truncated:
-            note_parts.append(f"display limited to {REMOTE_TEXT_RENDER_MAX_CHARS:,} characters")
         note_html = ""
         if note_parts:
             note_html = (
@@ -882,6 +979,19 @@ def create_tab(ctx):
                 + " | ".join(html.escape(part) for part in note_parts)
                 + "</div>"
             )
+        top_spacer_html = ""
+        bottom_spacer_html = ""
+        text_opacity = "1"
+        if chunk_mode:
+            total_size = max(1, int(state.get("selected_file_size") or 1))
+            chunk_start = max(0, int(state.get("file_chunk_start") or 0))
+            chunk_end = max(chunk_start, int(state.get("file_chunk_end") or chunk_start))
+            virtual_h = max(12000, min(180000, int(total_size / 96)))
+            top_px = int((chunk_start / total_size) * virtual_h)
+            bottom_px = int((max(0, total_size - chunk_end) / total_size) * virtual_h)
+            top_spacer_html = f"<div id='remote-chunk-top-spacer' style='height:{top_px}px;'></div>"
+            bottom_spacer_html = f"<div id='remote-chunk-bottom-spacer' style='height:{bottom_px}px;'></div>"
+            text_opacity = "0"
         preview_html.value = (
             "<style>"
             ".remote-match { background: #fff59d; padding: 0 2px; }"
@@ -890,11 +1000,222 @@ def create_tab(ctx):
             "<div id='remote-content-box' style='height:100%; overflow-y:auto; overflow-x:hidden;"
             " border:1px solid #ddd; padding:6px; background:#fafafa; width:100%; box-sizing:border-box;'>"
             f"{note_html}"
+            f"{top_spacer_html}"
             "<div id='remote-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
-            " word-break:break-word; font-family:monospace; font-size:12px; line-height:1.3;'>"
+            f" word-break:break-word; font-family:monospace; font-size:12px; line-height:1.3; opacity:{text_opacity};'>"
             f"{html.escape(content)}"
-            "</div></div>"
+            "</div>"
+            f"{bottom_spacer_html}"
+            "</div>"
         )
+        if chunk_mode:
+            file_size_js = int(state.get("selected_file_size") or 0)
+            chunk_start_js = int(state.get("file_chunk_start") or 0)
+            _run_js(
+                """
+                setTimeout(function() {
+                    const box = document.getElementById('remote-content-box');
+                    const topSpacer = document.getElementById('remote-chunk-top-spacer');
+                    const txt = document.getElementById('remote-content-text');
+                    if (!box || !topSpacer || !txt) return;
+                    const startInput = document.querySelector('.remote-chunk-start-input input');
+                    const ratioInput = document.querySelector('.remote-chunk-ratio-input input');
+                    if (!startInput || !ratioInput) return;
+
+                    const fileSize = __FILE_SIZE__;
+                    const chunkBytes = __CHUNK_BYTES__;
+                    const currentStart = __CURRENT_START__;
+                    if (fileSize <= 0 || chunkBytes <= 0) return;
+                    window.__remoteChunkCurrentStart = currentStart;
+
+                    function emit(el, value) {
+                        el.value = String(value);
+                        el.dispatchEvent(new Event('input', {bubbles: true}));
+                        el.dispatchEvent(new Event('change', {bubbles: true}));
+                    }
+
+                    function requestChunkForRatio(ratio) {
+                        if (!isFinite(ratio)) return;
+                        const clamped = Math.max(0, Math.min(1, ratio));
+                        if (window.__remoteChunkBusy) {
+                            window.__remoteChunkPendingRatio = clamped;
+                            return;
+                        }
+                        const activeStart = (typeof window.__remoteChunkCurrentStart === 'number' && isFinite(window.__remoteChunkCurrentStart))
+                            ? window.__remoteChunkCurrentStart
+                            : currentStart;
+                        const tailStart = Math.max(0, fileSize - chunkBytes);
+                        let desired;
+                        if (clamped >= 0.9995) {
+                            desired = tailStart;
+                        } else {
+                            desired = Math.floor((clamped * fileSize) / chunkBytes) * chunkBytes;
+                            if (desired < 0) desired = 0;
+                            if (desired > tailStart) desired = tailStart;
+                        }
+                        if (desired === activeStart) return;
+                        window.__remoteChunkBusy = true;
+                        window.__remoteChunkPendingRatio = null;
+                        window.__remoteChunkRequestedRatio = clamped;
+                        emit(startInput, desired);
+                        emit(ratioInput, clamped);
+                        setTimeout(function() {
+                            if (!window.__remoteChunkBusy) return;
+                            window.__remoteChunkBusy = false;
+                            processPendingRatio();
+                        }, 2000);
+                    }
+
+                    function processPendingRatio(forceRun) {
+                        if (window.__remoteChunkBusy) return;
+                        if (!forceRun && window.__remoteChunkScrollbarDragActive) return;
+                        const pending = window.__remoteChunkPendingRatio;
+                        if (typeof pending !== 'number' || !isFinite(pending)) return;
+                        const now = Date.now();
+                        const fastUntil = (window.__remoteChunkFastDragUntil || 0);
+                        if (!forceRun && fastUntil > now) {
+                            const waitFast = Math.max(20, (fastUntil - now) + 5);
+                            if (window.__remoteChunkResumeTimer) clearTimeout(window.__remoteChunkResumeTimer);
+                            window.__remoteChunkResumeTimer = setTimeout(function() {
+                                window.__remoteChunkResumeTimer = null;
+                                processPendingRatio(false);
+                            }, waitFast);
+                            return;
+                        }
+                        const ignoreUntil = (window.__remoteChunkIgnoreScrollUntil || 0);
+                        if (!forceRun && ignoreUntil > now) {
+                            const waitMs = Math.max(20, (ignoreUntil - now) + 5);
+                            if (window.__remoteChunkResumeTimer) clearTimeout(window.__remoteChunkResumeTimer);
+                            window.__remoteChunkResumeTimer = setTimeout(function() {
+                                window.__remoteChunkResumeTimer = null;
+                                processPendingRatio(false);
+                            }, waitMs);
+                            return;
+                        }
+                        window.__remoteChunkPendingRatio = null;
+                        requestChunkForRatio(pending);
+                    }
+                    window.__remoteChunkProcessPendingRatio = processPendingRatio;
+
+                    if (!window.__remoteChunkReleaseBound) {
+                        window.__remoteChunkReleaseBound = true;
+                        const onRelease = function() {
+                            if (!window.__remoteChunkScrollbarDragActive) return;
+                            window.__remoteChunkScrollbarDragActive = false;
+                            const fn = window.__remoteChunkProcessPendingRatio;
+                            if (typeof fn === 'function') fn(true);
+                        };
+                        window.addEventListener('pointerup', onRelease, {passive: true});
+                        window.addEventListener('mouseup', onRelease, {passive: true});
+                        window.addEventListener('pointercancel', onRelease, {passive: true});
+                        window.addEventListener('blur', onRelease, {passive: true});
+                    }
+
+                    if (!box.dataset.chunkBound) {
+                        box.dataset.chunkBound = '1';
+                        let timer = null;
+                        box.addEventListener('wheel', function() {
+                            window.__remoteChunkLastWheelTs = Date.now();
+                        }, {passive: true});
+                        box.addEventListener('pointerdown', function(ev) {
+                            if (window.__remoteChunkProgrammaticScroll) return;
+                            if (!ev) return;
+                            const rect = box.getBoundingClientRect();
+                            if (ev.clientX >= (rect.right - 28)) {
+                                window.__remoteChunkScrollbarDragActive = true;
+                            }
+                        }, {passive: true});
+                        box.addEventListener('scroll', function(ev) {
+                            if (window.__remoteChunkProgrammaticScroll) {
+                                return;
+                            }
+                            const nowTs = Date.now();
+                            const maxScroll = Math.max(1, box.scrollHeight - box.clientHeight);
+                            const ratio = box.scrollTop / maxScroll;
+                            const prevRatio = window.__remoteChunkPrevScrollRatio;
+                            const delta = (typeof prevRatio === 'number' && isFinite(prevRatio))
+                                ? Math.abs(ratio - prevRatio)
+                                : 0;
+                            const wheelRecent = ((nowTs - (window.__remoteChunkLastWheelTs || 0)) <= 90);
+                            if (!wheelRecent && delta >= 0.02) {
+                                window.__remoteChunkScrollbarDragActive = true;
+                            }
+                            if (typeof prevRatio === 'number' && isFinite(prevRatio)) {
+                                if (delta >= 0.08) {
+                                    window.__remoteChunkFastDragUntil = nowTs + 180;
+                                }
+                            }
+                            window.__remoteChunkPrevScrollRatio = ratio;
+                            const buttonsDown = !!(ev && typeof ev.buttons === 'number' && ev.buttons > 0);
+                            if (buttonsDown) {
+                                window.__remoteChunkScrollbarDragActive = true;
+                            }
+                            const activeStart = (typeof window.__remoteChunkCurrentStart === 'number' && isFinite(window.__remoteChunkCurrentStart))
+                                ? window.__remoteChunkCurrentStart
+                                : currentStart;
+                            const tailStart = Math.max(0, fileSize - chunkBytes);
+                            if (!window.__remoteChunkScrollbarDragActive && !window.__remoteChunkBusy) {
+                                if ((box.scrollTop + box.clientHeight) >= (box.scrollHeight - 48) && activeStart < tailStart) {
+                                    const nextStart = Math.min(tailStart, activeStart + chunkBytes);
+                                    const nextRatio = nextStart / Math.max(1, fileSize - 1);
+                                    requestChunkForRatio(nextRatio);
+                                    return;
+                                }
+                                if (box.scrollTop <= 48 && activeStart > 0) {
+                                    const prevStart = Math.max(0, activeStart - chunkBytes);
+                                    const prevRatio = prevStart / Math.max(1, fileSize - 1);
+                                    requestChunkForRatio(prevRatio);
+                                    return;
+                                }
+                            }
+                            if (window.__remoteChunkScrollbarDragActive) {
+                                if (window.__remoteChunkDragIdleTimer) {
+                                    clearTimeout(window.__remoteChunkDragIdleTimer);
+                                }
+                                window.__remoteChunkDragIdleTimer = setTimeout(function() {
+                                    window.__remoteChunkDragIdleTimer = null;
+                                    if (!window.__remoteChunkScrollbarDragActive) return;
+                                    window.__remoteChunkScrollbarDragActive = false;
+                                    processPendingRatio(true);
+                                }, 130);
+                            }
+                            window.__remoteChunkPendingRatio = ratio;
+                            if (window.__remoteChunkScrollbarDragActive && window.__remoteChunkBusy) {
+                                return;
+                            }
+                            if (timer) clearTimeout(timer);
+                            timer = setTimeout(function() {
+                                processPendingRatio(false);
+                            }, 30);
+                        }, {passive: true});
+                    }
+
+                    const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+                    const requestedRatio = window.__remoteChunkRequestedRatio;
+                    window.__remoteChunkProgrammaticScroll = true;
+                    if (typeof requestedRatio === 'number' && isFinite(requestedRatio)) {
+                        const clamped = Math.max(0, Math.min(1, requestedRatio));
+                        box.scrollTop = Math.floor(clamped * maxScroll);
+                    } else {
+                        box.scrollTop = Math.min(maxScroll, topSpacer.offsetHeight || 0);
+                    }
+                    window.__remoteChunkRequestedRatio = null;
+                    setTimeout(function() {
+                        window.__remoteChunkProgrammaticScroll = false;
+                        window.__remoteChunkBusy = false;
+                        if (txt) txt.style.opacity = '1';
+                        processPendingRatio(false);
+                    }, 40);
+                }, 0);
+                """.replace('__FILE_SIZE__', str(file_size_js))
+                   .replace('__CHUNK_BYTES__', str(REMOTE_TEXT_CHUNK_BYTES))
+                   .replace('__CURRENT_START__', str(chunk_start_js))
+            )
+            state["chunk_dom_initialized"] = True
+        else:
+            state["chunk_dom_initialized"] = False
+        if scroll_to:
+            _scroll_to(scroll_to)
 
     def _render_image_preview(local_path):
         data = Path(local_path).read_bytes()
@@ -1121,6 +1442,7 @@ def create_tab(ctx):
         viewer_id = f"remote_trj_viewer_{mol3d_counter[0]}"
         wrapper_id = f"remote_mol_wrap_{mol3d_counter[0]}"
         scope_key_json = json.dumps(scope_id)
+        view_scope_json = json.dumps(f"{scope_id}:{state.get('current_relative_path') or '/'}")
         with viewer_output:
             clear_output()
             display(
@@ -1194,19 +1516,46 @@ def create_tab(ctx):
                                     }}
                                 }}
                             }}
+                            window._remoteMolViewStateByScope = window._remoteMolViewStateByScope || {{}};
+                            window._remoteMolViewerByScope = window._remoteMolViewerByScope || {{}};
+                            window._remoteMolViewScopeKeyByScope = window._remoteMolViewScopeKeyByScope || {{}};
+                            window._remoteTrajViewerByScope = window._remoteTrajViewerByScope || {{}};
+                            var scopeKey = {scope_key_json};
+                            var viewScope = {view_scope_json};
+                            var previousViewer =
+                                window._remoteMolViewerByScope[scopeKey]
+                                || window._remoteTrajViewerByScope[scopeKey]
+                                || null;
+                            var previousScope =
+                                window._remoteMolViewScopeKeyByScope[scopeKey] || viewScope;
+                            if (previousViewer && typeof previousViewer.getView === 'function') {{
+                                try {{
+                                    window._remoteMolViewStateByScope[previousScope] = previousViewer.getView();
+                                }} catch (_e) {{}}
+                            }}
+                            var savedView = window._remoteMolViewStateByScope[viewScope] || null;
                             var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
                             {viewer_mouse_patch_js}
                             viewer.addModelsAsFrames(`{full_xyz}`, "xyz");
                             viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
-                            viewer.zoomTo();
-                            viewer.center();
-                            viewer.zoom({DEFAULT_3DMOL_ZOOM});
+                            if (savedView && typeof viewer.setView === 'function') {{
+                                try {{
+                                    viewer.setView(savedView);
+                                }} catch (_e) {{
+                                    viewer.zoomTo();
+                                    viewer.center();
+                                    viewer.zoom({DEFAULT_3DMOL_ZOOM});
+                                }}
+                            }} else {{
+                                viewer.zoomTo();
+                                viewer.center();
+                                viewer.zoom({DEFAULT_3DMOL_ZOOM});
+                            }}
                             viewer.setFrame({idx});
                             viewer.render();
-                            window._remoteTrajViewerByScope = window._remoteTrajViewerByScope || {{}};
-                            window._remoteMolViewerByScope = window._remoteMolViewerByScope || {{}};
-                            window._remoteTrajViewerByScope[{scope_key_json}] = viewer;
-                            window._remoteMolViewerByScope[{scope_key_json}] = viewer;
+                            window._remoteTrajViewerByScope[scopeKey] = viewer;
+                            window._remoteMolViewerByScope[scopeKey] = viewer;
+                            window._remoteMolViewScopeKeyByScope[scopeKey] = viewScope;
                             var scopeRoot2 = document.querySelector('.{scope_id}');
                             var wrappers = scopeRoot2
                                 ? scopeRoot2.querySelectorAll('.remote-mol-stage-wrapper')
@@ -1330,6 +1679,7 @@ def create_tab(ctx):
                 return f"{num_atoms}\n{title}\n{xyz_string}"
         return f"{len(lines)}\n{title}\n" + "\n".join(lines)
 
+
     def _show_file_info(entry, extra=""):
         name = str(entry.get("name") or "")
         size_str = _format_size(entry.get("size", 0))
@@ -1351,18 +1701,93 @@ def create_tab(ctx):
             return root_path
         return f"{root_path}/{relative_path}"
 
+    def _reset_text_preview_state():
+        state["file_content"] = ""
+        state["selected_file_chunk_raw"] = b""
+        state["file_is_preview"] = False
+        state["file_chunk_start"] = 0
+        state["file_chunk_end"] = 0
+        state["chunk_dom_initialized"] = False
+        _hide_chunk_controls()
+
+    def _set_text_preview_from_content(content, *, note=""):
+        _reset_text_preview_state()
+        size = int(state.get("selected_file_size") or 0)
+        if size > REMOTE_TEXT_FULL_READ_BYTES and state.get("selected_file_path"):
+            return _load_text_preview_chunk(0, scroll_to="top")
+        state["file_content"] = str(content or "")
+        state["selected_file_chunk_raw"] = state["file_content"].encode(
+            "utf-8", errors="ignore"
+        )
+        _render_text_preview(state["file_content"], note=note, scroll_to="top")
+        return True
+
+    def _prepare_remote_chunk_preview(entry, *, note=""):
+        state["file_preview_note"] = str(note or "")
+        state["selected_file_path"] = None
+        state["selected_file_relative_path"] = normalize_remote_relative_path(
+            entry.get("relative_path", "")
+        )
+        state["selected_file_size"] = int(entry.get("size") or 0)
+        _reset_text_preview_state()
+        _reset_search_state()
+        _reset_visualization_state()
+        copy_btn.disabled = True
+        download_btn.disabled = False
+
+    def _preview_chunked_text(entry, *, extra="chunked view"):
+        _show_file_info(entry, extra)
+        if not _load_text_preview_chunk(0, scroll_to="top"):
+            raise RuntimeError("Could not read text preview chunk.")
+        copy_btn.disabled = not bool(state.get("file_content"))
+        return True
+
+    def _load_log_xyz_source(size_bytes):
+        size_i = max(0, int(size_bytes))
+        tail_start = max(0, size_i - REMOTE_TEXT_CHUNK_BYTES)
+        local_path = state.get("selected_file_path")
+        if local_path and Path(local_path).exists():
+            path_obj = Path(local_path)
+            if size_i > REMOTE_LOG_XYZ_EXTRACT_MAX:
+                text_content, _raw, _start, _end = _read_local_text_chunk(
+                    path_obj, size_i, tail_start
+                )
+                return text_content
+            return path_obj.read_text(errors="ignore")
+        relative_path = _selected_relative_path()
+        if not relative_path:
+            return ""
+        text_content, _raw, _resolved_size, _start, _end = _read_remote_chunk(
+            relative_path, tail_start
+        )
+        return text_content
+
+    def _apply_log_xyz_visualization(text, title):
+        coords = _extract_orca_xyz_block(text)
+        xyz_text = f"{len(coords)}\n{title}\n" + "\n".join(coords) if coords else ""
+        frames = parse_xyz_frames(xyz_text) if xyz_text else []
+        _set_visualization("xyz" if xyz_text else "", xyz_text, frames=frames)
+        if view_toggle.value and xyz_text:
+            _render_selected_frame()
+        return bool(frames)
+
     def _preview_local_file(local_path, entry, *, note=""):
         path = Path(local_path)
         suffix = path.suffix.lower()
         lower_name = path.name.lower()
 
         state["file_preview_note"] = str(note or "")
-        state["file_content"] = ""
         state["selected_file_path"] = str(path)
+        state["selected_file_relative_path"] = normalize_remote_relative_path(
+            entry.get("relative_path", "")
+        )
         try:
             state["selected_file_size"] = path.stat().st_size
         except Exception:
             state["selected_file_size"] = 0
+        size_bytes = int(state.get("selected_file_size") or 0)
+        size_str = _format_size(size_bytes)
+        _reset_text_preview_state()
         copy_btn.disabled = True
         download_btn.disabled = False
         _reset_search_state()
@@ -1372,37 +1797,59 @@ def create_tab(ctx):
             content = path.read_text(errors="ignore")
             xyz_text = coord_to_xyz(content)
             frames = parse_xyz_frames(xyz_text) if xyz_text else []
-            state["file_content"] = content
             _show_file_info(entry, "Turbomole coord")
-            _render_text_preview(content, note=note)
+            _set_text_preview_from_content(content, note=note)
             _set_visualization("xyz" if xyz_text else "", xyz_text or "", frames=frames)
-            copy_btn.disabled = not bool(content)
+            copy_btn.disabled = not bool(state.get("file_content") or content)
             if view_toggle.value and xyz_text:
                 _render_selected_frame()
             return
 
         if suffix == ".xyz":
+            if size_bytes > REMOTE_XYZ_MAX_READ_BYTES:
+                head_text, _raw, _start, _end = _read_local_text_chunk(path, size_bytes, 0)
+                frames = parse_xyz_frames(head_text)
+                extra = (
+                    f"showing first {len(frames)} frames, file too large for full load"
+                    if frames else
+                    "chunked view"
+                )
+                _preview_chunked_text(entry, extra=extra)
+                _set_visualization("xyz" if frames else "", head_text if frames else "", frames=frames)
+                if frames:
+                    _set_view_toggle(True, disabled=False)
+                    _update_view()
+                return
             content = path.read_text(errors="ignore")
             frames = parse_xyz_frames(content)
-            state["file_content"] = content
             _show_file_info(entry, f"{len(frames) or 1} frame(s)")
-            _render_text_preview(content, note=note)
+            _set_text_preview_from_content(content, note=note)
             _set_visualization("xyz" if frames else "", content if frames else "", frames=frames)
-            copy_btn.disabled = not bool(content)
+            copy_btn.disabled = not bool(state.get("file_content") or content)
             if frames:
                 _set_view_toggle(True, disabled=False)
                 _update_view()
             return
 
-        if suffix in {".png"}:
-            state["file_content"] = ""
+        if suffix == ".png":
+            _reset_text_preview_state()
             _show_file_info(entry)
+            if size_bytes > REMOTE_IMAGE_MAX_READ_BYTES:
+                preview_html.value = (
+                    "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
+                    "padding:12px; background:#fafafa;'>"
+                    f"Image too large for inline display ({html.escape(size_str)})."
+                    "</div>"
+                )
+                return
             _render_image_preview(path)
             return
 
         if suffix in {".cube", ".cub"}:
+            if size_bytes > REMOTE_CUBE_MAX_READ_BYTES:
+                _preview_chunked_text(entry, extra="cube file too large for live preview")
+                return
             content = path.read_text(errors="ignore")
-            state["file_content"] = content
             _show_file_info(entry)
             preview_html.value = (
                 "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
@@ -1415,30 +1862,38 @@ def create_tab(ctx):
             return
 
         if suffix in {".doc", ".docx"}:
-            state["file_content"] = ""
+            _reset_text_preview_state()
             _show_file_info(entry)
             _render_docx_preview(path)
             return
 
-        if suffix in {".gbw", ".cis", ".densities", ".tmp"}:
-            state["file_content"] = ""
+        if suffix in REMOTE_BINARY_SUFFIXES:
+            _reset_text_preview_state()
             _show_file_info(entry)
-            _render_text_preview("Binary file.\n\nPreview is not available for this file type.", note=note)
+            preview_html.value = (
+                "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
+                "padding:12px; background:#fafafa;'>"
+                "Binary file. Preview is not available for this file type."
+                "</div>"
+            )
+            return
+
+        if size_bytes > REMOTE_TEXT_FULL_READ_BYTES:
+            _preview_chunked_text(entry, extra="chunked view")
+            if suffix in {".out", ".log"}:
+                try:
+                    _apply_log_xyz_visualization(_load_log_xyz_source(size_bytes), path.name)
+                except Exception:
+                    pass
             return
 
         content = path.read_text(errors="ignore")
-        state["file_content"] = content
         _show_file_info(entry)
-        _render_text_preview(content, note=note)
-        copy_btn.disabled = not bool(content)
+        _set_text_preview_from_content(content, note=note)
+        copy_btn.disabled = not bool(state.get("file_content") or content)
 
         if suffix in {".out", ".log"}:
-            coords = _extract_orca_xyz_block(content)
-            xyz_text = f"{len(coords)}\n{path.name}\n" + "\n".join(coords) if coords else ""
-            frames = parse_xyz_frames(xyz_text) if xyz_text else []
-            _set_visualization("xyz" if xyz_text else "", xyz_text, frames=frames)
-            if view_toggle.value and xyz_text:
-                _render_selected_frame()
+            _apply_log_xyz_visualization(content, path.name)
             return
 
         if suffix == ".inp":
@@ -1448,6 +1903,10 @@ def create_tab(ctx):
             if view_toggle.value and xyz_text:
                 _render_selected_frame()
             return
+
+    def _selected_entry():
+        value = file_list.value
+        return _entry_by_relative_path(value)
 
     def _selected_entry():
         value = file_list.value
@@ -1724,30 +2183,40 @@ def create_tab(ctx):
     def _open_selection(_button=None):
         _open_entry(_selected_entry())
 
+
     def _preview_selected_file(entry):
         config = state.get("config")
         if not config:
             return
         state["selected_entry"] = entry
+        state["selected_file_relative_path"] = normalize_remote_relative_path(
+            entry.get("relative_path", "")
+        )
         name = str(entry.get("name") or "")
         size = int(entry.get("size") or 0)
+        size_str = _format_size(size)
         suffix = str(entry.get("suffix") or "").lower()
         lower_name = name.lower()
-        always_fetch = lower_name == "coord" or suffix in {
-            ".xyz",
-            ".png",
-            ".cube",
-            ".cub",
-            ".doc",
-            ".docx",
-            ".out",
-            ".log",
-            ".inp",
-        }
+        should_fetch = False
+        if lower_name == "coord":
+            should_fetch = True
+        elif suffix in REMOTE_BINARY_SUFFIXES:
+            should_fetch = False
+        elif suffix == ".png":
+            should_fetch = size <= REMOTE_IMAGE_MAX_READ_BYTES
+        elif suffix in {".cube", ".cub"}:
+            should_fetch = size <= REMOTE_CUBE_MAX_READ_BYTES
+        elif suffix == ".xyz":
+            should_fetch = size <= REMOTE_XYZ_MAX_READ_BYTES
+        elif suffix in {".doc", ".docx"}:
+            should_fetch = size <= REMOTE_FULL_FETCH_MAX_BYTES
+        else:
+            should_fetch = size <= REMOTE_TEXT_FULL_READ_BYTES
+
         _set_status(f"Loading <code>{html.escape(name)}</code> ...", color="#455a64")
         ctx.set_busy(True)
         try:
-            if always_fetch or size <= REMOTE_FULL_FETCH_MAX_BYTES:
+            if should_fetch:
                 local_path = fetch_remote_file(
                     config["host"],
                     config["user"],
@@ -1755,30 +2224,60 @@ def create_tab(ctx):
                     config["port"],
                     entry.get("relative_path", ""),
                 )
-                note = "Remote file cached locally for preview."
-                _preview_local_file(local_path, entry, note=note)
+                _preview_local_file(local_path, entry, note="")
             else:
-                preview = read_remote_text_preview(
-                    config["host"],
-                    config["user"],
-                    config["remote_path"],
-                    config["port"],
-                    entry.get("relative_path", ""),
-                    max_bytes=TEXT_PREVIEW_MAX_BYTES,
-                )
-                state["file_content"] = str(preview.get("text", "") or "")
-                state["file_preview_note"] = "Large remote file preview."
-                state["selected_file_path"] = None
-                state["selected_file_size"] = size
-                _reset_search_state()
-                _reset_visualization_state()
-                _show_file_info(entry)
-                note = "Large remote file preview."
-                if preview.get("truncated"):
-                    note = f"{note} Only the first {TEXT_PREVIEW_MAX_BYTES:,} bytes are shown."
-                _render_text_preview(preview.get("text", ""), note=note)
-                copy_btn.disabled = not bool(state["file_content"])
-                download_btn.disabled = True
+                _prepare_remote_chunk_preview(entry)
+                if suffix in REMOTE_BINARY_SUFFIXES:
+                    _show_file_info(entry)
+                    preview_html.value = (
+                        "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
+                        "padding:12px; background:#fafafa;'>"
+                        "Binary file. Preview is not available for this file type."
+                        "</div>"
+                    )
+                elif suffix in {".doc", ".docx"}:
+                    _show_file_info(entry)
+                    preview_html.value = (
+                        "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
+                        "padding:12px; background:#fafafa;'>"
+                        f"Word file too large for inline preview ({html.escape(size_str)})."
+                        "</div>"
+                    )
+                elif suffix == ".png":
+                    _show_file_info(entry)
+                    preview_html.value = (
+                        "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
+                        "padding:12px; background:#fafafa;'>"
+                        f"Image too large for inline display ({html.escape(size_str)})."
+                        "</div>"
+                    )
+                elif suffix in {".cube", ".cub"}:
+                    _preview_chunked_text(entry, extra="cube file too large for live preview")
+                elif suffix == ".xyz":
+                    relative_path = _selected_relative_path()
+                    if not relative_path:
+                        raise RuntimeError("No remote file selected.")
+                    head_text, _raw, resolved_size, _start, _end = _read_remote_chunk(relative_path, 0)
+                    if resolved_size > 0:
+                        state["selected_file_size"] = resolved_size
+                    frames = parse_xyz_frames(head_text)
+                    extra = (
+                        f"showing first {len(frames)} frames, file too large for full load"
+                        if frames else
+                        "chunked view"
+                    )
+                    _preview_chunked_text(entry, extra=extra)
+                    _set_visualization("xyz" if frames else "", head_text if frames else "", frames=frames)
+                    if frames:
+                        _set_view_toggle(True, disabled=False)
+                        _update_view()
+                else:
+                    _preview_chunked_text(entry, extra="chunked view")
+                    if suffix in {".out", ".log"}:
+                        try:
+                            _apply_log_xyz_visualization(_load_log_xyz_source(size), name)
+                        except Exception:
+                            pass
         except Exception as exc:
             _clear_preview(f"Could not load {name}.")
             _set_status(html.escape(str(exc)), color="#d32f2f")
@@ -2025,6 +2524,10 @@ def create_tab(ctx):
             return
         if entry.get("is_dir"):
             state["selected_remote_path"] = _current_entry_remote_path(entry)
+            state["selected_file_path"] = None
+            state["selected_file_size"] = 0
+            state["selected_file_relative_path"] = ""
+            _reset_text_preview_state()
             file_info_html.value = (
                 f"<b><span style='word-break:break-all;'>{html.escape(str(entry.get('name') or 'Folder'))}</span></b> "
                 "<span style='color:#616161;'>(directory)</span>"
@@ -2033,6 +2536,7 @@ def create_tab(ctx):
             copy_path_btn.disabled = False
             copy_btn.disabled = True
             download_btn.disabled = True
+            content_toolbar.layout.display = "none"
             _reset_search_state()
             _reset_visualization_state()
             preview_html.value = (
@@ -2060,7 +2564,340 @@ def create_tab(ctx):
         state["current_xyz_index"] = max(0, min(len(frames) - 1, int(frame_input.value) - 1))
         _render_selected_frame()
 
+
     # -- Search helpers ---------------------------------------------------------
+
+    def _is_chunk_mode():
+        return bool(
+            state.get("file_is_preview")
+            and int(state.get("selected_file_size") or 0) > REMOTE_TEXT_FULL_READ_BYTES
+            and _selected_relative_path()
+        )
+
+    def _set_requested_ratio_for_offset(byte_offset):
+        size = int(state.get("selected_file_size") or 0)
+        if size <= 0:
+            return
+        try:
+            off = int(byte_offset)
+        except Exception:
+            off = 0
+        off = max(0, min(off, max(0, size - 1)))
+        ratio = off / max(1, size - 1)
+        _run_js(f"window.__remoteChunkRequestedRatio = {ratio:.12f};")
+
+    def _read_local_text_chunk(path_obj, size_bytes, start_byte):
+        if size_bytes <= 0:
+            return "", b"", 0, 0
+        safe_start = max(0, min(int(start_byte), max(0, size_bytes - 1)))
+        with path_obj.open("rb") as handle:
+            handle.seek(safe_start)
+            raw = handle.read(REMOTE_TEXT_CHUNK_BYTES)
+        safe_end = safe_start + len(raw)
+        return raw.decode("utf-8", errors="ignore"), raw, safe_start, safe_end
+
+    def _read_remote_chunk(relative_path, start_byte):
+        config = state.get("config")
+        if not config:
+            raise RuntimeError("No remote archive configured.")
+        payload = read_remote_text_chunk(
+            config["host"],
+            config["user"],
+            config["remote_path"],
+            config["port"],
+            relative_path,
+            start_byte=start_byte,
+            chunk_bytes=REMOTE_TEXT_CHUNK_BYTES,
+        )
+        text_content = str(payload.get("text", "") or "")
+        raw_b64 = str(payload.get("data_b64", "") or "")
+        if raw_b64:
+            raw = base64.b64decode(raw_b64)
+        else:
+            raw = text_content.encode("utf-8", errors="ignore")
+        return (
+            text_content,
+            raw,
+            int(payload.get("size", 0) or 0),
+            int(payload.get("chunk_start", 0) or 0),
+            int(payload.get("chunk_end", 0) or 0),
+        )
+
+    def _update_chunk_dom(content, size_bytes, chunk_start, chunk_end):
+        total_size = max(1, int(size_bytes))
+        c_start = max(0, int(chunk_start))
+        c_end = max(c_start, int(chunk_end))
+        virtual_h = max(12000, min(180000, int(total_size / 96)))
+        top_px = int((c_start / total_size) * virtual_h)
+        bottom_px = int((max(0, total_size - c_end) / total_size) * virtual_h)
+        fallback_ratio = c_start / max(1, total_size - 1)
+        js = r"""
+        setTimeout(function() {
+            const box = document.getElementById('remote-content-box');
+            const topSpacer = document.getElementById('remote-chunk-top-spacer');
+            const bottomSpacer = document.getElementById('remote-chunk-bottom-spacer');
+            const txt = document.getElementById('remote-content-text');
+            if (!box || !topSpacer || !bottomSpacer || !txt) return;
+            const req = window.__remoteChunkRequestedRatio;
+            const fallback = __FALLBACK_RATIO__;
+            window.__remoteChunkCurrentStart = __CHUNK_START__;
+            const targetRatio = (typeof req === 'number' && isFinite(req))
+                ? Math.max(0, Math.min(1, req))
+                : Math.max(0, Math.min(1, fallback));
+            txt.style.opacity = '0';
+            topSpacer.style.height = '__TOP_PX__px';
+            bottomSpacer.style.height = '__BOTTOM_PX__px';
+            txt.textContent = __TEXT_JSON__;
+            const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+            window.__remoteChunkProgrammaticScroll = true;
+            box.scrollTop = Math.floor(targetRatio * maxScroll);
+            window.__remoteChunkRequestedRatio = null;
+            setTimeout(function() {
+                window.__remoteChunkProgrammaticScroll = false;
+                window.__remoteChunkBusy = false;
+                txt.style.opacity = '1';
+                const fn = window.__remoteChunkProcessPendingRatio;
+                if (typeof fn === 'function') fn(false);
+            }, 20);
+        }, 0);
+        """
+        js = (
+            js.replace('__TOP_PX__', str(top_px))
+              .replace('__BOTTOM_PX__', str(bottom_px))
+              .replace('__FALLBACK_RATIO__', f'{fallback_ratio:.12f}')
+              .replace('__CHUNK_START__', str(c_start))
+              .replace('__TEXT_JSON__', json.dumps(content))
+        )
+        _run_js(js)
+
+    def _load_text_preview_chunk(start_byte, rerun_search=False, scroll_to=None):
+        size = int(state.get("selected_file_size") or 0)
+        if size <= 0:
+            return False
+        local_path = state.get("selected_file_path")
+        text_content = ""
+        raw = b""
+        chunk_start = 0
+        chunk_end = 0
+        if local_path and Path(local_path).exists():
+            text_content, raw, chunk_start, chunk_end = _read_local_text_chunk(
+                Path(local_path), size, start_byte
+            )
+        else:
+            relative_path = _selected_relative_path()
+            if not relative_path:
+                return False
+            text_content, raw, resolved_size, chunk_start, chunk_end = _read_remote_chunk(
+                relative_path, start_byte
+            )
+            if resolved_size > 0:
+                size = resolved_size
+                state["selected_file_size"] = resolved_size
+        state["file_content"] = text_content
+        state["file_is_preview"] = True
+        state["file_chunk_start"] = chunk_start
+        state["file_chunk_end"] = chunk_end
+        state["selected_file_chunk_raw"] = raw
+        if state.get("chunk_dom_initialized"):
+            _update_chunk_dom(text_content, size, chunk_start, chunk_end)
+            if scroll_to:
+                _scroll_to(scroll_to)
+        else:
+            _render_text_preview(
+                text_content,
+                note=state.get("file_preview_note", ""),
+                scroll_to=scroll_to,
+            )
+        _update_chunk_controls()
+        query = (search_input.value or "").strip()
+        if rerun_search and query:
+            _do_search()
+        elif not query:
+            state["search_spans"] = []
+            state["current_match"] = -1
+            state["search_truncated"] = False
+            search_result_html.value = ""
+            _update_search_nav_buttons()
+        return True
+
+    def _request_chunk_start(requested, scroll_to=None, align_to_chunk=True):
+        size = int(state.get("selected_file_size") or 0)
+        relative_path = _selected_relative_path()
+        local_path = state.get("selected_file_path")
+        if size <= REMOTE_TEXT_FULL_READ_BYTES:
+            return False
+        if not relative_path and not (local_path and Path(local_path).exists()):
+            return False
+        try:
+            req = int(requested)
+        except Exception:
+            req = 0
+        req = max(0, min(req, max(0, size - 1)))
+        if align_to_chunk:
+            tail_start = max(0, size - REMOTE_TEXT_CHUNK_BYTES)
+            if req >= tail_start:
+                req = tail_start
+            else:
+                req = (req // REMOTE_TEXT_CHUNK_BYTES) * REMOTE_TEXT_CHUNK_BYTES
+        else:
+            req = min(req, max(0, size - REMOTE_TEXT_CHUNK_BYTES))
+        current_start = int(state.get("file_chunk_start") or 0)
+        if scroll_to == "top":
+            _run_js("window.__remoteChunkRequestedRatio = 0.0;")
+        elif scroll_to == "bottom":
+            _run_js("window.__remoteChunkRequestedRatio = 1.0;")
+        if req == current_start:
+            if scroll_to:
+                _scroll_to(scroll_to)
+            return False
+        return _load_text_preview_chunk(req, scroll_to=scroll_to)
+
+    def _line_col_from_local_file_offset(path_obj, byte_pos):
+        target = max(0, int(byte_pos))
+        line = 1
+        last_nl = -1
+        seen = 0
+        with path_obj.open("rb") as handle:
+            while seen < target:
+                need = min(REMOTE_TEXT_CHUNK_BYTES, target - seen)
+                if need <= 0:
+                    break
+                chunk = handle.read(need)
+                if not chunk:
+                    break
+                idx = 0
+                while True:
+                    nl = chunk.find(b"\n", idx)
+                    if nl < 0:
+                        break
+                    line += 1
+                    last_nl = seen + nl
+                    idx = nl + 1
+                seen += len(chunk)
+        col = target + 1 if last_nl < 0 else target - last_nl
+        return line, col
+
+    def _line_col_from_file_offset(byte_pos):
+        local_path = state.get("selected_file_path")
+        if local_path and Path(local_path).exists():
+            return _line_col_from_local_file_offset(Path(local_path), byte_pos)
+        config = state.get("config")
+        relative_path = _selected_relative_path()
+        if not config or not relative_path:
+            return 0, 0
+        try:
+            return line_col_from_remote_file_offset(
+                config["host"],
+                config["user"],
+                config["remote_path"],
+                config["port"],
+                relative_path,
+                byte_pos,
+                chunk_bytes=REMOTE_TEXT_CHUNK_BYTES,
+            )
+        except Exception:
+            return 0, 0
+
+    def _local_text_span_from_chunk_bytes(chunk_start, abs_start, abs_end):
+        chunk_start_i = max(0, int(chunk_start))
+        start_i = max(0, int(abs_start))
+        end_i = max(start_i + 1, int(abs_end))
+        local_b_start = max(0, start_i - chunk_start_i)
+        local_b_end = max(local_b_start + 1, end_i - chunk_start_i)
+        raw = state.get("selected_file_chunk_raw") or b""
+        if raw:
+            local_b_start = min(local_b_start, len(raw))
+            local_b_end = min(max(local_b_start + 1, local_b_end), len(raw))
+            local_start = len(raw[:local_b_start].decode("utf-8", errors="ignore"))
+            local_end = len(raw[:local_b_end].decode("utf-8", errors="ignore"))
+            if local_end <= local_start:
+                local_end = local_start + 1
+            return local_start, local_end
+        local_path = state.get("selected_file_path")
+        if local_path and Path(local_path).exists():
+            try:
+                with Path(local_path).open("rb") as handle:
+                    handle.seek(chunk_start_i)
+                    raw = handle.read(local_b_end)
+                if raw:
+                    local_b_start = min(local_b_start, len(raw))
+                    local_b_end = min(max(local_b_start + 1, local_b_end), len(raw))
+                    local_start = len(raw[:local_b_start].decode("utf-8", errors="ignore"))
+                    local_end = len(raw[:local_b_end].decode("utf-8", errors="ignore"))
+                    if local_end <= local_start:
+                        local_end = local_start + 1
+                    return local_start, local_end
+            except Exception:
+                pass
+        fallback_start = max(0, start_i - chunk_start_i)
+        fallback_end = max(fallback_start + 1, end_i - chunk_start_i)
+        return fallback_start, fallback_end
+
+    def _find_local_file_matches(path_obj, query, max_matches):
+        q_bytes = query.encode("utf-8", errors="ignore")
+        if not q_bytes:
+            return []
+        if "\n" not in query and "\r" not in query:
+            try:
+                result = subprocess.run(
+                    [
+                        "rg", "-a", "-i", "-F", "--byte-offset", "--only-matching",
+                        query, str(path_obj),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                spans = []
+                for line in result.stdout.splitlines():
+                    if ":" not in line:
+                        continue
+                    parts = line.split(":", 2)
+                    if len(parts) < 2:
+                        continue
+                    try:
+                        offset = int(parts[0])
+                    except ValueError:
+                        continue
+                    match_text = parts[1] if len(parts) == 2 else parts[2]
+                    spans.append((offset, offset + len(match_text.encode("utf-8", errors="ignore"))))
+                    if len(spans) >= max_matches:
+                        return spans
+                if spans:
+                    return spans
+            except Exception:
+                pass
+        q_lower = q_bytes.lower()
+        q_len = len(q_lower)
+        overlap = max(q_len - 1, 256)
+        spans = []
+        carry = b""
+        file_offset = 0
+        with path_obj.open("rb") as handle:
+            while True:
+                block = handle.read(REMOTE_TEXT_CHUNK_BYTES)
+                if not block:
+                    break
+                data = carry + block
+                lower = data.lower()
+                search_from = 0
+                while True:
+                    idx = lower.find(q_lower, search_from)
+                    if idx < 0:
+                        break
+                    abs_start = file_offset - len(carry) + idx
+                    abs_end = abs_start + q_len
+                    if abs_start >= 0:
+                        spans.append((abs_start, abs_end))
+                        if len(spans) >= max_matches:
+                            return spans
+                    search_from = idx + 1
+                if len(data) > overlap:
+                    carry = data[-overlap:]
+                else:
+                    carry = data
+                file_offset += len(block)
+        return spans
 
     def _pos_to_line_col(pos):
         if pos < 0:
@@ -2095,43 +2932,202 @@ def create_tab(ctx):
             )
             return
         start, _ = state["search_spans"][state["current_match"]]
-        line, col = _pos_to_line_col(start)
+        if _is_chunk_mode():
+            line, col = _line_col_from_file_offset(start)
+        else:
+            line, col = _pos_to_line_col(start)
         search_result_html.value = (
             f'<b>{state["current_match"] + 1}/{len(state["search_spans"])}</b> '
             f'<span style="color:#555;">(line {line}, col {col})</span>{note_html}'
         )
 
-    def _find_matches(query):
-        """Search in state['file_content'] (in-memory, case-insensitive)."""
-        content = state.get("file_content", "")
-        if not content or not query:
-            return []
-        # For very large files with a cached local path, try ripgrep
-        local_path = state.get("selected_file_path")
-        file_size = state.get("selected_file_size", 0) or 0
-        if file_size > 5 * 1024 * 1024 and local_path and Path(local_path).exists():
-            try:
-                result = subprocess.run(
-                    ["rg", "-a", "-i", "-F", "--byte-offset", "--only-matching", query, str(local_path)],
-                    capture_output=True, text=True, timeout=30,
+    def _should_highlight():
+        return len(state.get("file_content", "")) <= REMOTE_HIGHLIGHT_MAX_CHARS
+
+    def _apply_highlight_span(local_start, local_end):
+        js = r"""
+        setTimeout(function() {
+            const box = document.getElementById('remote-content-box');
+            const el = document.getElementById('remote-content-text');
+            if (!el) return;
+            const text = el.textContent || '';
+            const s = __START__;
+            const e = __END__;
+            if (s < 0 || e <= s || s >= text.length) return;
+            function esc(v) {
+                return v.replace(/[&<>"]/g, function(c) {
+                    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+                });
+            }
+            const end = Math.min(e, text.length);
+            el.innerHTML =
+                esc(text.slice(0, s))
+                + '<mark class="remote-match current" id="remote-current-match">'
+                + esc(text.slice(s, end))
+                + '</mark>'
+                + esc(text.slice(end));
+            const mark = document.getElementById('remote-current-match');
+            if (!box || !mark) return;
+            const boxRect = box.getBoundingClientRect();
+            const markRect = mark.getBoundingClientRect();
+            const delta = (markRect.top - boxRect.top) - (box.clientHeight / 2);
+            window.__remoteChunkIgnoreScrollUntil = Date.now() + 350;
+            window.__remoteChunkProgrammaticScroll = true;
+            box.scrollTop += delta;
+            setTimeout(function() {
+                window.__remoteChunkProgrammaticScroll = false;
+            }, 120);
+        }, 0);
+        """
+        js = js.replace('__START__', str(int(local_start))).replace('__END__', str(int(local_end)))
+        _run_js(js)
+
+    def _clear_plain_match_marker():
+        _run_js("""
+        setTimeout(function() {
+            const old = document.getElementById('remote-current-match');
+            if (!old) return;
+            const parent = old.parentNode;
+            if (!parent) return;
+            parent.replaceChild(document.createTextNode(old.textContent || ''), old);
+            parent.normalize();
+        }, 0);
+        """)
+
+    def _focus_plain_match(start_pos, end_pos):
+        js = r"""
+        setTimeout(function() {
+            const box = document.getElementById('remote-content-box');
+            const el = document.getElementById('remote-content-text');
+            if (!box || !el) return;
+
+            function unwrapCurrent() {
+                const old = document.getElementById('remote-current-match');
+                if (!old) return;
+                const parent = old.parentNode;
+                if (!parent) return;
+                parent.replaceChild(document.createTextNode(old.textContent || ''), old);
+                parent.normalize();
+            }
+
+            function scrollByRatio(startIndex, textLength) {
+                if (textLength <= 0) return;
+                const ratio = Math.max(0, Math.min(1, startIndex / Math.max(1, textLength - 1)));
+                const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+                box.scrollTop = Math.floor(ratio * maxScroll);
+            }
+
+            unwrapCurrent();
+            const text = el.textContent || '';
+            const s = __START__;
+            const e = __END__;
+            if (s < 0 || e <= s || s >= text.length) return;
+
+            function locate(root, index) {
+                let remaining = index;
+                const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+                let node = walker.nextNode();
+                while (node) {
+                    const len = (node.nodeValue || '').length;
+                    if (remaining <= len) {
+                        return {node: node, offset: remaining};
+                    }
+                    remaining -= len;
+                    node = walker.nextNode();
+                }
+                return null;
+            }
+
+            const endBound = Math.min(e, text.length);
+            const startLoc = locate(el, s);
+            const endLoc = locate(el, endBound);
+            if (!startLoc || !endLoc) {
+                scrollByRatio(s, text.length);
+                return;
+            }
+
+            const range = document.createRange();
+            range.setStart(startLoc.node, startLoc.offset);
+            range.setEnd(endLoc.node, endLoc.offset);
+
+            const mark = document.createElement('mark');
+            mark.className = 'remote-match current';
+            mark.id = 'remote-current-match';
+            try {
+                range.surroundContents(mark);
+            } catch (_err) {
+                scrollByRatio(s, text.length);
+                return;
+            }
+
+            mark.scrollIntoView({block: 'center'});
+        }, 0);
+        """
+        js = js.replace('__START__', str(int(start_pos))).replace('__END__', str(int(end_pos)))
+        _run_js(js)
+
+    def _show_match():
+        if not state["search_spans"] or state["current_match"] < 0:
+            return
+        _update_search_nav_buttons()
+        _update_search_result()
+        if _is_chunk_mode():
+            start, end = state["search_spans"][state["current_match"]]
+            chunk_start = int(state.get("file_chunk_start") or 0)
+            chunk_end = int(state.get("file_chunk_end") or 0)
+            if start < chunk_start or end > chunk_end or not state.get("file_content"):
+                _set_requested_ratio_for_offset(start)
+                _run_js(
+                    "window.__remoteChunkPendingRatio = null;"
+                    "window.__remoteChunkBusy = false;"
+                    "window.__remoteChunkIgnoreScrollUntil = Date.now() + 120;"
+                    "window.__remoteChunkProgrammaticScroll = false;"
                 )
-                spans = []
-                for line in result.stdout.splitlines():
-                    if ":" in line:
-                        parts = line.split(":", 2)
-                        if len(parts) >= 2:
-                            try:
-                                offset = int(parts[0])
-                                match_text = parts[1] if len(parts) == 2 else parts[2]
-                                spans.append((offset, offset + len(match_text)))
-                                if len(spans) >= REMOTE_SEARCH_MAX_MATCHES + 1:
-                                    break
-                            except ValueError:
-                                continue
-                return spans
-            except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
-                pass
-        # In-memory search
+                desired = max(0, int(start) - (REMOTE_TEXT_CHUNK_BYTES // 4))
+                _request_chunk_start(desired)
+                chunk_start = int(state.get("file_chunk_start") or 0)
+                chunk_end = int(state.get("file_chunk_end") or 0)
+                if start < chunk_start or end > chunk_end:
+                    _set_requested_ratio_for_offset(start)
+                    _request_chunk_start(start)
+                    chunk_start = int(state.get("file_chunk_start") or 0)
+            local_start, local_end = _local_text_span_from_chunk_bytes(chunk_start, start, end)
+            _apply_highlight_span(local_start, local_end)
+            return
+        if _should_highlight():
+            _apply_highlight(search_input.value.strip(), state["current_match"])
+        else:
+            start, end = state["search_spans"][state["current_match"]]
+            _focus_plain_match(start, end)
+
+    def _find_matches(query):
+        if not query:
+            return []
+        if _is_chunk_mode():
+            local_path = state.get("selected_file_path")
+            if local_path and Path(local_path).exists():
+                return _find_local_file_matches(
+                    Path(local_path), query, REMOTE_SEARCH_MAX_MATCHES + 1
+                )
+            config = state.get("config")
+            relative_path = _selected_relative_path()
+            if config and relative_path:
+                try:
+                    return search_remote_file(
+                        config["host"],
+                        config["user"],
+                        config["remote_path"],
+                        config["port"],
+                        relative_path,
+                        query,
+                        max_matches=REMOTE_SEARCH_MAX_MATCHES + 1,
+                    )
+                except Exception:
+                    return []
+            return []
+        content = state.get("file_content", "")
+        if not content:
+            return []
         q_lower = query.lower()
         q_len = len(query)
         spans = []
@@ -2143,9 +3139,6 @@ def create_tab(ctx):
                 break
             pos = hay.find(q_lower, pos + 1)
         return spans
-
-    def _should_highlight():
-        return len(state.get("file_content", "")) <= REMOTE_HIGHLIGHT_MAX_CHARS
 
     def _apply_highlight(query, current_index):
         if query is None:
@@ -2167,7 +3160,7 @@ def create_tab(ctx):
                 });
             }
             function escapeRegExp(s) {
-                return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                return s.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
             }
             const re = new RegExp(escapeRegExp(q), 'gi');
             let html = '';
@@ -2192,7 +3185,7 @@ def create_tab(ctx):
             }
         })();
         """
-        js = js.replace("__QUERY__", repr(query)).replace("__INDEX__", str(current_index))
+        js = js.replace('__QUERY__', repr(query)).replace('__INDEX__', str(current_index))
         _run_js(js)
 
     def _scroll_to(target):
@@ -2242,9 +3235,28 @@ def create_tab(ctx):
         if not query or not state.get("file_content"):
             search_result_html.value = ""
             _update_search_nav_buttons()
-            if _should_highlight():
+            if _is_chunk_mode():
+                _run_js("""
+                (function() {
+                    const el = document.getElementById('remote-content-text');
+                    if (!el) return;
+                    el.textContent = el.textContent || '';
+                })();
+                """)
+            elif _should_highlight():
                 _apply_highlight("", -1)
+            else:
+                _clear_plain_match_marker()
             return
+
+        if _is_chunk_mode():
+            _run_js(
+                "window.__remoteChunkRequestedRatio = null;"
+                "window.__remoteChunkPendingRatio = null;"
+                "window.__remoteChunkBusy = false;"
+                "window.__remoteChunkIgnoreScrollUntil = Date.now() + 120;"
+                "window.__remoteChunkProgrammaticScroll = false;"
+            )
 
         spans = _find_matches(query)
         if len(spans) > REMOTE_SEARCH_MAX_MATCHES:
@@ -2255,16 +3267,31 @@ def create_tab(ctx):
         if not state["search_spans"]:
             search_result_html.value = '<span style="color:red;">0 matches</span>'
             _update_search_nav_buttons()
-            if _should_highlight():
+            if _is_chunk_mode():
+                _run_js("""
+                (function() {
+                    const el = document.getElementById('remote-content-text');
+                    if (!el) return;
+                    el.textContent = el.textContent || '';
+                })();
+                """)
+            elif _should_highlight():
                 _apply_highlight("", -1)
+            else:
+                _clear_plain_match_marker()
             return
 
         state["current_match"] = 0
+        if _is_chunk_mode():
+            _show_match()
+            return
         _update_search_nav_buttons()
         _update_search_result()
         if _should_highlight():
             _apply_highlight(query, state["current_match"])
-        _scroll_to("match")
+        else:
+            start, end = state["search_spans"][state["current_match"]]
+            _focus_plain_match(start, end)
 
     def _on_search_suggest(change):
         value = change.get("new")
@@ -2284,27 +3311,62 @@ def create_tab(ctx):
         if not state["search_spans"] or state["current_match"] <= 0:
             return
         state["current_match"] -= 1
-        _update_search_nav_buttons()
-        _update_search_result()
-        if _should_highlight():
-            _apply_highlight(search_input.value.strip(), state["current_match"])
-        _scroll_to("match")
+        _show_match()
 
     def _next_match(_button=None):
         if not state["search_spans"] or state["current_match"] >= len(state["search_spans"]) - 1:
             return
         state["current_match"] += 1
-        _update_search_nav_buttons()
-        _update_search_result()
-        if _should_highlight():
-            _apply_highlight(search_input.value.strip(), state["current_match"])
-        _scroll_to("match")
+        _show_match()
 
     def _on_top_click(_button=None):
+        if not state.get("file_content"):
+            return
+        if _is_chunk_mode():
+            _run_js(
+                "window.__remoteChunkRequestedRatio = null;"
+                "window.__remoteChunkPendingRatio = null;"
+                "window.__remoteChunkBusy = false;"
+                "window.__remoteChunkProgrammaticScroll = false;"
+            )
+            _request_chunk_start(0, scroll_to="top")
+            return
         _scroll_to("top")
 
     def _on_bottom_click(_button=None):
+        if not state.get("file_content"):
+            return
+        if _is_chunk_mode():
+            size = int(state.get("selected_file_size") or 0)
+            target = max(0, size - REMOTE_TEXT_CHUNK_BYTES)
+            _run_js(
+                "window.__remoteChunkRequestedRatio = null;"
+                "window.__remoteChunkPendingRatio = null;"
+                "window.__remoteChunkBusy = false;"
+                "window.__remoteChunkProgrammaticScroll = false;"
+            )
+            _request_chunk_start(target, scroll_to="bottom", align_to_chunk=False)
+            return
         _scroll_to("bottom")
+
+    def _prev_chunk(_button=None):
+        start = max(0, int(state.get("file_chunk_start") or 0) - REMOTE_TEXT_CHUNK_BYTES)
+        _request_chunk_start(start)
+
+    def _next_chunk(_button=None):
+        size = int(state.get("selected_file_size") or 0)
+        start = int(state.get("file_chunk_end") or 0)
+        if start >= size:
+            return
+        _request_chunk_start(start)
+
+    def _on_chunk_request(_button=None):
+        _request_chunk_start(chunk_request_start.value)
+
+    def _on_chunk_request_start_change(change):
+        if change.get("name") != "value":
+            return
+        _request_chunk_start(change.get("new", 0))
 
     # -- Download helpers -------------------------------------------------------
 
@@ -3097,12 +4159,36 @@ def create_tab(ctx):
             flex_flow="row wrap", align_items="center",
         ),
     )
+    chunk_hidden_row = widgets.HBox(
+        [
+            chunk_prev_btn, chunk_next_btn, chunk_label,
+            chunk_request_start, chunk_request_ratio, chunk_request_btn,
+        ],
+        layout=widgets.Layout(
+            display="flex",
+            height="0px",
+            min_height="0px",
+            overflow="hidden",
+            visibility="hidden",
+        ),
+    )
     download_status_row = widgets.HBox(
         [download_status_html],
         layout=widgets.Layout(width="100%"),
     )
     right_panel = widgets.VBox(
-        [top_toolbar, content_toolbar, download_status_row, ops_status_html, confirm_panel, viewer_container, content_label, preview_html, table_panel],
+        [
+            top_toolbar,
+            download_status_row,
+            ops_status_html,
+            confirm_panel,
+            viewer_container,
+            content_label,
+            table_panel,
+            content_toolbar,
+            chunk_hidden_row,
+            preview_html,
+        ],
         layout=widgets.Layout(
             flex="1 1 0",
             min_width="0",
@@ -3139,6 +4225,8 @@ def create_tab(ctx):
         f".{scope_id} .remote-mol-view-row {{ width:100% !important; gap:12px !important; align-items:flex-start !important; flex-wrap:nowrap !important; }}"
         f".{scope_id} .remote-mol-view-wrap {{ flex:0 0 auto !important; min-width:0 !important; width:auto !important; }}"
         f".{scope_id} .remote-xyz-tray-controls {{ width:360px !important; min-width:340px !important; max-width:420px !important; }}"
+        f".{scope_id} .remote-search-input, .{scope_id} .remote-search-input .widget-input {{ min-width:0 !important; max-width:100% !important; width:100% !important; min-height:26px !important; overflow:visible !important; }}"
+        f" .{scope_id} .remote-search-input input {{ min-width:0 !important; max-width:100% !important; width:100% !important; height:26px !important; line-height:26px !important; padding-top:0 !important; padding-bottom:0 !important; box-sizing:border-box !important; }}"
         "</style>"
     )
 
@@ -3199,6 +4287,10 @@ def create_tab(ctx):
     search_suggest.observe(_on_search_suggest, names="value")
     search_prev_btn.on_click(_prev_match)
     search_next_btn.on_click(_next_match)
+    chunk_prev_btn.on_click(_prev_chunk)
+    chunk_next_btn.on_click(_next_chunk)
+    chunk_request_btn.on_click(_on_chunk_request)
+    chunk_request_start.observe(_on_chunk_request_start_change, names="value")
 
     # Navigation event wiring
     top_btn.on_click(_on_top_click)
