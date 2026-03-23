@@ -582,6 +582,25 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                         f'{current_branch or "detached"}-to-{target_branch}'
                     )
                     print('Working tree is not clean.')
+
+                    # --- file-system backup (survives any git operation) ---
+                    backup_dir = Path(rd).parent / 'delfin_branch_switch_backups' / stash_name
+                    try:
+                        backup_dir.mkdir(parents=True, exist_ok=True)
+                        for line in status_result.stdout.strip().splitlines():
+                            # status lines: "XY filename" or "XY filename -> newname"
+                            entry = line[3:].split(' -> ')[0].strip().strip('"')
+                            src = Path(rd) / entry
+                            if src.is_file():
+                                dst = backup_dir / entry
+                                dst.parent.mkdir(parents=True, exist_ok=True)
+                                import shutil as _shutil
+                                _shutil.copy2(str(src), str(dst))
+                        print(f'File backup saved to: {backup_dir}')
+                    except Exception as backup_err:
+                        print(f'Warning: file backup failed ({backup_err}), continuing with git stash only.')
+
+                    # --- git stash (preserves full diff for easy restore) ---
                     print(f'Creating local safety stash: {stash_name}')
                     stash_result = subprocess.run(
                         [
@@ -614,15 +633,16 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 if result.returncode == 0:
                     if stash_name:
                         print(
-                            'Local changes were preserved in the stash above. '
-                            'They were not applied automatically on the target branch.'
+                            'Local changes were preserved in git stash AND as file backup. '
+                            f'To restore: git stash pop  |  Backup: {backup_dir}'
                         )
                     refresh_git_status_label()
                     print('Reloading dashboard to pick up code from the selected branch...')
                     ctx.run_js('window.location.reload();')
                 elif stash_name:
                     print(
-                        f'Branch switch failed, but your changes are still preserved locally in stash "{stash_name}".'
+                        f'Branch switch failed, but your changes are preserved in stash "{stash_name}" '
+                        f'and as file backup in {backup_dir}.'
                     )
             except Exception as e:
                 print(f'Error: {e}')
