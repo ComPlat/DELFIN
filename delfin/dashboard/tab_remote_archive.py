@@ -1067,6 +1067,16 @@ def create_tab(ctx):
                             viewer.render();
                             window._remoteMolViewerByScope[scopeKey] = viewer;
                             window._remoteMolViewScopeKeyByScope[scopeKey] = viewScope;
+                            var scopeRoot2 = document.querySelector('.{scope_id}');
+                            var wrappers = scopeRoot2
+                                ? scopeRoot2.querySelectorAll('.remote-mol-stage-wrapper')
+                                : document.querySelectorAll('.remote-mol-stage-wrapper');
+                            wrappers.forEach(function(w) {{
+                                if (w.id !== "{wrapper_id}") w.remove();
+                            }});
+                            if (window["{remote_resize_mol_fn}"]) {{
+                                setTimeout(window["{remote_resize_mol_fn}"], 200);
+                            }}
                         }}
                         setTimeout(initViewer, 0);
                     }})();
@@ -1197,6 +1207,16 @@ def create_tab(ctx):
                             window._remoteMolViewerByScope = window._remoteMolViewerByScope || {{}};
                             window._remoteTrajViewerByScope[{scope_key_json}] = viewer;
                             window._remoteMolViewerByScope[{scope_key_json}] = viewer;
+                            var scopeRoot2 = document.querySelector('.{scope_id}');
+                            var wrappers = scopeRoot2
+                                ? scopeRoot2.querySelectorAll('.remote-mol-stage-wrapper')
+                                : document.querySelectorAll('.remote-mol-stage-wrapper');
+                            wrappers.forEach(function(w) {{
+                                if (w.id !== "{wrapper_id}") w.remove();
+                            }});
+                            if (window["{remote_resize_mol_fn}"]) {{
+                                setTimeout(window["{remote_resize_mol_fn}"], 200);
+                            }}
                         }}
                         setTimeout(initViewer, 0);
                     }})();
@@ -1390,8 +1410,8 @@ def create_tab(ctx):
             )
             _set_visualization("cube", content)
             copy_btn.disabled = not bool(content)
-            if view_toggle.value:
-                _render_cube_in_viewer(content)
+            _set_view_toggle(True, disabled=False)
+            _update_view()
             return
 
         if suffix in {".doc", ".docx"}:
@@ -1774,6 +1794,13 @@ def create_tab(ctx):
         _update_view()
 
     def _update_view():
+        # When table panel is active, hide everything else
+        if state.get("table_panel_active", False):
+            content_label.layout.display = "none"
+            preview_html.layout.display = "none"
+            content_toolbar.layout.display = "none"
+            _set_viewer_visible(False)
+            return
         show_visualize = bool(view_toggle.value and state.get("visualize_enabled"))
         has_content = bool(state.get("file_content"))
         if show_visualize:
@@ -2237,6 +2264,7 @@ def create_tab(ctx):
         _update_search_result()
         if _should_highlight():
             _apply_highlight(query, state["current_match"])
+        _scroll_to("match")
 
     def _on_search_suggest(change):
         value = change.get("new")
@@ -2805,10 +2833,12 @@ def create_tab(ctx):
         else:
             table_panel.layout.display = "none"
             state["table_panel_active"] = False
+        _update_view()
 
     def _on_table_close(_button=None):
         table_panel.layout.display = "none"
         state["table_panel_active"] = False
+        _update_view()
 
     def _on_table_add_col(_button=None):
         _collect_table_col_values()
@@ -3253,16 +3283,30 @@ def create_tab(ctx):
                 stage.style.height = h + 'px';
             }}
             var scopeKey = {json.dumps(scope_id)};
+            window._remoteMolViewStateByScope = window._remoteMolViewStateByScope || {{}};
+            window._remoteMolViewScopeKeyByScope = window._remoteMolViewScopeKeyByScope || {{}};
             var viewer = null;
             if (window._remoteMolViewerByScope && window._remoteMolViewerByScope[scopeKey]) {{
                 viewer = window._remoteMolViewerByScope[scopeKey];
             }} else if (window._remoteTrajViewerByScope && window._remoteTrajViewerByScope[scopeKey]) {{
                 viewer = window._remoteTrajViewerByScope[scopeKey];
             }}
+            var savedView = null;
+            if (viewer && typeof viewer.getView === 'function') {{
+                try {{
+                    savedView = viewer.getView();
+                    var vs = window._remoteMolViewScopeKeyByScope[scopeKey] || null;
+                    if (savedView && vs) window._remoteMolViewStateByScope[vs] = savedView;
+                }} catch (_e) {{}}
+            }}
             if (viewer && typeof viewer.resize === 'function') {{
                 try {{
                     viewer.resize();
                     viewer.render();
+                    if (savedView && typeof viewer.setView === 'function') {{
+                        viewer.setView(savedView);
+                        viewer.render();
+                    }}
                 }} catch (_e) {{}}
             }}
         }}
