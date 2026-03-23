@@ -643,8 +643,31 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     if stash_name:
                         print(
                             'Local changes were preserved in git stash AND as file backup. '
-                            f'To restore: git stash pop  |  Backup: {backup_dir}'
+                            f'Backup: {backup_dir}'
                         )
+                    # --- auto-restore: pop stash that was created FROM the target branch ---
+                    try:
+                        stash_list = subprocess.run(
+                            ['git', '-C', str(rd), 'stash', 'list'],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, check=False,
+                        )
+                        for sline in (stash_list.stdout or '').strip().splitlines():
+                            # match stashes like "dashboard-switch-...-<target_branch>-to-..."
+                            if f'-{target_branch}-to-' in sline:
+                                stash_ref = sline.split(':')[0]  # e.g. "stash@{0}"
+                                print(f'Found stash from {target_branch}: {stash_ref} – restoring...')
+                                pop_result = subprocess.run(
+                                    ['git', '-C', str(rd), 'stash', 'pop', stash_ref],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, check=False,
+                                )
+                                print(pop_result.stdout.strip() or '(no output)')
+                                if pop_result.returncode != 0:
+                                    print('Auto-restore had conflicts. Check your files.')
+                                break
+                    except Exception:
+                        pass
                     refresh_git_status_label()
                     print('Reloading dashboard to pick up code from the selected branch...')
                     ctx.run_js('window.location.reload();')
