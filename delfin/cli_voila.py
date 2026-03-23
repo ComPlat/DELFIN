@@ -104,6 +104,31 @@ def _get_local_ips() -> list[str]:
     return list(dict.fromkeys(ips))  # dedupe, preserve order
 
 
+def _detect_login_node() -> str | None:
+    """Try to identify the login-node DNS name from the SSH connection."""
+    # SSH_CONNECTION = "<client_ip> <client_port> <server_ip> <server_port>"
+    ssh_conn = os.environ.get("SSH_CONNECTION", "")
+    parts = ssh_conn.split()
+    if len(parts) >= 3:
+        server_ip = parts[2]
+        try:
+            fqdn = socket.getfqdn(server_ip)
+            if fqdn and fqdn != server_ip:
+                # Return the short hostname (e.g. "uc3" from "uc3.scc.kit.edu")
+                # but keep the domain for external access.
+                return fqdn
+        except Exception:
+            pass
+        # Fallback: try reverse DNS
+        try:
+            hostname = socket.gethostbyaddr(server_ip)[0]
+            if hostname:
+                return hostname
+        except Exception:
+            pass
+    return None
+
+
 def _voila_is_available() -> bool:
     """Return True when the current Python can import voila."""
     return importlib.util.find_spec("voila") is not None
@@ -259,10 +284,20 @@ def main(argv=None):
 
     print()
     if args.ip == "0.0.0.0":
+        hostname = socket.gethostname().split(".")[0]
+        ips = _get_local_ips()
+        target = ips[0] if ips else hostname
+        # Detect the login node from SSH_CONNECTION (the IP the user connected to).
+        login_node = _detect_login_node()
+        user = os.environ.get("USER", os.environ.get("LOGNAME", "<user>"))
+        tunnel_target = f"{user}@{login_node}" if login_node else "<user>@<login-node>"
         print(
-            "Tip: From another machine, use one of the URLs above.\n"
-            "     If it doesn't connect, check your firewall:\n"
-            f"       sudo ufw allow {args.port}/tcp"
+            "Tip: If you cannot connect directly, set up an SSH tunnel.\n"
+            "     Run this on your LOCAL machine (PowerShell / MobaXterm / Terminal):\n"
+            "\n"
+            f"       ssh -N -L {args.port}:{target}:{args.port} {tunnel_target}\n"
+            "\n"
+            f"     Then open http://localhost:{args.port} in your browser."
         )
     print("Press Ctrl+C to stop.\n")
 
