@@ -445,6 +445,7 @@ def create_tab(ctx):
             flex="1 1 0", min_height="0",
         ),
     )
+    table_output_html.add_class("remote-table-output")
     table_cols_box = widgets.VBox(
         [],
         layout=widgets.Layout(width="100%", gap="4px"),
@@ -481,6 +482,7 @@ def create_tab(ctx):
             flex="1 1 0", min_height="0",
         ),
     )
+    table_panel.add_class("remote-table-panel")
 
     content_label = widgets.HTML(
         "<div style='height:26px; line-height:26px; margin:0 0 8px 0;'>"
@@ -537,8 +539,9 @@ def create_tab(ctx):
     viewer_output.add_class("remote-mol-viewer")
     preview_html = widgets.HTML(
         value="",
-        layout=widgets.Layout(width="100%", flex="1 1 0", min_height="0", overflow="auto"),
+        layout=widgets.Layout(width="100%", flex="1 1 0", min_height="0", overflow_x="hidden"),
     )
+    preview_html.add_class("remote-content-area")
     transfer_jobs_html = widgets.HTML(
         value="",
         layout=widgets.Layout(width="100%", overflow_x="hidden", overflow_y="auto", flex="1 1 0", min_height="0"),
@@ -4209,6 +4212,12 @@ def create_tab(ctx):
         "display:flex; flex-direction:column; overflow:hidden !important; }}"
         f".{scope_id} .remote-left {{ display:flex !important; flex-direction:column !important; }}"
         f".{scope_id} .remote-right {{ display:flex !important; flex-direction:column !important; overflow:hidden !important; }}"
+        f".{scope_id} .remote-content-area {{ flex:1 1 0 !important; min-height:0 !important; overflow-x:hidden !important; }}"
+        f".{scope_id} .remote-content-area .widget-html-content {{ height:100%; overflow:hidden !important; }}"
+        f".{scope_id} #remote-content-box {{ overflow-y:auto !important; overflow-x:hidden !important; }}"
+        f".{scope_id} .remote-table-panel {{ flex:1 1 0 !important; min-height:0 !important; overflow:hidden !important; }}"
+        f".{scope_id} .remote-table-output {{ flex:1 1 0 !important; min-height:0 !important;"
+        " overflow-y:auto !important; overflow-x:auto !important; max-height:none !important; }}"
         f".{scope_id} .widget-select select {{ height:100% !important; }}"
         f".{scope_id} .widget-select {{ flex:1 1 0 !important; min-height:0 !important; }}"
         f".{scope_id} .widget-output {{ overflow:hidden !important; }}"
