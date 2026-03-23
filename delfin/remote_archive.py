@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import posixpath
@@ -283,7 +284,7 @@ def read_remote_text_chunk(host, user, remote_path, port, relative_path,
     root = build_remote_absolute_path(remote_path, "")
     rel = normalize_remote_relative_path(relative_path)
     script = textwrap.dedent("""
-        import json, os, sys
+        import base64, json, os, sys
         root = os.path.realpath(sys.argv[1])
         relative = sys.argv[2]
         start = int(sys.argv[3])
@@ -300,6 +301,7 @@ def read_remote_text_chunk(host, user, remote_path, port, relative_path,
             data = f.read(length)
         print(json.dumps({
             "text": data.decode("utf-8", errors="ignore"),
+            "data_b64": base64.b64encode(data).decode("ascii"),
             "size": size,
             "chunk_start": safe_start,
             "chunk_end": safe_start + len(data),
@@ -369,6 +371,56 @@ def search_remote_file(host, user, remote_path, port, relative_path,
     )
     output = _run_ssh_command(host, user, port, command)
     return [tuple(pair) for pair in json.loads(output)]
+
+
+def line_col_from_remote_file_offset(host, user, remote_path, port, relative_path,
+                                     byte_pos, chunk_bytes=REMOTE_TEXT_CHUNK_BYTES):
+    """Return 1-based (line, column) for a byte offset in a remote file."""
+    host, user, remote_path, port = normalize_ssh_transfer_settings(host, user, remote_path, port)
+    root = build_remote_absolute_path(remote_path, "")
+    rel = normalize_remote_relative_path(relative_path)
+    target_pos = max(0, int(byte_pos))
+    read_bytes = max(1, int(chunk_bytes))
+    script = textwrap.dedent("""
+        import json, os, sys
+        root = os.path.realpath(sys.argv[1])
+        relative = sys.argv[2]
+        target = max(0, int(sys.argv[3]))
+        block_size = max(1, int(sys.argv[4]))
+        path = root if not relative else os.path.realpath(os.path.join(root, relative))
+        if os.path.commonpath([path, root]) != root:
+            raise SystemExit("Path escapes root.")
+        if not os.path.isfile(path):
+            raise SystemExit("File not found.")
+        line = 1
+        last_nl = -1
+        seen = 0
+        with open(path, "rb") as handle:
+            while seen < target:
+                need = min(block_size, target - seen)
+                if need <= 0:
+                    break
+                chunk = handle.read(need)
+                if not chunk:
+                    break
+                idx = 0
+                while True:
+                    nl = chunk.find(b"\n", idx)
+                    if nl < 0:
+                        break
+                    line += 1
+                    last_nl = seen + nl
+                    idx = nl + 1
+                seen += len(chunk)
+        col = target + 1 if last_nl < 0 else target - last_nl
+        print(json.dumps({"line": line, "col": col}))
+    """).strip()
+    command = "python3 -c " + shlex.quote(script) + " " + " ".join(
+        shlex.quote(str(v)) for v in (root, rel, target_pos, read_bytes)
+    )
+    output = _run_ssh_command(host, user, port, command)
+    payload = json.loads(output)
+    return int(payload.get("line", 0) or 0), int(payload.get("col", 0) or 0)
 
 
 def list_remote_folder_files(host, user, remote_path, port, relative_path,
