@@ -9,7 +9,7 @@
 
 > 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
 
-**DELFIN** is a modular computational chemistry platform that automates quantum chemical workflows — from SMILES input to realistic property predictions. It combines DFT, semi-empirical methods, ML potentials, and AI tools behind a unified interface with an interactive browser-based dashboard.
+**DELFIN** is a modular computational chemistry platform that automates end-to-end molecular workflows — from SMILES input to realistic property predictions. It combines structure generation, DFT, semi-empirical methods, ML potentials, and AI tools behind a unified interface with an interactive browser-based dashboard.
 
 ### What DELFIN can do
 
