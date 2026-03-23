@@ -586,7 +586,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     # --- file-system backup (survives any git operation) ---
                     backup_dir = Path(rd).parent / 'delfin_branch_switch_backups' / stash_name
                     try:
+                        import shutil as _shutil
                         backup_dir.mkdir(parents=True, exist_ok=True)
+                        copied = 0
                         for line in status_result.stdout.strip().splitlines():
                             # status lines: "XY filename" or "XY filename -> newname"
                             entry = line[3:].split(' -> ')[0].strip().strip('"')
@@ -594,9 +596,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                             if src.is_file():
                                 dst = backup_dir / entry
                                 dst.parent.mkdir(parents=True, exist_ok=True)
-                                import shutil as _shutil
                                 _shutil.copy2(str(src), str(dst))
-                        print(f'File backup saved to: {backup_dir}')
+                                copied += 1
+                        if copied:
+                            print(f'File backup: {copied} file(s) saved to {backup_dir}')
+                        else:
+                            print(f'Warning: no files could be backed up (directory created: {backup_dir})')
                     except Exception as backup_err:
                         print(f'Warning: file backup failed ({backup_err}), continuing with git stash only.')
 
