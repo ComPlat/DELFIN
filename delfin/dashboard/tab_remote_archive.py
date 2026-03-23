@@ -170,7 +170,12 @@ def create_tab(ctx):
     file_list = widgets.Select(
         options=[],
         rows=22,
-        layout=widgets.Layout(width="100%", flex="1 1 0", min_height="0", margin="-4px 0 0 0"),
+        layout=widgets.Layout(
+            width="100%",
+            flex="1 1 0",
+            min_height="0",
+            margin="-4px 0 0 0",
+        ),
     )
     file_list.add_class("remote-file-list")
     keyboard_action_input = widgets.Text(
