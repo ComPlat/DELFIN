@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import base64
+import csv as _csv
 import html
+import io
 import json
 import posixpath
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
+import zipfile
 from pathlib import Path, PurePosixPath
 
 import ipywidgets as widgets
@@ -19,6 +25,10 @@ from delfin.remote_archive import (
     list_remote_entries,
     normalize_remote_relative_path,
     read_remote_text_preview,
+    remote_delete,
+    remote_duplicate,
+    remote_mkdir,
+    remote_rename,
 )
 from delfin.ssh_transfer_jobs import (
     create_download_job,
@@ -27,6 +37,13 @@ from delfin.ssh_transfer_jobs import (
     list_transfer_jobs,
 )
 from delfin.user_settings import load_transfer_settings
+
+from .constants import CALC_SEARCH_OPTIONS
+
+try:
+    from delfin.remote_archive import list_remote_folder_files as _list_remote_folder_files
+except ImportError:
+    _list_remote_folder_files = None
 
 from .helpers import disable_spellcheck
 from .input_processing import is_smiles, smiles_to_xyz_quick
@@ -49,6 +66,9 @@ REMOTE_XYZ_LARGE_TRAJ_FRAMES = 2000
 REMOTE_XYZ_PLAY_FPS_DEFAULT = 10
 REMOTE_XYZ_PLAY_FPS_MIN = 1
 REMOTE_XYZ_PLAY_FPS_MAX = 60
+REMOTE_SEARCH_MAX_MATCHES = 2000
+REMOTE_HIGHLIGHT_MAX_CHARS = 400_000
+REMOTE_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
 
 
 def create_tab(ctx):
@@ -70,6 +90,19 @@ def create_tab(ctx):
         "traj_playing": False,
         "traj_play_toggle_guard": False,
         "traj_viewer_ready": False,
+        # Search state
+        "search_spans": [],
+        "current_match": -1,
+        "search_truncated": False,
+        "selected_file_path": None,
+        "selected_file_size": 0,
+        # Table extraction state
+        "table_col_defs": [
+            {"name": "Value 1", "type": "regex", "pattern": "", "occ": "last"},
+        ],
+        "table_col_widgets": [],
+        "table_csv_data": "",
+        "table_panel_active": False,
     }
     scope_id = f"remote-archive-scope-{abs(id(state))}"
     remote_resize_mol_fn = f"remoteArchiveResizeMolViewer_{abs(id(state))}"
@@ -161,6 +194,239 @@ def create_tab(ctx):
         button_style="warning",
         layout=widgets.Layout(width="110px", min_width="110px", height="26px"),
     )
+
+    # -- File operation buttons -------------------------------------------------
+    new_folder_btn = widgets.Button(
+        description="\U0001f4c1 New Folder",
+        layout=widgets.Layout(width="110px", min_width="110px", height="26px"),
+        disabled=True,
+    )
+    rename_btn = widgets.Button(
+        description="\u270f Rename",
+        layout=widgets.Layout(width="90px", min_width="90px", height="26px"),
+        disabled=True,
+    )
+    duplicate_btn = widgets.Button(
+        description="\U0001f4cb Duplicate",
+        layout=widgets.Layout(width="106px", min_width="106px", height="26px"),
+        disabled=True,
+    )
+    delete_btn = widgets.Button(
+        description="\U0001f5d1 Delete",
+        button_style="danger",
+        layout=widgets.Layout(width="90px", min_width="90px", height="26px"),
+        disabled=True,
+    )
+    # Confirmation/input dialogs
+    ops_status_html = widgets.HTML(value="")
+    rename_input = widgets.Text(
+        placeholder="New name...",
+        layout=widgets.Layout(width="200px", height="28px"),
+    )
+    new_folder_input = widgets.Text(
+        placeholder="Folder name...",
+        layout=widgets.Layout(width="200px", height="28px"),
+    )
+    confirm_panel = widgets.HBox(
+        [], layout=widgets.Layout(display="none", gap="6px", align_items="center", width="100%"),
+    )
+
+    # -- Search widgets ---------------------------------------------------------
+    search_input = widgets.Text(
+        placeholder="Search in file...",
+        continuous_update=True,
+        layout=widgets.Layout(width="140px", min_width="140px", height="26px"),
+    )
+    search_input.add_class("remote-search-input")
+    search_suggest = widgets.Dropdown(
+        options=["(Select)"] + CALC_SEARCH_OPTIONS,
+        value="(Select)",
+        layout=widgets.Layout(width="200px", min_width="200px", height="26px"),
+    )
+    search_btn = widgets.Button(
+        description="🔍",
+        layout=widgets.Layout(width="85px", min_width="85px", height="26px"),
+    )
+    search_prev_btn = widgets.Button(
+        description="◀",
+        layout=widgets.Layout(width="58px", min_width="58px", height="26px"),
+        disabled=True,
+    )
+    search_next_btn = widgets.Button(
+        description="▶",
+        layout=widgets.Layout(width="58px", min_width="58px", height="26px"),
+        disabled=True,
+    )
+    search_result_html = widgets.HTML(
+        value="",
+        layout=widgets.Layout(width="180px", min_width="180px"),
+    )
+
+    # -- Content navigation widgets ---------------------------------------------
+    top_btn = widgets.Button(
+        description="⬆ Top",
+        layout=widgets.Layout(width="78px", min_width="78px", height="26px"),
+    )
+    bottom_btn = widgets.Button(
+        description="⬇ End",
+        layout=widgets.Layout(width="78px", min_width="78px", height="26px"),
+    )
+
+    # -- Download widgets -------------------------------------------------------
+    download_btn = widgets.Button(
+        description="Download",
+        layout=widgets.Layout(width="100px", min_width="100px", height="26px"),
+        disabled=True,
+    )
+    download_status_html = widgets.HTML(
+        value="",
+        layout=widgets.Layout(width="100%", overflow_x="hidden"),
+    )
+
+    # -- Editable path input ----------------------------------------------------
+    path_input = widgets.Text(
+        value="/",
+        continuous_update=False,
+        layout=widgets.Layout(
+            flex="1 1 0", min_width="0", width="1px", max_width="100%",
+            height="24px", overflow_x="hidden", margin="0", padding="0",
+        ),
+    )
+    path_input.add_class("remote-path-input")
+    path_prefix_html = widgets.HTML(
+        value="<b>📂 Path:</b>",
+        layout=widgets.Layout(width="100%"),
+    )
+    path_input_box = widgets.VBox(
+        [path_prefix_html, path_input],
+        layout=widgets.Layout(
+            width="100%", overflow_x="hidden",
+            align_items="stretch", gap="2px",
+        ),
+    )
+
+    # -- Table presets (same as Calculations Browser) ---------------------------
+    _TABLE_PRESETS = [
+        ('— Preset —',                '',         'regex', '',                                                         'last'),
+        ('ORCA Total Energy (Eh)',    'Energy',   'regex', r'FINAL SINGLE POINT ENERGY\s+(-?[\d.]+)',                 'last'),
+        ('ORCA SCF Energy (Eh)',      'SCF E',    'regex', r'E\(SCF\)\s*=\s*(-?[\d.]+)',                             'last'),
+        ('ORCA HOMO (eV)',            'HOMO',     'regex', r'(?i)homo.*?(-?[\d.]+)\s*eV',                            'last'),
+        ('ORCA LUMO (eV)',            'LUMO',     'regex', r'(?i)lumo.*?(-?[\d.]+)\s*eV',                            'last'),
+        ('ORCA Dipole total (D)',     'Dipole',   'regex', r'(?i)total dipole moment.*?([\d.]+)',                     'last'),
+        ('ORCA S\u00b2 (before)',     'S2',       'regex', r'<S\*\*2> Expectation value\s+([\d.]+)',                 'last'),
+        ('ORCA Net Charge',           'Charge',   'regex', r'Total Charge\s*\.*\s*(-?\d+)',                           'first'),
+        ('ORCA Nr. Atoms',            'Atoms',    'regex', r'Number of atoms\s*\.\.\.\s*(\d+)',                       'first'),
+        ('ORCA Nr. Basis Fns',        'Basis',    'regex', r'Number of basis functions\s*\.\.\.\s*(\d+)',             'first'),
+        ('TM SCF Energy (Eh)',        'E(TM)',    'regex', r'SCF energy\s+:\s+(-?[\d.]+)',                           'last'),
+        ('TM HOMO (eV)',              'HOMO(TM)', 'regex', r'HOMO.*?(-?[\d.]+)\s*eV',                                'last'),
+        ('DELFIN TDDFT to_state',     'to_state', 'json',  'tddft_absorption.transitions[*].to_state',                'all'),
+        ('DELFIN TDDFT energy_eV',    'energy_eV','json',  'tddft_absorption.transitions[*].energy_eV',               'all'),
+        ('DELFIN TDDFT wavelength',   'nm',       'json',  'tddft_absorption.transitions[*].wavelength_nm',           'all'),
+        ('DELFIN TDDFT fosc',         'fosc',     'json',  'tddft_absorption.transitions[*].oscillator_strength',     'all'),
+        ('DELFIN S0→S1 wavelength',   'S0S1_nm',  'json',  'tddft_absorption.transitions[?(@.from_state=="S0" && @.to_state=="S1")].wavelength_nm', 'first'),
+        ('DELFIN S0→S1 energy_eV',    'S0S1_eV',  'json',  'tddft_absorption.transitions[?(@.from_state=="S0" && @.to_state=="S1")].energy_eV', 'first'),
+        ('JSON key path',             'JSON',     'json',  'results.energy.final',                                     'last'),
+    ]
+    _tp_labels = [p[0] for p in _TABLE_PRESETS]
+    _tp_names  = [p[1] for p in _TABLE_PRESETS]
+    _tp_types  = [p[2] for p in _TABLE_PRESETS]
+    _tp_pats   = [p[3] for p in _TABLE_PRESETS]
+    _tp_occs   = [p[4] for p in _TABLE_PRESETS]
+    _table_number_re = re.compile(
+        r'[-+]?(?:(?:\d+[.,]\d*)|(?:[.,]\d+)|\d+)(?:[eEdD][-+]?\d+)?'
+    )
+    _table_number_full_re = re.compile(
+        r'^[-+]?(?:(?:\d+[.,]\d*)|(?:[.,]\d+)|\d+)(?:[eEdD][-+]?\d+)?$'
+    )
+
+    # -- Table extraction widgets -----------------------------------------------
+    table_btn = widgets.Button(
+        description="📊 Table",
+        layout=widgets.Layout(width="84px", height="26px"),
+        disabled=(_list_remote_folder_files is None),
+    )
+    table_file_input = widgets.Text(
+        placeholder="e.g. orca.out or result.json",
+        layout=widgets.Layout(flex="1 1 auto", min_width="120px", height="26px"),
+    )
+    table_scope_dd = widgets.Dropdown(
+        options=[("All folders", "all")],
+        value="all",
+        layout=widgets.Layout(width="130px", height="26px"),
+    )
+    table_recursive_cb = widgets.ToggleButton(
+        value=False,
+        description="Recurse",
+        layout=widgets.Layout(width="86px", height="26px"),
+    )
+    table_decimal_comma_btn = widgets.ToggleButton(
+        value=False,
+        description="Dot to Comma",
+        tooltip="Convert decimal point to decimal comma in table/CSV values",
+        layout=widgets.Layout(width="126px", height="26px"),
+    )
+    table_add_col_btn = widgets.Button(
+        description="+ Column",
+        layout=widgets.Layout(width="80px", height="26px"),
+    )
+    table_run_btn = widgets.Button(
+        description="▶ Run",
+        button_style="primary",
+        layout=widgets.Layout(width="68px", height="26px"),
+    )
+    table_close_btn = widgets.Button(
+        description="✕",
+        layout=widgets.Layout(width="32px", height="26px"),
+    )
+    table_csv_btn = widgets.Button(
+        description="⬇ CSV",
+        layout=widgets.Layout(width="68px", height="26px", display="none"),
+    )
+    table_status_html = widgets.HTML(value="")
+    table_output_html = widgets.HTML(
+        value="",
+        layout=widgets.Layout(
+            width="100%", overflow_x="auto", overflow_y="auto",
+            flex="1 1 0", min_height="0",
+        ),
+    )
+    table_cols_box = widgets.VBox(
+        [],
+        layout=widgets.Layout(width="100%", gap="4px"),
+    )
+    table_panel = widgets.VBox(
+        [
+            widgets.HBox(
+                [widgets.HTML("<b>📊 Extract Table</b>"), table_close_btn],
+                layout=widgets.Layout(
+                    justify_content="space-between", align_items="center", width="100%",
+                ),
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<span style="white-space:nowrap"><b>File:</b></span>'),
+                    table_file_input,
+                    table_scope_dd,
+                    table_recursive_cb,
+                    table_decimal_comma_btn,
+                ],
+                layout=widgets.Layout(gap="6px", align_items="center", width="100%"),
+            ),
+            table_cols_box,
+            widgets.HBox(
+                [table_add_col_btn, table_run_btn, table_csv_btn],
+                layout=widgets.Layout(gap="6px", align_items="center"),
+            ),
+            table_status_html,
+            table_output_html,
+        ],
+        layout=widgets.Layout(
+            display="none", width="100%", padding="8px", gap="6px",
+            border="1px solid #e0e0e0", border_radius="4px", overflow_x="hidden",
+            flex="1 1 0", min_height="0",
+        ),
+    )
+
     content_label = widgets.HTML(
         "<div style='height:26px; line-height:26px; margin:0 0 8px 0;'>"
         "<b>📄 File Content:</b></div>"
@@ -509,15 +775,18 @@ def create_tab(ctx):
                 return entry
         return None
 
+    _path_syncing = [False]
+
     def _update_path_html():
         config = state.get("config")
-        if not config:
-            path_html.value = "<b>📂 Path:</b> /"
-            return
-        path_html.value = (
-            f"<b>📂 Path:</b> "
-            f"<code>{html.escape(_current_remote_path(config))}</code>"
-        )
+        _path_syncing[0] = True
+        try:
+            if not config:
+                path_input.value = "/"
+            else:
+                path_input.value = _current_remote_path(config)
+        finally:
+            _path_syncing[0] = False
 
     def _set_viewer_visible(is_visible):
         viewer_container.layout.display = "flex" if is_visible else "none"
@@ -580,6 +849,8 @@ def create_tab(ctx):
         selected_path_html.value = ""
         state["file_content"] = ""
         state["file_preview_note"] = ""
+        state["selected_file_path"] = None
+        state["selected_file_size"] = 0
         preview_html.value = (
             "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
             "padding:12px; background:#fafafa;'>"
@@ -587,6 +858,10 @@ def create_tab(ctx):
         )
         copy_btn.disabled = True
         copy_path_btn.disabled = True
+        download_btn.disabled = True
+        download_status_html.value = ""
+        content_toolbar.layout.display = "none"
+        _reset_search_state()
         _reset_visualization_state()
 
     def _render_text_preview(text, *, note=""):
@@ -608,10 +883,17 @@ def create_tab(ctx):
                 + "</div>"
             )
         preview_html.value = (
-            "<div style='height:100%; overflow:auto; border:1px solid #ddd; background:#fafafa; "
-            "padding:10px; box-sizing:border-box;'>"
-            f"{note_html}<pre style='white-space:pre-wrap; margin:0; font-family:monospace;'>"
-            f"{html.escape(content)}</pre></div>"
+            "<style>"
+            ".remote-match { background: #fff59d; padding: 0 2px; }"
+            ".remote-match.current { background: #ffcc80; }"
+            "</style>"
+            "<div id='remote-content-box' style='height:100%; overflow-y:auto; overflow-x:hidden;"
+            " border:1px solid #ddd; padding:6px; background:#fafafa; width:100%; box-sizing:border-box;'>"
+            f"{note_html}"
+            "<div id='remote-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
+            " word-break:break-word; font-family:monospace; font-size:12px; line-height:1.3;'>"
+            f"{html.escape(content)}"
+            "</div></div>"
         )
 
     def _render_image_preview(local_path):
@@ -1039,6 +1321,7 @@ def create_tab(ctx):
         )
         _set_selected_path_display(state["selected_remote_path"])
         copy_path_btn.disabled = False
+        content_toolbar.layout.display = "flex"
 
     def _current_entry_remote_path(entry):
         config = state.get("config") or {}
@@ -1055,7 +1338,14 @@ def create_tab(ctx):
 
         state["file_preview_note"] = str(note or "")
         state["file_content"] = ""
+        state["selected_file_path"] = str(path)
+        try:
+            state["selected_file_size"] = path.stat().st_size
+        except Exception:
+            state["selected_file_size"] = 0
         copy_btn.disabled = True
+        download_btn.disabled = False
+        _reset_search_state()
         _reset_visualization_state()
 
         if lower_name == "coord":
@@ -1143,6 +1433,132 @@ def create_tab(ctx):
         value = file_list.value
         return _entry_by_relative_path(value)
 
+    # -- File operation handlers -----------------------------------------------
+
+    def _on_new_folder_click(_button=None):
+        new_folder_input.value = ""
+        confirm_panel.children = [
+            widgets.HTML("<b>New folder name:</b>"),
+            new_folder_input,
+            widgets.Button(description="Create", button_style="primary",
+                          layout=widgets.Layout(width="70px", height="28px")),
+            widgets.Button(description="Cancel",
+                          layout=widgets.Layout(width="70px", height="28px")),
+        ]
+        confirm_panel.children[2].on_click(_on_new_folder_confirm)
+        confirm_panel.children[3].on_click(_on_confirm_cancel)
+        confirm_panel.layout.display = "flex"
+
+    def _on_new_folder_confirm(_button=None):
+        config = state.get("config")
+        name = new_folder_input.value.strip()
+        confirm_panel.layout.display = "none"
+        if not config or not name:
+            ops_status_html.value = '<span style="color:#d32f2f;">Invalid folder name.</span>'
+            return
+        try:
+            remote_mkdir(config["host"], config["user"], config["remote_path"],
+                        config["port"], state.get("current_relative_path", ""), name)
+            ops_status_html.value = f'<span style="color:#2e7d32;">Created folder: {html.escape(name)}</span>'
+            _refresh_listing(set_status=False)
+        except Exception as exc:
+            ops_status_html.value = f'<span style="color:#d32f2f;">Create failed: {html.escape(str(exc))}</span>'
+
+    def _on_rename_click(_button=None):
+        entry = _selected_entry()
+        if not entry:
+            return
+        rename_input.value = entry.get("name", "")
+        confirm_panel.children = [
+            widgets.HTML(f"<b>Rename</b> {html.escape(entry.get('name', ''))}:"),
+            rename_input,
+            widgets.Button(description="Rename", button_style="primary",
+                          layout=widgets.Layout(width="70px", height="28px")),
+            widgets.Button(description="Cancel",
+                          layout=widgets.Layout(width="70px", height="28px")),
+        ]
+        confirm_panel.children[2].on_click(_on_rename_confirm)
+        confirm_panel.children[3].on_click(_on_confirm_cancel)
+        confirm_panel.layout.display = "flex"
+
+    def _on_rename_confirm(_button=None):
+        config = state.get("config")
+        entry = _selected_entry()
+        new_name = rename_input.value.strip()
+        confirm_panel.layout.display = "none"
+        if not config or not entry or not new_name:
+            ops_status_html.value = '<span style="color:#d32f2f;">Invalid input.</span>'
+            return
+        rel = normalize_remote_relative_path(entry.get("relative_path", ""))
+        if not rel:
+            return
+        try:
+            remote_rename(config["host"], config["user"], config["remote_path"],
+                         config["port"], rel, new_name)
+            ops_status_html.value = f'<span style="color:#2e7d32;">Renamed to: {html.escape(new_name)}</span>'
+            _refresh_listing(set_status=False)
+        except Exception as exc:
+            ops_status_html.value = f'<span style="color:#d32f2f;">Rename failed: {html.escape(str(exc))}</span>'
+
+    def _on_duplicate_click(_button=None):
+        config = state.get("config")
+        entry = _selected_entry()
+        if not config or not entry:
+            return
+        rel = normalize_remote_relative_path(entry.get("relative_path", ""))
+        if not rel:
+            return
+        try:
+            new_name = remote_duplicate(config["host"], config["user"], config["remote_path"],
+                                       config["port"], rel)
+            ops_status_html.value = f'<span style="color:#2e7d32;">Duplicated as: {html.escape(new_name)}</span>'
+            _refresh_listing(set_status=False)
+        except Exception as exc:
+            ops_status_html.value = f'<span style="color:#d32f2f;">Duplicate failed: {html.escape(str(exc))}</span>'
+
+    def _on_delete_click(_button=None):
+        entry = _selected_entry()
+        if not entry:
+            return
+        name = entry.get("name", "")
+        confirm_panel.children = [
+            widgets.HTML(f"<b>Delete</b> <code>{html.escape(name)}</code>?"),
+            widgets.Button(description="Yes, delete", button_style="danger",
+                          layout=widgets.Layout(width="90px", height="28px")),
+            widgets.Button(description="Cancel",
+                          layout=widgets.Layout(width="70px", height="28px")),
+        ]
+        confirm_panel.children[1].on_click(_on_delete_confirm)
+        confirm_panel.children[2].on_click(_on_confirm_cancel)
+        confirm_panel.layout.display = "flex"
+
+    def _on_delete_confirm(_button=None):
+        config = state.get("config")
+        entry = _selected_entry()
+        confirm_panel.layout.display = "none"
+        if not config or not entry:
+            return
+        rel = normalize_remote_relative_path(entry.get("relative_path", ""))
+        if not rel:
+            return
+        try:
+            result = remote_delete(config["host"], config["user"], config["remote_path"],
+                                  config["port"], [rel])
+            deleted = result.get("deleted", [])
+            errors = result.get("errors", [])
+            if deleted and not errors:
+                ops_status_html.value = f'<span style="color:#2e7d32;">Deleted {len(deleted)} item(s).</span>'
+            elif errors:
+                ops_status_html.value = f'<span style="color:#d32f2f;">{html.escape("; ".join(errors))}</span>'
+            _refresh_listing(set_status=False)
+        except Exception as exc:
+            ops_status_html.value = f'<span style="color:#d32f2f;">Delete failed: {html.escape(str(exc))}</span>'
+
+    def _on_confirm_cancel(_button=None):
+        confirm_panel.layout.display = "none"
+
+    # --------------------------------------------------------------------------
+
     def _update_buttons():
         config_ready = state.get("config") is not None
         has_parent = bool(normalize_remote_relative_path(state.get("current_relative_path", "")))
@@ -1159,6 +1575,10 @@ def create_tab(ctx):
         if not selected:
             copy_path_btn.disabled = True
         copy_btn.disabled = not bool(state.get("file_content"))
+        new_folder_btn.disabled = not config_ready
+        rename_btn.disabled = not (config_ready and selected)
+        duplicate_btn.disabled = not (config_ready and selected)
+        delete_btn.disabled = not (config_ready and selected)
         if not state.get("visualize_enabled"):
             _set_view_toggle(False, disabled=True)
 
@@ -1328,6 +1748,9 @@ def create_tab(ctx):
                 )
                 state["file_content"] = str(preview.get("text", "") or "")
                 state["file_preview_note"] = "Large remote file preview."
+                state["selected_file_path"] = None
+                state["selected_file_size"] = size
+                _reset_search_state()
                 _reset_visualization_state()
                 _show_file_info(entry)
                 note = "Large remote file preview."
@@ -1335,6 +1758,7 @@ def create_tab(ctx):
                     note = f"{note} Only the first {TEXT_PREVIEW_MAX_BYTES:,} bytes are shown."
                 _render_text_preview(preview.get("text", ""), note=note)
                 copy_btn.disabled = not bool(state["file_content"])
+                download_btn.disabled = True
         except Exception as exc:
             _clear_preview(f"Could not load {name}.")
             _set_status(html.escape(str(exc)), color="#d32f2f")
@@ -1351,9 +1775,11 @@ def create_tab(ctx):
 
     def _update_view():
         show_visualize = bool(view_toggle.value and state.get("visualize_enabled"))
+        has_content = bool(state.get("file_content"))
         if show_visualize:
             content_label.layout.display = "none"
             preview_html.layout.display = "none"
+            content_toolbar.layout.display = "none"
             _set_viewer_visible(True)
             if state.get("visualize_kind") == "cube":
                 _render_cube_in_viewer(state.get("visualize_payload", ""))
@@ -1366,6 +1792,7 @@ def create_tab(ctx):
             _set_viewer_visible(False)
             content_label.layout.display = "block"
             preview_html.layout.display = "block"
+            content_toolbar.layout.display = "flex" if has_content else "none"
         _update_traj_control_state()
 
     def _on_view_toggle(change=None):
@@ -1578,6 +2005,8 @@ def create_tab(ctx):
             _set_selected_path_display(state["selected_remote_path"])
             copy_path_btn.disabled = False
             copy_btn.disabled = True
+            download_btn.disabled = True
+            _reset_search_state()
             _reset_visualization_state()
             preview_html.value = (
                 "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
@@ -1604,8 +2033,923 @@ def create_tab(ctx):
         state["current_xyz_index"] = max(0, min(len(frames) - 1, int(frame_input.value) - 1))
         _render_selected_frame()
 
+    # -- Search helpers ---------------------------------------------------------
+
+    def _pos_to_line_col(pos):
+        if pos < 0:
+            return 0, 0
+        content = state.get("file_content", "")
+        line = content.count("\n", 0, pos) + 1
+        last_nl = content.rfind("\n", 0, pos)
+        col = pos + 1 if last_nl == -1 else pos - last_nl
+        return line, col
+
+    def _update_search_nav_buttons():
+        if not state["search_spans"]:
+            search_prev_btn.disabled = True
+            search_next_btn.disabled = True
+            return
+        search_prev_btn.disabled = state["current_match"] <= 0
+        search_next_btn.disabled = state["current_match"] >= len(state["search_spans"]) - 1
+
+    def _update_search_result():
+        if not state["search_spans"]:
+            search_result_html.value = ""
+            return
+        notes = []
+        if state.get("search_truncated"):
+            notes.append(f"limited to {REMOTE_SEARCH_MAX_MATCHES} matches")
+        note_html = ""
+        if notes:
+            note_html = f' <span style="color:#777;">({", ".join(notes)})</span>'
+        if state["current_match"] < 0:
+            search_result_html.value = (
+                f'<span style="color:green;">{len(state["search_spans"])} matches</span>{note_html}'
+            )
+            return
+        start, _ = state["search_spans"][state["current_match"]]
+        line, col = _pos_to_line_col(start)
+        search_result_html.value = (
+            f'<b>{state["current_match"] + 1}/{len(state["search_spans"])}</b> '
+            f'<span style="color:#555;">(line {line}, col {col})</span>{note_html}'
+        )
+
+    def _find_matches(query):
+        """Search in state['file_content'] (in-memory, case-insensitive)."""
+        content = state.get("file_content", "")
+        if not content or not query:
+            return []
+        # For very large files with a cached local path, try ripgrep
+        local_path = state.get("selected_file_path")
+        file_size = state.get("selected_file_size", 0) or 0
+        if file_size > 5 * 1024 * 1024 and local_path and Path(local_path).exists():
+            try:
+                result = subprocess.run(
+                    ["rg", "-a", "-i", "-F", "--byte-offset", "--only-matching", query, str(local_path)],
+                    capture_output=True, text=True, timeout=30,
+                )
+                spans = []
+                for line in result.stdout.splitlines():
+                    if ":" in line:
+                        parts = line.split(":", 2)
+                        if len(parts) >= 2:
+                            try:
+                                offset = int(parts[0])
+                                match_text = parts[1] if len(parts) == 2 else parts[2]
+                                spans.append((offset, offset + len(match_text)))
+                                if len(spans) >= REMOTE_SEARCH_MAX_MATCHES + 1:
+                                    break
+                            except ValueError:
+                                continue
+                return spans
+            except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+                pass
+        # In-memory search
+        q_lower = query.lower()
+        q_len = len(query)
+        spans = []
+        hay = content.lower()
+        pos = hay.find(q_lower)
+        while pos >= 0:
+            spans.append((pos, pos + q_len))
+            if len(spans) >= REMOTE_SEARCH_MAX_MATCHES + 1:
+                break
+            pos = hay.find(q_lower, pos + 1)
+        return spans
+
+    def _should_highlight():
+        return len(state.get("file_content", "")) <= REMOTE_HIGHLIGHT_MAX_CHARS
+
+    def _apply_highlight(query, current_index):
+        if query is None:
+            query = ""
+        js = r"""
+        (function() {
+            const box = document.getElementById('remote-content-box');
+            const el = document.getElementById('remote-content-text');
+            if (!box || !el) return;
+            const text = el.textContent || '';
+            const q = __QUERY__;
+            if (!q) {
+                el.textContent = text;
+                return;
+            }
+            function esc(s) {
+                return s.replace(/[&<>"]/g, function(c) {
+                    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+                });
+            }
+            function escapeRegExp(s) {
+                return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            }
+            const re = new RegExp(escapeRegExp(q), 'gi');
+            let html = '';
+            let last = 0;
+            let i = 0;
+            let m;
+            while ((m = re.exec(text)) !== null) {
+                html += esc(text.slice(last, m.index));
+                const cls = (i === __INDEX__) ? 'remote-match current' : 'remote-match';
+                const id = (i === __INDEX__) ? 'remote-current-match' : '';
+                html += `<mark class="${cls}" ${id ? 'id="' + id + '"' : ''}>${esc(m[0])}</mark>`;
+                last = m.index + m[0].length;
+                i++;
+            }
+            html += esc(text.slice(last));
+            el.innerHTML = html;
+            if (__INDEX__ >= 0) {
+                setTimeout(function() {
+                    const mark = document.getElementById('remote-current-match');
+                    if (mark) { mark.scrollIntoView({block: 'center'}); }
+                }, 0);
+            }
+        })();
+        """
+        js = js.replace("__QUERY__", repr(query)).replace("__INDEX__", str(current_index))
+        _run_js(js)
+
+    def _scroll_to(target):
+        if target == "top":
+            _run_js("""
+            setTimeout(function(){
+                const box = document.getElementById('remote-content-box');
+                if (box) { box.scrollTop = 0; }
+            }, 0);
+            """)
+        elif target == "bottom":
+            _run_js("""
+            setTimeout(function(){
+                const box = document.getElementById('remote-content-box');
+                if (box) { box.scrollTop = box.scrollHeight; }
+            }, 0);
+            """)
+        elif target == "match" and state["current_match"] >= 0:
+            _run_js("""
+            setTimeout(function(){
+                const box = document.getElementById('remote-content-box');
+                const el = document.getElementById('remote-current-match');
+                if (!box || !el) return;
+                const boxRect = box.getBoundingClientRect();
+                const elRect = el.getBoundingClientRect();
+                const delta = (elRect.top - boxRect.top) - (box.clientHeight / 2);
+                box.scrollTop += delta;
+            }, 0);
+            """)
+
+    def _reset_search_state():
+        state["search_spans"] = []
+        state["current_match"] = -1
+        state["search_truncated"] = False
+        search_result_html.value = ""
+        _update_search_nav_buttons()
+
+    def _do_search(_button=None):
+        query = (search_input.value or "").strip()
+        if not query and search_suggest.value and search_suggest.value != "(Select)":
+            query = search_suggest.value
+            search_input.value = query
+        state["search_spans"] = []
+        state["current_match"] = -1
+        state["search_truncated"] = False
+
+        if not query or not state.get("file_content"):
+            search_result_html.value = ""
+            _update_search_nav_buttons()
+            if _should_highlight():
+                _apply_highlight("", -1)
+            return
+
+        spans = _find_matches(query)
+        if len(spans) > REMOTE_SEARCH_MAX_MATCHES:
+            state["search_truncated"] = True
+            spans = spans[:REMOTE_SEARCH_MAX_MATCHES]
+        state["search_spans"] = spans
+
+        if not state["search_spans"]:
+            search_result_html.value = '<span style="color:red;">0 matches</span>'
+            _update_search_nav_buttons()
+            if _should_highlight():
+                _apply_highlight("", -1)
+            return
+
+        state["current_match"] = 0
+        _update_search_nav_buttons()
+        _update_search_result()
+        if _should_highlight():
+            _apply_highlight(query, state["current_match"])
+
+    def _on_search_suggest(change):
+        value = change.get("new")
+        if not value or value == "(Select)":
+            return
+        search_input.value = value
+
+    def _on_search_input_change(change):
+        if len(state.get("file_content", "")) > REMOTE_HIGHLIGHT_MAX_CHARS:
+            return
+        _do_search()
+
+    def _on_search_submit(_widget):
+        _do_search()
+
+    def _prev_match(_button=None):
+        if not state["search_spans"] or state["current_match"] <= 0:
+            return
+        state["current_match"] -= 1
+        _update_search_nav_buttons()
+        _update_search_result()
+        if _should_highlight():
+            _apply_highlight(search_input.value.strip(), state["current_match"])
+        _scroll_to("match")
+
+    def _next_match(_button=None):
+        if not state["search_spans"] or state["current_match"] >= len(state["search_spans"]) - 1:
+            return
+        state["current_match"] += 1
+        _update_search_nav_buttons()
+        _update_search_result()
+        if _should_highlight():
+            _apply_highlight(search_input.value.strip(), state["current_match"])
+        _scroll_to("match")
+
+    def _on_top_click(_button=None):
+        _scroll_to("top")
+
+    def _on_bottom_click(_button=None):
+        _scroll_to("bottom")
+
+    # -- Download helpers -------------------------------------------------------
+
+    def _trigger_download(filename, payload, mime="application/octet-stream"):
+        b64 = base64.b64encode(payload).decode("ascii")
+        js = (
+            "(function(){"
+            f"const fileName={json.dumps(filename)};"
+            f"const mimeType={json.dumps(mime)};"
+            f"const b64={json.dumps(b64)};"
+            "try{"
+            "const bin=atob(b64);"
+            "const len=bin.length;"
+            "const bytes=new Uint8Array(len);"
+            "for(let i=0;i<len;i++){bytes[i]=bin.charCodeAt(i);}"
+            "const blob=new Blob([bytes],{type:mimeType});"
+            "const url=URL.createObjectURL(blob);"
+            "const a=document.createElement('a');"
+            "a.href=url;a.download=fileName;document.body.appendChild(a);a.click();"
+            "setTimeout(function(){URL.revokeObjectURL(url);if(a.parentNode){a.parentNode.removeChild(a);}},1500);"
+            "}catch(err){console.error('Download failed:', err);}"
+            "})();"
+        )
+        _run_js(js)
+
+    def _on_download_click(_button=None):
+        entry = state.get("selected_entry")
+        config = state.get("config")
+        if not entry or not config:
+            download_status_html.value = '<span style="color:#d32f2f;">No file selected.</span>'
+            return
+
+        local_path = state.get("selected_file_path")
+        if not local_path or not Path(local_path).exists():
+            # Try to fetch
+            try:
+                local_path = fetch_remote_file(
+                    config["host"], config["user"],
+                    config["remote_path"], config["port"],
+                    entry.get("relative_path", ""),
+                )
+            except Exception as exc:
+                download_status_html.value = (
+                    f'<span style="color:#d32f2f;">Fetch failed: {html.escape(str(exc))}</span>'
+                )
+                return
+
+        try:
+            target = Path(local_path)
+            payload = b""
+            filename = ""
+            mime = "application/octet-stream"
+
+            if target.is_dir():
+                download_status_html.value = (
+                    f'<span style="color:#1976d2;">Preparing ZIP for '
+                    f'{html.escape(target.name or str(target))}...</span>'
+                )
+                with tempfile.TemporaryDirectory(prefix="delfin_download_") as tmpdir:
+                    archive_name = target.name or "folder"
+                    archive_base = Path(tmpdir) / archive_name
+                    archive_path = Path(shutil.make_archive(
+                        str(archive_base), "zip",
+                        root_dir=str(target.parent),
+                        base_dir=target.name,
+                    ))
+                    payload = archive_path.read_bytes()
+                    filename = archive_path.name
+                    mime = "application/zip"
+            else:
+                payload = target.read_bytes()
+                filename = target.name
+
+            size_bytes = len(payload)
+            if size_bytes > REMOTE_DOWNLOAD_MAX_BYTES:
+                download_status_html.value = (
+                    f'<span style="color:#d32f2f;">Download too large '
+                    f'({_format_size(size_bytes)}). Limit: {_format_size(REMOTE_DOWNLOAD_MAX_BYTES)}.</span>'
+                )
+                return
+
+            _trigger_download(filename, payload, mime=mime)
+            download_status_html.value = (
+                f'<span style="color:#2e7d32;">Download started: '
+                f'{html.escape(filename)} ({_format_size(size_bytes)})</span>'
+            )
+        except Exception as exc:
+            download_status_html.value = (
+                f'<span style="color:#d32f2f;">Download failed: {html.escape(str(exc))}</span>'
+            )
+
+    # -- Editable path input handler --------------------------------------------
+
+    def _on_path_input_change(change):
+        if _path_syncing[0]:
+            return
+        raw = str(change.get("new") or "").strip()
+        if not raw:
+            _update_path_html()
+            return
+        config = state.get("config")
+        if not config:
+            _update_path_html()
+            return
+        root = str(config.get("remote_path") or "/").rstrip("/") or "/"
+        # Compute relative path from the input
+        if raw.startswith(root):
+            rel = raw[len(root):].strip("/")
+        elif raw.startswith("/"):
+            rel = raw.strip("/")
+        else:
+            rel = raw.strip("/")
+        state["current_relative_path"] = normalize_remote_relative_path(rel)
+        state["selected_entry"] = None
+        _refresh_listing(set_status=True)
+
+    # -- Table extraction helpers -----------------------------------------------
+
+    def _normalize_table_number(token):
+        value = str(token).strip().replace("D", "E").replace("d", "e")
+        if "," in value and "." not in value:
+            value = value.replace(",", ".")
+        return value
+
+    def _json_collect_key_values(node, key):
+        matches = []
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                if key in current:
+                    matches.append(current[key])
+                for value in reversed(list(current.values())):
+                    stack.append(value)
+            elif isinstance(current, list):
+                for item in reversed(current):
+                    stack.append(item)
+        return matches
+
+    def _normalize_json_path(path):
+        normalized = str(path or "").strip()
+        if not normalized:
+            return ""
+        if normalized.startswith("$"):
+            normalized = normalized[1:]
+        return normalized.lstrip(".")
+
+    def _json_split_path(path):
+        parts = []
+        buf = []
+        bracket_depth = 0
+        quote = None
+        escaped = False
+        for ch in path:
+            if quote is not None:
+                buf.append(ch)
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == "\\":
+                    escaped = True
+                elif ch == quote:
+                    quote = None
+                continue
+            if ch in ("'", '"') and bracket_depth > 0:
+                quote = ch
+                buf.append(ch)
+                continue
+            if ch == "[":
+                bracket_depth += 1
+                buf.append(ch)
+                continue
+            if ch == "]":
+                if bracket_depth > 0:
+                    bracket_depth -= 1
+                buf.append(ch)
+                continue
+            if ch == "." and bracket_depth == 0:
+                token = "".join(buf).strip()
+                if token:
+                    parts.append(token)
+                buf = []
+                continue
+            buf.append(ch)
+        tail = "".join(buf).strip()
+        if tail:
+            parts.append(tail)
+        return parts
+
+    def _json_parse_value(raw):
+        token = str(raw).strip()
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in ('"', "'"):
+            return token[1:-1]
+        low = token.lower()
+        if low == "true":
+            return True
+        if low == "false":
+            return False
+        if low == "null":
+            return None
+        try:
+            if any(ch in token for ch in (".", "e", "E")):
+                return float(token)
+            return int(token)
+        except Exception:
+            return token
+
+    def _json_compare_values(lhs, op, rhs):
+        if op in ("==", "!="):
+            equal = lhs == rhs
+            if not equal:
+                try:
+                    equal = float(lhs) == float(rhs)
+                except Exception:
+                    equal = str(lhs) == str(rhs)
+            return equal if op == "==" else (not equal)
+        try:
+            lval, rval = float(lhs), float(rhs)
+        except Exception:
+            lval, rval = str(lhs), str(rhs)
+        if op == ">":
+            return lval > rval
+        if op == ">=":
+            return lval >= rval
+        if op == "<":
+            return lval < rval
+        if op == "<=":
+            return lval <= rval
+        return False
+
+    def _json_item_matches_filter(item, expression):
+        if not isinstance(item, dict):
+            return False
+        clauses = [c.strip() for c in re.split(r"\s*(?:&&|\band\b)\s*", expression) if c.strip()]
+        if not clauses:
+            return False
+        for clause in clauses:
+            m = re.match(r"^@\.(\w+)\s*(==|!=|>=|<=|>|<)\s*(.+)$", clause)
+            if not m:
+                return False
+            key, op, raw_rhs = m.groups()
+            rhs = _json_parse_value(raw_rhs)
+            lhs = item.get(key)
+            if not _json_compare_values(lhs, op, rhs):
+                return False
+        return True
+
+    def _json_parse_part(part):
+        text = part.strip()
+        if not text:
+            return "", None, None
+        if "[" not in text or not text.endswith("]"):
+            return text, None, None
+        bracket_pos = text.find("[")
+        key = text[:bracket_pos].strip()
+        selector = text[bracket_pos + 1:-1].strip()
+        if selector == "*":
+            return key, "wildcard", None
+        if re.fullmatch(r"-?\d+", selector):
+            return key, "index", int(selector)
+        if selector.startswith("?(") and selector.endswith(")"):
+            return key, "filter", selector[2:-1].strip()
+        return key, None, None
+
+    def _json_apply_selector(values, selector_kind, selector_value):
+        if selector_kind is None:
+            return values
+        selected = []
+        for value in values:
+            if selector_kind == "wildcard":
+                if isinstance(value, list):
+                    selected.extend(value)
+                elif isinstance(value, dict):
+                    selected.extend(value.values())
+            elif selector_kind == "index":
+                if isinstance(value, list):
+                    try:
+                        selected.append(value[selector_value])
+                    except Exception:
+                        pass
+            elif selector_kind == "filter":
+                if isinstance(value, list):
+                    for item in value:
+                        if _json_item_matches_filter(item, selector_value):
+                            selected.append(item)
+                elif _json_item_matches_filter(value, selector_value):
+                    selected.append(value)
+        return selected
+
+    def _json_step(node, part):
+        key, selector_kind, selector_value = _json_parse_part(part)
+        if isinstance(node, dict):
+            if key == "*":
+                matches = list(node.values())
+            elif key in node:
+                matches = [node[key]]
+            else:
+                matches = _json_collect_key_values(node, key)
+            return _json_apply_selector(matches, selector_kind, selector_value)
+        if isinstance(node, list):
+            lower_key = key.lower()
+            if key in ("*", "[]"):
+                matches = list(node)
+            elif lower_key == "last":
+                matches = [node[-1]] if node else []
+            elif lower_key == "first":
+                matches = [node[0]] if node else []
+            elif key == "":
+                matches = [node]
+            else:
+                try:
+                    matches = [node[int(key)]]
+                except Exception:
+                    matches = []
+                    for item in node:
+                        if isinstance(item, dict) and key in item:
+                            matches.append(item[key])
+                    if not matches:
+                        for item in node:
+                            if isinstance(item, (dict, list)):
+                                matches.extend(_json_step(item, key))
+            return _json_apply_selector(matches, selector_kind, selector_value)
+        return []
+
+    def _json_extract_path_values(json_data, path):
+        path = _normalize_json_path(path)
+        parts = _json_split_path(path)
+        if not parts:
+            return []
+        nodes = [json_data]
+        for part in parts:
+            next_nodes = []
+            for node in nodes:
+                next_nodes.extend(_json_step(node, part))
+            if not next_nodes:
+                return []
+            nodes = next_nodes
+        flat_nodes = []
+        for node in nodes:
+            if isinstance(node, list):
+                flat_nodes.extend(node)
+            else:
+                flat_nodes.append(node)
+        return flat_nodes
+
+    def _extract_values(col_def, text, json_data):
+        typ = col_def.get("type", "regex")
+        pat = col_def.get("pattern", "").strip()
+        occ = col_def.get("occ", "last")
+        if not pat:
+            return ["—"]
+        try:
+            if typ in ("regex", "text"):
+                rx = re.compile(re.escape(pat) if typ == "text" else pat)
+                if rx.groups > 0:
+                    raw_matches = rx.finditer(text)
+                    values = []
+                    for m in raw_matches:
+                        g = m.group(1)
+                        val = str(g).strip() if g is not None else "—"
+                        line_num = text[:m.start()].count("\n") + 1
+                        values.append((val, line_num))
+                    if not values:
+                        return ["—"]
+                else:
+                    values = []
+                    for m in rx.finditer(text):
+                        line_num = text[:m.start()].count("\n") + 1
+                        line_end = text.find("\n", m.end())
+                        if line_end == -1:
+                            line_end = len(text)
+                        tail = text[m.end():line_end]
+                        nums = [nm.group(0) for nm in _table_number_re.finditer(tail)]
+                        if nums:
+                            values.append((_normalize_table_number(nums[0]), line_num))
+                            continue
+                        near = text[m.end():min(len(text), m.end() + 240)]
+                        near_nums = [nm.group(0) for nm in _table_number_re.finditer(near)]
+                        if near_nums:
+                            values.append((_normalize_table_number(near_nums[0]), line_num))
+                            continue
+                        values.append((m.group(0).strip(), line_num))
+                    if not values:
+                        return ["—"]
+                if occ == "all":
+                    return values
+                if occ == "first":
+                    return [values[0][0]]
+                return [values[-1][0]]
+            elif typ == "json":
+                if json_data is None:
+                    return ["—"]
+                values = _json_extract_path_values(json_data, pat)
+                if not values:
+                    return ["—"]
+                rendered = [str(v) for v in values]
+                if occ == "all":
+                    return rendered
+                if occ == "first":
+                    return [rendered[0]]
+                return [rendered[-1]]
+        except Exception as exc:
+            return [f"err:{exc}"]
+        return ["—"]
+
+    def _format_table_output_value(raw_value):
+        value = str(raw_value)
+        if not table_decimal_comma_btn.value:
+            return value
+        if not _table_number_full_re.fullmatch(value.strip()):
+            return value
+        return value.replace(".", ",")
+
+    def _render_extract_table_html(headers, rows):
+        th = "".join(
+            f'<th style="padding:4px 10px;border:1px solid #ddd;'
+            f'background:#f0f4f8;white-space:nowrap;text-align:left">'
+            f'{html.escape(str(h))}</th>'
+            for h in headers
+        )
+        trs = ""
+        for i, row in enumerate(rows):
+            bg = "#ffffff" if i % 2 == 0 else "#f7f9fc"
+            tds = "".join(
+                f'<td style="padding:4px 10px;border:1px solid #ddd;'
+                f'white-space:nowrap">{html.escape(str(v))}</td>'
+                for v in row
+            )
+            trs += f'<tr style="background:{bg}">{tds}</tr>'
+        return (
+            '<div style="overflow-x:auto">'
+            '<table style="border-collapse:collapse;font-size:12px;width:auto">'
+            f'<thead><tr>{th}</tr></thead>'
+            f'<tbody>{trs}</tbody>'
+            '</table></div>'
+        )
+
+    def _collect_table_col_values():
+        for i, rw in enumerate(state["table_col_widgets"]):
+            if i < len(state["table_col_defs"]):
+                state["table_col_defs"][i]["name"] = rw["name"].value
+                state["table_col_defs"][i]["type"] = rw["type_dd"].value
+                state["table_col_defs"][i]["occ"] = rw["occ_dd"].value
+                state["table_col_defs"][i]["pattern"] = rw["pattern"].value
+
+    def _rebuild_table_col_rows():
+        rows = []
+        state["table_col_widgets"] = []
+        for i, col in enumerate(state["table_col_defs"]):
+            name_w = widgets.Text(
+                value=col.get("name", ""),
+                placeholder="Column name",
+                layout=widgets.Layout(width="100px", height="26px"),
+            )
+            type_dd = widgets.Dropdown(
+                options=[("Text", "text"), ("Regex", "regex"), ("JSON path", "json")],
+                value=col.get("type", "text"),
+                layout=widgets.Layout(width="92px", height="26px"),
+            )
+            occ_dd = widgets.Dropdown(
+                options=[("last", "last"), ("first", "first"), ("all", "all")],
+                value=col.get("occ", "last"),
+                layout=widgets.Layout(width="66px", height="26px"),
+            )
+            _pat_placeholders = {"regex": "regex pattern", "json": "key.path", "text": "literal text"}
+            pat_w = widgets.Text(
+                value=col.get("pattern", ""),
+                placeholder=_pat_placeholders.get(col.get("type", "text"), "literal text"),
+                layout=widgets.Layout(flex="1 1 auto", min_width="80px", height="26px"),
+            )
+            preset_dd = widgets.Dropdown(
+                options=_tp_labels,
+                value=_tp_labels[0],
+                layout=widgets.Layout(width="180px", height="26px"),
+            )
+            rm_btn = widgets.Button(
+                description="✕",
+                layout=widgets.Layout(width="32px", height="26px"),
+            )
+
+            def _on_type_change(change, pw=pat_w):
+                _ph = {"regex": "regex pattern", "json": "key.path", "text": "literal text"}
+                pw.placeholder = _ph.get(change["new"], "literal text")
+
+            def _on_preset(change, idx=i):
+                label = change["new"]
+                if label == _tp_labels[0]:
+                    return
+                pi = _tp_labels.index(label)
+                _collect_table_col_values()
+                state["table_col_defs"][idx].update({
+                    "name": _tp_names[pi],
+                    "type": _tp_types[pi],
+                    "pattern": _tp_pats[pi],
+                    "occ": _tp_occs[pi],
+                })
+                if _tp_types[pi] == "json" and not table_file_input.value.strip():
+                    table_file_input.value = "DELFIN_Data.json"
+                _rebuild_table_col_rows()
+
+            def _on_remove(b, idx=i):
+                _collect_table_col_values()
+                if len(state["table_col_defs"]) > 1:
+                    state["table_col_defs"].pop(idx)
+                _rebuild_table_col_rows()
+
+            type_dd.observe(_on_type_change, names="value")
+            preset_dd.observe(_on_preset, names="value")
+            rm_btn.on_click(_on_remove)
+
+            rows.append(widgets.HBox(
+                [name_w, type_dd, occ_dd, pat_w, preset_dd, rm_btn],
+                layout=widgets.Layout(gap="4px", align_items="center", width="100%"),
+            ))
+            state["table_col_widgets"].append({
+                "name": name_w, "type_dd": type_dd, "occ_dd": occ_dd,
+                "pattern": pat_w, "preset_dd": preset_dd,
+            })
+        table_cols_box.children = tuple(rows)
+
+    def _on_table_toggle(_button=None):
+        if table_panel.layout.display == "none":
+            table_panel.layout.display = ""
+            state["table_panel_active"] = True
+            _rebuild_table_col_rows()
+        else:
+            table_panel.layout.display = "none"
+            state["table_panel_active"] = False
+
+    def _on_table_close(_button=None):
+        table_panel.layout.display = "none"
+        state["table_panel_active"] = False
+
+    def _on_table_add_col(_button=None):
+        _collect_table_col_values()
+        n = len(state["table_col_defs"]) + 1
+        state["table_col_defs"].append(
+            {"name": f"Value {n}", "type": "regex", "pattern": "", "occ": "last"}
+        )
+        _rebuild_table_col_rows()
+
+    def _on_table_run(_button=None):
+        if _list_remote_folder_files is None:
+            table_status_html.value = (
+                '<span style="color:#d32f2f;">Table extraction not available '
+                '(list_remote_folder_files not found in remote_archive module).</span>'
+            )
+            return
+        _collect_table_col_values()
+        target_file = table_file_input.value.strip()
+        if not target_file:
+            table_status_html.value = '<span style="color:#d32f2f;">Please enter a filename.</span>'
+            return
+        config = state.get("config")
+        if not config:
+            table_status_html.value = '<span style="color:#d32f2f;">No remote archive configured.</span>'
+            return
+
+        current_rel = state.get("current_relative_path", "")
+        table_status_html.value = '<span style="color:#1976d2;">Scanning remote folders...</span>'
+        ctx.set_busy(True)
+        try:
+            # Use list_remote_folder_files to get all matching files in one SSH call
+            file_map = _list_remote_folder_files(
+                config["host"], config["user"],
+                config["remote_path"], config["port"],
+                current_rel, target_file,
+                recursive=bool(table_recursive_cb.value),
+            )
+        except Exception as exc:
+            table_status_html.value = (
+                f'<span style="color:#d32f2f;">Remote scan failed: {html.escape(str(exc))}</span>'
+            )
+            ctx.set_busy(False)
+            return
+
+        if not file_map:
+            table_status_html.value = '<span style="color:#d32f2f;">No matching files found.</span>'
+            ctx.set_busy(False)
+            return
+
+        cols = state["table_col_defs"]
+        headers = ["Job"]
+        for i, c in enumerate(cols):
+            headers.append(c.get("name", f"Col {i+1}"))
+            if c.get("occ") == "all":
+                headers.append(c.get("name", f"Col {i+1}") + " (Line)")
+        _n_header_cols = len(headers) - 1
+        rows = []
+        missing = 0
+
+        for folder_name, file_rel_paths in sorted(file_map.items()):
+            if not file_rel_paths:
+                rows.append([folder_name] + ["—"] * _n_header_cols)
+                missing += 1
+                continue
+            for file_rel_path in file_rel_paths:
+                try:
+                    local_path = fetch_remote_file(
+                        config["host"], config["user"],
+                        config["remote_path"], config["port"],
+                        file_rel_path,
+                    )
+                    content = Path(local_path).read_text(errors="replace")
+                except Exception:
+                    rows.append([folder_name] + ["err"] * _n_header_cols)
+                    continue
+
+                json_data = None
+                if file_rel_path.lower().endswith(".json"):
+                    try:
+                        json_data = json.loads(content)
+                    except Exception:
+                        pass
+
+                col_values = [_extract_values(c, content, json_data) for c in cols]
+                row_count = max((len(vs) for vs in col_values), default=1)
+                for row_idx in range(row_count):
+                    row = [folder_name]
+                    for c, values in zip(cols, col_values):
+                        is_all = c.get("occ") == "all"
+                        if not values or values == ["—"]:
+                            row.append("—")
+                            if is_all:
+                                row.append("—")
+                        elif row_idx < len(values):
+                            v = values[row_idx]
+                            if isinstance(v, tuple):
+                                row.append(_format_table_output_value(v[0]))
+                                if is_all:
+                                    row.append(str(v[1]) if v[1] is not None else "—")
+                            else:
+                                row.append(_format_table_output_value(v))
+                                if is_all:
+                                    row.append("—")
+                        else:
+                            row.append("—")
+                            if is_all:
+                                row.append("—")
+                    rows.append(row)
+
+        ctx.set_busy(False)
+        table_output_html.value = _render_extract_table_html(headers, rows)
+        buf = io.StringIO()
+        csv_rows = [["" if c == "—" else c for c in row] for row in rows]
+        _csv.writer(buf, delimiter=";").writerows([headers] + csv_rows)
+        state["table_csv_data"] = buf.getvalue()
+        table_csv_btn.layout.display = "inline-flex"
+        folder_count = len(file_map)
+        row_count = len(rows)
+        msg = f'<span style="color:#2e7d32;">{folder_count} folder(s) processed'
+        if row_count != folder_count:
+            msg += f", {row_count} row(s) generated"
+        if missing:
+            msg += f", {missing} without {html.escape(target_file)}"
+        table_status_html.value = msg + ".</span>"
+
+    def _on_table_csv_download(_button=None):
+        data = state.get("table_csv_data", "")
+        if not data:
+            return
+        b64 = base64.b64encode(data.encode("utf-8-sig")).decode()
+        _run_js(
+            'var a=document.createElement("a");'
+            f'a.href="data:text/csv;charset=utf-8;base64,{b64}";'
+            'a.download="extract_table.csv";'
+            'document.body.appendChild(a);a.click();document.body.removeChild(a);'
+        )
+
+    # -- Layout -----------------------------------------------------------------
+
     controls_row = widgets.HBox(
-        [up_btn, home_btn, refresh_btn, open_btn],
+        [up_btn, home_btn, refresh_btn, open_btn, new_folder_btn, rename_btn, duplicate_btn, delete_btn, table_btn],
         layout=widgets.Layout(width="100%", gap="6px", flex_flow="row wrap"),
     )
     filter_row = widgets.HBox(
@@ -1614,7 +2958,7 @@ def create_tab(ctx):
     )
     filter_row.add_class("remote-filter-row")
     left_panel = widgets.VBox(
-        [info_html, path_html, controls_row, filter_row, file_list, transfer_jobs_panel, status_html],
+        [info_html, path_input_box, controls_row, filter_row, file_list, transfer_jobs_panel, status_html],
         layout=widgets.Layout(
             flex=f"0 0 {REMOTE_LEFT_DEFAULT}px",
             min_width=f"{REMOTE_LEFT_MIN}px",
@@ -1696,7 +3040,7 @@ def create_tab(ctx):
         [
             file_info_html,
             widgets.HBox(
-                [transfer_jobs_btn, transfer_back_btn, transfer_to_archive_btn, copy_path_btn, copy_btn, view_toggle],
+                [transfer_jobs_btn, transfer_back_btn, transfer_to_archive_btn, copy_path_btn, copy_btn, download_btn, view_toggle],
                 layout=widgets.Layout(
                     gap="10px",
                     flex_flow="row wrap",
@@ -1709,8 +3053,26 @@ def create_tab(ctx):
         ],
         layout=widgets.Layout(align_items="center", justify_content="space-between", width="100%"),
     )
+    content_toolbar = widgets.HBox(
+        [
+            top_btn, bottom_btn,
+            widgets.HTML("&nbsp;│&nbsp;"),
+            search_input, search_suggest, search_btn,
+            widgets.HTML("&nbsp;&nbsp;"),
+            search_prev_btn, search_next_btn,
+            search_result_html,
+        ],
+        layout=widgets.Layout(
+            display="none", margin="5px 0", width="100%", overflow_x="hidden", gap="6px",
+            flex_flow="row wrap", align_items="center",
+        ),
+    )
+    download_status_row = widgets.HBox(
+        [download_status_html],
+        layout=widgets.Layout(width="100%"),
+    )
     right_panel = widgets.VBox(
-        [top_toolbar, viewer_container, content_label, preview_html],
+        [top_toolbar, content_toolbar, download_status_row, ops_status_html, confirm_panel, viewer_container, content_label, preview_html, table_panel],
         layout=widgets.Layout(
             flex="1 1 0",
             min_width="0",
@@ -1783,6 +3145,10 @@ def create_tab(ctx):
     transfer_to_archive_btn.on_click(_on_transfer_to_archive_click)
     copy_btn.on_click(_on_copy_click)
     copy_path_btn.on_click(_on_copy_path_click)
+    new_folder_btn.on_click(_on_new_folder_click)
+    rename_btn.on_click(_on_rename_click)
+    duplicate_btn.on_click(_on_duplicate_click)
+    delete_btn.on_click(_on_delete_click)
     view_toggle.observe(_on_view_toggle, names="value")
     filter_input.observe(_on_filter_change, names="value")
     sort_dropdown.observe(_on_sort_change, names="value")
@@ -1793,7 +3159,37 @@ def create_tab(ctx):
     xyz_play_btn.observe(_on_xyz_play_change, names="value")
     xyz_copy_btn.on_click(_on_xyz_copy)
 
+    # Search event wiring
+    search_btn.on_click(_do_search)
+    search_input.observe(_on_search_input_change, names="value")
+    try:
+        search_input.on_submit(_on_search_submit)
+    except AttributeError:
+        pass
+    search_suggest.observe(_on_search_suggest, names="value")
+    search_prev_btn.on_click(_prev_match)
+    search_next_btn.on_click(_next_match)
+
+    # Navigation event wiring
+    top_btn.on_click(_on_top_click)
+    bottom_btn.on_click(_on_bottom_click)
+
+    # Download event wiring
+    download_btn.on_click(_on_download_click)
+
+    # Path input event wiring
+    path_input.observe(_on_path_input_change, names="value")
+
+    # Table event wiring
+    table_btn.on_click(_on_table_toggle)
+    table_close_btn.on_click(_on_table_close)
+    table_add_col_btn.on_click(_on_table_add_col)
+    table_run_btn.on_click(_on_table_run)
+    table_csv_btn.on_click(_on_table_csv_download)
+
     disable_spellcheck(ctx, class_name="remote-archive-filter")
+    disable_spellcheck(ctx, class_name="remote-search-input")
+    disable_spellcheck(ctx, class_name="remote-path-input")
 
     _clear_preview()
     _load_config(set_status=False)
@@ -1912,6 +3308,11 @@ def create_tab(ctx):
             selectEl.dataset.remoteEnterBound = '1';
             selectEl.addEventListener('keydown', function(e) {{
                 if (!e || e.key !== 'Enter') return;
+                e.preventDefault();
+                e.stopPropagation();
+                _setWidgetField(root, 'remote-cmd-keyboard-action', 'open');
+            }}, true);
+            selectEl.addEventListener('dblclick', function(e) {{
                 e.preventDefault();
                 e.stopPropagation();
                 _setWidgetField(root, 'remote-cmd-keyboard-action', 'open');
