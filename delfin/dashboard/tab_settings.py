@@ -737,11 +737,16 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 continue
             seen.add(tab_id)
             normalized_order.append(tab_id)
+        saved_order = set(order)
         normalized_hidden = [
             tab_id
             for tab_id in normalized_order
             if (
-                (tab_id in hidden or not bool(spec_map[tab_id].get('default_visible', True)))
+                (
+                    tab_id in hidden
+                    if tab_id in saved_order
+                    else not bool(spec_map[tab_id].get('default_visible', True))
+                )
                 and not spec_map[tab_id].get('fixed')
             )
         ]

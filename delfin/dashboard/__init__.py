@@ -393,10 +393,15 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             seen.add(tab_id)
             order.append(tab_id)
         hidden = set()
+        saved_ids = set(raw_order)
         for tab_id in order:
             spec = spec_map.get(tab_id) or {}
-            if tab_id in raw_hidden or not bool(spec.get('default_visible', True)):
-                hidden.add(tab_id)
+            if tab_id in saved_ids:
+                if tab_id in raw_hidden:
+                    hidden.add(tab_id)
+            else:
+                if not bool(spec.get('default_visible', True)):
+                    hidden.add(tab_id)
         return order, hidden
 
     def _sorted_visible_specs():
