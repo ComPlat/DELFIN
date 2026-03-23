@@ -862,10 +862,13 @@ def create_tab(ctx):
     def _set_viewer_visible(is_visible):
         viewer_container.layout.display = "flex" if is_visible else "none"
 
+    def _clear_selected_path_display():
+        selected_path_html.value = ""
+
     def _set_selected_path_display(path_value):
         full_path = str(path_value or "").strip()
         if not full_path:
-            selected_path_html.value = ""
+            _clear_selected_path_display()
             return
         selected_path_html.value = (
             f'<input type="text" value="{html.escape(full_path)}" onclick="this.select()" '
@@ -1713,7 +1716,6 @@ def create_tab(ctx):
             f"<b><span style='word-break:break-all;'>{html.escape(name)}</span></b> "
             f"<span style='color:#616161;'>({html.escape(size_str)})</span>{extra_html}"
         )
-        _set_selected_path_display(state["selected_remote_path"])
         copy_path_btn.disabled = False
         content_toolbar.layout.display = "flex"
 
@@ -2130,6 +2132,7 @@ def create_tab(ctx):
         return config
 
     def _refresh_listing(set_status=True):
+        _clear_selected_path_display()
         config = state.get("config") or _load_config(set_status=False)
         if not config:
             state["entries"] = []
@@ -2196,6 +2199,7 @@ def create_tab(ctx):
     def _open_entry(entry):
         if not entry:
             return
+        _clear_selected_path_display()
         state["selected_entry"] = entry
         if entry.get("is_dir"):
             _clear_filter_for_navigation()
@@ -2521,6 +2525,7 @@ def create_tab(ctx):
         _update_loop_button_style()
 
     def _on_filter_change(change):
+        _clear_selected_path_display()
         _apply_filter()
 
     def _on_sort_change(change):
@@ -2540,6 +2545,7 @@ def create_tab(ctx):
         _render_transfer_jobs()
 
     def _on_selection_change(change):
+        _clear_selected_path_display()
         entry = _selected_entry()
         state["selected_entry"] = entry
         if not entry:
@@ -2556,7 +2562,6 @@ def create_tab(ctx):
                 f"<b><span style='word-break:break-all;'>{html.escape(str(entry.get('name') or 'Folder'))}</span></b> "
                 "<span style='color:#616161;'>(directory)</span>"
             )
-            _set_selected_path_display(state["selected_remote_path"])
             copy_path_btn.disabled = False
             copy_btn.disabled = True
             download_btn.disabled = True
@@ -3487,6 +3492,7 @@ def create_tab(ctx):
     def _on_path_input_change(change):
         if _path_syncing[0]:
             return
+        _clear_selected_path_display()
         raw = str(change.get("new") or "").strip()
         if not raw:
             _update_path_html()
