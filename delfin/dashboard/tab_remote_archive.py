@@ -174,7 +174,7 @@ def create_tab(ctx):
             width="100%",
             flex="1 1 0",
             min_height="0",
-            margin="-4px 0 30px 0",
+            margin="-4px 0 0 0",
         ),
     )
     file_list.add_class("remote-file-list")
