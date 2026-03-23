@@ -4053,7 +4053,7 @@ def create_tab(ctx):
     )
     filter_row.add_class("remote-filter-row")
     left_panel = widgets.VBox(
-        [info_html, path_input_box, controls_row, filter_row, file_list, transfer_jobs_panel, status_html],
+        [info_html, path_input_box, controls_row, filter_row, file_list, transfer_jobs_panel],
         layout=widgets.Layout(
             flex=f"0 0 {REMOTE_LEFT_DEFAULT}px",
             min_width=f"{REMOTE_LEFT_MIN}px",
@@ -4218,7 +4218,7 @@ def create_tab(ctx):
         f".{scope_id} .remote-table-panel {{ flex:1 1 0 !important; min-height:0 !important; overflow:hidden !important; }}"
         f".{scope_id} .remote-table-output {{ flex:1 1 0 !important; min-height:0 !important;"
         " overflow-y:auto !important; overflow-x:auto !important; max-height:none !important; }}"
-        f".{scope_id} .widget-select select {{ height:100% !important; }}"
+        f".{scope_id} .widget-select select {{ height:100% !important; overflow-y:auto !important; }}"
         f".{scope_id} .widget-select {{ flex:1 1 0 !important; min-height:0 !important; }}"
         f".{scope_id} .widget-output {{ overflow:hidden !important; }}"
         f".{scope_id} .widget-output .output_area, .{scope_id} .widget-output .output_subarea,"
