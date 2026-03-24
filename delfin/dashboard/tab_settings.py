@@ -605,17 +605,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         )
         return effective_backend, effective_orca_base, submit_templates_dir
 
-    def _render_runtime_diagnostics(runtime_payload, *, reload_required=False):
+    def _runtime_summary_parts(runtime_payload, *, reload_required=False):
         effective_backend, effective_orca_base, submit_templates_dir = _resolve_runtime_effective_values(
             runtime_payload
         )
-        diagnostics = collect_runtime_diagnostics(
-            runtime_payload,
-            backend=effective_backend,
-            effective_orca_base=effective_orca_base,
-            submit_templates_dir=submit_templates_dir if effective_backend == 'slurm' else None,
-        )
-
         summary_parts = [
             f'Effective backend: <code>{html.escape(effective_backend)}</code>',
             (
@@ -646,6 +639,35 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 f'<code>{html.escape(ctx.runtime_backend)}</code> to '
                 f'<code>{html.escape(effective_backend)}</code>.</span>'
             )
+        return summary_parts, effective_backend, effective_orca_base, submit_templates_dir
+
+    def _render_runtime_summary(runtime_payload, *, reload_required=False):
+        summary_parts, effective_backend, effective_orca_base, submit_templates_dir = _runtime_summary_parts(
+            runtime_payload,
+            reload_required=reload_required,
+        )
+        runtime_diagnostics_html.value = (
+            '<div style="border:1px solid #d9dee3; border-radius:6px; padding:10px; background:#fafbfc;">'
+            '<b>Runtime summary</b><br>'
+            + ' | '.join(summary_parts)
+            + '<div style="margin-top:8px; color:#546e7a; font-size:12px;">'
+            + 'Detailed PATH/module/tool checks are not run automatically here. '
+            + 'Click <b>Validate Setup</b> to run the full detection scan.'
+            + '</div></div>'
+        )
+        return effective_backend, effective_orca_base, submit_templates_dir
+
+    def _render_runtime_diagnostics(runtime_payload, *, reload_required=False):
+        summary_parts, effective_backend, effective_orca_base, submit_templates_dir = _runtime_summary_parts(
+            runtime_payload,
+            reload_required=reload_required,
+        )
+        diagnostics = collect_runtime_diagnostics(
+            runtime_payload,
+            backend=effective_backend,
+            effective_orca_base=effective_orca_base,
+            submit_templates_dir=submit_templates_dir if effective_backend == 'slurm' else None,
+        )
 
         rows = []
         for item in diagnostics:
@@ -742,11 +764,29 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         slurm_orca_input.value = str(slurm_payload.get('orca_base') or '')
         slurm_templates_input.value = str(slurm_payload.get('submit_templates_dir') or '')
         slurm_profile_input.value = str(slurm_payload.get('profile') or '')
+
+        current_orca = global_orca_input.value
+        orca_options = [('Auto-detect / PATH', '')]
+        if current_orca:
+            orca_options.append((_format_orca_option_label(current_orca, configured=True), current_orca))
+        detected_orca_dropdown.options = orca_options
+        detected_orca_dropdown.value = current_orca if current_orca else ''
+        detected_orca_dropdown.disabled = True
+
         tool_binaries_payload = runtime_payload.get('tool_binaries', {}) or {}
         for tool_name in _selectable_tool_names:
-            tool_binary_inputs[tool_name].value = str(tool_binaries_payload.get(tool_name) or '')
-            _refresh_tool_dropdown(tool_name, tool_binary_inputs[tool_name].value)
-        _refresh_orca_dropdown(global_orca_input.value)
+            current_tool = str(tool_binaries_payload.get(tool_name) or '')
+            tool_binary_inputs[tool_name].value = current_tool
+            dropdown = tool_detected_dropdowns[tool_name]
+            options = [('Auto-detect / PATH', '')]
+            if current_tool:
+                options.append((
+                    _format_tool_option_label(tool_name, current_tool, 'explicit', configured=True),
+                    current_tool,
+                ))
+            dropdown.options = options
+            dropdown.value = current_tool if current_tool else ''
+            dropdown.disabled = True
 
     def _effective_paths_from_widgets():
         calc_override = normalize_local_directory_setting(
@@ -1157,7 +1197,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         _set_remote_archive_widget(settings_payload)
         _set_tab_preferences(settings_payload)
         runtime_payload = settings_payload.get('runtime', {}) or {}
-        effective_backend, effective_orca_base, _submit_templates_dir = _render_runtime_diagnostics(
+        effective_backend, effective_orca_base, _submit_templates_dir = _render_runtime_summary(
             runtime_payload,
             reload_required=False,
         )
@@ -1822,7 +1862,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             from delfin.analysis_tools import collect_analysis_summary
             info = collect_analysis_summary()
 
-            if not _outdated_cache:
+            # Avoid blocking the first dashboard render with a network-bound
+            # `pip list --outdated` lookup. Refresh buttons can trigger it later.
+            if button is not None and not _outdated_cache:
                 _check_outdated_packages()
 
             # (pip_install_cmd, pip_pkg_name, conda_cmd)
@@ -2136,7 +2178,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             from delfin.mlp_tools import collect_mlp_summary
             info = collect_mlp_summary()
 
-            if not _outdated_cache:
+            # Avoid blocking the first dashboard render with a network-bound
+            # `pip list --outdated` lookup. Refresh buttons can trigger it later.
+            if button is not None and not _outdated_cache:
                 _check_outdated_packages()
 
             # install_cmd -> pip_pkg_name mapping
@@ -2204,7 +2248,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             from delfin.ai_tools import collect_ai_summary
             info = collect_ai_summary()
 
-            if not _outdated_cache:
+            # Avoid blocking the first dashboard render with a network-bound
+            # `pip list --outdated` lookup. Refresh buttons can trigger it later.
+            if button is not None and not _outdated_cache:
                 _check_outdated_packages()
 
             children = []
@@ -2565,7 +2611,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         _set_runtime_widgets(settings_payload)
         _set_remote_archive_widget(settings_payload)
         _set_tab_preferences(settings_payload)
-        _render_runtime_diagnostics(
+        _render_runtime_summary(
             settings_payload.get('runtime', {}) or {},
             reload_required=backend_switch_required,
         )
@@ -3205,11 +3251,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     _apply_sensitive_visibility()
     _load_settings_to_widgets(set_status=True)
-    _refresh_qm_status()
-    _refresh_csp_status()
-    _refresh_mlp_status()
-    _refresh_analysis_status()
-    _refresh_ai_status()
+    qm_status_box.children = [widgets.HTML(
+        '<span style="color:#616161;">Click "Refresh QM status" to scan installed QM tools.</span>'
+    )]
+    csp_status_box.children = [widgets.HTML(
+        '<span style="color:#616161;">Click "Refresh CSP status" to scan installed CSP tools.</span>'
+    )]
+    mlp_status_box.children = [widgets.HTML(
+        '<span style="color:#616161;">Click "Refresh MLP status" to scan installed MLP backends.</span>'
+    )]
+    analysis_status_box.children = [widgets.HTML(
+        '<span style="color:#616161;">Click "Refresh status" to scan analysis tools.</span>'
+    )]
+    ai_status_box.children = [widgets.HTML(
+        '<span style="color:#616161;">Click "Refresh AI status" to scan AI tools.</span>'
+    )]
     save_btn.disabled = True  # clean state after initial load
 
     return tab, {'reload_settings': _load_settings_to_widgets}
