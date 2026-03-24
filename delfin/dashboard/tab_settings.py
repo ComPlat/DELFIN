@@ -13,6 +13,7 @@ from delfin.runtime_setup import (
     apply_runtime_environment,
     collect_bwunicluster_verification,
     collect_runtime_diagnostics,
+    describe_installation_source,
     detect_local_runtime_limits,
     describe_orca_installation,
     discover_orca_installations,
@@ -37,6 +38,7 @@ from delfin.runtime_setup import (
     stage_packaged_csp_tools,
     stage_packaged_mlp_tools,
 )
+from delfin.qm_runtime import canonical_tool_name, discover_tool_installations, settings_selectable_tools
 from delfin.user_settings import (
     get_settings_path,
     load_settings,
@@ -269,6 +271,37 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         disabled=True,
         layout=widgets.Layout(width='320px', min_width='250px', height='28px'),
     )
+    _tool_display_names = {
+        'gaussian': 'Gaussian',
+        'turbomole': 'Turbomole',
+        'xtb': 'xTB',
+        'crest': 'CREST',
+        'std2': 'STD2',
+        'stda': 'STDA',
+        'xtb4stda': 'xtb4stda',
+        'dftb+': 'DFTB+',
+    }
+    _selectable_tool_names = tuple(
+        tool_name for tool_name in settings_selectable_tools() if tool_name in _tool_display_names
+    )
+    tool_binary_inputs = {}
+    tool_scan_buttons = {}
+    tool_detected_dropdowns = {}
+    for _tool_name in _selectable_tool_names:
+        tool_binary_inputs[_tool_name] = widgets.Text(
+            placeholder='Prefer PATH / auto-detect',
+            layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+        )
+        tool_scan_buttons[_tool_name] = widgets.Button(
+            description='Scan',
+            layout=widgets.Layout(width='80px', height='28px'),
+        )
+        tool_detected_dropdowns[_tool_name] = widgets.Dropdown(
+            options=[('Auto-detect / PATH', '')],
+            value='',
+            disabled=True,
+            layout=widgets.Layout(width='320px', min_width='250px', height='28px'),
+        )
     qm_tools_root_input = widgets.Text(
         placeholder='Optional qm_tools root override',
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
@@ -383,6 +416,101 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             roots.append(Path(ctx.repo_dir).parent / 'software')
         return roots
 
+    _path_source_labels = {
+        'auto': 'Auto',
+        'local': 'Local',
+        'cluster': 'System',
+        'system': 'System',
+        'external': 'External',
+    }
+    _turbomole_program_names = ('ridft', 'dscf', 'define')
+
+    def _settings_source_label_from_path(path_value: str) -> str:
+        source = describe_installation_source(path_value)
+        return _path_source_labels.get(source, str(source or '').strip().title() or 'External')
+
+    def _module_name_from_source(source: str) -> str:
+        normalized_source = str(source or '').strip()
+        if normalized_source.startswith('module:'):
+            return normalized_source.split(':', 1)[1]
+        return ''
+
+    def _candidate_ancestors(path_value: str):
+        text = str(path_value or '').strip()
+        if not text:
+            return []
+        path = Path(text).expanduser()
+        try:
+            path = path.resolve()
+        except Exception:
+            pass
+        return list(path.parents)
+
+    def _infer_turbomole_install_root(path_value: str):
+        for ancestor in _candidate_ancestors(path_value):
+            if ancestor.name == 'bin':
+                return ancestor.parent
+        for ancestor in _candidate_ancestors(path_value):
+            bin_dir = ancestor / 'bin'
+            if not bin_dir.is_dir():
+                continue
+            if any((bin_dir / name).is_file() for name in _turbomole_program_names):
+                return ancestor
+            try:
+                subdirs = [item for item in bin_dir.iterdir() if item.is_dir()]
+            except Exception:
+                subdirs = []
+            for subdir in subdirs:
+                if any((subdir / name).is_file() for name in _turbomole_program_names):
+                    return ancestor
+        return None
+
+    def _summarize_turbomole_install(path_value: str, source: str) -> str:
+        module_name = _module_name_from_source(source)
+        if module_name:
+            return module_name
+        root = _infer_turbomole_install_root(path_value)
+        if root is None:
+            return Path(path_value).name or str(path_value)
+        root_name = root.name.strip()
+        if root_name and root_name.lower() not in {'turbomole', 'tmole'}:
+            return root_name
+        parent_name = root.parent.name.strip()
+        if parent_name and parent_name.lower() not in {'chem', 'common', 'opt'}:
+            return f'{parent_name}/{root_name}'
+        return str(root)
+
+    def _prefer_turbomole_candidate(current, candidate):
+        priority = {'ridft': 0, 'dscf': 1, 'define': 2}
+        current_rank = priority.get(Path(current.path).name.lower(), 99)
+        candidate_rank = priority.get(Path(candidate.path).name.lower(), 99)
+        return candidate if candidate_rank < current_rank else current
+
+    def _dropdown_resolved_tools(tool_name):
+        resolved_tools = discover_tool_installations(tool_name)
+        if tool_name != 'turbomole':
+            return resolved_tools
+
+        grouped = {}
+        ordered_keys = []
+        for resolved in resolved_tools:
+            install_root = _infer_turbomole_install_root(resolved.path)
+            group_key = str(install_root) if install_root is not None else str(Path(resolved.path).expanduser())
+            if group_key not in grouped:
+                grouped[group_key] = resolved
+                ordered_keys.append(group_key)
+                continue
+            grouped[group_key] = _prefer_turbomole_candidate(grouped[group_key], resolved)
+
+        return [grouped[key] for key in ordered_keys]
+
+    def _format_orca_option_label(path_value, *, configured=False):
+        source = _settings_source_label_from_path(path_value)
+        base_label = describe_orca_installation(path_value)
+        if configured:
+            return f'{base_label} [{source}, configured]'
+        return f'{base_label} [{source}]'
+
     def _refresh_orca_dropdown(selected_value=None):
         current_value = str(selected_value if selected_value is not None else global_orca_input.value or '').strip()
         options = [('Auto-detect / PATH', '')]
@@ -390,15 +518,67 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             seed_candidates=_runtime_auto_candidates(),
             search_roots=_orca_search_roots(),
         ):
-            options.append((describe_orca_installation(candidate), candidate))
+            options.append((_format_orca_option_label(candidate), candidate))
 
         if current_value and all(current_value != value for _label, value in options):
-            options.append((f'Configured: {current_value}', current_value))
+            options.append((_format_orca_option_label(current_value, configured=True), current_value))
 
         detected_orca_dropdown.options = options
         allowed_values = {value for _label, value in options}
         detected_orca_dropdown.value = current_value if current_value in allowed_values else ''
         detected_orca_dropdown.disabled = len(options) <= 1
+
+    def _tool_source_label(source: str, path_value: str) -> str:
+        if _module_name_from_source(source):
+            return 'Module'
+        normalized_source = str(source or '').strip()
+        if normalized_source == 'qm_tools':
+            return 'qm_tools'
+        if normalized_source.startswith('env:'):
+            return 'Environment'
+        return _settings_source_label_from_path(path_value)
+
+    def _format_tool_option_label(tool_name, path_value, source, *, configured=False):
+        display_name = _tool_display_names.get(tool_name, tool_name.upper())
+        module_name = _module_name_from_source(source)
+        if tool_name == 'turbomole':
+            label = f'{display_name} ({_summarize_turbomole_install(path_value, source)})'
+        else:
+            path_obj = Path(path_value)
+            label = f'{display_name} ({path_obj.name})'
+            if module_name:
+                label += f' @ {module_name}'
+            else:
+                parent_name = path_obj.parent.name
+                if parent_name and parent_name not in {'bin', path_obj.name}:
+                    label += f' @ {parent_name}'
+        source_label = _tool_source_label(source, path_value)
+        if configured:
+            source_label = f'{source_label}, configured'
+        return f'{label} [{source_label}]'
+
+    def _refresh_tool_dropdown(tool_name, selected_value=None):
+        current_value = str(
+            selected_value if selected_value is not None else tool_binary_inputs[tool_name].value or ''
+        ).strip()
+        options = [('Auto-detect / PATH', '')]
+        for resolved in _dropdown_resolved_tools(tool_name):
+            options.append((
+                _format_tool_option_label(tool_name, resolved.path, resolved.source),
+                resolved.path,
+            ))
+
+        if current_value and all(current_value != value for _label, value in options):
+            options.append((
+                _format_tool_option_label(tool_name, current_value, 'explicit', configured=True),
+                current_value,
+            ))
+
+        dropdown = tool_detected_dropdowns[tool_name]
+        dropdown.options = options
+        allowed_values = {value for _label, value in options}
+        dropdown.value = current_value if current_value in allowed_values else ''
+        dropdown.disabled = len(options) <= 1
 
     def _fallback_submit_templates_dir():
         current = getattr(ctx, 'submit_templates_dir', None)
@@ -472,6 +652,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             status = item.get('status', 'missing')
             if status == 'ok':
                 status_color, status_label = '#2e7d32', 'OK'
+            elif status == 'system':
+                status_color, status_label = '#1565c0', 'System'
             elif status == 'module':
                 status_color, status_label = '#e65100', 'Module'
             else:
@@ -498,7 +680,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             '</thead>'
             '<tbody>'
             + ''.join(rows)
-            + '</tbody></table></div>'
+            + '</tbody></table>'
+            + '<div style="margin-top:8px; color:#546e7a; font-size:12px;">'
+            + 'System = found system-wide. Module = available via Environment Modules.'
+            + '</div></div>'
         )
         return effective_backend, effective_orca_base, submit_templates_dir
 
@@ -557,6 +742,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         slurm_orca_input.value = str(slurm_payload.get('orca_base') or '')
         slurm_templates_input.value = str(slurm_payload.get('submit_templates_dir') or '')
         slurm_profile_input.value = str(slurm_payload.get('profile') or '')
+        tool_binaries_payload = runtime_payload.get('tool_binaries', {}) or {}
+        for tool_name in _selectable_tool_names:
+            tool_binary_inputs[tool_name].value = str(tool_binaries_payload.get(tool_name) or '')
+            _refresh_tool_dropdown(tool_name, tool_binary_inputs[tool_name].value)
         _refresh_orca_dropdown(global_orca_input.value)
 
     def _effective_paths_from_widgets():
@@ -575,6 +764,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         return calc_override, archive_override, effective_calc_dir, effective_archive_dir
 
     def _runtime_payload_from_widgets():
+        tool_binaries = {}
+        for tool_name in _selectable_tool_names:
+            configured_path = normalize_local_directory_setting(
+                tool_binary_inputs[tool_name].value,
+                f'{_tool_display_names.get(tool_name, tool_name)} binary',
+            )
+            if configured_path:
+                tool_binaries[canonical_tool_name(tool_name)] = configured_path
         return {
             'backend': normalize_choice_setting(
                 backend_dropdown.value,
@@ -598,6 +795,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 mlp_tools_root_input.value,
                 'mlp_tools root',
             ),
+            'tool_binaries': tool_binaries,
             'local': {
                 'orca_base': normalize_local_directory_setting(
                     local_orca_input.value,
@@ -653,12 +851,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             qm_tools_root=runtime_payload.get('qm_tools_root', ''),
             orca_base=effective_orca_base,
             csp_tools_root=runtime_payload.get('csp_tools_root', ''),
+            tool_binaries=runtime_payload.get('tool_binaries', {}) or {},
         )
 
         if not backend_switch_required:
             ctx.orca_base = effective_orca_base
             if getattr(ctx, 'backend', None) is not None and hasattr(ctx.backend, 'orca_base'):
                 ctx.backend.orca_base = effective_orca_base
+            if getattr(ctx, 'backend', None) is not None and hasattr(ctx.backend, 'tool_binaries'):
+                ctx.backend.tool_binaries = dict(runtime_payload.get('tool_binaries', {}) or {})
             if effective_backend == 'local':
                 local_settings = runtime_payload.get('local', {}) or {}
                 if hasattr(ctx.backend, 'max_cores'):
@@ -1055,7 +1256,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 )
             else:
                 _set_status(
-                    'No ORCA installation was found in PATH or the standard search roots. Keep auto-detect or enter a path manually.',
+                    'No ORCA installation was found in PATH, configured roots, or detected system locations. Keep auto-detect or enter a path manually.',
                     color='#ef6c00',
                 )
         except Exception as exc:
@@ -2125,6 +2326,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 qm_tools_root=runtime_payload.get('qm_tools_root', ''),
                 install_qm_tools=True,
             )
+            prepared_runtime = prepared.get('runtime', {}) or {}
+            prepared_runtime['tool_binaries'] = dict(runtime_payload.get('tool_binaries', {}) or {})
+            prepared['runtime'] = prepared_runtime
 
             settings_payload = load_settings()
             paths_payload = {}
@@ -2408,6 +2612,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         calc_path_input, archive_path_input,
         backend_dropdown, global_orca_input, qm_tools_root_input,
         csp_tools_root_input, mlp_tools_root_input,
+        *[tool_binary_inputs[name] for name in _selectable_tool_names],
         local_orca_input, local_max_cores_input, local_max_ram_input,
         slurm_orca_input, slurm_templates_input, slurm_profile_input,
         host_hidden, host_visible, user_hidden, user_visible,
@@ -2450,6 +2655,22 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     save_btn.on_click(_on_save)
     detected_orca_dropdown.observe(_on_select_detected_orca, names='value')
     global_orca_input.observe(_on_change_global_orca, names='value')
+    for _tool_name in _selectable_tool_names:
+        tool_detected_dropdowns[_tool_name].observe(
+            lambda change, tool_name=_tool_name: (
+                None if change.get('name') != 'value' else tool_binary_inputs[tool_name].set_trait('value', str(change.get('new') or ''))
+            ),
+            names='value',
+        )
+        tool_binary_inputs[_tool_name].observe(
+            lambda change, tool_name=_tool_name: (
+                None if change.get('name') != 'value' else _refresh_tool_dropdown(tool_name, change.get('new'))
+            ),
+            names='value',
+        )
+        tool_scan_buttons[_tool_name].on_click(
+            lambda _button, tool_name=_tool_name: _refresh_tool_dropdown(tool_name)
+        )
 
     info_box = widgets.HTML(
         value=(
@@ -2520,6 +2741,35 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     # ══════════════════════════════════════════════════════════════════════
     # Section 2: Runtime Backend
     # ══════════════════════════════════════════════════════════════════════
+    tool_selector_rows = []
+    if _selectable_tool_names:
+        tool_selector_rows.extend([
+            widgets.HTML(
+                '<hr style="border:none; border-top:1px solid #e0e0e0; margin:4px 0;">'
+                '<b style="color:#455a64;">Preferred Program Binaries</b>'
+            )
+        ])
+        for tool_name in _selectable_tool_names:
+            display_name = _tool_display_names.get(tool_name, tool_name.upper())
+            tool_selector_rows.append(
+                widgets.HBox(
+                    [widgets.HTML(f'<b>{display_name} binary</b>'), tool_binary_inputs[tool_name], tool_scan_buttons[tool_name]],
+                    layout=_row_layout,
+                )
+            )
+            tool_selector_rows.append(
+                widgets.HBox(
+                    [
+                        widgets.HTML(f'<b>Detected {display_name}</b>'),
+                        tool_detected_dropdowns[tool_name],
+                        widgets.HTML(
+                            '<span style="color:#616161;">Choose a detected installation to fill the preferred binary automatically.</span>'
+                        ),
+                    ],
+                    layout=_row_layout,
+                )
+            )
+
     runtime_section = widgets.VBox(
         [
             widgets.HBox(
@@ -2546,6 +2796,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 ],
                 layout=_row_layout,
             ),
+            *tool_selector_rows,
             widgets.HTML(
                 '<hr style="border:none; border-top:1px solid #e0e0e0; margin:4px 0;">'
                 '<b style="color:#455a64;">Local overrides</b>'
