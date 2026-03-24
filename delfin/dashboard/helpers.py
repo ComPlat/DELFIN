@@ -163,12 +163,19 @@ def save_neb_trajectory_plot_png(text, output_path, title='Trajectory Plot', ene
         plt.close(fig)
 
 
-def save_neb_trajectory_csv(text, output_path):
+def _format_csv_number(value, decimal=','):
+    text = f'{float(value):.10f}'.rstrip('0').rstrip('.')
+    if decimal == ',':
+        return text.replace('.', ',')
+    return text
+
+
+def save_neb_trajectory_csv(text, output_path, decimal='.'):
     """Save parsed ``*.final.interp`` trajectory data as CSV."""
     sections = parse_neb_final_interp(text)
     rows_written = 0
-    with open(output_path, 'w', encoding='utf-8', newline='') as handle:
-        writer = csv.writer(handle)
+    with open(output_path, 'w', encoding='utf-8-sig', newline='') as handle:
+        writer = csv.writer(handle, delimiter=';')
         writer.writerow([
             'section',
             'progress',
@@ -181,11 +188,11 @@ def save_neb_trajectory_csv(text, output_path):
             for row in sections.get(section_name, []):
                 writer.writerow([
                     section_name,
-                    row['progress'],
-                    row['distance_bohr'],
-                    row['distance_angstrom'],
-                    row['energy_eh'],
-                    row['energy_kcal_mol'],
+                    _format_csv_number(row['progress'], decimal=decimal),
+                    _format_csv_number(row['distance_bohr'], decimal=decimal),
+                    _format_csv_number(row['distance_angstrom'], decimal=decimal),
+                    _format_csv_number(row['energy_eh'], decimal=decimal),
+                    _format_csv_number(row['energy_kcal_mol'], decimal=decimal),
                 ])
                 rows_written += 1
     if rows_written <= 0:
