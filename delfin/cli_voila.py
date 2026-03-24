@@ -13,8 +13,10 @@ import importlib.resources
 import os
 import socket
 import shutil
+import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -63,14 +65,21 @@ def _latest_vscode_ipc_socket() -> str | None:
     return None
 
 
+def _is_vscode_session(env: dict[str, str] | None = None) -> bool:
+    """Return True when the launcher runs inside a VS Code terminal session."""
+    env = env or os.environ
+    term_program = str(env.get("TERM_PROGRAM") or "")
+    browser = str(env.get("BROWSER") or "")
+    ipc_hook = str(env.get("VSCODE_IPC_HOOK_CLI") or "").strip()
+    return term_program == "vscode" or "browser.sh" in browser or bool(ipc_hook)
+
+
 def _prepare_voila_env(open_browser: bool) -> dict[str, str]:
     env = os.environ.copy()
     if not open_browser:
         return env
 
-    browser = str(env.get("BROWSER") or "")
-    term_program = str(env.get("TERM_PROGRAM") or "")
-    if term_program != "vscode" and "browser.sh" not in browser:
+    if not _is_vscode_session(env):
         return env
 
     current_hook = str(env.get("VSCODE_IPC_HOOK_CLI") or "").strip()
@@ -132,6 +141,44 @@ def _detect_login_node() -> str | None:
 def _voila_is_available() -> bool:
     """Return True when the current Python can import voila."""
     return importlib.util.find_spec("voila") is not None
+
+
+def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
+    """Poll until a TCP port becomes reachable or timeout expires."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.2)
+            if sock.connect_ex((host, port)) == 0:
+                return True
+        time.sleep(0.1)
+    return False
+
+
+def _open_browser_url(url: str, env: dict[str, str]) -> None:
+    """Best-effort browser open for VS Code remote sessions."""
+    browser = str(env.get("BROWSER") or "").strip()
+    if browser:
+        try:
+            subprocess.Popen(
+                [*shlex.split(browser), url],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        except Exception:
+            pass
+
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "webbrowser", "-t", url],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
 
 def _select_port(requested_port: int) -> int:
@@ -202,12 +249,14 @@ def main(argv=None):
     browser_group.add_argument(
         "--open-browser",
         action="store_true",
-        help="Explicitly ask Voila to open a browser window",
+        default=None,
+        help="Ask Voila to open a browser window",
     )
     browser_group.add_argument(
         "--no-browser",
         action="store_true",
-        help="Default behaviour (kept for backwards compatibility)",
+        default=None,
+        help="Disable automatic browser launch",
     )
     parser.add_argument(
         "--dark",
@@ -216,8 +265,11 @@ def main(argv=None):
     )
     parser.add_argument(
         "--ip",
-        default="0.0.0.0",
-        help="IP to bind to (default: 0.0.0.0 = all interfaces, use 127.0.0.1 for local only)",
+        default=None,
+        help=(
+            "IP to bind to (default: 0.0.0.0, or 127.0.0.1 inside VS Code; "
+            "set 127.0.0.1 for local-only access)"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -237,7 +289,15 @@ def main(argv=None):
         print(str(exc), file=sys.stderr)
         sys.exit(1)
 
-    open_browser = bool(args.open_browser)
+    if args.ip is None:
+        args.ip = "127.0.0.1" if _is_vscode_session() else "0.0.0.0"
+
+    if args.open_browser is True:
+        open_browser = True
+    elif args.no_browser is True:
+        open_browser = False
+    else:
+        open_browser = _is_vscode_session()
     notebook = _find_notebook()
     root_dir = str(
         Path(
@@ -262,7 +322,7 @@ def main(argv=None):
         "--show_tracebacks=True",
         f"--Voila.root_dir={root_dir}",
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)",
-        "--VoilaConfiguration.preheat_kernels=True",
+        "--VoilaConfiguration.preheat_kernel=True",
         "--Voila.tornado_settings=disable_check_xsrf=True",
     ]
 
@@ -302,6 +362,10 @@ def main(argv=None):
     print("Press Ctrl+C to stop.\n")
 
     proc = subprocess.Popen(cmd, env=env)
+    if open_browser and _is_vscode_session(env):
+        browser_host = "localhost" if args.ip in {"127.0.0.1", "0.0.0.0"} else args.ip
+        if _wait_for_port("127.0.0.1", args.port):
+            _open_browser_url(f"http://{browser_host}:{args.port}", env)
     try:
         sys.exit(proc.wait())
     except KeyboardInterrupt:

@@ -61,6 +61,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
     monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
+    monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: False)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
     def fake_popen(cmd, env):
         captured["cmd"] = cmd
@@ -92,6 +93,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     )
     assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
     assert captured["env"]["DELFIN_VOILA_ROOT_DIR"] == str(root_dir.resolve())
+    assert "--VoilaConfiguration.preheat_kernel=True" in captured["cmd"]
 
     stdout = capsys.readouterr().out
     assert "Starting DELFIN Dashboard on http://0.0.0.0:9001" in stdout
@@ -133,11 +135,16 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
         def wait(self):
             return 0
 
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    monkeypatch.delenv("BROWSER", raising=False)
+    monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
     monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
+    monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: False)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
+
     def fake_popen(cmd, env):
         captured["cmd"] = cmd
         return FakeProc()
@@ -151,8 +158,72 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
         assert exc.code == 0
 
     assert "--no-browser" in captured["cmd"]
+    assert "--Voila.ip=0.0.0.0" in captured["cmd"]
     assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
     assert "--Voila.open_browser=True" not in captured["cmd"]
+
+
+def test_main_defaults_to_open_browser_in_vscode(monkeypatch, tmp_path, capsys):
+    root_dir = tmp_path / "home"
+    package_dir = tmp_path / "package"
+    root_dir.mkdir()
+    package_dir.mkdir()
+
+    notebook = package_dir / "delfin_dashboard.ipynb"
+    notebook.write_text('{"cells":[]}', encoding="utf-8")
+
+    captured = {}
+    observed = {}
+
+    def fake_run(cmd, env, check):
+        captured["cmd"] = cmd
+
+        class Result:
+            returncode = 0
+
+        return Result()
+
+    class FakeProc:
+        def wait(self):
+            return 0
+
+    monkeypatch.setenv("TERM_PROGRAM", "vscode")
+    monkeypatch.delenv("BROWSER", raising=False)
+    monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
+    monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
+    monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
+    def fake_prepare_voila_env(open_browser):
+        observed["open_browser"] = open_browser
+        return {}
+
+    browser_urls = []
+
+    monkeypatch.setattr(cli_voila, "_prepare_voila_env", fake_prepare_voila_env)
+    monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
+    monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: True)
+    monkeypatch.setattr(cli_voila, "_open_browser_url", lambda url, env: browser_urls.append(url))
+    monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
+
+    def fake_popen(cmd, env):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(cli_voila.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
+
+    try:
+        cli_voila.main([])
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert observed["open_browser"] is True
+    assert browser_urls == ["http://localhost:8866"]
+    assert "--Voila.open_browser=True" in captured["cmd"]
+    assert "--no-browser" not in captured["cmd"]
+    assert "--Voila.ip=127.0.0.1" in captured["cmd"]
+
+    stdout = capsys.readouterr().out
+    assert "Starting DELFIN Dashboard on http://localhost:8866" in stdout
 
 
 def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
