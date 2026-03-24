@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
 
+from delfin.qm_runtime import binary_env_var_name, canonical_tool_name
+
 from .backend_base import JobBackend, JobInfo, SubmitResult
 from .helpers import parse_time_to_seconds
 
@@ -20,11 +22,16 @@ class LocalJobBackend(JobBackend):
     """Local server backend using a JSON job queue and subprocess execution."""
 
     def __init__(self, run_script, orca_base=None,
-                 jobs_file=None,
+                 jobs_file=None, tool_binaries=None,
                  max_cores=384, max_ram_mb=1_400_000):
         self.run_script = Path(run_script)
         self.orca_base = orca_base
         self.jobs_file = Path(jobs_file) if jobs_file else Path.home() / '.delfin_jobs.json'
+        self.tool_binaries = {
+            canonical_tool_name(name): str(value).strip()
+            for name, value in (tool_binaries or {}).items()
+            if str(value or '').strip()
+        }
         self.max_cores = max_cores
         self.max_ram_mb = max_ram_mb
         self._next_job_id_key = '_next_job_id'
@@ -143,6 +150,9 @@ class LocalJobBackend(JobBackend):
             env['DELFIN_XYZ_FILE'] = str(job['xyz_file'])
         if job.get('workflow_label'):
             env['DELFIN_WORKFLOW_LABEL'] = str(job['workflow_label'])
+        job_tool_binaries = job.get('tool_binaries', {}) or self.tool_binaries
+        for tool_name, binary_path in job_tool_binaries.items():
+            env[binary_env_var_name(tool_name)] = str(binary_path)
 
         try:
             log_file = Path(job['job_dir']) / f'delfin_{job["job_id"]}.out'
@@ -246,6 +256,7 @@ class LocalJobBackend(JobBackend):
                 'co2_species_delta': co2_species_delta,
                 'xyz_file': xyz_file,
                 'workflow_label': workflow_label,
+                'tool_binaries': dict(self.tool_binaries),
                 'log_file': None,
             }
             data['jobs'].append(job_entry)

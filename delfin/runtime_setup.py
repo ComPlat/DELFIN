@@ -11,7 +11,16 @@ import tarfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from delfin.qm_runtime import check_tools, get_csp_tools_root, get_mlp_tools_root
+from delfin.qm_runtime import (
+    binary_env_var_name,
+    canonical_tool_name,
+    check_tools,
+    get_csp_tools_root,
+    get_mlp_tools_root,
+    resolve_tool,
+    settings_selectable_tools,
+)
+from delfin.system_tools import available_modules, discover_system_tool_candidates
 
 try:
     import psutil  # type: ignore
@@ -20,6 +29,108 @@ except ImportError:
 
 
 _ORCA_VERSION_RE = re.compile(r"orca[_-]?(\d+(?:[_\.-]\d+)*)", re.IGNORECASE)
+_XTB4STDA_RUNTIME_FILES = (".xtb4stdarc", ".param_stda1.xtb", ".param_stda2.xtb")
+_TURBOMOLE_COMMAND_NAMES = ("ridft", "dscf", "define")
+
+
+def _iter_runtime_ancestors(path_value: str | Path | None) -> list[Path]:
+    normalized = normalize_runtime_path(path_value)
+    if not normalized:
+        return []
+    path = Path(normalized).expanduser()
+    try:
+        path = path.resolve()
+    except Exception:
+        pass
+    seen: set[str] = set()
+    ancestors: list[Path] = []
+    for candidate in path.parents:
+        candidate_text = str(candidate)
+        if candidate_text in seen:
+            continue
+        seen.add(candidate_text)
+        ancestors.append(candidate)
+    return ancestors
+
+
+def _infer_runtime_root_from_binary(binary_path: str | Path | None) -> str:
+    for ancestor in _iter_runtime_ancestors(binary_path):
+        if ancestor.name == "bin":
+            return str(ancestor.parent)
+    return ""
+
+
+def _has_xtb4stda_runtime(candidate: Path) -> bool:
+    return all((candidate / filename).is_file() for filename in _XTB4STDA_RUNTIME_FILES)
+
+
+def _infer_xtb4stda_runtime_home(binary_paths: list[str]) -> str:
+    for binary_path in binary_paths:
+        for ancestor in _iter_runtime_ancestors(binary_path):
+            share_candidate = ancestor / "share" / "xtb4stda"
+            if _has_xtb4stda_runtime(share_candidate):
+                return str(share_candidate)
+            if _has_xtb4stda_runtime(ancestor):
+                return str(ancestor)
+    return ""
+
+
+def _infer_turbomole_root(binary_path: str | Path | None) -> str:
+    root = _infer_runtime_root_from_binary(binary_path)
+    if root:
+        return root
+    for ancestor in _iter_runtime_ancestors(binary_path):
+        bin_dir = ancestor / "bin"
+        if not bin_dir.is_dir():
+            continue
+        if any((bin_dir / name).is_file() for name in _TURBOMOLE_COMMAND_NAMES):
+            return str(ancestor)
+        try:
+            subdirs = [item for item in bin_dir.iterdir() if item.is_dir()]
+        except Exception:
+            subdirs = []
+        for subdir in subdirs:
+            if any((subdir / name).is_file() for name in _TURBOMOLE_COMMAND_NAMES):
+                return str(ancestor)
+    return ""
+
+
+def _tool_environment_overrides(tool_binaries: dict[str, str] | None) -> tuple[dict[str, str], list[str]]:
+    env_updates: dict[str, str] = {}
+    path_entries: list[str] = []
+    xtb_runtime_sources: list[str] = []
+    for raw_name, raw_value in (tool_binaries or {}).items():
+        tool_name = canonical_tool_name(raw_name)
+        binary_path = normalize_runtime_path(raw_value)
+        if not binary_path:
+            continue
+        env_updates[binary_env_var_name(tool_name)] = binary_path
+        parent_dir = str(Path(binary_path).expanduser().parent)
+        if parent_dir and parent_dir not in path_entries:
+            path_entries.append(parent_dir)
+        if tool_name in {"std2", "stda", "xtb4stda"}:
+            xtb_runtime_sources.append(binary_path)
+        if tool_name == "turbomole":
+            turbodir = _infer_turbomole_root(binary_path)
+            if turbodir:
+                env_updates["TURBODIR"] = turbodir
+
+    xtb_runtime_home = _infer_xtb4stda_runtime_home(xtb_runtime_sources)
+    if xtb_runtime_home:
+        env_updates["XTB4STDAHOME"] = xtb_runtime_home
+        std2_root = _infer_runtime_root_from_binary(xtb_runtime_sources[0])
+        if not std2_root:
+            runtime_path = Path(xtb_runtime_home)
+            if runtime_path.name == "xtb4stda" and runtime_path.parent.name == "share":
+                std2_root = str(runtime_path.parent.parent)
+        if std2_root:
+            env_updates["STD2HOME"] = std2_root
+    elif xtb_runtime_sources:
+        std2_root = _infer_runtime_root_from_binary(xtb_runtime_sources[0])
+        if std2_root:
+            env_updates["STD2HOME"] = std2_root
+
+    return env_updates, path_entries
 
 
 def normalize_runtime_path(path_value: str | Path | None) -> str:
@@ -116,13 +227,21 @@ def discover_orca_installations(
                 continue
             _add_candidate(entry)
 
+    for candidate in discover_system_tool_candidates(
+        ("orca", "orca.exe"),
+        base_dirs=("/opt/orca", "/opt/bwhpc/common/chem/orca"),
+        module_patterns=("chem/orca", "orca"),
+        module_env_hints=("ORCA_BIN_DIR", "ORCA_PATH", "ORCA_HOME", "EBROOTORCA"),
+        max_depth=6,
+    ):
+        _add_candidate(candidate.path)
+
     def _version_sort_key(value: str) -> tuple:
         """Sort ORCA installations by version number, highest first."""
         desc = describe_orca_installation(value)
         match = _ORCA_VERSION_RE.search(desc)
         if match:
             parts = match.group(1).replace("_", ".").replace("-", ".").split(".")
-            # Pad to 4 parts, convert to ints for proper numeric sorting
             nums = []
             for p in parts:
                 try:
@@ -131,9 +250,7 @@ def discover_orca_installations(
                     nums.append(0)
             while len(nums) < 4:
                 nums.append(0)
-            # Negate for descending order (highest version first)
             return tuple(-n for n in nums)
-        # No version found — sort to the end
         return (0, 0, 0, 0)
 
     return sorted(candidates, key=_version_sort_key)
@@ -184,6 +301,13 @@ def resolve_orca_base(
 
     candidates.extend(auto_candidates or [])
 
+    if not candidates:
+        candidates.extend(
+            discover_orca_installations(
+                search_roots=[Path.home() / "software", Path.home() / "apps", Path.home() / "local", Path("/opt")],
+            )
+        )
+
     which_orca = shutil.which("orca")
     if which_orca:
         candidates.append(str(Path(which_orca).resolve().parent))
@@ -201,6 +325,46 @@ def resolve_orca_base(
         return str(path)
 
     return ""
+
+
+def describe_installation_source(path_value: str | Path | None) -> str:
+    if not path_value:
+        return "auto"
+    try:
+        resolved = Path(path_value).expanduser().resolve()
+    except Exception:
+        resolved = Path(path_value).expanduser()
+
+    home = Path.home().expanduser()
+    resolved_str = str(resolved)
+    if resolved == home or home in resolved.parents:
+        return "local"
+    if resolved_str.startswith("/opt/bwhpc"):
+        return "cluster"
+    if resolved_str.startswith("/opt"):
+        return "system"
+    return "external"
+
+
+def _path_looks_system(path_value: str | Path | None) -> bool:
+    source = describe_installation_source(path_value)
+    return source in {"cluster", "system", "external"}
+
+
+def _resolved_tool_status(resolved, *, missing_detail: str = "not found") -> tuple[str, str]:
+    if resolved is None:
+        return "missing", missing_detail
+
+    source = str(getattr(resolved, "source", "") or "")
+    detail = str(getattr(resolved, "path", "") or "")
+    if source.startswith("module:"):
+        module_name = source.split(":", 1)[1]
+        return "module", f"{detail} via {module_name}"
+    if source in {"qm_tools", "csp_tools"}:
+        return "ok", detail
+    if _path_looks_system(detail):
+        return "system", detail
+    return "ok", detail
 
 
 def resolve_submit_templates_dir(runtime_settings: dict | None, fallback_dir: str | Path) -> Path:
@@ -308,12 +472,14 @@ def write_delfin_env_file(
     repo_dir: str | Path | None = None,
     orca_base: str = "",
     qm_tools_root: str = "",
+    tool_binaries: dict[str, str] | None = None,
     env_path: str | Path | None = None,
 ) -> Path:
     target = Path(env_path).expanduser() if env_path else (Path.home() / ".delfin_env.sh")
     repo_path = Path(repo_dir).expanduser() if repo_dir else None
     orca_root = normalize_orca_base(orca_base)
     qm_root = normalize_runtime_path(qm_tools_root)
+    tool_env_updates, selected_tool_path_entries = _tool_environment_overrides(tool_binaries)
 
     def _sq(value: str | Path) -> str:
         """Shell-quote a value for safe embedding in a shell script."""
@@ -347,10 +513,16 @@ def write_delfin_env_file(
         if xtb4stda_share.exists():
             lines.append(f'export XTB4STDAHOME={_sq(xtb4stda_share)}')
 
+    for env_key, env_value in tool_env_updates.items():
+        lines.append(f'export {env_key}={_sq(env_value)}')
+
     path_entries = []
-    if qm_root and (Path(qm_root) / "bin").is_dir():
+    for path_entry in selected_tool_path_entries:
+        if path_entry and path_entry not in path_entries:
+            path_entries.append(path_entry)
+    if qm_root and (Path(qm_root) / "bin").is_dir() and str(Path(qm_root) / "bin") not in path_entries:
         path_entries.append(str(Path(qm_root) / "bin"))
-    if orca_root:
+    if orca_root and orca_root not in path_entries:
         path_entries.append(orca_root)
     if path_entries:
         joined = ":".join(path_entries)
@@ -1089,7 +1261,7 @@ def _prepend_path_env_once(path_entry: str) -> None:
     )
 
 
-def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", csp_tools_root: str = "") -> None:
+def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", csp_tools_root: str = "", tool_binaries: dict[str, str] | None = None) -> None:
     qm_root = normalize_runtime_path(qm_tools_root)
     if qm_root:
         os.environ["DELFIN_QM_ROOT"] = qm_root
@@ -1117,6 +1289,27 @@ def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", c
         orca_plot = Path(orca_root) / "orca_plot"
         if orca_plot.exists():
             os.environ["ORCA_PLOT"] = str(orca_plot)
+
+    configured_tool_binaries = {
+        canonical_tool_name(name): value
+        for name, value in (tool_binaries or {}).items()
+    }
+    tool_env_updates, tool_path_entries = _tool_environment_overrides(configured_tool_binaries)
+    for tool_name in settings_selectable_tools():
+        env_key = binary_env_var_name(tool_name)
+        binary_path = tool_env_updates.get(env_key, "")
+        if binary_path:
+            os.environ[env_key] = binary_path
+        else:
+            os.environ.pop(env_key, None)
+    for path_entry in tool_path_entries:
+        _prepend_path_env_once(path_entry)
+    if tool_env_updates.get("TURBODIR"):
+        os.environ["TURBODIR"] = tool_env_updates["TURBODIR"]
+    if tool_env_updates.get("XTB4STDAHOME"):
+        os.environ["XTB4STDAHOME"] = tool_env_updates["XTB4STDAHOME"]
+    if tool_env_updates.get("STD2HOME"):
+        os.environ["STD2HOME"] = tool_env_updates["STD2HOME"]
 
     # Suppress noisy but harmless third-party warnings in the dashboard
     os.environ.setdefault("TORCHANI_NO_WARN_EXTENSIONS", "1")
@@ -1153,21 +1346,31 @@ def collect_runtime_diagnostics(
     ]
 
     orca_root = normalize_runtime_path(effective_orca_base)
-    orca_binary = ""
+    qm_tools_root = normalize_runtime_path(runtime_settings.get("qm_tools_root", ""))
+    env_updates: dict[str, str] = {}
+    if qm_tools_root:
+        env_updates["DELFIN_QM_ROOT"] = qm_tools_root
+        env_updates["DELFIN_QM_TOOLS_ROOT"] = qm_tools_root
     if orca_root:
-        orca_candidate = Path(orca_root) / "orca"
-        if orca_candidate.exists():
-            orca_binary = str(orca_candidate)
-    if not orca_binary:
-        which_orca = shutil.which("orca")
-        if which_orca:
-            orca_binary = which_orca
+        env_updates["ORCA_PATH"] = orca_root
+        env_updates["DELFIN_ORCA_BASE"] = orca_root
+    for tool_name, binary_path in ((runtime_settings.get("tool_binaries", {}) or {}).items()):
+        normalized_binary = normalize_runtime_path(binary_path)
+        if normalized_binary:
+            env_updates[binary_env_var_name(tool_name)] = normalized_binary
 
+    with temporary_environment(env_updates):
+        orca_resolved = resolve_tool("orca")
+
+    orca_status, orca_detail = _resolved_tool_status(
+        orca_resolved,
+        missing_detail=orca_root or "not found",
+    )
     diagnostics.append(
         {
             "name": "orca",
-            "status": "ok" if orca_binary else "missing",
-            "detail": orca_binary or (orca_root or "not found"),
+            "status": orca_status,
+            "detail": orca_detail,
         }
     )
 
@@ -1215,11 +1418,12 @@ def collect_runtime_diagnostics(
     with temporary_environment(env_updates):
         qm_results = check_tools(["xtb", "crest", "std2", "stda", "xtb4stda", "dftb+"])
     for name, resolved in qm_results:
+        status, detail = _resolved_tool_status(resolved)
         diagnostics.append(
             {
                 "name": name,
-                "status": "ok" if resolved else "missing",
-                "detail": resolved.path if resolved else "not found",
+                "status": status,
+                "detail": detail,
             }
         )
 
@@ -1438,28 +1642,16 @@ def collect_runtime_diagnostics(
         "gamess":    ["chem/gamess", "gamess"],
         "cfour":     ["chem/cfour", "cfour"],
     }
-    _available_modules: set[str] = set()
-    try:
-        _mod_result = subprocess.run(
-            ["bash", "-c", "module avail 2>&1"],
-            capture_output=True, text=True, timeout=10,
-        )
-        import re as _re_mod
-        for line in (_mod_result.stdout + _mod_result.stderr).splitlines():
-            # Skip header/separator lines
-            if line.startswith("---") or not line.strip():
-                continue
-            for token in line.split():
-                # Remove trailing markers like (D), (L), (default)
-                clean = _re_mod.sub(r'\s*\([^)]*\)\s*$', '', token).strip()
-                if clean and "/" in clean:
-                    _available_modules.add(clean.lower())
-    except Exception:
-        pass
+    _available_modules = {module_name.lower() for module_name in available_modules()}
 
     for binaries, label in _EXT_QM_PROGRAMS:
         found_path = None
+        resolved_external = resolve_tool(label)
+        if resolved_external is not None:
+            found_path = resolved_external.path
         for name in binaries:
+            if found_path:
+                break
             path = _shutil_diag.which(name)
             if path:
                 found_path = path
@@ -1492,10 +1684,15 @@ def collect_runtime_diagnostics(
                     # Use the latest version (sorted descending)
                     _module_hint = f"available via 'module load {_matched_mods[0]}'"
                     break
+        status = "missing"
+        if found_path:
+            status = "system" if _path_looks_system(found_path) else "ok"
+        elif _module_hint:
+            status = "module"
         diagnostics.append(
             {
                 "name": label,
-                "status": "ok" if found_path else ("module" if _module_hint else "missing"),
+                "status": status,
                 "detail": found_path or _module_hint or "not found",
             }
         )
