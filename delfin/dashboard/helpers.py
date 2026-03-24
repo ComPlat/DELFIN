@@ -17,6 +17,7 @@ _NEB_TRAJECTORY_ROW_RE = re.compile(
     r'\s+([-+]?\d*\.?\d+(?:[eEdD][-+]?\d+)?)\s*$'
 )
 _BOHR_TO_ANGSTROM = 0.529177210903
+_HARTREE_TO_KCAL_MOL = 627.5094740631
 
 
 def parse_neb_final_interp(text):
@@ -48,12 +49,13 @@ def parse_neb_final_interp(text):
                 'distance_bohr': distance_bohr,
                 'distance_angstrom': distance_bohr * _BOHR_TO_ANGSTROM,
                 'energy_eh': energy_eh,
+                'energy_kcal_mol': energy_eh * _HARTREE_TO_KCAL_MOL,
             }
         )
     return sections
 
 
-def _build_neb_trajectory_figure(text, title='Trajectory Plot'):
+def _build_neb_trajectory_figure(text, title='Trajectory Plot', energy_unit='kcal/mol'):
     """Build a matplotlib figure for ``*.final.interp`` content."""
     sections = parse_neb_final_interp(text)
     interp_rows = sections.get('Interp.', [])
@@ -61,6 +63,13 @@ def _build_neb_trajectory_figure(text, title='Trajectory Plot'):
     rows = interp_rows or image_rows
     if not rows:
         raise ValueError('No trajectory data found in .final.interp file.')
+    energy_unit_norm = str(energy_unit or 'kcal/mol').strip().lower()
+    if energy_unit_norm in {'eh', 'hartree'}:
+        energy_key = 'energy_eh'
+        energy_label = 'Energy (Hartree)'
+    else:
+        energy_key = 'energy_kcal_mol'
+        energy_label = 'Energy (kcal/mol)'
 
     import matplotlib
     matplotlib.use('Agg')
@@ -71,7 +80,7 @@ def _build_neb_trajectory_figure(text, title='Trajectory Plot'):
     if interp_rows:
         ax.plot(
             [row['distance_angstrom'] for row in interp_rows],
-            [row['energy_eh'] for row in interp_rows],
+            [row[energy_key] for row in interp_rows],
             color='#1565c0',
             linewidth=2.2,
             label='Interp.',
@@ -79,7 +88,7 @@ def _build_neb_trajectory_figure(text, title='Trajectory Plot'):
     if image_rows:
         ax.scatter(
             [row['distance_angstrom'] for row in image_rows],
-            [row['energy_eh'] for row in image_rows],
+            [row[energy_key] for row in image_rows],
             color='#ef6c00',
             edgecolors='white',
             linewidths=0.7,
@@ -89,7 +98,7 @@ def _build_neb_trajectory_figure(text, title='Trajectory Plot'):
         )
         ax.plot(
             [row['distance_angstrom'] for row in image_rows],
-            [row['energy_eh'] for row in image_rows],
+            [row[energy_key] for row in image_rows],
             color='#ef6c00',
             linewidth=1.0,
             alpha=0.45,
@@ -97,19 +106,56 @@ def _build_neb_trajectory_figure(text, title='Trajectory Plot'):
         )
 
     ax.set_xlabel('Distance (Angstrom)')
-    ax.set_ylabel('Energy (Eh)')
+    ax.set_ylabel(energy_label)
     ax.set_title(str(title or 'Trajectory Plot'))
     ax.grid(True, alpha=0.25, linestyle='--', linewidth=0.7)
     if interp_rows and image_rows:
         ax.legend(frameon=False)
+
+    peak_row = max(rows, key=lambda row: row[energy_key])
+    end_row = rows[-1]
+    y_values = [row[energy_key] for row in rows]
+    y_min = min(y_values)
+    y_max = max(y_values)
+    y_span = y_max - y_min
+    if y_span <= 0:
+        y_span = max(abs(y_max), 1.0) * 0.12
+    top_padding = max(y_span * 0.16, 0.02)
+    bottom_padding = max(y_span * 0.06, 0.01)
+    ax.set_ylim(y_min - bottom_padding, y_max + top_padding)
+    peak_label = f"{peak_row[energy_key]:.2f}"
+    end_label = f"{end_row[energy_key]:.2f}"
+
+    ax.annotate(
+        peak_label,
+        xy=(peak_row['distance_angstrom'], peak_row[energy_key]),
+        xytext=(0, 10),
+        textcoords='offset points',
+        fontsize=9,
+        color='#b71c1c',
+        bbox={'boxstyle': 'round,pad=0.18', 'facecolor': 'white', 'edgecolor': '#ef9a9a', 'alpha': 0.95},
+        ha='center',
+        va='bottom',
+    )
+    ax.annotate(
+        end_label,
+        xy=(end_row['distance_angstrom'], end_row[energy_key]),
+        xytext=(0, 10),
+        textcoords='offset points',
+        fontsize=9,
+        color='#1b5e20',
+        bbox={'boxstyle': 'round,pad=0.18', 'facecolor': 'white', 'edgecolor': '#a5d6a7', 'alpha': 0.95},
+        ha='center',
+        va='bottom',
+    )
     fig.tight_layout()
 
     return fig
 
 
-def save_neb_trajectory_plot_png(text, output_path, title='Trajectory Plot'):
+def save_neb_trajectory_plot_png(text, output_path, title='Trajectory Plot', energy_unit='kcal/mol'):
     """Save ``*.final.interp`` content as a PNG plot."""
-    fig = _build_neb_trajectory_figure(text, title=title)
+    fig = _build_neb_trajectory_figure(text, title=title, energy_unit=energy_unit)
     try:
         fig.savefig(output_path, format='png', bbox_inches='tight')
     finally:
@@ -129,6 +175,7 @@ def save_neb_trajectory_csv(text, output_path):
             'distance_bohr',
             'distance_angstrom',
             'energy_eh',
+            'energy_kcal_mol',
         ])
         for section_name in ('Images', 'Interp.'):
             for row in sections.get(section_name, []):
@@ -138,6 +185,7 @@ def save_neb_trajectory_csv(text, output_path):
                     row['distance_bohr'],
                     row['distance_angstrom'],
                     row['energy_eh'],
+                    row['energy_kcal_mol'],
                 ])
                 rows_written += 1
     if rows_written <= 0:
