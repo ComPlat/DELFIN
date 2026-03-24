@@ -76,6 +76,7 @@ REMOTE_XYZ_LARGE_TRAJ_FRAMES = 2000
 REMOTE_XYZ_PLAY_FPS_DEFAULT = 10
 REMOTE_XYZ_PLAY_FPS_MIN = 1
 REMOTE_XYZ_PLAY_FPS_MAX = 60
+REMOTE_VIEWER_PNG_SCALE = 6
 REMOTE_SEARCH_MAX_MATCHES = 2000
 REMOTE_HIGHLIGHT_MAX_CHARS = 400_000
 REMOTE_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
@@ -493,9 +494,26 @@ def create_tab(ctx):
         "<div style='height:26px; line-height:26px; margin:0 0 8px 0;'>"
         "<b>📄 File Content:</b></div>"
     )
+    viewer_png_btn = widgets.Button(
+        description="PNG",
+        icon="",
+        button_style="warning",
+        layout=widgets.Layout(width="54px", min_width="54px", height="30px", display="none"),
+        tooltip="Download a high-resolution PNG from the current 3D view",
+    )
+    viewer_png_btn.add_class("remote-png-btn")
     viewer_label = widgets.HTML(
-        "<div style='height:26px; line-height:26px; margin:0 0 8px 0;'>"
+        "<div style='height:26px; line-height:26px; margin:0;'>"
         "<b>🔬 Molecule Preview:</b></div>"
+    )
+    viewer_header = widgets.HBox(
+        [viewer_label, viewer_png_btn],
+        layout=widgets.Layout(
+            width="100%",
+            align_items="flex-start",
+            justify_content="space-between",
+            margin="0 0 8px 0",
+        ),
     )
     frame_label_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
     frame_input = widgets.BoundedIntText(
@@ -574,6 +592,42 @@ def create_tab(ctx):
 
     def _run_js(script):
         ctx.run_js(script)
+
+    def _set_png_button_visible(is_visible):
+        viewer_png_btn.layout.display = "inline-flex" if is_visible else "none"
+
+    def _build_png_filename():
+        entry = state.get("selected_entry") or {}
+        name = str(entry.get("name") or "viewer")
+        stem = Path(name).stem or "viewer"
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._") or "viewer"
+        frames = state.get("current_xyz_frames") or []
+        if len(frames) > 1:
+            frame_no = int(state.get("current_xyz_index", 0)) + 1
+            return f"{stem}_frame_{frame_no:04d}.png"
+        return f"{stem}.png"
+
+    def _download_current_viewer_png(_button=None):
+        filename_json = json.dumps(_build_png_filename())
+        scope_key_json = json.dumps(scope_id)
+        _run_js(
+            f"""
+            (function() {{
+                var scopeKey = {scope_key_json};
+                var viewer = null;
+                if (window._remoteTrajViewerByScope && window._remoteTrajViewerByScope[scopeKey]) {{
+                    viewer = window._remoteTrajViewerByScope[scopeKey];
+                }} else if (window._remoteMolViewerByScope && window._remoteMolViewerByScope[scopeKey]) {{
+                    viewer = window._remoteMolViewerByScope[scopeKey];
+                }}
+                if (!viewer || !window.__delfinDownloadViewerPng) return;
+                window.__delfinDownloadViewerPng(viewer, {{
+                    filename: {filename_json},
+                    scale: {REMOTE_VIEWER_PNG_SCALE}
+                }});
+            }})();
+            """
+        )
 
     def _copy_to_clipboard(text, label="content"):
         text_payload = json.dumps(str(text or ""))
@@ -853,6 +907,7 @@ def create_tab(ctx):
 
     def _set_viewer_visible(is_visible):
         viewer_container.layout.display = "flex" if is_visible else "none"
+        _set_png_button_visible(bool(is_visible))
 
     def _clear_selected_path_display():
         selected_path_html.value = ""
@@ -2934,8 +2989,9 @@ def create_tab(ctx):
             search_prev_btn.disabled = True
             search_next_btn.disabled = True
             return
-        search_prev_btn.disabled = state["current_match"] <= 0
-        search_next_btn.disabled = state["current_match"] >= len(state["search_spans"]) - 1
+        has_multiple = len(state["search_spans"]) > 1
+        search_prev_btn.disabled = not has_multiple
+        search_next_btn.disabled = not has_multiple
 
     def _update_search_result():
         if not state["search_spans"]:
@@ -3329,15 +3385,31 @@ def create_tab(ctx):
         _do_search()
 
     def _prev_match(_button=None):
-        if not state["search_spans"] or state["current_match"] <= 0:
+        if not state["search_spans"]:
             return
-        state["current_match"] -= 1
+        if len(state["search_spans"]) == 1:
+            state["current_match"] = 0
+            _show_match()
+            return
+        state["current_match"] = (
+            state["current_match"] - 1
+            if state["current_match"] > 0
+            else len(state["search_spans"]) - 1
+        )
         _show_match()
 
     def _next_match(_button=None):
-        if not state["search_spans"] or state["current_match"] >= len(state["search_spans"]) - 1:
+        if not state["search_spans"]:
             return
-        state["current_match"] += 1
+        if len(state["search_spans"]) == 1:
+            state["current_match"] = 0
+            _show_match()
+            return
+        state["current_match"] = (
+            state["current_match"] + 1
+            if state["current_match"] < len(state["search_spans"]) - 1
+            else 0
+        )
         _show_match()
 
     def _on_top_click(_button=None):
@@ -4147,7 +4219,7 @@ def create_tab(ctx):
     )
     viewer_row.add_class("remote-mol-view-row")
     viewer_container = widgets.VBox(
-        [viewer_label, viewer_row],
+        [viewer_header, viewer_row],
         layout=widgets.Layout(display="none", margin="0 0 10px 0", width="100%", align_items="stretch"),
     )
     top_toolbar = widgets.HBox(
@@ -4268,6 +4340,9 @@ def create_tab(ctx):
         "to right, #b0b0b0, #e0e0e0, #b0b0b0); }"
         f".{scope_id} .remote-mol-view-row {{ width:100% !important; gap:12px !important; align-items:flex-start !important; flex-wrap:nowrap !important; }}"
         f".{scope_id} .remote-mol-view-wrap {{ flex:0 0 auto !important; min-width:0 !important; width:auto !important; }}"
+        f".{scope_id} .remote-png-btn button {{ display:inline-flex !important; align-items:center !important; justify-content:center !important; text-align:center !important; padding:0 !important; line-height:30px !important; }}"
+        f".{scope_id} .remote-png-btn button i, .{scope_id} .remote-png-btn .fa {{ display:none !important; }}"
+        f".{scope_id} .remote-png-btn button > span, .{scope_id} .remote-png-btn button .widget-button-label {{ display:flex !important; align-items:center !important; justify-content:center !important; width:100% !important; height:100% !important; margin:0 auto !important; text-align:center !important; line-height:30px !important; padding:0 !important; }}"
         f".{scope_id} .remote-xyz-tray-controls {{ width:360px !important; min-width:340px !important; max-width:420px !important; }}"
         f".{scope_id} .remote-search-input, .{scope_id} .remote-search-input .widget-input {{ min-width:0 !important; max-width:100% !important; width:100% !important; min-height:26px !important; overflow:visible !important; }}"
         f" .{scope_id} .remote-search-input input {{ min-width:0 !important; max-width:100% !important; width:100% !important; height:26px !important; line-height:26px !important; padding-top:0 !important; padding-bottom:0 !important; box-sizing:border-box !important; }}"
@@ -4320,6 +4395,7 @@ def create_tab(ctx):
     xyz_loop_checkbox.observe(_on_xyz_loop_change, names="value")
     xyz_play_btn.observe(_on_xyz_play_change, names="value")
     xyz_copy_btn.on_click(_on_xyz_copy)
+    viewer_png_btn.on_click(_download_current_viewer_png)
 
     # Search event wiring
     search_btn.on_click(_do_search)

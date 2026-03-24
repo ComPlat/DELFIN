@@ -88,6 +88,7 @@ def create_tab(ctx):
     CALC_XYZ_PLAY_FPS_DEFAULT = 10
     CALC_XYZ_PLAY_FPS_MIN = 1
     CALC_XYZ_PLAY_FPS_MAX = 60
+    CALC_VIEWER_PNG_SCALE = 6
     CALC_BROWSER_WORKFLOW_PAL = 4
     CALC_BROWSER_WORKFLOW_MAXCORE = 1000
     CALC_BROWSER_WORKFLOW_TIMELIMIT = '00:10:00'
@@ -656,9 +657,26 @@ def create_tab(ctx):
     )
 
     # Molecule viewer
+    calc_view_png_btn = widgets.Button(
+        description='PNG',
+        icon='',
+        button_style='warning',
+        layout=widgets.Layout(width='54px', min_width='54px', height='30px', display='none'),
+        tooltip='Download a high-resolution PNG from the current 3D view',
+    )
+    calc_view_png_btn.add_class('calc-png-btn')
     calc_mol_label = widgets.HTML(
-        "<div style='height:26px; line-height:26px; margin:0 0 8px 0;'>"
+        "<div style='height:26px; line-height:26px; margin:0;'>"
         "<b>🔬 Molecule Preview:</b></div>"
+    )
+    calc_mol_header = widgets.HBox(
+        [calc_mol_label, calc_view_png_btn],
+        layout=widgets.Layout(
+            width='100%',
+            align_items='flex-start',
+            justify_content='space-between',
+            margin='0 0 8px 0',
+        ),
     )
     calc_mol_viewer = widgets.Output(
         layout=widgets.Layout(
@@ -706,9 +724,24 @@ def create_tab(ctx):
         description='📋 Copy Coordinates', button_style='success',
         layout=widgets.Layout(width='176px', min_width='176px', height='32px'),
     )
+    calc_xyz_png_btn = widgets.Button(
+        description='🖼 PNG', button_style='warning',
+        layout=widgets.Layout(width='112px', min_width='112px', height='32px'),
+        tooltip='Download a high-resolution PNG from the current XYZ view',
+    )
     calc_xyz_frame_inline = widgets.HBox(
         [widgets.HTML('<b>Frame:</b>'), calc_xyz_frame_input, calc_xyz_frame_total],
         layout=widgets.Layout(gap='10px', align_items='center', min_width='170px', flex='0 0 auto'),
+    )
+    calc_xyz_png_row = widgets.HBox(
+        [calc_xyz_png_btn],
+        layout=widgets.Layout(
+            display='none',
+            width='100%',
+            justify_content='flex-end',
+            align_items='center',
+            margin='0 0 6px 0',
+        ),
     )
     calc_xyz_controls = widgets.HBox(
         [
@@ -730,6 +763,21 @@ def create_tab(ctx):
         description='📋 Copy Coordinates', button_style='success',
         layout=widgets.Layout(width='160px', height='32px'),
     )
+    calc_coord_png_btn = widgets.Button(
+        description='🖼 PNG', button_style='warning',
+        layout=widgets.Layout(width='108px', height='32px'),
+        tooltip='Download a high-resolution PNG from the current 3D view',
+    )
+    calc_coord_png_row = widgets.HBox(
+        [calc_coord_png_btn],
+        layout=widgets.Layout(
+            display='none',
+            width='100%',
+            justify_content='flex-end',
+            align_items='center',
+            margin='0 0 6px 0',
+        ),
+    )
     calc_coord_controls = widgets.HBox(
         [calc_coord_copy_btn],
         layout=widgets.Layout(
@@ -740,7 +788,9 @@ def create_tab(ctx):
     calc_xyz_tray_controls = widgets.VBox(
         [
             calc_xyz_frame_label,
+            calc_xyz_png_row,
             calc_xyz_controls,
+            calc_coord_png_row,
             calc_coord_controls,
             widgets.HBox(
                 [
@@ -1255,7 +1305,7 @@ def create_tab(ctx):
     calc_xyz_tray_controls.add_class('calc-xyz-tray-controls')
     calc_mol_container = widgets.VBox(
         [
-            calc_mol_label,
+            calc_mol_header,
             calc_rmsd_controls,
             calc_mol_view_row,
         ],
@@ -2942,6 +2992,43 @@ def create_tab(ctx):
     def _run_js(script):
         ctx.run_js(script)
 
+    def _calc_build_png_filename():
+        selected_path = _calc_get_selected_path()
+        if selected_path:
+            base = selected_path.stem or 'viewer'
+        else:
+            base = 'viewer'
+        base = re.sub(r'[^A-Za-z0-9._-]+', '_', str(base)).strip('._') or 'viewer'
+        if len(state.get('xyz_frames') or []) > 1:
+            frame_no = int(state.get('xyz_current_frame', [0])[0]) + 1
+            return f'{base}_frame_{frame_no:04d}.png'
+        return f'{base}.png'
+
+    def _calc_set_png_button_mode(main=False):
+        calc_view_png_btn.layout.display = 'inline-flex' if main else 'none'
+        calc_xyz_png_row.layout.display = 'none'
+        calc_coord_png_row.layout.display = 'none'
+
+    def _calc_trigger_png_download():
+        scope_key_json = json.dumps(calc_scope_id)
+        filename_json = json.dumps(_calc_build_png_filename())
+        _run_js(
+            f"""
+            (function() {{
+                var scopeKey = {scope_key_json};
+                var filename = {filename_json};
+                var viewerMap = window._calcMolViewerByScope || {{}};
+                var trajMap = window._calcTrajViewerByScope || {{}};
+                var viewer = trajMap[scopeKey] || viewerMap[scopeKey] || null;
+                if (!viewer || !window.__delfinDownloadViewerPng) return;
+                window.__delfinDownloadViewerPng(viewer, {{
+                    filename: filename,
+                    scale: {CALC_VIEWER_PNG_SCALE}
+                }});
+            }})();
+            """
+        )
+
     def _calc_traj_can_play():
         n_frames = len(state.get('xyz_frames') or [])
         return 1 < n_frames <= CALC_XYZ_LARGE_TRAJ_FRAMES
@@ -3235,6 +3322,7 @@ def create_tab(ctx):
 
     def _calc_clear_main_viewer_state(reset_view_state=False):
         calc_mol_viewer.clear_output()
+        _calc_set_png_button_mode(main=False)
         scope_key_json = json.dumps(calc_scope_id)
         clear_views_flag = 'true' if reset_view_state else 'false'
         current_view_scope_json = json.dumps(
@@ -3433,6 +3521,8 @@ def create_tab(ctx):
         """
         with calc_mol_viewer:
             display(HTML(html))
+        _calc_set_png_button_mode(main=True)
+        _calc_set_png_button_mode(main=True)
 
     def _set_view_toggle(value, disabled=None):
         """Set visualize toggle without triggering multiple UI refreshes."""
@@ -5157,7 +5247,7 @@ def create_tab(ctx):
             _calc_stop_xyz_playback(update_button=True)
             saved = {}
             widgets_to_hide = [
-                ('calc_mol_label', calc_mol_label),
+                ('calc_mol_header', calc_mol_header),
                 ('calc_xyz_frame_label', calc_xyz_frame_label),
                 ('calc_xyz_controls', calc_xyz_controls),
                 ('calc_coord_controls', calc_coord_controls),
@@ -5175,7 +5265,7 @@ def create_tab(ctx):
             return
         saved = state.get('rmsd_saved_display') or {}
         widgets_to_restore = [
-            ('calc_mol_label', calc_mol_label),
+            ('calc_mol_header', calc_mol_header),
             ('calc_xyz_frame_label', calc_xyz_frame_label),
             ('calc_xyz_controls', calc_xyz_controls),
             ('calc_coord_controls', calc_coord_controls),
@@ -6222,6 +6312,7 @@ def create_tab(ctx):
                     </script>
                     """
                     display(HTML(html_content))
+                _calc_set_png_button_mode(main=True)
                 state['traj_viewer_ready'] = True
             else:
                 _run_js(f"""
@@ -6236,6 +6327,8 @@ def create_tab(ctx):
                     }}
                 }}, 0);
                 """)
+                _calc_update_png_frame(idx)
+                _calc_set_png_button_mode(main=True)
             return
 
         # Single frame: render with py3Dmol
@@ -6869,8 +6962,9 @@ def create_tab(ctx):
             calc_prev_btn.disabled = True
             calc_next_btn.disabled = True
             return
-        calc_prev_btn.disabled = (state['current_match'] <= 0)
-        calc_next_btn.disabled = (state['current_match'] >= len(state['search_spans']) - 1)
+        has_multiple = len(state['search_spans']) > 1
+        calc_prev_btn.disabled = not has_multiple
+        calc_next_btn.disabled = not has_multiple
 
     def calc_update_search_result():
         if not state['search_spans']:
@@ -7264,14 +7358,32 @@ def create_tab(ctx):
         _calc_request_chunk_start(change.get('new', 0))
 
     def calc_prev_match(b):
-        if state['search_spans'] and state['current_match'] > 0:
-            state['current_match'] -= 1
+        if not state['search_spans']:
+            return
+        if len(state['search_spans']) == 1:
+            state['current_match'] = 0
             calc_show_match()
+            return
+        state['current_match'] = (
+            state['current_match'] - 1
+            if state['current_match'] > 0
+            else len(state['search_spans']) - 1
+        )
+        calc_show_match()
 
     def calc_next_match(b):
-        if state['search_spans'] and state['current_match'] < len(state['search_spans']) - 1:
-            state['current_match'] += 1
+        if not state['search_spans']:
+            return
+        if len(state['search_spans']) == 1:
+            state['current_match'] = 0
             calc_show_match()
+            return
+        state['current_match'] = (
+            state['current_match'] + 1
+            if state['current_match'] < len(state['search_spans']) - 1
+            else 0
+        )
+        calc_show_match()
 
     def calc_on_xyz_input_change(change):
         new_val = change['new']
@@ -7323,6 +7435,9 @@ def create_tab(ctx):
         except Exception:
             xyz_content = f"{n_atoms}\n{comment}\n{xyz_block}"
         _calc_copy_to_clipboard(xyz_content, label=f'xyz frame {idx + 1}')
+
+    def calc_on_view_png(button):
+        _calc_trigger_png_download()
 
     def calc_on_rmsd_toggle(button=None):
         if not state.get('rmsd_available'):
@@ -9599,6 +9714,7 @@ def create_tab(ctx):
 
         # --- PNG image ---
         if suffix == '.png':
+            _calc_set_png_button_mode(main=False)
             if size > CALC_IMAGE_MAX_READ_BYTES:
                 calc_file_info.value = (
                     f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
@@ -9653,6 +9769,7 @@ def create_tab(ctx):
                 )
                 lower_name = name.lower()
                 if lower_name.endswith('.esp.cube') or lower_name.endswith('.esp.cub'):
+                    _calc_set_png_button_mode(main=False)
                     from delfin.reporting.esp_report import generate_esp_png_for_state
 
                     workspace_root = None
@@ -10132,9 +10249,12 @@ def create_tab(ctx):
     calc_xyz_fps_input.observe(calc_on_xyz_fps_change, names='value')
     calc_xyz_play_btn.observe(calc_on_xyz_play_change, names='value')
     calc_xyz_copy_btn.on_click(calc_on_xyz_copy)
+    calc_xyz_png_btn.on_click(calc_on_view_png)
     calc_rmsd_run_btn.on_click(calc_on_rmsd_run)
     calc_rmsd_hide_btn.on_click(calc_on_rmsd_hide)
     calc_coord_copy_btn.on_click(calc_on_coord_copy)
+    calc_coord_png_btn.on_click(calc_on_view_png)
+    calc_view_png_btn.on_click(calc_on_view_png)
     calc_copy_btn.on_click(calc_on_content_copy)
     calc_copy_path_btn.on_click(calc_on_path_copy)
     calc_download_btn.on_click(calc_on_download)
@@ -11268,6 +11388,14 @@ def create_tab(ctx):
         '.calc-left .widget-text input { width:100% !important; }'
         '.calc-filter-row > .widget-text { width:calc(100% - 94px) !important; }'
         '.calc-tab .widget-button { flex:0 0 auto !important; }'
+        '.calc-png-btn button { display:inline-flex !important; align-items:center !important;'
+        ' justify-content:center !important; text-align:center !important; padding:0 !important;'
+        ' line-height:30px !important; }'
+        '.calc-png-btn button i, .calc-png-btn .fa { display:none !important; }'
+        '.calc-png-btn button > span, .calc-png-btn button .widget-button-label {'
+        ' display:flex !important; align-items:center !important; justify-content:center !important;'
+        ' width:100% !important; height:100% !important; margin:0 auto !important;'
+        ' text-align:center !important; line-height:30px !important; padding:0 !important; }'
         '.calc-rmsd-trigger-btn button { display:flex !important; align-items:center !important;'
         ' justify-content:center !important; text-align:center !important; height:32px !important; }'
         '.calc-rmsd-trigger-btn button > span { display:inline-flex !important; align-items:center !important;'
