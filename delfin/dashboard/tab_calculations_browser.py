@@ -31,7 +31,7 @@ from .input_processing import (
     contains_metal,
     is_smiles,
 )
-from .helpers import disable_spellcheck
+from .helpers import disable_spellcheck, save_neb_trajectory_plot_png
 from .molecule_viewer import (
     coord_to_xyz,
     parse_xyz_frames,
@@ -1202,6 +1202,7 @@ def create_tab(ctx):
         ],
         layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
     )
+
 
     # -- preselection widgets ----------------------------------------------
     calc_preselect_title = widgets.HTML('<b>Preselection</b>')
@@ -3995,6 +3996,28 @@ def create_tab(ctx):
             f" if(window['{calc_resize_mol_fn}']) window['{calc_resize_mol_fn}']();"
             f"}}, 80);"
         )
+
+    def _calc_render_traj_plot():
+        selected_path = _calc_get_selected_path()
+        if selected_path is None or not selected_path.exists():
+            calc_download_status.value = (
+                '<span style="color:#d32f2f;">Select a .final.interp file first.</span>'
+            )
+            return
+        try:
+            raw_text = state.get('file_content') or selected_path.read_text(errors='ignore')
+            output_path = selected_path.with_suffix('.png')
+            save_neb_trajectory_plot_png(
+                raw_text,
+                output_path,
+                title=selected_path.name,
+            )
+            calc_download_status.value = (
+                '<span style="color:#2e7d32;">Saved trajectory plot:</span> '
+                f'<code>{_html.escape(output_path.name)}</code>'
+            )
+        except Exception as exc:
+            calc_download_status.value = f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>'
 
     def calc_on_print_mode_plot(_button):
         modes, err = _calc_print_mode_parse_modes(calc_print_mode_input.value)
@@ -7084,6 +7107,10 @@ def create_tab(ctx):
             calc_options_dropdown.options = out_options
             calc_options_dropdown.value = '(Options)'
             calc_options_dropdown.layout.display = 'block'
+        elif selected and sel_lower.endswith('.final.interp'):
+            calc_options_dropdown.options = ['(Options)', 'Plot Trajectory']
+            calc_options_dropdown.value = '(Options)'
+            calc_options_dropdown.layout.display = 'block'
         elif selected and rmsd_available:
             calc_options_dropdown.options = ['(Options)', 'RMSD']
             calc_options_dropdown.value = '(Options)'
@@ -7907,6 +7934,20 @@ def create_tab(ctx):
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(True)
             calc_content_area.layout.display = 'block'
+        elif change['new'] == 'Plot Trajectory':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(False)
+            _calc_show_mo_plot_panel(False)
+            _calc_render_traj_plot()
+            calc_content_area.layout.display = 'block'
+            _calc_reset_options_dropdown()
         elif change['new'] == 'RMSD':
             calc_override_input.layout.display = 'none'
             calc_override_time.layout.display = 'none'

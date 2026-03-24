@@ -1,8 +1,136 @@
 """Shared helper / utility functions for the DELFIN Dashboard."""
 
+import base64
+import io
+import re
+
 import ipywidgets as widgets
 
 from .constants import JOB_TIME_LIMITS
+
+
+_NEB_TRAJECTORY_SECTION_RE = re.compile(r'^\s*(Images|Interp\.)\s*:\s*(.*)$')
+_NEB_TRAJECTORY_ROW_RE = re.compile(
+    r'^\s*([-+]?\d*\.?\d+(?:[eEdD][-+]?\d+)?)'
+    r'\s+([-+]?\d*\.?\d+(?:[eEdD][-+]?\d+)?)'
+    r'\s+([-+]?\d*\.?\d+(?:[eEdD][-+]?\d+)?)\s*$'
+)
+_BOHR_TO_ANGSTROM = 0.529177210903
+
+
+def parse_neb_final_interp(text):
+    """Parse a ``*.final.interp`` file into Images / Interp. sections."""
+    sections = {}
+    current_key = None
+    for raw_line in str(text or '').splitlines():
+        match = _NEB_TRAJECTORY_SECTION_RE.match(raw_line)
+        if match:
+            current_key = match.group(1)
+            sections[current_key] = []
+            continue
+        if current_key is None:
+            continue
+        row_match = _NEB_TRAJECTORY_ROW_RE.match(raw_line)
+        if not row_match:
+            if raw_line.strip():
+                current_key = None
+            continue
+        try:
+            progress = float(row_match.group(1).replace('D', 'E').replace('d', 'e'))
+            distance_bohr = float(row_match.group(2).replace('D', 'E').replace('d', 'e'))
+            energy_eh = float(row_match.group(3).replace('D', 'E').replace('d', 'e'))
+        except ValueError:
+            continue
+        sections.setdefault(current_key, []).append(
+            {
+                'progress': progress,
+                'distance_bohr': distance_bohr,
+                'distance_angstrom': distance_bohr * _BOHR_TO_ANGSTROM,
+                'energy_eh': energy_eh,
+            }
+        )
+    return sections
+
+
+def _build_neb_trajectory_figure(text, title='Trajectory Plot'):
+    """Build a matplotlib figure for ``*.final.interp`` content."""
+    sections = parse_neb_final_interp(text)
+    interp_rows = sections.get('Interp.', [])
+    image_rows = sections.get('Images', [])
+    rows = interp_rows or image_rows
+    if not rows:
+        raise ValueError('No trajectory data found in .final.interp file.')
+
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7.4, 4.8), dpi=180)
+
+    if interp_rows:
+        ax.plot(
+            [row['distance_angstrom'] for row in interp_rows],
+            [row['energy_eh'] for row in interp_rows],
+            color='#1565c0',
+            linewidth=2.2,
+            label='Interp.',
+        )
+    if image_rows:
+        ax.scatter(
+            [row['distance_angstrom'] for row in image_rows],
+            [row['energy_eh'] for row in image_rows],
+            color='#ef6c00',
+            edgecolors='white',
+            linewidths=0.7,
+            s=38,
+            zorder=3,
+            label='Images',
+        )
+        ax.plot(
+            [row['distance_angstrom'] for row in image_rows],
+            [row['energy_eh'] for row in image_rows],
+            color='#ef6c00',
+            linewidth=1.0,
+            alpha=0.45,
+            zorder=2,
+        )
+
+    ax.set_xlabel('Distance (Angstrom)')
+    ax.set_ylabel('Energy (Eh)')
+    ax.set_title(str(title or 'Trajectory Plot'))
+    ax.grid(True, alpha=0.25, linestyle='--', linewidth=0.7)
+    if interp_rows and image_rows:
+        ax.legend(frameon=False)
+    fig.tight_layout()
+
+    return fig
+
+
+def save_neb_trajectory_plot_png(text, output_path, title='Trajectory Plot'):
+    """Save ``*.final.interp`` content as a PNG plot."""
+    fig = _build_neb_trajectory_figure(text, title=title)
+    try:
+        fig.savefig(output_path, format='png', bbox_inches='tight')
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
+def render_neb_trajectory_plot_html(text, title='Trajectory Plot'):
+    """Render ``*.final.interp`` content as an inline PNG plot and return HTML."""
+    fig = _build_neb_trajectory_figure(text, title=title)
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format='png', bbox_inches='tight')
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+    b64 = base64.b64encode(buffer.getvalue()).decode('ascii')
+    return (
+        "<div style='width:100%; border:1px solid #d9dee3; border-radius:6px; background:#fff; "
+        "padding:10px; box-sizing:border-box;'>"
+        f"<img src='data:image/png;base64,{b64}' "
+        "style='display:block; width:100%; height:auto; max-width:100%;' />"
+        "</div>"
+    )
 
 
 def resolve_time_limit(toggle_widget, custom_widget, default='48:00:00'):
