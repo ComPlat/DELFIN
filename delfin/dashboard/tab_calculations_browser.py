@@ -4007,19 +4007,30 @@ def create_tab(ctx):
             return
         try:
             raw_text = state.get('file_content') or selected_path.read_text(errors='ignore')
-            output_path = selected_path.with_suffix('.png')
+            output_path_hartree = selected_path.with_name(f'{selected_path.stem}_hartree.png')
+            output_path_kcal = selected_path.with_name(f'{selected_path.stem}_kcal_mol.png')
             csv_output_path = selected_path.with_suffix('.csv')
             save_neb_trajectory_plot_png(
                 raw_text,
-                output_path,
+                output_path_hartree,
                 title=selected_path.name,
+                energy_unit='hartree',
+            )
+            save_neb_trajectory_plot_png(
+                raw_text,
+                output_path_kcal,
+                title=selected_path.name,
+                energy_unit='kcal/mol',
             )
             save_neb_trajectory_csv(raw_text, csv_output_path)
             calc_download_status.value = (
                 '<span style="color:#2e7d32;">Saved trajectory files:</span> '
-                f'<code>{_html.escape(output_path.name)}</code>'
+                f'<code>{_html.escape(output_path_hartree.name)}</code>'
+                ' &nbsp;and&nbsp; '
+                f'<code>{_html.escape(output_path_kcal.name)}</code>'
                 ' &nbsp;and&nbsp; '
                 f'<code>{_html.escape(csv_output_path.name)}</code>'
+                ' <span style="color:#555;">(CSV contains Eh and kcal/mol)</span>'
             )
         except Exception as exc:
             calc_download_status.value = f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>'
