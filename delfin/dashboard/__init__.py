@@ -26,7 +26,9 @@ warnings.filterwarnings("ignore", message="PySisiphus is not installed", module=
 # These imports are safe without ipywidgets and needed by module-level helpers
 from delfin.runtime_setup import (
     apply_runtime_environment,
+    describe_installation_source,
     detect_local_runtime_limits,
+    discover_orca_installations,
     get_packaged_submit_templates_dir,
     resolve_backend_choice,
     resolve_orca_base,
@@ -140,11 +142,13 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             qm_tools_root=runtime_settings.get('qm_tools_root', ''),
             orca_base=orca_base,
             csp_tools_root=runtime_settings.get('csp_tools_root', ''),
+            tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
         )
 
         backend_obj = SlurmJobBackend(
             submit_templates_dir=submit_templates_dir,
             orca_base=orca_base,
+            tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
         )
         only_goat_template_path = _find_only_goat_template(notebook_dir)
     else:
@@ -164,10 +168,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             qm_tools_root=runtime_settings.get('qm_tools_root', ''),
             orca_base=orca_base,
             csp_tools_root=runtime_settings.get('csp_tools_root', ''),
+            tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
         )
         backend_obj = LocalJobBackend(
             run_script=run_script,
             orca_base=orca_base,
+            tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
             max_cores=int((runtime_settings.get('local', {}) or {}).get('max_cores', detected_local_cores)),
             max_ram_mb=int((runtime_settings.get('local', {}) or {}).get('max_ram_mb', detected_local_ram_mb)),
         )
@@ -505,7 +511,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     git_status_label = widgets.HTML(value='')
     pull_delfin_output = widgets.Output()
 
-    orca_version_label = _build_orca_version_widget(orca_base, orca_candidates)
     home_usage_label = _build_home_usage_widget(home)
 
     def refresh_git_status_label():
@@ -766,7 +771,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     switch_branch_btn,
                     pull_delfin_btn,
                     rollback_delfin_btn,
-                    orca_version_label,
                 ],
                 layout=widgets.Layout(
                     margin='0 0 0 12px', align_items='center', gap='8px',
@@ -963,17 +967,15 @@ def _find_submit_templates_dir(notebook_dir):
 
 
 def _find_orca_candidates(notebook_dir):
-    """Find all ``orca_*`` directories under the software folder."""
+    """Find local and system ORCA installations visible to the dashboard."""
     root_dir = _find_root_dir(notebook_dir)
-    if not root_dir:
-        return []
+    search_roots = [Path.home() / 'software', Path.home() / 'apps', Path.home() / 'local', Path('/opt')]
+    if root_dir:
+        search_roots.append(root_dir / 'software')
     try:
-        orca_root = root_dir / 'software'
-        if orca_root.exists():
-            return sorted(p for p in orca_root.glob('orca_*') if p.is_dir())
+        return [Path(path) for path in discover_orca_installations(search_roots=search_roots)]
     except Exception:
-        pass
-    return []
+        return []
 
 
 def _find_only_goat_template(notebook_dir):
@@ -1014,33 +1016,37 @@ def _find_run_script(notebook_dir):
 
 
 def _build_orca_version_widget(orca_base, orca_candidates):
-    """Build an ORCA version dropdown or label widget."""
+    """Build an informational ORCA version widget for the dashboard header."""
     import ipywidgets as widgets
+
+    def _label_for(path_value):
+        version = Path(path_value).name.replace('orca_', 'ORCA ').replace('_', '.')
+        if version == path_value or version == Path(path_value).name:
+            version = 'ORCA'
+        return f'{version} [{describe_installation_source(path_value)}]'
+
     if orca_candidates and len(orca_candidates) > 1:
         options = []
         for p in orca_candidates:
             p = Path(p)
-            label = p.name.replace('orca_', 'ORCA ').replace('_', '.')
-            options.append((label, str(p)))
+            options.append((_label_for(str(p)), str(p)))
         return widgets.Dropdown(
             options=options,
             value=str(orca_base) if orca_base else str(orca_candidates[-1]),
             description='ORCA:',
-            layout=widgets.Layout(width='170px'),
+            layout=widgets.Layout(width='250px'),
             style={'description_width': 'initial'},
+            disabled=True,
         )
-    # Single ORCA or none: static label
     if orca_base:
-        version = Path(orca_base).name.replace('orca_', 'ORCA ').replace('_', '.')
-        if version == orca_base or version == Path(orca_base).name:
-            version = 'ORCA'
+        version = _label_for(str(orca_base))
     else:
         version = 'ORCA (not found)'
     return widgets.Dropdown(
         options=[(version, orca_base or '')],
         value=orca_base or '',
         description='ORCA:',
-        layout=widgets.Layout(width='170px'),
+        layout=widgets.Layout(width='250px'),
         style={'description_width': 'initial'},
         disabled=True,
     )

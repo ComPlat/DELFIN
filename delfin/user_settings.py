@@ -39,6 +39,7 @@ DEFAULT_SETTINGS = {
         "qm_tools_root": "",
         "csp_tools_root": "",
         "mlp_tools_root": "",
+        "tool_binaries": {},
         "local": {
             "orca_base": "",
             "max_cores": _DEFAULT_LOCAL_CORES,
@@ -205,6 +206,20 @@ def _normalized_settings_dict(payload):
         slurm_runtime = {}
     if not isinstance(slurm_runtime, dict):
         raise ValueError("Settings key 'runtime.slurm' must be a JSON object.")
+    tool_binaries = runtime.get("tool_binaries", {})
+    if tool_binaries is None:
+        tool_binaries = {}
+    if not isinstance(tool_binaries, dict):
+        raise ValueError("Settings key 'runtime.tool_binaries' must be a JSON object.")
+    normalized_tool_binaries = {}
+    for key, value in tool_binaries.items():
+        tool_name = str(key or "").strip().lower()
+        if not tool_name:
+            continue
+        normalized_tool_binaries[tool_name] = normalize_local_directory_setting(
+            value,
+            f"{tool_name} binary",
+        )
     normalized["runtime"] = {
         "backend": normalize_choice_setting(
             runtime.get("backend", DEFAULT_SETTINGS["runtime"]["backend"]),
@@ -228,6 +243,7 @@ def _normalized_settings_dict(payload):
             runtime.get("mlp_tools_root", ""),
             "mlp_tools root",
         ),
+        "tool_binaries": normalized_tool_binaries,
         "local": {
             "orca_base": normalize_local_directory_setting(
                 local_runtime.get("orca_base", ""),

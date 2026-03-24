@@ -30,14 +30,25 @@ Usage::
 
 from __future__ import annotations
 
-import shutil
+import shlex
 from typing import Optional
 
 from ase.calculators.calculator import Calculator
 
 from delfin.common.logging import get_logger
+from delfin.qm_runtime import find_tool_executable, resolve_tool
 
 logger = get_logger(__name__)
+
+
+def _module_aware_shell_command(resolved, suffix: str) -> str | None:
+    if resolved is None:
+        return None
+    if resolved.source.startswith("module:"):
+        module_name = resolved.source.split(":", 1)[1]
+        payload = f"module load {module_name} >/dev/null 2>&1 && exec {shlex.quote(resolved.path)}{suffix}"
+        return f"bash -lc {shlex.quote(payload)}"
+    return f"{resolved.path}{suffix}"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -112,7 +123,7 @@ def _create_orca(method: str = "B3LYP", basis: str = "def2-SVP",
                  charge: int = 0, mult: int = 1, pal: int = 1,
                  extra_input: str = "", **kwargs) -> Calculator:
     from ase.calculators.orca import ORCA, OrcaProfile
-    orca_path = shutil.which("orca")
+    orca_path = find_tool_executable("orca")
     if not orca_path:
         raise FileNotFoundError("ORCA executable not found in PATH")
     simple_input = f"{method} {basis} {extra_input}".strip()
@@ -133,6 +144,9 @@ def _create_gaussian(method: str = "B3LYP", basis: str = "6-31G*",
                      charge: int = 0, mult: int = 1, nprocs: int = 1,
                      mem: str = "4GB", **kwargs) -> Calculator:
     from ase.calculators.gaussian import Gaussian
+    gaussian_command = kwargs.pop("command", None)
+    if gaussian_command is None:
+        gaussian_command = _module_aware_shell_command(resolve_tool("gaussian"), " < PREFIX.com > PREFIX.log")
     calc = Gaussian(
         method=method,
         basis=basis,
@@ -140,6 +154,7 @@ def _create_gaussian(method: str = "B3LYP", basis: str = "6-31G*",
         mult=mult,
         nprocshared=nprocs,
         mem=mem,
+        command=gaussian_command,
         **kwargs,
     )
     logger.info("Created Gaussian calculator (%s/%s)", method, basis)
@@ -327,7 +342,7 @@ def _create_xtb(method: str = "GFN2-xTB", charge: int = 0,
     except ImportError:
         pass
     # Fallback: xTB through ORCA interface
-    orca_path = shutil.which("orca")
+    orca_path = find_tool_executable("orca")
     if not orca_path:
         raise FileNotFoundError(
             "Neither standalone xTB (pip install xtb-ase) nor ORCA found in PATH"
@@ -347,7 +362,10 @@ def _create_xtb(method: str = "GFN2-xTB", charge: int = 0,
 
 def _create_dftb(**kwargs) -> Calculator:
     from ase.calculators.dftb import Dftb
-    calc = Dftb(**kwargs)
+    dftb_command = kwargs.pop("command", None)
+    if dftb_command is None:
+        dftb_command = _module_aware_shell_command(resolve_tool("dftb+"), " > PREFIX.out")
+    calc = Dftb(command=dftb_command, **kwargs)
     logger.info("Created DFTB+ calculator")
     return calc
 

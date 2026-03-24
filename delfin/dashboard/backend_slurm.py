@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import List, Tuple
 
+from delfin.qm_runtime import binary_env_var_name, canonical_tool_name
+
 from .backend_base import JobBackend, JobInfo, SubmitResult
 from .input_processing import parse_resource_settings, parse_inp_resources
 
@@ -12,9 +14,14 @@ from .input_processing import parse_resource_settings, parse_inp_resources
 class SlurmJobBackend(JobBackend):
     """SLURM cluster backend (sbatch/squeue/scancel)."""
 
-    def __init__(self, submit_templates_dir, orca_base=None):
+    def __init__(self, submit_templates_dir, orca_base=None, tool_binaries=None):
         self.submit_templates_dir = Path(submit_templates_dir)
         self.orca_base = orca_base
+        self.tool_binaries = {
+            canonical_tool_name(name): str(value).strip()
+            for name, value in (tool_binaries or {}).items()
+            if str(value or '').strip()
+        }
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -59,6 +66,44 @@ class SlurmJobBackend(JobBackend):
 
         mem_used = int(pal_used) * int(maxcore_used)
         return pal_used, mem_used
+
+    def _append_tool_exports(self, env_vars: str) -> str:
+        exports = []
+        for tool_name, binary_path in self.tool_binaries.items():
+            exports.append(f'{binary_env_var_name(tool_name)}={binary_path}')
+        if not exports:
+            return env_vars
+        return f'{env_vars},{",".join(exports)}'
+
+    def _resolve_turbomole_command(self, module: str) -> str | None:
+        selected = str(self.tool_binaries.get('turbomole') or '').strip()
+        if not selected:
+            return None
+        path = Path(selected).expanduser()
+        try:
+            path = path.resolve()
+        except Exception:
+            pass
+        roots: list[Path] = []
+        if path.is_dir():
+            roots.append(path)
+        roots.extend(path.parents)
+        for root in roots:
+            bin_dir = root / 'bin'
+            if not bin_dir.is_dir():
+                continue
+            direct = bin_dir / module
+            if direct.is_file() and direct.stat().st_mode & 0o111:
+                return str(direct)
+            try:
+                subdirs = [item for item in bin_dir.iterdir() if item.is_dir()]
+            except Exception:
+                subdirs = []
+            for subdir in subdirs:
+                candidate = subdir / module
+                if candidate.is_file() and candidate.stat().st_mode & 0o111:
+                    return str(candidate)
+        return None
 
     def _sbatch(self, job_dir, env_vars, time_limit, pal, mem_mb,
                 job_name, submit_script, *, gpu=None, partition=None):
@@ -114,6 +159,7 @@ class SlurmJobBackend(JobBackend):
         pal_used, mem_used = self._resolve_resources(job_dir, pal=pal, maxcore=maxcore)
         maxcore_used = max(1, int(mem_used) // max(1, int(pal_used)))
         env_vars += f',DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
+        env_vars = self._append_tool_exports(env_vars)
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
             job_name, self.submit_templates_dir / 'submit_delfin.sh',
@@ -131,6 +177,7 @@ class SlurmJobBackend(JobBackend):
         pal_used, mem_used = self._resolve_resources(
             job_dir, inp_file=inp_file, pal=pal, maxcore=maxcore,
         )
+        env_vars = self._append_tool_exports(env_vars)
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
             job_name, self.submit_templates_dir / 'submit_delfin.sh',
@@ -149,6 +196,7 @@ class SlurmJobBackend(JobBackend):
         )
         if self.orca_base:
             env_vars += f',DELFIN_ORCA_BASE={self.orca_base}'
+        env_vars = self._append_tool_exports(env_vars)
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
             job_name, self.submit_templates_dir / 'submit_delfin.sh',
@@ -167,6 +215,7 @@ class SlurmJobBackend(JobBackend):
         )
         if self.orca_base:
             env_vars += f',DELFIN_ORCA_BASE={self.orca_base}'
+        env_vars = self._append_tool_exports(env_vars)
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
             job_name, self.submit_templates_dir / 'submit_delfin.sh',
@@ -183,6 +232,10 @@ class SlurmJobBackend(JobBackend):
             f'TM_NPROCS={nprocs},'
             f'TM_PARA_ARCH={para_arch}'
         )
+        env_vars = self._append_tool_exports(env_vars)
+        tm_command = self._resolve_turbomole_command(module)
+        if tm_command:
+            env_vars += f',TM_COMMAND={tm_command}'
         result = self._sbatch(
             job_dir, env_vars, time_limit, nprocs, mem_mb,
             job_name, self.submit_templates_dir / 'submit_turbomole.sh',
@@ -233,6 +286,7 @@ class SlurmJobBackend(JobBackend):
         )
         # Auto-detect GPU partition — if found, request 1 GPU
         gpu_partition = self._detect_gpu_partition()
+        env_vars = self._append_tool_exports(env_vars)
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
             job_name, self.submit_templates_dir / 'submit_delfin.sh',
