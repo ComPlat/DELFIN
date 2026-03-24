@@ -31,7 +31,7 @@ from .input_processing import (
     contains_metal,
     is_smiles,
 )
-from .helpers import disable_spellcheck, save_neb_trajectory_plot_png
+from .helpers import disable_spellcheck, save_neb_trajectory_csv, save_neb_trajectory_plot_png
 from .molecule_viewer import (
     coord_to_xyz,
     parse_xyz_frames,
@@ -4008,14 +4008,18 @@ def create_tab(ctx):
         try:
             raw_text = state.get('file_content') or selected_path.read_text(errors='ignore')
             output_path = selected_path.with_suffix('.png')
+            csv_output_path = selected_path.with_suffix('.csv')
             save_neb_trajectory_plot_png(
                 raw_text,
                 output_path,
                 title=selected_path.name,
             )
+            save_neb_trajectory_csv(raw_text, csv_output_path)
             calc_download_status.value = (
-                '<span style="color:#2e7d32;">Saved trajectory plot:</span> '
+                '<span style="color:#2e7d32;">Saved trajectory files:</span> '
                 f'<code>{_html.escape(output_path.name)}</code>'
+                ' &nbsp;and&nbsp; '
+                f'<code>{_html.escape(csv_output_path.name)}</code>'
             )
         except Exception as exc:
             calc_download_status.value = f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>'
