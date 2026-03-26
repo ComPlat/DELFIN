@@ -597,6 +597,22 @@ def create_tab(ctx):
     calc_table_cols_box = widgets.VBox(
         [], layout=widgets.Layout(width='100%', gap='4px'),
     )
+    calc_table_file_row = widgets.HBox([
+        widgets.HTML('<span style="white-space:nowrap"><b>File:</b></span>'),
+        calc_table_file_input,
+        calc_table_scope_dd,
+        calc_table_recursive_cb,
+        calc_table_decimal_comma_btn,
+    ], layout=widgets.Layout(gap='6px', align_items='center', width='100%'))
+    calc_table_file_row.add_class('calc-table-top-row')
+
+    calc_table_preset_row = widgets.HBox([
+        widgets.HTML('<span style="white-space:nowrap"><b>Preset file:</b></span>'),
+        calc_table_preset_name,
+        calc_table_preset_save_btn,
+    ], layout=widgets.Layout(gap='6px', align_items='center', width='100%'))
+    calc_table_preset_row.add_class('calc-table-top-row')
+
     calc_table_panel = widgets.VBox([
         widgets.HBox([
             widgets.HTML('<b>📊 Extract Table</b>'),
@@ -604,18 +620,8 @@ def create_tab(ctx):
         ], layout=widgets.Layout(
             justify_content='space-between', align_items='center', width='100%',
         )),
-        widgets.HBox([
-            widgets.HTML('<span style="white-space:nowrap"><b>File:</b></span>'),
-            calc_table_file_input,
-            calc_table_scope_dd,
-            calc_table_recursive_cb,
-            calc_table_decimal_comma_btn,
-        ], layout=widgets.Layout(gap='6px', align_items='center', width='100%')),
-        widgets.HBox([
-            widgets.HTML('<span style="white-space:nowrap"><b>Preset file:</b></span>'),
-            calc_table_preset_name,
-            calc_table_preset_save_btn,
-        ], layout=widgets.Layout(gap='6px', align_items='center', width='100%')),
+        calc_table_file_row,
+        calc_table_preset_row,
         calc_table_preset_status,
         calc_table_cols_box,
         widgets.HBox(
@@ -9460,8 +9466,9 @@ def create_tab(ctx):
             pat_w = widgets.Text(
                 value=col.get('pattern', ''),
                 placeholder=_pat_placeholders.get(col.get('type', 'text'), 'literal text'),
-                layout=widgets.Layout(flex='1 1 auto', min_width='80px', height='26px'),
+                layout=widgets.Layout(flex='1 1 0', min_width='0', width='1px', height='26px'),
             )
+            pat_w.add_class('calc-table-pattern-input')
             preset_dd = widgets.Dropdown(
                 options=_tp_labels,
                 value=_tp_labels[0],
@@ -9502,10 +9509,12 @@ def create_tab(ctx):
             preset_dd.observe(_on_preset, names='value')
             rm_btn.on_click(_on_remove)
 
-            rows.append(widgets.HBox(
+            row_box = widgets.HBox(
                 [name_w, type_dd, occ_dd, pat_w, preset_dd, rm_btn],
                 layout=widgets.Layout(gap='4px', align_items='center', width='100%'),
-            ))
+            )
+            row_box.add_class('calc-table-col-row')
+            rows.append(row_box)
             state['table_col_widgets'].append({
                 'name': name_w, 'type_dd': type_dd, 'occ_dd': occ_dd,
                 'pattern': pat_w, 'preset_dd': preset_dd,
@@ -12091,6 +12100,19 @@ def create_tab(ctx):
         ' overflow:hidden !important; }'
         '.calc-table-output { flex:1 1 0 !important; min-height:0 !important;'
         ' overflow-y:auto !important; overflow-x:auto !important; max-height:none !important; }'
+        '.calc-tab .calc-table-panel .widget-text { overflow:visible !important; }'
+        '.calc-tab .calc-table-panel .widget-dropdown, .calc-tab .calc-table-panel .widget-text { flex:0 0 auto !important; }'
+        '.calc-tab .calc-table-panel .widget-dropdown, .calc-tab .calc-table-panel .widget-dropdown select { overflow:hidden !important; }'
+        '.calc-tab .calc-table-top-row > .widget-text { flex:1 1 0 !important; min-width:0 !important; width:1px !important; }'
+        '.calc-tab .calc-table-top-row > .widget-text input { width:100% !important; min-width:0 !important; }'
+        '.calc-tab .calc-table-col-row > .widget-text { flex:1 1 0 !important; min-width:0 !important; width:1px !important; height:26px !important; min-height:26px !important; }'
+        '.calc-tab .calc-table-col-row > .widget-text input { width:100% !important; min-width:0 !important; height:26px !important; line-height:26px !important; padding:0 6px !important; box-sizing:border-box !important; }'
+        '.calc-tab .calc-table-panel .widget-text { height:26px !important; min-height:26px !important; }'
+        '.calc-tab .calc-table-panel .widget-text input { width:100% !important; overflow-x:hidden !important; overflow-y:hidden !important; height:26px !important; line-height:26px !important; padding:0 6px !important; box-sizing:border-box !important; }'
+        '.calc-tab .calc-table-panel .widget-dropdown { height:26px !important; min-height:26px !important; }'
+        '.calc-tab .calc-table-panel .widget-dropdown select { height:26px !important; max-height:26px !important; line-height:26px !important; overflow:hidden !important; padding:0 6px !important; box-sizing:border-box !important; }'
+        '.calc-tab .calc-table-panel input::-webkit-scrollbar { width:0; height:0; display:none; }'
+        '.calc-tab .calc-table-panel input { scrollbar-width:none; overflow:hidden !important; height:26px !important; line-height:26px !important; padding:0 6px !important; box-sizing:border-box !important; }'
         '.calc-right .widget-output, .calc-right .jupyter-widgets-output-area { overflow:hidden !important; }'
         '.calc-right .widget-output .output_area { overflow:hidden !important; }'
         '.calc-right .widget-output .output { overflow:hidden !important; }'
