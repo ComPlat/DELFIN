@@ -953,7 +953,7 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
         input_path = resolve_path(control_path.parent / entry_path)
 
     # Check if input contains SMILES
-    from .smiles_converter import is_smiles_string, smiles_to_xyz
+    from .smiles_converter import is_smiles_string, smiles_to_xyz, smiles_to_xyz_quick
 
     is_smiles = False
     try:
@@ -995,12 +995,17 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
                     logger.error("GUPPY sampling failed: %s", exc)
                     raise ValueError(f"GUPPY sampling failed: {exc}") from exc
             else:
-                # Default: quick single-conformer SMILES → XYZ conversion.
+                # Default: use the robust DELFIN converter first, then fall back
+                # to the quick single-conformer path if the full conversion fails.
                 xyz_content, error = smiles_to_xyz(smiles_line)
 
                 if error:
-                    logger.error("SMILES conversion failed: %s", error)
-                    raise ValueError(f"SMILES conversion failed: {error}")
+                    logger.warning("SMILES conversion failed, trying quick fallback: %s", error)
+                    xyz_content, error = smiles_to_xyz_quick(smiles_line)
+
+                if error:
+                    logger.error("SMILES conversion failed after quick fallback: %s", error)
+                    raise ValueError(f"SMILES conversion failed after quick fallback: {error}")
 
                 try:
                     start_path.write_text(xyz_content, encoding='utf-8')
