@@ -274,6 +274,36 @@ def fetch_remote_file(host, user, remote_path, port, relative_path="", *, cache_
     return local_path
 
 
+def write_remote_text_file(host, user, remote_path, port, relative_path, text_content):
+    """Write a UTF-8 text file below the configured remote root."""
+    host, user, remote_path, port = normalize_ssh_transfer_settings(host, user, remote_path, port)
+    root = build_remote_absolute_path(remote_path, "")
+    rel = normalize_remote_relative_path(relative_path)
+    if not rel:
+        raise ValueError("Remote file path is empty.")
+    payload_b64 = base64.b64encode(str(text_content or "").encode("utf-8")).decode("ascii")
+    script = textwrap.dedent("""
+        import base64, os, sys
+        root = os.path.realpath(sys.argv[1])
+        relative = sys.argv[2]
+        payload_b64 = sys.argv[3]
+        target = os.path.realpath(os.path.join(root, relative))
+        if os.path.commonpath([target, root]) != root:
+            raise SystemExit("Path escapes root.")
+        parent = os.path.dirname(target)
+        if not os.path.isdir(parent):
+            raise SystemExit("Parent directory not found.")
+        data = base64.b64decode(payload_b64.encode("ascii"))
+        with open(target, "wb") as handle:
+            handle.write(data)
+        print(target)
+    """).strip()
+    command = "python3 -c " + shlex.quote(script) + " " + " ".join(
+        shlex.quote(str(value)) for value in (root, rel, payload_b64)
+    )
+    return _run_ssh_command(host, user, port, command).strip()
+
+
 REMOTE_TEXT_CHUNK_BYTES = 128_000
 
 

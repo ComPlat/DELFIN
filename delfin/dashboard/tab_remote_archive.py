@@ -35,6 +35,7 @@ from delfin.remote_archive import (
     remote_mkdir,
     remote_rename,
     search_remote_file,
+    write_remote_text_file,
 )
 from delfin.ssh_transfer_jobs import (
     create_download_job,
@@ -430,6 +431,18 @@ def create_tab(ctx):
         tooltip="Convert decimal point to decimal comma in table/CSV values",
         layout=widgets.Layout(width="126px", height="26px"),
     )
+    table_preset_name = widgets.Text(
+        placeholder="extract_table.delfin-table.json",
+        layout=widgets.Layout(flex="1 1 auto", min_width="140px", height="26px"),
+    )
+    table_preset_name.add_class("remote-table-preset-name")
+    table_preset_save_btn = widgets.Button(
+        description="Save file",
+        layout=widgets.Layout(width="88px", height="26px"),
+    )
+    table_preset_status_html = widgets.HTML(
+        value="<span style='color:#616161;'>Click a <code>.delfin-table.json</code> file in the explorer to load it.</span>"
+    )
     table_add_col_btn = widgets.Button(
         description="+ Column",
         layout=widgets.Layout(width="80px", height="26px"),
@@ -478,6 +491,15 @@ def create_tab(ctx):
                 ],
                 layout=widgets.Layout(gap="6px", align_items="center", width="100%"),
             ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<span style="white-space:nowrap"><b>Preset file:</b></span>'),
+                    table_preset_name,
+                    table_preset_save_btn,
+                ],
+                layout=widgets.Layout(gap="6px", align_items="center", width="100%"),
+            ),
+            table_preset_status_html,
             table_cols_box,
             widgets.HBox(
                 [table_add_col_btn, table_run_btn, table_csv_btn],
@@ -861,6 +883,8 @@ def create_tab(ctx):
         name = str(entry.get("name") or "")
         if name.lower() == "coord":
             return "🔬"
+        if _is_table_preset_name(name):
+            return "📊"
         if suffix == ".xyz":
             return "🔬"
         if suffix == ".png":
@@ -2403,6 +2427,21 @@ def create_tab(ctx):
         size_str = _format_size(size)
         suffix = str(entry.get("suffix") or "").lower()
         lower_name = name.lower()
+        if _is_table_preset_name(name):
+            _set_status(f"Loading <code>{html.escape(name)}</code> ...", color="#455a64")
+            ctx.set_busy(True)
+            try:
+                _open_table_preset_entry(entry)
+            except Exception as exc:
+                table_panel.layout.display = ""
+                state["table_panel_active"] = True
+                _set_table_preset_status(f"Could not load preset file: {exc}", color="#d32f2f")
+                _update_view()
+                _set_status(html.escape(str(exc)), color="#d32f2f")
+            finally:
+                ctx.set_busy(False)
+            _update_buttons()
+            return
         should_fetch = False
         if lower_name == "coord":
             should_fetch = True
@@ -4063,6 +4102,103 @@ def create_tab(ctx):
             '</table></div>'
         )
 
+    _REMOTE_TABLE_PRESET_SUFFIX = ".delfin-table.json"
+
+    def _default_table_col_defs():
+        return [{"name": "Value 1", "type": "regex", "pattern": "", "occ": "last"}]
+
+    def _normalize_table_preset_col_defs(columns):
+        normalized = []
+        for col in columns or []:
+            if not isinstance(col, dict):
+                continue
+            col_type = str(col.get("type", "regex") or "regex").strip().lower()
+            if col_type not in ("text", "regex", "json"):
+                col_type = "regex"
+            occ = str(col.get("occ", "last") or "last").strip().lower()
+            if occ not in ("last", "first", "all"):
+                occ = "last"
+            normalized.append({
+                "name": str(col.get("name", "") or "").strip(),
+                "type": col_type,
+                "pattern": str(col.get("pattern", "") or "").strip(),
+                "occ": occ,
+            })
+        return normalized or _default_table_col_defs()
+
+    def _set_table_preset_status(message="", color="#555"):
+        if not message:
+            table_preset_status_html.value = ""
+            return
+        table_preset_status_html.value = (
+            f'<span style="color:{color};">{html.escape(str(message))}</span>'
+        )
+
+    def _is_table_preset_name(name):
+        return str(name or "").strip().lower().endswith(_REMOTE_TABLE_PRESET_SUFFIX)
+
+    def _normalize_table_preset_name(raw_name=""):
+        name = str(raw_name or "").strip()
+        if not name:
+            name = f"extract_table{_REMOTE_TABLE_PRESET_SUFFIX}"
+        if "/" in name or "\\" in name:
+            raise ValueError("Use only a file name, not a path.")
+        if not name.lower().endswith(_REMOTE_TABLE_PRESET_SUFFIX):
+            name += _REMOTE_TABLE_PRESET_SUFFIX
+        return name
+
+    def _table_preset_payload_from_ui():
+        _collect_table_col_values()
+        scope = str(table_scope_dd.value or "all").strip().lower()
+        if scope not in ("all", "selected"):
+            scope = "all"
+        return {
+            "kind": "delfin_extract_table_preset",
+            "version": 1,
+            "file": str(table_file_input.value or "").strip(),
+            "scope": scope,
+            "recursive": bool(table_recursive_cb.value),
+            "decimal_comma": bool(table_decimal_comma_btn.value),
+            "columns": _normalize_table_preset_col_defs(state.get("table_col_defs")),
+        }
+
+    def _apply_table_preset_payload(preset_payload, preset_name=""):
+        payload = preset_payload if isinstance(preset_payload, dict) else {}
+        scope = str(payload.get("scope", "all") or "all").strip().lower()
+        if scope not in ("all", "selected"):
+            scope = "all"
+        table_file_input.value = str(payload.get("file", "") or "").strip()
+        table_scope_dd.value = scope
+        table_recursive_cb.value = bool(payload.get("recursive", False))
+        table_decimal_comma_btn.value = bool(payload.get("decimal_comma", False))
+        state["table_col_defs"] = _normalize_table_preset_col_defs(payload.get("columns"))
+        _rebuild_table_col_rows()
+
+        if preset_name:
+            table_preset_name.value = str(preset_name or "").strip()
+
+    def _parse_table_preset_text(raw_text, source_label=""):
+        try:
+            payload = json.loads(raw_text)
+        except Exception as exc:
+            raise ValueError(f"Invalid preset JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Preset file must contain a JSON object.")
+        kind = str(payload.get("kind", "") or "").strip()
+        if kind and kind != "delfin_extract_table_preset":
+            raise ValueError("Not a DELFIN extract-table preset file.")
+        payload = dict(payload)
+        payload["columns"] = _normalize_table_preset_col_defs(payload.get("columns"))
+        payload["scope"] = str(payload.get("scope", "all") or "all").strip().lower()
+        if payload["scope"] not in ("all", "selected"):
+            payload["scope"] = "all"
+        payload["recursive"] = bool(payload.get("recursive", False))
+        payload["decimal_comma"] = bool(payload.get("decimal_comma", False))
+        payload["file"] = str(payload.get("file", "") or "").strip()
+        if not payload["file"]:
+            raise ValueError("Preset file is missing the table target file.")
+        return payload
+
     def _collect_table_col_values():
         for i, rw in enumerate(state["table_col_widgets"]):
             if i < len(state["table_col_defs"]):
@@ -4150,6 +4286,8 @@ def create_tab(ctx):
         if table_panel.layout.display == "none":
             table_panel.layout.display = ""
             state["table_panel_active"] = True
+            if not str(table_preset_name.value or "").strip():
+                table_preset_name.value = f"extract_table{_REMOTE_TABLE_PRESET_SUFFIX}"
             _rebuild_table_col_rows()
         else:
             table_panel.layout.display = "none"
@@ -4168,6 +4306,60 @@ def create_tab(ctx):
             {"name": f"Value {n}", "type": "regex", "pattern": "", "occ": "last"}
         )
         _rebuild_table_col_rows()
+
+    def _open_table_preset_entry(entry):
+        config = state.get("config")
+        if not config:
+            raise RuntimeError("No remote archive configured.")
+        local_path = fetch_remote_file(
+            config["host"],
+            config["user"],
+            config["remote_path"],
+            config["port"],
+            entry.get("relative_path", ""),
+        )
+        raw_text = Path(local_path).read_text(encoding="utf-8")
+        payload = _parse_table_preset_text(raw_text, source_label=str(entry.get("name") or ""))
+        table_panel.layout.display = ""
+        state["table_panel_active"] = True
+        _apply_table_preset_payload(payload, preset_name=str(entry.get("name") or ""))
+        _set_table_preset_status(
+            f'Loaded preset file {str(entry.get("name") or "")}. Click Run to extract the table.',
+            color="#2e7d32",
+        )
+        _update_view()
+
+    def _on_table_preset_save(_button=None):
+        config = state.get("config")
+        if not config:
+            _set_table_preset_status("No remote archive configured.", color="#d32f2f")
+            return
+        try:
+            preset_name = _normalize_table_preset_name(table_preset_name.value)
+        except Exception as exc:
+            _set_table_preset_status(str(exc), color="#d32f2f")
+            return
+        current_rel = normalize_remote_relative_path(state.get("current_relative_path", ""))
+        target_rel = preset_name if not current_rel else f"{current_rel}/{preset_name}"
+        try:
+            write_remote_text_file(
+                config["host"],
+                config["user"],
+                config["remote_path"],
+                config["port"],
+                target_rel,
+                json.dumps(_table_preset_payload_from_ui(), indent=2, ensure_ascii=True) + "\n",
+            )
+        except Exception as exc:
+            _set_table_preset_status(f"Could not save preset file: {exc}", color="#d32f2f")
+            return
+        table_preset_name.value = preset_name
+        _refresh_listing(set_status=False)
+        folder_label = "/" if not current_rel else f"/{current_rel}"
+        _set_table_preset_status(
+            f"Saved preset file {preset_name} in {folder_label}.",
+            color="#2e7d32",
+        )
 
     def _on_table_run(_button=None):
         if _list_remote_folder_files is None:
@@ -4612,10 +4804,12 @@ def create_tab(ctx):
     table_add_col_btn.on_click(_on_table_add_col)
     table_run_btn.on_click(_on_table_run)
     table_csv_btn.on_click(_on_table_csv_download)
+    table_preset_save_btn.on_click(_on_table_preset_save)
 
     disable_spellcheck(ctx, class_name="remote-archive-filter")
     disable_spellcheck(ctx, class_name="remote-search-input")
     disable_spellcheck(ctx, class_name="remote-path-input")
+    disable_spellcheck(ctx, class_name="remote-table-preset-name")
 
     _clear_preview()
     _load_config(set_status=False)
