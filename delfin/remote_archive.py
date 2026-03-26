@@ -601,6 +601,95 @@ def remote_duplicate(host, user, remote_path, port, relative_path):
     return output.strip()
 
 
+def _remote_copy_or_move(host, user, remote_path, port, relative_paths, target_relative_path, mode):
+    """Copy or move files/folders inside the remote archive."""
+    host, user, remote_path, port = normalize_ssh_transfer_settings(host, user, remote_path, port)
+    root = build_remote_absolute_path(remote_path, "")
+    if not relative_paths:
+        raise ValueError("Nothing selected.")
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode not in {"copy", "move"}:
+        raise ValueError("Unsupported remote operation mode.")
+    validated = []
+    for rp in relative_paths:
+        rel = normalize_remote_relative_path(rp)
+        if not rel:
+            raise ValueError("Cannot operate on the root directory.")
+        validated.append(rel)
+    target_rel = normalize_remote_relative_path(target_relative_path)
+    script = textwrap.dedent("""
+        import json, os, shutil, sys
+
+        root = os.path.realpath(sys.argv[1])
+        items = json.loads(sys.argv[2])
+        target_rel = sys.argv[3]
+        mode = sys.argv[4]
+        target_dir = root if not target_rel else os.path.realpath(os.path.join(root, target_rel))
+        if os.path.commonpath([target_dir, root]) != root:
+            raise SystemExit("Target escapes root.")
+        if not os.path.isdir(target_dir):
+            raise SystemExit("Target folder not found.")
+
+        def next_available_path(dest):
+            if not os.path.exists(dest):
+                return dest
+            parent = os.path.dirname(dest)
+            base = os.path.basename(dest)
+            name, ext = os.path.splitext(base)
+            counter = 2
+            while True:
+                candidate = os.path.join(parent, f"{name}_{counter}{ext}")
+                if not os.path.exists(candidate):
+                    return candidate
+                counter += 1
+
+        done, errors = [], []
+        for rel in items:
+            src = os.path.realpath(os.path.join(root, rel))
+            if os.path.commonpath([src, root]) != root:
+                errors.append(rel + ": escapes root")
+                continue
+            if not os.path.exists(src):
+                errors.append(rel + ": not found")
+                continue
+            try:
+                if os.path.isdir(src) and os.path.commonpath([target_dir, src]) == src:
+                    raise ValueError("Cannot paste a folder into itself.")
+                dest = next_available_path(os.path.join(target_dir, os.path.basename(src)))
+                if mode == "copy":
+                    if os.path.isdir(src):
+                        shutil.copytree(src, dest)
+                    else:
+                        shutil.copy2(src, dest)
+                else:
+                    shutil.move(src, dest)
+                done.append(rel)
+            except Exception as exc:
+                errors.append(rel + ": " + str(exc))
+        print(json.dumps({"done": done, "errors": errors}))
+    """).strip()
+    items_json = json.dumps(validated)
+    command = "python3 -c " + shlex.quote(script) + " " + " ".join(
+        shlex.quote(str(v)) for v in (root, items_json, target_rel, normalized_mode)
+    )
+    output = _run_ssh_command(host, user, port, command)
+    return json.loads(output)
+
+
+def remote_copy(host, user, remote_path, port, relative_paths, target_relative_path=""):
+    """Copy files or folders into another remote archive folder."""
+    return _remote_copy_or_move(
+        host, user, remote_path, port, relative_paths, target_relative_path, "copy"
+    )
+
+
+def remote_move(host, user, remote_path, port, relative_paths, target_relative_path=""):
+    """Move files or folders into another remote archive folder."""
+    return _remote_copy_or_move(
+        host, user, remote_path, port, relative_paths, target_relative_path, "move"
+    )
+
+
 def remote_delete(host, user, remote_path, port, relative_paths):
     """Delete files or folders on the remote server."""
     host, user, remote_path, port = normalize_ssh_transfer_settings(host, user, remote_path, port)

@@ -22,9 +22,11 @@ from IPython.display import HTML, clear_output, display
 from delfin.remote_archive import (
     REMOTE_TEXT_CHUNK_BYTES as REMOTE_BACKEND_TEXT_CHUNK_BYTES,
     TEXT_PREVIEW_MAX_BYTES,
+    remote_copy,
     fetch_remote_file,
     line_col_from_remote_file_offset,
     list_remote_entries,
+    remote_move,
     normalize_remote_relative_path,
     read_remote_text_chunk,
     read_remote_text_preview,
@@ -128,6 +130,8 @@ def create_tab(ctx):
         "table_col_widgets": [],
         "table_csv_data": "",
         "table_panel_active": False,
+        "clipboard_paths": [],
+        "clipboard_mode": "",
     }
     scope_id = f"remote-archive-scope-{abs(id(state))}"
     remote_resize_mol_fn = f"remoteArchiveResizeMolViewer_{abs(id(state))}"
@@ -168,7 +172,7 @@ def create_tab(ctx):
         value="name",
         layout=widgets.Layout(width="98px", height="28px"),
     )
-    file_list = widgets.Select(
+    file_list = widgets.SelectMultiple(
         options=[],
         rows=22,
         layout=widgets.Layout(
@@ -1977,13 +1981,129 @@ def create_tab(ctx):
                 _render_selected_frame()
             return
 
-    def _selected_entry():
-        value = file_list.value
-        return _entry_by_relative_path(value)
+    def _selected_relative_paths():
+        raw = file_list.value
+        if isinstance(raw, (tuple, list)):
+            values = raw
+        elif raw:
+            values = (raw,)
+        else:
+            values = ()
+        selected = []
+        seen = set()
+        for value in values:
+            rel = str(value or "").strip()
+            if not rel or rel in seen:
+                continue
+            seen.add(rel)
+            selected.append(rel)
+        return selected
+
+    def _selected_entries():
+        selected = set(_selected_relative_paths())
+        if not selected:
+            return []
+        return [
+            entry for entry in state.get("filtered_entries", [])
+            if str(entry.get("relative_path", "")).strip() in selected
+        ]
 
     def _selected_entry():
-        value = file_list.value
-        return _entry_by_relative_path(value)
+        entries = _selected_entries()
+        return entries[0] if len(entries) == 1 else None
+
+    def _remote_clipboard_paths():
+        paths = []
+        seen = set()
+        for value in state.get("clipboard_paths", []) or []:
+            rel = str(value or "").strip()
+            if not rel or rel in seen:
+                continue
+            seen.add(rel)
+            paths.append(rel)
+        return paths
+
+    def _remote_clipboard_mode():
+        mode = str(state.get("clipboard_mode") or "").strip().lower()
+        return mode if mode in {"cut", "copy"} else ""
+
+    def _remote_clipboard_set(relative_paths, mode):
+        selected = []
+        seen = set()
+        for raw in relative_paths or []:
+            rel = normalize_remote_relative_path(raw)
+            if not rel or rel in seen:
+                continue
+            seen.add(rel)
+            selected.append(rel)
+        if not selected:
+            _set_status("Select item(s) first.", color="#d32f2f")
+            return
+        state["clipboard_paths"] = selected
+        state["clipboard_mode"] = mode
+        verb = "Cut" if mode == "cut" else "Copied"
+        _set_status(
+            f"{verb} {len(selected)} item(s). Open target folder and press Ctrl+V.",
+            color="#1976d2",
+        )
+
+    def _on_remote_cut(_button=None):
+        _remote_clipboard_set(_selected_relative_paths(), "cut")
+
+    def _on_remote_copy(_button=None):
+        _remote_clipboard_set(_selected_relative_paths(), "copy")
+
+    def _on_remote_paste(_button=None):
+        config = state.get("config")
+        clipboard_paths = _remote_clipboard_paths()
+        if not config:
+            _set_status("Configure Settings first.", color="#d32f2f")
+            return
+        if not clipboard_paths:
+            _set_status("Clipboard is empty. Use Ctrl+X or Ctrl+C first.", color="#d32f2f")
+            return
+        target_rel = normalize_remote_relative_path(state.get("current_relative_path", ""))
+        mode = _remote_clipboard_mode() or "cut"
+        try:
+            if mode == "copy":
+                result = remote_copy(
+                    config["host"], config["user"], config["remote_path"], config["port"],
+                    clipboard_paths, target_rel,
+                )
+            else:
+                result = remote_move(
+                    config["host"], config["user"], config["remote_path"], config["port"],
+                    clipboard_paths, target_rel,
+                )
+        except Exception as exc:
+            _set_status(
+                f"Remote paste failed: {html.escape(str(exc))}",
+                color="#d32f2f",
+            )
+            return
+
+        done = [str(item or "").strip() for item in result.get("done", []) if str(item or "").strip()]
+        errors = [str(item or "").strip() for item in result.get("errors", []) if str(item or "").strip()]
+        if mode == "cut":
+            remaining = [path for path in clipboard_paths if path not in set(done)]
+            state["clipboard_paths"] = remaining
+            if not remaining:
+                state["clipboard_mode"] = ""
+        target_label = "/" if not target_rel else f"/{target_rel}"
+        verb = "Moved" if mode == "cut" else "Copied"
+        if done and not errors:
+            _set_status(
+                f"{verb} {len(done)} item(s) to <code>{html.escape(target_label)}</code>.",
+                color="#2e7d32",
+            )
+        elif done and errors:
+            _set_status(
+                f"{verb} {len(done)} item(s), failed: {html.escape('; '.join(errors))}",
+                color="#e65100",
+            )
+        else:
+            _set_status(html.escape("; ".join(errors) or "Paste failed."), color="#d32f2f")
+        _refresh_listing(set_status=False)
 
     # -- File operation handlers -----------------------------------------------
 
@@ -2069,12 +2189,15 @@ def create_tab(ctx):
             ops_status_html.value = f'<span style="color:#d32f2f;">Duplicate failed: {html.escape(str(exc))}</span>'
 
     def _on_delete_click(_button=None):
-        entry = _selected_entry()
-        if not entry:
+        entries = _selected_entries()
+        if not entries:
             return
-        name = entry.get("name", "")
+        if len(entries) == 1:
+            prompt = f"<b>Delete</b> <code>{html.escape(entries[0].get('name', ''))}</code>?"
+        else:
+            prompt = f"<b>Delete</b> {len(entries)} selected item(s)?"
         confirm_panel.children = [
-            widgets.HTML(f"<b>Delete</b> <code>{html.escape(name)}</code>?"),
+            widgets.HTML(prompt),
             widgets.Button(description="Yes, delete", button_style="danger",
                           layout=widgets.Layout(width="90px", height="28px")),
             widgets.Button(description="Cancel",
@@ -2086,16 +2209,17 @@ def create_tab(ctx):
 
     def _on_delete_confirm(_button=None):
         config = state.get("config")
-        entry = _selected_entry()
+        entries = _selected_entries()
         confirm_panel.layout.display = "none"
-        if not config or not entry:
+        if not config or not entries:
             return
-        rel = normalize_remote_relative_path(entry.get("relative_path", ""))
-        if not rel:
+        rel_paths = [normalize_remote_relative_path(entry.get("relative_path", "")) for entry in entries]
+        rel_paths = [rel for rel in rel_paths if rel]
+        if not rel_paths:
             return
         try:
             result = remote_delete(config["host"], config["user"], config["remote_path"],
-                                  config["port"], [rel])
+                                  config["port"], rel_paths)
             deleted = result.get("deleted", [])
             errors = result.get("errors", [])
             if deleted and not errors:
@@ -2114,9 +2238,11 @@ def create_tab(ctx):
     def _update_buttons():
         config_ready = state.get("config") is not None
         has_parent = bool(normalize_remote_relative_path(state.get("current_relative_path", "")))
+        selected_entries = _selected_entries()
         selected = _selected_entry()
-        transfer_back_btn.disabled = not (config_ready and selected)
-        transfer_to_archive_btn.disabled = not (config_ready and selected)
+        has_selection = bool(selected_entries)
+        transfer_back_btn.disabled = not (config_ready and has_selection)
+        transfer_to_archive_btn.disabled = not (config_ready and has_selection)
         open_btn.disabled = not bool(selected)
         up_btn.disabled = (not config_ready) or (not has_parent)
         home_btn.disabled = not config_ready
@@ -2124,13 +2250,13 @@ def create_tab(ctx):
         file_list.disabled = not config_ready
         filter_input.disabled = not config_ready
         sort_dropdown.disabled = not config_ready
-        if not selected:
+        if not selected or not state.get("selected_remote_path"):
             copy_path_btn.disabled = True
         copy_btn.disabled = not bool(state.get("file_content"))
         new_folder_btn.disabled = not config_ready
         rename_btn.disabled = not (config_ready and selected)
         duplicate_btn.disabled = not (config_ready and selected)
-        delete_btn.disabled = not (config_ready and selected)
+        delete_btn.disabled = not (config_ready and has_selection)
         if not state.get("visualize_enabled"):
             _set_view_toggle(False, disabled=True)
 
@@ -2140,20 +2266,20 @@ def create_tab(ctx):
         if query:
             entries = [entry for entry in entries if query in str(entry.get("name") or "").lower()]
         state["filtered_entries"] = entries
+        previous_values = set(_selected_relative_paths())
         if not entries:
             file_list.options = [("(No matches)", "")]
-            file_list.index = 0
+            file_list.value = ()
             state["selected_entry"] = None
             _update_buttons()
             return
         file_list.options = [(_entry_label(entry), entry.get("relative_path", "")) for entry in entries]
-        previous = state.get("selected_entry") or {}
-        previous_value = previous.get("relative_path", "")
         available_values = {entry.get("relative_path", "") for entry in entries}
-        if previous_value in available_values:
-            file_list.value = previous_value
+        kept = tuple(value for value in previous_values if value in available_values)
+        if kept:
+            file_list.value = kept
         else:
-            file_list.index = None
+            file_list.value = ()
             state["selected_entry"] = None
         _update_buttons()
 
@@ -2185,7 +2311,7 @@ def create_tab(ctx):
             state["entries"] = []
             state["filtered_entries"] = []
             file_list.options = [("(Configure Settings first)", "")]
-            file_list.index = 0
+            file_list.value = ()
             _update_buttons()
             return
 
@@ -2205,7 +2331,7 @@ def create_tab(ctx):
             state["entries"] = []
             state["filtered_entries"] = []
             file_list.options = [("(Remote directory unavailable)", "")]
-            file_list.index = 0
+            file_list.value = ()
             _clear_preview("Could not load remote directory.")
             _set_status(html.escape(str(exc)), color="#d32f2f")
             _update_buttons()
@@ -2256,7 +2382,12 @@ def create_tab(ctx):
         _preview_selected_file(entry)
 
     def _open_selection(_button=None):
-        _open_entry(_selected_entry())
+        entry = _selected_entry()
+        if not entry:
+            if _selected_entries():
+                _set_status("Open works only with one selected item.", color="#d32f2f")
+            return
+        _open_entry(entry)
 
 
     def _preview_selected_file(entry):
@@ -2414,20 +2545,16 @@ def create_tab(ctx):
 
     def _start_transfer_back(local_target, destination_label):
         config = state.get("config")
-        entry = _selected_entry()
-        if not config or not entry:
-            _set_status("Select a remote file or directory first.", color="#d32f2f")
-            return
-        relative_path = normalize_remote_relative_path(entry.get("relative_path", ""))
-        if not relative_path:
-            _set_status("Select a remote file or directory first.", color="#d32f2f")
+        selected_paths = _selected_relative_paths()
+        if not config or not selected_paths:
+            _set_status("Select remote item(s) first.", color="#d32f2f")
             return
         local_target = Path(local_target).resolve()
         transfer_back_btn.disabled = True
         transfer_to_archive_btn.disabled = True
         try:
             job = create_download_job(
-                [relative_path],
+                selected_paths,
                 config["host"],
                 config["user"],
                 config["remote_path"],
@@ -2446,12 +2573,15 @@ def create_tab(ctx):
         transfer_jobs_panel.layout.display = "flex"
         _update_transfer_jobs_visibility()
         _render_transfer_jobs()
-        destination = local_target / Path(relative_path)
+        labels = selected_paths[:3]
+        label_text = ", ".join(html.escape(path) for path in labels)
+        if len(selected_paths) > 3:
+            label_text += f" (+{len(selected_paths) - 3} more)"
         _set_status(
             f"Started transfer job to {html.escape(destination_label)} "
             f"<code>{html.escape(job['job_id'])}</code> for "
-            f"<code>{html.escape(relative_path)}</code> into "
-            f"<code>{html.escape(str(destination))}</code>. "
+            f"{len(selected_paths)} item(s): <code>{label_text}</code> into "
+            f"<code>{html.escape(str(local_target))}</code>. "
             "The remote source will be removed only after rsync finishes successfully. "
             f"PID: <code>{int(pid)}</code>.",
             color="#2e7d32",
@@ -2593,10 +2723,34 @@ def create_tab(ctx):
 
     def _on_selection_change(change):
         _clear_selected_path_display()
+        selected_entries = _selected_entries()
         entry = _selected_entry()
         state["selected_entry"] = entry
-        if not entry:
+        if not selected_entries:
             _clear_preview()
+            _update_buttons()
+            return
+        if len(selected_entries) > 1:
+            state["selected_remote_path"] = ""
+            state["selected_file_path"] = None
+            state["selected_file_size"] = 0
+            state["selected_file_relative_path"] = ""
+            _reset_text_preview_state()
+            _reset_search_state()
+            _reset_visualization_state()
+            file_info_html.value = (
+                f"<b>{len(selected_entries)} selected item(s)</b> "
+                "<span style='color:#616161;'>(use Ctrl/Cmd+X, Ctrl/Cmd+C, Ctrl/Cmd+V)</span>"
+            )
+            download_btn.disabled = True
+            content_toolbar.layout.display = "none"
+            preview_html.value = (
+                "<div style='color:#616161; border:1px solid #e0e0e0; border-radius:6px; "
+                "padding:12px; background:#fafafa;'>"
+                "Multiple items selected. You can transfer them back, delete them, "
+                "or use <b>Ctrl/Cmd+X</b>, <b>Ctrl/Cmd+C</b> and <b>Ctrl/Cmd+V</b> inside the remote archive."
+                "</div>"
+            )
             _update_buttons()
             return
         if entry.get("is_dir"):
@@ -2627,9 +2781,20 @@ def create_tab(ctx):
     def _on_keyboard_action(change):
         action = str(change.get("new") or "").strip()
         keyboard_action_input.value = ""
-        if action != "open":
-            return
-        _open_selection()
+        if action == "open":
+            _open_selection()
+        elif action == "copy":
+            _on_remote_copy()
+        elif action == "cut":
+            _on_remote_cut()
+        elif action == "paste":
+            _on_remote_paste()
+        elif action == "delete":
+            _on_delete_click()
+        elif action == "deselect":
+            file_list.value = ()
+        elif action == "rename":
+            _on_rename_click()
 
     def _on_frame_change(change):
         if change.get("name") != "value":
@@ -4563,10 +4728,19 @@ def create_tab(ctx):
             if (selectEl.dataset.remoteEnterBound === '1') return;
             selectEl.dataset.remoteEnterBound = '1';
             selectEl.addEventListener('keydown', function(e) {{
-                if (!e || e.key !== 'Enter') return;
+                if (!e) return;
+                var action = '';
+                if ((e.ctrlKey || e.metaKey) && e.key === 'c') action = 'copy';
+                else if ((e.ctrlKey || e.metaKey) && e.key === 'x') action = 'cut';
+                else if ((e.ctrlKey || e.metaKey) && e.key === 'v') action = 'paste';
+                else if (e.key === 'Delete' || e.key === 'Backspace') action = 'delete';
+                else if (e.key === 'Enter') action = 'open';
+                else if (e.key === 'Escape') action = 'deselect';
+                else if (e.key === 'F2') action = 'rename';
+                if (!action) return;
                 e.preventDefault();
                 e.stopPropagation();
-                _setWidgetField(root, 'remote-cmd-keyboard-action', 'open');
+                _setWidgetField(root, 'remote-cmd-keyboard-action', action);
             }}, true);
             selectEl.addEventListener('dblclick', function(e) {{
                 e.preventDefault();
