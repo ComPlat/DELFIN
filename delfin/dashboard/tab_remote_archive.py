@@ -419,7 +419,7 @@ def create_tab(ctx):
         layout=widgets.Layout(flex="1 1 auto", min_width="120px", height="26px"),
     )
     table_scope_dd = widgets.Dropdown(
-        options=[("All folders", "all")],
+        options=[("All folders", "all"), ("Selection only", "selected")],
         value="all",
         layout=widgets.Layout(width="130px", height="26px"),
     )
@@ -4198,15 +4198,37 @@ def create_tab(ctx):
             return
 
         current_rel = state.get("current_relative_path", "")
-        table_status_html.value = '<span style="color:#1976d2;">Scanning remote folders...</span>'
+        scope = str(table_scope_dd.value or "all").strip()
+        selected_folders = []
+        if scope == "selected":
+            for entry in _selected_entries():
+                if not entry.get("is_dir"):
+                    continue
+                rel_path = normalize_remote_relative_path(entry.get("relative_path", ""))
+                if rel_path:
+                    selected_folders.append(rel_path)
+            if not selected_folders:
+                table_status_html.value = (
+                    '<span style="color:#d32f2f;">No folders selected.</span>'
+                )
+                return
+            table_status_html.value = (
+                f'<span style="color:#1976d2;">Scanning {len(selected_folders)} selected remote folder(s)...</span>'
+            )
+        else:
+            current_label = "/" if not current_rel else f"/{current_rel}"
+            table_status_html.value = (
+                f'<span style="color:#1976d2;">Scanning remote folders under '
+                f'<code>{html.escape(current_label)}</code>...</span>'
+            )
         ctx.set_busy(True)
         try:
-            # Use list_remote_folder_files to get all matching files in one SSH call
-            file_map = _list_remote_folder_files(
+            file_entries = _list_remote_folder_files(
                 config["host"], config["user"],
                 config["remote_path"], config["port"],
                 current_rel, target_file,
                 recursive=bool(table_recursive_cb.value),
+                folder_relative_paths=(selected_folders if scope == "selected" else None),
             )
         except Exception as exc:
             table_status_html.value = (
@@ -4215,7 +4237,7 @@ def create_tab(ctx):
             ctx.set_busy(False)
             return
 
-        if not file_map:
+        if not file_entries:
             table_status_html.value = '<span style="color:#d32f2f;">No matching files found.</span>'
             ctx.set_busy(False)
             return
@@ -4229,56 +4251,53 @@ def create_tab(ctx):
         _n_header_cols = len(headers) - 1
         rows = []
         missing = 0
+        processed_folders = []
+        seen_folders = set()
 
-        for folder_name, file_rel_paths in sorted(file_map.items()):
-            if not file_rel_paths:
+        for entry in file_entries:
+            folder_name = str(entry.get("folder_name") or "").strip() or "?"
+            if folder_name not in seen_folders:
+                seen_folders.add(folder_name)
+                processed_folders.append(folder_name)
+            file_rel_path = str(entry.get("relative_path") or "").strip()
+            content = str(entry.get("content") or "")
+            if not file_rel_path or not content:
                 rows.append([folder_name] + ["—"] * _n_header_cols)
                 missing += 1
                 continue
-            for file_rel_path in file_rel_paths:
+
+            json_data = None
+            if file_rel_path.lower().endswith(".json"):
                 try:
-                    local_path = fetch_remote_file(
-                        config["host"], config["user"],
-                        config["remote_path"], config["port"],
-                        file_rel_path,
-                    )
-                    content = Path(local_path).read_text(errors="replace")
+                    json_data = json.loads(content)
                 except Exception:
-                    rows.append([folder_name] + ["err"] * _n_header_cols)
-                    continue
+                    pass
 
-                json_data = None
-                if file_rel_path.lower().endswith(".json"):
-                    try:
-                        json_data = json.loads(content)
-                    except Exception:
-                        pass
-
-                col_values = [_extract_values(c, content, json_data) for c in cols]
-                row_count = max((len(vs) for vs in col_values), default=1)
-                for row_idx in range(row_count):
-                    row = [folder_name]
-                    for c, values in zip(cols, col_values):
-                        is_all = c.get("occ") == "all"
-                        if not values or values == ["—"]:
+            col_values = [_extract_values(c, content, json_data) for c in cols]
+            row_count = max((len(vs) for vs in col_values), default=1)
+            for row_idx in range(row_count):
+                row = [folder_name]
+                for c, values in zip(cols, col_values):
+                    is_all = c.get("occ") == "all"
+                    if not values or values == ["—"]:
+                        row.append("—")
+                        if is_all:
                             row.append("—")
+                    elif row_idx < len(values):
+                        v = values[row_idx]
+                        if isinstance(v, tuple):
+                            row.append(_format_table_output_value(v[0]))
                             if is_all:
-                                row.append("—")
-                        elif row_idx < len(values):
-                            v = values[row_idx]
-                            if isinstance(v, tuple):
-                                row.append(_format_table_output_value(v[0]))
-                                if is_all:
-                                    row.append(str(v[1]) if v[1] is not None else "—")
-                            else:
-                                row.append(_format_table_output_value(v))
-                                if is_all:
-                                    row.append("—")
+                                row.append(str(v[1]) if v[1] is not None else "—")
                         else:
-                            row.append("—")
+                            row.append(_format_table_output_value(v))
                             if is_all:
                                 row.append("—")
-                    rows.append(row)
+                    else:
+                        row.append("—")
+                        if is_all:
+                            row.append("—")
+                rows.append(row)
 
         ctx.set_busy(False)
         table_output_html.value = _render_extract_table_html(headers, rows)
@@ -4287,7 +4306,7 @@ def create_tab(ctx):
         _csv.writer(buf, delimiter=";").writerows([headers] + csv_rows)
         state["table_csv_data"] = buf.getvalue()
         table_csv_btn.layout.display = "inline-flex"
-        folder_count = len(file_map)
+        folder_count = len(processed_folders)
         row_count = len(rows)
         msg = f'<span style="color:#2e7d32;">{folder_count} folder(s) processed'
         if row_count != folder_count:

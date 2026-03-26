@@ -424,15 +424,27 @@ def line_col_from_remote_file_offset(host, user, remote_path, port, relative_pat
 
 
 def list_remote_folder_files(host, user, remote_path, port, relative_path,
-                             filename_pattern, recursive=False, max_content_bytes=2 * 1024 * 1024):
-    """List subdirectories and read matching files for table extraction.
+                             filename_pattern, recursive=False, max_content_bytes=2 * 1024 * 1024,
+                             folder_relative_paths=None, include_current=False):
+    """Collect matching files for remote table extraction in one SSH call.
 
-    Returns list of dicts: {folder_name, relative_path, content}.
-    One SSH call runs a Python script on the remote server.
+    When *folder_relative_paths* is provided, only those folders are scanned.
+    Otherwise the helper scans either the current folder (*include_current=True*)
+    or the direct child folders below *relative_path*.
+
+    Returns list of dicts: ``{folder_name, relative_path, content}``, where
+    ``relative_path`` points to the matched file relative to the configured
+    remote root.
     """
     host, user, remote_path, port = normalize_ssh_transfer_settings(host, user, remote_path, port)
     root = build_remote_absolute_path(remote_path, "")
     rel = normalize_remote_relative_path(relative_path)
+    folder_paths = []
+    for folder_path in folder_relative_paths or []:
+        normalized = normalize_remote_relative_path(folder_path)
+        if normalized:
+            folder_paths.append(normalized)
+    folders_json = json.dumps(folder_paths)
     script = textwrap.dedent("""
         import fnmatch, json, os, sys
         root = os.path.realpath(sys.argv[1])
@@ -440,21 +452,47 @@ def list_remote_folder_files(host, user, remote_path, port, relative_path,
         pattern = sys.argv[3]
         recursive = sys.argv[4] == "1"
         max_bytes = int(sys.argv[5])
+        selected_folders = json.loads(sys.argv[6])
+        include_current = sys.argv[7] == "1"
         base = root if not relative else os.path.realpath(os.path.join(root, relative))
         if os.path.commonpath([base, root]) != root:
             raise SystemExit("Path escapes root.")
         if not os.path.isdir(base):
             raise SystemExit("Directory not found.")
         results = []
-        try:
-            folders = sorted(
-                [e.name for e in os.scandir(base) if e.is_dir(follow_symlinks=False)],
-                key=lambda n: n.lower(),
-            )
-        except OSError:
-            folders = []
-        for folder_name in folders:
-            folder_path = os.path.join(base, folder_name)
+
+        def _folder_label(folder_path):
+            rel_to_base = os.path.relpath(folder_path, base).replace(os.sep, "/")
+            if rel_to_base == ".":
+                base_name = os.path.basename(base.rstrip(os.sep))
+                return base_name or "/"
+            return rel_to_base
+
+        folder_targets = []
+        if selected_folders:
+            for folder_rel in selected_folders:
+                folder_path = os.path.realpath(os.path.join(root, folder_rel))
+                if os.path.commonpath([folder_path, root]) != root:
+                    continue
+                if not os.path.isdir(folder_path):
+                    continue
+                folder_targets.append((_folder_label(folder_path), folder_path))
+        elif include_current:
+            folder_targets.append((_folder_label(base), base))
+        else:
+            try:
+                folder_targets = sorted(
+                    [
+                        (entry.name, os.path.realpath(os.path.join(base, entry.name)))
+                        for entry in os.scandir(base)
+                        if entry.is_dir(follow_symlinks=False)
+                    ],
+                    key=lambda item: item[0].lower(),
+                )
+            except OSError:
+                folder_targets = []
+
+        for folder_name, folder_path in folder_targets:
             found = []
             if recursive:
                 for dirpath, _dirs, files in os.walk(folder_path):
@@ -476,9 +514,9 @@ def list_remote_folder_files(host, user, remote_path, port, relative_path,
                 continue
             for fp in sorted(found):
                 try:
-                    rel_to_base = os.path.relpath(fp, base).replace(os.sep, "/")
+                    rel_to_root = os.path.relpath(fp, root).replace(os.sep, "/")
                 except ValueError:
-                    rel_to_base = os.path.basename(fp)
+                    rel_to_root = os.path.basename(fp)
                 try:
                     with open(fp, "rb") as f:
                         raw = f.read(max_bytes)
@@ -487,7 +525,7 @@ def list_remote_folder_files(host, user, remote_path, port, relative_path,
                     content = ""
                 results.append({
                     "folder_name": folder_name,
-                    "relative_path": rel_to_base,
+                    "relative_path": rel_to_root,
                     "content": content,
                 })
         print(json.dumps(results))
@@ -497,6 +535,8 @@ def list_remote_folder_files(host, user, remote_path, port, relative_path,
             root, rel, filename_pattern,
             "1" if recursive else "0",
             int(max_content_bytes),
+            folders_json,
+            "1" if include_current else "0",
         )
     )
     output = _run_ssh_command(host, user, port, command)
