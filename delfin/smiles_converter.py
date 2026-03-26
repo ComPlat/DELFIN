@@ -3759,15 +3759,42 @@ def _fit_secondary_metal_geometry_from_donors(
     donor_fit_weights: Optional[List[float]] = None,
 ):
     """Fit an ideal coordination geometry while optionally honoring anchor donors."""
+    fits = _enumerate_secondary_metal_geometry_fits(
+        donor_positions,
+        donor_symbols,
+        metal_symbol,
+        constrained_indices=constrained_indices,
+        bite_distance_constraints=bite_distance_constraints,
+        donor_target_lengths=donor_target_lengths,
+        donor_fit_weights=donor_fit_weights,
+        max_candidates=1,
+    )
+    if not fits:
+        return None
+    metal_pos, geom_code, transformed, _score = fits[0]
+    return metal_pos, geom_code, transformed
+
+
+def _enumerate_secondary_metal_geometry_fits(
+    donor_positions,
+    donor_symbols: List[str],
+    metal_symbol: str,
+    constrained_indices: Optional[List[int]] = None,
+    bite_distance_constraints: Optional[List[Tuple[int, int, float]]] = None,
+    donor_target_lengths: Optional[List[float]] = None,
+    donor_fit_weights: Optional[List[float]] = None,
+    max_candidates: int = 4,
+) -> List[Tuple[object, str, object, float]]:
+    """Return ranked geometry fits for a secondary metal donor set."""
     try:
         import itertools
         import numpy as np
     except ImportError:
-        return None
+        return []
 
     donors = np.asarray(donor_positions, dtype=float)
     if donors.ndim != 2 or donors.shape[0] != len(donor_symbols) or donors.shape[0] < 2:
-        return None
+        return []
 
     n_coord = donors.shape[0]
     target_lengths = [
@@ -3784,7 +3811,7 @@ def _fit_secondary_metal_geometry_from_donors(
     )
     geometry_codes = _secondary_metal_geometry_codes(n_coord, metal_symbol)
     if not geometry_codes:
-        return None
+        return []
 
     fit_indices = sorted({
         int(idx) for idx in (constrained_indices or [])
@@ -3808,7 +3835,7 @@ def _fit_secondary_metal_geometry_from_donors(
     else:
         preferred_cn4 = None
 
-    best = None
+    ranked_candidates: List[Tuple[float, float, float, float, object, str, object]] = []
     for geom_code in geometry_codes:
         vectors = _TOPO_GEOMETRY_VECTORS.get(geom_code)
         if not vectors or len(vectors) != n_coord:
@@ -3856,13 +3883,69 @@ def _fit_secondary_metal_geometry_from_donors(
                     bite_errors.append((actual_dist - expected_dist) ** 2)
                 if bite_errors:
                     bite_rmsd = float(np.sqrt(np.mean(bite_errors)))
-            score = rmsd_fit + 0.10 * rmsd_all + 0.55 * bite_rmsd
-            if preferred_cn4 is not None and geom_code != preferred_cn4:
-                score += nonpreferred_cn4_penalty
-            if best is None or score < best[0]:
-                best = (score, metal_pos, geom_code, transformed)
+                score = rmsd_fit + 0.10 * rmsd_all + 0.55 * bite_rmsd
+                if preferred_cn4 is not None and geom_code != preferred_cn4:
+                    score += nonpreferred_cn4_penalty
+                ranked_candidates.append(
+                    (
+                        float(score),
+                        float(rmsd_fit),
+                        float(rmsd_all),
+                        float(bite_rmsd),
+                        np.asarray(metal_pos, dtype=float),
+                        geom_code,
+                        np.asarray(transformed, dtype=float),
+                    )
+                )
 
-    return None if best is None else best[1:]
+    if not ranked_candidates:
+        return []
+
+    ranked_candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+
+    selected: List[Tuple[object, str, object, float]] = []
+
+    def _is_distinct_geometry_candidate(
+        transformed,
+        geom_code: str,
+        existing: List[Tuple[object, str, object, float]],
+    ) -> bool:
+        transformed_arr = np.asarray(transformed, dtype=float)
+        for _pos, prev_geom, prev_transformed, _score in existing:
+            if geom_code != prev_geom:
+                continue
+            prev_arr = np.asarray(prev_transformed, dtype=float)
+            if prev_arr.shape != transformed_arr.shape:
+                continue
+            deltas = np.linalg.norm(prev_arr - transformed_arr, axis=1)
+            if float(np.max(deltas)) < 0.22:
+                return False
+        return True
+
+    first = ranked_candidates[0]
+    selected.append((first[4], first[5], first[6], first[0]))
+    seen_geometries = {first[5]}
+
+    for candidate in ranked_candidates[1:]:
+        if len(selected) >= max(1, int(max_candidates)):
+            break
+        geom_code = candidate[5]
+        if geom_code in seen_geometries:
+            continue
+        if not _is_distinct_geometry_candidate(candidate[6], geom_code, selected):
+            continue
+        selected.append((candidate[4], geom_code, candidate[6], candidate[0]))
+        seen_geometries.add(geom_code)
+
+    for candidate in ranked_candidates[1:]:
+        if len(selected) >= max(1, int(max_candidates)):
+            break
+        geom_code = candidate[5]
+        if not _is_distinct_geometry_candidate(candidate[6], geom_code, selected):
+            continue
+        selected.append((candidate[4], geom_code, candidate[6], candidate[0]))
+
+    return selected[:max(1, int(max_candidates))]
 
 
 def _fit_secondary_metal_position_from_donors(
@@ -3873,15 +3956,38 @@ def _fit_secondary_metal_position_from_donors(
     donor_fit_weights: Optional[List[float]] = None,
 ):
     """Fit a secondary metal center to already-placed donor atoms."""
+    fits = _enumerate_secondary_metal_position_fits(
+        donor_positions,
+        donor_symbols,
+        metal_symbol,
+        donor_target_lengths=donor_target_lengths,
+        donor_fit_weights=donor_fit_weights,
+        max_candidates=1,
+    )
+    if not fits:
+        return None
+    metal_pos, geom_code, _score = fits[0]
+    return metal_pos, geom_code
+
+
+def _enumerate_secondary_metal_position_fits(
+    donor_positions,
+    donor_symbols: List[str],
+    metal_symbol: str,
+    donor_target_lengths: Optional[List[float]] = None,
+    donor_fit_weights: Optional[List[float]] = None,
+    max_candidates: int = 4,
+) -> List[Tuple[object, str, float]]:
+    """Return ranked metal-position fits for already placed donors."""
     try:
         import itertools
         import numpy as np
     except ImportError:
-        return None
+        return []
 
     donors = np.asarray(donor_positions, dtype=float)
     if donors.ndim != 2 or donors.shape[0] != len(donor_symbols) or donors.shape[0] < 2:
-        return None
+        return []
 
     n_coord = donors.shape[0]
     target_lengths = [
@@ -3898,9 +4004,9 @@ def _fit_secondary_metal_position_from_donors(
     )
     geometry_codes = _secondary_metal_geometry_codes(n_coord, metal_symbol)
     if not geometry_codes:
-        return None
+        return []
 
-    best = None
+    ranked_candidates: List[Tuple[float, float, object, str]] = []
     for geom_code in geometry_codes:
         vectors = _TOPO_GEOMETRY_VECTORS.get(geom_code)
         if not vectors or len(vectors) != n_coord:
@@ -3945,10 +4051,55 @@ def _fit_secondary_metal_position_from_donors(
             rmsd = float(np.sqrt(np.sum(fit_weights * resid) / max(np.sum(fit_weights), 1e-12)))
             metal_pos = donor_centroid - model_centroid @ rot.T
             score = rmsd
-            if best is None or score < best[0]:
-                best = (score, metal_pos, geom_code)
+            ranked_candidates.append(
+                (float(score), float(rmsd), np.asarray(metal_pos, dtype=float), geom_code)
+            )
 
-    return None if best is None else best[1:]
+    if not ranked_candidates:
+        return []
+
+    ranked_candidates.sort(key=lambda item: (item[0], item[1]))
+
+    selected: List[Tuple[object, str, float]] = []
+
+    def _is_distinct_position_candidate(
+        metal_pos,
+        geom_code: str,
+        existing: List[Tuple[object, str, float]],
+    ) -> bool:
+        metal_arr = np.asarray(metal_pos, dtype=float)
+        for prev_pos, prev_geom, _score in existing:
+            if geom_code != prev_geom:
+                continue
+            prev_arr = np.asarray(prev_pos, dtype=float)
+            if float(np.linalg.norm(prev_arr - metal_arr)) < 0.20:
+                return False
+        return True
+
+    first = ranked_candidates[0]
+    selected.append((first[2], first[3], first[0]))
+    seen_geometries = {first[3]}
+
+    for candidate in ranked_candidates[1:]:
+        if len(selected) >= max(1, int(max_candidates)):
+            break
+        geom_code = candidate[3]
+        if geom_code in seen_geometries:
+            continue
+        if not _is_distinct_position_candidate(candidate[2], geom_code, selected):
+            continue
+        selected.append((candidate[2], geom_code, candidate[0]))
+        seen_geometries.add(geom_code)
+
+    for candidate in ranked_candidates[1:]:
+        if len(selected) >= max(1, int(max_candidates)):
+            break
+        geom_code = candidate[3]
+        if not _is_distinct_position_candidate(candidate[2], geom_code, selected):
+            continue
+        selected.append((candidate[2], geom_code, candidate[0]))
+
+    return selected[:max(1, int(max_candidates))]
 
 
 def _secondary_module_fragment_is_movable(
@@ -5621,6 +5772,7 @@ def _assemble_secondary_metal_coordination_modules(
     mol,
     decomposition: _HybridHaptoDecomposition,
     hapto_groups: List[Tuple[int, List[int]]],
+    fit_variant_plan: Optional[Dict[int, int]] = None,
 ) -> Tuple[set, set, set]:
     """Build secondary metal coordination spheres from donor fragments."""
     if not RDKIT_AVAILABLE or mol is None or decomposition is None or not hapto_groups:
@@ -5651,6 +5803,7 @@ def _assemble_secondary_metal_coordination_modules(
         metal_sym = atom.GetSymbol()
         if metal_sym not in _METAL_SET or metal_idx in hapto_metals:
             continue
+        variant_rank = max(0, int((fit_variant_plan or {}).get(metal_idx, 0)))
 
         donor_indices = [
             nbr.GetIdx()
@@ -5800,7 +5953,7 @@ def _assemble_secondary_metal_coordination_modules(
                         (donor_slots[donor_i], donor_slots[donor_j], float(expected_dist))
                     )
 
-        fit = _fit_secondary_metal_geometry_from_donors(
+        fit_candidates = _enumerate_secondary_metal_geometry_fits(
             donor_positions,
             donor_symbols,
             metal_sym,
@@ -5808,18 +5961,22 @@ def _assemble_secondary_metal_coordination_modules(
             bite_distance_constraints=bite_distance_constraints,
             donor_target_lengths=donor_target_lengths,
             donor_fit_weights=donor_fit_weights,
+            max_candidates=max(variant_rank + 1, 4),
         )
+        fit = fit_candidates[min(variant_rank, len(fit_candidates) - 1)] if fit_candidates else None
         if fit is None:
-            fallback = _fit_secondary_metal_position_from_donors(
+            fallback_candidates = _enumerate_secondary_metal_position_fits(
                 donor_positions,
                 donor_symbols,
                 metal_sym,
                 donor_target_lengths=donor_target_lengths,
                 donor_fit_weights=donor_fit_weights,
+                max_candidates=max(variant_rank + 1, 4),
             )
+            fallback = fallback_candidates[min(variant_rank, len(fallback_candidates) - 1)] if fallback_candidates else None
             if fallback is None:
                 continue
-            metal_pos, geom_code = fallback
+            metal_pos, geom_code, _fit_score = fallback
             conf.SetAtomPosition(
                 metal_idx,
                 Point3D(float(metal_pos[0]), float(metal_pos[1]), float(metal_pos[2])),
@@ -5835,7 +5992,7 @@ def _assemble_secondary_metal_coordination_modules(
             )
             continue
 
-        metal_pos, geom_code, target_positions = fit
+        metal_pos, geom_code, target_positions, _fit_score = fit
         donor_target_map: Dict[int, np.ndarray] = {
             donor_idx: np.asarray(target_positions[slot_idx], dtype=float)
             for slot_idx, donor_idx in enumerate(donor_indices)
@@ -5882,7 +6039,7 @@ def _assemble_secondary_metal_coordination_modules(
             for donor_idx in donor_indices:
                 pos = conf.GetAtomPosition(donor_idx)
                 donor_positions.append(np.array([pos.x, pos.y, pos.z], dtype=float))
-            refit = _fit_secondary_metal_geometry_from_donors(
+            refit_candidates = _enumerate_secondary_metal_geometry_fits(
                 donor_positions,
                 donor_symbols,
                 metal_sym,
@@ -5890,9 +6047,11 @@ def _assemble_secondary_metal_coordination_modules(
                 bite_distance_constraints=bite_distance_constraints,
                 donor_target_lengths=donor_target_lengths,
                 donor_fit_weights=donor_fit_weights,
+                max_candidates=max(variant_rank + 1, 4),
             )
+            refit = refit_candidates[min(variant_rank, len(refit_candidates) - 1)] if refit_candidates else None
             if refit is not None:
-                metal_pos, geom_code, target_positions = refit
+                metal_pos, geom_code, target_positions, _fit_score = refit
                 donor_target_map = {
                     donor_idx: np.asarray(target_positions[slot_idx], dtype=float)
                     for slot_idx, donor_idx in enumerate(donor_indices)
@@ -6051,7 +6210,7 @@ def _assemble_secondary_metal_coordination_modules(
             for donor_idx in donor_indices:
                 pos = conf.GetAtomPosition(donor_idx)
                 donor_positions.append(np.array([pos.x, pos.y, pos.z], dtype=float))
-            refit = _fit_secondary_metal_geometry_from_donors(
+            refit_candidates = _enumerate_secondary_metal_geometry_fits(
                 donor_positions,
                 donor_symbols,
                 metal_sym,
@@ -6059,9 +6218,11 @@ def _assemble_secondary_metal_coordination_modules(
                 bite_distance_constraints=bite_distance_constraints,
                 donor_target_lengths=donor_target_lengths,
                 donor_fit_weights=donor_fit_weights,
+                max_candidates=max(variant_rank + 1, 4),
             )
+            refit = refit_candidates[min(variant_rank, len(refit_candidates) - 1)] if refit_candidates else None
             if refit is not None:
-                refit_metal_pos, refit_geom_code, _target_positions = refit
+                refit_metal_pos, refit_geom_code, _target_positions, _refit_score = refit
                 refit_err = _module_error(refit_metal_pos)
                 if refit_err + 1e-9 < best_metal_err:
                     best_metal_pos = np.asarray(refit_metal_pos, dtype=float)
@@ -6831,6 +6992,7 @@ def _build_multimetal_hapto_sequential(
     mol,
     hapto_groups: List[Tuple[int, List[int]]],
     decomposition: '_HybridHaptoDecomposition',
+    secondary_variant_plan: Optional[Dict[int, int]] = None,
 ):
     """Sequential multi-metal builder with rigid-body clash-free placement.
 
@@ -7113,6 +7275,7 @@ def _build_multimetal_hapto_sequential(
     # ==== STEP 3: Place secondary (non-hapto) metals ====
     for metal_idx in sorted(non_hapto_metals):
         metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+        variant_rank = max(0, int((secondary_variant_plan or {}).get(metal_idx, 0)))
         # Collect donors that are already placed (in trusted set)
         donor_indices = []
         for nbr in mol.GetAtomWithIdx(metal_idx).GetNeighbors():
@@ -7152,13 +7315,18 @@ def _build_multimetal_hapto_sequential(
             hapto_center = np.mean([_gp(conf, mi) for mi in hapto_metal_set], axis=0)
             avg_len = np.mean(target_lengths)
 
-            fit_result = _fit_secondary_metal_position_from_donors(
+            fit_candidates = _enumerate_secondary_metal_position_fits(
                 donor_positions, donor_symbols, metal_sym,
                 donor_target_lengths=target_lengths,
+                max_candidates=max(variant_rank + 1, 4),
+            )
+            fit_result = (
+                fit_candidates[min(variant_rank, len(fit_candidates) - 1)]
+                if fit_candidates else None
             )
             geom_code = "SVD"
             if fit_result is not None:
-                metal_pos, geom_code = fit_result
+                metal_pos, geom_code, _fit_score = fit_result
             else:
                 metal_pos = np.mean(donor_positions, axis=0)
 
@@ -7226,6 +7394,29 @@ def _build_multimetal_hapto_sequential(
                             ])
                             candidates.append(center + d_vec * center_len)
 
+                scored_candidates: List[Tuple[float, float, object]] = []
+                if fit_result is not None:
+                    min_clash_fit = min(
+                        (float(np.linalg.norm(np.asarray(metal_pos, dtype=float) - _gp(conf, ti)))
+                         for ti in trusted if ti not in all_metals),
+                        default=999.0,
+                    )
+                    min_hm_fit = min(
+                        float(np.linalg.norm(np.asarray(metal_pos, dtype=float) - _gp(conf, hm)))
+                        for hm in hapto_metal_set
+                    )
+                    ml_err_fit = sum(
+                        (float(np.linalg.norm(np.asarray(metal_pos, dtype=float) - np.array(dp2))) - tl2) ** 2
+                        for dp2, tl2 in zip(donor_positions, target_lengths)
+                    )
+                    scored_candidates.append(
+                        (
+                            -ml_err_fit * 2.0 + min(min_clash_fit, 3.0) * 0.3 + min(min_hm_fit, 4.0) * 0.12,
+                            min_clash_fit,
+                            np.asarray(metal_pos, dtype=float),
+                        )
+                    )
+
                 for clash_thresh in (1.8, 1.0):
                     for cand in candidates:
                         min_hm = min(
@@ -7246,23 +7437,31 @@ def _build_multimetal_hapto_sequential(
                         if min_clash < clash_thresh:
                             continue
                         score = -ml_err * 2.0 + min(min_clash, 3.0) * 0.3
-                        if score > best_score:
-                            best_score = score
-                            best_cand = cand
-                    if best_score > -1e9:
-                        break  # found with stricter clash threshold
+                        score += min(min_hm, 4.0) * 0.12
+                        scored_candidates.append((score, min_clash, np.asarray(cand, dtype=float)))
+                    if scored_candidates:
+                        break
 
-                if best_score > -1e9:
-                    metal_pos = best_cand
+                if scored_candidates:
+                    scored_candidates.sort(key=lambda item: (-item[0], -item[1]))
+                    unique_candidates: List[Tuple[float, float, object]] = []
+                    for score, min_clash, cand in scored_candidates:
+                        if any(
+                            float(np.linalg.norm(np.asarray(cand, dtype=float) - np.asarray(prev_cand, dtype=float))) < 0.28
+                            for _score_prev, _clash_prev, prev_cand in unique_candidates
+                        ):
+                            continue
+                        unique_candidates.append((score, min_clash, cand))
+                    chosen_idx = min(variant_rank, len(unique_candidates) - 1)
+                    best_score, best_min_clash, best_cand = unique_candidates[chosen_idx]
+                    metal_pos = np.asarray(best_cand, dtype=float)
                     logger.info(
-                        "SEARCH: found position, score=%.2f, "
+                        "SEARCH: selected ranked position %d/%d, score=%.2f, "
                         "min_clash=%.2f, ml_dists=%s",
+                        chosen_idx + 1,
+                        len(unique_candidates),
                         best_score,
-                        min(
-                            (float(np.linalg.norm(best_cand - _gp(conf, ti)))
-                             for ti in trusted if ti not in all_metals),
-                            default=999.0,
-                        ),
+                        best_min_clash,
                         [f"{float(np.linalg.norm(best_cand - np.array(dp))):.2f}"
                          for dp in donor_positions],
                     )
@@ -7716,10 +7915,40 @@ def _build_multimetal_hapto_sequential(
     return scaffold_mol
 
 
+def _secondary_metal_variant_plans(
+    mol,
+    hapto_groups: List[Tuple[int, List[int]]],
+    max_alternates_per_metal: int = 2,
+) -> List[Tuple[str, Dict[int, int]]]:
+    """Return ranked secondary-metal variant plans for hybrid hapto building."""
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
+        return [("hybrid", {})]
+
+    hapto_metals = {metal_idx for metal_idx, _grp in hapto_groups}
+    plans: List[Tuple[str, Dict[int, int]]] = [("hybrid", {})]
+    for atom in mol.GetAtoms():
+        metal_idx = atom.GetIdx()
+        if atom.GetSymbol() not in _METAL_SET or metal_idx in hapto_metals:
+            continue
+        donor_count = sum(
+            1
+            for nbr in atom.GetNeighbors()
+            if nbr.GetAtomicNum() > 1 and nbr.GetSymbol() not in _METAL_SET
+        )
+        if donor_count < 2:
+            continue
+        for rank in range(1, max(1, int(max_alternates_per_metal)) + 1):
+            plans.append(
+                (f"hybrid-secondary-{atom.GetSymbol()}{metal_idx}-alt{rank}", {metal_idx: rank})
+            )
+    return plans
+
+
 def _build_hybrid_hapto_complex(
     mol,
     hapto_groups: List[Tuple[int, List[int]]],
     preview_store: Optional[List[Tuple[str, str]]] = None,
+    secondary_variant_plan: Optional[Dict[int, int]] = None,
 ):
     """Assemble a hapto complex from a scaffold plus rigid ligand fragments."""
     if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
@@ -7733,7 +7962,12 @@ def _build_hybrid_hapto_complex(
     n_metals = sum(1 for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET)
     if n_metals >= 2 and decomposition is not None:
         try:
-            seq_result = _build_multimetal_hapto_sequential(mol, hapto_groups, decomposition)
+            seq_result = _build_multimetal_hapto_sequential(
+                mol,
+                hapto_groups,
+                decomposition,
+                secondary_variant_plan=secondary_variant_plan,
+            )
         except Exception as e:
             logger.debug("Sequential multi-metal builder failed: %s", e)
             seq_result = None
@@ -7825,6 +8059,7 @@ def _build_hybrid_hapto_complex(
         scaffold_mol,
         decomposition,
         hapto_groups,
+        fit_variant_plan=secondary_variant_plan,
     )
     trusted_atoms |= secondary_module_atoms
 
@@ -11769,6 +12004,158 @@ def _heavy_graph_exact_match_ok(
         return True
 
 
+def _nonmetal_fragment_ids(mol) -> Dict[int, int]:
+    """Return connected-component ids for heavy non-metal atoms."""
+    if not RDKIT_AVAILABLE or mol is None:
+        return {}
+    adj: Dict[int, set] = {}
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+            continue
+        adj[atom.GetIdx()] = set()
+    for bond in mol.GetBonds():
+        bi = bond.GetBeginAtomIdx()
+        bj = bond.GetEndAtomIdx()
+        if bi in adj and bj in adj:
+            adj[bi].add(bj)
+            adj[bj].add(bi)
+
+    frag_id_by_atom: Dict[int, int] = {}
+    next_frag_id = 0
+    for start in sorted(adj):
+        if start in frag_id_by_atom:
+            continue
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            if node in frag_id_by_atom:
+                continue
+            frag_id_by_atom[node] = next_frag_id
+            stack.extend(adj.get(node, set()) - set(frag_id_by_atom))
+        next_frag_id += 1
+    return frag_id_by_atom
+
+
+def _metal_aware_coordination_ok(
+    mol,
+    conf_id: int,
+    hapto_groups: Optional[List[Tuple[int, List[int]]]] = None,
+) -> bool:
+    """Return True when metal-centered donor fragments match the intended model."""
+    if not RDKIT_AVAILABLE or mol is None:
+        return True
+    try:
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return True
+
+    frag_id_by_atom = _nonmetal_fragment_ids(mol)
+    by_metal: Dict[int, List[List[int]]] = {}
+    hapto_atom_to_metal: Dict[int, int] = {}
+    for metal_idx, group_atoms in (hapto_groups or []):
+        by_metal.setdefault(int(metal_idx), []).append(list(group_atoms))
+        for atom_idx in group_atoms:
+            hapto_atom_to_metal[int(atom_idx)] = int(metal_idx)
+
+    def _dist(i: int, j: int) -> float:
+        pi = conf.GetAtomPosition(i)
+        pj = conf.GetAtomPosition(j)
+        return math.sqrt(
+            (pi.x - pj.x) ** 2 + (pi.y - pj.y) ** 2 + (pi.z - pj.z) ** 2
+        )
+
+    for metal in mol.GetAtoms():
+        if metal.GetSymbol() not in _METAL_SET:
+            continue
+        metal_idx = metal.GetIdx()
+        metal_sym = metal.GetSymbol()
+        metal_hapto_groups = by_metal.get(metal_idx, [])
+        metal_hapto_atoms = {
+            atom_idx for group_atoms in metal_hapto_groups for atom_idx in group_atoms
+        }
+
+        # Hapto consistency: each expected group should retain a plausible
+        # metal-centroid distance after candidate selection.
+        for group_atoms in metal_hapto_groups:
+            if not group_atoms:
+                continue
+            pts = [conf.GetAtomPosition(atom_idx) for atom_idx in group_atoms]
+            centroid = (
+                sum(p.x for p in pts) / len(pts),
+                sum(p.y for p in pts) / len(pts),
+                sum(p.z for p in pts) / len(pts),
+            )
+            mpos = conf.GetAtomPosition(metal_idx)
+            mc_dist = math.sqrt(
+                (centroid[0] - mpos.x) ** 2
+                + (centroid[1] - mpos.y) ** 2
+                + (centroid[2] - mpos.z) ** 2
+            )
+            target_mc = _target_mc_dist(metal_sym, len(group_atoms))
+            if abs(mc_dist - target_mc) > 0.70:
+                return False
+
+        # Fragment-aware donor consistency for non-hapto donors.
+        expected_frag_donors: Dict[int, Counter] = {}
+        expected_donor_atom_indices: set = set()
+        for nbr in metal.GetNeighbors():
+            donor_idx = nbr.GetIdx()
+            if nbr.GetAtomicNum() <= 1 or nbr.GetSymbol() in _METAL_SET:
+                continue
+            if donor_idx in metal_hapto_atoms:
+                continue
+            expected_donor_atom_indices.add(donor_idx)
+            frag_id = frag_id_by_atom.get(donor_idx)
+            if frag_id is None:
+                continue
+            expected_frag_donors.setdefault(frag_id, Counter())[nbr.GetSymbol()] += 1
+
+        if expected_frag_donors:
+            observed_frag_donors: Dict[int, Counter] = {}
+            for atom in mol.GetAtoms():
+                atom_idx = atom.GetIdx()
+                if atom_idx == metal_idx:
+                    continue
+                if atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+                    continue
+                if atom_idx in metal_hapto_atoms:
+                    continue
+                frag_id = frag_id_by_atom.get(atom_idx)
+                if frag_id is None:
+                    continue
+                dist = _dist(metal_idx, atom_idx)
+                target = _get_ml_bond_length(metal_sym, atom.GetSymbol())
+                # Count atoms that genuinely occupy the coordination shell.
+                if dist <= target + 0.45:
+                    observed_frag_donors.setdefault(frag_id, Counter())[atom.GetSymbol()] += 1
+
+            for frag_id, expected_counter in expected_frag_donors.items():
+                observed_counter = observed_frag_donors.get(frag_id, Counter())
+                for donor_sym, expected_count in expected_counter.items():
+                    if observed_counter.get(donor_sym, 0) < expected_count:
+                        return False
+
+            # For secondary/non-hapto metals, reject foreign fragments that
+            # enter the first coordination shell unexpectedly.
+            if not metal_hapto_groups:
+                expected_frag_ids = set(expected_frag_donors.keys())
+                for atom in mol.GetAtoms():
+                    atom_idx = atom.GetIdx()
+                    if atom_idx == metal_idx:
+                        continue
+                    if atom.GetAtomicNum() <= 1 or atom.GetSymbol() in _METAL_SET:
+                        continue
+                    frag_id = frag_id_by_atom.get(atom_idx)
+                    if frag_id is None or frag_id in expected_frag_ids:
+                        continue
+                    dist = _dist(metal_idx, atom_idx)
+                    intrusion_limit = _get_ml_bond_length(metal_sym, atom.GetSymbol()) + 0.15
+                    if dist <= intrusion_limit:
+                        return False
+
+    return True
+
+
 def _organic_fragment_signature(smiles: str) -> "frozenset | None":
     """Return an order-independent connectivity signature for organic fragments."""
     if not RDKIT_AVAILABLE:
@@ -12280,6 +12667,83 @@ def _ml_distance_range(metal_symbol: str, donor_symbol: str) -> Tuple[float, flo
     return (1.4, 3.5)
 
 
+def _cn4_geometry_penalties(
+    metal_pos,
+    coord_positions: List[object],
+    angles: List[float],
+) -> Tuple[float, float]:
+    """Return ``(tetra_pen, square_pen)`` for a 4-coordinate center."""
+    tetra_pen = sum(abs(a - 109.5) for a in angles)
+    square_targets = [90.0, 90.0, 90.0, 90.0, 180.0, 180.0]
+    square_angle_pen = sum(
+        abs(a - t) for a, t in zip(sorted(angles), square_targets)
+    )
+
+    # Square-planar candidates should also be planar. Add a donor-plane
+    # penalty to distinguish flattened tetrahedral-like solutions.
+    square_planarity_pen = 0.0
+    try:
+        import numpy as np
+
+        pts = np.array(
+            [[p.x, p.y, p.z] for p in coord_positions],
+            dtype=float,
+        )
+        if pts.shape == (4, 3):
+            centroid = pts.mean(axis=0)
+            q = pts - centroid
+            _u, _s, vh = np.linalg.svd(q, full_matrices=False)
+            normal = vh[-1]
+            n_norm = float(np.linalg.norm(normal))
+            if n_norm > 1e-12:
+                normal = normal / n_norm
+                donor_dev = np.abs(q @ normal)
+                rms_donor = float(np.sqrt(np.mean(donor_dev * donor_dev)))
+                mp = np.array([metal_pos.x, metal_pos.y, metal_pos.z], dtype=float)
+                metal_dev = abs(float(np.dot(mp - centroid, normal)))
+                square_planarity_pen = 35.0 * rms_donor + 45.0 * metal_dev
+    except Exception:
+        pass
+
+    return tetra_pen, (square_angle_pen + square_planarity_pen)
+
+
+def _preferred_cn4_geometry_score(
+    metal_symbol: str,
+    donor_symbols: List[str],
+    metal_pos,
+    coord_positions: List[object],
+    angles: List[float],
+) -> float:
+    """Return a metal-aware geometry score for 4-coordinate centers."""
+    tetra_pen, square_pen = _cn4_geometry_penalties(
+        metal_pos,
+        coord_positions,
+        angles,
+    )
+
+    if metal_symbol in {'Pt', 'Pd'}:
+        return min(square_pen, tetra_pen + 40.0)
+    if metal_symbol == 'Au':
+        return min(square_pen, tetra_pen + 28.0)
+    if metal_symbol == 'Ni':
+        n_n = donor_symbols.count('N')
+        n_o = donor_symbols.count('O')
+        n_p = donor_symbols.count('P')
+        n_c = donor_symbols.count('C')
+        # d8 Ni(II) with cyclometalated / N-rich donor sets strongly tends
+        # toward square-planar arrangements.
+        if n_c >= 1 or (n_n + n_o) >= 3 or n_p >= 2:
+            return min(square_pen, tetra_pen + 22.0)
+        return min(square_pen, tetra_pen + 10.0)
+    if metal_symbol in {'Zn', 'Cd', 'Hg'}:
+        return min(tetra_pen, square_pen + 22.0)
+    if metal_symbol in {'Cu', 'Ag'}:
+        return min(tetra_pen, square_pen + 10.0)
+
+    return min(tetra_pen, square_pen)
+
+
 def _has_bad_geometry(mol, conf_id: int) -> bool:
     """Return True if the conformer has unrealistic metal-ligand geometry.
 
@@ -12380,6 +12844,7 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
         # Bond length uniformity
         dists = []
         coord_positions = []
+        donor_symbols: List[str] = []
         for nbr in neighbors:
             nbr_pos = conf.GetAtomPosition(nbr.GetIdx())
             dx = nbr_pos.x - metal_pos.x
@@ -12387,6 +12852,7 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
             dz = nbr_pos.z - metal_pos.z
             dists.append(math.sqrt(dx*dx + dy*dy + dz*dz))
             coord_positions.append(nbr_pos)
+            donor_symbols.append(nbr.GetSymbol())
 
         if dists:
             mean_d = sum(dists) / len(dists)
@@ -12424,12 +12890,13 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
             )
             total_penalty += min(tp_pen, ts_pen)
         elif len(neighbors) == 4 and len(angles) == 6:
-            tetra_pen = sum(abs(a - 109.5) for a in angles)
-            square_targets = [90.0, 90.0, 90.0, 90.0, 180.0, 180.0]
-            square_pen = sum(
-                abs(a - t) for a, t in zip(sorted(angles), square_targets)
+            total_penalty += _preferred_cn4_geometry_score(
+                atom.GetSymbol(),
+                donor_symbols,
+                metal_pos,
+                coord_positions,
+                angles,
             )
-            total_penalty += min(tetra_pen, square_pen)
         elif len(neighbors) == 5:
             # CN=5: score against best of TBP or SP ideal angles.
             # TBP (D3h): 1×180° (ax-ax), 6×90° (ax-eq), 3×120° (eq-eq)
@@ -12526,9 +12993,14 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
 def _hapto_candidate_topology_ok(
     xyz_delfin: str,
     original_smiles: str,
+    mol=None,
+    conf_id: int = 0,
+    hapto_groups: Optional[List[Tuple[int, List[int]]]] = None,
 ) -> bool:
     """Return True when a hapto candidate preserves the input topology."""
     try:
+        if mol is not None and not _metal_aware_coordination_ok(mol, conf_id, hapto_groups):
+            return False
         if not _heavy_graph_exact_match_ok(xyz_delfin, original_smiles):
             return False
         if not _roundtrip_ring_count_ok(xyz_delfin, original_smiles):
@@ -12671,7 +13143,13 @@ def _select_best_hapto_candidate(
         except Exception:
             continue
 
-        topo_ok = _hapto_candidate_topology_ok(xyz_candidate, smiles)
+        topo_ok = _hapto_candidate_topology_ok(
+            xyz_candidate,
+            smiles,
+            mol=candidate_mol,
+            conf_id=0,
+            hapto_groups=hapto_groups,
+        )
         base_score = _hapto_candidate_quality_score(candidate_mol, 0)
         target_bucket = accepted if topo_ok else relaxed
         target_bucket.append((base_score, candidate_mol, label))
@@ -12704,7 +13182,13 @@ def _select_best_hapto_candidate(
                 xyz_refined = _mol_to_xyz(refined_mol)
             except Exception:
                 continue
-            if not _hapto_candidate_topology_ok(xyz_refined, smiles):
+            if not _hapto_candidate_topology_ok(
+                xyz_refined,
+                smiles,
+                mol=refined_mol,
+                conf_id=0,
+                hapto_groups=hapto_groups,
+            ):
                 continue
             refined_score = _hapto_candidate_quality_score(refined_mol, 0)
             if refined_score + 1e-6 < base_score:
@@ -15618,14 +16102,35 @@ def smiles_to_xyz(
             # aligned ligand fragments. This avoids global ETKDG on the full
             # metal graph where multi-hapto systems are most brittle.
             try:
-                hybrid_mol = _build_hybrid_hapto_complex(
-                    mol,
-                    hapto_groups,
-                    preview_store=preview_candidates,
-                )
-                if hybrid_mol is not None:
-                    hapto_candidate_mols.append(("hybrid", hybrid_mol))
-                    logger.info("Hybrid hapto scaffold/fragment builder succeeded")
+                hybrid_variant_plans = _secondary_metal_variant_plans(mol, hapto_groups)
+                seen_hybrid_xyz: set = set()
+                for plan_idx, (hybrid_label, variant_plan) in enumerate(hybrid_variant_plans):
+                    hybrid_mol = _build_hybrid_hapto_complex(
+                        mol,
+                        hapto_groups,
+                        preview_store=preview_candidates if plan_idx == 0 else None,
+                        secondary_variant_plan=variant_plan,
+                    )
+                    if hybrid_mol is None:
+                        continue
+                    try:
+                        hybrid_xyz_key = "\n".join(
+                            line.strip()
+                            for line in _mol_to_xyz(hybrid_mol).splitlines()
+                            if line.strip()
+                        )
+                    except Exception:
+                        hybrid_xyz_key = ""
+                    if hybrid_xyz_key and hybrid_xyz_key in seen_hybrid_xyz:
+                        continue
+                    if hybrid_xyz_key:
+                        seen_hybrid_xyz.add(hybrid_xyz_key)
+                    hapto_candidate_mols.append((hybrid_label, hybrid_mol))
+                if seen_hybrid_xyz:
+                    logger.info(
+                        "Hybrid hapto scaffold/fragment builder produced %d ranked candidate(s)",
+                        len(seen_hybrid_xyz),
+                    )
             except Exception as e:
                 logger.debug("Hybrid hapto scaffold/fragment builder failed: %s", e)
             _HAPTO_QUICK_PREVIEW_CACHE[smiles] = list(preview_candidates)
