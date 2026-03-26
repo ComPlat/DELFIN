@@ -12004,6 +12004,163 @@ def _heavy_graph_exact_match_ok(
         return True
 
 
+def _shortest_path_length_excluding(
+    adj: Dict[int, set],
+    start: int,
+    goal: int,
+    blocked: int,
+    max_depth: int = 6,
+) -> Optional[int]:
+    """Return shortest path length from ``start`` to ``goal`` while skipping ``blocked``."""
+    if start == goal:
+        return 0
+    visited = {blocked, start}
+    queue = deque([(start, 0)])
+    while queue:
+        node, depth = queue.popleft()
+        if depth >= max_depth:
+            continue
+        for nbr in adj.get(node, set()):
+            if nbr in visited:
+                continue
+            if nbr == goal:
+                return depth + 1
+            visited.add(nbr)
+            queue.append((nbr, depth + 1))
+    return None
+
+
+def _cycle_size_signature_from_adj(
+    adj: Dict[int, set],
+    max_cycle_size: int = 8,
+) -> Dict[int, Tuple[int, ...]]:
+    """Return per-atom cycle-size signatures derived from the adjacency graph."""
+    cycle_sizes: Dict[int, set] = {idx: set() for idx in adj}
+    for node, neighbors in adj.items():
+        nbrs = sorted(neighbors)
+        for i in range(len(nbrs)):
+            for j in range(i + 1, len(nbrs)):
+                path_len = _shortest_path_length_excluding(
+                    adj,
+                    nbrs[i],
+                    nbrs[j],
+                    blocked=node,
+                    max_depth=max(2, int(max_cycle_size) - 2),
+                )
+                if path_len is None:
+                    continue
+                cycle_size = path_len + 2
+                if 3 <= cycle_size <= max_cycle_size:
+                    cycle_sizes[node].add(int(cycle_size))
+    return {
+        idx: tuple(sorted(sizes))
+        for idx, sizes in cycle_sizes.items()
+    }
+
+
+def _heavy_local_signature_multiset(
+    symbol_by_idx: Dict[int, str],
+    adj: Dict[int, set],
+    wl_rounds: int = 2,
+) -> Counter:
+    """Return a multiset of local heavy-atom graph signatures."""
+    cycle_sig = _cycle_size_signature_from_adj(adj)
+    labels: Dict[int, str] = {
+        idx: f"{symbol_by_idx.get(idx, '?')}|d{len(adj.get(idx, set()))}|c{','.join(map(str, cycle_sig.get(idx, ()) ))}"
+        for idx in adj
+    }
+    for _ in range(max(1, int(wl_rounds))):
+        new_labels: Dict[int, str] = {}
+        for idx in adj:
+            neigh = sorted(labels.get(nbr, '?') for nbr in adj.get(idx, set()))
+            new_labels[idx] = labels[idx] + "|" + ";".join(neigh)
+        labels = new_labels
+    signatures = Counter()
+    for idx in adj:
+        signatures[
+            (
+                symbol_by_idx.get(idx, '?'),
+                len(adj.get(idx, set())),
+                cycle_sig.get(idx, ()),
+                labels.get(idx, '?'),
+            )
+        ] += 1
+    return signatures
+
+
+def _heavy_local_signature_multiset_smiles(
+    smiles: str,
+) -> Optional[Counter]:
+    """Return local heavy-atom environment multiset from SMILES."""
+    if not RDKIT_AVAILABLE:
+        return None
+    try:
+        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        if mol is None:
+            return None
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        keep = {
+            atom.GetIdx(): atom.GetSymbol()
+            for atom in mol.GetAtoms()
+            if atom.GetAtomicNum() > 1 and atom.GetSymbol() not in _METAL_SET
+        }
+        adj: Dict[int, set] = {idx: set() for idx in keep}
+        for bond in mol.GetBonds():
+            bi = bond.GetBeginAtomIdx()
+            bj = bond.GetEndAtomIdx()
+            if bi in adj and bj in adj:
+                adj[bi].add(bj)
+                adj[bj].add(bi)
+        return _heavy_local_signature_multiset(keep, adj)
+    except Exception:
+        return None
+
+
+def _heavy_local_signature_multiset_xyz(
+    xyz_delfin: str,
+    expected_heavy_symbols: Dict[int, str],
+) -> Optional[Counter]:
+    """Return local heavy-atom environment multiset from XYZ via OB perception."""
+    xyz_edges = _heavy_graph_edges_xyz(xyz_delfin, expected_heavy_symbols)
+    if xyz_edges is None:
+        return None
+    adj: Dict[int, set] = {idx: set() for idx in expected_heavy_symbols}
+    for i1, i2 in xyz_edges:
+        if i1 in adj and i2 in adj:
+            adj[i1].add(i2)
+            adj[i2].add(i1)
+    return _heavy_local_signature_multiset(expected_heavy_symbols, adj)
+
+
+def _heavy_local_signature_match_ok(
+    xyz_delfin: str,
+    original_smiles: str,
+) -> bool:
+    """Return True when local heavy-atom graph environments still match."""
+    try:
+        ref = _heavy_graph_edges_smiles(original_smiles)
+        if ref is None:
+            return True
+        heavy_symbols, _ref_edges = ref
+        sig_smiles = _heavy_local_signature_multiset_smiles(original_smiles)
+        sig_xyz = _heavy_local_signature_multiset_xyz(xyz_delfin, heavy_symbols)
+        if sig_smiles is None or sig_xyz is None:
+            return True
+        if sig_smiles == sig_xyz:
+            return True
+        logger.debug(
+            "Heavy local-signature mismatch: smiles=%d xyz=%d",
+            sum(sig_smiles.values()),
+            sum(sig_xyz.values()),
+        )
+        return False
+    except Exception:
+        return True
+
+
 def _nonmetal_fragment_ids(mol) -> Dict[int, int]:
     """Return connected-component ids for heavy non-metal atoms."""
     if not RDKIT_AVAILABLE or mol is None:
@@ -13003,6 +13160,8 @@ def _hapto_candidate_topology_ok(
             return False
         if not _heavy_graph_exact_match_ok(xyz_delfin, original_smiles):
             return False
+        if not _heavy_local_signature_match_ok(xyz_delfin, original_smiles):
+            return False
         if not _roundtrip_ring_count_ok(xyz_delfin, original_smiles):
             return False
         if not _no_spurious_bonds(xyz_delfin, original_smiles):
@@ -13017,9 +13176,70 @@ def _hapto_candidate_topology_ok(
         return True
 
 
+def _hapto_geometry_quality_score(
+    mol,
+    conf_id: int = 0,
+    hapto_groups: Optional[List[Tuple[int, List[int]]]] = None,
+) -> float:
+    """Return a hapto-specific geometry penalty (lower = better)."""
+    if not RDKIT_AVAILABLE or mol is None or not hapto_groups:
+        return 0.0
+    try:
+        import numpy as np
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return 0.0
+
+    penalty = 0.0
+    for metal_idx, group_atoms in hapto_groups:
+        if not group_atoms:
+            continue
+        try:
+            metal_pos = np.array(conf.GetAtomPosition(int(metal_idx)), dtype=float)
+            pts = np.array([conf.GetAtomPosition(int(atom_idx)) for atom_idx in group_atoms], dtype=float)
+        except Exception:
+            continue
+        if pts.ndim != 2 or pts.shape[0] < 3:
+            continue
+
+        centroid = pts.mean(axis=0)
+        mc_dist = float(np.linalg.norm(metal_pos - centroid))
+        target_mc = float(_target_mc_dist(mol.GetAtomWithIdx(int(metal_idx)).GetSymbol(), len(group_atoms)))
+        penalty += 180.0 * (mc_dist - target_mc) ** 2
+
+        mc_atom_dists = np.linalg.norm(pts - metal_pos, axis=1)
+        if mc_atom_dists.size:
+            penalty += 30.0 * float(np.std(mc_atom_dists) ** 2)
+
+        q = pts - centroid
+        try:
+            _u, _s, vh = np.linalg.svd(q, full_matrices=False)
+        except Exception:
+            continue
+        normal = vh[-1]
+        n_norm = float(np.linalg.norm(normal))
+        if n_norm < 1e-12:
+            continue
+        normal = normal / n_norm
+        plane_dev = np.abs(q @ normal)
+        plane_rms = float(np.sqrt(np.mean(plane_dev * plane_dev)))
+        penalty += 120.0 * plane_rms * plane_rms
+
+        axis = metal_pos - centroid
+        axis_norm = float(np.linalg.norm(axis))
+        if axis_norm > 1e-12:
+            axis = axis / axis_norm
+            cosang = abs(float(np.dot(normal, axis)))
+            penalty += 40.0 * (1.0 - cosang) ** 2
+            lateral_offset = float(np.linalg.norm((metal_pos - centroid) - np.dot(metal_pos - centroid, normal) * normal))
+            penalty += 35.0 * lateral_offset * lateral_offset
+    return penalty
+
+
 def _hapto_candidate_quality_score(
     mol,
     conf_id: int = 0,
+    hapto_groups: Optional[List[Tuple[int, List[int]]]] = None,
 ) -> float:
     """Return a penalty score for a hapto candidate (lower = better)."""
     if not RDKIT_AVAILABLE or mol is None:
@@ -13030,6 +13250,11 @@ def _hapto_candidate_quality_score(
         score += float(_geometry_quality_score(mol, conf_id))
     except Exception:
         score += 1.0e6
+
+    try:
+        score += float(_hapto_geometry_quality_score(mol, conf_id, hapto_groups))
+    except Exception:
+        score += 1.0e5
 
     try:
         if _has_severe_covalent_distortion(mol, conf_id):
@@ -13150,7 +13375,7 @@ def _select_best_hapto_candidate(
             conf_id=0,
             hapto_groups=hapto_groups,
         )
-        base_score = _hapto_candidate_quality_score(candidate_mol, 0)
+        base_score = _hapto_candidate_quality_score(candidate_mol, 0, hapto_groups)
         target_bucket = accepted if topo_ok else relaxed
         target_bucket.append((base_score, candidate_mol, label))
 
@@ -13190,7 +13415,7 @@ def _select_best_hapto_candidate(
                 hapto_groups=hapto_groups,
             ):
                 continue
-            refined_score = _hapto_candidate_quality_score(refined_mol, 0)
+            refined_score = _hapto_candidate_quality_score(refined_mol, 0, hapto_groups)
             if refined_score + 1e-6 < base_score:
                 accepted.append((refined_score, refined_mol, refined_label))
 
