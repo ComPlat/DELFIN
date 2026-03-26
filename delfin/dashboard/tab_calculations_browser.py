@@ -91,7 +91,7 @@ def create_tab(ctx):
     CALC_VIEWER_PNG_SCALE = 6
     CALC_BROWSER_WORKFLOW_PAL = 4
     CALC_BROWSER_WORKFLOW_MAXCORE = 1000
-    CALC_BROWSER_WORKFLOW_TIMELIMIT = '00:10:00'
+    CALC_BROWSER_WORKFLOW_TIMELIMIT = '00:15:00'
     try:
         _calc_browser_root_hint = Path(
             os.environ.get('DELFIN_VOILA_ROOT_DIR') or str(Path.cwd())
@@ -113,6 +113,11 @@ def create_tab(ctx):
         'selected_inp_path': None,
         'selected_inp_base': '',
         'recalc_active': False,
+        'xyz_workflow_active': False,
+        'xyz_workflow_mode': '',
+        'xyz_workflow_source_path': None,
+        'xyz_batch_path': '',
+        'xyz_batch_marked_paths': [],
         'delete_current': False,
         'table_col_defs': [
             {'name': 'Value 1', 'type': 'text', 'pattern': '', 'occ': 'last'},
@@ -326,6 +331,16 @@ def create_tab(ctx):
         layout=widgets.Layout(width='1px', height='1px', display='none'),
     )
     calc_dblclick_input.add_class('calc-cmd-dblclick')
+    calc_xyz_batch_dblclick_input = widgets.Text(
+        value='',
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
+    )
+    calc_xyz_batch_dblclick_input.add_class('calc-cmd-xyz-batch-dblclick')
+    calc_xyz_batch_toggle_input = widgets.Text(
+        value='',
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
+    )
+    calc_xyz_batch_toggle_input.add_class('calc-cmd-xyz-batch-toggle')
     calc_keyboard_action_input = widgets.Text(
         value='',
         layout=widgets.Layout(width='1px', height='1px', display='none'),
@@ -951,6 +966,28 @@ def create_tab(ctx):
     calc_recalc_status = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+    calc_xyz_workflow_info = widgets.HTML(
+        value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_xyz_workflow_pal = widgets.BoundedIntText(
+        value=CALC_BROWSER_WORKFLOW_PAL,
+        min=1,
+        max=999,
+        description='PAL',
+        layout=widgets.Layout(width='150px', height='26px'),
+    )
+    calc_xyz_workflow_time = widgets.Text(
+        value=CALC_BROWSER_WORKFLOW_TIMELIMIT,
+        description='JobTime',
+        layout=widgets.Layout(width='220px', height='26px'),
+    )
+    calc_submit_xyz_workflow_btn = widgets.Button(
+        description='Submit', button_style='success',
+        layout=widgets.Layout(width='90px', min_width='90px', height='26px'), disabled=True,
+    )
+    calc_xyz_workflow_status = widgets.HTML(
+        value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
     calc_edit_area = widgets.Textarea(
         value='',
         layout=widgets.Layout(
@@ -1057,12 +1094,29 @@ def create_tab(ctx):
     # Build Batch from XYZ widgets
     calc_xyz_batch_filename = widgets.Text(
         value='',
-        placeholder='xyz_batch.txt',
+        placeholder='batch_name',
         layout=widgets.Layout(width='220px', min_width='160px', height='26px'),
     )
     calc_xyz_batch_refresh_btn = widgets.Button(
         description='Refresh',
         layout=widgets.Layout(width='88px', min_width='88px', height='26px'),
+    )
+    calc_xyz_batch_up_btn = widgets.Button(
+        description='Up',
+        layout=widgets.Layout(width='70px', min_width='70px', height='26px'),
+    )
+    calc_xyz_batch_root_btn = widgets.Button(
+        description='Calc',
+        layout=widgets.Layout(width='70px', min_width='70px', height='26px'),
+    )
+    calc_xyz_batch_mark_btn = widgets.Button(
+        description='Select',
+        button_style='warning',
+        layout=widgets.Layout(width='80px', min_width='80px', height='26px'),
+    )
+    calc_xyz_batch_select_all_btn = widgets.Button(
+        description='Select All',
+        layout=widgets.Layout(width='95px', min_width='95px', height='26px'),
     )
     calc_xyz_batch_build_btn = widgets.Button(
         description='Build Batch TXT', button_style='primary',
@@ -1077,6 +1131,7 @@ def create_tab(ctx):
         layout=widgets.Layout(width='100%', min_height='170px', max_height='300px'),
     )
     calc_xyz_batch_select.add_class('delfin-multi-select')
+    calc_xyz_batch_select.add_class('calc-xyz-batch-select')
     calc_xyz_batch_root_info = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
@@ -1087,12 +1142,23 @@ def create_tab(ctx):
         [
             widgets.HTML('<b>Build Batch from XYZ</b>'),
             widgets.HTML(
-                '<span style="color:#555;">Select File / Jobs (folders or .xyz files).</span>'
+                '<span style="color:#555;">Click left box to set/remove Haken. Double-click folders to enter them.</span>'
             ),
-            calc_xyz_batch_root_info,
             widgets.HBox(
                 [
-                    widgets.HTML('<b>Download name:</b>'),
+                    calc_xyz_batch_up_btn,
+                    calc_xyz_batch_root_btn,
+                    calc_xyz_batch_mark_btn,
+                    calc_xyz_batch_select_all_btn,
+                    calc_xyz_batch_root_info,
+                ],
+                layout=widgets.Layout(
+                    gap='8px', align_items='center', flex_flow='row wrap', width='100%',
+                ),
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Batch_name:</b>'),
                     calc_xyz_batch_filename,
                     calc_xyz_batch_refresh_btn,
                     calc_xyz_batch_build_btn,
@@ -1333,6 +1399,20 @@ def create_tab(ctx):
         margin='5px 0', width='100%', overflow_x='hidden', gap='8px',
         align_items='center', display='none',
     ))
+    calc_xyz_workflow_toolbar = widgets.VBox([
+        calc_xyz_workflow_info,
+        widgets.HBox(
+            [calc_xyz_workflow_pal, calc_xyz_workflow_time, calc_submit_xyz_workflow_btn],
+            layout=widgets.Layout(
+                width='100%', overflow_x='hidden', gap='8px',
+                flex_flow='row wrap', align_items='center',
+            ),
+        ),
+        calc_xyz_workflow_status,
+    ], layout=widgets.Layout(
+        margin='5px 0', width='100%', overflow_x='hidden', gap='6px',
+        display='none',
+    ))
     calc_chunk_hidden_row = widgets.HBox(
         [
             calc_chunk_prev_btn, calc_chunk_next_btn, calc_chunk_label,
@@ -1451,12 +1531,18 @@ def create_tab(ctx):
         return None
 
     def _calc_label_to_name(label):
-        if not label or label.startswith('('):
+        label_text = str(label or '').replace('\xa0', ' ').strip()
+        if not label_text or label_text.startswith('('):
             return ''
-        head, sep, tail = label.partition(' ')
-        if sep:
-            return tail.strip()
-        return head.strip()
+        while True:
+            parts = re.split(r'\s+', label_text, maxsplit=1)
+            if len(parts) != 2:
+                return label_text
+            head, tail = parts[0].strip(), parts[1].strip()
+            if head in {'📂', '🔬', '✅', '⬜', '☑', '☐', '✔', '□', '📁', '📄'} or not any(ch.isalnum() for ch in head):
+                label_text = tail
+                continue
+            return label_text
 
     def _calc_path_for_label(label):
         name = _calc_label_to_name(label)
@@ -1589,13 +1675,60 @@ def create_tab(ctx):
         calc_options_dropdown.value = '(Options)'
         calc_options_dropdown.observe(calc_on_options_change, names='value')
 
-    def _calc_submit_xyz_browser_workflow(mode):
+    def _calc_prepare_xyz_browser_workflow(mode):
         selected_path = _calc_selected_item_path()
         if selected_path is None or selected_path.suffix.lower() != '.xyz':
+            calc_reset_xyz_workflow_state()
+            calc_update_view()
             _calc_set_ops_status('Select a single-structure .xyz file first.', '#d32f2f')
             return
         if not _calc_is_single_structure_xyz(selected_path):
+            calc_reset_xyz_workflow_state()
+            calc_update_view()
             _calc_set_ops_status('This action is only available for .xyz files with exactly one structure.', '#d32f2f')
+            return
+
+        if mode not in ('hyperpol_xtb', 'tadf_xtb'):
+            calc_reset_xyz_workflow_state()
+            calc_update_view()
+            _calc_set_ops_status(f'Unknown workflow mode: {_html.escape(str(mode))}', '#d32f2f')
+            return
+
+        state['xyz_workflow_active'] = True
+        state['xyz_workflow_mode'] = mode
+        state['xyz_workflow_source_path'] = selected_path
+        calc_xyz_workflow_pal.value = CALC_BROWSER_WORKFLOW_PAL
+        calc_xyz_workflow_time.value = CALC_BROWSER_WORKFLOW_TIMELIMIT
+        calc_submit_xyz_workflow_btn.disabled = False
+        calc_xyz_workflow_info.value = (
+            f'<b>{_html.escape(mode)}</b> for '
+            f'<code>{_html.escape(selected_path.name)}</code>'
+        )
+        calc_xyz_workflow_status.value = (
+            '<span style="color:#555;">Adjust PAL / JobTime and click Submit.</span>'
+        )
+        _calc_set_ops_status('', '#555')
+        calc_update_view()
+
+    def _calc_submit_xyz_browser_workflow(_button=None):
+        mode = state.get('xyz_workflow_mode') or ''
+        selected_path = state.get('xyz_workflow_source_path')
+        if mode not in ('hyperpol_xtb', 'tadf_xtb') or selected_path is None:
+            calc_xyz_workflow_status.value = (
+                '<span style="color:#d32f2f;">No workflow prepared.</span>'
+            )
+            return
+
+        selected_path = Path(selected_path)
+        if not selected_path.exists():
+            calc_xyz_workflow_status.value = (
+                '<span style="color:#d32f2f;">Selected .xyz file no longer exists.</span>'
+            )
+            return
+        if selected_path.suffix.lower() != '.xyz' or not _calc_is_single_structure_xyz(selected_path):
+            calc_xyz_workflow_status.value = (
+                '<span style="color:#d32f2f;">Select a single-structure .xyz file first.</span>'
+            )
             return
 
         base_token = _calc_safe_job_token(selected_path.stem, 'xyz_job')
@@ -1608,9 +1741,13 @@ def create_tab(ctx):
             workflow_label = f'{base_token}_tadf'
             submit_fn = ctx.backend.submit_tadf_xtb
         else:
-            _calc_set_ops_status(f'Unknown workflow mode: {_html.escape(str(mode))}', '#d32f2f')
+            calc_xyz_workflow_status.value = (
+                f'<span style="color:#d32f2f;">Unknown workflow mode: {_html.escape(str(mode))}</span>'
+            )
             return
 
+        pal_used = max(1, int(calc_xyz_workflow_pal.value or CALC_BROWSER_WORKFLOW_PAL))
+        time_limit = calc_xyz_workflow_time.value.strip() or CALC_BROWSER_WORKFLOW_TIMELIMIT
         target_dir = _calc_next_available_dir(selected_path.parent, folder_name)
         copied_xyz_name = f'{base_token}.xyz'
         copied_xyz_path = target_dir / copied_xyz_name
@@ -1618,6 +1755,10 @@ def create_tab(ctx):
             target_dir.mkdir(parents=True, exist_ok=False)
             shutil.copy2(selected_path, copied_xyz_path)
         except Exception as exc:
+            calc_xyz_workflow_status.value = (
+                f'<span style="color:#d32f2f;">Failed to prepare '
+                f'<code>{_html.escape(target_dir.name)}</code>: {_html.escape(str(exc))}</span>'
+            )
             _calc_set_ops_status(
                 f'Failed to prepare workflow folder <code>{_html.escape(target_dir.name)}</code>: '
                 f'{_html.escape(str(exc))}',
@@ -1625,6 +1766,10 @@ def create_tab(ctx):
             )
             return
 
+        calc_xyz_workflow_status.value = (
+            f'<span style="color:#1976d2;">Submitting <code>{_html.escape(mode)}</code> '
+            f'from <code>{_html.escape(target_dir.name)}</code>...</span>'
+        )
         _calc_set_ops_status(
             f'Submitting <code>{_html.escape(mode)}</code> from '
             f'<code>{_html.escape(target_dir.name)}</code>...',
@@ -1636,11 +1781,15 @@ def create_tab(ctx):
                 job_name=target_dir.name,
                 xyz_file=copied_xyz_name,
                 label=workflow_label,
-                time_limit=CALC_BROWSER_WORKFLOW_TIMELIMIT,
-                pal=CALC_BROWSER_WORKFLOW_PAL,
+                time_limit=time_limit,
+                pal=pal_used,
                 maxcore=CALC_BROWSER_WORKFLOW_MAXCORE,
             )
         except Exception as exc:
+            calc_xyz_workflow_status.value = (
+                f'<span style="color:#d32f2f;">Error submitting '
+                f'<code>{_html.escape(mode)}</code>: {_html.escape(str(exc))}</span>'
+            )
             _calc_set_ops_status(
                 f'Error submitting <code>{_html.escape(mode)}</code>: {_html.escape(str(exc))}',
                 '#d32f2f',
@@ -1650,13 +1799,25 @@ def create_tab(ctx):
         calc_list_directory()
         if result.returncode == 0:
             submit_msg = (result.stdout or '').strip() or 'Submitted'
+            calc_xyz_workflow_status.value = (
+                f'<span style="color:#2e7d32;">Submitted <code>{_html.escape(mode)}</code> in '
+                f'<code>{_html.escape(target_dir.name)}</code>: {_html.escape(submit_msg)}</span>'
+            )
             _calc_set_ops_status(
                 f'Submitted <code>{_html.escape(mode)}</code> in '
                 f'<code>{_html.escape(target_dir.name)}</code>: {_html.escape(submit_msg)}',
                 '#2e7d32',
             )
+            calc_reset_xyz_workflow_state()
+            _calc_reset_options_dropdown()
+            calc_update_view()
         else:
             submit_msg = (result.stderr or result.stdout or 'Unknown error').strip()
+            calc_xyz_workflow_status.value = (
+                f'<span style="color:#d32f2f;">Failed to submit '
+                f'<code>{_html.escape(mode)}</code> in <code>{_html.escape(target_dir.name)}</code>: '
+                f'{_html.escape(submit_msg)}</span>'
+            )
             _calc_set_ops_status(
                 f'Failed to submit <code>{_html.escape(mode)}</code> in '
                 f'<code>{_html.escape(target_dir.name)}</code>: {_html.escape(submit_msg)}',
@@ -2876,18 +3037,26 @@ def create_tab(ctx):
             # In preselect/visualize mode the content toolbar (Top/End/Search) is redundant.
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
+            calc_xyz_workflow_toolbar.layout.display = 'none'
         else:
             calc_preselect_container.layout.display = 'none'
             # Restore toolbars based on current mode.
             if state['recalc_active']:
                 calc_content_toolbar.layout.display = 'none'
                 calc_recalc_toolbar.layout.display = 'flex'
+                calc_xyz_workflow_toolbar.layout.display = 'none'
+            elif state['xyz_workflow_active']:
+                calc_content_toolbar.layout.display = 'none'
+                calc_recalc_toolbar.layout.display = 'none'
+                calc_xyz_workflow_toolbar.layout.display = 'flex'
             elif calc_view_toggle.value:
                 calc_content_toolbar.layout.display = 'none'
                 calc_recalc_toolbar.layout.display = 'none'
+                calc_xyz_workflow_toolbar.layout.display = 'none'
             else:
                 calc_content_toolbar.layout.display = 'flex'
                 calc_recalc_toolbar.layout.display = 'none'
+                calc_xyz_workflow_toolbar.layout.display = 'none'
 
     def _calc_preselect_prev_entry(_btn=None):
         entries = state['preselect']['entries']
@@ -3620,6 +3789,8 @@ def create_tab(ctx):
         selected_path = _calc_selected_item_path()
         if selected_path and selected_path.suffix.lower() == '.xyz':
             base = selected_path.stem
+        elif state.get('xyz_batch_path'):
+            base = Path(state['xyz_batch_path']).name
         elif state.get('current_path'):
             base = Path(state['current_path']).name
         else:
@@ -3672,8 +3843,33 @@ def create_tab(ctx):
             return None, f'{item_path.name}: no .xyz file found'
         return None, f'{item_path.name}: unsupported selection'
 
+    def _calc_xyz_batch_dir():
+        rel_path = str(state.get('xyz_batch_path') or '').strip().strip('/')
+        if not rel_path:
+            return _calc_dir()
+        try:
+            candidate = _calc_resolve_within_root(_calc_dir() / rel_path)
+        except Exception:
+            state['xyz_batch_path'] = ''
+            return _calc_dir()
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+        state['xyz_batch_path'] = ''
+        return _calc_dir()
+
+    def _calc_set_xyz_batch_dir(target_dir):
+        try:
+            resolved = _calc_resolve_within_root(Path(target_dir))
+        except Exception:
+            return False
+        if not resolved.exists() or not resolved.is_dir():
+            return False
+        state['xyz_batch_path'] = _calc_state_rel_path(resolved)
+        return True
+
     def _calc_collect_xyz_batch_labels(base_dir):
         labels = []
+        marked = set(state.get('xyz_batch_marked_paths') or [])
         try:
             entries = sorted(
                 base_dir.iterdir(),
@@ -3683,32 +3879,48 @@ def create_tab(ctx):
             return labels
 
         for entry in entries:
+            rel_value = _calc_state_rel_path(entry)
+            mark = '✔' if rel_value in marked else '□'
             if entry.is_dir():
-                labels.append(f'📂 {entry.name}')
+                labels.append((f'{mark} 📂 {entry.name}', rel_value))
             elif entry.is_file() and entry.suffix.lower() == '.xyz':
-                labels.append(f'🔬 {entry.name}')
+                labels.append((f'{mark} 🔬 {entry.name}', rel_value))
         return labels
 
     def _calc_refresh_xyz_batch_selector():
-        root_dir = _calc_dir()
+        root_dir = _calc_xyz_batch_dir()
         candidates = _calc_collect_xyz_batch_labels(root_dir)
         previous_selection = set(calc_xyz_batch_select.value or ())
-        calc_xyz_batch_select.options = candidates
-        kept = tuple(label for label in candidates if label in previous_selection)
-        cur_labels = _calc_selected_labels()
-        selected_label = cur_labels[0] if cur_labels else ''
+        # Force a real widget rerender so changed labels (⬜ -> ✅) become visible.
+        calc_xyz_batch_select.options = ()
+        calc_xyz_batch_select.value = ()
+        calc_xyz_batch_select.options = tuple(candidates)
+        kept = tuple(value for _label, value in candidates if value in previous_selection)
+        selected_value = ''
+        selected_path = _calc_selected_item_path()
+        if selected_path is not None:
+            try:
+                if selected_path.parent.resolve() == root_dir.resolve():
+                    selected_value = _calc_state_rel_path(selected_path)
+            except Exception:
+                selected_value = ''
         if kept:
             calc_xyz_batch_select.value = kept
-        elif state.get('current_path'):
-            calc_xyz_batch_select.value = ()
-        elif selected_label and selected_label in candidates:
-            calc_xyz_batch_select.value = (selected_label,)
+        elif selected_value and any(value == selected_value for _label, value in candidates):
+            calc_xyz_batch_select.value = (selected_value,)
         else:
             calc_xyz_batch_select.value = ()
+        current_rel = state.get('xyz_batch_path') or ''
+        display_rel = f'/{current_rel}' if current_rel else '/'
+        marked_count = len(state.get('xyz_batch_marked_paths') or [])
         calc_xyz_batch_root_info.value = (
-            f'<span style="color:#555;">Explorer root:</span> '
-            f'<code>{_html.escape(str(root_dir))}</code>'
+            f'<span style="color:#555;">Batch folder:</span> '
+            f'<code>{_html.escape(display_rel)}</code> '
+            f'<span style="color:#555;">| Haken:</span> <code>{marked_count}</code>'
         )
+        calc_xyz_batch_up_btn.disabled = not bool(current_rel)
+        calc_xyz_batch_root_btn.disabled = not bool(current_rel)
+        calc_xyz_batch_select_all_btn.disabled = not bool(candidates)
         if not calc_xyz_batch_filename.value.strip():
             calc_xyz_batch_filename.value = _calc_xyz_batch_default_filename()
 
@@ -4362,6 +4574,128 @@ def create_tab(ctx):
         _calc_refresh_xyz_batch_selector()
         calc_xyz_batch_status.value = '<span style="color:#555;">Selection refreshed.</span>'
 
+    def _calc_toggle_xyz_batch_mark_values(values):
+        selected_values = []
+        seen = set()
+        for value in values or ():
+            item = str(value).strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            selected_values.append(item)
+        if not selected_values:
+            return 0, ''
+        marked = set(state.get('xyz_batch_marked_paths') or [])
+        if all(value in marked for value in selected_values):
+            for value in selected_values:
+                marked.discard(value)
+            action = 'Removed'
+        else:
+            for value in selected_values:
+                marked.add(value)
+            action = 'Marked'
+        state['xyz_batch_marked_paths'] = sorted(marked)
+        _calc_refresh_xyz_batch_selector()
+        return len(selected_values), action
+
+    def calc_on_xyz_batch_mark(_button=None):
+        selected_values = [str(value).strip() for value in (calc_xyz_batch_select.value or ()) if str(value).strip()]
+        if not selected_values:
+            calc_xyz_batch_status.value = (
+                '<span style="color:#d32f2f;">Select .xyz files or folders first, then click Select.</span>'
+            )
+            return
+        count, action = _calc_toggle_xyz_batch_mark_values(selected_values)
+        calc_xyz_batch_status.value = (
+            f'<span style="color:#2e7d32;">{_html.escape(action)} {count} item(s).</span>'
+        )
+
+    def calc_on_xyz_batch_toggle(change):
+        raw = (change['new'] or '').strip()
+        calc_xyz_batch_toggle_input.value = ''
+        if not raw:
+            return
+        toggle_value = raw
+        if raw.startswith('idx:'):
+            try:
+                idx = int(raw.split(':', 1)[1])
+            except Exception:
+                idx = -1
+            candidates = _calc_collect_xyz_batch_labels(_calc_xyz_batch_dir())
+            if 0 <= idx < len(candidates):
+                toggle_value = str(candidates[idx][1]).strip()
+            else:
+                toggle_value = ''
+        count, action = _calc_toggle_xyz_batch_mark_values([toggle_value] if toggle_value else [])
+        if count <= 0:
+            return
+        calc_xyz_batch_status.value = (
+            f'<span style="color:#2e7d32;">{_html.escape(action)} 1 item.</span>'
+        )
+
+    def calc_on_xyz_batch_select_all(_button=None):
+        candidates = _calc_collect_xyz_batch_labels(_calc_xyz_batch_dir())
+        visible_values = [value for _label, value in candidates]
+        if not visible_values:
+            calc_xyz_batch_status.value = (
+                '<span style="color:#d32f2f;">No .xyz files or folders in this directory.</span>'
+            )
+            return
+        marked = set(state.get('xyz_batch_marked_paths') or [])
+        marked.update(visible_values)
+        state['xyz_batch_marked_paths'] = sorted(marked)
+        calc_xyz_batch_select.value = tuple(visible_values)
+        _calc_refresh_xyz_batch_selector()
+        calc_xyz_batch_status.value = (
+            f'<span style="color:#2e7d32;">Marked all {len(visible_values)} visible item(s) in this directory.</span>'
+        )
+
+    def calc_on_xyz_batch_up(_button=None):
+        current_dir = _calc_xyz_batch_dir()
+        root_dir = _calc_dir()
+        if current_dir == root_dir:
+            calc_xyz_batch_status.value = '<span style="color:#555;">Already at calc root.</span>'
+            return
+        if not _calc_set_xyz_batch_dir(current_dir.parent):
+            calc_xyz_batch_status.value = '<span style="color:#d32f2f;">Could not open parent folder.</span>'
+            return
+        _calc_refresh_xyz_batch_selector()
+        calc_xyz_batch_status.value = '<span style="color:#555;">Moved to parent folder.</span>'
+
+    def calc_on_xyz_batch_root(_button=None):
+        if not _calc_set_xyz_batch_dir(_calc_dir()):
+            calc_xyz_batch_status.value = '<span style="color:#d32f2f;">Could not open calc root.</span>'
+            return
+        _calc_refresh_xyz_batch_selector()
+        calc_xyz_batch_status.value = '<span style="color:#555;">Moved to calc root.</span>'
+
+    def calc_on_xyz_batch_dblclick(change):
+        raw = (change['new'] or '').strip()
+        calc_xyz_batch_dblclick_input.value = ''
+        if not raw or raw.startswith('('):
+            return
+        item_name = _calc_label_to_name(raw)
+        if not item_name:
+            return
+        item_path = _calc_xyz_batch_dir() / item_name
+        if not item_path.exists():
+            calc_xyz_batch_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(item_name)} not found.</span>'
+            )
+            return
+        if not item_path.is_dir():
+            return
+        if not _calc_set_xyz_batch_dir(item_path):
+            calc_xyz_batch_status.value = (
+                f'<span style="color:#d32f2f;">Could not open folder '
+                f'<code>{_html.escape(item_name)}</code>.</span>'
+            )
+            return
+        _calc_refresh_xyz_batch_selector()
+        calc_xyz_batch_status.value = (
+            f'<span style="color:#555;">Opened folder <code>{_html.escape(item_name)}</code>.</span>'
+        )
+
     def _calc_xyz_batch_skipped_html(skipped):
         if not skipped:
             return ''
@@ -4370,19 +4704,29 @@ def create_tab(ctx):
         return f' <span style="color:#ef6c00;">Skipped {len(skipped)}: {details}{more}</span>'
 
     def _calc_xyz_batch_prepare_export():
-        selected_labels = [label for label in calc_xyz_batch_select.value if not str(label).startswith('(')]
-        if not selected_labels:
-            return None, [], 'No files/jobs selected.'
+        marked_values = [str(value).strip() for value in (state.get('xyz_batch_marked_paths') or []) if str(value).strip()]
+        selected_values = [str(value).strip() for value in (calc_xyz_batch_select.value or ()) if str(value).strip()]
+        item_values = marked_values or selected_values
+        if not item_values:
+            return None, [], 'No files/jobs selected. Use Haken or Select All.'
 
-        root_dir = _calc_dir()
+        requested = calc_xyz_batch_filename.value.strip() or _calc_xyz_batch_default_filename()
+        batch_stem = re.sub(r'[^A-Za-z0-9._-]+', '_', requested).strip('._')
+        if not batch_stem:
+            batch_stem = _calc_xyz_batch_default_filename()
+        if batch_stem.lower().endswith('.txt'):
+            batch_stem = batch_stem[:-4].rstrip('._') or 'batch'
+
         entries = []
         skipped = []
-        for label in selected_labels:
-            item_name = _calc_label_to_name(label)
-            if not item_name:
-                skipped.append(f'{label}: invalid item name')
+        home_dir = Path.home().resolve()
+        for rel_value in item_values:
+            try:
+                item_path = _calc_resolve_within_root(_calc_dir() / rel_value)
+            except Exception:
+                skipped.append(f'{rel_value}: invalid item path')
                 continue
-            item_path = root_dir / item_name
+            item_name = item_path.name
             if not item_path.exists():
                 skipped.append(f'{item_name}: item not found')
                 continue
@@ -4408,21 +4752,32 @@ def create_tab(ctx):
             if not safe_name:
                 skipped.append(f'{item_name}: invalid batch name')
                 continue
-            entries.append((f'{safe_name}_batch', xyz_content))
+            entry_name = f'{safe_name}_{batch_stem}' if batch_stem else safe_name
+            try:
+                xyz_source_path = xyz_path.resolve()
+            except Exception:
+                xyz_source_path = xyz_path
+            try:
+                path_field = str(xyz_source_path.relative_to(_calc_dir()))
+            except Exception:
+                try:
+                    path_field = str(xyz_source_path.relative_to(home_dir))
+                except Exception:
+                    path_field = str(xyz_source_path)
+            entries.append((entry_name, path_field, xyz_content))
 
         if not entries:
             return None, skipped, 'No valid XYZ entries found.'
 
         lines = []
-        for idx, (entry_name, xyz_content) in enumerate(entries):
-            lines.append(f'{entry_name};')
+        for idx, (entry_name, rel_value, xyz_content) in enumerate(entries):
+            lines.append(f'{entry_name};source={rel_value};')
             lines.extend(xyz_content.splitlines())
             lines.append('*')
             if idx < len(entries) - 1:
                 lines.append('')
         payload_text = '\n'.join(lines).rstrip() + '\n'
 
-        requested = calc_xyz_batch_filename.value.strip() or _calc_xyz_batch_default_filename()
         safe_file = re.sub(r'[^A-Za-z0-9._-]+', '_', requested).strip('._')
         if not safe_file:
             safe_file = _calc_xyz_batch_default_filename()
@@ -4864,6 +5219,7 @@ def create_tab(ctx):
             calc_content_label.layout.display = 'none'
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
+            calc_xyz_workflow_toolbar.layout.display = 'none'
             return
         show_mol = calc_view_toggle.value
         if show_mol:
@@ -4873,6 +5229,7 @@ def create_tab(ctx):
             calc_content_label.layout.display = 'none'
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
+            calc_xyz_workflow_toolbar.layout.display = 'none'
         else:
             _calc_stop_xyz_playback(update_button=True)
             calc_mol_container.layout.display = 'none'
@@ -4882,11 +5239,19 @@ def create_tab(ctx):
                 calc_content_area.layout.display = 'none'
                 calc_edit_area.layout.display = 'block'
                 calc_recalc_toolbar.layout.display = 'flex'
+                calc_xyz_workflow_toolbar.layout.display = 'none'
+            elif state['xyz_workflow_active']:
+                calc_content_toolbar.layout.display = 'none'
+                calc_content_area.layout.display = 'block'
+                calc_edit_area.layout.display = 'none'
+                calc_recalc_toolbar.layout.display = 'none'
+                calc_xyz_workflow_toolbar.layout.display = 'flex'
             else:
                 calc_content_toolbar.layout.display = 'flex'
                 calc_content_area.layout.display = 'block'
                 calc_edit_area.layout.display = 'none'
                 calc_recalc_toolbar.layout.display = 'none'
+                calc_xyz_workflow_toolbar.layout.display = 'none'
 
     def calc_set_message(message):
         calc_content_area.value = (
@@ -6740,6 +7105,7 @@ def create_tab(ctx):
         calc_path_display.value = ''
         calc_download_status.value = ''
         calc_xyz_batch_status.value = ''
+        state['xyz_batch_marked_paths'] = []
         calc_print_mode_status.value = ''
         calc_mo_plot_status.value = ''
         calc_search_result.value = ''
@@ -6871,6 +7237,17 @@ def create_tab(ctx):
         calc_edit_area.layout.display = 'none'
         calc_recalc_toolbar.layout.display = 'none'
         calc_content_label.value = '<b>📄 File Content:</b>'
+
+    def calc_reset_xyz_workflow_state():
+        state['xyz_workflow_active'] = False
+        state['xyz_workflow_mode'] = ''
+        state['xyz_workflow_source_path'] = None
+        calc_xyz_workflow_pal.value = CALC_BROWSER_WORKFLOW_PAL
+        calc_xyz_workflow_time.value = CALC_BROWSER_WORKFLOW_TIMELIMIT
+        calc_submit_xyz_workflow_btn.disabled = True
+        calc_xyz_workflow_info.value = ''
+        calc_xyz_workflow_status.value = ''
+        calc_xyz_workflow_toolbar.layout.display = 'none'
 
     def calc_get_recalc_base_name(stem):
         match = re.match(r'^(.*)_recalc_(\d+)$', stem)
@@ -7144,7 +7521,11 @@ def create_tab(ctx):
             calc_override_status.layout.display = 'none'
             calc_override_status.value = ''
             calc_edit_area.layout.display = 'none'
-            if not calc_view_toggle.value and not state['recalc_active']:
+            if (
+                not calc_view_toggle.value
+                and not state['recalc_active']
+                and not state['xyz_workflow_active']
+            ):
                 calc_content_area.layout.display = 'block'
 
     # -- event handlers -----------------------------------------------------
@@ -7830,6 +8211,8 @@ def create_tab(ctx):
             _calc_show_print_mode_panel(False)
         if change['new'] != 'MO Plot':
             _calc_show_mo_plot_panel(False)
+        if change['new'] not in ('hyperpol_xtb', 'tadf_xtb'):
+            calc_reset_xyz_workflow_state()
         if change['new'] == 'Override':
             calc_override_input.layout.display = 'block'
             calc_override_time.layout.display = 'block'
@@ -7916,6 +8299,8 @@ def create_tab(ctx):
                     '<span style="color:#d32f2f;">Select a .xyz file first.</span>'
                 )
                 return
+            state['xyz_batch_marked_paths'] = []
+            state['xyz_batch_path'] = ''
             calc_xyz_batch_filename.value = _calc_xyz_batch_default_filename()
             _calc_show_xyz_batch_panel(True)
         elif change['new'] in ('hyperpol_xtb', 'tadf_xtb'):
@@ -7928,7 +8313,7 @@ def create_tab(ctx):
             _calc_preselect_show(False)
             _calc_show_xyz_batch_panel(False)
             calc_content_area.layout.display = 'block'
-            _calc_submit_xyz_browser_workflow(change['new'])
+            _calc_prepare_xyz_browser_workflow(change['new'])
             _calc_reset_options_dropdown()
         elif change['new'] == 'Print Mode':
             calc_override_input.layout.display = 'none'
@@ -9529,6 +9914,7 @@ def create_tab(ctx):
         calc_path_display.value = ''
         calc_download_status.value = ''
         calc_xyz_batch_status.value = ''
+        state['xyz_batch_marked_paths'] = []
         calc_print_mode_status.value = ''
         calc_mo_plot_status.value = ''
         state['file_content'] = ''
@@ -9542,6 +9928,7 @@ def create_tab(ctx):
         _calc_stop_xyz_playback(update_button=True)
         _calc_hide_chunk_controls()
         calc_reset_recalc_state()
+        calc_reset_xyz_workflow_state()
         _calc_preselect_show(False)
         _calc_show_xyz_batch_panel(False)
         _calc_show_print_mode_panel(False)
@@ -10233,6 +10620,7 @@ def create_tab(ctx):
     calc_next_btn.on_click(calc_next_match)
     calc_recalc_btn.on_click(calc_on_recalc_click)
     calc_submit_recalc_btn.on_click(calc_on_submit_recalc)
+    calc_submit_xyz_workflow_btn.on_click(_calc_submit_xyz_browser_workflow)
     calc_delete_btn.on_click(calc_on_delete_click)
     calc_delete_yes_btn.on_click(calc_on_delete_yes)
     calc_delete_no_btn.on_click(calc_on_delete_no)
@@ -10291,6 +10679,8 @@ def create_tab(ctx):
         calc_table_csv_btn.on_click(calc_on_table_csv_download)
     calc_file_list.observe(calc_on_selection_change, names='value')
     calc_dblclick_input.observe(calc_on_dblclick, names='value')
+    calc_xyz_batch_dblclick_input.observe(calc_on_xyz_batch_dblclick, names='value')
+    calc_xyz_batch_toggle_input.observe(calc_on_xyz_batch_toggle, names='value')
     calc_keyboard_action_input.observe(calc_on_keyboard_action, names='value')
     calc_folder_search.observe(calc_filter_file_list, names='value')
     calc_options_dropdown.observe(calc_on_options_change, names='value')
@@ -10317,6 +10707,10 @@ def create_tab(ctx):
     calc_copy_btn.on_click(calc_on_content_copy)
     calc_copy_path_btn.on_click(calc_on_path_copy)
     calc_download_btn.on_click(calc_on_download)
+    calc_xyz_batch_mark_btn.on_click(calc_on_xyz_batch_mark)
+    calc_xyz_batch_select_all_btn.on_click(calc_on_xyz_batch_select_all)
+    calc_xyz_batch_up_btn.on_click(calc_on_xyz_batch_up)
+    calc_xyz_batch_root_btn.on_click(calc_on_xyz_batch_root)
     calc_xyz_batch_refresh_btn.on_click(calc_on_xyz_batch_refresh)
     calc_xyz_batch_build_btn.on_click(calc_on_xyz_batch_build)
     calc_xyz_batch_copy_btn.on_click(calc_on_xyz_batch_copy)
@@ -10435,6 +10829,11 @@ def create_tab(ctx):
             var node = _eventPointNode(e);
             if (!node || !node.closest) return null;
             return node.closest('.calc-file-list select');
+        }
+        function _batchSelectAtPoint(e){
+            var node = _eventPointNode(e);
+            if (!node || !node.closest) return null;
+            return node.closest('.calc-xyz-batch-select select');
         }
         function _leftPaneAtPoint(e){
             var node = _eventPointNode(e);
@@ -11133,6 +11532,95 @@ def create_tab(ctx):
                 });
             } catch (_err) {}
         }
+        function _installBatchSelect(selectEl){
+            if (!selectEl || selectEl._delfinBatchSelectReady) return;
+            selectEl._delfinBatchSelectReady = true;
+            var root = selectEl.closest('.calc-tab');
+            if (!root) return;
+
+            function _isBatchToggleZone(e){
+                if (!e || typeof e.clientX !== 'number') return false;
+                var opt = _optionAtPoint(selectEl, e);
+                if (!opt || !opt.getBoundingClientRect) return false;
+                var rect = opt.getBoundingClientRect();
+                var localX = e.clientX - rect.left;
+                return localX >= 0 && localX <= 64;
+            }
+            function _styleBatchOption(opt){
+                if (!opt) return;
+                var text = _labelText(opt);
+                if (text.indexOf('✔ ') === 0) {
+                    opt.style.color = '#2e7d32';
+                    opt.style.fontWeight = '700';
+                } else {
+                    opt.style.color = '';
+                    opt.style.fontWeight = '';
+                }
+            }
+            function _applyBatchOptionStyles(){
+                Array.prototype.forEach.call(selectEl.options || [], function(opt){
+                    _styleBatchOption(opt);
+                });
+            }
+            function _toggleBatchOptionLabel(opt){
+                if (!opt) return;
+                var text = _labelText(opt);
+                if (!text) return;
+                if (text.indexOf('□ ') === 0) {
+                    opt.textContent = text.replace(/^□\s+/, '✔ ');
+                    _styleBatchOption(opt);
+                    return;
+                }
+                if (text.indexOf('✔ ') === 0) {
+                    opt.textContent = text.replace(/^✔\s+/, '□ ');
+                    _styleBatchOption(opt);
+                }
+            }
+
+            function _resetBatchDblClick(){
+                root._batchDblLastTime = 0;
+                root._batchDblLastLabel = '';
+                root._batchDblLastX = 0;
+                root._batchDblLastY = 0;
+            }
+            function _armBatchDblClick(opt, e){
+                var label = _labelText(opt);
+                if (!label || label.charAt(0) === '(') {
+                    _resetBatchDblClick();
+                    return;
+                }
+                root._batchDblLastTime = Date.now();
+                root._batchDblLastLabel = label;
+                root._batchDblLastX = (e && typeof e.clientX === 'number') ? e.clientX : 0;
+                root._batchDblLastY = (e && typeof e.clientY === 'number') ? e.clientY : 0;
+            }
+
+            selectEl.addEventListener('mousedown', function(e){
+                if (e.button != null && e.button !== 0) return;
+                var opt = _optionAtPoint(selectEl, e);
+                if (!opt) {
+                    _resetBatchDblClick();
+                    return;
+                }
+                if (_isBatchToggleZone(e)) {
+                    _resetBatchDblClick();
+                    e.preventDefault();
+                    e.stopPropagation();
+                    _toggleBatchOptionLabel(opt);
+                    _setWidgetInput(root, 'calc-cmd-xyz-batch-toggle', 'idx:' + String(_optionIndex(selectEl, opt)));
+                    return;
+                }
+                _armBatchDblClick(opt, e);
+            }, true);
+
+            _applyBatchOptionStyles();
+            try {
+                new MutationObserver(_applyBatchOptionStyles).observe(selectEl, {
+                    childList: true,
+                    subtree: true,
+                });
+            } catch (_err) {}
+        }
         function _installExternalFileDrop(root){
             if (!root || root._delfinExternalDropReady) return;
             console.log('[DELFIN] _installExternalFileDrop on', root.className);
@@ -11148,26 +11636,59 @@ def create_tab(ctx):
             root._dblLastLabel = '';
             root._dblLastX = 0;
             root._dblLastY = 0;
+            root._batchDblLastTime = 0;
+            root._batchDblLastLabel = '';
+            root._batchDblLastX = 0;
+            root._batchDblLastY = 0;
             root.addEventListener('mousedown', function(e){
                 if (e.button != null && e.button !== 0) return;
                 var sel = _selectAtPoint(e);
-                if (!sel || !sel.closest('.calc-file-list')) return;
-                var currentOpt = _optionAtPoint(sel, e);
-                if (!currentOpt) return;
-                var currentLabel = _labelText(currentOpt);
-                var label = String(root._dblLastLabel || '');
-                if (!label || label.charAt(0) === '(') return;
-                var now = Date.now();
-                var dx = Math.abs((typeof e.clientX === 'number' ? e.clientX : 0) - (Number(root._dblLastX) || 0));
-                var dy = Math.abs((typeof e.clientY === 'number' ? e.clientY : 0) - (Number(root._dblLastY) || 0));
-                if (currentLabel === label && (now - root._dblLastTime) < 500 && dx <= 20 && dy <= 20) {
-                    root._dblLastTime = 0;
-                    root._dblLastLabel = '';
-                    root._dblLastX = 0;
-                    root._dblLastY = 0;
+                if (sel && sel.closest('.calc-file-list')) {
+                    var currentOpt = _optionAtPoint(sel, e);
+                    if (!currentOpt) return;
+                    var currentLabel = _labelText(currentOpt);
+                    var label = String(root._dblLastLabel || '');
+                    if (!label || label.charAt(0) === '(') return;
+                    var now = Date.now();
+                    var dx = Math.abs((typeof e.clientX === 'number' ? e.clientX : 0) - (Number(root._dblLastX) || 0));
+                    var dy = Math.abs((typeof e.clientY === 'number' ? e.clientY : 0) - (Number(root._dblLastY) || 0));
+                    if (currentLabel === label && (now - root._dblLastTime) < 500 && dx <= 20 && dy <= 20) {
+                        root._dblLastTime = 0;
+                        root._dblLastLabel = '';
+                        root._dblLastX = 0;
+                        root._dblLastY = 0;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        _setWidgetInput(root, 'calc-cmd-dblclick', label);
+                    }
+                    return;
+                }
+                sel = _batchSelectAtPoint(e);
+                if (!sel || !sel.closest('.calc-xyz-batch-select')) return;
+                if (typeof e.clientX === 'number') {
+                    var batchOptForZone = _optionAtPoint(sel, e);
+                    if (batchOptForZone && batchOptForZone.getBoundingClientRect) {
+                        var batchRect = batchOptForZone.getBoundingClientRect();
+                        var batchLocalX = e.clientX - batchRect.left;
+                        if (batchLocalX >= 0 && batchLocalX <= 64) return;
+                    }
+                }
+                var batchOpt = _optionAtPoint(sel, e);
+                if (!batchOpt) return;
+                var batchLabel = _labelText(batchOpt);
+                var prevBatchLabel = String(root._batchDblLastLabel || '');
+                if (!prevBatchLabel || prevBatchLabel.charAt(0) === '(') return;
+                var batchNow = Date.now();
+                var batchDx = Math.abs((typeof e.clientX === 'number' ? e.clientX : 0) - (Number(root._batchDblLastX) || 0));
+                var batchDy = Math.abs((typeof e.clientY === 'number' ? e.clientY : 0) - (Number(root._batchDblLastY) || 0));
+                if (batchLabel === prevBatchLabel && (batchNow - root._batchDblLastTime) < 500 && batchDx <= 20 && batchDy <= 20) {
+                    root._batchDblLastTime = 0;
+                    root._batchDblLastLabel = '';
+                    root._batchDblLastX = 0;
+                    root._batchDblLastY = 0;
                     e.preventDefault();
                     e.stopPropagation();
-                    _setWidgetInput(root, 'calc-cmd-dblclick', label);
+                    _setWidgetInput(root, 'calc-cmd-xyz-batch-dblclick', prevBatchLabel);
                 }
             }, true);
 
@@ -11272,6 +11793,13 @@ def create_tab(ctx):
             });
             Array.prototype.forEach.call(selects, _installExplorerSelect);
 
+            var batchSelects = [];
+            if (root.matches && root.matches('.calc-xyz-batch-select select')) batchSelects.push(root);
+            Array.prototype.forEach.call(root.querySelectorAll('.calc-xyz-batch-select select'), function(sel){
+                batchSelects.push(sel);
+            });
+            Array.prototype.forEach.call(batchSelects, _installBatchSelect);
+
             var tabs = [];
             if (root.matches && root.matches('.calc-tab')) tabs.push(root);
             Array.prototype.forEach.call(root.querySelectorAll('.calc-tab'), function(tab){
@@ -11347,7 +11875,8 @@ def create_tab(ctx):
              calc_upload_meta_input, calc_upload_chunk_input,
              calc_upload_seq_input, calc_upload_ack_input,
              calc_upload_trigger_btn, calc_upload_ack_label,
-             calc_dblclick_input, calc_keyboard_action_input],
+             calc_dblclick_input, calc_xyz_batch_dblclick_input, calc_xyz_batch_toggle_input,
+             calc_keyboard_action_input],
             layout=widgets.Layout(display='none'),
         ),
     ], layout=widgets.Layout(width='100%', overflow_x='hidden'))
@@ -11547,6 +12076,7 @@ def create_tab(ctx):
         calc_right_children.append(calc_table_panel)
     calc_right_children.extend([
         calc_recalc_toolbar,
+        calc_xyz_workflow_toolbar,
         calc_content_toolbar,
         calc_chunk_hidden_row,
         calc_override_status,
