@@ -557,6 +557,18 @@ def create_tab(ctx):
         tooltip='Convert decimal point to decimal comma in table/CSV values',
         layout=widgets.Layout(width='126px', height='26px'),
     )
+    calc_table_preset_name = widgets.Text(
+        placeholder='extract_table.delfin-table.json',
+        layout=widgets.Layout(flex='1 1 auto', min_width='140px', height='26px'),
+    )
+    calc_table_preset_name.add_class('calc-table-preset-name')
+    calc_table_preset_save_btn = widgets.Button(
+        description='Save file',
+        layout=widgets.Layout(width='88px', height='26px'),
+    )
+    calc_table_preset_status = widgets.HTML(
+        value="<span style='color:#616161;'>Click a <code>.delfin-table.json</code> file in the explorer to load it.</span>"
+    )
     calc_table_add_col_btn = widgets.Button(
         description='+ Column',
         layout=widgets.Layout(width='80px', height='26px'),
@@ -598,6 +610,12 @@ def create_tab(ctx):
             calc_table_recursive_cb,
             calc_table_decimal_comma_btn,
         ], layout=widgets.Layout(gap='6px', align_items='center', width='100%')),
+        widgets.HBox([
+            widgets.HTML('<span style="white-space:nowrap"><b>Preset file:</b></span>'),
+            calc_table_preset_name,
+            calc_table_preset_save_btn,
+        ], layout=widgets.Layout(gap='6px', align_items='center', width='100%')),
+        calc_table_preset_status,
         calc_table_cols_box,
         widgets.HBox(
             [calc_table_add_col_btn, calc_table_run_btn, calc_table_csv_btn],
@@ -7187,7 +7205,9 @@ def create_tab(ctx):
                     items.append(f'{folder_icon} {entry.name}')
                 else:
                     suffix = entry.suffix.lower()
-                    if suffix == '.xyz':
+                    if _calc_is_table_preset_path(entry):
+                        items.append(f'📊 {entry.name}')
+                    elif suffix == '.xyz':
                         items.append(f'🔬 {entry.name}')
                     elif suffix == '.png':
                         items.append(f'🖼 {entry.name}')
@@ -9295,6 +9315,119 @@ def create_tab(ctx):
         _calc_refresh_related_explorers()
 
     # -- table extraction ---------------------------------------------------
+    _CALC_TABLE_PRESET_SUFFIX = '.delfin-table.json'
+
+    def _default_table_col_defs():
+        return [{'name': 'Value 1', 'type': 'text', 'pattern': '', 'occ': 'last'}]
+
+    def _normalize_table_preset_col_defs(columns):
+        normalized = []
+        for col in columns or []:
+            if not isinstance(col, dict):
+                continue
+            col_type = str(col.get('type', 'text') or 'text').strip().lower()
+            if col_type not in ('text', 'regex', 'json'):
+                col_type = 'text'
+            occ = str(col.get('occ', 'last') or 'last').strip().lower()
+            if occ not in ('last', 'first', 'all'):
+                occ = 'last'
+            normalized.append({
+                'name': str(col.get('name', '') or '').strip(),
+                'type': col_type,
+                'pattern': str(col.get('pattern', '') or '').strip(),
+                'occ': occ,
+            })
+        return normalized or _default_table_col_defs()
+
+    def _set_calc_table_preset_status(message='', color='#555'):
+        if not message:
+            calc_table_preset_status.value = ''
+            return
+        calc_table_preset_status.value = (
+            f'<span style="color:{color};">{_html.escape(str(message))}</span>'
+        )
+
+    def _calc_is_table_preset_path(path):
+        try:
+            name = Path(path).name
+        except Exception:
+            name = str(path or '')
+        return str(name or '').lower().endswith(_CALC_TABLE_PRESET_SUFFIX)
+
+    def _normalize_calc_table_preset_name(raw_name=''):
+        name = str(raw_name or '').strip()
+        if not name:
+            name = f'extract_table{_CALC_TABLE_PRESET_SUFFIX}'
+        if '/' in name or '\\' in name:
+            raise ValueError('Use only a file name, not a path.')
+        if not name.lower().endswith(_CALC_TABLE_PRESET_SUFFIX):
+            name += _CALC_TABLE_PRESET_SUFFIX
+        return name
+
+    def _table_preset_payload_from_ui():
+        _collect_table_col_values()
+        scope = str(calc_table_scope_dd.value or 'all').strip().lower()
+        if scope not in ('all', 'selected'):
+            scope = 'all'
+        return {
+            'kind': 'delfin_extract_table_preset',
+            'version': 1,
+            'file': str(calc_table_file_input.value or '').strip(),
+            'scope': scope,
+            'recursive': bool(calc_table_recursive_cb.value),
+            'decimal_comma': bool(calc_table_decimal_comma_btn.value),
+            'columns': _normalize_table_preset_col_defs(state.get('table_col_defs')),
+        }
+
+    def _apply_table_preset_payload(preset_payload, preset_name=''):
+        payload = preset_payload if isinstance(preset_payload, dict) else {}
+        scope = str(payload.get('scope', 'all') or 'all').strip().lower()
+        if scope not in ('all', 'selected'):
+            scope = 'all'
+        calc_table_file_input.value = str(payload.get('file', '') or '').strip()
+        calc_table_scope_dd.value = scope
+        calc_table_recursive_cb.value = bool(payload.get('recursive', False))
+        calc_table_decimal_comma_btn.value = bool(payload.get('decimal_comma', False))
+        state['table_col_defs'] = _normalize_table_preset_col_defs(payload.get('columns'))
+        _rebuild_table_col_rows()
+
+        if preset_name:
+            calc_table_preset_name.value = str(preset_name or '').strip()
+
+    def _parse_calc_table_preset_text(raw_text, source_label=''):
+        try:
+            payload = json.loads(raw_text)
+        except Exception as exc:
+            raise ValueError(f'Invalid preset JSON: {exc}') from exc
+        if not isinstance(payload, dict):
+            raise ValueError('Preset file must contain a JSON object.')
+        kind = str(payload.get('kind', '') or '').strip()
+        if kind and kind != 'delfin_extract_table_preset':
+            raise ValueError('Not a DELFIN extract-table preset file.')
+        payload = dict(payload)
+        payload['columns'] = _normalize_table_preset_col_defs(payload.get('columns'))
+        payload['scope'] = str(payload.get('scope', 'all') or 'all').strip().lower()
+        if payload['scope'] not in ('all', 'selected'):
+            payload['scope'] = 'all'
+        payload['recursive'] = bool(payload.get('recursive', False))
+        payload['decimal_comma'] = bool(payload.get('decimal_comma', False))
+        payload['file'] = str(payload.get('file', '') or '').strip()
+        if not payload['file']:
+            raise ValueError('Preset file is missing the table target file.')
+        return payload
+
+    def _open_calc_table_preset_file(full_path):
+        raw_text = Path(full_path).read_text(encoding='utf-8')
+        payload = _parse_calc_table_preset_text(raw_text, source_label=Path(full_path).name)
+        calc_table_panel.layout.display = ''
+        state['table_panel_active'] = True
+        _apply_table_preset_payload(payload, preset_name=Path(full_path).name)
+        _set_calc_table_preset_status(
+            f'Loaded preset file {Path(full_path).name}. Click Run to extract the table.',
+            color='#2e7d32',
+        )
+        calc_update_view()
+
     def _collect_table_col_values():
         for i, rw in enumerate(state['table_col_widgets']):
             if i < len(state['table_col_defs']):
@@ -9712,6 +9845,8 @@ def create_tab(ctx):
         if calc_table_panel.layout.display == 'none':
             calc_table_panel.layout.display = ''
             state['table_panel_active'] = True
+            if not str(calc_table_preset_name.value or '').strip():
+                calc_table_preset_name.value = f'extract_table{_CALC_TABLE_PRESET_SUFFIX}'
             _rebuild_table_col_rows()
         else:
             calc_table_panel.layout.display = 'none'
@@ -9730,6 +9865,32 @@ def create_tab(ctx):
             {'name': f'Value {n}', 'type': 'regex', 'pattern': '', 'occ': 'last'}
         )
         _rebuild_table_col_rows()
+
+    def calc_on_table_preset_save(button=None):
+        try:
+            preset_name = _normalize_calc_table_preset_name(calc_table_preset_name.value)
+        except Exception as exc:
+            _set_calc_table_preset_status(str(exc), color='#d32f2f')
+            return
+        base_dir = (
+            _calc_dir() / state['current_path']
+            if state['current_path'] else _calc_dir()
+        )
+        preset_path = base_dir / preset_name
+        try:
+            preset_path.write_text(
+                json.dumps(_table_preset_payload_from_ui(), indent=2, ensure_ascii=True) + '\n',
+                encoding='utf-8',
+            )
+        except Exception as exc:
+            _set_calc_table_preset_status(f'Could not save preset file: {exc}', color='#d32f2f')
+            return
+        calc_table_preset_name.value = preset_name
+        calc_list_directory()
+        _set_calc_table_preset_status(
+            f'Saved preset file {preset_name} in {base_dir}.',
+            color='#2e7d32',
+        )
 
     def calc_on_table_run(button):
         _collect_table_col_values()
@@ -9884,6 +10045,16 @@ def create_tab(ctx):
 
         # Directories are only navigated via dblclick, not here.
         if full_path.is_dir():
+            return
+
+        if _is_archive_tab and _calc_is_table_preset_path(full_path):
+            try:
+                _open_calc_table_preset_file(full_path)
+            except Exception as exc:
+                _set_calc_table_preset_status(f'Could not load preset file: {exc}', color='#d32f2f')
+                calc_table_panel.layout.display = ''
+                state['table_panel_active'] = True
+                calc_update_view()
             return
 
         # Reset search state
@@ -10677,6 +10848,7 @@ def create_tab(ctx):
         calc_table_add_col_btn.on_click(calc_on_table_add_col)
         calc_table_run_btn.on_click(calc_on_table_run)
         calc_table_csv_btn.on_click(calc_on_table_csv_download)
+        calc_table_preset_save_btn.on_click(calc_on_table_preset_save)
     calc_file_list.observe(calc_on_selection_change, names='value')
     calc_dblclick_input.observe(calc_on_dblclick, names='value')
     calc_xyz_batch_dblclick_input.observe(calc_on_xyz_batch_dblclick, names='value')
@@ -10721,6 +10893,7 @@ def create_tab(ctx):
     calc_mo_plot_btn.on_click(calc_on_mo_plot)
     calc_report_btn.on_click(calc_on_report)
     disable_spellcheck(ctx, class_name='calc-search-input')
+    disable_spellcheck(ctx, class_name='calc-table-preset-name')
     _calc_update_xyz_traj_control_state()
 
     # -- initialise ---------------------------------------------------------
