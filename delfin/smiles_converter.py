@@ -11660,6 +11660,115 @@ def _component_stats_from_adj(adj: Dict[int, set]) -> Optional[Tuple[int, int, i
         return None
 
 
+def _heavy_graph_edges_smiles(
+    smiles: str,
+) -> Optional[Tuple[Dict[int, str], set]]:
+    """Return non-metal heavy symbols and bond-order-neutral edge set from SMILES."""
+    if not RDKIT_AVAILABLE:
+        return None
+    try:
+        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        if mol is None:
+            return None
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+
+        heavy_symbols: Dict[int, str] = {}
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() <= 1:
+                continue
+            if atom.GetSymbol() in _METAL_SET:
+                continue
+            heavy_symbols[atom.GetIdx()] = atom.GetSymbol()
+
+        edges: set = set()
+        for bond in mol.GetBonds():
+            bi = bond.GetBeginAtomIdx()
+            bj = bond.GetEndAtomIdx()
+            if bi not in heavy_symbols or bj not in heavy_symbols:
+                continue
+            edges.add(tuple(sorted((int(bi), int(bj)))))
+        return heavy_symbols, edges
+    except Exception:
+        return None
+
+
+def _heavy_graph_edges_xyz(
+    xyz_delfin: str,
+    expected_heavy_symbols: Dict[int, str],
+) -> Optional[set]:
+    """Return bond-order-neutral non-metal heavy edge set perceived from XYZ."""
+    if not OPENBABEL_AVAILABLE:
+        return None
+    try:
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        if not lines:
+            return None
+
+        for idx, sym in expected_heavy_symbols.items():
+            if idx >= len(lines):
+                return None
+            parts = lines[idx].split()
+            if not parts or parts[0] != sym:
+                return None
+
+        std_xyz = f"{len(lines)}\n\n" + "\n".join(lines) + "\n"
+        ob_mol = pybel.readstring('xyz', std_xyz).OBMol
+        try:
+            from openbabel import openbabel as _ob
+        except ImportError:
+            return None
+
+        heavy_idx_set = set(int(i) for i in expected_heavy_symbols.keys())
+        edges: set = set()
+        for bond in _ob.OBMolBondIter(ob_mol):
+            i1 = int(bond.GetBeginAtomIdx()) - 1
+            i2 = int(bond.GetEndAtomIdx()) - 1
+            if i1 not in heavy_idx_set or i2 not in heavy_idx_set:
+                continue
+            edges.add(tuple(sorted((i1, i2))))
+        return edges
+    except Exception:
+        return None
+
+
+def _heavy_graph_exact_match_ok(
+    xyz_delfin: str,
+    original_smiles: str,
+) -> bool:
+    """Return True if non-metal heavy connectivity matches exactly, ignoring bond order."""
+    try:
+        ref = _heavy_graph_edges_smiles(original_smiles)
+        if ref is None:
+            return True
+        heavy_symbols, ref_edges = ref
+        xyz_edges = _heavy_graph_edges_xyz(xyz_delfin, heavy_symbols)
+        if xyz_edges is None:
+            return True
+        if xyz_edges == ref_edges:
+            return True
+
+        missing = sorted(ref_edges - xyz_edges)
+        added = sorted(xyz_edges - ref_edges)
+        if missing:
+            logger.debug(
+                "Heavy-graph mismatch: missing %d bond(s), first=%s",
+                len(missing),
+                missing[0],
+            )
+        if added:
+            logger.debug(
+                "Heavy-graph mismatch: added %d bond(s), first=%s",
+                len(added),
+                added[0],
+            )
+        return False
+    except Exception:
+        return True
+
+
 def _organic_fragment_signature(smiles: str) -> "frozenset | None":
     """Return an order-independent connectivity signature for organic fragments."""
     if not RDKIT_AVAILABLE:
@@ -12420,6 +12529,8 @@ def _hapto_candidate_topology_ok(
 ) -> bool:
     """Return True when a hapto candidate preserves the input topology."""
     try:
+        if not _heavy_graph_exact_match_ok(xyz_delfin, original_smiles):
+            return False
         if not _roundtrip_ring_count_ok(xyz_delfin, original_smiles):
             return False
         if not _no_spurious_bonds(xyz_delfin, original_smiles):
