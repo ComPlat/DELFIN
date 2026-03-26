@@ -301,7 +301,7 @@ def create_tab(ctx):
             "Ni_1;[Ni];charge=2;solvent=water\n"
             "Co_1;[Co];charge=3\n"
             "\n"
-            "name1;key=value;\n"
+            "name1;source=20/build_complex.xyz;key=value;\n"
             "C  0.0  0.0  0.0\n"
             "H  0.0  0.0  1.0\n"
             "*\n"
@@ -906,6 +906,31 @@ def create_tab(ctx):
         val = m.group(1).strip()
         return not val or val == '[CHARGE]'
 
+    def _batch_token_looks_like_source(token):
+        token = str(token or '').strip()
+        if not token:
+            return False
+        token_lower = token.lower()
+        return (
+            token_lower.endswith('.xyz')
+            or token.startswith('/')
+            or token.startswith('./')
+            or token.startswith('../')
+            or token.startswith('~/')
+            or bool(re.match(r'^[A-Za-z]:[\\/]', token))
+        )
+
+    def _set_control_value(control_content, key, value):
+        pattern = rf'(?m)^{re.escape(key)}\s*=.*$'
+        replacement = f'{key}={value}'
+        if re.search(pattern, control_content):
+            return re.sub(
+                pattern,
+                lambda _m, repl=replacement: repl,
+                control_content,
+            )
+        return control_content.rstrip() + f'\n{replacement}\n'
+
     def parse_batch_entries():
         """Parse mixed SMILES/XYZ batch textarea.
 
@@ -913,12 +938,12 @@ def create_tab(ctx):
         1) SMILES line:
            Name;SMILES;key=value;...
         2) XYZ block:
-           Name;key=value;...    # key=value optional
+           Name;source=20/build_complex.xyz;key=value;...
            XYZ
            <coordinates ...>    # with or without XYZ header lines
            *
            or short form:
-           Name.xyz;
+           Name;20/build_complex.xyz;
            <coordinates ...>
            *
         """
@@ -945,7 +970,8 @@ def create_tab(ctx):
                 continue
 
             extras = {}
-            smiles_payload = None
+            source_path = ''
+            header_free_tokens = []
             force_xyz = False
             for token in header_tokens:
                 if not token:
@@ -959,15 +985,28 @@ def create_tab(ctx):
                         key, value = token.split('=', 1)
                         key = key.strip()
                         value = value.strip()
+                        if key in {'source', 'path', 'origin'}:
+                            source_path = value
+                            force_xyz = True
+                            continue
                         extras[key] = value
                         continue
                 if token.upper() == 'XYZ':
                     force_xyz = True
                     continue
-                if smiles_payload is None and not force_xyz:
-                    smiles_payload = token
+                header_free_tokens.append(token)
+
+            smiles_payload = None
+            if header_free_tokens:
+                if not source_path and len(header_free_tokens) == 1 and _batch_token_looks_like_source(header_free_tokens[0]):
+                    source_path = header_free_tokens[0]
+                    force_xyz = True
+                elif len(header_free_tokens) == 1 and not force_xyz:
+                    smiles_payload = header_free_tokens[0]
                 else:
-                    errors.append(f"Line {line_no}: Invalid token '{token}' in header")
+                    invalid_tokens = ', '.join(repr(token) for token in header_free_tokens)
+                    errors.append(f'Line {line_no}: Invalid header token(s): {invalid_tokens}')
+                    continue
 
             if smiles_payload and not force_xyz:
                 entries.append({
@@ -977,6 +1016,8 @@ def create_tab(ctx):
                     'input_raw': smiles_payload,
                     'input_content': None,
                     'extras': extras,
+                    'source_path': '',
+                    'header_raw': raw_line.rstrip(),
                 })
                 continue
 
@@ -1010,6 +1051,8 @@ def create_tab(ctx):
                 'input_raw': xyz_raw,
                 'input_content': xyz_content,
                 'extras': extras,
+                'source_path': source_path,
+                'header_raw': raw_line.rstrip(),
             })
         return entries, errors
 
@@ -1044,6 +1087,7 @@ def create_tab(ctx):
         name = entry['name']
         extras = entry['extras']
         input_kind = entry['input_kind']
+        source_path = str(entry.get('source_path') or '').strip()
 
         with mol_output:
             clear_output()
@@ -1052,6 +1096,8 @@ def create_tab(ctx):
                 print(f"SMILES: {entry['input_raw']}")
             else:
                 print('XYZ coordinates')
+                if source_path:
+                    print(f'Source: {source_path}')
             if extras:
                 print(f'Options: {extras}')
             print('Converting...')
@@ -1078,12 +1124,16 @@ def create_tab(ctx):
                 coord_lines = [ln for ln in xyz_coords.splitlines() if ln.strip()]
                 if not coord_lines:
                     print(f'Preview: {name}')
+                    if source_path:
+                        print(f'Source: {source_path}')
                     if extras:
                         print(f'Options: {extras}')
                     print('Error: Empty XYZ coordinates')
                     return
                 num_atoms = len(coord_lines)
                 print(f'Preview: {name} (XYZ)')
+                if source_path:
+                    print(f'Source: {source_path}')
                 if extras:
                     print(f'Options: {extras}')
                 xyz_data = f'{num_atoms}\nPreview: {name}\n{xyz_coords}'
@@ -1165,6 +1215,7 @@ def create_tab(ctx):
                 name_raw = entry.get('name', '').strip()
                 extras = dict(entry.get('extras', {}))
                 input_kind = entry.get('input_kind', 'smiles')
+                source_path = str(entry.get('source_path') or '').strip()
                 safe_name = ''.join(c for c in name_raw if c.isalnum() or c in ('_', '-'))
                 if not safe_name:
                     print(f'Line {line_no}: Invalid name -> {name_raw}')
@@ -1214,19 +1265,25 @@ def create_tab(ctx):
                     extras['charge'] = str(_get_smiles_charge(smi))
 
                 for key, value in extras.items():
-                    pattern = rf'(?m)^{re.escape(key)}\s*=.*$'
-                    replacement = f'{key}={value}'
-                    if re.search(pattern, control_content):
-                        control_content = re.sub(
-                            pattern,
-                            lambda _m, repl=replacement: repl,
-                            control_content,
-                        )
-                    else:
-                        control_content = control_content.rstrip() + f'\n{replacement}\n'
+                    control_content = _set_control_value(control_content, key, value)
+
+                if source_path:
+                    control_content = _set_control_value(control_content, 'source', source_path)
 
                 (job_dir / 'CONTROL.txt').write_text(control_content)
                 (job_dir / 'input.txt').write_text(input_content)
+                batch_metadata = {
+                    'line_no': line_no,
+                    'name': safe_name,
+                    'input_kind': input_kind,
+                    'source': source_path or None,
+                    'extras': extras,
+                    'header_raw': entry.get('header_raw', ''),
+                }
+                (job_dir / 'input_metadata.json').write_text(
+                    json.dumps(batch_metadata, indent=2),
+                    encoding='utf-8',
+                )
 
                 pal, maxcore = parse_resource_settings(control_content)
                 mode, co2_delta = resolve_co2_submit_mode(control_content)
