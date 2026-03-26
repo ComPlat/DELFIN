@@ -12414,6 +12414,206 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
     return total_penalty
 
 
+def _hapto_candidate_topology_ok(
+    xyz_delfin: str,
+    original_smiles: str,
+) -> bool:
+    """Return True when a hapto candidate preserves the input topology."""
+    try:
+        if not _roundtrip_ring_count_ok(xyz_delfin, original_smiles):
+            return False
+        if not _no_spurious_bonds(xyz_delfin, original_smiles):
+            return False
+        if not _fragment_topology_ok(xyz_delfin, original_smiles):
+            if not _fragment_topology_relaxed_fallback_ok(xyz_delfin, original_smiles):
+                return False
+        return True
+    except Exception:
+        # If topology perception is unavailable (for example without OB),
+        # keep the candidate and let graph/geometry checks decide.
+        return True
+
+
+def _hapto_candidate_quality_score(
+    mol,
+    conf_id: int = 0,
+) -> float:
+    """Return a penalty score for a hapto candidate (lower = better)."""
+    if not RDKIT_AVAILABLE or mol is None:
+        return float("inf")
+
+    score = 0.0
+    try:
+        score += float(_geometry_quality_score(mol, conf_id))
+    except Exception:
+        score += 1.0e6
+
+    try:
+        if _has_severe_covalent_distortion(mol, conf_id):
+            score += 1.0e6
+    except Exception:
+        score += 1.0e5
+
+    try:
+        if _has_bad_geometry(mol, conf_id):
+            score += 2.5e5
+    except Exception:
+        score += 1.0e5
+
+    try:
+        if _has_atom_clash(mol, conf_id, min_dist=0.80):
+            score += 2.5e5
+    except Exception:
+        pass
+
+    try:
+        if _has_unphysical_metal_nonbonded_contact(mol, conf_id):
+            score += 2.0e5
+    except Exception:
+        pass
+
+    try:
+        if _has_ligand_intertwining(mol, conf_id):
+            score += 8.0e4
+    except Exception:
+        pass
+
+    return score
+
+
+def _hapto_mol_from_xyz_template(mol_template, xyz_delfin: str):
+    """Map DELFIN XYZ coordinates back onto a template molecule."""
+    if not RDKIT_AVAILABLE or mol_template is None:
+        return None
+    try:
+        mol_tmp = Chem.Mol(mol_template)
+        mol_tmp.RemoveAllConformers()
+        conf = _xyz_to_rdkit_conformer(mol_tmp, xyz_delfin)
+        if conf is None:
+            return None
+        mol_tmp.AddConformer(conf, assignId=True)
+        return mol_tmp
+    except Exception:
+        return None
+
+
+def _refine_hapto_candidate_with_rdkit_uff(
+    mol,
+    hapto_groups: List[Tuple[int, List[int]]],
+):
+    """Run local RDKit UFF while freezing the hapto scaffold."""
+    if not RDKIT_AVAILABLE or mol is None:
+        return None
+    try:
+        work = Chem.Mol(mol)
+        if work.GetNumConformers() == 0:
+            return None
+        ff = AllChem.UFFGetMoleculeForceField(work, confId=0)
+        if ff is None:
+            return None
+
+        fixed: set = set()
+        for atom in work.GetAtoms():
+            if atom.GetSymbol() in _METAL_SET:
+                fixed.add(atom.GetIdx())
+        for metal_idx, catoms in hapto_groups:
+            fixed.add(metal_idx)
+            fixed.update(catoms)
+        for atom_idx in sorted(fixed):
+            ff.AddFixedPoint(int(atom_idx))
+
+        ff.Minimize(maxIts=600)
+        try:
+            _enforce_donor_pi_coplanarity(work, 0, hapto_groups)
+        except Exception:
+            pass
+        try:
+            _fix_secondary_metal_distances(work, 0, hapto_groups)
+        except Exception:
+            pass
+        try:
+            _final_clash_resolution(work, 0, hapto_groups)
+        except Exception:
+            pass
+        return work
+    except Exception:
+        return None
+
+
+def _select_best_hapto_candidate(
+    smiles: str,
+    hapto_groups: List[Tuple[int, List[int]]],
+    candidates: List[Tuple[str, object]],
+    *,
+    apply_uff: bool,
+):
+    """Select the best topology-preserving hapto candidate."""
+    accepted: List[Tuple[float, object, str]] = []
+    relaxed: List[Tuple[float, object, str]] = []
+
+    for label, candidate_mol in candidates:
+        if candidate_mol is None or candidate_mol.GetNumConformers() == 0:
+            continue
+
+        try:
+            xyz_candidate = _mol_to_xyz(candidate_mol)
+        except Exception:
+            continue
+
+        topo_ok = _hapto_candidate_topology_ok(xyz_candidate, smiles)
+        base_score = _hapto_candidate_quality_score(candidate_mol, 0)
+        target_bucket = accepted if topo_ok else relaxed
+        target_bucket.append((base_score, candidate_mol, label))
+
+        if not apply_uff:
+            continue
+
+        refined_trials: List[Tuple[str, object]] = []
+        rdkit_refined = _refine_hapto_candidate_with_rdkit_uff(candidate_mol, hapto_groups)
+        if rdkit_refined is not None:
+            refined_trials.append((f"{label}+rdkit-uff", rdkit_refined))
+
+        try:
+            xyz_refined = _optimize_xyz_openbabel_safe(
+                xyz_candidate,
+                mol_template=candidate_mol,
+                smiles=smiles,
+                steps=750,
+                apply_template_constraints=True,
+            )
+        except Exception:
+            xyz_refined = xyz_candidate
+        if xyz_refined and xyz_refined != xyz_candidate:
+            ob_refined = _hapto_mol_from_xyz_template(candidate_mol, xyz_refined)
+            if ob_refined is not None:
+                refined_trials.append((f"{label}+ob-uff", ob_refined))
+
+        for refined_label, refined_mol in refined_trials:
+            try:
+                xyz_refined = _mol_to_xyz(refined_mol)
+            except Exception:
+                continue
+            if not _hapto_candidate_topology_ok(xyz_refined, smiles):
+                continue
+            refined_score = _hapto_candidate_quality_score(refined_mol, 0)
+            if refined_score + 1e-6 < base_score:
+                accepted.append((refined_score, refined_mol, refined_label))
+
+    pool = accepted if accepted else relaxed
+    if not pool:
+        return None
+    pool.sort(key=lambda item: (item[0], item[2]))
+    best_score, best_mol, best_label = pool[0]
+    logger.info(
+        "Selected hapto candidate %s (score=%.2f, strict_topology=%s, pool=%d)",
+        best_label,
+        best_score,
+        bool(accepted),
+        len(pool),
+    )
+    return best_mol
+
+
 def _segment_distance_sq(p1, p2, p3, p4) -> float:
     """Squared minimum distance between 3D line segments P1-P2 and P3-P4.
 
@@ -15300,8 +15500,8 @@ def smiles_to_xyz(
             hapto_groups = _find_hapto_groups(mol)
             if not hapto_groups:
                 hapto_groups = _probe_hapto_groups_from_smiles(smiles)
-            best_mol = None
             preview_candidates: List[Tuple[str, str]] = []
+            hapto_candidate_mols: List[Tuple[str, object]] = []
 
             # Primary hybrid path: analytical hapto scaffold plus rigidly
             # aligned ligand fragments. This avoids global ETKDG on the full
@@ -15313,221 +15513,170 @@ def smiles_to_xyz(
                     preview_store=preview_candidates,
                 )
                 if hybrid_mol is not None:
-                    best_mol = hybrid_mol
+                    hapto_candidate_mols.append(("hybrid", hybrid_mol))
                     logger.info("Hybrid hapto scaffold/fragment builder succeeded")
             except Exception as e:
                 logger.debug("Hybrid hapto scaffold/fragment builder failed: %s", e)
             _HAPTO_QUICK_PREVIEW_CACHE[smiles] = list(preview_candidates)
 
-            if best_mol is None:
-                # Fix O- atoms with double bonds that cause valence errors
-                # during ETKDG embedding (e.g. C=[O-] in metal chelates).
-                # Temporarily neutralize for embedding; formal charges don't
-                # affect distance geometry.
-                _fixed_o_atoms = []
-                for _oa in mol.GetAtoms():
-                    if (_oa.GetSymbol() == 'O'
-                            and _oa.GetFormalCharge() == -1
-                            and any(b.GetBondType() == Chem.BondType.DOUBLE
-                                    for b in _oa.GetBonds())):
-                        _oa.SetFormalCharge(0)
-                        _fixed_o_atoms.append(_oa.GetIdx())
-                if _fixed_o_atoms:
+            # Fix O- atoms with double bonds that cause valence errors
+            # during ETKDG embedding (e.g. C=[O-] in metal chelates).
+            # Temporarily neutralize for embedding; formal charges don't
+            # affect distance geometry.
+            _fixed_o_atoms = []
+            for _oa in mol.GetAtoms():
+                if (_oa.GetSymbol() == 'O'
+                        and _oa.GetFormalCharge() == -1
+                        and any(b.GetBondType() == Chem.BondType.DOUBLE
+                                for b in _oa.GetBonds())):
+                    _oa.SetFormalCharge(0)
+                    _fixed_o_atoms.append(_oa.GetIdx())
+            if _fixed_o_atoms:
+                try:
+                    mol.UpdatePropertyCache(strict=False)
+                except Exception:
+                    pass
+
+            # SECONDARY: Two-phase ETKDG embedding
+            # Phase 1: ETKDG + analytical hapto correction → fix hapto atoms
+            # Phase 2: candidate selection via topology/geometry filter.
+            etkdg_seeds = [42, 1337, 2027, 7, 97, 13, 271, 911]
+            for seed in etkdg_seeds:
+                try:
+                    mol_try = Chem.Mol(mol)
+                    params = AllChem.ETKDGv3()
+                    params.randomSeed = seed
+                    params.useRandomCoords = True
+                    params.enforceChirality = False
+                    r = AllChem.EmbedMolecule(mol_try, params)
+                    if r != 0:
+                        r = AllChem.EmbedMolecule(
+                            mol_try, useRandomCoords=True, randomSeed=seed
+                        )
+                    if r != 0:
+                        continue
+                    cid = int(r)
+
+                    # Phase 1: Analytical hapto correction
                     try:
-                        mol.UpdatePropertyCache(strict=False)
+                        _correct_hapto_geometry(mol_try, cid, hapto_groups)
                     except Exception:
                         pass
 
-                # SECONDARY: Two-phase ETKDG embedding
-                # Phase 1: ETKDG + analytical hapto correction → fix hapto atoms
-                # Phase 2: UFF relaxation with fixed hapto scaffold
-                etkdg_seeds = [42, 1337, 2027, 7, 97, 13]
-                for seed in etkdg_seeds:
+                    # Phase 1.5: Fix sigma metal-ligand distances.
+                    # ETKDG treats M-L bonds like organic bonds (~1.5Å)
+                    # which is too short.  Scale entire ligand fragments
+                    # rigidly to correct M-L distances.
                     try:
-                        mol_try = Chem.Mol(mol)
-                        params = AllChem.ETKDGv3()
-                        params.randomSeed = seed
-                        params.useRandomCoords = True
-                        params.enforceChirality = False
-                        r = AllChem.EmbedMolecule(mol_try, params)
-                        if r != 0:
-                            r = AllChem.EmbedMolecule(
-                                mol_try, useRandomCoords=True, randomSeed=seed
-                            )
-                        if r != 0:
-                            continue
-                        cid = int(r)
+                        from collections import deque as _deque
+                        _conf = mol_try.GetConformer(cid)
+                        hapto_atom_set = set()
+                        metal_set_idx = set()
+                        for _mi, catoms in hapto_groups:
+                            metal_set_idx.add(_mi)
+                            for _ca in catoms:
+                                hapto_atom_set.add(_ca)
+                        for _ai in range(mol_try.GetNumAtoms()):
+                            if mol_try.GetAtomWithIdx(_ai).GetSymbol() in _METAL_SET:
+                                metal_set_idx.add(_ai)
 
-                        # Phase 1: Analytical hapto correction
-                        try:
-                            _correct_hapto_geometry(mol_try, cid, hapto_groups)
-                        except Exception:
-                            pass
-
-                        # Phase 1.5: Fix sigma metal-ligand distances.
-                        # ETKDG treats M-L bonds like organic bonds (~1.5Å)
-                        # which is too short.  Scale entire ligand fragments
-                        # rigidly to correct M-L distances.
-                        try:
-                            from collections import deque as _deque
-                            _conf = mol_try.GetConformer(cid)
-                            hapto_atom_set = set()
-                            metal_set_idx = set()
-                            for _mi, catoms in hapto_groups:
-                                metal_set_idx.add(_mi)
-                                for _ca in catoms:
-                                    hapto_atom_set.add(_ca)
-                            for _ai in range(mol_try.GetNumAtoms()):
-                                if mol_try.GetAtomWithIdx(_ai).GetSymbol() in _METAL_SET:
-                                    metal_set_idx.add(_ai)
-
-                            for _ai in metal_set_idx:
-                                _atom = mol_try.GetAtomWithIdx(_ai)
-                                m_sym = _atom.GetSymbol()
-                                mp = _conf.GetAtomPosition(_ai)
-                                m_pos = np.array([mp.x, mp.y, mp.z])
-                                for _nbr in _atom.GetNeighbors():
-                                    _ni = _nbr.GetIdx()
-                                    if _ni in hapto_atom_set:
-                                        continue  # handled by Phase 1
-                                    if _ni in metal_set_idx:
-                                        continue  # M-M bonds
-                                    l_sym = _nbr.GetSymbol()
-                                    lp = _conf.GetAtomPosition(_ni)
-                                    l_pos = np.array([lp.x, lp.y, lp.z])
-                                    cur_d = float(np.linalg.norm(l_pos - m_pos))
-                                    if cur_d < 1e-8:
-                                        continue
-                                    target_d = float(
-                                        _get_ml_bond_length(m_sym, l_sym))
-                                    if abs(cur_d - target_d) / target_d < 0.15:
-                                        continue
-                                    # BFS to find entire fragment attached to
-                                    # this donor (not crossing metals)
-                                    frag = set()
-                                    q = _deque([_ni])
-                                    frag.add(_ni)
-                                    while q:
-                                        cur = q.popleft()
-                                        for fn in mol_try.GetAtomWithIdx(
-                                                cur).GetNeighbors():
-                                            fi = fn.GetIdx()
-                                            if (fi not in frag
-                                                    and fi not in metal_set_idx
-                                                    and fi not in hapto_atom_set):
-                                                frag.add(fi)
-                                                q.append(fi)
-                                    # Rigid translation of entire fragment
-                                    delta = (target_d - cur_d) / cur_d * (
-                                        l_pos - m_pos)
-                                    for fi in frag:
-                                        fp = _conf.GetAtomPosition(fi)
-                                        fv = np.array([fp.x, fp.y, fp.z])
-                                        new_fv = fv + delta
-                                        _conf.SetAtomPosition(
-                                            fi, Point3D(float(new_fv[0]),
-                                                        float(new_fv[1]),
-                                                        float(new_fv[2])))
-                        except Exception:
-                            pass
-
-                        # Phase 1.6: BFS propagation for non-hapto atoms
-                        try:
-                            _propagate_non_hapto_atoms(mol_try, cid, hapto_groups)
-                        except Exception:
-                            pass
-
-                        # Phase 2: UFF force-field relaxation with fixed hapto
-                        # scaffold.  This corrects organic ligand geometry
-                        # (angles, torsions, ring conformations) while preserving
-                        # the analytically placed coordination sphere.
-                        try:
-                            ff = AllChem.UFFGetMoleculeForceField(mol_try, confId=cid)
-                            if ff is not None:
-                                # Fix ALL metal atoms + hapto ring atoms
-                                fixed_set = set()
-                                for _ai in range(mol_try.GetNumAtoms()):
-                                    if mol_try.GetAtomWithIdx(_ai).GetSymbol() in _METAL_SET:
-                                        ff.AddFixedPoint(_ai)
-                                        fixed_set.add(_ai)
-                                for _mi, catoms in hapto_groups:
-                                    for ai in catoms:
-                                        if ai not in fixed_set:
-                                            ff.AddFixedPoint(ai)
-                                            fixed_set.add(ai)
-                                ff.Minimize(maxIts=500)
-                                logger.info(
-                                    "Hapto phase-1 + UFF relax (seed=%d)", seed)
-                            else:
-                                logger.info(
-                                    "Hapto phase-1 only (UFF=None, seed=%d)", seed)
-                        except Exception:
-                            logger.info(
-                                "Hapto phase-1 only (UFF failed, seed=%d)", seed)
-
-                        try:
-                            _enforce_donor_pi_coplanarity(
-                                mol_try, cid, hapto_groups)
-                        except Exception:
-                            pass
-
-                        # Fix secondary metal positions AFTER UFF/coplanarity
-                        try:
-                            _fix_secondary_metal_distances(
-                                mol_try, cid, hapto_groups)
-                        except Exception:
-                            pass
-
-                        try:
-                            _final_clash_resolution(
-                                mol_try, cid, hapto_groups)
-                        except Exception:
-                            pass
-
-                        best_mol = mol_try
-                        break
+                        for _ai in metal_set_idx:
+                            _atom = mol_try.GetAtomWithIdx(_ai)
+                            m_sym = _atom.GetSymbol()
+                            mp = _conf.GetAtomPosition(_ai)
+                            m_pos = np.array([mp.x, mp.y, mp.z])
+                            for _nbr in _atom.GetNeighbors():
+                                _ni = _nbr.GetIdx()
+                                if _ni in hapto_atom_set:
+                                    continue  # handled by Phase 1
+                                if _ni in metal_set_idx:
+                                    continue  # M-M bonds
+                                l_sym = _nbr.GetSymbol()
+                                lp = _conf.GetAtomPosition(_ni)
+                                l_pos = np.array([lp.x, lp.y, lp.z])
+                                cur_d = float(np.linalg.norm(l_pos - m_pos))
+                                if cur_d < 1e-8:
+                                    continue
+                                target_d = float(
+                                    _get_ml_bond_length(m_sym, l_sym))
+                                if abs(cur_d - target_d) / target_d < 0.15:
+                                    continue
+                                # BFS to find entire fragment attached to
+                                # this donor (not crossing metals)
+                                frag = set()
+                                q = _deque([_ni])
+                                frag.add(_ni)
+                                while q:
+                                    cur = q.popleft()
+                                    for fn in mol_try.GetAtomWithIdx(cur).GetNeighbors():
+                                        fi = fn.GetIdx()
+                                        if (fi not in frag
+                                                and fi not in metal_set_idx
+                                                and fi not in hapto_atom_set):
+                                            frag.add(fi)
+                                            q.append(fi)
+                                # Rigid translation of entire fragment
+                                delta = (target_d - cur_d) / cur_d * (
+                                    l_pos - m_pos)
+                                for fi in frag:
+                                    fp = _conf.GetAtomPosition(fi)
+                                    fv = np.array([fp.x, fp.y, fp.z])
+                                    new_fv = fv + delta
+                                    _conf.SetAtomPosition(
+                                        fi, Point3D(float(new_fv[0]),
+                                                    float(new_fv[1]),
+                                                    float(new_fv[2])))
                     except Exception:
-                        continue
+                        pass
+
+                    # Phase 1.6: BFS propagation for non-hapto atoms
+                    try:
+                        _propagate_non_hapto_atoms(mol_try, cid, hapto_groups)
+                    except Exception:
+                        pass
+
+                    try:
+                        _enforce_donor_pi_coplanarity(mol_try, cid, hapto_groups)
+                    except Exception:
+                        pass
+
+                    # Fix secondary metal positions AFTER coplanarity
+                    try:
+                        _fix_secondary_metal_distances(mol_try, cid, hapto_groups)
+                    except Exception:
+                        pass
+
+                    try:
+                        _final_clash_resolution(mol_try, cid, hapto_groups)
+                    except Exception:
+                        pass
+
+                    hapto_candidate_mols.append((f"etkdg-seed-{seed}", mol_try))
+                except Exception:
+                    continue
 
             # FALLBACK: Sphere-based constructive scaffold builder
-            if best_mol is None:
-                try:
-                    mol_scaffold = Chem.Mol(mol)
-                    if _build_hapto_scaffold(mol_scaffold, hapto_groups):
-                        # UFF relaxation on scaffold result
-                        try:
-                            ff = AllChem.UFFGetMoleculeForceField(mol_scaffold)
-                            if ff is not None:
-                                for _mi, catoms in hapto_groups:
-                                    ff.AddFixedPoint(_mi)
-                                    for ai in catoms:
-                                        ff.AddFixedPoint(ai)
-                                ff.Minimize(maxIts=500)
-                                try:
-                                    _correct_hapto_geometry(
-                                        mol_scaffold, 0, hapto_groups)
-                                except Exception:
-                                    pass
-                                logger.info(
-                                    "Hapto scaffold + UFF relax")
-                            else:
-                                logger.info(
-                                    "Hapto scaffold (UFF=None)")
-                        except Exception:
-                            logger.info("Hapto scaffold (UFF failed)")
-                        try:
-                            _enforce_donor_pi_coplanarity(
-                                mol_scaffold, 0, hapto_groups)
-                        except Exception:
-                            pass
-                        try:
-                            _final_clash_resolution(
-                                mol_scaffold, 0, hapto_groups)
-                        except Exception:
-                            pass
-                        best_mol = mol_scaffold
-                except Exception as e:
-                    logger.debug("Sphere scaffold failed: %s", e)
+            try:
+                mol_scaffold = Chem.Mol(mol)
+                if _build_hapto_scaffold(mol_scaffold, hapto_groups):
+                    try:
+                        _enforce_donor_pi_coplanarity(mol_scaffold, 0, hapto_groups)
+                    except Exception:
+                        pass
+                    try:
+                        _final_clash_resolution(mol_scaffold, 0, hapto_groups)
+                    except Exception:
+                        pass
+                    hapto_candidate_mols.append(("scaffold", mol_scaffold))
+            except Exception as e:
+                logger.debug("Sphere scaffold failed: %s", e)
+
+            best_mol = _select_best_hapto_candidate(
+                smiles,
+                hapto_groups,
+                hapto_candidate_mols,
+                apply_uff=apply_uff,
+            )
 
             if best_mol is None:
                 if legacy_hapto_xyz:
