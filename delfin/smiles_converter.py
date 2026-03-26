@@ -13190,12 +13190,114 @@ def _hapto_geometry_quality_score(
     except Exception:
         return 0.0
 
+    def _metal_atomic_number(sym: str) -> int:
+        try:
+            if RDKIT_AVAILABLE:
+                return int(Chem.GetPeriodicTable().GetAtomicNumber(sym))
+        except Exception:
+            pass
+        return 0
+
+    def _is_f_block_like(sym: str) -> bool:
+        z = _metal_atomic_number(sym)
+        return (
+            57 <= z <= 71
+            or 89 <= z <= 103
+            or sym in {'Y', 'Sc'}
+        )
+
+    def _hapto_weight_profile(metal_sym: str, eta: int, n_groups_for_metal: int) -> Dict[str, float]:
+        profile = {
+            'mc': 180.0,
+            'radial': 30.0,
+            'plane': 120.0,
+            'axis': 40.0,
+            'lateral': 35.0,
+            'min_pair_angle': 90.0,
+            'pair_sep': 0.45,
+            'equal_eta_mc_std': 40.0,
+        }
+
+        if eta >= 5:
+            profile.update({
+                'mc': 220.0,
+                'radial': 36.0,
+                'plane': 165.0,
+                'axis': 72.0,
+                'lateral': 55.0,
+                'min_pair_angle': 118.0,
+                'pair_sep': 0.80,
+                'equal_eta_mc_std': 55.0,
+            })
+        elif eta == 4:
+            profile.update({
+                'mc': 195.0,
+                'radial': 32.0,
+                'plane': 135.0,
+                'axis': 52.0,
+                'lateral': 42.0,
+                'min_pair_angle': 102.0,
+                'pair_sep': 0.60,
+                'equal_eta_mc_std': 45.0,
+            })
+        elif eta == 3:
+            profile.update({
+                'mc': 150.0,
+                'radial': 24.0,
+                'plane': 82.0,
+                'axis': 24.0,
+                'lateral': 20.0,
+                'min_pair_angle': 74.0,
+                'pair_sep': 0.28,
+                'equal_eta_mc_std': 28.0,
+            })
+        else:
+            profile.update({
+                'mc': 135.0,
+                'radial': 18.0,
+                'plane': 55.0,
+                'axis': 14.0,
+                'lateral': 12.0,
+                'min_pair_angle': 60.0,
+                'pair_sep': 0.18,
+                'equal_eta_mc_std': 18.0,
+            })
+
+        if _is_f_block_like(metal_sym):
+            profile['mc'] *= 0.80
+            profile['radial'] *= 0.75
+            profile['plane'] *= 0.45
+            profile['axis'] *= 0.35
+            profile['lateral'] *= 0.35
+            profile['min_pair_angle'] = min(profile['min_pair_angle'], 72.0 if eta >= 5 else 58.0)
+            profile['pair_sep'] *= 0.40
+            profile['equal_eta_mc_std'] *= 0.70
+        elif metal_sym in {'Fe', 'Co', 'Ni', 'Ru', 'Rh', 'Ir', 'Os', 'Mo', 'W', 'Re'} and eta >= 5:
+            profile['plane'] *= 1.10
+            profile['axis'] *= 1.20
+            profile['lateral'] *= 1.15
+
+        if n_groups_for_metal >= 2 and eta >= 4 and not _is_f_block_like(metal_sym):
+            profile['axis'] *= 1.10
+            profile['lateral'] *= 1.10
+            profile['pair_sep'] *= 1.15
+
+        return profile
+
     penalty = 0.0
+    groups_by_metal: Dict[int, List[Tuple[int, List[int]]]] = {}
+    for metal_idx, group_atoms in hapto_groups:
+        groups_by_metal.setdefault(int(metal_idx), []).append((int(metal_idx), list(group_atoms)))
+
+    centroid_records: Dict[int, List[Tuple[int, np.ndarray, np.ndarray, float, Dict[str, float]]]] = {}
     for metal_idx, group_atoms in hapto_groups:
         if not group_atoms:
             continue
         try:
-            metal_pos = np.array(conf.GetAtomPosition(int(metal_idx)), dtype=float)
+            metal_idx = int(metal_idx)
+            metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+            profile = _hapto_weight_profile(metal_sym, len(group_atoms), len(groups_by_metal.get(metal_idx, [])))
+            metal_pos = np.array(conf.GetAtomPosition(metal_idx), dtype=float)
             pts = np.array([conf.GetAtomPosition(int(atom_idx)) for atom_idx in group_atoms], dtype=float)
         except Exception:
             continue
@@ -13204,12 +13306,12 @@ def _hapto_geometry_quality_score(
 
         centroid = pts.mean(axis=0)
         mc_dist = float(np.linalg.norm(metal_pos - centroid))
-        target_mc = float(_target_mc_dist(mol.GetAtomWithIdx(int(metal_idx)).GetSymbol(), len(group_atoms)))
-        penalty += 180.0 * (mc_dist - target_mc) ** 2
+        target_mc = float(_target_mc_dist(metal_sym, len(group_atoms)))
+        penalty += profile['mc'] * (mc_dist - target_mc) ** 2
 
         mc_atom_dists = np.linalg.norm(pts - metal_pos, axis=1)
         if mc_atom_dists.size:
-            penalty += 30.0 * float(np.std(mc_atom_dists) ** 2)
+            penalty += profile['radial'] * float(np.std(mc_atom_dists) ** 2)
 
         q = pts - centroid
         try:
@@ -13223,16 +13325,35 @@ def _hapto_geometry_quality_score(
         normal = normal / n_norm
         plane_dev = np.abs(q @ normal)
         plane_rms = float(np.sqrt(np.mean(plane_dev * plane_dev)))
-        penalty += 120.0 * plane_rms * plane_rms
+        penalty += profile['plane'] * plane_rms * plane_rms
 
         axis = metal_pos - centroid
         axis_norm = float(np.linalg.norm(axis))
         if axis_norm > 1e-12:
             axis = axis / axis_norm
             cosang = abs(float(np.dot(normal, axis)))
-            penalty += 40.0 * (1.0 - cosang) ** 2
+            penalty += profile['axis'] * (1.0 - cosang) ** 2
             lateral_offset = float(np.linalg.norm((metal_pos - centroid) - np.dot(metal_pos - centroid, normal) * normal))
-            penalty += 35.0 * lateral_offset * lateral_offset
+            penalty += profile['lateral'] * lateral_offset * lateral_offset
+            centroid_records.setdefault(metal_idx, []).append(
+                (len(group_atoms), centroid, axis, mc_dist, profile)
+            )
+
+    for metal_idx, records in centroid_records.items():
+        if len(records) < 2:
+            continue
+        for i in range(len(records)):
+            eta_i, centroid_i, axis_i, mc_i, profile_i = records[i]
+            for j in range(i + 1, len(records)):
+                eta_j, centroid_j, axis_j, mc_j, profile_j = records[j]
+                cosang = max(-1.0, min(1.0, float(np.dot(axis_i, axis_j))))
+                angle = math.degrees(math.acos(cosang))
+                min_pair_angle = min(profile_i['min_pair_angle'], profile_j['min_pair_angle'])
+                if angle < min_pair_angle:
+                    gap = (min_pair_angle - angle) / max(min_pair_angle, 1.0)
+                    penalty += 220.0 * min(profile_i['pair_sep'], profile_j['pair_sep']) * gap * gap
+                if eta_i == eta_j:
+                    penalty += min(profile_i['equal_eta_mc_std'], profile_j['equal_eta_mc_std']) * (mc_i - mc_j) ** 2
     return penalty
 
 
