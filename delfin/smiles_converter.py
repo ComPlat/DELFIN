@@ -6925,6 +6925,21 @@ def _build_multimetal_hapto_sequential(
         len(all_hapto_carbons), len(hapto_metal_set),
     )
 
+    # Helper: Rodrigues rotation (used in Steps 2 and 4)
+    def _rotate_fragment_around_axis(orig_positions, pivot, axis, angle):
+        """Rotate a dict {idx: pos} around pivot+axis by angle radians."""
+        ax = axis / max(float(np.linalg.norm(axis)), 1e-12)
+        cos_a = np.cos(angle)
+        sin_a = np.sin(angle)
+        result = {}
+        for idx, pos in orig_positions.items():
+            v = pos - pivot
+            v_rot = (v * cos_a
+                     + np.cross(ax, v) * sin_a
+                     + ax * float(np.dot(ax, v)) * (1 - cos_a))
+            result[idx] = pivot + v_rot
+        return result
+
     # ==== STEP 2: Embed & align all ligand fragments ====
     # Strategy: ETKDG embed (gives correct ring geometry) → Procrustes align
     # to scaffold anchors (with anchor snap) → UFF relaxation with anchors
@@ -6987,6 +7002,91 @@ def _build_multimetal_hapto_sequential(
         except Exception as e:
             logger.debug("UFF relaxation failed for fragment: %s", e)
 
+        # ---- Clash-aware torsion for bridge fragments ----
+        # If this fragment contains hapto carbons, the non-hapto substituents
+        # (e.g., pyridine ring) may clash with the OTHER Cp ring of the
+        # metallocene.  Fix by rotating the non-hapto substructure around
+        # the bond connecting it to the hapto ring.
+        frag_hapto = [ai for ai in fragment.atom_indices if ai in all_hapto_carbons]
+        frag_non_hapto_heavy = [ai for ai in fragment.atom_indices
+                                if ai not in all_hapto_carbons
+                                and ai not in all_metals
+                                and mol.GetAtomWithIdx(ai).GetAtomicNum() > 1]
+        if frag_hapto and frag_non_hapto_heavy:
+            # Find the OTHER Cp ring's atoms (for clash checking)
+            other_cp_atoms: set = set()
+            for hm in hapto_metal_set:
+                for nbr in mol.GetAtomWithIdx(hm).GetNeighbors():
+                    ni = nbr.GetIdx()
+                    if ni in all_hapto_carbons and ni not in frag_hapto:
+                        other_cp_atoms.add(ni)
+
+            # Find the bond connecting hapto → non-hapto HEAVY atom
+            bridge_bond = None
+            for hi in frag_hapto:
+                for nbr in mol.GetAtomWithIdx(hi).GetNeighbors():
+                    ni = nbr.GetIdx()
+                    if ni in frag_non_hapto_heavy:
+                        bridge_bond = (hi, ni)
+                        break
+                if bridge_bond is not None:
+                    break
+
+            if bridge_bond is not None and other_cp_atoms:
+                pivot_idx, next_idx = bridge_bond
+                pivot_pos = _gp(conf, pivot_idx)
+                next_pos = _gp(conf, next_idx)
+                rot_axis = next_pos - pivot_pos
+                rot_axis_len = float(np.linalg.norm(rot_axis))
+
+                if rot_axis_len > 1e-6:
+                    # Check all clash-relevant atoms (other Cp + all trusted
+                    # not in this fragment)
+                    clash_targets = (other_cp_atoms | trusted) - set(fragment.atom_indices)
+                    # Collect atoms to rotate: all non-hapto atoms (heavy + H)
+                    frag_non_hapto_all = [ai for ai in fragment.atom_indices
+                                          if ai not in all_hapto_carbons
+                                          and ai not in all_metals]
+                    rot_atoms = list(frag_non_hapto_all)
+                    orig_positions = {ai: _gp(conf, ai) for ai in rot_atoms}
+
+                    def _score_rotation(angle):
+                        if abs(angle) < 1e-9:
+                            positions = orig_positions
+                        else:
+                            positions = _rotate_fragment_around_axis(
+                                orig_positions, pivot_pos, rot_axis, angle)
+                        min_d = 999.0
+                        for ai, pos in positions.items():
+                            for ti in clash_targets:
+                                d = float(np.linalg.norm(pos - _gp(conf, ti)))
+                                if d < min_d:
+                                    min_d = d
+                        return min_d
+
+                    best_angle = 0.0
+                    best_min_d = _score_rotation(0.0)
+                    for step in range(1, 36):
+                        angle = step * (2 * np.pi / 36)
+                        min_d = _score_rotation(angle)
+                        if min_d > best_min_d:
+                            best_min_d = min_d
+                            best_angle = angle
+
+                    if best_angle != 0.0:
+                        rotated = _rotate_fragment_around_axis(
+                            orig_positions, pivot_pos, rot_axis, best_angle)
+                        for ai, pos in rotated.items():
+                            _sp(conf, ai, pos)
+                        logger.info(
+                            "Step 2 torsion: rotated %d non-hapto atoms by %.0f° "
+                            "around %s%d-%s%d, min_d=%.2f",
+                            len(rot_atoms), np.degrees(best_angle),
+                            mol.GetAtomWithIdx(pivot_idx).GetSymbol(), pivot_idx,
+                            mol.GetAtomWithIdx(next_idx).GetSymbol(), next_idx,
+                            best_min_d,
+                        )
+
         trusted.update(fragment.atom_indices)
         logger.info(
             "Sequential: embed+align+relax fragment (%d atoms, bridge=%s)",
@@ -7043,38 +7143,138 @@ def _build_multimetal_hapto_sequential(
             target_lengths.append(_get_ml_bond_length(metal_sym, d_sym))
 
         if len(placed_donors) >= 2:
-            # Fit metal position from placed donors
+            # For bimetallic complexes, the LIN/centroid fit from 2 donors
+            # often places the metal BETWEEN close donors (inside the
+            # ferrocene cage). Strategy:
+            #   1. Try SVD fit first
+            #   2. Check inter-metal distance; if too close to hapto metals,
+            #      use outward placement from hapto center through donor midpoint
+            hapto_center = np.mean([_gp(conf, mi) for mi in hapto_metal_set], axis=0)
+            avg_len = np.mean(target_lengths)
+
             fit_result = _fit_secondary_metal_position_from_donors(
                 donor_positions, donor_symbols, metal_sym,
                 donor_target_lengths=target_lengths,
             )
+            geom_code = "SVD"
             if fit_result is not None:
                 metal_pos, geom_code = fit_result
-                _sp(conf, metal_idx, metal_pos)
-                trusted.add(metal_idx)
-                logger.info(
-                    "Sequential: placed %s%d via %s fit from %d donors",
-                    metal_sym, metal_idx, geom_code, len(placed_donors),
-                )
             else:
-                # Fallback: centroid of donors, shifted outward
-                centroid = np.mean(donor_positions, axis=0)
-                avg_len = np.mean(target_lengths)
-                if len(placed_donors) == 2:
-                    midpoint = (np.array(donor_positions[0]) + np.array(donor_positions[1])) / 2.0
-                    d_vec = np.array(donor_positions[1]) - np.array(donor_positions[0])
-                    perp = np.cross(d_vec, [0, 0, 1])
-                    if np.linalg.norm(perp) < 1e-6:
-                        perp = np.cross(d_vec, [0, 1, 0])
-                    perp = perp / max(np.linalg.norm(perp), 1e-12) * avg_len * 0.6
-                    _sp(conf, metal_idx, midpoint + perp)
-                else:
-                    _sp(conf, metal_idx, centroid)
-                trusted.add(metal_idx)
-                logger.info(
-                    "Sequential: placed %s%d via centroid fallback from %d donors",
-                    metal_sym, metal_idx, len(placed_donors),
-                )
+                metal_pos = np.mean(donor_positions, axis=0)
+
+            # Check if fitted position is too close to any hapto metal
+            too_close = False
+            for hm in hapto_metal_set:
+                hm_pos = _gp(conf, hm)
+                if float(np.linalg.norm(metal_pos - hm_pos)) < 2.5:
+                    too_close = True
+                    break
+
+            if too_close:
+                # Intersection-circle search: for 2+ donors, the ideal
+                # metal position lies on the intersection circle of the
+                # donor spheres. Search on this circle first, then fall
+                # back to multi-sphere search.
+                best_score = -1e9
+                best_cand = metal_pos
+                geom_code = "SEARCH"
+
+                # Build candidate list from intersection circle + sphere
+                candidates: list = []
+
+                if len(donor_positions) >= 2:
+                    # Compute intersection circle of first two donors
+                    c1 = np.array(donor_positions[0])
+                    c2 = np.array(donor_positions[1])
+                    r1 = target_lengths[0]
+                    r2 = target_lengths[1]
+                    axis_vec = c2 - c1
+                    d_donors = float(np.linalg.norm(axis_vec))
+                    if d_donors > 1e-6 and d_donors < r1 + r2:
+                        axis_unit = axis_vec / d_donors
+                        # Distance from c1 to intersection plane
+                        h = (r1 ** 2 - r2 ** 2 + d_donors ** 2) / (2 * d_donors)
+                        circle_r_sq = r1 ** 2 - h ** 2
+                        if circle_r_sq > 0:
+                            circle_r = np.sqrt(circle_r_sq)
+                            circle_center = c1 + h * axis_unit
+                            # Build orthonormal basis in the plane
+                            arb = np.array([1.0, 0.0, 0.0])
+                            if abs(float(np.dot(axis_unit, arb))) > 0.9:
+                                arb = np.array([0.0, 1.0, 0.0])
+                            u = np.cross(axis_unit, arb)
+                            u = u / float(np.linalg.norm(u))
+                            v = np.cross(axis_unit, u)
+                            # Sample circle at 5° resolution
+                            for deg in range(0, 360, 5):
+                                angle = np.radians(deg)
+                                cand = (circle_center
+                                        + circle_r * (np.cos(angle) * u + np.sin(angle) * v))
+                                candidates.append(cand)
+
+                # Also sample spheres around each donor (10° resolution)
+                for center_pos, center_len in zip(donor_positions, target_lengths):
+                    center = np.array(center_pos)
+                    for theta_deg in range(0, 180, 15):
+                        for phi_deg in range(0, 360, 15):
+                            theta = np.radians(theta_deg)
+                            phi = np.radians(phi_deg)
+                            d_vec = np.array([
+                                np.sin(theta) * np.cos(phi),
+                                np.sin(theta) * np.sin(phi),
+                                np.cos(theta),
+                            ])
+                            candidates.append(center + d_vec * center_len)
+
+                for clash_thresh in (1.8, 1.0):
+                    for cand in candidates:
+                        min_hm = min(
+                            float(np.linalg.norm(cand - _gp(conf, hm)))
+                            for hm in hapto_metal_set
+                        )
+                        if min_hm < 2.0:
+                            continue
+                        ml_err = sum(
+                            (float(np.linalg.norm(cand - np.array(dp2))) - tl2) ** 2
+                            for dp2, tl2 in zip(donor_positions, target_lengths)
+                        )
+                        min_clash = min(
+                            (float(np.linalg.norm(cand - _gp(conf, ti)))
+                             for ti in trusted if ti not in all_metals),
+                            default=999.0,
+                        )
+                        if min_clash < clash_thresh:
+                            continue
+                        score = -ml_err * 2.0 + min(min_clash, 3.0) * 0.3
+                        if score > best_score:
+                            best_score = score
+                            best_cand = cand
+                    if best_score > -1e9:
+                        break  # found with stricter clash threshold
+
+                if best_score > -1e9:
+                    metal_pos = best_cand
+                    logger.info(
+                        "SEARCH: found position, score=%.2f, "
+                        "min_clash=%.2f, ml_dists=%s",
+                        best_score,
+                        min(
+                            (float(np.linalg.norm(best_cand - _gp(conf, ti)))
+                             for ti in trusted if ti not in all_metals),
+                            default=999.0,
+                        ),
+                        [f"{float(np.linalg.norm(best_cand - np.array(dp))):.2f}"
+                         for dp in donor_positions],
+                    )
+
+            _sp(conf, metal_idx, metal_pos)
+            trusted.add(metal_idx)
+            logger.info(
+                "Sequential: placed %s%d via %s fit from %d donors, "
+                "dist to hapto=%.2f",
+                metal_sym, metal_idx, geom_code, len(placed_donors),
+                float(np.linalg.norm(metal_pos - hapto_center)),
+            )
         elif len(placed_donors) == 1:
             # Single placed donor: place metal along donor→outward direction
             d_pos = np.array(donor_positions[0])
@@ -7108,26 +7308,33 @@ def _build_multimetal_hapto_sequential(
             for ud in unplaced_donors:
                 ud_sym = mol.GetAtomWithIdx(ud).GetSymbol()
                 bl = _get_ml_bond_length(metal_sym, ud_sym)
-                # Find direction avoiding used directions (VSEPR-like)
+                # Find direction maximally separated from ALL used directions.
+                # For each candidate direction on a sphere, compute the
+                # minimum angle to any used direction. Pick the candidate
+                # with the largest minimum angle.
                 if not used_dirs:
                     new_dir = np.array([0.0, 0.0, 1.0])
-                elif len(used_dirs) == 1:
-                    # ~109.5° from existing
-                    perp = np.cross(used_dirs[0], [0, 0, 1])
-                    if np.linalg.norm(perp) < 1e-6:
-                        perp = np.cross(used_dirs[0], [0, 1, 0])
-                    perp = perp / max(np.linalg.norm(perp), 1e-12)
-                    new_dir = -0.33 * used_dirs[0] + 0.94 * perp
-                    new_dir = new_dir / max(np.linalg.norm(new_dir), 1e-12)
                 else:
-                    avg_used = np.mean(used_dirs, axis=0)
-                    new_dir = -avg_used
-                    n = np.linalg.norm(new_dir)
-                    if n < 1e-6:
-                        # All directions cancel: pick perpendicular
-                        new_dir = np.cross(used_dirs[0], used_dirs[1] if len(used_dirs) > 1 else [0,0,1])
-                        n = np.linalg.norm(new_dir)
-                    new_dir = new_dir / max(n, 1e-12)
+                    best_dir = np.array([0.0, 0.0, 1.0])
+                    best_min_angle = -1.0
+                    for t_deg in range(0, 180, 15):
+                        for p_deg in range(0, 360, 15):
+                            t = np.radians(t_deg)
+                            p = np.radians(p_deg)
+                            cand = np.array([
+                                np.sin(t) * np.cos(p),
+                                np.sin(t) * np.sin(p),
+                                np.cos(t),
+                            ])
+                            # Minimum angle to any used direction
+                            min_ang = min(
+                                np.arccos(np.clip(float(np.dot(cand, ud)), -1, 1))
+                                for ud in used_dirs
+                            )
+                            if min_ang > best_min_angle:
+                                best_min_angle = min_ang
+                                best_dir = cand
+                    new_dir = best_dir
 
                 _sp(conf, ud, metal_pos + new_dir * bl)
                 used_dirs.append(new_dir)
@@ -7173,20 +7380,6 @@ def _build_multimetal_hapto_sequential(
                 if d < worst:
                     worst = d
         return worst
-
-    def _rotate_fragment_around_axis(orig_positions, pivot, axis, angle):
-        """Rotate a dict {idx: pos} around pivot+axis by angle radians."""
-        ax = axis / max(float(np.linalg.norm(axis)), 1e-12)
-        cos_a = np.cos(angle)
-        sin_a = np.sin(angle)
-        result = {}
-        for idx, pos in orig_positions.items():
-            v = pos - pivot
-            v_rot = (v * cos_a
-                     + np.cross(ax, v) * sin_a
-                     + ax * float(np.dot(ax, v)) * (1 - cos_a))
-            result[idx] = pivot + v_rot
-        return result
 
     # ==== STEP 4: Embed & place remaining fragments WITH CLASH-AWARE ROTATION ====
     # For fragments connected to secondary metals whose scaffold positions are
@@ -7262,100 +7455,104 @@ def _build_multimetal_hapto_sequential(
                 )
                 continue
 
-        # ---- Custom placement for metal-connected fragments ----
+        # ---- Placement for metal-connected fragments ----
+        # The donor atoms (e.g. O11, O15) were placed at M-L distance from the
+        # metal in Step 3. Use those positions as alignment targets: Procrustes
+        # align the ETKDG-embedded fragment so its donors match the Step 3
+        # positions. This preserves internal fragment geometry while placing
+        # donors at correct M-L distances.
         if not donor_to_metal:
             # Fallback: try standard alignment anyway
             if _align_hybrid_fragment_onto_scaffold(scaffold_mol, fragment, embedded):
                 trusted.update(fragment.atom_indices)
             continue
 
-        # Get embedded fragment coordinates
-        frag_conf = embedded.GetConformer()
-        frag_coords = {}
-        for frag_idx, orig_idx in fragment.fragment_to_original.items():
-            p = frag_conf.GetAtomPosition(frag_idx)
-            frag_coords[orig_idx] = np.array([p.x, p.y, p.z], dtype=float)
-
-        # Compute donor centroid in fragment space and target position
         donor_indices_list = list(donor_to_metal.keys())
-        metal_idx_for_frag = list(donor_to_metal.values())[0]  # primary metal
+        metal_idx_for_frag = list(donor_to_metal.values())[0]
         metal_pos = _gp(conf, metal_idx_for_frag)
         metal_sym = mol.GetAtomWithIdx(metal_idx_for_frag).GetSymbol()
 
-        # Compute target donor positions: at M-L distance from metal,
-        # in a direction away from existing placed atoms around the metal
-        used_dirs = []
-        for nbr in mol.GetAtomWithIdx(metal_idx_for_frag).GetNeighbors():
-            ni = nbr.GetIdx()
-            if ni in trusted and ni not in fragment.atom_indices:
-                vec = _gp(conf, ni) - metal_pos
-                n = float(np.linalg.norm(vec))
-                if n > 1e-6:
-                    used_dirs.append(vec / n)
+        # Target positions for donor atoms = their current scaffold positions
+        # (set in Step 3's unplaced-donor VSEPR placement)
+        target_positions = {d: _gp(conf, d) for d in donor_indices_list}
+        for d in donor_indices_list:
+            tp = target_positions[d]
+            td = float(np.linalg.norm(tp - metal_pos))
+            logger.info("Step 4 target: %s%d at %.2f from %s%d, pos=%s",
+                        mol.GetAtomWithIdx(d).GetSymbol(), d, td,
+                        metal_sym, metal_idx_for_frag, tp)
 
-        # Average direction from metal to existing donors → place new donors opposite
-        if used_dirs:
-            avg_used = np.mean(used_dirs, axis=0)
-            n = float(np.linalg.norm(avg_used))
-            if n > 1e-6:
-                outward = -avg_used / n
-            else:
-                # Existing donors cancel out → pick perpendicular
-                outward = np.cross(used_dirs[0], [0, 0, 1])
-                if float(np.linalg.norm(outward)) < 1e-6:
-                    outward = np.cross(used_dirs[0], [0, 1, 0])
-                outward = outward / max(float(np.linalg.norm(outward)), 1e-12)
-        else:
-            outward = np.array([0.0, 0.0, 1.0])
+        # Procrustes alignment of ETKDG embedding to donor targets
+        aligned = _align_hybrid_fragment_to_targets(
+            scaffold_mol, fragment, embedded,
+            target_atom_indices=donor_indices_list,
+            target_positions=target_positions,
+            reference_center=metal_pos,
+            metal_idx=metal_idx_for_frag,
+        )
+        if not aligned:
+            # Fallback: try standard alignment
+            logger.info("Step 4: Procrustes alignment FAILED, using scaffold alignment")
+            _align_hybrid_fragment_onto_scaffold(scaffold_mol, fragment, embedded)
 
-        # Fragment donor centroid (in fragment space)
-        frag_donor_centroid = np.mean([frag_coords[d] for d in donor_indices_list], axis=0)
-        frag_com = np.mean(list(frag_coords.values()), axis=0)
+        # ---- Snap donors to their target positions ----
+        # Procrustes alignment may leave donors at wrong M-L distances
+        # because the fragment's donor-donor distance differs from the
+        # chelate bite distance. Snap each donor atom to its target
+        # position, then UFF-relax the body with donors fixed.
+        for d_idx in donor_indices_list:
+            tp = target_positions[d_idx]
+            _sp(conf, d_idx, np.asarray(tp, dtype=float))
+            d_dist = float(np.linalg.norm(np.asarray(tp) - metal_pos))
+            logger.info("Step 4 snap: %s%d → %.2f from %s%d",
+                        mol.GetAtomWithIdx(d_idx).GetSymbol(), d_idx,
+                        d_dist, metal_sym, metal_idx_for_frag)
 
-        # Target donor centroid: at average M-L distance along outward direction
-        avg_ml = np.mean([
-            _get_ml_bond_length(metal_sym, mol.GetAtomWithIdx(d).GetSymbol())
-            for d in donor_indices_list
-        ])
-        target_donor_centroid = metal_pos + outward * avg_ml
-
-        # Align: translate fragment so donor centroid matches target
-        translation = target_donor_centroid - frag_donor_centroid
-
-        # Also try to orient fragment: rotate so that donor→COM aligns with outward
-        frag_donor_to_com = frag_com - frag_donor_centroid
-        n_dc = float(np.linalg.norm(frag_donor_to_com))
-        if n_dc > 1e-6:
-            frag_dir = frag_donor_to_com / n_dc
-            rot = _rotation_matrix_from_vectors(frag_dir, outward)
-            # Rotate all fragment coords around donor centroid
-            for orig_idx in frag_coords:
-                frag_coords[orig_idx] = (
-                    (frag_coords[orig_idx] - frag_donor_centroid) @ rot.T
-                    + target_donor_centroid
-                )
-        else:
-            for orig_idx in frag_coords:
-                frag_coords[orig_idx] = frag_coords[orig_idx] + translation
-
-        # Write initial positions to scaffold
-        for orig_idx, pos in frag_coords.items():
-            _sp(conf, orig_idx, pos)
+        # UFF relaxation: fix donor atoms at correct positions, relax
+        # body to accommodate the snap (repairs stretched bonds)
+        try:
+            frag_mol = Chem.Mol(fragment.fragment_mol)
+            frag_mol.RemoveAllConformers()
+            frag_conf_obj = Chem.Conformer(frag_mol.GetNumAtoms())
+            for frag_idx, orig_idx in fragment.fragment_to_original.items():
+                p = conf.GetAtomPosition(orig_idx)
+                frag_conf_obj.SetAtomPosition(frag_idx, Point3D(p.x, p.y, p.z))
+            frag_mol.AddConformer(frag_conf_obj, assignId=True)
+            ff = AllChem.UFFGetMoleculeForceField(frag_mol)
+            if ff is not None:
+                for d_idx in donor_indices_list:
+                    frag_idx = fragment.original_to_fragment.get(d_idx)
+                    if frag_idx is not None:
+                        ff.AddFixedPoint(frag_idx)
+                ff.Minimize(maxIts=500)
+                relaxed_conf = frag_mol.GetConformer()
+                for frag_idx, orig_idx in fragment.fragment_to_original.items():
+                    p = relaxed_conf.GetAtomPosition(frag_idx)
+                    conf.SetAtomPosition(orig_idx, Point3D(p.x, p.y, p.z))
+        except Exception:
+            pass
 
         # ---- Clash-aware rotation around metal→donor axis ----
-        new_atoms = [ai for ai in fragment.atom_indices if ai not in trusted]
-        if new_atoms:
-            axis = outward
+        # Rotate the ENTIRE fragment as a rigid body (including donors)
+        # to avoid breaking donor-to-body bonds.
+        all_frag_atoms = list(fragment.atom_indices)
+        non_frag_trusted = trusted - set(all_frag_atoms)
+        if all_frag_atoms and non_frag_trusted:
+            # Rotation axis: metal → donor centroid
+            donor_centroid = np.mean([_gp(conf, d) for d in donor_indices_list], axis=0)
+            axis = donor_centroid - metal_pos
+            if float(np.linalg.norm(axis)) < 1e-6:
+                axis = np.array([0.0, 0.0, 1.0])
             pivot = metal_pos
-            orig_positions = {ai: _gp(conf, ai) for ai in new_atoms}
+            orig_positions = {ai: _gp(conf, ai) for ai in all_frag_atoms}
 
             best_angle = 0.0
-            best_min_d = _min_dist_to_placed(orig_positions, trusted, skip_set=set(new_atoms))
+            best_min_d = _min_dist_to_placed(orig_positions, non_frag_trusted)
 
             for step in range(1, 36):
                 angle = step * (2 * np.pi / 36)
                 rotated = _rotate_fragment_around_axis(orig_positions, pivot, axis, angle)
-                min_d = _min_dist_to_placed(rotated, trusted, skip_set=set(new_atoms))
+                min_d = _min_dist_to_placed(rotated, non_frag_trusted)
                 if min_d > best_min_d:
                     best_min_d = min_d
                     best_angle = angle
@@ -7420,113 +7617,13 @@ def _build_multimetal_hapto_sequential(
             [f"{float(np.linalg.norm(_gp(conf, d) - _gp(conf, metal_idx))):.2f}" for d in donor_indices],
         )
 
-    # ==== STEP 6: Final clash resolution — rotate offending fragments ====
+    # ==== STEP 6: Final fixes ====
     conf = scaffold_mol.GetConformer(0)
     n_atoms = scaffold_mol.GetNumAtoms()
 
-    # 6a: Identify all inter-fragment spurious contacts
-    HEAVY_CLASH_THRESH = 1.5
-    H_CLASH_THRESH = 1.0
-
-    # Build per-fragment atom sets for targeted rotation
-    # Map each non-metal, non-Cp atom to the rigid body it belongs to
-    atom_to_body_donor: Dict[int, int] = {}
-    for d_idx, body in frag_body_cache.items():
-        for ai in body:
-            atom_to_body_donor[ai] = d_idx
-
-    for _clash_pass in range(5):
-        worst_clash = 999.0
-        worst_pair = None
-        for i in range(n_atoms):
-            for j in range(i + 1, n_atoms):
-                pair = (i, j)
-                if pair in bonded_pairs:
-                    continue
-                pi = _gp(conf, i)
-                pj = _gp(conf, j)
-                d = float(np.linalg.norm(pi - pj))
-                is_h = (mol.GetAtomWithIdx(i).GetAtomicNum() <= 1 or
-                         mol.GetAtomWithIdx(j).GetAtomicNum() <= 1)
-                thresh = H_CLASH_THRESH if is_h else HEAVY_CLASH_THRESH
-                if d < thresh and d < worst_clash:
-                    worst_clash = d
-                    worst_pair = (i, j)
-
-        if worst_pair is None or worst_clash >= HEAVY_CLASH_THRESH:
-            break  # no more clashes
-
-        ci, cj = worst_pair
-        logger.info(
-            "Step 6 clash pass %d: %s%d - %s%d at %.2f A",
-            _clash_pass,
-            mol.GetAtomWithIdx(ci).GetSymbol(), ci,
-            mol.GetAtomWithIdx(cj).GetSymbol(), cj,
-            worst_clash,
-        )
-
-        # Determine which atom belongs to a rotatable fragment
-        # Try to rotate the fragment body that contains one of the clashing atoms
-        for clash_atom in [ci, cj]:
-            if clash_atom not in atom_to_body_donor:
-                continue
-            donor_idx = atom_to_body_donor[clash_atom]
-            body = frag_body_cache[donor_idx]
-            # Find the metal this donor connects to
-            rot_metal = None
-            for nbr in mol.GetAtomWithIdx(donor_idx).GetNeighbors():
-                if nbr.GetIdx() in all_metals:
-                    rot_metal = nbr.GetIdx()
-                    break
-            if rot_metal is None:
-                continue
-
-            # Rotation axis: metal → donor
-            metal_pos = _gp(conf, rot_metal)
-            donor_pos = _gp(conf, donor_idx)
-            axis = donor_pos - metal_pos
-            if float(np.linalg.norm(axis)) < 1e-6:
-                continue
-
-            # Collect current positions of the body
-            body_positions = {ai: _gp(conf, ai) for ai in body}
-            other_atoms = trusted - body
-
-            # Try 36 rotations
-            best_angle = 0.0
-            best_min_d = _min_dist_to_placed(body_positions, other_atoms)
-            for step in range(1, 36):
-                angle = step * (2 * np.pi / 36)
-                rotated = _rotate_fragment_around_axis(body_positions, metal_pos, axis, angle)
-                min_d = _min_dist_to_placed(rotated, other_atoms)
-                if min_d > best_min_d:
-                    best_min_d = min_d
-                    best_angle = angle
-
-            if best_angle != 0.0:
-                rotated = _rotate_fragment_around_axis(body_positions, metal_pos, axis, best_angle)
-                for ai, pos in rotated.items():
-                    _sp(conf, ai, pos)
-                logger.info(
-                    "Step 6: rotated body (donor %d, %d atoms) by %.0f° → min_d %.2f",
-                    donor_idx, len(body), np.degrees(best_angle), best_min_d,
-                )
-                break  # re-check after rotation
-
-        # If neither atom was in a rotatable body, try pushing them apart
-        if ci not in atom_to_body_donor and cj not in atom_to_body_donor:
-            # Simple repulsion: push both apart along their connecting vector
-            pi = _gp(conf, ci)
-            pj = _gp(conf, cj)
-            vec = pj - pi
-            d = float(np.linalg.norm(vec))
-            if d > 1e-6:
-                push = vec / d * (HEAVY_CLASH_THRESH - d + 0.2) * 0.5
-                # Only push if they're not Cp carbons or metals
-                if ci not in all_hapto_carbons and ci not in all_metals:
-                    _sp(conf, ci, pi - push)
-                if cj not in all_hapto_carbons and cj not in all_metals:
-                    _sp(conf, cj, pj + push)
+    # 6a: Clash-resolution rotations DISABLED — they compound and create
+    # new clashes worse than the original. Step 4 clash-aware rotation
+    # handles initial placement; post-hoc rotation just moves problems around.
 
     # 6b: Fix H atoms with bad parent distances or clashes
     for _h_pass in range(3):
@@ -7609,11 +7706,8 @@ def _build_multimetal_hapto_sequential(
         if not any_fixed:
             break
 
-    # 6c: Enforce pi-coplanarity AFTER clash resolution
-    try:
-        _enforce_donor_pi_coplanarity(scaffold_mol, 0, hapto_groups)
-    except Exception:
-        pass
+    # 6c: Skip pi-coplanarity for multi-metal — it moves atoms and
+    # can re-introduce clashes that Step 6a resolved.
 
     logger.info(
         "Sequential multi-metal: %d/%d atoms placed",
