@@ -931,6 +931,30 @@ def create_tab(ctx):
             )
         return control_content.rstrip() + f'\n{replacement}\n'
 
+    def _set_control_smiles(control_content, smiles):
+        return _set_control_value(control_content, 'SMILES', smiles)
+
+    def _prepare_delfin_submit_input(raw_input, cache):
+        """Return the exact payload DELFIN should receive in input.txt.
+
+        Dashboard conversions are previews only. DELFIN itself should decide
+        whether to run quick SMILES conversion or GUPPY based on the original
+        SMILES string that reached input.txt.
+        """
+        input_content, input_type = clean_input_data(raw_input)
+        cached_smiles = str((cache or {}).get('smiles') or '').strip()
+        cached_xyz = str((cache or {}).get('xyz') or '').strip()
+
+        if input_type == 'smiles':
+            submit_smiles = input_content.strip()
+            return submit_smiles + '\n', 'smiles', submit_smiles
+
+        cleaned_xyz = str(input_content or '').strip()
+        if input_type == 'xyz' and cached_smiles and cached_xyz and cleaned_xyz == cached_xyz:
+            return cached_smiles + '\n', 'smiles', cached_smiles
+
+        return input_content, input_type, None
+
     def parse_batch_entries():
         """Parse mixed SMILES/XYZ batch textarea.
 
@@ -1235,20 +1259,8 @@ def create_tab(ctx):
                     if not smi:
                         print(f'Line {line_no}: Missing SMILES payload for {safe_name}')
                         continue
-                    xyz_string, _num_atoms, _method, error = smiles_to_xyz_quick(smi)
-                    if error:
-                        print(f'Line {line_no}: {safe_name} - SMILES error: {error}')
-                        continue
-                    input_content = xyz_string
-                    smiles_line = f'SMILES={smi}'
-                    if re.search(r'(?m)^SMILES=.*$', control_content_base):
-                        control_content = re.sub(
-                            r'(?m)^SMILES=.*$',
-                            lambda _m, repl=smiles_line: repl,
-                            control_content_base,
-                        )
-                    else:
-                        control_content = control_content_base.rstrip() + f'\n{smiles_line}\n'
+                    input_content = smi + '\n'
+                    control_content = _set_control_smiles(control_content_base, smi)
                 else:
                     input_content = (entry.get('input_content') or '').strip()
                     if not input_content:
@@ -1344,11 +1356,10 @@ def create_tab(ctx):
                     print(f'- {err}')
                 return
 
-            input_content, input_type = clean_input_data(raw_input)
-            cache = state['converted_xyz_cache']
-            if input_type == 'smiles' and cache.get('xyz'):
-                input_content = cache['xyz']
-                input_type = 'xyz (from SMILES)'
+            input_content, input_type, submit_smiles = _prepare_delfin_submit_input(
+                raw_input,
+                state['converted_xyz_cache'],
+            )
 
             if not input_content:
                 print('Error: No valid input found!')
@@ -1365,13 +1376,9 @@ def create_tab(ctx):
             try:
                 job_dir.mkdir(parents=True, exist_ok=True)
 
-                smiles_for_charge = cache.get('smiles') or (
-                    raw_input if input_type == 'smiles' else None
-                )
-                if cache.get('smiles'):
-                    control_content = control_content.replace(
-                        'SMILES=', f"SMILES={cache['smiles']}",
-                    )
+                smiles_for_charge = submit_smiles
+                if submit_smiles:
+                    control_content = _set_control_smiles(control_content, submit_smiles)
 
                 # Auto-fill charge from SMILES if CONTROL.txt has none/empty/[CHARGE]
                 if smiles_for_charge and _needs_smiles_charge(control_content, {}):
@@ -1450,11 +1457,10 @@ def create_tab(ctx):
                 print('Error: Solvent cannot be empty!')
                 return
 
-            input_content, input_type = clean_input_data(raw_input)
-            cache = state['converted_xyz_cache']
-            if input_type == 'smiles' and cache.get('xyz'):
-                input_content = cache['xyz']
-                input_type = 'xyz (from SMILES)'
+            input_content, input_type, submit_smiles = _prepare_delfin_submit_input(
+                raw_input,
+                state['converted_xyz_cache'],
+            )
 
             if not input_content:
                 print('Error: No valid input found!')
@@ -1482,10 +1488,8 @@ def create_tab(ctx):
                     .replace('[SOLVENT]', solvent_value)
                 )
 
-                if cache.get('smiles'):
-                    control_content = control_content.replace(
-                        'SMILES=', f"SMILES={cache['smiles']}",
-                    )
+                if submit_smiles:
+                    control_content = _set_control_smiles(control_content, submit_smiles)
 
                 control_errors = validate_control_text(control_content)
                 if control_errors:
@@ -1543,10 +1547,10 @@ def create_tab(ctx):
                     print(f'- {err}')
                 return
 
-            input_content, input_type = clean_input_data(raw_input)
-            cache = state['converted_xyz_cache']
-            if input_type == 'smiles' and cache.get('xyz'):
-                input_content = cache['xyz']
+            input_content, input_type, submit_smiles = _prepare_delfin_submit_input(
+                raw_input,
+                state['converted_xyz_cache'],
+            )
 
             if not input_content:
                 print('Error: No valid input found!')
@@ -1563,10 +1567,8 @@ def create_tab(ctx):
             try:
                 job_dir.mkdir(parents=True, exist_ok=True)
 
-                if cache.get('smiles'):
-                    control_content = control_content.replace(
-                        'SMILES=', f"SMILES={cache['smiles']}",
-                    )
+                if submit_smiles:
+                    control_content = _set_control_smiles(control_content, submit_smiles)
 
                 (job_dir / 'CONTROL.txt').write_text(control_content)
                 (job_dir / 'input.txt').write_text(input_content)
