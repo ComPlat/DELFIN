@@ -322,7 +322,8 @@ def main(argv=None):
         "--show_tracebacks=True",
         f"--Voila.root_dir={root_dir}",
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)",
-        "--VoilaConfiguration.preheat_kernel=True",
+        "--VoilaConfiguration.preheat_kernel=False",
+        "--VoilaConfiguration.default_pool_size=0",
         "--Voila.tornado_settings=disable_check_xsrf=True",
     ]
 
