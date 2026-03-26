@@ -7,6 +7,8 @@ Usage::
 """
 
 import base64
+import contextlib
+import fcntl
 import importlib
 import importlib.resources
 import html
@@ -15,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 import warnings
 from pathlib import Path
@@ -517,12 +520,17 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         rd = ctx.repo_dir
         if not rd or not Path(rd).exists():
             git_status_label.value = '<span style="color:#666;">git: repo n/a</span>'
+            pull_delfin_btn.disabled = True
             branch_switch_dropdown.disabled = True
             switch_branch_btn.disabled = True
+            rollback_delfin_btn.disabled = True
             return
         git_status_label.value = _format_git_status_html(rd)
-        branch_switch_dropdown.disabled = False
-        switch_branch_btn.disabled = False
+        lock_present = bool(_git_index_lock_message(rd))
+        pull_delfin_btn.disabled = lock_present
+        branch_switch_dropdown.disabled = lock_present
+        switch_branch_btn.disabled = lock_present
+        rollback_delfin_btn.disabled = lock_present
         current_branch = _get_current_git_branch(rd)
         if current_branch in {value for _label, value in branch_options}:
             branch_switch_dropdown.value = current_branch
@@ -536,15 +544,16 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             if not rd or not Path(rd).exists():
                 print(f'Repo path not found: {rd}')
                 return
-            print(f'Running git pull in {rd} ...')
             ctx.set_busy(True)
             try:
-                result = subprocess.run(
-                    ['git', '-C', str(rd), 'pull'],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, check=False,
-                )
-                print(result.stdout.strip() or '(no output)')
+                with _dashboard_git_write_lock(rd, 'git pull'):
+                    if _ensure_git_index_lock_clear(rd, 'Pull'):
+                        print('Removed stale Git index lock before pull.')
+                    print(f'Running git pull in {rd} ...')
+                    result = _run_git_write(rd, 'pull')
+                    print(result.stdout.strip() or '(no output)')
+            except RuntimeError as e:
+                print(str(e))
             except Exception as e:
                 print(f'Error: {e}')
             finally:
@@ -568,120 +577,91 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 return
             if target_branch == current_branch:
                 print(f'Already on {target_branch}.')
+                refresh_git_status_label()
                 return
 
             ctx.set_busy(True)
             try:
-                stash_name = ''
-                status_result = subprocess.run(
-                    ['git', '-C', str(rd), 'status', '--porcelain'],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, check=False,
-                )
-                if status_result.returncode != 0:
-                    print(status_result.stdout.strip() or 'git status failed')
-                    return
-                if status_result.stdout.strip():
-                    stash_name = (
-                        'dashboard-switch-'
-                        f'{datetime.utcnow().strftime("%Y%m%d-%H%M%S")}-'
-                        f'{current_branch or "detached"}-to-{target_branch}'
-                    )
-                    print('Working tree is not clean.')
+                with _dashboard_git_write_lock(rd, f'branch-switch:{current_branch or "detached"}->{target_branch}'):
+                    if _ensure_git_index_lock_clear(rd, 'Branch switch'):
+                        print('Removed stale Git index lock before branch switch.')
 
-                    # --- file-system backup (survives any git operation) ---
-                    backup_dir = Path(rd).parent / 'delfin_branch_switch_backups' / stash_name
-                    try:
-                        import shutil as _shutil
-                        backup_dir.mkdir(parents=True, exist_ok=True)
-                        copied = 0
-                        for line in status_result.stdout.strip().splitlines():
-                            # porcelain format: "XY filename" or "XY filename -> newname"
-                            # With git -C the prefix can be 2 or 3 chars; strip status flags safely.
-                            entry = line.lstrip(' MADRCU?!').lstrip()
-                            entry = entry.split(' -> ')[0].strip().strip('"')
-                            if not entry:
-                                continue
-                            src = Path(rd) / entry
-                            if src.is_file():
-                                dst = backup_dir / entry
-                                dst.parent.mkdir(parents=True, exist_ok=True)
-                                _shutil.copy2(str(src), str(dst))
-                                copied += 1
-                        if copied:
-                            print(f'File backup: {copied} file(s) saved to {backup_dir}')
-                        else:
-                            print(f'Warning: no files could be backed up (directory created: {backup_dir})')
-                    except Exception as backup_err:
-                        print(f'Warning: file backup failed ({backup_err}), continuing with git stash only.')
+                    stash_name = ''
+                    status_result = _run_git_capture(rd, 'status', '--porcelain')
+                    if status_result.returncode != 0:
+                        print(status_result.stdout.strip() or 'git status failed')
+                        return
+                    if status_result.stdout.strip():
+                        stash_name = (
+                            'dashboard-switch-'
+                            f'{datetime.utcnow().strftime("%Y%m%d-%H%M%S")}-'
+                            f'{current_branch or "detached"}-to-{target_branch}'
+                        )
+                        print('Working tree is not clean.')
 
-                    # --- git stash (preserves full diff for easy restore) ---
-                    print(f'Creating local safety stash: {stash_name}')
-                    stash_result = subprocess.run(
-                        [
-                            'git', '-C', str(rd), 'stash', 'push',
+                        backup_dir = Path(rd).parent / 'delfin_branch_switch_backups' / stash_name
+                        try:
+                            copied = _backup_status_entries(rd, status_result.stdout, backup_dir)
+                            if copied:
+                                print(f'File backup: {copied} file(s) saved to {backup_dir}')
+                            else:
+                                print(f'Warning: no files could be backed up (directory created: {backup_dir})')
+                        except Exception as backup_err:
+                            print(f'Warning: file backup failed ({backup_err}), continuing with git stash only.')
+
+                        print(f'Creating local safety stash: {stash_name}')
+                        stash_result = _run_git_write(
+                            rd, 'stash', 'push',
                             '--include-untracked',
                             '--message', stash_name,
-                        ],
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        text=True, check=False,
-                    )
-                    print(stash_result.stdout.strip() or '(no output)')
-                    if stash_result.returncode != 0:
-                        print('Branch switch aborted: could not create safety stash.')
+                        )
+                        print(stash_result.stdout.strip() or '(no output)')
+                        if stash_result.returncode != 0:
+                            print('Branch switch aborted: could not create safety stash.')
+                            lock_message = _git_index_lock_message(rd)
+                            if lock_message:
+                                print(lock_message)
+                            return
+
+                    available_branches = _list_local_git_branches(rd)
+                    if target_branch not in available_branches:
+                        print(f'Branch not available locally: {target_branch}')
+                        if stash_name:
+                            print(f'Your changes are preserved locally in stash "{stash_name}".')
                         return
 
-                available_branches = _list_local_git_branches(rd)
-                if target_branch not in available_branches:
-                    print(f'Branch not available locally: {target_branch}')
-                    if stash_name:
-                        print(f'Your changes are preserved locally in stash "{stash_name}".')
-                    return
-
-                print(f'Switching DELFIN branch: {current_branch or "?"} -> {target_branch}')
-                result = subprocess.run(
-                    ['git', '-C', str(rd), 'switch', target_branch],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, check=False,
-                )
-                print(result.stdout.strip() or '(no output)')
-                if result.returncode == 0:
-                    if stash_name:
+                    print(f'Switching DELFIN branch: {current_branch or "?"} -> {target_branch}')
+                    result = _run_git_write(rd, 'switch', target_branch)
+                    print(result.stdout.strip() or '(no output)')
+                    if result.returncode == 0:
+                        if stash_name:
+                            print(
+                                'Local changes were preserved in git stash AND as file backup. '
+                                f'Backup: {backup_dir}'
+                            )
+                        try:
+                            stash_list = _run_git_capture(rd, 'stash', 'list')
+                            for sline in (stash_list.stdout or '').strip().splitlines():
+                                if f'-{target_branch}-to-' in sline:
+                                    stash_ref = sline.split(':')[0]
+                                    print(f'Found stash from {target_branch}: {stash_ref} – restoring...')
+                                    pop_result = _run_git_write(rd, 'stash', 'pop', stash_ref)
+                                    print(pop_result.stdout.strip() or '(no output)')
+                                    if pop_result.returncode != 0:
+                                        print('Auto-restore had conflicts. Check your files.')
+                                    break
+                        except Exception:
+                            pass
+                        refresh_git_status_label()
+                        print('Reloading dashboard to pick up code from the selected branch...')
+                        ctx.run_js('window.location.reload();')
+                    elif stash_name:
                         print(
-                            'Local changes were preserved in git stash AND as file backup. '
-                            f'Backup: {backup_dir}'
+                            f'Branch switch failed, but your changes are preserved in stash "{stash_name}" '
+                            f'and as file backup in {backup_dir}.'
                         )
-                    # --- auto-restore: pop stash that was created FROM the target branch ---
-                    try:
-                        stash_list = subprocess.run(
-                            ['git', '-C', str(rd), 'stash', 'list'],
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, check=False,
-                        )
-                        for sline in (stash_list.stdout or '').strip().splitlines():
-                            # match stashes like "dashboard-switch-...-<target_branch>-to-..."
-                            if f'-{target_branch}-to-' in sline:
-                                stash_ref = sline.split(':')[0]  # e.g. "stash@{0}"
-                                print(f'Found stash from {target_branch}: {stash_ref} – restoring...')
-                                pop_result = subprocess.run(
-                                    ['git', '-C', str(rd), 'stash', 'pop', stash_ref],
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    text=True, check=False,
-                                )
-                                print(pop_result.stdout.strip() or '(no output)')
-                                if pop_result.returncode != 0:
-                                    print('Auto-restore had conflicts. Check your files.')
-                                break
-                    except Exception:
-                        pass
-                    refresh_git_status_label()
-                    print('Reloading dashboard to pick up code from the selected branch...')
-                    ctx.run_js('window.location.reload();')
-                elif stash_name:
-                    print(
-                        f'Branch switch failed, but your changes are preserved in stash "{stash_name}" '
-                        f'and as file backup in {backup_dir}.'
-                    )
+            except RuntimeError as e:
+                print(str(e))
             except Exception as e:
                 print(f'Error: {e}')
             finally:
@@ -699,45 +679,35 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 return
             ctx.set_busy(True)
             try:
-                status_result = subprocess.run(
-                    ['git', '-C', str(rd), 'status', '--porcelain'],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, check=False,
-                )
-                if status_result.returncode != 0:
-                    print(status_result.stdout.strip() or 'git status failed')
-                    return
-                if status_result.stdout.strip():
-                    print('Rollback aborted: working tree is not clean.')
-                    print('Please commit, stash, or discard local changes first.')
-                    return
+                with _dashboard_git_write_lock(rd, 'git reset --hard HEAD~1'):
+                    if _ensure_git_index_lock_clear(rd, 'Rollback'):
+                        print('Removed stale Git index lock before rollback.')
 
-                old_head = subprocess.run(
-                    ['git', '-C', str(rd), 'rev-parse', '--short', 'HEAD'],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, check=False,
-                )
-                target_head = subprocess.run(
-                    ['git', '-C', str(rd), 'rev-parse', '--short', 'HEAD~1'],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, check=False,
-                )
-                if target_head.returncode != 0:
-                    print(target_head.stdout.strip() or 'No previous commit available.')
-                    return
+                    status_result = _run_git_capture(rd, 'status', '--porcelain')
+                    if status_result.returncode != 0:
+                        print(status_result.stdout.strip() or 'git status failed')
+                        return
+                    if status_result.stdout.strip():
+                        print('Rollback aborted: working tree is not clean.')
+                        print('Please commit, stash, or discard local changes first.')
+                        return
 
-                print(
-                    'Rolling DELFIN back one commit: '
-                    f"{old_head.stdout.strip() or 'HEAD'} -> {target_head.stdout.strip()}"
-                )
-                result = subprocess.run(
-                    ['git', '-C', str(rd), 'reset', '--hard', 'HEAD~1'],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, check=False,
-                )
-                print(result.stdout.strip() or '(no output)')
-                if result.returncode == 0:
-                    _force_reload_delfin()
+                    old_head = _run_git_capture(rd, 'rev-parse', '--short', 'HEAD')
+                    target_head = _run_git_capture(rd, 'rev-parse', '--short', 'HEAD~1')
+                    if target_head.returncode != 0:
+                        print(target_head.stdout.strip() or 'No previous commit available.')
+                        return
+
+                    print(
+                        'Rolling DELFIN back one commit: '
+                        f"{old_head.stdout.strip() or 'HEAD'} -> {target_head.stdout.strip()}"
+                    )
+                    result = _run_git_write(rd, 'reset', '--hard', 'HEAD~1')
+                    print(result.stdout.strip() or '(no output)')
+                    if result.returncode == 0:
+                        _force_reload_delfin()
+            except RuntimeError as e:
+                print(str(e))
             except Exception as e:
                 print(f'Error: {e}')
             finally:
@@ -872,14 +842,167 @@ def _force_reload_delfin():
 
 
 def _run_git_capture(repo_dir, *args):
-    """Run git in the given repo and return the completed process."""
+    """Run read-only git in the given repo without taking optional index locks."""
+    env = os.environ.copy()
+    env.setdefault('GIT_OPTIONAL_LOCKS', '0')
     return subprocess.run(
         ['git', '-C', str(repo_dir), *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         check=False,
+        env=env,
     )
+
+
+@contextlib.contextmanager
+def _dashboard_git_write_lock(repo_dir, action_name, timeout=15.0):
+    """Serialize repo-changing dashboard Git actions across kernels/processes."""
+    lock_path = Path(repo_dir) / '.git' / 'delfin-dashboard.lock'
+    with open(lock_path, 'a+', encoding='utf-8') as handle:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                handle.seek(0)
+                handle.truncate()
+                handle.write(f'{os.getpid()} {action_name}\n')
+                handle.flush()
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        'Another DELFIN dashboard session is already changing the Git repo. '
+                        'Please wait a moment and retry.'
+                    )
+                time.sleep(0.2)
+        try:
+            yield
+        finally:
+            try:
+                handle.seek(0)
+                handle.truncate()
+                handle.flush()
+            except Exception:
+                pass
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+
+
+def _git_index_lock_path(repo_dir):
+    """Return the Git index lock path for the repository."""
+    return Path(repo_dir) / '.git' / 'index.lock'
+
+
+def _git_index_lock_message(repo_dir):
+    """Describe a present Git index lock, or return an empty string."""
+    lock_path = _git_index_lock_path(repo_dir)
+    if not lock_path.exists():
+        return ''
+    try:
+        stamp = datetime.fromtimestamp(lock_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+        return f'Git index lock present: {lock_path} (mtime {stamp})'
+    except Exception:
+        return f'Git index lock present: {lock_path}'
+
+
+def _git_index_lock_in_use(repo_dir):
+    """Return whether another process currently holds the Git index lock."""
+    lock_path = _git_index_lock_path(repo_dir)
+    if not lock_path.exists():
+        return False
+    try:
+        result = subprocess.run(
+            ['lsof', str(lock_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _ensure_git_index_lock_clear(repo_dir, action_name, wait_seconds=10.0):
+    """Wait for an active Git index lock or remove it when it is stale."""
+    lock_path = _git_index_lock_path(repo_dir)
+    removed_stale_lock = False
+    deadline = time.monotonic() + wait_seconds
+    while lock_path.exists():
+        if _git_index_lock_in_use(repo_dir):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f'{action_name} blocked: another git process is still using {lock_path}. '
+                    'Please finish that operation or close the other DELFIN session.'
+                )
+            time.sleep(0.2)
+            continue
+        try:
+            lock_path.unlink()
+            removed_stale_lock = True
+        except FileNotFoundError:
+            break
+        except Exception as exc:
+            raise RuntimeError(
+                f'{action_name} blocked: stale Git lock could not be removed ({exc}).'
+            ) from exc
+    return removed_stale_lock
+
+
+def _git_output_mentions_index_lock(output):
+    """Return whether Git output points to an index lock conflict."""
+    message = (output or '').lower()
+    return 'index.lock' in message or 'could not write index' in message
+
+
+def _run_git_write(repo_dir, *args, retry_on_index_lock=True):
+    """Run a repo-changing Git command with stale-index-lock recovery."""
+    _ensure_git_index_lock_clear(repo_dir, 'Git write')
+    result = subprocess.run(
+        ['git', '-C', str(repo_dir), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0 or not retry_on_index_lock:
+        return result
+    if not _git_output_mentions_index_lock(result.stdout):
+        return result
+    _ensure_git_index_lock_clear(repo_dir, 'Git write retry', wait_seconds=1.0)
+    return _run_git_write(repo_dir, *args, retry_on_index_lock=False)
+
+
+def _backup_status_entries(repo_dir, status_output, backup_dir):
+    """Copy dirty files and directories from git status output into a backup directory."""
+    backup_dir = Path(backup_dir)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+
+    for line in (status_output or '').strip().splitlines():
+        raw_entry = line.lstrip(' MADRCU?!').lstrip().strip()
+        entries = []
+        for candidate in raw_entry.split(' -> '):
+            candidate = candidate.strip().strip('"')
+            if candidate and candidate not in entries:
+                entries.append(candidate)
+        for entry in entries:
+            src = Path(repo_dir) / entry
+            if not src.exists():
+                continue
+            dst = backup_dir / entry
+            if src.is_dir():
+                shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+                copied += 1
+            elif src.is_file():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(src), str(dst))
+                copied += 1
+
+    return copied
 
 
 def _format_git_status_html(repo_dir):
@@ -922,15 +1045,16 @@ def _format_git_status_html(repo_dir):
         parts.append(f'behind {behind}')
     if not ahead and not behind:
         parts.append('synced')
+    if _git_index_lock_message(repo_dir):
+        parts.append('index.lock present')
 
-    color = '#455a64'
+    color = '#b71c1c' if _git_index_lock_message(repo_dir) else '#455a64'
     text = ' | '.join(parts)
     return (
         f'<span style="font-family:monospace; color:{color}; '
         f'padding:2px 6px; border:1px solid #cfd8dc; border-radius:4px;">'
         f'{html.escape(text)}</span>'
     )
-
 
 def _get_current_git_branch(repo_dir):
     """Return the current local branch name, or ``None`` when detached/unknown."""
