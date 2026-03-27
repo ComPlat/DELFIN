@@ -2,6 +2,7 @@
 
 import json
 import re
+import shlex
 
 import py3Dmol
 import ipywidgets as widgets
@@ -11,7 +12,7 @@ from delfin.config import parse_control_text, validate_control_text, get_esd_hin
 from delfin.smiles_converter import contains_metal
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
-from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck
+from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck, parse_time_to_seconds
 from .molecule_viewer import apply_molecule_view_style
 from .input_processing import (
     smiles_to_xyz, smiles_to_xyz_quick, smiles_to_xyz_quick_with_previews,
@@ -289,11 +290,6 @@ def create_tab(ctx):
         tooltip='Convert metal-complex SMILES to 3D via architector',
     )
 
-    guppy_submit_button = widgets.Button(
-        description='SUBMIT GUPPY', button_style='warning',
-        layout=widgets.Layout(width='170px'),
-    )
-
     smiles_batch_widget = widgets.Textarea(
         value='',
         placeholder=(
@@ -405,6 +401,25 @@ def create_tab(ctx):
         layout=widgets.Layout(width='180px'),
     )
     co2_output = widgets.Output()
+
+    guppy_pal = widgets.IntText(
+        value=12, description='PAL:',
+        style=COMMON_STYLE, layout=widgets.Layout(width='140px'),
+    )
+    guppy_goat_topk = widgets.Dropdown(
+        options=[(str(i), i) for i in range(4)],
+        value=0, description='GOAT:',
+        style=COMMON_STYLE, layout=widgets.Layout(width='150px'),
+    )
+    guppy_timeout = widgets.Text(
+        value='02:00:00', description='Timeout:',
+        style=COMMON_STYLE, layout=widgets.Layout(width='200px'),
+    )
+    guppy_submit_button = widgets.Button(
+        description='SUBMIT GUPPY', button_style='warning',
+        layout=widgets.Layout(width='170px'),
+    )
+    guppy_output = widgets.Output()
 
     # -- state ----------------------------------------------------------
     state = {
@@ -799,10 +814,155 @@ def create_tab(ctx):
                 print(f'Architector error: {exc}')
 
     def handle_guppy_submit(button):
-        """Submit SMILES->20x XTB sampling job (GUPPY trajectory mode)."""
-        with output_area:
+        """Submit GUPPY either for batch entries or a single SMILES input."""
+        with guppy_output:
             clear_output()
             job_name = job_name_widget.value.strip()
+            pal_value = int(guppy_pal.value or 0)
+            goat_topk_value = int(guppy_goat_topk.value or 0)
+            timeout_value = str(guppy_timeout.value or '').strip() or '02:00:00'
+
+            if pal_value <= 0:
+                print('Error: GUPPY PAL must be > 0.')
+                return
+            if goat_topk_value not in (0, 1, 2, 3):
+                print('Error: GUPPY GOAT must be 0, 1, 2, or 3.')
+                return
+            try:
+                parse_time_to_seconds(timeout_value)
+            except Exception:
+                print('Error: GUPPY timeout must use HH:MM:SS, e.g. 02:00:00.')
+                return
+
+            goat_template = ctx.only_goat_template
+            if ctx.only_goat_template_path and ctx.only_goat_template_path.exists():
+                goat_template = ctx.only_goat_template_path.read_text()
+            guppy_maxcore = 500
+            guppy_runs = 20
+            guppy_parallel_jobs = 4
+            guppy_goat_parallel_jobs = guppy_parallel_jobs
+            guppy_cli_command = shlex.join([
+                'python',
+                '-m',
+                'delfin.guppy_sampling',
+                'input.txt',
+                '--runs',
+                str(guppy_runs),
+                '--pal',
+                str(pal_value),
+                '--maxcore',
+                str(guppy_maxcore),
+                '--parallel-jobs',
+                str(guppy_parallel_jobs),
+                '--goat-topk',
+                str(goat_topk_value),
+                '--goat-parallel-jobs',
+                str(guppy_goat_parallel_jobs),
+                '--output',
+                'GUPPY_try.xyz',
+            ])
+            guppy_env = {
+                'GUPPY_RUNS': str(guppy_runs),
+                'GUPPY_PAL': str(pal_value),
+                'GUPPY_MAXCORE': str(guppy_maxcore),
+                'GUPPY_PARALLEL_JOBS': str(guppy_parallel_jobs),
+                'GUPPY_GOAT_TOPK': str(goat_topk_value),
+                'GUPPY_GOAT_PARALLEL_JOBS': str(guppy_goat_parallel_jobs),
+            }
+
+            batch_text = smiles_batch_widget.value.strip()
+            if batch_text:
+                if not job_name:
+                    print('Error: Job name is required for GUPPY batch submission.')
+                    return
+                entries, parse_errors = parse_batch_entries()
+                for err in parse_errors:
+                    print(err)
+                if parse_errors:
+                    return
+                if not entries:
+                    print('Error: No valid batch entries.')
+                    return
+
+                submitted = 0
+                for entry in entries:
+                    line_no = entry.get('line_no', '?')
+                    if entry.get('input_kind') != 'smiles':
+                        print(f"Line {line_no}: GUPPY batch supports only SMILES entries.")
+                        continue
+
+                    name_raw = entry.get('name', '').strip()
+                    smiles_value = str(entry.get('input_raw') or '').strip()
+                    safe_name = ''.join(c for c in name_raw if c.isalnum() or c in ('_', '-'))
+                    if not safe_name:
+                        print(f'Line {line_no}: Invalid name -> {name_raw}')
+                        continue
+                    if not smiles_value:
+                        print(f'Line {line_no}: Missing SMILES payload for {safe_name}')
+                        continue
+
+                    full_job_name = f'{job_name}_{safe_name}'
+                    safe_job_name = ''.join(c for c in full_job_name if c.isalnum() or c in ('_', '-'))
+                    if not safe_job_name:
+                        print(f'Line {line_no}: Invalid job name -> {full_job_name}')
+                        continue
+
+                    job_dir = ctx.calc_dir / safe_job_name
+                    try:
+                        job_dir.mkdir(parents=True, exist_ok=True)
+                        (job_dir / 'input.txt').write_text(smiles_value + '\n')
+                        (job_dir / 'guppy_settings.json').write_text(
+                            json.dumps(
+                                {
+                                    'mode': 'guppy',
+                                    'submit_mode': 'batch',
+                                    'runs': guppy_runs,
+                                    'pal': pal_value,
+                                    'maxcore': guppy_maxcore,
+                                    'parallel_jobs': guppy_parallel_jobs,
+                                    'goat_topk': goat_topk_value,
+                                    'goat_parallel_jobs': guppy_goat_parallel_jobs,
+                                    'time_limit': timeout_value,
+                                    'line_no': line_no,
+                                    'batch_name': safe_name,
+                                    'job_name': safe_job_name,
+                                    'input_file': 'input.txt',
+                                    'output_file': 'GUPPY_try.xyz',
+                                    'cli_command': guppy_cli_command,
+                                },
+                                indent=2,
+                            ),
+                            encoding='utf-8',
+                        )
+
+                        result = ctx.backend.submit_delfin(
+                            job_dir=job_dir,
+                            job_name=safe_job_name,
+                            mode='guppy',
+                            time_limit=timeout_value,
+                            pal=pal_value,
+                            maxcore=guppy_maxcore,
+                            extra_env=guppy_env,
+                        )
+                    except Exception as exc:
+                        print(f'Failed {safe_job_name}: {exc}')
+                        continue
+
+                    if result.returncode == 0:
+                        job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                        print(
+                            f'Submitted {safe_job_name} [SMILES] '
+                            f'(ID: {job_id}, PAL: {pal_value}, GOAT: {goat_topk_value}, Timeout: {timeout_value})'
+                        )
+                        submitted += 1
+                    else:
+                        print(f'Failed {safe_job_name}: {result.stderr or result.stdout}')
+
+                if submitted:
+                    print('')
+                    print('Check status in Job Status tab')
+                return
+
             if not job_name:
                 print('Error: Job name is required!')
                 return
@@ -811,7 +971,6 @@ def create_tab(ctx):
             if not raw_input:
                 print('Error: Please enter a SMILES string in the input box.')
                 return
-
             cleaned_data, input_type = clean_input_data(raw_input)
             if input_type != 'smiles':
                 print('Error: Input must be a SMILES string for GUPPY submission.')
@@ -823,7 +982,6 @@ def create_tab(ctx):
                 return
 
             job_dir = ctx.calc_dir / safe_job_name
-            time_limit = '00:45:00'
 
             try:
                 # Match ONLY GOAT behavior: allow existing dir and reuse same naming flow.
@@ -831,27 +989,45 @@ def create_tab(ctx):
 
                 # Required input for guppy mode: raw SMILES in input.txt
                 (job_dir / 'input.txt').write_text(cleaned_data + '\n')
-
-                # Resource policy must match ONLY GOAT.
-                goat_template = ctx.only_goat_template
-                if ctx.only_goat_template_path and ctx.only_goat_template_path.exists():
-                    goat_template = ctx.only_goat_template_path.read_text()
-                pal, maxcore = parse_resource_settings(goat_template)
+                (job_dir / 'guppy_settings.json').write_text(
+                    json.dumps(
+                        {
+                            'mode': 'guppy',
+                            'submit_mode': 'single',
+                            'runs': guppy_runs,
+                            'pal': pal_value,
+                            'maxcore': guppy_maxcore,
+                            'parallel_jobs': guppy_parallel_jobs,
+                            'goat_topk': goat_topk_value,
+                            'goat_parallel_jobs': guppy_goat_parallel_jobs,
+                            'time_limit': timeout_value,
+                            'job_name': safe_job_name,
+                            'input_file': 'input.txt',
+                            'output_file': 'GUPPY_try.xyz',
+                            'cli_command': guppy_cli_command,
+                        },
+                        indent=2,
+                    ),
+                    encoding='utf-8',
+                )
 
                 result = ctx.backend.submit_delfin(
                     job_dir=job_dir,
                     job_name=safe_job_name,
                     mode='guppy',
-                    time_limit=time_limit,
-                    pal=pal or 40,
-                    maxcore=maxcore or 6000,
+                    time_limit=timeout_value,
+                    pal=pal_value,
+                    maxcore=guppy_maxcore,
+                    extra_env=guppy_env,
                 )
 
                 if result.returncode == 0:
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
                     print('GUPPY sampling job submitted!')
                     print(f'Job ID: {job_id}')
-                    print(f'Time Limit: {time_limit}')
+                    print(f'Time Limit: {timeout_value}')
+                    print(f'PAL: {pal_value}')
+                    print(f'GOAT top-k: {goat_topk_value}')
                     print('Workflow: 20x (SMILES -> XTB2 OPT) with energy ranking')
                     print(f'Input Type: {input_type.upper()}')
                     print(f'Directory: {job_dir}')
@@ -1327,6 +1503,9 @@ def create_tab(ctx):
         only_goat_charge.value = 0
         only_goat_solvent.value = ''
         co2_species_delta.value = -2
+        guppy_pal.value = 12
+        guppy_goat_topk.value = 0
+        guppy_timeout.value = '02:00:00'
         state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
         state['isomers'] = []
         state['isomer_index'] = 0
@@ -1633,7 +1812,7 @@ def create_tab(ctx):
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
-        widgets.HBox([build_complex_button, architector_button, guppy_submit_button],
+        widgets.HBox([build_complex_button, architector_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
@@ -1672,6 +1851,13 @@ def create_tab(ctx):
             layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
         ),
         co2_output,
+        spacer_large,
+        widgets.HTML('<b>GUPPY:</b>'),
+        widgets.HBox(
+            [guppy_pal, guppy_goat_topk, guppy_timeout, guppy_submit_button],
+            layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
+        ),
+        guppy_output,
     ], layout=widgets.Layout(
         flex='1 1 0', min_width='0', padding='10px',
         box_sizing='border-box', overflow_x='hidden',

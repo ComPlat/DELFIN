@@ -16,10 +16,10 @@
 #   DELFIN_WORKFLOW_LABEL: Workflow label for browser-launched hyperpol_xtb/tadf_xtb modes
 #   BUILD_MULTIPLICITY   : Spin multiplicity for build mode (default: 1)
 #   GUPPY_RUNS           : Number of GUPPY sampling runs (default: 20)
-#   GUPPY_PAL            : Total PAL budget for GUPPY (default: DELFIN_PAL or local nproc)
-#   GUPPY_MAXCORE        : Maxcore per core in MB for GUPPY scheduler (default: DELFIN_MAXCORE or 6000)
+#   GUPPY_PAL            : Total PAL budget for GUPPY (default: DELFIN_PAL or 12)
+#   GUPPY_MAXCORE        : Maxcore per core in MB for GUPPY scheduler (default: DELFIN_MAXCORE or 500)
 #   GUPPY_PARALLEL_JOBS  : Number of parallel GUPPY runs sharing resources (default: 4)
-#   GUPPY_GOAT_TOPK      : Number of top-ranked GUPPY candidates refined with GOAT (default: 3)
+#   GUPPY_GOAT_TOPK      : Number of top-ranked GUPPY candidates refined with GOAT (default: 0)
 #   GUPPY_GOAT_PARALLEL_JOBS : Number of parallel GOAT refinement jobs (default: GUPPY_PARALLEL_JOBS)
 #   DELFIN_CO2_SPECIES_DELTA : Redox species delta for delfin-co2-chain mode (default: 0)
 #
@@ -235,10 +235,10 @@ case "$MODE" in
         ;;
     guppy)
         GUPPY_RUNS="${GUPPY_RUNS:-20}"
-        GUPPY_PAL="${GUPPY_PAL:-${DELFIN_PAL:-$(nproc)}}"
-        GUPPY_MAXCORE="${GUPPY_MAXCORE:-${DELFIN_MAXCORE:-6000}}"
+        GUPPY_PAL="${GUPPY_PAL:-${DELFIN_PAL:-12}}"
+        GUPPY_MAXCORE="${GUPPY_MAXCORE:-${DELFIN_MAXCORE:-500}}"
         GUPPY_PARALLEL_JOBS="${GUPPY_PARALLEL_JOBS:-4}"
-        GUPPY_GOAT_TOPK="${GUPPY_GOAT_TOPK:-3}"
+        GUPPY_GOAT_TOPK="${GUPPY_GOAT_TOPK:-0}"
         GUPPY_GOAT_PARALLEL_JOBS="${GUPPY_GOAT_PARALLEL_JOBS:-$GUPPY_PARALLEL_JOBS}"
         echo "Starting GUPPY SMILES sampling..."
         echo "  Runs:         $GUPPY_RUNS"
@@ -248,7 +248,6 @@ case "$MODE" in
         echo "  Maxcore:      $GUPPY_MAXCORE"
         echo "  Parallel:     $GUPPY_PARALLEL_JOBS runs"
         echo "  GOAT top-k:   $GUPPY_GOAT_TOPK"
-        echo "  GOAT parallel:$GUPPY_GOAT_PARALLEL_JOBS runs"
 
         GUPPY_CMD=(
             "$DELFIN_PYTHON" -m delfin.guppy_sampling input.txt

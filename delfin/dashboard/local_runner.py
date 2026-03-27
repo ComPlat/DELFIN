@@ -175,10 +175,10 @@ def _run_mode(mode: str) -> int:
         ])
     if resolved_mode == 'guppy':
         guppy_runs = str(os.environ.get('GUPPY_RUNS') or '20')
-        guppy_pal = str(os.environ.get('GUPPY_PAL') or os.environ.get('DELFIN_PAL') or (os.cpu_count() or 1))
-        guppy_maxcore = str(os.environ.get('GUPPY_MAXCORE') or os.environ.get('DELFIN_MAXCORE') or '6000')
+        guppy_pal = str(os.environ.get('GUPPY_PAL') or os.environ.get('DELFIN_PAL') or '12')
+        guppy_maxcore = str(os.environ.get('GUPPY_MAXCORE') or os.environ.get('DELFIN_MAXCORE') or '500')
         guppy_parallel_jobs = str(os.environ.get('GUPPY_PARALLEL_JOBS') or '4')
-        guppy_goat_topk = str(os.environ.get('GUPPY_GOAT_TOPK') or '3')
+        guppy_goat_topk = str(os.environ.get('GUPPY_GOAT_TOPK') or '0')
         guppy_goat_parallel = str(os.environ.get('GUPPY_GOAT_PARALLEL_JOBS') or guppy_parallel_jobs)
         print('Starting GUPPY SMILES sampling...')
         return _run_command([
