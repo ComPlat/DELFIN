@@ -1,12 +1,14 @@
 """Submit Job tab: main DELFIN job submission form."""
 
+import html
 import json
 import re
 import shlex
 import threading
 
-import py3Dmol
 import ipywidgets as widgets
+import py3Dmol
+from IPython import get_ipython
 from IPython.display import clear_output
 
 from delfin.config import parse_control_text, validate_control_text, get_esd_hints
@@ -243,6 +245,7 @@ def create_tab(ctx):
     """
     SUBMIT_MOL_HEIGHT = 650
     SMILES_CONVERTER_PLACEHOLDER = '[QUICK|NORMAL|GUPPY|ARCHITECTOR]'
+    main_io_loop = getattr(getattr(get_ipython(), 'kernel', None), 'io_loop', None)
 
     # -- widgets --------------------------------------------------------
     job_name_widget = widgets.Text(
@@ -290,20 +293,6 @@ def create_tab(ctx):
         description='ARCHITECTOR', button_style='warning',
         layout=widgets.Layout(width='150px'),
         tooltip='Convert metal-complex SMILES to 3D via architector',
-    )
-
-    smiles_converter_widget = widgets.Dropdown(
-        options=[
-            ('Select SMILES converter', ''),
-            ('QUICK', 'QUICK'),
-            ('NORMAL', 'NORMAL'),
-            ('GUPPY', 'GUPPY'),
-            ('ARCHITECTOR', 'ARCHITECTOR'),
-        ],
-        value='',
-        description='SMILES Converter:',
-        style=COMMON_STYLE,
-        layout=widgets.Layout(width='320px'),
     )
 
     smiles_batch_widget = widgets.Textarea(
@@ -366,6 +355,10 @@ def create_tab(ctx):
     output_area = widgets.Output()
     validate_output = widgets.Output()
 
+    mol_status = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', margin='0 0 6px 0'),
+    )
     mol_output = widgets.Output(layout=widgets.Layout(
         border='2px solid #1976d2', width='100%', height=f'{SUBMIT_MOL_HEIGHT}px',
         overflow='hidden', box_sizing='border-box',
@@ -448,7 +441,8 @@ def create_tab(ctx):
         'batch_preview_task_id': 0,
         'batch_preview_timer': None,
         'batch_preview_cache': {},
-        'syncing_smiles_converter': False,
+        'smiles_busy': False,
+        'batch_preview_busy': False,
     }
 
     # -- handlers -------------------------------------------------------
@@ -457,6 +451,7 @@ def create_tab(ctx):
             button.disabled = disabled
 
     def _set_smiles_conversion_busy(is_busy):
+        state['smiles_busy'] = bool(is_busy)
         _set_buttons_disabled(
             [
                 convert_smiles_button,
@@ -467,15 +462,115 @@ def create_tab(ctx):
             ],
             is_busy,
         )
+        ctx.set_busy(state['smiles_busy'] or state['batch_preview_busy'])
 
     def _set_batch_preview_busy(is_busy):
+        state['batch_preview_busy'] = bool(is_busy)
         _set_buttons_disabled([smiles_prev_button, smiles_next_button], is_busy)
+        ctx.set_busy(state['smiles_busy'] or state['batch_preview_busy'])
 
     def _cancel_batch_preview_timer():
         timer = state.get('batch_preview_timer')
         if timer is not None:
             timer.cancel()
             state['batch_preview_timer'] = None
+
+    def _schedule_ui_update(func, *args, **kwargs):
+        if main_io_loop is not None:
+            main_io_loop.add_callback(lambda: func(*args, **kwargs))
+            return
+        func(*args, **kwargs)
+
+    def _set_mol_status(*lines, spinner=False):
+        rendered = [html.escape(str(line)) for line in lines if line not in (None, '')]
+        spinner_html = (
+            "<span class='delfin-busy' style='margin-right:6px; vertical-align:middle;' "
+            "title='Working'></span>"
+            if spinner else ''
+        )
+        text_html = '<br>'.join(rendered)
+        if not spinner_html and not text_html:
+            mol_status.value = ''
+            return
+        if spinner_html and text_html:
+            first, *rest = rendered
+            body = spinner_html + first
+            if rest:
+                body += '<br>' + '<br>'.join(rest)
+        else:
+            body = spinner_html + text_html
+        mol_status.value = (
+            "<div style='font-family: monospace; white-space: pre-wrap; "
+            "font-size: 13px; line-height: 1.35;'>"
+            f"{body}</div>"
+        )
+
+    def _clear_mol_status():
+        mol_status.value = ''
+
+    def _build_mol_output_bundle(xyz_data):
+        view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
+        view.addModel(xyz_data, 'xyz')
+        apply_molecule_view_style(view)
+        html_payload = view._make_html()
+        return ({
+            'output_type': 'display_data',
+            'data': {
+                'application/3dmoljs_load.v0': html_payload,
+                'text/html': html_payload,
+            },
+            'metadata': {},
+        },)
+
+    def _clear_mol_output():
+        mol_output.outputs = ()
+
+    def _replace_mol_output_text(*lines):
+        _set_mol_status(*lines)
+        _clear_mol_output()
+
+    def _replace_mol_output_view(xyz_data):
+        _clear_mol_status()
+        mol_output.outputs = _build_mol_output_bundle(xyz_data)
+
+    def _apply_smiles_conversion_result(task_id, *, quick, cleaned_data, result):
+        if task_id != state['smiles_task_id']:
+            return
+
+        _set_smiles_conversion_busy(False)
+        if quick:
+            xyz_string = result.get('xyz_string')
+            preview_items = result.get('preview_items') or []
+            error = result.get('error')
+            if error or not xyz_string:
+                _replace_mol_output_text(f'Error: {error or "Conversion failed"}')
+                return
+            state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
+            state['isomers'] = [(xyz_string, result['num_atoms'], 'quick')] + preview_items
+            _show_isomer_at_index(0)
+            return
+
+        isomers = result.get('isomers') or []
+        error = result.get('error')
+        if error or not isomers:
+            _replace_mol_output_text(
+                f'SMILES: {cleaned_data}',
+                f'Fehler: {error or "No isomers generated"}',
+            )
+            state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
+            state['isomers'] = []
+            isomer_nav_row.layout.display = 'none'
+            return
+
+        state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
+        state['isomers'] = isomers
+        _show_isomer_at_index(0)
+
+    def _apply_batch_preview_result(task_id, entry, preview_payload):
+        if task_id != state['batch_preview_task_id']:
+            return
+        _set_batch_preview_busy(False)
+        _render_batch_preview(entry, preview_payload)
 
     def update_molecule_view(change=None):
         state['smiles_task_id'] += 1
@@ -484,41 +579,35 @@ def create_tab(ctx):
         state['isomers'] = []
         state['isomer_index'] = 0
         isomer_nav_row.layout.display = 'none'
+        raw_input = coords_widget.value.strip()
 
-        with mol_output:
-            clear_output()
-            raw_input = coords_widget.value.strip()
-
-            if not raw_input:
-                print('Please enter XYZ coordinates or SMILES.')
-                state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
-                state['current_xyz_for_copy'] = {'content': None}
-                xyz_copy_btn.disabled = True
-                xyz_copy_status.value = ''
-                return
-
-            cleaned_data, input_type = clean_input_data(raw_input)
-
-            if input_type == 'smiles':
-                state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
-                state['current_xyz_for_copy'] = {'content': None}
-                xyz_copy_btn.disabled = True
-                xyz_copy_status.value = ''
-                print("SMILES erkannt. Bitte 'CONVERT SMILES' oder 'CONVERT SMILES + UFF' klicken.")
-                return
-
+        if not raw_input:
+            _replace_mol_output_text('Please enter XYZ coordinates or SMILES.')
             state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
-            coords = cleaned_data
-            lines = [l for l in coords.split('\n') if l.strip()]
-            num_atoms = len(lines)
-            xyz_data = f'{num_atoms}\nGenerated by widget\n{coords}'
-            state['current_xyz_for_copy'] = {'content': xyz_data}
-            xyz_copy_btn.disabled = False
-            xyz_copy_status.value = '<span style="color:#388e3c;">XYZ ready to copy</span>'
-            view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
-            view.addModel(xyz_data, 'xyz')
-            apply_molecule_view_style(view)
-            view.show()
+            state['current_xyz_for_copy'] = {'content': None}
+            xyz_copy_btn.disabled = True
+            xyz_copy_status.value = ''
+            return
+
+        cleaned_data, input_type = clean_input_data(raw_input)
+
+        if input_type == 'smiles':
+            state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
+            state['current_xyz_for_copy'] = {'content': None}
+            xyz_copy_btn.disabled = True
+            xyz_copy_status.value = ''
+            _replace_mol_output_text("SMILES erkannt. Bitte 'CONVERT SMILES' oder 'CONVERT SMILES + UFF' klicken.")
+            return
+
+        state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
+        coords = cleaned_data
+        lines = [l for l in coords.split('\n') if l.strip()]
+        num_atoms = len(lines)
+        xyz_data = f'{num_atoms}\nGenerated by widget\n{coords}'
+        state['current_xyz_for_copy'] = {'content': xyz_data}
+        xyz_copy_btn.disabled = False
+        xyz_copy_status.value = '<span style="color:#388e3c;">XYZ ready to copy</span>'
+        _replace_mol_output_view(xyz_data)
 
     def on_xyz_copy(button):
         content = state['current_xyz_for_copy'].get('content')
@@ -581,14 +670,8 @@ def create_tab(ctx):
         else:
             isomer_nav_row.layout.display = 'none'
 
-        # Update 3D preview
         xyz_data = f'{num_atoms}\nIsomer: {label}\n{xyz_string}'
-        with mol_output:
-            clear_output()
-            view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
-            view.addModel(xyz_data, 'xyz')
-            apply_molecule_view_style(view)
-            view.show()
+        _replace_mol_output_view(xyz_data)
 
         # Update copy state
         state['current_xyz_for_copy'] = {'content': xyz_data}
@@ -615,30 +698,25 @@ def create_tab(ctx):
         cached_smiles = state['converted_xyz_cache'].get('smiles') if quick else None
         raw_input = (cached_smiles or coords_widget.value).strip()
         if not raw_input:
-            with mol_output:
-                clear_output()
-                print('Please enter SMILES in the input box.')
+            _replace_mol_output_text('Please enter SMILES in the input box.')
             return
 
         cleaned_data, input_type = clean_input_data(raw_input)
         if input_type != 'smiles':
-            with mol_output:
-                clear_output()
-                print('Please enter SMILES in the input box.')
+            _replace_mol_output_text('Please enter SMILES in the input box.')
             return
 
         state['smiles_task_id'] += 1
         task_id = state['smiles_task_id']
         _set_smiles_conversion_busy(True)
 
-        with mol_output:
-            clear_output()
-            if quick:
-                print('Quick convert (single structure)...')
-            elif apply_uff:
-                print('Converting SMILES with UFF...')
-            else:
-                print('Converting SMILES (no UFF)...')
+        _clear_mol_output()
+        if quick:
+            _set_mol_status('Quick convert (single structure)...', spinner=True)
+        elif apply_uff:
+            _set_mol_status('Converting SMILES with UFF...', spinner=True)
+        else:
+            _set_mol_status('Converting SMILES (no UFF)...', spinner=True)
 
         def _worker():
             try:
@@ -669,39 +747,13 @@ def create_tab(ctx):
             except Exception as exc:
                 result = {'error': str(exc)}
 
-            if task_id != state['smiles_task_id']:
-                return
-
-            _set_smiles_conversion_busy(False)
-            if quick:
-                xyz_string = result.get('xyz_string')
-                preview_items = result.get('preview_items') or []
-                error = result.get('error')
-                if error or not xyz_string:
-                    with mol_output:
-                        clear_output()
-                        print(f'Error: {error or "Conversion failed"}')
-                    return
-                state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
-                state['isomers'] = [(xyz_string, result['num_atoms'], 'quick')] + preview_items
-                _show_isomer_at_index(0)
-                return
-
-            isomers = result.get('isomers') or []
-            error = result.get('error')
-            if error or not isomers:
-                with mol_output:
-                    clear_output()
-                    print(f'SMILES: {cleaned_data}')
-                    print(f'Fehler: {error or "No isomers generated"}')
-                state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
-                state['isomers'] = []
-                isomer_nav_row.layout.display = 'none'
-                return
-
-            state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
-            state['isomers'] = isomers
-            _show_isomer_at_index(0)
+            _schedule_ui_update(
+                _apply_smiles_conversion_result,
+                task_id,
+                quick=quick,
+                cleaned_data=cleaned_data,
+                result=result,
+            )
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -778,33 +830,28 @@ def create_tab(ctx):
         cached_smiles = state['converted_xyz_cache'].get('smiles')
         raw_input = cached_smiles or coords_widget.value.strip()
         if not raw_input:
-            with mol_output:
-                clear_output()
-                print('Please enter a metal-complex SMILES in the input box.')
+            _replace_mol_output_text('Please enter a metal-complex SMILES in the input box.')
             return
         cleaned_data, input_type = clean_input_data(raw_input)
         if input_type != 'smiles':
-            with mol_output:
-                clear_output()
-                print('Please enter a SMILES string in the input box.')
+            _replace_mol_output_text('Please enter a SMILES string in the input box.')
             return
         if not contains_metal(cleaned_data):
-            with mol_output:
-                clear_output()
-                print('SMILES does not contain a metal atom.\n'
-                      'Architector is for metal complexes — use CONVERT SMILES for organic molecules.')
+            _replace_mol_output_text(
+                'SMILES does not contain a metal atom.',
+                'Architector is for metal complexes — use CONVERT SMILES for organic molecules.',
+            )
             return
-        with mol_output:
-            clear_output()
-            print('Running architector...')
+        _clear_mol_output()
+        _set_mol_status('Running architector...', spinner=True)
         try:
             import importlib.util
             if importlib.util.find_spec('architector') is None:
-                with mol_output:
-                    clear_output()
-                    print('architector is not installed.\n'
-                          'Install via: pip install architector\n'
-                          'Or use the Install button in Settings → AI Tools.')
+                _replace_mol_output_text(
+                    'architector is not installed.',
+                    'Install via: pip install architector',
+                    'Or use the Install button in Settings → AI Tools.',
+                )
                 return
 
             from architector.complex_construction import build_complex_driver
@@ -814,17 +861,15 @@ def create_tab(ctx):
             # ── Decompose SMILES into core + ligands via RDKit ──
             input_dict = _smiles_to_architector_input(cleaned_data)
             if input_dict is None:
-                with mol_output:
-                    clear_output()
-                    print('Could not decompose SMILES into metal + ligands.\n'
-                          'Try CONVERT SMILES or BUILD COMPLEX instead.')
+                _replace_mol_output_text(
+                    'Could not decompose SMILES into metal + ligands.',
+                    'Try CONVERT SMILES or BUILD COMPLEX instead.',
+                )
                 return
 
-            with mol_output:
-                clear_output()
-                metal = input_dict['core'].get('metal', '?')
-                n_lig = len(input_dict.get('ligands', []))
-                print(f'Running architector: {metal} + {n_lig} ligands...')
+            metal = input_dict['core'].get('metal', '?')
+            n_lig = len(input_dict.get('ligands', []))
+            _set_mol_status(f'Running architector: {metal} + {n_lig} ligands...', spinner=True)
 
             input_dict = inparse(input_dict)
             results = build_complex_driver(input_dict)
@@ -847,9 +892,7 @@ def create_tab(ctx):
                         break
 
             if not results:
-                with mol_output:
-                    clear_output()
-                    print('Architector returned no structures for this SMILES.')
+                _replace_mol_output_text('Architector returned no structures for this SMILES.')
                 return
 
             isomers = []
@@ -871,18 +914,14 @@ def create_tab(ctx):
                 isomers.append((xyz_string, num_atoms, label))
 
             if not isomers:
-                with mol_output:
-                    clear_output()
-                    print('Architector could not produce valid 3D structures.')
+                _replace_mol_output_text('Architector could not produce valid 3D structures.')
                 return
 
             state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
             state['isomers'] = isomers
             _show_isomer_at_index(0)
         except Exception as exc:
-            with mol_output:
-                clear_output()
-                print(f'Architector error: {exc}')
+            _replace_mol_output_text(f'Architector error: {exc}')
 
     def handle_guppy_submit(button):
         """Submit GUPPY either for batch entries or a single SMILES input."""
@@ -1197,18 +1236,6 @@ def create_tab(ctx):
             parsed = {}
         return _normalize_smiles_converter_value(parsed.get('smiles_converter', ''))
 
-    def _sync_smiles_converter_widget_from_control(control_content):
-        value = _get_smiles_converter_from_control(control_content)
-        state['syncing_smiles_converter'] = True
-        try:
-            smiles_converter_widget.value = value
-        finally:
-            state['syncing_smiles_converter'] = False
-
-    def _set_smiles_converter_in_control(control_content, converter_value):
-        target_value = converter_value or SMILES_CONVERTER_PLACEHOLDER
-        return _set_control_value(control_content, 'smiles_converter', target_value)
-
     def _validate_smiles_converter_requirement(control_content, raw_input, *, batch_has_smiles=False):
         converter = _get_smiles_converter_from_control(control_content)
         single_has_smiles = False
@@ -1216,11 +1243,8 @@ def create_tab(ctx):
         raw_input = str(raw_input or '').strip()
         if raw_input:
             try:
-                _input_content, input_type, submit_smiles = _prepare_delfin_submit_input(
-                    raw_input,
-                    state['converted_xyz_cache'],
-                )
-                single_has_smiles = bool(submit_smiles) or input_type == 'smiles'
+                cleaned_data, input_type = clean_input_data(raw_input)
+                single_has_smiles = input_type == 'smiles' and bool(cleaned_data.strip())
             except Exception:
                 cleaned_data, input_type = clean_input_data(raw_input)
                 single_has_smiles = input_type == 'smiles' and bool(cleaned_data.strip())
@@ -1413,32 +1437,30 @@ def create_tab(ctx):
         error = preview_payload.get('error')
         method = preview_payload.get('method')
 
-        with mol_output:
-            clear_output()
-            if error:
-                print(f'Preview: {name}')
-                if input_kind == 'smiles':
-                    print(f"SMILES: {entry['input_raw']}")
-                elif source_path:
-                    print(f'Source: {source_path}')
-                if extras:
-                    print(f'Options: {extras}')
-                print(f'Error: {error}')
-                return
-
+        if error:
+            lines = [f'Preview: {name}']
             if input_kind == 'smiles':
-                print(f'Preview: {name} ({method})')
-                print(f"SMILES: {entry['input_raw']}")
-            else:
-                print(f'Preview: {name} (XYZ)')
-                if source_path:
-                    print(f'Source: {source_path}')
+                lines.append(f"SMILES: {entry['input_raw']}")
+            elif source_path:
+                lines.append(f'Source: {source_path}')
             if extras:
-                print(f'Options: {extras}')
-            view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
-            view.addModel(xyz_data, 'xyz')
-            apply_molecule_view_style(view)
-            view.show()
+                lines.append(f'Options: {extras}')
+            lines.append(f'Error: {error}')
+            _replace_mol_output_text(*lines)
+            return
+
+        lines = []
+        if input_kind == 'smiles':
+            lines.append(f'Preview: {name} ({method})')
+            lines.append(f"SMILES: {entry['input_raw']}")
+        else:
+            lines.append(f'Preview: {name} (XYZ)')
+            if source_path:
+                lines.append(f'Source: {source_path}')
+        if extras:
+            lines.append(f'Options: {extras}')
+        _set_mol_status(*lines)
+        mol_output.outputs = _build_mol_output_bundle(xyz_data)
 
     def preview_smiles_at_index(index, *, delay=0.0):
         entries = get_smiles_list_entries()
@@ -1447,9 +1469,7 @@ def create_tab(ctx):
             state['batch_preview_task_id'] += 1
             _set_batch_preview_busy(False)
             update_smiles_preview_label()
-            with mol_output:
-                clear_output()
-                print('No valid batch entries.')
+            _replace_mol_output_text('No valid batch entries.')
             return
         if index < 0:
             index = 0
@@ -1464,19 +1484,19 @@ def create_tab(ctx):
         _cancel_batch_preview_timer()
         _set_batch_preview_busy(True)
 
-        with mol_output:
-            clear_output()
-            print(f'Preview: {entry["name"]} [{entry["input_kind"].upper()}]')
-            if entry['input_kind'] == 'smiles':
-                print(f"SMILES: {entry['input_raw']}")
-            else:
-                print('XYZ coordinates')
-                source_path = str(entry.get('source_path') or '').strip()
-                if source_path:
-                    print(f'Source: {source_path}')
-            if entry['extras']:
-                print(f'Options: {entry["extras"]}')
-            print('Converting...')
+        status_lines = [f'Preview: {entry["name"]} [{entry["input_kind"].upper()}]']
+        if entry['input_kind'] == 'smiles':
+            status_lines.append(f"SMILES: {entry['input_raw']}")
+        else:
+            status_lines.append('XYZ coordinates')
+            source_path = str(entry.get('source_path') or '').strip()
+            if source_path:
+                status_lines.append(f'Source: {source_path}')
+        if entry['extras']:
+            status_lines.append(f'Options: {entry["extras"]}')
+        status_lines.append('Converting...')
+        _clear_mol_output()
+        _set_mol_status(*status_lines, spinner=True)
 
         def _worker():
             preview_key = _batch_preview_key(entry)
@@ -1508,11 +1528,7 @@ def create_tab(ctx):
                     preview_payload = {'error': str(exc)}
                 state['batch_preview_cache'][preview_key] = preview_payload
 
-            if task_id != state['batch_preview_task_id']:
-                return
-
-            _set_batch_preview_busy(False)
-            _render_batch_preview(entry, preview_payload)
+            _schedule_ui_update(_apply_batch_preview_result, task_id, entry, preview_payload)
 
         def _launch_worker():
             state['batch_preview_timer'] = None
@@ -1529,9 +1545,7 @@ def create_tab(ctx):
     def handle_smiles_prev(button):
         entries = get_smiles_list_entries()
         if not entries:
-            with mol_output:
-                clear_output()
-                print('No valid batch entries.')
+            _replace_mol_output_text('No valid batch entries.')
             return
         new_index = state['smiles_preview_index'] - 1
         if new_index < 0:
@@ -1541,9 +1555,7 @@ def create_tab(ctx):
     def handle_smiles_next(button):
         entries = get_smiles_list_entries()
         if not entries:
-            with mol_output:
-                clear_output()
-                print('No valid batch entries.')
+            _replace_mol_output_text('No valid batch entries.')
             return
         new_index = state['smiles_preview_index'] + 1
         if new_index >= len(entries):
@@ -1690,7 +1702,6 @@ def create_tab(ctx):
         coords_widget.value = ''
         smiles_batch_widget.value = ''
         control_widget.value = ctx.default_control
-        _sync_smiles_converter_widget_from_control(ctx.default_control)
         job_type_widget.value = '48h'
         custom_time_widget.value = 72
         only_goat_charge.value = 0
@@ -1708,9 +1719,7 @@ def create_tab(ctx):
         _set_smiles_conversion_busy(False)
         _set_batch_preview_busy(False)
         isomer_nav_row.layout.display = 'none'
-        with mol_output:
-            clear_output()
-            print('Please enter XYZ coordinates or SMILES.')
+        _replace_mol_output_text('Please enter XYZ coordinates or SMILES.')
 
     def handle_submit(button):
         with output_area:
@@ -2005,24 +2014,7 @@ def create_tab(ctx):
         state['batch_preview_cache'] = {}
         preview_smiles_at_index(0, delay=0.35)
 
-    def on_smiles_converter_change(change):
-        if change.get('name') != 'value' or state['syncing_smiles_converter']:
-            return
-        control_widget.value = _set_smiles_converter_in_control(
-            control_widget.value,
-            change.get('new', ''),
-        )
-
-    def on_control_change(change):
-        if change.get('name') != 'value':
-            return
-        _sync_smiles_converter_widget_from_control(change.get('new', ''))
-
-    _sync_smiles_converter_widget_from_control(control_widget.value)
-
     smiles_batch_widget.observe(on_batch_change, names='value')
-    smiles_converter_widget.observe(on_smiles_converter_change, names='value')
-    control_widget.observe(on_control_change, names='value')
     isomer_prev_btn.on_click(handle_isomer_prev)
     isomer_next_btn.on_click(handle_isomer_next)
     only_goat_submit_button.on_click(handle_only_goat_submit)
@@ -2043,7 +2035,6 @@ def create_tab(ctx):
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         widgets.HBox([build_complex_button, architector_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
-        smiles_converter_widget,
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
         smiles_batch_widget, spacer,
@@ -2063,7 +2054,7 @@ def create_tab(ctx):
     ))
 
     submit_right = widgets.VBox([
-        widgets.HTML('<b>Molecule Preview:</b>'), mol_output,
+        widgets.HTML('<b>Molecule Preview:</b>'), mol_status, mol_output,
         isomer_nav_row,
         widgets.HBox([xyz_copy_btn, xyz_copy_status],
                      layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap')),
@@ -2141,6 +2132,7 @@ def create_tab(ctx):
     submit_right.add_class('submit-split-pane')
     mol_output.add_class('submit-split-pane')
     mol_output.add_class('submit-mol-output')
+    _replace_mol_output_text('Please enter XYZ coordinates or SMILES.')
     tab_widget = widgets.VBox([submit_css, tab_widget], layout=widgets.Layout(width='100%'))
 
     return tab_widget, {'reset_form': reset_form, 'mol_output': mol_output}
