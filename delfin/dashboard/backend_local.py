@@ -150,6 +150,10 @@ class LocalJobBackend(JobBackend):
             env['DELFIN_XYZ_FILE'] = str(job['xyz_file'])
         if job.get('workflow_label'):
             env['DELFIN_WORKFLOW_LABEL'] = str(job['workflow_label'])
+        for key, value in (job.get('extra_env') or {}).items():
+            if value is None:
+                continue
+            env[str(key)] = str(value)
         job_tool_binaries = job.get('tool_binaries', {}) or self.tool_binaries
         for tool_name, binary_path in job_tool_binaries.items():
             env[binary_env_var_name(tool_name)] = str(binary_path)
@@ -222,7 +226,7 @@ class LocalJobBackend(JobBackend):
     def _enqueue(self, job_dir, mode, job_name, inp_file=None,
                  time_limit='48:00:00', override=None, build_mult=None,
                  pal=40, maxcore=6000, co2_species_delta=None,
-                 xyz_file=None, workflow_label=None):
+                 xyz_file=None, workflow_label=None, extra_env=None):
         if not self._has_launch_target():
             return SubmitResult(
                 1,
@@ -256,6 +260,7 @@ class LocalJobBackend(JobBackend):
                 'co2_species_delta': co2_species_delta,
                 'xyz_file': xyz_file,
                 'workflow_label': workflow_label,
+                'extra_env': dict(extra_env or {}),
                 'tool_binaries': dict(self.tool_binaries),
                 'log_file': None,
             }
@@ -271,12 +276,12 @@ class LocalJobBackend(JobBackend):
     def submit_delfin(self, job_dir, job_name, mode='delfin',
                       time_limit='48:00:00', pal=40, maxcore=6000,
                       override=None, build_mult=None,
-                      co2_species_delta=None) -> SubmitResult:
+                      co2_species_delta=None, extra_env=None) -> SubmitResult:
         return self._enqueue(
             job_dir, mode, job_name,
             time_limit=time_limit, override=override,
             build_mult=build_mult, pal=pal, maxcore=maxcore,
-            co2_species_delta=co2_species_delta,
+            co2_species_delta=co2_species_delta, extra_env=extra_env,
         )
 
     def submit_orca(self, job_dir, job_name, inp_file,
