@@ -870,8 +870,8 @@ def _skip_xtb_goat_after_guppy(config: Dict[str, Any]) -> bool:
 def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any]) -> None:
     """Run GUPPY sampling for a SMILES string and write best geometry to start_path.
 
-    Replaces the quick smiles_to_xyz conversion when GUPPY=yes is set in
-    CONTROL.txt.  After completion, start_path contains the lowest-energy
+    Used when ``smiles_converter=GUPPY`` is selected in CONTROL.txt. After
+    completion, start_path contains the lowest-energy
     XTB2-optimised geometry in DELFIN coordinate format (no XYZ header),
     ready for XTB_OPT / XTB_GOAT / GOAT / subsequent ORCA steps.
     """
@@ -951,7 +951,7 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     }
     guppy_settings_path.write_text(json.dumps(guppy_settings, indent=2), encoding="utf-8")
 
-    logger.info("GUPPY=yes: starting GUPPY sampling for SMILES → %s", start_path.name)
+    logger.info("smiles_converter=GUPPY: starting GUPPY sampling for SMILES → %s", start_path.name)
     ret = run_sampling(
         input_file=guppy_input,
         runs=runs,
@@ -993,6 +993,23 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     logger.info("GUPPY: best geometry written to %s (%d atoms)", start_path.name, len(coord_lines))
 
 
+def _resolve_smiles_converter(config: Dict[str, Any]) -> str:
+    """Return the effective SMILES converter with legacy fallback."""
+    raw_value = str(config.get('smiles_converter', '') or '').strip().upper()
+    if raw_value in {'QUICK', 'NORMAL', 'GUPPY', 'ARCHITECTOR'}:
+        return raw_value
+    if str(config.get('GUPPY', 'no')).strip().lower() == 'yes':
+        return 'GUPPY'
+    return 'NORMAL'
+
+
+def _write_smiles_xyz_to_start(start_path: Path, xyz_content: str) -> None:
+    """Write DELFIN-format coordinates to start.txt."""
+    start_path.write_text(xyz_content, encoding='utf-8')
+    coord_count = len([line for line in xyz_content.splitlines() if line.strip()])
+    logger.info("Converted SMILES to XYZ coordinates in %s (%d atoms)", start_path.name, coord_count)
+
+
 def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
     input_entry = (config.get('input_file') or 'input.txt').strip() or 'input.txt'
     entry_path = Path(input_entry)
@@ -1002,7 +1019,12 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
         input_path = resolve_path(control_path.parent / entry_path)
 
     # Check if input contains SMILES
-    from .smiles_converter import is_smiles_string, smiles_to_xyz, smiles_to_xyz_quick
+    from delfin.smiles_converter import (
+        is_smiles_string,
+        smiles_to_xyz,
+        smiles_to_xyz_architector,
+        smiles_to_xyz_quick,
+    )
 
     is_smiles = False
     try:
@@ -1013,7 +1035,7 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
 
     if input_path.suffix.lower() == '.xyz':
         target = input_path.with_suffix('.txt')
-        from .define import convert_xyz_to_input_txt
+        from delfin.define import convert_xyz_to_input_txt
 
         convert_xyz_to_input_txt(str(input_path), str(target))
         result_path = target
@@ -1033,32 +1055,54 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
 
         if smiles_line:
             logger.info("Detected SMILES in %s: %s", input_path.name, smiles_line)
-            use_guppy = str(config.get('GUPPY', 'no')).strip().lower() == 'yes'
+            converter = _resolve_smiles_converter(config)
+            logger.info("Using smiles_converter=%s for %s", converter, input_path.name)
 
-            if use_guppy:
-                # GUPPY=yes: run full XTB2 sampling, use best_coordniation.xyz as start.txt.
-                # The quick smiles_to_xyz is intentionally skipped here.
+            if converter == 'GUPPY':
                 try:
                     _run_guppy_for_smiles(smiles_line, start_path, config)
                 except Exception as exc:  # noqa: BLE001
                     logger.error("GUPPY sampling failed: %s", exc)
                     raise ValueError(f"GUPPY sampling failed: {exc}") from exc
+            elif converter == 'QUICK':
+                xyz_content, error = smiles_to_xyz_quick(smiles_line)
+
+                if error:
+                    logger.error("QUICK SMILES conversion failed: %s", error)
+                    raise ValueError(f"QUICK SMILES conversion failed: {error}")
+
+                try:
+                    _write_smiles_xyz_to_start(start_path, xyz_content)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Could not write QUICK-converted coordinates to '%s': %s", start_path, exc)
+                    raise ValueError(f"Could not write QUICK-converted coordinates: {exc}") from exc
+            elif converter == 'ARCHITECTOR':
+                xyz_content, error = smiles_to_xyz_architector(smiles_line)
+
+                if error:
+                    logger.error("ARCHITECTOR SMILES conversion failed: %s", error)
+                    raise ValueError(f"ARCHITECTOR SMILES conversion failed: {error}")
+
+                try:
+                    _write_smiles_xyz_to_start(start_path, xyz_content)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Could not write ARCHITECTOR coordinates to '%s': %s", start_path, exc)
+                    raise ValueError(f"Could not write ARCHITECTOR coordinates: {exc}") from exc
             else:
-                # Default: use the robust DELFIN converter first, then fall back
+                # NORMAL: use the robust DELFIN converter first, then fall back
                 # to the quick single-conformer path if the full conversion fails.
                 xyz_content, error = smiles_to_xyz(smiles_line)
 
                 if error:
-                    logger.warning("SMILES conversion failed, trying quick fallback: %s", error)
+                    logger.warning("NORMAL SMILES conversion failed, trying quick fallback: %s", error)
                     xyz_content, error = smiles_to_xyz_quick(smiles_line)
 
                 if error:
-                    logger.error("SMILES conversion failed after quick fallback: %s", error)
-                    raise ValueError(f"SMILES conversion failed after quick fallback: {error}")
+                    logger.error("NORMAL SMILES conversion failed after quick fallback: %s", error)
+                    raise ValueError(f"NORMAL SMILES conversion failed after quick fallback: {error}")
 
                 try:
-                    start_path.write_text(xyz_content, encoding='utf-8')
-                    logger.info("Converted SMILES to XYZ coordinates in %s (input.txt unchanged)", start_path.name)
+                    _write_smiles_xyz_to_start(start_path, xyz_content)
                 except Exception as exc:  # noqa: BLE001
                     logger.error("Could not write converted coordinates to '%s': %s", start_path, exc)
                     raise ValueError(f"Could not write converted coordinates: {exc}") from exc
