@@ -7329,3 +7329,227 @@ def convert_input_if_smiles(input_path: Path) -> Tuple[bool, Optional[str]]:
         return True, None
     except Exception as e:
         return False, f"Could not write converted coordinates: {e}"
+
+
+def _smiles_to_architector_input(smiles: str) -> Optional[dict]:
+    """Decompose a metal-complex SMILES into an Architector input dict."""
+    if not RDKIT_AVAILABLE:
+        return None
+
+    mol = Chem.MolFromSmiles(smiles, sanitize=False)
+    if mol is None:
+        return None
+
+    metal_indices = []
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() in _METALS:
+            metal_indices.append(atom.GetIdx())
+    if not metal_indices:
+        return None
+
+    metal_idx = metal_indices[0]
+    metal_atom = mol.GetAtomWithIdx(metal_idx)
+    metal_symbol = metal_atom.GetSymbol()
+    metal_charge = metal_atom.GetFormalCharge()
+
+    coord_atom_to_metal = {}
+    bonds_to_remove = []
+    for bond in mol.GetBonds():
+        a = bond.GetBeginAtomIdx()
+        b = bond.GetEndAtomIdx()
+        if a in metal_indices:
+            coord_atom_to_metal[b] = a
+            bonds_to_remove.append((a, b))
+        elif b in metal_indices:
+            coord_atom_to_metal[a] = b
+            bonds_to_remove.append((a, b))
+
+    edit_mol = Chem.RWMol(mol)
+    orig_props = {}
+    for atom in mol.GetAtoms():
+        idx = atom.GetIdx()
+        orig_props[idx] = {
+            'formal_charge': atom.GetFormalCharge(),
+            'explicit_h': atom.GetNumExplicitHs(),
+            'no_implicit': atom.GetNoImplicit(),
+            'rad_e': atom.GetNumRadicalElectrons(),
+        }
+
+    for a, b in bonds_to_remove:
+        edit_mol.RemoveBond(a, b)
+
+    metal_set = set(metal_indices)
+    idx_map = {}
+    removed = 0
+    for old_idx in range(mol.GetNumAtoms()):
+        if old_idx in metal_set:
+            removed += 1
+        else:
+            idx_map[old_idx] = old_idx - removed
+
+    for mi in sorted(metal_indices, reverse=True):
+        edit_mol.RemoveAtom(mi)
+
+    mol_no_metal = edit_mol.GetMol()
+
+    for old_idx, props in orig_props.items():
+        if old_idx in metal_set:
+            continue
+        new_idx = idx_map.get(old_idx)
+        if new_idx is None:
+            continue
+        try:
+            atom = mol_no_metal.GetAtomWithIdx(new_idx)
+            atom.SetNumRadicalElectrons(props['rad_e'])
+            if old_idx in coord_atom_to_metal:
+                typical_valence = {
+                    'C': 4, 'N': 3, 'O': 2, 'S': 2, 'Se': 2,
+                    'P': 3, 'As': 3, 'Si': 4, 'B': 3, 'Te': 2,
+                    'F': 1, 'Cl': 1, 'Br': 1, 'I': 1,
+                }
+                sym = atom.GetSymbol()
+                typ_val = typical_valence.get(sym, 2)
+                bo_sum = 0.0
+                for bond in mol.GetBonds():
+                    ba, bb = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+                    if old_idx in (ba, bb):
+                        neighbor = bb if ba == old_idx else ba
+                        if neighbor not in metal_set:
+                            bo_sum += bond.GetBondTypeAsDouble()
+                saturated = (bo_sum + props['explicit_h']) >= typ_val
+
+                if props['formal_charge'] != 0:
+                    atom.SetFormalCharge(props['formal_charge'])
+                    atom.SetNumExplicitHs(0)
+                    atom.SetNoImplicit(True)
+                elif saturated:
+                    atom.SetFormalCharge(0)
+                else:
+                    atom.SetFormalCharge(-1)
+                    atom.SetNumExplicitHs(0)
+                    atom.SetNoImplicit(True)
+            else:
+                atom.SetNumExplicitHs(props['explicit_h'])
+                atom.SetNoImplicit(props['no_implicit'])
+        except Exception:
+            pass
+
+    try:
+        mol_no_metal.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+
+    frag_atom_lists = Chem.GetMolFrags(mol_no_metal, asMols=False)
+    frag_mols = Chem.GetMolFrags(mol_no_metal, asMols=True, sanitizeFrags=False)
+    new_to_old = {v: k for k, v in idx_map.items()}
+
+    ligands = []
+    for frag_atoms, frag_mol in zip(frag_atom_lists, frag_mols):
+        coord_positions = []
+        for pos_in_frag, new_idx in enumerate(frag_atoms):
+            old_idx = new_to_old.get(new_idx)
+            if old_idx is not None and old_idx in coord_atom_to_metal:
+                coord_positions.append(pos_in_frag)
+
+        for atom in frag_mol.GetAtoms():
+            atom.SetAtomMapNum(atom.GetIdx() + 1)
+
+        mapped_smiles = Chem.MolToSmiles(frag_mol, canonical=True)
+        mapped_mol = Chem.MolFromSmiles(mapped_smiles, sanitize=False)
+        if mapped_mol is None:
+            continue
+
+        frag_to_canon = {}
+        for atom in mapped_mol.GetAtoms():
+            orig_frag_idx = atom.GetAtomMapNum() - 1
+            frag_to_canon[orig_frag_idx] = atom.GetIdx()
+
+        canon_coord = []
+        for pos in coord_positions:
+            mapped_idx = frag_to_canon.get(pos)
+            if mapped_idx is not None:
+                canon_coord.append(mapped_idx)
+
+        if not canon_coord:
+            continue
+
+        for atom in mapped_mol.GetAtoms():
+            atom.SetAtomMapNum(0)
+        canon_smiles = Chem.MolToSmiles(mapped_mol, canonical=False)
+        ligands.append({'smiles': canon_smiles, 'coordList': sorted(canon_coord)})
+
+    if not ligands:
+        return None
+
+    total_charge = metal_charge
+    for atom in mol.GetAtoms():
+        if atom.GetIdx() not in metal_set:
+            total_charge += atom.GetFormalCharge()
+
+    return {
+        'core': {'metal': metal_symbol},
+        'ligands': ligands,
+        'parameters': {'full_charge': total_charge},
+    }
+
+
+def smiles_to_xyz_architector(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Convert a metal-complex SMILES to XYZ using Architector."""
+    if not contains_metal(smiles):
+        return None, 'Architector requires a metal-containing SMILES string'
+
+    try:
+        import importlib.util
+        if importlib.util.find_spec('architector') is None:
+            return None, 'architector is not installed'
+
+        from architector.complex_construction import build_complex_driver
+        from architector.io_process_input import inparse
+        from architector import io_ptable
+    except Exception as exc:
+        return None, f'Could not import architector: {exc}'
+
+    try:
+        input_dict = _smiles_to_architector_input(smiles)
+        if input_dict is None:
+            return None, 'Could not decompose SMILES into metal + ligands for Architector'
+
+        input_dict = inparse(input_dict)
+        results = build_complex_driver(input_dict)
+
+        real_keys = [k for k in results if '_init_only' not in k]
+        ligands = input_dict.get('ligands', [])
+        max_dent = max((len(l.get('coordList', [])) for l in ligands), default=0)
+        if not real_keys and max_dent >= 2:
+            for larger in (True, False):
+                scaled = io_ptable.map_metal_radii(
+                    inparse(input_dict), larger=larger,
+                )
+                extra = build_complex_driver(scaled)
+                suffix = '_larger_scaled' if larger else '_smaller_scaled'
+                for key, value in extra.items():
+                    results[key + suffix] = value
+                if any('_init_only' not in key for key in extra):
+                    break
+
+        ranked = []
+        for key, mol in results.items():
+            if '_init_only' in key:
+                continue
+            atoms = mol.get('ase_atoms')
+            if atoms is None:
+                continue
+            energy = mol.get('energy', None)
+            ranked.append((float(energy) if energy is not None else float('inf'), atoms, key))
+
+        if not ranked:
+            return None, 'Architector returned no valid 3D structures'
+
+        ranked.sort(key=lambda item: item[0])
+        atoms = ranked[0][1]
+        xyz_lines = []
+        for atom, pos in zip(atoms.get_chemical_symbols(), atoms.get_positions()):
+            xyz_lines.append(f'{atom}  {pos[0]:.6f}  {pos[1]:.6f}  {pos[2]:.6f}')
+        return '\n'.join(xyz_lines), None
+    except Exception as exc:
+        return None, f'Architector conversion failed: {exc}'

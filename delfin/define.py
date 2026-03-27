@@ -18,7 +18,7 @@ number_explicit_solv_molecules=2
 ------------------------------------
 Global geometry optimisation:
 xTB_method=XTB2
-GUPPY=no
+smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
 XTB_OPT=no
 XTB_GOAT=no
 CREST=no
@@ -37,8 +37,8 @@ reorganisation_energy=lambda_p,lambda_m
 ------------------------------------
 Redox steps:
 calc_initial=yes
-oxidation_steps=1,2,3
-reduction_steps=1,2,3
+oxidation_steps=
+reduction_steps=
 method=[classic|manually|OCCUPIER]
 calc_potential_method=2
 ------------------------------------
