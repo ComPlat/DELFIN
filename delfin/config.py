@@ -22,11 +22,13 @@ _PLACEHOLDER_VALIDATION_VALUES: Dict[str, Any] = {
     "charge": 0,
     "solvent": "DMF",
     "method": "classic",
+    "smiles_converter": "NORMAL",
     "ESD_modus": "tddft",
     "ESD_T1_opt": "uks",
 }
 _PLACEHOLDER_MESSAGES: Dict[str, str] = {
     "method": "Placeholder [METHOD] must be set to one of: classic, manually, OCCUPIER",
+    "smiles_converter": "Placeholder [SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, GUPPY, ARCHITECTOR",
     "ESD_modus": "Placeholder [ESD_MODUS] must be set to one of: TDDFT, deltaSCF, hybrid1",
     "ESD_T1_opt": "Placeholder [ESD_T1_OPT] must be set to one of: uks, tddft",
 }
