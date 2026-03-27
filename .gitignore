@@ -33,3 +33,6 @@ delfin/qm_tools/.mamba_env/
 delfin/qm_tools/share/
 delfin/qm_tools/third_party/
 delfin/qm_tools/HYPERPOLARIZABILITY_SETUP.txt
+
+# Local runtime/build cache
+.runtime_cache/
