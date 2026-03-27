@@ -75,6 +75,17 @@ class SlurmJobBackend(JobBackend):
             return env_vars
         return f'{env_vars},{",".join(exports)}'
 
+    @staticmethod
+    def _append_extra_env(env_vars: str, extra_env: dict | None) -> str:
+        exports = []
+        for key, value in (extra_env or {}).items():
+            if value is None:
+                continue
+            exports.append(f'{key}={value}')
+        if not exports:
+            return env_vars
+        return f'{env_vars},{",".join(exports)}'
+
     def _resolve_turbomole_command(self, module: str) -> str | None:
         selected = str(self.tool_binaries.get('turbomole') or '').strip()
         if not selected:
@@ -145,7 +156,7 @@ class SlurmJobBackend(JobBackend):
     def submit_delfin(self, job_dir, job_name, mode='delfin',
                       time_limit='48:00:00', pal=40, maxcore=6000,
                       override=None, build_mult=None,
-                      co2_species_delta=None) -> SubmitResult:
+                      co2_species_delta=None, extra_env=None) -> SubmitResult:
         env_vars = f'DELFIN_MODE={mode},DELFIN_JOB_NAME={job_name}'
         if self.orca_base:
             env_vars += f',DELFIN_ORCA_BASE={self.orca_base}'
@@ -159,6 +170,7 @@ class SlurmJobBackend(JobBackend):
         pal_used, mem_used = self._resolve_resources(job_dir, pal=pal, maxcore=maxcore)
         maxcore_used = max(1, int(mem_used) // max(1, int(pal_used)))
         env_vars += f',DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
+        env_vars = self._append_extra_env(env_vars, extra_env)
         env_vars = self._append_tool_exports(env_vars)
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
