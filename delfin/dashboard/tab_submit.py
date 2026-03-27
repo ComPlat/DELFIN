@@ -3,6 +3,7 @@
 import json
 import re
 import shlex
+import threading
 
 import py3Dmol
 import ipywidgets as widgets
@@ -428,10 +429,41 @@ def create_tab(ctx):
         'smiles_preview_index': 0,
         'isomers': [],
         'isomer_index': 0,
+        'smiles_task_id': 0,
+        'batch_preview_task_id': 0,
+        'batch_preview_timer': None,
+        'batch_preview_cache': {},
     }
 
     # -- handlers -------------------------------------------------------
+    def _set_buttons_disabled(buttons, disabled):
+        for button in buttons:
+            button.disabled = disabled
+
+    def _set_smiles_conversion_busy(is_busy):
+        _set_buttons_disabled(
+            [
+                convert_smiles_button,
+                convert_smiles_quick_button,
+                convert_smiles_uff_button,
+                isomer_prev_btn,
+                isomer_next_btn,
+            ],
+            is_busy,
+        )
+
+    def _set_batch_preview_busy(is_busy):
+        _set_buttons_disabled([smiles_prev_button, smiles_next_button], is_busy)
+
+    def _cancel_batch_preview_timer():
+        timer = state.get('batch_preview_timer')
+        if timer is not None:
+            timer.cancel()
+            state['batch_preview_timer'] = None
+
     def update_molecule_view(change=None):
+        state['smiles_task_id'] += 1
+        _set_smiles_conversion_busy(False)
         # User manually edited coords -> clear isomer navigation and reset convert toggle
         state['isomers'] = []
         state['isomer_index'] = 0
@@ -563,85 +595,108 @@ def create_tab(ctx):
         if state['isomers']:
             _show_isomer_at_index(state['isomer_index'] + 1)
 
-    def _convert_smiles(*, apply_uff: bool):
-        raw_input = coords_widget.value.strip()
+    def _start_smiles_conversion(*, apply_uff: bool, quick: bool):
+        cached_smiles = state['converted_xyz_cache'].get('smiles') if quick else None
+        raw_input = (cached_smiles or coords_widget.value).strip()
         if not raw_input:
             with mol_output:
                 clear_output()
                 print('Please enter SMILES in the input box.')
             return
 
-        with mol_output:
-            clear_output()
-            if apply_uff:
-                print('Converting SMILES with UFF...')
-            else:
-                print('Converting SMILES (no UFF)...')
-
         cleaned_data, input_type = clean_input_data(raw_input)
         if input_type != 'smiles':
             with mol_output:
                 clear_output()
-                print('Input is not a SMILES string.')
+                print('Please enter SMILES in the input box.')
             return
 
-        isomers, error = smiles_to_xyz_isomers(
-            cleaned_data,
-            apply_uff=apply_uff,
-            collapse_label_variants=False,
-            include_binding_mode_isomers=True,
-        )
-        if error or not isomers:
-            with mol_output:
-                clear_output()
-                print(f'SMILES: {cleaned_data}')
-                print(f'Fehler: {error or "No isomers generated"}')
-            state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
-            state['isomers'] = []
-            isomer_nav_row.layout.display = 'none'
-            return
+        state['smiles_task_id'] += 1
+        task_id = state['smiles_task_id']
+        _set_smiles_conversion_busy(True)
 
-        isomers = append_hapto_previews_to_isomers(
-            isomers,
-            cleaned_data,
-            include_quick=apply_uff,
-        )
+        with mol_output:
+            clear_output()
+            if quick:
+                print('Quick convert (single structure)...')
+            elif apply_uff:
+                print('Converting SMILES with UFF...')
+            else:
+                print('Converting SMILES (no UFF)...')
 
-        state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
-        state['isomers'] = isomers
-        _show_isomer_at_index(0)
+        def _worker():
+            try:
+                if quick:
+                    xyz_string, num_atoms, _method, preview_items, error = (
+                        smiles_to_xyz_quick_with_previews(cleaned_data)
+                    )
+                    result = {
+                        'error': error,
+                        'xyz_string': xyz_string,
+                        'num_atoms': num_atoms,
+                        'preview_items': preview_items,
+                    }
+                else:
+                    isomers, error = smiles_to_xyz_isomers(
+                        cleaned_data,
+                        apply_uff=apply_uff,
+                        collapse_label_variants=False,
+                        include_binding_mode_isomers=True,
+                    )
+                    if not error and isomers:
+                        isomers = append_hapto_previews_to_isomers(
+                            isomers,
+                            cleaned_data,
+                            include_quick=apply_uff,
+                        )
+                    result = {'error': error, 'isomers': isomers}
+            except Exception as exc:
+                result = {'error': str(exc)}
+
+            if task_id != state['smiles_task_id']:
+                return
+
+            _set_smiles_conversion_busy(False)
+            if quick:
+                xyz_string = result.get('xyz_string')
+                preview_items = result.get('preview_items') or []
+                error = result.get('error')
+                if error or not xyz_string:
+                    with mol_output:
+                        clear_output()
+                        print(f'Error: {error or "Conversion failed"}')
+                    return
+                state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
+                state['isomers'] = [(xyz_string, result['num_atoms'], 'quick')] + preview_items
+                _show_isomer_at_index(0)
+                return
+
+            isomers = result.get('isomers') or []
+            error = result.get('error')
+            if error or not isomers:
+                with mol_output:
+                    clear_output()
+                    print(f'SMILES: {cleaned_data}')
+                    print(f'Fehler: {error or "No isomers generated"}')
+                state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
+                state['isomers'] = []
+                isomer_nav_row.layout.display = 'none'
+                return
+
+            state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
+            state['isomers'] = isomers
+            _show_isomer_at_index(0)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _convert_smiles(*, apply_uff: bool):
+        _start_smiles_conversion(apply_uff=apply_uff, quick=False)
 
     def handle_convert_smiles(button):
         _convert_smiles(apply_uff=False)
 
     def handle_convert_smiles_quick(button):
-        # Quick single-conformer conversion - no isomer search, no UFF.
-        # Uses cached SMILES if available (coords_widget may already show XYZ).
-        cached_smiles = state['converted_xyz_cache'].get('smiles')
-        raw_input = cached_smiles or coords_widget.value.strip()
-        if not raw_input:
-            with mol_output:
-                clear_output()
-                print('Please enter SMILES in the input box.')
-            return
-        cleaned_data, input_type = clean_input_data(raw_input)
-        if input_type != 'smiles':
-            with mol_output:
-                clear_output()
-                print('Please enter SMILES in the input box.')
-            return
-        with mol_output:
-            clear_output()
-            print('Quick convert (single structure)...')
-        xyz_string, num_atoms, _method, preview_items, error = smiles_to_xyz_quick_with_previews(cleaned_data)
-        if error or not xyz_string:
-            with mol_output:
-                clear_output()
-                print(f'Error: {error or "Conversion failed"}')
-            return
-        state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
-        state['isomers'] = [(xyz_string, num_atoms, 'quick')] + preview_items
-        _show_isomer_at_index(0)
+        _start_smiles_conversion(apply_uff=False, quick=True)
 
     def handle_convert_smiles_uff(button):
         _convert_smiles(apply_uff=True)
@@ -1269,9 +1324,59 @@ def create_tab(ctx):
             current = state['smiles_preview_index'] + 1
             smiles_preview_label.value = f'<span style="font-size:12px;">{current} / {total}</span>'
 
-    def preview_smiles_at_index(index):
+    def _batch_preview_key(entry):
+        return (
+            entry.get('input_kind'),
+            entry.get('name'),
+            entry.get('input_raw'),
+            entry.get('input_content'),
+            tuple(sorted((entry.get('extras') or {}).items())),
+            str(entry.get('source_path') or ''),
+        )
+
+    def _render_batch_preview(entry, preview_payload):
+        name = entry['name']
+        extras = entry['extras']
+        input_kind = entry['input_kind']
+        source_path = str(entry.get('source_path') or '').strip()
+        xyz_data = preview_payload.get('xyz_data')
+        error = preview_payload.get('error')
+        method = preview_payload.get('method')
+
+        with mol_output:
+            clear_output()
+            if error:
+                print(f'Preview: {name}')
+                if input_kind == 'smiles':
+                    print(f"SMILES: {entry['input_raw']}")
+                elif source_path:
+                    print(f'Source: {source_path}')
+                if extras:
+                    print(f'Options: {extras}')
+                print(f'Error: {error}')
+                return
+
+            if input_kind == 'smiles':
+                print(f'Preview: {name} ({method})')
+                print(f"SMILES: {entry['input_raw']}")
+            else:
+                print(f'Preview: {name} (XYZ)')
+                if source_path:
+                    print(f'Source: {source_path}')
+            if extras:
+                print(f'Options: {extras}')
+            view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
+            view.addModel(xyz_data, 'xyz')
+            apply_molecule_view_style(view)
+            view.show()
+
+    def preview_smiles_at_index(index, *, delay=0.0):
         entries = get_smiles_list_entries()
         if not entries:
+            _cancel_batch_preview_timer()
+            state['batch_preview_task_id'] += 1
+            _set_batch_preview_busy(False)
+            update_smiles_preview_label()
             with mol_output:
                 clear_output()
                 print('No valid batch entries.')
@@ -1284,63 +1389,72 @@ def create_tab(ctx):
         state['smiles_preview_index'] = index
         update_smiles_preview_label()
         entry = entries[index]
-        name = entry['name']
-        extras = entry['extras']
-        input_kind = entry['input_kind']
-        source_path = str(entry.get('source_path') or '').strip()
+        state['batch_preview_task_id'] += 1
+        task_id = state['batch_preview_task_id']
+        _cancel_batch_preview_timer()
+        _set_batch_preview_busy(True)
 
         with mol_output:
             clear_output()
-            print(f'Preview: {name} [{input_kind.upper()}]')
-            if input_kind == 'smiles':
+            print(f'Preview: {entry["name"]} [{entry["input_kind"].upper()}]')
+            if entry['input_kind'] == 'smiles':
                 print(f"SMILES: {entry['input_raw']}")
             else:
                 print('XYZ coordinates')
+                source_path = str(entry.get('source_path') or '').strip()
                 if source_path:
                     print(f'Source: {source_path}')
-            if extras:
-                print(f'Options: {extras}')
+            if entry['extras']:
+                print(f'Options: {entry["extras"]}')
             print('Converting...')
 
-        with mol_output:
-            clear_output()
-            if input_kind == 'smiles':
-                smi = entry['input_raw']
-                xyz_string, num_atoms, method, error = smiles_to_xyz_quick(smi)
-                if error:
-                    print(f'Preview: {name}')
-                    print(f'SMILES: {smi}')
-                    if extras:
-                        print(f'Options: {extras}')
-                    print(f'Error: {error}')
-                    return
-                print(f'Preview: {name} ({method})')
-                print(f'SMILES: {smi}')
-                if extras:
-                    print(f'Options: {extras}')
-                xyz_data = f'{num_atoms}\nPreview: {name}\n{xyz_string}'
-            else:
-                xyz_coords = entry['input_content']
-                coord_lines = [ln for ln in xyz_coords.splitlines() if ln.strip()]
-                if not coord_lines:
-                    print(f'Preview: {name}')
-                    if source_path:
-                        print(f'Source: {source_path}')
-                    if extras:
-                        print(f'Options: {extras}')
-                    print('Error: Empty XYZ coordinates')
-                    return
-                num_atoms = len(coord_lines)
-                print(f'Preview: {name} (XYZ)')
-                if source_path:
-                    print(f'Source: {source_path}')
-                if extras:
-                    print(f'Options: {extras}')
-                xyz_data = f'{num_atoms}\nPreview: {name}\n{xyz_coords}'
-            view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
-            view.addModel(xyz_data, 'xyz')
-            apply_molecule_view_style(view)
-            view.show()
+        def _worker():
+            preview_key = _batch_preview_key(entry)
+            preview_payload = state['batch_preview_cache'].get(preview_key)
+            if preview_payload is None:
+                try:
+                    if entry['input_kind'] == 'smiles':
+                        smi = entry['input_raw']
+                        xyz_string, num_atoms, method, error = smiles_to_xyz_quick(smi)
+                        if error:
+                            preview_payload = {'error': error}
+                        else:
+                            preview_payload = {
+                                'xyz_data': f'{num_atoms}\nPreview: {entry["name"]}\n{xyz_string}',
+                                'method': method,
+                            }
+                    else:
+                        xyz_coords = entry['input_content']
+                        coord_lines = [ln for ln in xyz_coords.splitlines() if ln.strip()]
+                        if not coord_lines:
+                            preview_payload = {'error': 'Empty XYZ coordinates'}
+                        else:
+                            num_atoms = len(coord_lines)
+                            preview_payload = {
+                                'xyz_data': f'{num_atoms}\nPreview: {entry["name"]}\n{xyz_coords}',
+                                'method': 'XYZ',
+                            }
+                except Exception as exc:
+                    preview_payload = {'error': str(exc)}
+                state['batch_preview_cache'][preview_key] = preview_payload
+
+            if task_id != state['batch_preview_task_id']:
+                return
+
+            _set_batch_preview_busy(False)
+            _render_batch_preview(entry, preview_payload)
+
+        def _launch_worker():
+            state['batch_preview_timer'] = None
+            threading.Thread(target=_worker, daemon=True).start()
+
+        if delay > 0:
+            timer = threading.Timer(delay, _launch_worker)
+            timer.daemon = True
+            state['batch_preview_timer'] = timer
+            timer.start()
+        else:
+            _launch_worker()
 
     def handle_smiles_prev(button):
         entries = get_smiles_list_entries()
@@ -1494,6 +1608,7 @@ def create_tab(ctx):
                     print(f'Failed {safe_job_name}: {result.stderr or result.stdout}')
 
     def reset_form():
+        _cancel_batch_preview_timer()
         job_name_widget.value = ''
         coords_widget.value = ''
         smiles_batch_widget.value = ''
@@ -1509,6 +1624,11 @@ def create_tab(ctx):
         state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
         state['isomers'] = []
         state['isomer_index'] = 0
+        state['smiles_task_id'] += 1
+        state['batch_preview_task_id'] += 1
+        state['batch_preview_cache'] = {}
+        _set_smiles_conversion_busy(False)
+        _set_batch_preview_busy(False)
         isomer_nav_row.layout.display = 'none'
         with mol_output:
             clear_output()
@@ -1791,7 +1911,8 @@ def create_tab(ctx):
 
     def on_batch_change(change):
         state['smiles_preview_index'] = 0
-        preview_smiles_at_index(0)
+        state['batch_preview_cache'] = {}
+        preview_smiles_at_index(0, delay=0.35)
 
     smiles_batch_widget.observe(on_batch_change, names='value')
     isomer_prev_btn.on_click(handle_isomer_prev)
