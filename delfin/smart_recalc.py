@@ -46,6 +46,13 @@ _HESS_DIRECTIVE_RE = re.compile(
 # Broad fallback: quoted tokens that look like file paths.
 _QUOTED_TOKEN_RE = re.compile(r'"([^"\n]+)"')
 _PATHLIKE_EXT_RE = re.compile(r'.+\.[A-Za-z0-9]{1,12}$')
+_BASE_DIRECTIVE_RE = re.compile(
+    r'^\s*%base\s+(?:"([^"]+)"|(\S+))',
+    re.IGNORECASE | re.MULTILINE,
+)
+_ORCA_BANG_RE = re.compile(r'^\s*!', re.MULTILINE)
+_ORCA_BLOCK_RE = re.compile(r'^\s*%(?:pal|scf|base|moinp)\b', re.IGNORECASE | re.MULTILINE)
+_ORCA_XYZFILE_RE = re.compile(r'^\s*\*\s*xyzfile\b', re.IGNORECASE | re.MULTILINE)
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +88,68 @@ def has_ok_marker(out_path) -> bool:
             return OK_MARKER in f.read()
     except Exception:
         return False
+
+
+def _looks_like_orca_job(inp_path: Path) -> bool:
+    """Heuristically detect ORCA inputs without affecting xTB marker files."""
+    try:
+        text = inp_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+    return bool(
+        _ORCA_BANG_RE.search(text)
+        or _ORCA_BLOCK_RE.search(text)
+        or _ORCA_XYZFILE_RE.search(text)
+    )
+
+
+def required_orca_outputs(inp_path=None, out_path=None) -> List[Path]:
+    """Return generated ORCA artifacts required for a calculation to count as complete."""
+    inp = Path(inp_path) if inp_path is not None else None
+    out = Path(out_path) if out_path is not None else None
+
+    if inp is None and out is None:
+        return []
+
+    if inp is not None and not _looks_like_orca_job(inp):
+        return []
+
+    stem_path: Optional[Path] = None
+    if inp is not None:
+        try:
+            text = inp.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            text = ""
+        match = _BASE_DIRECTIVE_RE.search(text)
+        if match:
+            base_raw = (match.group(1) or match.group(2) or "").strip().strip('"').strip("'")
+            if base_raw:
+                base_path = Path(base_raw)
+                if not base_path.is_absolute():
+                    parent = out.parent if out is not None else inp.parent
+                    base_path = parent / base_path
+                stem_path = base_path
+
+    if stem_path is None:
+        if out is not None:
+            stem_path = out.with_suffix("")
+        elif inp is not None:
+            stem_path = inp.with_suffix("")
+
+    return [stem_path.with_suffix('.gbw')] if stem_path is not None else []
+
+
+def outputs_complete(inp_path, out_path, required_outputs: Optional[Iterable] = None) -> bool:
+    """Return True when the main output and required generated files all exist."""
+    if not has_ok_marker(out_path):
+        return False
+
+    if required_outputs is None:
+        outputs = required_orca_outputs(inp_path=inp_path, out_path=out_path)
+    else:
+        outputs = [Path(path) for path in required_outputs]
+
+    return all(path.exists() for path in outputs)
 
 
 # ---------------------------------------------------------------------------
@@ -242,18 +311,24 @@ def store_fingerprint(inp_path, extra_deps: Optional[Iterable] = None) -> None:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def should_skip(inp_path, out_path, extra_deps: Optional[Iterable] = None) -> bool:
+def should_skip(
+    inp_path,
+    out_path,
+    extra_deps: Optional[Iterable] = None,
+    required_outputs: Optional[Iterable] = None,
+) -> bool:
     """Return True when ORCA execution can safely be skipped.
 
     All three conditions must hold:
     1. ``DELFIN_RECALC`` is enabled in the environment.
-    2. *out_path* exists and contains ``ORCA TERMINATED NORMALLY``.
+    2. *out_path* exists, contains ``ORCA TERMINATED NORMALLY``, and the
+       required generated artifacts for dependent jobs are present.
     3. Smart mode only: the ``.fprint`` sidecar of *inp_path* matches the
        current fingerprint (i.e. neither inp content nor dependencies changed).
     """
     if not recalc_enabled():
         return False
-    if not has_ok_marker(out_path):
+    if not outputs_complete(inp_path, out_path, required_outputs=required_outputs):
         return False
     if not smart_mode_enabled():
         return True
