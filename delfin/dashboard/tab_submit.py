@@ -242,6 +242,7 @@ def create_tab(ctx):
     Returns ``(tab_widget, refs_dict)``.
     """
     SUBMIT_MOL_HEIGHT = 650
+    SMILES_CONVERTER_PLACEHOLDER = '[QUICK|NORMAL|GUPPY|ARCHITECTOR]'
 
     # -- widgets --------------------------------------------------------
     job_name_widget = widgets.Text(
@@ -289,6 +290,20 @@ def create_tab(ctx):
         description='ARCHITECTOR', button_style='warning',
         layout=widgets.Layout(width='150px'),
         tooltip='Convert metal-complex SMILES to 3D via architector',
+    )
+
+    smiles_converter_widget = widgets.Dropdown(
+        options=[
+            ('Select SMILES converter', ''),
+            ('QUICK', 'QUICK'),
+            ('NORMAL', 'NORMAL'),
+            ('GUPPY', 'GUPPY'),
+            ('ARCHITECTOR', 'ARCHITECTOR'),
+        ],
+        value='',
+        description='SMILES Converter:',
+        style=COMMON_STYLE,
+        layout=widgets.Layout(width='320px'),
     )
 
     smiles_batch_widget = widgets.Textarea(
@@ -433,6 +448,7 @@ def create_tab(ctx):
         'batch_preview_task_id': 0,
         'batch_preview_timer': None,
         'batch_preview_cache': {},
+        'syncing_smiles_converter': False,
     }
 
     # -- handlers -------------------------------------------------------
@@ -1165,6 +1181,57 @@ def create_tab(ctx):
     def _set_control_smiles(control_content, smiles):
         return _set_control_value(control_content, 'SMILES', smiles)
 
+    def _normalize_smiles_converter_value(value):
+        text = str(value or '').strip()
+        if not text or text == SMILES_CONVERTER_PLACEHOLDER:
+            return ''
+        normalized = text.upper()
+        if normalized in {'QUICK', 'NORMAL', 'GUPPY', 'ARCHITECTOR'}:
+            return normalized
+        return ''
+
+    def _get_smiles_converter_from_control(control_content):
+        try:
+            parsed = parse_control_text(control_content)
+        except Exception:
+            parsed = {}
+        return _normalize_smiles_converter_value(parsed.get('smiles_converter', ''))
+
+    def _sync_smiles_converter_widget_from_control(control_content):
+        value = _get_smiles_converter_from_control(control_content)
+        state['syncing_smiles_converter'] = True
+        try:
+            smiles_converter_widget.value = value
+        finally:
+            state['syncing_smiles_converter'] = False
+
+    def _set_smiles_converter_in_control(control_content, converter_value):
+        target_value = converter_value or SMILES_CONVERTER_PLACEHOLDER
+        return _set_control_value(control_content, 'smiles_converter', target_value)
+
+    def _validate_smiles_converter_requirement(control_content, raw_input, *, batch_has_smiles=False):
+        converter = _get_smiles_converter_from_control(control_content)
+        single_has_smiles = False
+
+        raw_input = str(raw_input or '').strip()
+        if raw_input:
+            try:
+                _input_content, input_type, submit_smiles = _prepare_delfin_submit_input(
+                    raw_input,
+                    state['converted_xyz_cache'],
+                )
+                single_has_smiles = bool(submit_smiles) or input_type == 'smiles'
+            except Exception:
+                cleaned_data, input_type = clean_input_data(raw_input)
+                single_has_smiles = input_type == 'smiles' and bool(cleaned_data.strip())
+
+        if (single_has_smiles or batch_has_smiles) and not converter:
+            return [
+                'SMILES detected in Input or Batch list: set '
+                'smiles_converter=QUICK, NORMAL, GUPPY, or ARCHITECTOR.'
+            ]
+        return []
+
     def _prepare_delfin_submit_input(raw_input, cache):
         """Return the exact payload DELFIN should receive in input.txt.
 
@@ -1314,6 +1381,9 @@ def create_tab(ctx):
     def get_smiles_list_entries():
         entries, _errors = parse_batch_entries()
         return entries
+
+    def batch_has_smiles_entries():
+        return any(entry.get('input_kind') == 'smiles' for entry in get_smiles_list_entries())
 
     def update_smiles_preview_label():
         entries = get_smiles_list_entries()
@@ -1509,6 +1579,13 @@ def create_tab(ctx):
 
             control_content_base = control_widget.value
             control_errors = validate_control_text(control_content_base)
+            control_errors.extend(
+                _validate_smiles_converter_requirement(
+                    control_content_base,
+                    coords_widget.value,
+                    batch_has_smiles=batch_has_smiles_entries(),
+                )
+            )
             if control_errors:
                 print('CONTROL.txt validation failed:')
                 for err in control_errors:
@@ -1613,6 +1690,7 @@ def create_tab(ctx):
         coords_widget.value = ''
         smiles_batch_widget.value = ''
         control_widget.value = ctx.default_control
+        _sync_smiles_converter_widget_from_control(ctx.default_control)
         job_type_widget.value = '48h'
         custom_time_widget.value = 72
         only_goat_charge.value = 0
@@ -1649,6 +1727,12 @@ def create_tab(ctx):
                 return
 
             control_errors = validate_control_text(control_content)
+            control_errors.extend(
+                _validate_smiles_converter_requirement(
+                    control_content,
+                    raw_input,
+                )
+            )
             if control_errors:
                 print('CONTROL.txt validation failed:')
                 for err in control_errors:
@@ -1726,6 +1810,13 @@ def create_tab(ctx):
         with validate_output:
             clear_output()
             errors = validate_control_text(control_widget.value)
+            errors.extend(
+                _validate_smiles_converter_requirement(
+                    control_widget.value,
+                    coords_widget.value,
+                    batch_has_smiles=batch_has_smiles_entries(),
+                )
+            )
             if errors:
                 print('CONTROL.txt validation failed:')
                 for err in errors:
@@ -1914,7 +2005,24 @@ def create_tab(ctx):
         state['batch_preview_cache'] = {}
         preview_smiles_at_index(0, delay=0.35)
 
+    def on_smiles_converter_change(change):
+        if change.get('name') != 'value' or state['syncing_smiles_converter']:
+            return
+        control_widget.value = _set_smiles_converter_in_control(
+            control_widget.value,
+            change.get('new', ''),
+        )
+
+    def on_control_change(change):
+        if change.get('name') != 'value':
+            return
+        _sync_smiles_converter_widget_from_control(change.get('new', ''))
+
+    _sync_smiles_converter_widget_from_control(control_widget.value)
+
     smiles_batch_widget.observe(on_batch_change, names='value')
+    smiles_converter_widget.observe(on_smiles_converter_change, names='value')
+    control_widget.observe(on_control_change, names='value')
     isomer_prev_btn.on_click(handle_isomer_prev)
     isomer_next_btn.on_click(handle_isomer_next)
     only_goat_submit_button.on_click(handle_only_goat_submit)
@@ -1935,6 +2043,7 @@ def create_tab(ctx):
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         widgets.HBox([build_complex_button, architector_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+        smiles_converter_widget,
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
         smiles_batch_widget, spacer,
