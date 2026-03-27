@@ -46,6 +46,8 @@ def _precomplete_recalc_job_if_possible(
     manager: _WorkflowManager,
     job_id: str,
     out_file: Path,
+    *,
+    required_outputs: Optional[List[Path]] = None,
 ) -> bool:
     """Mark a job as completed before scheduling when classic recalc can skip it.
 
@@ -60,7 +62,7 @@ def _precomplete_recalc_job_if_possible(
     if smart_recalc.smart_mode_enabled():
         return False
 
-    if not smart_recalc.has_ok_marker(out_file):
+    if not smart_recalc.outputs_complete(None, out_file, required_outputs=required_outputs):
         return False
 
     manager._completed.add(job_id)
@@ -278,7 +280,16 @@ def _populate_state_jobs(
         job_id = f"esd_{state_upper}"
         state_out = esd_dir / f"{state_upper}.out"
 
-        if _precomplete_recalc_job_if_possible(manager, job_id, state_out):
+        precomplete_outputs = [state_out.with_suffix('.gbw')]
+        if state_upper == 'S0':
+            precomplete_outputs.append(esd_dir / 'S0.xyz')
+
+        if _precomplete_recalc_job_if_possible(
+            manager,
+            job_id,
+            state_out,
+            required_outputs=precomplete_outputs,
+        ):
             continue
 
         # Check if this state should be calculated
@@ -571,7 +582,12 @@ def _populate_state_jobs(
         if esd_modus == "deltascf" and state_upper.startswith("S") and state_upper != "S0":
             tddft_job_id = f"esd_{state_upper}_tddft"
             tddft_output = esd_dir / f"{state_upper}_TDDFT.out"
-            if _precomplete_recalc_job_if_possible(manager, tddft_job_id, tddft_output):
+            if _precomplete_recalc_job_if_possible(
+                manager,
+                tddft_job_id,
+                tddft_output,
+                required_outputs=[tddft_output.with_suffix('.gbw')],
+            ):
                 continue
             manager.add_job(
                 WorkflowJob(
