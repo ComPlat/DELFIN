@@ -41,16 +41,18 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
         }.get(inp_path.name, ())
         return [inp_path.parent / name for name in expected]
 
-    def _maybe_bootstrap_fingerprint(inp_path: Path, out_path: Path, extra_deps, smart_mode: bool):
+    def _maybe_bootstrap_fingerprint(inp_path: Path, out_path: Path, extra_deps, smart_mode: bool, required_outputs):
         if not smart_mode:
             return False
         if inp_path.with_suffix(inp_path.suffix + ".fprint").exists():
             return False
-        if not smart_recalc.has_ok_marker(out_path):
-            return False
 
-        required_outputs = _bootstrap_required_outputs(inp_path)
-        if required_outputs and not all(path.exists() for path in required_outputs):
+        bootstrap_outputs = list(required_outputs or ())
+        if not bootstrap_outputs:
+            bootstrap_outputs = _bootstrap_required_outputs(inp_path)
+        if not bootstrap_outputs:
+            bootstrap_outputs = smart_recalc.required_orca_outputs(inp_path=inp_path, out_path=out_path)
+        if not smart_recalc.outputs_complete(inp_path, out_path, required_outputs=bootstrap_outputs):
             return False
 
         smart_recalc.store_fingerprint(inp_path, extra_deps=extra_deps)
@@ -69,15 +71,21 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
         force_run = out_resolved in force_targets
         smart_mode = smart_recalc.smart_mode_enabled()
         extra_deps = _normalize_extra_deps(inp_path, kwargs.get("copy_files"))
+        required_outputs = kwargs.pop("required_outputs", None)
 
         # First check
-        if not force_run and smart_recalc.should_skip(inp_path, out_path, extra_deps=extra_deps):
+        if not force_run and smart_recalc.should_skip(
+            inp_path,
+            out_path,
+            extra_deps=extra_deps,
+            required_outputs=required_outputs,
+        ):
             if smart_mode:
                 logger.info("[smart_recalc] skipping ORCA; %s inp+deps unchanged and output complete.", out_file)
             else:
                 logger.info("[recalc] skipping ORCA; %s output complete (classic mode).", out_file)
             return True  # Already complete = success
-        if not force_run and _maybe_bootstrap_fingerprint(inp_path, out_path, extra_deps, smart_mode):
+        if not force_run and _maybe_bootstrap_fingerprint(inp_path, out_path, extra_deps, smart_mode, required_outputs):
             return True
 
         if force_run:
@@ -94,13 +102,18 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
             logger.info("[recalc] (re)running ORCA for %s", out_file)
 
         # Second check right before execution (race condition protection)
-        if not force_run and smart_recalc.should_skip(inp_path, out_path, extra_deps=extra_deps):
+        if not force_run and smart_recalc.should_skip(
+            inp_path,
+            out_path,
+            extra_deps=extra_deps,
+            required_outputs=required_outputs,
+        ):
             if smart_mode:
                 logger.info("[smart_recalc] skipping ORCA; %s completed by another process.", out_file)
             else:
                 logger.info("[recalc] skipping ORCA; %s completed by another process (classic mode).", out_file)
             return True  # Already complete = success
-        if not force_run and _maybe_bootstrap_fingerprint(inp_path, out_path, extra_deps, smart_mode):
+        if not force_run and _maybe_bootstrap_fingerprint(inp_path, out_path, extra_deps, smart_mode, required_outputs):
             return True
 
         return _run_orca_real(inp_file, out_file, *args, **kwargs)
