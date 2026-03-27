@@ -9,7 +9,7 @@ description = "DELFIN is a modular computational chemistry platform that automat
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10,<3.12"
 authors = [{ name = "Maximilian Hartmann" }]
-license = {text = "LGPL-3.0-or-later"}
+license = "LGPL-3.0-or-later"
 urls = { "Homepage" = "https://github.com/ComPlat/DELFIN", "Repository" = "https://github.com/ComPlat/DELFIN" }
 keywords = ["quantum-chemistry", "orca", "xtb", "redox", "spin-state", "workflow", "dashboard", "smiles"]
 classifiers = [
@@ -45,16 +45,13 @@ dependencies = [
 
 [project.optional-dependencies]
 csp = [
-    "genarris @ git+https://github.com/Yi5817/Genarris.git",
     "mpi4py",
 ]
 mlp = [
     "torchani",
-    "aimnet2calc @ git+https://github.com/zubatyuk/aimnet2calc.git",
 ]
 mlp-full = [
     "torchani",
-    "aimnet2calc @ git+https://github.com/zubatyuk/aimnet2calc.git",
     "mace-torch",
     "chgnet",
     "matgl",

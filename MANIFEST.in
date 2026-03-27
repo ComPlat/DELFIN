@@ -7,8 +7,10 @@ recursive-include delfin/notebooks *.ipynb
 recursive-include delfin/logo *.png *.PNG
 recursive-include tests *.py
 
+prune delfin/csp_tools/.build
 prune delfin/qm_tools/bin
 prune delfin/qm_tools/downloads
+global-exclude __pycache__ *.py[cod]
 
 include delfin/qm_tools/*.txt
 include delfin/qm_tools/*.sh
