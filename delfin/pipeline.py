@@ -882,6 +882,7 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     guppy_input = start_path.parent / "guppy_input.txt"
     guppy_output = workdir / "GUPPY_try.xyz"
     best_coord = workdir / "best_coordniation.xyz"
+    guppy_settings_path = start_path.parent / "guppy_settings.json"
 
     guppy_input.write_text(smiles + "\n", encoding="utf-8")
 
@@ -896,24 +897,72 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     except (ValueError, TypeError):
         maxcore = 6000
 
+    try:
+        runs = int(str(config.get('GUPPY_RUNS', 20)).strip())
+    except (ValueError, TypeError):
+        runs = 20
+    if runs <= 0:
+        runs = 20
+
+    try:
+        parallel_jobs = int(str(config.get('GUPPY_PARALLEL_JOBS', 4)).strip())
+    except (ValueError, TypeError):
+        parallel_jobs = 4
+    if parallel_jobs <= 0:
+        parallel_jobs = 4
+
+    try:
+        seed = int(str(config.get('GUPPY_SEED', 31)).strip())
+    except (ValueError, TypeError):
+        seed = 31
+
     method = str(config.get('xTB_method') or 'XTB2').strip() or 'XTB2'
-    use_goat_refinement = _is_truthy_token(config.get('XTB_GOAT', 'no'))
-    goat_topk = int(os.environ.get('GUPPY_GOAT_TOPK', '3')) if use_goat_refinement else 0
-    goat_parallel_jobs = int(os.environ.get('GUPPY_GOAT_PARALLEL_JOBS', os.environ.get('GUPPY_PARALLEL_JOBS', '4')))
+    try:
+        goat_topk = int(str(config.get('GUPPY_GOAT', 0)).strip())
+    except (ValueError, TypeError):
+        goat_topk = 0
+    goat_topk = max(0, min(3, goat_topk))
+    goat_parallel_jobs = parallel_jobs
     config['_guppy_goat_completed'] = 'no'
+
+    guppy_settings = {
+        'source': 'CONTROL.txt',
+        'mode': 'guppy',
+        'smiles': smiles,
+        'runs': runs,
+        'pal': pal,
+        'maxcore': maxcore,
+        'parallel_jobs': parallel_jobs,
+        'goat_topk': goat_topk,
+        'goat_parallel_jobs': goat_parallel_jobs,
+        'seed': seed,
+        'method': method,
+        'input_file': guppy_input.name,
+        'output_file': guppy_output.name,
+        'winner_file': best_coord.name,
+        'start_file': start_path.name,
+        'cli_command': (
+            f"python -m delfin.guppy_sampling {guppy_input.name} "
+            f"--runs {runs} --pal {pal} --maxcore {maxcore} "
+            f"--parallel-jobs {parallel_jobs} --goat-topk {goat_topk} "
+            f"--goat-parallel-jobs {goat_parallel_jobs} --seed {seed} "
+            f"--method {method} --output {guppy_output.name} --workdir {workdir.name}"
+        ),
+    }
+    guppy_settings_path.write_text(json.dumps(guppy_settings, indent=2), encoding="utf-8")
 
     logger.info("GUPPY=yes: starting GUPPY sampling for SMILES → %s", start_path.name)
     ret = run_sampling(
         input_file=guppy_input,
-        runs=int(os.environ.get('GUPPY_RUNS', '20')),
+        runs=runs,
         charge=None,
         pal=pal,
         maxcore=maxcore,
-        parallel_jobs=int(os.environ.get('GUPPY_PARALLEL_JOBS', '4')),
+        parallel_jobs=parallel_jobs,
         method=method,
         output_file=guppy_output,
         workdir=workdir,
-        seed=int(os.environ.get('GUPPY_SEED', '31')),
+        seed=seed,
         allow_partial=True,
         goat_topk=goat_topk,
         goat_parallel_jobs=goat_parallel_jobs,

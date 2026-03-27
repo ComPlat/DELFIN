@@ -863,6 +863,20 @@ def _as_int(value: Any) -> int:
     return int(value)
 
 
+def _as_positive_int(value: Any) -> int:
+    parsed = _as_int(value)
+    if parsed <= 0:
+        raise ValueError("must be > 0")
+    return parsed
+
+
+def _as_guppy_goat_topk(value: Any) -> int:
+    parsed = _as_int(value)
+    if parsed < 0 or parsed > 3:
+        raise ValueError("must be 0, 1, 2, or 3")
+    return parsed
+
+
 def _as_float(value: Any) -> float:
     if value is None or value == "":
         raise ValueError("must be a float")
@@ -1479,6 +1493,10 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("charge", _as_charge, required=True),
     FieldSpec("multiplicity_global_opt", _as_int, allow_none=True),
     FieldSpec("PAL", _as_int, default=6),
+    FieldSpec("GUPPY_RUNS", _as_positive_int, default=20),
+    FieldSpec("GUPPY_GOAT", _as_guppy_goat_topk, default=0),
+    FieldSpec("GUPPY_PARALLEL_JOBS", _as_positive_int, default=4),
+    FieldSpec("GUPPY_SEED", _as_int, default=31),
     FieldSpec("number_explicit_solv_molecules", _as_int, default=0),
     FieldSpec("method", _as_method, required=True),
     FieldSpec("frequency_calculation", _as_yes_no, default="no"),

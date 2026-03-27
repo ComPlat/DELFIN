@@ -157,6 +157,12 @@ opt_timeout_hours=14
 frequency_timeout_hours=36
 sp_timeout_hours=3
 ------------------------------------
+GUPPY_settings:
+GUPPY_RUNS=20
+GUPPY_GOAT=0
+GUPPY_PARALLEL_JOBS=4
+GUPPY_SEED=31
+------------------------------------
 Automatic Error Recovery & Retry:
 enable_auto_recovery=yes
 max_recovery_attempts=3
