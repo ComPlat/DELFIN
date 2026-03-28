@@ -35,6 +35,7 @@ def _load_full_cli_dependencies() -> None:
     global print_delfin_banner, validate_required_files
     global PipelineContext, compute_summary, interpret_method_alias
     global normalize_input_file, run_classic_phase, run_manual_phase, run_occuper_phase, run_esd_phase
+    global run_hyperpol_xtb_phase, run_tadf_xtb_phase
     global extract_preferred_spin, read_occupier_file
     global FileBundle
 
@@ -79,6 +80,8 @@ def _load_full_cli_dependencies() -> None:
         run_manual_phase as _run_manual_phase,
         run_occuper_phase as _run_occuper_phase,
         run_esd_phase as _run_esd_phase,
+        run_hyperpol_xtb_phase as _run_hyperpol_xtb_phase,
+        run_tadf_xtb_phase as _run_tadf_xtb_phase,
     )
     from .copy_helpers import extract_preferred_spin as _extract_preferred_spin, read_occupier_file as _read_occupier_file
 
@@ -118,6 +121,8 @@ def _load_full_cli_dependencies() -> None:
     run_manual_phase = _run_manual_phase
     run_occuper_phase = _run_occuper_phase
     run_esd_phase = _run_esd_phase
+    run_hyperpol_xtb_phase = _run_hyperpol_xtb_phase
+    run_tadf_xtb_phase = _run_tadf_xtb_phase
     extract_preferred_spin = _extract_preferred_spin
     read_occupier_file = _read_occupier_file
     _FULL_CLI_IMPORTS_LOADED = True
@@ -1670,17 +1675,23 @@ def main(argv: list[str] | None = None) -> int:
         method_lower = raw_method.lower()
         esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
     
+        hyperpol_xtb_enabled = str(config.get('hyperpol_xTB', 'no')).strip().lower() == 'yes'
+        tadf_xtb_enabled = str(config.get('tadf_xTB', 'no')).strip().lower() == 'yes'
+
         method_token: Optional[str]
         if method_lower in {'', 'none', 'esd'}:
-            if not esd_enabled:
+            if not esd_enabled and not hyperpol_xtb_enabled and not tadf_xtb_enabled:
                 logger.error(
-                    "No method specified in CONTROL.txt and ESD_modul is not enabled. Supported methods: classic, manually, OCCUPIER"
+                    "No method specified in CONTROL.txt and no analysis module enabled (ESD/hyperpol_xTB/tadf_xTB). "
+                    "Supported methods: classic, manually, OCCUPIER"
                 )
                 return _finalize(2)
             if method_lower == 'esd':
                 logger.info("CONTROL.txt method 'ESD' interpreted as ESD-only mode.")
-            else:
+            elif esd_enabled:
                 logger.info("No redox method requested; proceeding with ESD module only.")
+            else:
+                logger.info("No redox method requested; proceeding with xTB analysis modules.")
             config['method'] = None
             method_token = None
         else:
@@ -1755,7 +1766,19 @@ def main(argv: list[str] | None = None) -> int:
                     "ESD module enabled but skipped for method '%s' (only classic/ESD-only supported).",
                     method_token,
                 )
-    
+
+        # ------------------- hyperpol_xtb --------------------
+        if hyperpol_xtb_enabled:
+            logger.info("Running hyperpol_xTB phase...")
+            if not run_hyperpol_xtb_phase(pipeline_ctx):
+                logger.warning("hyperpol_xTB phase encountered issues, continuing...")
+
+        # ------------------- tadf_xtb --------------------
+        if tadf_xtb_enabled:
+            logger.info("Running tadf_xTB phase...")
+            if not run_tadf_xtb_phase(pipeline_ctx):
+                logger.warning("tadf_xTB phase encountered issues, continuing...")
+
         # Finalize redox and emission summary
         if method_token == "OCCUPIER":
             mul0 = pipeline_ctx.extra.get('multiplicity_0')

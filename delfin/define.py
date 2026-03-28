@@ -64,6 +64,22 @@ ESD_NPOINTS=131072
 ESD_MAXTIME=12000
 hybrid1_geom_MaxIter=60
 --------------------
+xTB Hyperpolarizability (sTD-DFT-xTB):
+hyperpol_xTB=no
+hyperpol_xTB_xyz=start.txt
+hyperpol_xTB_preopt=none
+hyperpol_xTB_engine=std2
+hyperpol_xTB_wavelengths=
+hyperpol_xTB_energy_window=15.0
+--------------------
+xTB TADF Screening:
+tadf_xTB=no
+tadf_xTB_xyz=start.txt
+tadf_xTB_preopt=none
+tadf_xTB_excited_method=stda
+tadf_xTB_energy_window=10.0
+tadf_xTB_run_t1_opt=yes
+--------------------
 Electrical Properties:
 elprop_Dipole=no
 elprop_Quadrupole=no
@@ -323,6 +339,17 @@ Supported error types:
 - Transient system errors → Exponential backoff retry (disk full, network, I/O)
 
 See docs/RECOVERY_STRATEGIES_DETAILED.txt for all settings and ORCA Manual references
+-------------------------------------------------
+xTB Hyperpolarizability & TADF Screening:
+hyperpol_xTB: yes/no - xTB-based hyperpolarizability via sTD-DFT-xTB (separate from ORCA elprop_Hyperpol!)
+tadf_xTB: yes/no - xTB-based TADF screening via sTD-DFT-xTB
+  _xyz: Source geometry file (start.txt, xtb_opt.xyz, S0.xyz, etc.)
+  _preopt: none (use XYZ as-is), xtb, crest, goat
+  _engine/_excited_method: std2 or stda
+  _wavelengths: comma-separated nm values (e.g. 1064,532,800). Empty = static only
+  Uses central PAL/maxcore from Resource Settings
+  Calculations run in hyperpol_xtb/ and tadf_xtb/ subdirectories
+  Can run standalone (SMILES -> smiles_converter -> hyperpol/tadf) or after ORCA/ESD
 -------------------------------------------------
 """
 # -------------------------------------------------------------------------------------------------------

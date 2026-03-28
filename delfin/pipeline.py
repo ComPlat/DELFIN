@@ -680,6 +680,382 @@ def run_esd_phase(ctx: PipelineContext) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# xTB Hyperpolarizability Phase
+# ---------------------------------------------------------------------------
+
+
+def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
+    """Execute xTB-based hyperpolarizability calculation."""
+    config = ctx.config
+    if str(config.get('hyperpol_xTB', 'no')).strip().lower() != 'yes':
+        return True
+
+    from delfin.hyperpol import run_single_hyperpol_workflow
+    from delfin.tadf_xtb import WorkflowEntry
+
+    xyz_filename = str(config.get('hyperpol_xTB_xyz', 'start.txt')).strip()
+    xyz_path = ctx.control_file_path.parent / xyz_filename
+    if not xyz_path.exists():
+        logger.error("hyperpol_xTB: source file '%s' not found — skipping", xyz_path)
+        return False
+
+    preopt = str(config.get('hyperpol_xTB_preopt', 'none')).strip().lower()
+    engine = str(config.get('hyperpol_xTB_engine', 'std2')).strip().lower()
+    import math
+    raw_wl = str(config.get('hyperpol_xTB_wavelengths', '')).strip()
+    if raw_wl and raw_wl.lower() not in ('', 'none', 'static'):
+        wavelengths = [float(w.strip()) for w in raw_wl.split(',') if w.strip()]
+    else:
+        wavelengths = [math.inf]  # static only
+    energy_window = float(config.get('hyperpol_xTB_energy_window', 15.0))
+    maxcore = int(str(config.get('maxcore', 1000)).strip())
+    label = ctx.name or "mol"
+    workdir = ctx.control_file_path.parent / "hyperpol_xtb"
+
+    if xyz_filename.endswith('.xyz'):
+        entry = WorkflowEntry(label=label, xyz_path=str(xyz_path))
+    else:
+        entry = WorkflowEntry(label=label, xyz_text=xyz_path.read_text(encoding="utf-8", errors="ignore"))
+
+    try:
+        result = run_single_hyperpol_workflow(
+            entry,
+            charge=ctx.charge,
+            multiplicity=ctx.multiplicity,
+            engine=engine,
+            preopt=preopt,
+            wavelengths_nm=wavelengths,
+            energy_window_ev=energy_window,
+            cores=ctx.PAL,
+            maxcore=maxcore,
+            workdir=workdir,
+        )
+        ctx.extra['hyperpol_xtb_result'] = result
+
+        # Write JSON summary
+        import json, math as _math
+        from dataclasses import asdict
+        json_path = workdir / "hyperpol_xtb_summary.json"
+        json_payload = {
+            "hyperpol_xtb": {
+                "settings": {
+                    "engine": result.engine,
+                    "preopt": result.preopt,
+                    "charge": result.charge,
+                    "multiplicity": result.multiplicity,
+                    "energy_window_ev": result.energy_window_ev,
+                    "requested_wavelengths_nm": result.requested_wavelengths_nm,
+                },
+                "dipole_moment": {
+                    "x_au": result.dipole_x_au,
+                    "y_au": result.dipole_y_au,
+                    "z_au": result.dipole_z_au,
+                    "total_debye": result.dipole_total_debye,
+                },
+                "response_points": result.response_points,
+                "files": {
+                    "initial_xyz": result.initial_xyz,
+                    "selected_xyz": result.selected_xyz,
+                    "xtb4stda_output": result.xtb4stda_output,
+                    "response_output": result.response_output,
+                    "beta_hrs_file": result.beta_hrs_file,
+                    "beta_tensor_file": result.beta_tensor_file,
+                },
+            }
+        }
+        json_path.write_text(json.dumps(json_payload, indent=2, default=str), encoding="utf-8")
+        logger.info("hyperpol_xTB JSON written to %s", json_path)
+
+        # Write human-readable TXT report (DELFIN.txt style)
+        def _fmt_beta(label, point, au_key):
+            v_au = point.get(au_key)
+            if v_au is None:
+                return f"  {label:<36s} = n/a"
+            v_esu = point.get(au_key.replace("_au", "_esu"))
+            v_esu_30 = point.get(au_key.replace("_au", "_esu_30"))
+            return (
+                f"  {label:<36s} = {float(v_au):>12.3f} au"
+                f"    ({float(v_esu):.3e} esu; {float(v_esu_30):.3f} x10^-30 esu)"
+            )
+
+        sep = "-" * 72
+        lines = [
+            sep,
+            "DELFIN — xTB Hyperpolarizability (sTD-DFT-xTB)",
+            sep,
+            "",
+            "Calculation settings:",
+            f"  Label          = {result.label}",
+            f"  Engine         = {result.engine}",
+            f"  Preopt         = {result.preopt}",
+            f"  Charge         = {result.charge}",
+            f"  Multiplicity   = {result.multiplicity}",
+            f"  Energy window  = {result.energy_window_ev} eV",
+            "",
+            sep,
+            "Dipole moment:",
+            f"  mu_x           = {result.dipole_x_au:.6f} au" if result.dipole_x_au is not None else "  mu_x           = n/a",
+            f"  mu_y           = {result.dipole_y_au:.6f} au" if result.dipole_y_au is not None else "  mu_y           = n/a",
+            f"  mu_z           = {result.dipole_z_au:.6f} au" if result.dipole_z_au is not None else "  mu_z           = n/a",
+            f"  |mu|           = {result.dipole_total_debye:.4f} Debye" if result.dipole_total_debye is not None else "  |mu|           = n/a",
+            "",
+        ]
+        for point in result.response_points:
+            wl = point.get("wavelength_nm")
+            is_static = point.get("is_static", False)
+            tag = "static" if is_static else f"{float(wl):.1f} nm"
+            lines.append(sep)
+            lines.append(f"First hyperpolarizability ({tag}):")
+            lines.append("")
+            lines.append(_fmt_beta(f"beta_HRS({tag})", point, "beta_hrs_au"))
+            if point.get("beta_zzz_au") is not None:
+                lines.append(_fmt_beta(f"beta_zzz({tag})", point, "beta_zzz_au"))
+            if point.get("beta_zzz_aligned_au") is not None:
+                lines.append(_fmt_beta(f"|beta_zzz| aligned to dipole({tag})", point, "beta_zzz_aligned_au"))
+            for axis in ("x", "y", "z"):
+                key = f"beta_vec_{axis}_au"
+                if point.get(key) is not None:
+                    lines.append(_fmt_beta(f"beta_vec_{axis}({tag})", point, key))
+            if point.get("dr") is not None:
+                lines.append(f"  {'Depolarization ratio (DR)':<36s} = {float(point['dr']):>12.3f}")
+            if point.get("beta_sq_zzz_au2") is not None:
+                lines.append(f"  {'<beta_zzz^2>':<36s} = {float(point['beta_sq_zzz_au2']):>12.3f} au^2")
+            if point.get("beta_sq_xzz_au2") is not None:
+                lines.append(f"  {'<beta_xzz^2>':<36s} = {float(point['beta_sq_xzz_au2']):>12.3f} au^2")
+            if point.get("kleinman_score_raw_rotation") is not None:
+                lines.append(f"  {'Kleinman symmetry score':<36s} = {float(point['kleinman_score_raw_rotation']):>12.6f}")
+            lines.append("")
+        lines.append(sep)
+        lines.append(f"Working directory: {result.workdir}")
+        lines.append(sep)
+        txt_path = workdir / "hyperpol_xtb_summary.txt"
+        txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        logger.info("hyperpol_xTB TXT report written to %s", txt_path)
+
+        logger.info("hyperpol_xTB phase completed in %s", workdir)
+        return True
+    except Exception as exc:
+        logger.error("hyperpol_xTB phase failed: %s", exc, exc_info=True)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# xTB TADF Screening Phase
+# ---------------------------------------------------------------------------
+
+
+def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
+    """Execute xTB-based TADF screening calculation."""
+    config = ctx.config
+    if str(config.get('tadf_xTB', 'no')).strip().lower() != 'yes':
+        return True
+
+    from delfin.tadf_xtb import WorkflowEntry, run_single_tadf_xtb
+
+    xyz_filename = str(config.get('tadf_xTB_xyz', 'start.txt')).strip()
+    xyz_path = ctx.control_file_path.parent / xyz_filename
+    if not xyz_path.exists():
+        logger.error("tadf_xTB: source file '%s' not found — skipping", xyz_path)
+        return False
+
+    preopt = str(config.get('tadf_xTB_preopt', 'none')).strip().lower()
+    excited_method = str(config.get('tadf_xTB_excited_method', 'stda')).strip().lower()
+    energy_window = float(config.get('tadf_xTB_energy_window', 10.0))
+    run_t1_opt = str(config.get('tadf_xTB_run_t1_opt', 'yes')).strip().lower() == 'yes'
+    xtb_method = str(config.get('xTB_method', 'XTB2')).strip()
+    maxcore = int(str(config.get('maxcore', 1000)).strip())
+    label = ctx.name or "mol"
+    workdir = ctx.control_file_path.parent / "tadf_xtb"
+
+    use_crest = (preopt == "crest")
+    use_goat = (preopt == "goat")
+    optimize_s0 = (preopt == "xtb")
+
+    if xyz_filename.endswith('.xyz'):
+        entry = WorkflowEntry(label=label, xyz_path=str(xyz_path))
+    else:
+        entry = WorkflowEntry(label=label, xyz_text=xyz_path.read_text(encoding="utf-8", errors="ignore"))
+
+    try:
+        result = run_single_tadf_xtb(
+            entry,
+            charge=ctx.charge,
+            multiplicity=ctx.multiplicity,
+            xtb_method=xtb_method,
+            excited_method=excited_method,
+            energy_window=energy_window,
+            cores=ctx.PAL,
+            maxcore=maxcore,
+            workdir=workdir,
+            use_crest=use_crest,
+            use_goat=use_goat,
+            run_t1_opt=run_t1_opt,
+            t1_multiplicity=3,
+            optimize_s0=optimize_s0,
+        )
+        ctx.extra['tadf_xtb_result'] = result
+
+        # Write structured JSON summary
+        import json
+        json_path = workdir / "tadf_xtb_summary.json"
+
+        def _opt_f(v, d=6):
+            return round(float(v), d) if v is not None else None
+
+        json_payload = {
+            "tadf_xtb": {
+                "settings": {
+                    "label": result.label,
+                    "excited_method": result.excited_method,
+                    "xtb_method": result.xtb_method,
+                    "charge": result.charge,
+                    "multiplicity": result.multiplicity,
+                    "energy_window_ev": energy_window,
+                    "preopt": preopt,
+                    "run_t1_opt": run_t1_opt,
+                },
+                "excited_states": {
+                    "s1_ev": _opt_f(result.s1_ev, 4),
+                    "s1_nm": _opt_f(result.s1_nm, 1),
+                    "s1_f_osc": _opt_f(result.s1_f_osc, 5),
+                    "t1_ev": _opt_f(result.t1_ev, 4),
+                    "t1_nm": _opt_f(result.t1_nm, 1),
+                    "delta_est_vertical_ev": _opt_f(result.delta_est_ev, 4),
+                    "first_allowed_singlet": {
+                        "state": result.first_allowed_singlet_state,
+                        "ev": _opt_f(result.first_allowed_singlet_ev, 4),
+                        "nm": _opt_f(result.first_allowed_singlet_nm, 1),
+                        "f_osc": _opt_f(result.first_allowed_singlet_f_osc, 5),
+                    } if result.first_allowed_singlet_ev is not None else None,
+                    "brightest_singlet": {
+                        "state": result.brightest_singlet_state,
+                        "ev": _opt_f(result.brightest_singlet_ev, 4),
+                        "nm": _opt_f(result.brightest_singlet_nm, 1),
+                        "f_osc": _opt_f(result.brightest_singlet_f_osc, 5),
+                    } if result.brightest_singlet_ev is not None else None,
+                },
+                "energetics": {
+                    "s0_xtb_energy_eh": _opt_f(result.s0_xtb_energy_eh, 8),
+                    "t1_vertical_xtb_ev": _opt_f(result.t1_vertical_xtb_ev, 4),
+                    "t1_adiabatic_ev": _opt_f(result.t1_adiabatic_ev, 4),
+                    "t1_relaxed_ev": _opt_f(result.t1_relaxed_ev, 4),
+                    "t1_relaxation_ev": _opt_f(result.t1_relaxation_ev, 4),
+                    "s1_relaxed_est_ev": _opt_f(result.s1_relaxed_est_ev, 4),
+                },
+                "photophysics": {
+                    "lambda_abs_nm": _opt_f(result.lambda_abs_nm, 1),
+                    "lambda_em_s1_nm": _opt_f(result.lambda_em_s1_nm, 1),
+                    "lambda_pl_est_nm": _opt_f(result.lambda_pl_est_nm, 1),
+                    "stokes_shift_est_ev": _opt_f(result.stokes_shift_est_ev, 4),
+                    "delta_est_relaxed_est_ev": _opt_f(result.delta_est_relaxed_est_ev, 4),
+                },
+                "files": {
+                    "workdir": str(result.workdir),
+                    "s0_xyz": result.s0_xyz,
+                    "t1_opt_xyz": result.t1_opt_xyz,
+                    "crest_xyz": result.crest_xyz,
+                    "goat_xyz": result.goat_xyz,
+                },
+            }
+        }
+        json_path.write_text(json.dumps(json_payload, indent=2, default=str), encoding="utf-8")
+        logger.info("tadf_xTB JSON written to %s", json_path)
+
+        # Write human-readable TXT report (DELFIN.txt style)
+        def _fmt(v, d=3):
+            return f"{v:.{d}f}" if v is not None else "n/a"
+
+        sep = "-" * 72
+        txt_path = workdir / "tadf_xtb_summary.txt"
+        lines = [
+            sep,
+            "DELFIN — xTB TADF Screening (sTD-DFT-xTB)",
+            sep,
+            "",
+            "Calculation settings:",
+            f"  Label             = {result.label}",
+            f"  Excited method    = {result.excited_method}",
+            f"  xTB method        = {result.xtb_method}",
+            f"  Charge            = {result.charge}",
+            f"  Multiplicity      = {result.multiplicity}",
+            f"  Preopt            = {preopt}",
+            f"  Energy window     = {energy_window} eV",
+            f"  T1 optimization   = {'yes' if run_t1_opt else 'no'}",
+            "",
+            sep,
+            "Vertical excited states (at S0 geometry):",
+            f"  S1                = {_fmt(result.s1_ev, 4):>10s} eV    ({_fmt(result.s1_nm, 1):>8s} nm,  f = {_fmt(result.s1_f_osc, 5)})",
+            f"  T1                = {_fmt(result.t1_ev, 4):>10s} eV    ({_fmt(result.t1_nm, 1):>8s} nm)",
+            f"  Delta_E(S-T) vert = {_fmt(result.delta_est_ev, 4):>10s} eV",
+            "",
+        ]
+
+        if result.first_allowed_singlet_ev is not None:
+            lines.append(
+                f"  First allowed     = S{result.first_allowed_singlet_state:<3d}"
+                f" {_fmt(result.first_allowed_singlet_ev, 4):>10s} eV"
+                f"    ({_fmt(result.first_allowed_singlet_nm, 1):>8s} nm,"
+                f"  f = {_fmt(result.first_allowed_singlet_f_osc, 5)})"
+            )
+        if result.brightest_singlet_ev is not None:
+            lines.append(
+                f"  Brightest singlet = S{result.brightest_singlet_state:<3d}"
+                f" {_fmt(result.brightest_singlet_ev, 4):>10s} eV"
+                f"    ({_fmt(result.brightest_singlet_nm, 1):>8s} nm,"
+                f"  f = {_fmt(result.brightest_singlet_f_osc, 5)})"
+            )
+        if result.first_allowed_singlet_ev is not None or result.brightest_singlet_ev is not None:
+            lines.append("")
+
+        lines.append(sep)
+        lines.append("Total energies:")
+        if result.s0_xtb_energy_eh is not None:
+            lines.append(f"  E(S0, xTB)        = {_fmt(result.s0_xtb_energy_eh, 8):>16s} Eh")
+        if result.t1_xtb_energy_eh is not None:
+            lines.append(f"  E(T1, xTB)        = {_fmt(result.t1_xtb_energy_eh, 8):>16s} Eh")
+        lines.append("")
+
+        lines.append(sep)
+        lines.append("Adiabatic & relaxed energetics:")
+        if result.t1_vertical_xtb_ev is not None:
+            lines.append(f"  E(T1, vertical)   = {_fmt(result.t1_vertical_xtb_ev, 4):>10s} eV")
+        if result.t1_adiabatic_ev is not None:
+            lines.append(f"  E(T1, adiabatic)  = {_fmt(result.t1_adiabatic_ev, 4):>10s} eV")
+        if result.t1_relaxed_ev is not None:
+            lines.append(f"  E(T1, relaxed)    = {_fmt(result.t1_relaxed_ev, 4):>10s} eV")
+        if result.t1_relaxation_ev is not None:
+            lines.append(f"  T1 relaxation     = {_fmt(result.t1_relaxation_ev, 4):>10s} eV")
+        if result.s1_relaxed_est_ev is not None:
+            lines.append(f"  E(S1, rel. est.)  = {_fmt(result.s1_relaxed_est_ev, 4):>10s} eV")
+        if result.delta_est_relaxed_est_ev is not None:
+            lines.append(f"  Delta_E(S-T) rel. = {_fmt(result.delta_est_relaxed_est_ev, 4):>10s} eV")
+        lines.append("")
+
+        lines.append(sep)
+        lines.append("Photophysical properties:")
+        lines.append(f"  lambda_abs(S0->S1)  = {_fmt(result.lambda_abs_nm, 1):>8s} nm")
+        if result.lambda_em_s1_nm is not None:
+            lines.append(f"  lambda_em(S1)       = {_fmt(result.lambda_em_s1_nm, 1):>8s} nm")
+        lines.append(f"  lambda_PL(est.)     = {_fmt(result.lambda_pl_est_nm, 1):>8s} nm")
+        if result.stokes_shift_est_ev is not None:
+            lines.append(f"  Stokes shift (est.) = {_fmt(result.stokes_shift_est_ev, 4):>10s} eV")
+        lines.append("")
+
+        lines.append(sep)
+        lines.append(f"Working directory: {result.workdir}")
+        lines.append(sep)
+
+        txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        logger.info("tadf_xTB TXT report written to %s", txt_path)
+
+        logger.info("tadf_xTB phase completed in %s", workdir)
+        return True
+    except Exception as exc:
+        logger.error("tadf_xTB phase failed: %s", exc, exc_info=True)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Post-processing and reporting
 # ---------------------------------------------------------------------------
 
