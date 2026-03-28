@@ -862,8 +862,7 @@ def create_tab(ctx):
         return (
             f'<b>Remote target:</b> '
             f'<code>{html.escape(str(config.get("user") or "?"))}@'
-            f'{html.escape(str(config.get("host") or "?"))}:{html.escape(remote_root)}</code> '
-            f'<span style="color:#616161;">(browse inside this root; selected items can be moved back into local Calculations or Archive)</span>'
+            f'{html.escape(str(config.get("host") or "?"))}:{html.escape(remote_root)}</code>'
         )
 
     def _format_size(size_bytes):
