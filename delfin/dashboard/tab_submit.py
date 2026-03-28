@@ -1324,10 +1324,12 @@ def create_tab(ctx):
                     continue
                 if '=' in token:
                     key_candidate = token.split('=', 1)[0].strip()
-                    # Valid key: starts with lowercase letter, only word chars
-                    # (SMILES atoms like O, C, N, Cl are uppercase → treated as SMILES)
-                    if (key_candidate[:1].islower()
-                            and key_candidate.replace('_', '').isalnum()):
+                    # Valid key: word-chars only; distinguish from SMILES atoms
+                    # (1-2 char uppercase like O, Cl, Fe look like elements → SMILES)
+                    if (key_candidate.replace('_', '').isalnum()
+                            and (key_candidate[:1].islower()
+                                 or len(key_candidate) > 2
+                                 or '_' in key_candidate)):
                         key, value = token.split('=', 1)
                         key = key.strip()
                         value = value.strip()
