@@ -27,6 +27,7 @@
 # - Maximum 3 jobs running simultaneously (%3)
 # - Each system gets full node (24 cores)
 # - Optimal for parameter scans / screenings
+# - Stage-in/stage-out: all I/O on node-local SSD ($TMPDIR)
 #
 # ========================================================================
 
@@ -66,6 +67,7 @@ echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
 echo "System: $SYSTEM_DIR"
 echo "Node: $SLURM_JOB_NODELIST"
 echo "CPUs: $SLURM_CPUS_PER_TASK"
+echo "TMPDIR: ${TMPDIR:-not set}"
 echo "Started: $(date)"
 echo "========================================="
 echo ""
@@ -78,13 +80,71 @@ fi
 
 # Go to system directory
 cd $SYSTEM_DIR
+ORIGIN_DIR="$(pwd)"
 
-# Create scratch
-export ORCA_TMP=/scratch/$SLURM_JOB_ID
-mkdir -p $ORCA_TMP
+# ------------------------------------------------------------------
+# Stage-in: copy job data to node-local SSD
+# ------------------------------------------------------------------
+STAGE_IO="${DELFIN_STAGE_IO:-1}"
+WORK_DIR="$ORIGIN_DIR"
 
+if [ "$STAGE_IO" = "1" ] && [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
+  WORK_DIR="$TMPDIR/delfin_${SYSTEM_DIR}"
+  echo "[stage-in] Copying $ORIGIN_DIR -> $WORK_DIR"
+  mkdir -p "$WORK_DIR"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --copy-links "$ORIGIN_DIR/" "$WORK_DIR/"
+  else
+    cp -rL "$ORIGIN_DIR/." "$WORK_DIR/"
+  fi
+  export DELFIN_SCRATCH="$TMPDIR"
+  echo "[stage-in] Done. Working on local SSD."
+  cd "$WORK_DIR"
+fi
+
+# Stage-out on any exit (success, failure, timeout, signal)
+_DELFIN_PID=""
+
+_stage_out() {
+  set +e
+  local rc=${1:-$?}
+  if [ "$WORK_DIR" != "$ORIGIN_DIR" ]; then
+    echo ""
+    echo "[stage-out] Copying results $WORK_DIR -> $ORIGIN_DIR"
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --update "$WORK_DIR/" "$ORIGIN_DIR/" 2>&1 || echo "[stage-out] WARNING: rsync errors"
+    else
+      cp -ru "$WORK_DIR/." "$ORIGIN_DIR/" 2>&1 || echo "[stage-out] WARNING: cp errors"
+    fi
+    echo "[stage-out] Done."
+  fi
+  exit "$rc"
+}
+
+# Handle SLURM timeout (SIGTERM) — stop DELFIN, then stage-out results
+_handle_signal() {
+  echo ""
+  echo "[signal] Received termination signal — stopping DELFIN and saving results..."
+  if [ -n "$_DELFIN_PID" ]; then
+    kill -TERM -- -"$_DELFIN_PID" 2>/dev/null || kill -TERM "$_DELFIN_PID" 2>/dev/null || true
+    wait "$_DELFIN_PID" 2>/dev/null || true
+  fi
+  _stage_out 124
+}
+
+trap '_stage_out $?' EXIT
+trap '_handle_signal' SIGTERM SIGINT SIGHUP
+
+# ------------------------------------------------------------------
 # Run DELFIN
-delfin
+# ------------------------------------------------------------------
+if [ "$WORK_DIR" = "$ORIGIN_DIR" ]; then
+  delfin
+else
+  delfin &
+  _DELFIN_PID=$!
+  wait "$_DELFIN_PID"
+fi
 
 EXIT_CODE=$?
 
@@ -93,8 +153,5 @@ echo "========================================="
 echo "System $SYSTEM_DIR finished at: $(date)"
 echo "Exit code: $EXIT_CODE"
 echo "========================================="
-
-# Cleanup
-rm -rf $ORCA_TMP
 
 exit $EXIT_CODE
