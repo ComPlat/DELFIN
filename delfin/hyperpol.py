@@ -21,6 +21,7 @@ from delfin.tadf_xtb import (
     _load_entries,
     _rdkit_available,
     _run_crest,
+    _run_goat,
     _run_xtb_opt,
     _run_xtb_singlepoint,
     _safe_label,
@@ -465,6 +466,7 @@ def run_single_hyperpol_workflow(
     wavelengths_nm: list[float],
     energy_window_ev: float,
     cores: int,
+    maxcore: int = 1000,
     workdir: Path,
 ) -> HyperpolResult:
     workdir.mkdir(parents=True, exist_ok=True)
@@ -487,6 +489,9 @@ def run_single_hyperpol_workflow(
             stage_name="xtb_opt",
             output_name="xtbopt.xyz",
         )
+        # xTB opt output already contains dipole — reuse it instead of a separate singlepoint
+        dipole_output = preopt_output
+        dipole_x_au, dipole_y_au, dipole_z_au, dipole_total_debye = _parse_xtb_dipole(dipole_output)
     elif preopt == "crest":
         preopt_output, current_xyz = _run_crest(
             current_xyz,
@@ -495,16 +500,27 @@ def run_single_hyperpol_workflow(
             multiplicity=multiplicity,
             cores=cores,
         )
+    elif preopt == "goat":
+        preopt_output, current_xyz = _run_goat(
+            current_xyz,
+            workdir,
+            charge=charge,
+            multiplicity=multiplicity,
+            xtb_method="XTB2",
+            cores=cores,
+            maxcore=maxcore,
+        )
 
-    dipole_output, _xtb_sp_energy = _run_xtb_singlepoint(
-        current_xyz,
-        workdir,
-        charge=charge,
-        multiplicity=multiplicity,
-        cores=cores,
-        stage_name="dipole_xtb_sp",
-    )
-    dipole_x_au, dipole_y_au, dipole_z_au, dipole_total_debye = _parse_xtb_dipole(dipole_output)
+    if dipole_output is None:
+        dipole_output, _xtb_sp_energy = _run_xtb_singlepoint(
+            current_xyz,
+            workdir,
+            charge=charge,
+            multiplicity=multiplicity,
+            cores=cores,
+            stage_name="dipole_xtb_sp",
+        )
+        dipole_x_au, dipole_y_au, dipole_z_au, dipole_total_debye = _parse_xtb_dipole(dipole_output)
 
     wavelength_file = _write_wavelength_file(workdir, wavelengths_nm)
     xtb4stda_output = _run_xtb4stda(
@@ -658,7 +674,7 @@ def run_cli(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--preopt",
-        choices=("xtb", "crest", "none"),
+        choices=("xtb", "crest", "goat", "none"),
         default="xtb",
         help="Geometry preparation before xtb4stda.",
     )
@@ -751,6 +767,7 @@ def run_cli(argv: list[str]) -> int:
                     wavelengths_nm=wavelengths_nm,
                     energy_window_ev=args.energy_window,
                     cores=args.pal,
+                    maxcore=args.maxcore,
                     workdir=base_workdir / _safe_label(entry.label, entry.label),
                 )
                 results.append(result)
@@ -787,6 +804,7 @@ def run_cli(argv: list[str]) -> int:
                         wavelengths_nm=wavelengths_nm,
                         energy_window_ev=args.energy_window,
                         cores=max(1, int(allocated)),
+                        maxcore=args.maxcore,
                         workdir=_workdir,
                     )
                     with lock:
