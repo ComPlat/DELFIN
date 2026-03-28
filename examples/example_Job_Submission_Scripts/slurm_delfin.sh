@@ -21,6 +21,9 @@
 # - Dynamic core allocation (92-98% efficiency)
 # - No sub-job spawning (avoids queue overhead)
 # - Optimal for 24-48 core nodes
+# - Stage-in/stage-out: all I/O on node-local SSD ($TMPDIR)
+#
+# To disable local staging: export DELFIN_STAGE_IO=0 before sbatch
 #
 # ========================================================================
 
@@ -38,10 +41,6 @@ module load python/3.11
 # Set OMP threads (ORCA uses OpenMP)
 export OMP_NUM_THREADS=1  # DELFIN manages parallelism
 
-# Optional: Set scratch directory for ORCA
-export ORCA_TMP=/scratch/$SLURM_JOB_ID
-mkdir -p $ORCA_TMP
-
 # Print cluster information
 echo "========================================="
 echo "DELFIN SLURM Job Information"
@@ -51,15 +50,77 @@ echo "Node: $SLURM_JOB_NODELIST"
 echo "CPUs allocated: $SLURM_CPUS_PER_TASK"
 echo "Memory allocated: $SLURM_MEM_PER_NODE MB"
 echo "Working directory: $(pwd)"
+echo "TMPDIR: ${TMPDIR:-not set}"
 echo "Started at: $(date)"
 echo "========================================="
 echo ""
 
-# Run DELFIN
-# DELFIN automatically detects SLURM_CPUS_PER_TASK and uses all cores!
-delfin
+# ------------------------------------------------------------------
+# Stage-in: copy job data to node-local SSD
+# ------------------------------------------------------------------
+ORIGIN_DIR="$(pwd)"
+STAGE_IO="${DELFIN_STAGE_IO:-1}"
+WORK_DIR="$ORIGIN_DIR"
 
-# Capture exit code
+if [ "$STAGE_IO" = "1" ] && [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
+  WORK_DIR="$TMPDIR/delfin_job"
+  echo "[stage-in] Copying $ORIGIN_DIR -> $WORK_DIR"
+  mkdir -p "$WORK_DIR"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --copy-links "$ORIGIN_DIR/" "$WORK_DIR/"
+  else
+    cp -rL "$ORIGIN_DIR/." "$WORK_DIR/"
+  fi
+  export DELFIN_SCRATCH="$TMPDIR"
+  echo "[stage-in] Done. Working on local SSD."
+  cd "$WORK_DIR"
+fi
+
+# Stage-out on any exit (success, failure, timeout, signal)
+_DELFIN_PID=""
+
+_stage_out() {
+  set +e
+  local rc=${1:-$?}
+  if [ "$WORK_DIR" != "$ORIGIN_DIR" ]; then
+    echo ""
+    echo "[stage-out] Copying results $WORK_DIR -> $ORIGIN_DIR"
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --update "$WORK_DIR/" "$ORIGIN_DIR/" 2>&1 || echo "[stage-out] WARNING: rsync errors"
+    else
+      cp -ru "$WORK_DIR/." "$ORIGIN_DIR/" 2>&1 || echo "[stage-out] WARNING: cp errors"
+    fi
+    echo "[stage-out] Done."
+  fi
+  [ -n "${ORCA_TMP:-}" ] && rm -rf "$ORCA_TMP" 2>/dev/null || true
+  exit "$rc"
+}
+
+# Handle SLURM timeout (SIGTERM) — stop DELFIN, then stage-out results
+_handle_signal() {
+  echo ""
+  echo "[signal] Received termination signal — stopping DELFIN and saving results..."
+  if [ -n "$_DELFIN_PID" ]; then
+    kill -TERM -- -"$_DELFIN_PID" 2>/dev/null || kill -TERM "$_DELFIN_PID" 2>/dev/null || true
+    wait "$_DELFIN_PID" 2>/dev/null || true
+  fi
+  _stage_out 124
+}
+
+trap '_stage_out $?' EXIT
+trap '_handle_signal' SIGTERM SIGINT SIGHUP
+
+# ------------------------------------------------------------------
+# Run DELFIN
+# ------------------------------------------------------------------
+if [ "$WORK_DIR" = "$ORIGIN_DIR" ]; then
+  delfin
+else
+  delfin &
+  _DELFIN_PID=$!
+  wait "$_DELFIN_PID"
+fi
+
 EXIT_CODE=$?
 
 echo ""
@@ -67,8 +128,5 @@ echo "========================================="
 echo "Job finished at: $(date)"
 echo "Exit code: $EXIT_CODE"
 echo "========================================="
-
-# Cleanup scratch
-rm -rf $ORCA_TMP
 
 exit $EXIT_CODE
