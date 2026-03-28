@@ -111,8 +111,10 @@ fi
 
 # Periodic background sync: incrementally copy results every SYNC_INTERVAL
 # seconds so intermediate results survive crashes/OOM kills.
+# Excludes temp files to minimize HOME I/O.
 _SYNC_PID=""
 _DELFIN_PID=""
+RSYNC_EXCLUDES="--exclude=.orca_iso_* --exclude=*.tmp --exclude=__pycache__ --exclude=.exit_code_*"
 
 _start_periodic_sync() {
   if [ "$WORK_DIR" = "$ORIGIN_DIR" ]; then return; fi
@@ -120,7 +122,7 @@ _start_periodic_sync() {
   (
     while true; do
       sleep "$SYNC_INTERVAL"
-      rsync -a --update "$WORK_DIR/" "$ORIGIN_DIR/" 2>/dev/null || true
+      rsync -a --update $RSYNC_EXCLUDES "$WORK_DIR/" "$ORIGIN_DIR/" 2>/dev/null || true
       echo "[sync] Periodic sync completed at $(date +%H:%M:%S)"
     done
   ) &
@@ -170,9 +172,9 @@ _handle_signal() {
 # Sync results while DELFIN keeps running.
 _handle_early_warning() {
   echo ""
-  echo "[warning] Approaching walltime — performing preemptive sync..."
+  echo "[warning] Approaching walltime -- performing preemptive sync..."
   if [ "$WORK_DIR" != "$ORIGIN_DIR" ]; then
-    rsync -a --update "$WORK_DIR/" "$ORIGIN_DIR/" 2>/dev/null || true
+    rsync -a --update $RSYNC_EXCLUDES "$WORK_DIR/" "$ORIGIN_DIR/" 2>/dev/null || true
     echo "[warning] Preemptive sync done."
   fi
 }
