@@ -519,14 +519,17 @@ def calculate_beta_properties(
     beta_zzz_aligned, _, _ = calculate_beta_zzz_aligned(
         beta_tensor, dipole_x, dipole_y, dipole_z, kleinman_mode=kleinman_mode
     )
+    beta_zzz_aligned = abs(beta_zzz_aligned)
     # Always raw (no symmetrisation)
     beta_zzz_aligned_raw, _, _ = calculate_beta_zzz_aligned(
         beta_tensor, dipole_x, dipole_y, dipole_z, kleinman_mode='off'
     )
+    beta_zzz_aligned_raw = abs(beta_zzz_aligned_raw)
     # Always Kleinman-symmetrised
     beta_zzz_aligned_sym, _, _ = calculate_beta_zzz_aligned(
         beta_tensor, dipole_x, dipole_y, dipole_z, kleinman_mode='on'
     )
+    beta_zzz_aligned_sym = abs(beta_zzz_aligned_sym)
 
     # ---------- β_HRS (isotropic rotational average) ----------
     #

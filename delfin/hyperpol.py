@@ -409,9 +409,9 @@ def _annotate_tensor_metrics(
         point["beta_zzz_au"] = beta_zzz_au
         point["beta_zzz_esu"] = beta_zzz_au * _AU_TO_ESU
         point["beta_zzz_esu_30"] = beta_zzz_au * _AU_TO_ESU_30
-        point["beta_zzz_aligned_au"] = beta_zzz_aligned_au
-        point["beta_zzz_aligned_esu"] = beta_zzz_aligned_au * _AU_TO_ESU
-        point["beta_zzz_aligned_esu_30"] = beta_zzz_aligned_au * _AU_TO_ESU_30
+        point["beta_zzz_aligned_au"] = abs(beta_zzz_aligned_au)
+        point["beta_zzz_aligned_esu"] = abs(beta_zzz_aligned_au) * _AU_TO_ESU
+        point["beta_zzz_aligned_esu_30"] = abs(beta_zzz_aligned_au) * _AU_TO_ESU_30
         point["dipole_x_au"] = dipole_x_au
         point["dipole_y_au"] = dipole_y_au
         point["dipole_z_au"] = dipole_z_au
