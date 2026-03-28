@@ -133,6 +133,7 @@ class SlurmJobBackend(JobBackend):
             'sbatch',
             f'--export=ALL,{env_vars}',
             f'--time={time_limit}',
+            '--signal=B:USR1@300',  # early warning 5min before walltime for preemptive sync
             '--ntasks=1',
             f'--cpus-per-task={pal}',
             f'--mem={mem_mb}M',
