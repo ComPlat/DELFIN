@@ -1366,25 +1366,15 @@ def create_tab(ctx):
             smiles_payload = None
             if header_free_tokens:
                 if is_xyz:
-                    if (not source_path and len(header_free_tokens) == 1
-                            and _batch_token_looks_like_source(header_free_tokens[0])):
-                        source_path = header_free_tokens[0]
-                    else:
-                        invalid = ', '.join(repr(t) for t in header_free_tokens)
-                        errors.append(f'Line {line_no}: Invalid header token(s): {invalid}')
-                        if has_xyz_block:       # skip past the block
-                            while i < len(lines):
-                                if lines[i].strip() == '*':
-                                    i += 1
-                                    break
-                                i += 1
-                        continue
+                    # Pick the first source-path-looking token if we don't
+                    # have one yet; silently ignore the rest.
+                    if not source_path:
+                        for ft in header_free_tokens:
+                            if _batch_token_looks_like_source(ft):
+                                source_path = ft
+                                break
                 else:
                     smiles_payload = header_free_tokens[0]
-                    if len(header_free_tokens) > 1:
-                        invalid = ', '.join(repr(t) for t in header_free_tokens[1:])
-                        errors.append(f'Line {line_no}: Invalid header token(s): {invalid}')
-                        continue
 
             # --- SMILES mode ---
             if not is_xyz:
