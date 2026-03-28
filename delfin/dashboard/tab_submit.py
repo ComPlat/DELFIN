@@ -1344,19 +1344,53 @@ def create_tab(ctx):
                     continue
                 header_free_tokens.append(token)
 
+            # --- Lookahead: does a *-terminated XYZ block follow? ---
+            has_xyz_block = False
+            j = i
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines) and lines[j].strip().upper() == 'XYZ':
+                j += 1
+            while j < len(lines):
+                sj = lines[j].strip()
+                if sj == '*':
+                    has_xyz_block = True
+                    break
+                if ';' in sj:          # next header line → no block
+                    break
+                j += 1
+
+            is_xyz = has_xyz_block or force_xyz
+
+            # --- Resolve free tokens based on mode ---
             smiles_payload = None
             if header_free_tokens:
-                if not source_path and len(header_free_tokens) == 1 and _batch_token_looks_like_source(header_free_tokens[0]):
-                    source_path = header_free_tokens[0]
-                    force_xyz = True
-                elif len(header_free_tokens) == 1 and not force_xyz:
-                    smiles_payload = header_free_tokens[0]
+                if is_xyz:
+                    if (not source_path and len(header_free_tokens) == 1
+                            and _batch_token_looks_like_source(header_free_tokens[0])):
+                        source_path = header_free_tokens[0]
+                    else:
+                        invalid = ', '.join(repr(t) for t in header_free_tokens)
+                        errors.append(f'Line {line_no}: Invalid header token(s): {invalid}')
+                        if has_xyz_block:       # skip past the block
+                            while i < len(lines):
+                                if lines[i].strip() == '*':
+                                    i += 1
+                                    break
+                                i += 1
+                        continue
                 else:
-                    invalid_tokens = ', '.join(repr(token) for token in header_free_tokens)
-                    errors.append(f'Line {line_no}: Invalid header token(s): {invalid_tokens}')
-                    continue
+                    smiles_payload = header_free_tokens[0]
+                    if len(header_free_tokens) > 1:
+                        invalid = ', '.join(repr(t) for t in header_free_tokens[1:])
+                        errors.append(f'Line {line_no}: Invalid header token(s): {invalid}')
+                        continue
 
-            if smiles_payload and not force_xyz:
+            # --- SMILES mode ---
+            if not is_xyz:
+                if not smiles_payload:
+                    errors.append(f"Line {line_no}: No SMILES or XYZ coordinates for '{name}'")
+                    continue
                 entries.append({
                     'line_no': line_no,
                     'name': name,
@@ -1369,27 +1403,26 @@ def create_tab(ctx):
                 })
                 continue
 
-            # XYZ mode: optional explicit "XYZ" marker line, then block until "*"
+            # --- XYZ mode: read optional marker + block until "*" ---
             while i < len(lines) and not lines[i].strip():
                 i += 1
             if i < len(lines) and lines[i].strip().upper() == 'XYZ':
                 i += 1
 
             xyz_lines = []
-            while i < len(lines):
-                if lines[i].strip() == '*':
+            if has_xyz_block:
+                while i < len(lines):
+                    if lines[i].strip() == '*':
+                        i += 1
+                        break
+                    xyz_lines.append(lines[i].rstrip())
                     i += 1
-                    break
-                xyz_lines.append(lines[i].rstrip())
-                i += 1
-            else:
-                errors.append(f"Line {line_no}: XYZ block for '{name}' missing terminating '*'")
-                continue
 
             xyz_raw = '\n'.join(xyz_lines).strip()
-            xyz_content = _clean_xyz_block(xyz_raw)
-            if not xyz_content:
-                errors.append(f"Line {line_no}: XYZ block for '{name}' is empty")
+            xyz_content = _clean_xyz_block(xyz_raw) if xyz_raw else ''
+
+            if not xyz_content and not source_path:
+                errors.append(f"Line {line_no}: XYZ block for '{name}' is empty and no source path given")
                 continue
 
             entries.append({
