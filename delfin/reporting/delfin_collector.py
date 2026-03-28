@@ -1951,6 +1951,24 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     if phosp:
         data["phosphorescence_rates"]["T1_S0"] = phosp
 
+    # Collect hyperpol_xtb results if present
+    hyperpol_json = project_dir / "hyperpol_xtb" / "hyperpol_xtb_summary.json"
+    if hyperpol_json.exists():
+        try:
+            data["hyperpol_xtb"] = json.loads(hyperpol_json.read_text(encoding="utf-8", errors="ignore"))
+            logger.info("Collected hyperpol_xtb results from %s", hyperpol_json)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to read hyperpol_xtb summary: %s", exc)
+
+    # Collect tadf_xtb results if present
+    tadf_json = project_dir / "tadf_xtb" / "tadf_xtb_summary.json"
+    if tadf_json.exists():
+        try:
+            data["tadf_xtb"] = json.loads(tadf_json.read_text(encoding="utf-8", errors="ignore"))
+            logger.info("Collected tadf_xtb results from %s", tadf_json)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to read tadf_xtb summary: %s", exc)
+
     logger.info("ESD data collection complete")
     return data
 
