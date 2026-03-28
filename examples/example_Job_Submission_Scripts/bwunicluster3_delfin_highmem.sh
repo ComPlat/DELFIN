@@ -7,6 +7,7 @@
 #SBATCH --threads-per-core=1
 #SBATCH --mem=500G                   # High-memory: up to 1TB possible
 #SBATCH --time=72:00:00              # Longer runtime for large systems
+#SBATCH --signal=B:USR1@300          # Send SIGUSR1 5min before walltime for preemptive sync
 #SBATCH --output=delfin_%j.out
 #SBATCH --error=delfin_%j.err
 #SBATCH --constraint=BEEOND
@@ -79,27 +80,59 @@ mkdir -p "$ORCA_TMP"
 # ------------------------------------------------------------------
 ORIGIN_DIR="$(pwd)"
 STAGE_IO="${DELFIN_STAGE_IO:-1}"
+SYNC_INTERVAL="${DELFIN_SYNC_INTERVAL:-900}"
 WORK_DIR="$ORIGIN_DIR"
 
 if [ "$STAGE_IO" = "1" ] && [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
   WORK_DIR="$TMPDIR/delfin_job"
   echo "[stage-in] Copying job data $ORIGIN_DIR -> $WORK_DIR"
   mkdir -p "$WORK_DIR"
+  _STAGE_OK=0
   if command -v rsync >/dev/null 2>&1; then
-    rsync -a --copy-links "$ORIGIN_DIR/" "$WORK_DIR/"
+    rsync -a --copy-links "$ORIGIN_DIR/" "$WORK_DIR/" && _STAGE_OK=1
   else
-    cp -rL "$ORIGIN_DIR/." "$WORK_DIR/"
+    cp -rL "$ORIGIN_DIR/." "$WORK_DIR/" && _STAGE_OK=1
   fi
-  echo "[stage-in] Done. Working directory on local SSD."
-  cd "$WORK_DIR"
+  if [ "$_STAGE_OK" = "1" ]; then
+    echo "[stage-in] Done. Working directory on local SSD."
+    cd "$WORK_DIR"
+  else
+    echo "[stage-in] WARNING: copy failed (disk full?). Running directly on HOME."
+    rm -rf "$WORK_DIR" 2>/dev/null || true
+    WORK_DIR="$ORIGIN_DIR"
+  fi
 fi
 
-# Stage-out: copy results back to HOME on any exit (success, failure, timeout)
+# Periodic background sync
+_SYNC_PID=""
 _DELFIN_PID=""
+
+_start_periodic_sync() {
+  if [ "$WORK_DIR" = "$ORIGIN_DIR" ]; then return; fi
+  if [ "$SYNC_INTERVAL" -le 0 ] 2>/dev/null; then return; fi
+  (
+    while true; do
+      sleep "$SYNC_INTERVAL"
+      rsync -a --update "$WORK_DIR/" "$ORIGIN_DIR/" 2>/dev/null || true
+      echo "[sync] Periodic sync completed at $(date +%H:%M:%S)"
+    done
+  ) &
+  _SYNC_PID=$!
+  echo "[sync] Periodic background sync every ${SYNC_INTERVAL}s (PID $_SYNC_PID)"
+}
+
+_stop_periodic_sync() {
+  if [ -n "$_SYNC_PID" ]; then
+    kill "$_SYNC_PID" 2>/dev/null || true
+    wait "$_SYNC_PID" 2>/dev/null || true
+    _SYNC_PID=""
+  fi
+}
 
 _stage_out() {
   set +e
   local rc=${1:-$?}
+  _stop_periodic_sync
   if [ "$WORK_DIR" != "$ORIGIN_DIR" ]; then
     echo ""
     echo "[stage-out] Copying results $WORK_DIR -> $ORIGIN_DIR"
@@ -114,7 +147,6 @@ _stage_out() {
   exit "$rc"
 }
 
-# Handle SLURM timeout (SIGTERM) — stop DELFIN, then stage-out results
 _handle_signal() {
   echo ""
   echo "[signal] Received termination signal — stopping DELFIN and saving results..."
@@ -125,8 +157,18 @@ _handle_signal() {
   _stage_out 124
 }
 
+_handle_early_warning() {
+  echo ""
+  echo "[warning] Approaching walltime — performing preemptive sync..."
+  if [ "$WORK_DIR" != "$ORIGIN_DIR" ]; then
+    rsync -a --update "$WORK_DIR/" "$ORIGIN_DIR/" 2>/dev/null || true
+    echo "[warning] Preemptive sync done."
+  fi
+}
+
 trap '_stage_out $?' EXIT
 trap '_handle_signal' SIGTERM SIGINT SIGHUP
+trap '_handle_early_warning' SIGUSR1
 
 echo "========================================="
 echo "DELFIN High-Memory Job"
@@ -147,6 +189,7 @@ echo ""
 if [ "$WORK_DIR" = "$ORIGIN_DIR" ]; then
   delfin
 else
+  _start_periodic_sync
   delfin &
   _DELFIN_PID=$!
   wait "$_DELFIN_PID"
