@@ -147,7 +147,6 @@ class SlurmJobBackend(JobBackend):
             f'--export=ALL,{env_vars}',
             f'--time={time_limit}',
             f'--signal=B:USR1@{usr1_offset}',
-            '--kill-delay=120',   # 120s grace after SIGTERM before SIGKILL
             '--ntasks=1',
             f'--cpus-per-task={pal}',
             f'--mem={mem_mb}M',
