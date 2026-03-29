@@ -116,6 +116,16 @@ class SlurmJobBackend(JobBackend):
                     return str(candidate)
         return None
 
+    @staticmethod
+    def _time_limit_seconds(time_limit: str) -> int:
+        """Convert HH:MM:SS or MM:SS or bare minutes to total seconds."""
+        parts = str(time_limit).split(':')
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        elif len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        return int(parts[0]) * 60  # SLURM treats bare number as minutes
+
     def _sbatch(self, job_dir, env_vars, time_limit, pal, mem_mb,
                 job_name, submit_script, *, gpu=None, partition=None):
         """Run sbatch with the given parameters.
@@ -129,11 +139,15 @@ class SlurmJobBackend(JobBackend):
             SLURM partition name, e.g. ``"gpu"`` or ``"gpu_4"``.
             Passed as ``--partition=<partition>`` when set.
         """
+        # USR1 for preemptive sync: half the walltime, capped 30s–300s
+        total_secs = self._time_limit_seconds(time_limit)
+        usr1_offset = max(30, min(300, total_secs // 2))
         cmd = [
             'sbatch',
             f'--export=ALL,{env_vars}',
             f'--time={time_limit}',
-            '--signal=B:USR1@300',  # early warning 5min before walltime for preemptive sync
+            f'--signal=B:USR1@{usr1_offset}',
+            '--kill-delay=120',   # 120s grace after SIGTERM before SIGKILL
             '--ntasks=1',
             f'--cpus-per-task={pal}',
             f'--mem={mem_mb}M',
