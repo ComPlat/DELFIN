@@ -256,9 +256,12 @@ def _xyz_coord_block(xyz_path: Path) -> str:
     return "\n".join(coord_lines) + "\n"
 
 
+_XTB_MAX_THREADS = 8  # xTB scales poorly beyond ~8 threads; higher values trigger Fortran I/O bugs
+
+
 def _tool_env(cores: int) -> dict[str, str]:
     return {
-        "OMP_NUM_THREADS": str(max(1, int(cores))),
+        "OMP_NUM_THREADS": str(min(max(1, int(cores)), _XTB_MAX_THREADS)),
         "MKL_NUM_THREADS": "1",
     }
 
