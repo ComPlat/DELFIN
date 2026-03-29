@@ -373,23 +373,8 @@ def _resolve_xtb4stda_home(root: Path) -> str:
     if not default_home.exists():
         return str(default_home)
 
-    default_str = str(default_home)
-    if len(default_str) <= 60:
-        return default_str
-
-    short_home = Path.home() / ".delfin_xtb4stda"
-    try:
-        if short_home.is_dir() and (short_home / ".param_stda1.xtb").exists():
-            return str(short_home)
-        if not short_home.exists() or short_home.is_symlink():
-            if short_home.is_symlink() or short_home.exists():
-                short_home.unlink()
-            short_home.symlink_to(default_home)
-            return str(short_home)
-    except OSError as exc:
-        logger.debug("Failed to prepare short xtb4stda runtime path: %s", exc)
-
-    return default_str
+    from delfin.runtime_setup import _shorten_xtb4stda_path
+    return _shorten_xtb4stda_path(str(default_home))
 
 
 def _prepare_tool_environment(extra_env: Optional[Mapping[str, str]] = None) -> dict[str, str]:

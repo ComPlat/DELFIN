@@ -28,9 +28,17 @@ except ImportError:
     psutil = None  # type: ignore
 
 
+import logging as _logging
+
+_logger = _logging.getLogger(__name__)
 _ORCA_VERSION_RE = re.compile(r"orca[_-]?(\d+(?:[_\.-]\d+)*)", re.IGNORECASE)
 _XTB4STDA_RUNTIME_FILES = (".xtb4stdarc", ".param_stda1.xtb", ".param_stda2.xtb")
 _TURBOMOLE_COMMAND_NAMES = ("ridft", "dscf", "define")
+
+# xtb4stda is a Fortran binary with an 80-character path limit for
+# XTB4STDAHOME.  If the real path exceeds 60 characters we create a
+# short symlink at ~/.delfin_xtb4stda to stay within the limit.
+_XTB4STDA_PATH_LIMIT = 60
 
 
 def _iter_runtime_ancestors(path_value: str | Path | None) -> list[Path]:
@@ -62,6 +70,29 @@ def _infer_runtime_root_from_binary(binary_path: str | Path | None) -> str:
 
 def _has_xtb4stda_runtime(candidate: Path) -> bool:
     return all((candidate / filename).is_file() for filename in _XTB4STDA_RUNTIME_FILES)
+
+
+def _shorten_xtb4stda_path(long_path: str) -> str:
+    """Return a short alias for *long_path* if it exceeds the Fortran limit.
+
+    xtb4stda is compiled with fixed-length Fortran strings (~80 chars).
+    If *long_path* is too long, create a symlink ``~/.delfin_xtb4stda``
+    that points to it and return the symlink path instead.
+    """
+    if len(long_path) <= _XTB4STDA_PATH_LIMIT:
+        return long_path
+    short_home = Path.home() / ".delfin_xtb4stda"
+    try:
+        if short_home.is_dir() and (short_home / ".param_stda1.xtb").exists():
+            return str(short_home)
+        if not short_home.exists() or short_home.is_symlink():
+            if short_home.is_symlink() or short_home.exists():
+                short_home.unlink()
+            short_home.symlink_to(long_path)
+            return str(short_home)
+    except OSError as exc:
+        _logger.debug("Failed to create short xtb4stda symlink: %s", exc)
+    return long_path
 
 
 def _infer_xtb4stda_runtime_home(binary_paths: list[str]) -> str:
@@ -117,7 +148,7 @@ def _tool_environment_overrides(tool_binaries: dict[str, str] | None) -> tuple[d
 
     xtb_runtime_home = _infer_xtb4stda_runtime_home(xtb_runtime_sources)
     if xtb_runtime_home:
-        env_updates["XTB4STDAHOME"] = xtb_runtime_home
+        env_updates["XTB4STDAHOME"] = _shorten_xtb4stda_path(xtb_runtime_home)
         std2_root = _infer_runtime_root_from_binary(xtb_runtime_sources[0])
         if not std2_root:
             runtime_path = Path(xtb_runtime_home)
