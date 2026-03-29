@@ -443,6 +443,7 @@ def _run_tadf_xtb(argv: list[str]) -> int:
     parser.add_argument("--charge", type=int, default=0)
     parser.add_argument("--multiplicity", type=int, default=1)
     parser.add_argument("--xtb-method", default="XTB2")
+    parser.add_argument("--preopt", choices=("none", "xtb", "crest", "goat"), default="none")
     parser.add_argument("--excited-method", choices=("stda", "std2"), default="stda")
     parser.add_argument("--energy-window", type=float, default=10.0)
     parser.add_argument("--crest", action="store_true")
@@ -460,6 +461,8 @@ def _run_tadf_xtb(argv: list[str]) -> int:
         workdir = resolve_path(args.workdir)
         workdir.mkdir(parents=True, exist_ok=True)
         entry = TadfWorkflowEntry(label=label, xyz_path=str(resolve_path(args.xyz_file)))
+        use_crest = bool(args.crest or args.preopt == "crest")
+        use_goat = bool(args.goat or args.preopt == "goat")
         result = run_single_tadf_xtb(
             entry,
             charge=args.charge,
@@ -470,11 +473,11 @@ def _run_tadf_xtb(argv: list[str]) -> int:
             cores=args.pal,
             maxcore=args.maxcore,
             workdir=workdir,
-            use_crest=bool(args.crest),
-            use_goat=bool(args.goat),
+            use_crest=use_crest,
+            use_goat=use_goat,
             run_t1_opt=bool(args.t1_opt),
             t1_multiplicity=args.t1_multiplicity,
-            optimize_s0=False,
+            optimize_s0=(args.preopt == "xtb"),
         )
         payload = {
             "summary": _tadf_summary_payload(result),

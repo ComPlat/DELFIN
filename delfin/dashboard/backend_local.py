@@ -305,6 +305,10 @@ class LocalJobBackend(JobBackend):
             job_dir, 'tadf_xtb', job_name,
             time_limit=time_limit, pal=pal, maxcore=maxcore,
             xyz_file=xyz_file, workflow_label=label,
+            extra_env={
+                'DELFIN_TADF_XTB_PREOPT': 'xtb',
+                'DELFIN_TADF_XTB_T1_OPT': 'yes',
+            },
         )
 
     def list_jobs(self) -> List[JobInfo]:
