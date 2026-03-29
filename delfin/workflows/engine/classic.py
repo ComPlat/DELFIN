@@ -22,11 +22,18 @@ from delfin.esd_input_generator import (
 from delfin.workflows.scheduling.manager import get_global_manager
 from delfin.orca import run_orca
 from delfin.imag import run_IMAG
+from delfin.scheduler_profiles import (
+    get_molecule_features,
+    infer_stage_key,
+    predict_stage_profile,
+)
 from delfin.xyz_io import read_and_modify_file_1, read_xyz_and_create_input3
 
 logger = get_logger(__name__)
 
 JOB_DURATION_HISTORY: Dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=8))
+STAGE_DURATION_HISTORY: Dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=32))
+STAGE_CORE_HISTORY: Dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=32))
 
 # Global registry of active workflow managers for nested workflow coordination
 _ACTIVE_MANAGERS: Dict[int, '_WorkflowManager'] = {}
@@ -393,6 +400,9 @@ class _WorkflowManager:
         Returns:
             True if we should wait, False otherwise
         """
+        if not self._allow_speculative_bottleneck_wait():
+            return False
+
         if not ready_jobs:
             return False
 
@@ -803,7 +813,7 @@ class _WorkflowManager:
                 raise
             else:
                 duration = time.time() - start_time
-                self._record_duration(job, duration)
+                self._record_duration(job, duration, cores)
                 self._mark_completed(job.job_id)
             return
 
@@ -850,7 +860,7 @@ class _WorkflowManager:
                 raise
             else:
                 duration = time.time() - start_time
-                self._record_duration(job, duration)
+                self._record_duration(job, duration, cores)
 
                 # Only log completion for jobs that took significant time (>5s) or failed/inline
                 # This reduces noise from quick recalc jobs
@@ -974,6 +984,10 @@ class _WorkflowManager:
             job.cores_min,
             duration_hint,
         )
+        learned_stage_cores = self._get_stage_core_hint(job)
+        if learned_stage_cores is not None:
+            learned_opt = max(job.cores_min, min(job.cores_max, int(round(learned_stage_cores))))
+            suggestion = max(suggestion, learned_opt)
 
         min_required = self._minimum_required_cores(hint, base_share, duration_hint)
         job.cores_min = max(job.cores_min, min(min_required, suggestion, job.cores_max))
@@ -1080,36 +1094,21 @@ class _WorkflowManager:
                 )
                 return {job.job_id: target}, {job.job_id: cap}
 
-            base_target = max(job.cores_min, min(job.cores_optimal, available))
-            nothing_else_runnable = (
-                blocked_other == 0 and running_jobs == 0 and queued_jobs == 0
+            target = max(job.cores_min, min(available, job.cores_max))
+            cap = False
+            logger.debug(
+                "[%s] Single ready job %s (%s) gets %d cores "
+                "(blocked_other=%d, running=%d, queued=%d, available=%d, max=%d)",
+                self.label,
+                job.job_id,
+                job.description,
+                target,
+                blocked_other,
+                running_jobs,
+                queued_jobs,
+                available,
+                job.cores_max,
             )
-            if nothing_else_runnable:
-                target = max(base_target, min(available, job.cores_max))
-                cap = False
-                logger.debug(
-                    "[%s] Exclusive allocation for %s (%s) → %d cores (full pool, nothing else runnable)",
-                    self.label,
-                    job.job_id,
-                    job.description,
-                    target,
-                )
-            else:
-                target = base_target
-                cap = False
-                logger.debug(
-                    "[%s] Single ready job %s (%s) capped to optimal %d cores "
-                    "(blocked_other=%d, running=%d, queued=%d, available=%d, max=%d)",
-                    self.label,
-                    job.job_id,
-                    job.description,
-                    target,
-                    blocked_other,
-                    running_jobs,
-                    queued_jobs,
-                    available,
-                    job.cores_max,
-                )
             return {job.job_id: target}, {job.job_id: cap}
 
         # Multiple jobs ready: distribute available capacity as evenly as possible.
@@ -1471,23 +1470,88 @@ class _WorkflowManager:
 
         return min_required
 
+    def _profile_prediction(self, job: WorkflowJob) -> Dict[str, Any]:
+        features = get_molecule_features(job.working_dir)
+        atom_count = features.get("atom_count")
+        return predict_stage_profile(
+            self._stage_key(job),
+            atom_count=atom_count if isinstance(atom_count, int) else None,
+            features=features,
+        )
+
+    def _stage_core_learning_mode(self) -> str:
+        raw = str(
+            self.config.get(
+                "scheduler_stage_core_learning",
+                self.config.get("stage_core_learning", "duration_only"),
+            )
+        ).strip().lower()
+        if raw in {"observed", "archive", "legacy"}:
+            return "observed"
+        if raw in {"live", "adaptive", "history"}:
+            return "live"
+        return "duration_only"
+
     def _get_duration_hint(self, job: WorkflowJob) -> Optional[float]:
         history = JOB_DURATION_HISTORY.get(self._duration_key(job))
-        if not history:
-            return None
-        if len(history) == 1:
-            return history[0]
-        try:
-            return statistics.median(history)
-        except statistics.StatisticsError:  # pragma: no cover - defensive fallback
-            return sum(history) / len(history)
+        if history:
+            return self._history_median(history)
+
+        prediction = self._profile_prediction(job)
+        duration_s = prediction.get("duration_s")
+        if duration_s is not None:
+            return float(duration_s)
+
+        stage = self._stage_key(job)
+        stage_history = STAGE_DURATION_HISTORY.get(stage)
+        if stage_history:
+            return self._history_median(stage_history)
+
+        return None
 
     def _duration_key(self, job: WorkflowJob) -> str:
         return f"{self.label}:{job.job_id}:{job.description}".lower()
 
-    def _record_duration(self, job: WorkflowJob, duration: float) -> None:
+    def _stage_key(self, job: WorkflowJob) -> str:
+        return infer_stage_key(job.job_id, job.description)
+
+    def _history_median(self, values: deque[float]) -> Optional[float]:
+        if not values:
+            return None
+        if len(values) == 1:
+            return values[0]
+        try:
+            return statistics.median(values)
+        except statistics.StatisticsError:  # pragma: no cover - defensive fallback
+            return sum(values) / len(values)
+
+    def _get_stage_core_hint(self, job: WorkflowJob) -> Optional[float]:
+        mode = self._stage_core_learning_mode()
+        prediction = self._profile_prediction(job)
+        recommended_cores = prediction.get("recommended_cores")
+        if recommended_cores is not None:
+            return float(recommended_cores)
+
+        if mode == "observed":
+            observed_avg_cores = prediction.get("observed_avg_cores")
+            if observed_avg_cores is not None:
+                return float(observed_avg_cores)
+
+        stage = self._stage_key(job)
+        if mode in {"observed", "live"}:
+            history = STAGE_CORE_HISTORY.get(stage)
+            if history:
+                return self._history_median(history)
+
+        return None
+
+    def _record_duration(self, job: WorkflowJob, duration: float, cores_used: Optional[int] = None) -> None:
         key = self._duration_key(job)
         JOB_DURATION_HISTORY[key].append(duration)
+        stage = self._stage_key(job)
+        STAGE_DURATION_HISTORY[stage].append(duration)
+        if cores_used is not None and cores_used > 0:
+            STAGE_CORE_HISTORY[stage].append(float(cores_used))
         logger.debug(
             "[%s] Duration recorded for %s: %.1fs (samples=%d)",
             self.label,
@@ -1495,6 +1559,10 @@ class _WorkflowManager:
             duration,
             len(JOB_DURATION_HISTORY[key]),
         )
+
+    def _allow_speculative_bottleneck_wait(self) -> bool:
+        value = str(self.config.get("wait_for_bottleneck", "no")).strip().lower()
+        return value in {"1", "true", "yes", "on", "y"}
 
 
 def normalize_parallel_token(value: Any, default: str = "auto") -> str:
@@ -1800,6 +1868,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 cores_min=cores_min,
                 cores_optimal=cores_opt,
                 cores_max=cores_max,
+                working_dir=Path.cwd(),
             )
         )
 
@@ -1977,6 +2046,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 cores_min=cores_min,
                 cores_optimal=cores_opt,
                 cores_max=cores_max,
+                working_dir=Path.cwd(),
             )
         )
 
@@ -2073,6 +2143,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                 cores_min=cores_min,
                 cores_optimal=cores_opt,
                 cores_max=cores_max,
+                working_dir=Path.cwd(),
             )
         )
 
@@ -2122,6 +2193,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 cores_min=cores_min,
                 cores_optimal=cores_opt,
                 cores_max=cores_max,
+                working_dir=Path.cwd(),
             )
         )
 
@@ -2299,6 +2371,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 cores_min=cores_min,
                 cores_optimal=cores_opt,
                 cores_max=cores_max,
+                working_dir=Path.cwd(),
             )
         )
 
@@ -2395,6 +2468,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                 cores_min=cores_min,
                 cores_optimal=cores_opt,
                 cores_max=cores_max,
+                working_dir=Path.cwd(),
             )
         )
 

@@ -10,6 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from delfin.common.paths import resolve_path
+from delfin.global_manager import get_global_manager
 from delfin.hyperpol import (
     WorkflowEntry as HyperpolWorkflowEntry,
     _load_wavelengths as _hyperpol_load_wavelengths,
@@ -21,6 +22,19 @@ from delfin.tadf_xtb import (
     _print_result as _print_tadf_result,
     run_single_tadf_xtb,
 )
+
+
+def _resolve_active_job_limits(*, requested_cores: int, requested_maxcore: int) -> tuple[int, int]:
+    manager = get_global_manager()
+    try:
+        if manager.is_initialized():
+            return manager.resolve_job_resources(
+                requested_cores=requested_cores,
+                requested_maxcore=requested_maxcore,
+            )
+    except Exception:
+        pass
+    return max(1, int(requested_cores)), max(256, int(requested_maxcore))
 
 
 def _write_json(path: str | None, payload: dict) -> None:
@@ -364,6 +378,10 @@ def _run_hyperpol_xtb(argv: list[str]) -> int:
         workdir.mkdir(parents=True, exist_ok=True)
         wavelengths_nm = _hyperpol_load_wavelengths([], None, static_only=args.static_only)
         entry = HyperpolWorkflowEntry(label=label, xyz_path=str(resolve_path(args.xyz_file)))
+        resolved_cores, resolved_maxcore = _resolve_active_job_limits(
+            requested_cores=args.pal,
+            requested_maxcore=getattr(args, "maxcore", 1000),
+        )
         result = run_single_hyperpol_workflow(
             entry,
             charge=args.charge,
@@ -372,7 +390,8 @@ def _run_hyperpol_xtb(argv: list[str]) -> int:
             preopt=args.preopt,
             wavelengths_nm=wavelengths_nm,
             energy_window_ev=args.energy_window,
-            cores=args.pal,
+            cores=resolved_cores,
+            maxcore=resolved_maxcore,
             workdir=workdir,
         )
         payload = {
@@ -463,6 +482,10 @@ def _run_tadf_xtb(argv: list[str]) -> int:
         entry = TadfWorkflowEntry(label=label, xyz_path=str(resolve_path(args.xyz_file)))
         use_crest = bool(args.crest or args.preopt == "crest")
         use_goat = bool(args.goat or args.preopt == "goat")
+        resolved_cores, resolved_maxcore = _resolve_active_job_limits(
+            requested_cores=args.pal,
+            requested_maxcore=args.maxcore,
+        )
         result = run_single_tadf_xtb(
             entry,
             charge=args.charge,
@@ -470,8 +493,8 @@ def _run_tadf_xtb(argv: list[str]) -> int:
             xtb_method=args.xtb_method,
             excited_method=args.excited_method,
             energy_window=args.energy_window,
-            cores=args.pal,
-            maxcore=args.maxcore,
+            cores=resolved_cores,
+            maxcore=resolved_maxcore,
             workdir=workdir,
             use_crest=use_crest,
             use_goat=use_goat,

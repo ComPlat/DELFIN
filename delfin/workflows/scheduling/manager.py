@@ -9,6 +9,7 @@ This module provides a centralized job manager that ensures:
 from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple, Callable, List
 import atexit
+import math
 import threading
 import os
 import json
@@ -54,6 +55,13 @@ def _normalize_parallel_token(value: Any, default: str = "auto") -> str:
     if token in {"yes", "true", "on", "1", "enable", "enabled"}:
         return "enable"
     return "auto"
+
+
+def _default_pal_jobs_for_makespan(pal: int) -> int:
+    """Choose a concurrency cap that keeps medium-sized slots available."""
+    if pal <= 1:
+        return 1
+    return max(1, min(8, int(math.ceil(pal / 12.0))))
 
 
 class GlobalJobManager:
@@ -239,6 +247,28 @@ class GlobalJobManager:
         # This will be enhanced to track active workflows
         return self.total_cores
 
+    def resolve_job_resources(
+        self,
+        *,
+        requested_cores: Optional[int] = None,
+        requested_maxcore: Optional[int] = None,
+    ) -> Tuple[int, int]:
+        """Clamp a job's resource request to the active DELFIN ceiling."""
+        core_limit = max(1, int(self.total_cores or 1))
+        maxcore_limit = max(256, int(self.maxcore_per_job or 1000))
+
+        if requested_cores is None:
+            resolved_cores = core_limit
+        else:
+            resolved_cores = max(1, min(int(requested_cores), core_limit))
+
+        if requested_maxcore is None:
+            resolved_maxcore = maxcore_limit
+        else:
+            resolved_maxcore = max(256, min(int(requested_maxcore), maxcore_limit))
+
+        return resolved_cores, resolved_maxcore
+
     def shutdown(self) -> None:
         """Shutdown the global manager and clean up resources."""
         self._terminate_all_processes(reason="shutdown")
@@ -333,18 +363,7 @@ class GlobalJobManager:
         if parallel_token == "disable":
             pal_jobs = 1
         if pal_jobs <= 0:
-            if pal <= 4:
-                pal_jobs = 1
-            elif pal <= 8:
-                pal_jobs = 2
-            elif pal <= 16:
-                pal_jobs = max(2, pal // 6)
-            elif pal <= 32:
-                pal_jobs = max(2, pal // 8)
-            elif pal <= 64:
-                pal_jobs = max(3, pal // 10)
-            else:
-                pal_jobs = max(4, pal // 12)
+            pal_jobs = _default_pal_jobs_for_makespan(pal)
         pal_jobs = max(1, min(pal_jobs, pal))
 
         cfg.update({

@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from delfin.common.logging import get_logger
 from delfin.common.paths import resolve_path
 from delfin.copy_helpers import copy_if_exists, read_occupier_file
+from delfin.workflows.scheduling.manager import get_global_manager
 from delfin.workflows.engine.scheduler import GlobalOrcaScheduler
 from delfin.workflows.engine.occupier import OccupierExecutionContext, run_occupier_orca_jobs
 from delfin.workflows.engine.classic import execute_classic_workflows, execute_manually_workflows, normalize_parallel_token, WorkflowRunResult
@@ -24,6 +25,19 @@ from delfin.esd_module import run_esd_phase as execute_esd_module, parse_esd_con
 from delfin.esd_results import collect_esd_results, ESDSummary
 
 logger = get_logger(__name__)
+
+
+def _resolve_pipeline_job_limits(*, requested_cores: int, requested_maxcore: int) -> tuple[int, int]:
+    manager = get_global_manager()
+    try:
+        if manager.is_initialized():
+            return manager.resolve_job_resources(
+                requested_cores=requested_cores,
+                requested_maxcore=requested_maxcore,
+            )
+    except Exception:
+        logger.debug("Could not resolve global job limits; using requested pipeline limits", exc_info=True)
+    return max(1, int(requested_cores)), max(256, int(requested_maxcore))
 
 
 
@@ -709,6 +723,10 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
         wavelengths = [math.inf]  # static only
     energy_window = float(config.get('hyperpol_xTB_energy_window', 15.0))
     maxcore = int(str(config.get('maxcore', 1000)).strip())
+    resolved_cores, resolved_maxcore = _resolve_pipeline_job_limits(
+        requested_cores=ctx.PAL,
+        requested_maxcore=maxcore,
+    )
     label = ctx.name or "mol"
     workdir = ctx.control_file_path.parent / "hyperpol_xtb"
 
@@ -726,8 +744,8 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
             preopt=preopt,
             wavelengths_nm=wavelengths,
             energy_window_ev=energy_window,
-            cores=ctx.PAL,
-            maxcore=maxcore,
+            cores=resolved_cores,
+            maxcore=resolved_maxcore,
             workdir=workdir,
         )
         ctx.extra['hyperpol_xtb_result'] = result
@@ -864,6 +882,10 @@ def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
     run_t1_opt = str(config.get('tadf_xTB_run_t1_opt', 'yes')).strip().lower() == 'yes'
     xtb_method = str(config.get('xTB_method', 'XTB2')).strip()
     maxcore = int(str(config.get('maxcore', 1000)).strip())
+    resolved_cores, resolved_maxcore = _resolve_pipeline_job_limits(
+        requested_cores=ctx.PAL,
+        requested_maxcore=maxcore,
+    )
     label = ctx.name or "mol"
     workdir = ctx.control_file_path.parent / "tadf_xtb"
 
@@ -884,8 +906,8 @@ def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
             xtb_method=xtb_method,
             excited_method=excited_method,
             energy_window=energy_window,
-            cores=ctx.PAL,
-            maxcore=maxcore,
+            cores=resolved_cores,
+            maxcore=resolved_maxcore,
             workdir=workdir,
             use_crest=use_crest,
             use_goat=use_goat,

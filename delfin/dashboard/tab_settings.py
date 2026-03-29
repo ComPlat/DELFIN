@@ -44,6 +44,7 @@ from delfin.user_settings import (
     load_settings,
     normalize_choice_setting,
     normalize_local_directory_setting,
+    normalize_positive_float_setting,
     normalize_positive_int_setting,
     normalize_ssh_transfer_settings,
     save_settings,
@@ -324,6 +325,19 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         max=100_000_000,
         step=1000,
         layout=widgets.Layout(width='140px', min_width='140px', height='28px'),
+    )
+    local_oversubscribe_toggle = widgets.Checkbox(
+        value=False,
+        description='Allow local queue oversubscription',
+        indent=False,
+        layout=widgets.Layout(width='250px', min_width='250px', height='28px'),
+    )
+    local_oversubscribe_factor_input = widgets.BoundedFloatText(
+        value=1.0,
+        min=1.0,
+        max=8.0,
+        step=0.1,
+        layout=widgets.Layout(width='120px', min_width='120px', height='28px'),
     )
     slurm_orca_input = widgets.Text(
         placeholder='Optional SLURM ORCA override',
@@ -761,6 +775,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         local_orca_input.value = str(local_payload.get('orca_base') or '')
         local_max_cores_input.value = int(local_payload.get('max_cores', detected_local_cores))
         local_max_ram_input.value = int(local_payload.get('max_ram_mb', detected_local_ram_mb))
+        local_oversubscribe_toggle.value = bool(local_payload.get('allow_oversubscribe', False))
+        local_oversubscribe_factor_input.value = float(local_payload.get('oversubscribe_factor', 1.0))
         slurm_orca_input.value = str(slurm_payload.get('orca_base') or '')
         slurm_templates_input.value = str(slurm_payload.get('submit_templates_dir') or '')
         slurm_profile_input.value = str(slurm_payload.get('profile') or '')
@@ -851,6 +867,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     'Local max RAM (MB)',
                     1_400_000,
                 ),
+                'allow_oversubscribe': bool(local_oversubscribe_toggle.value),
+                'oversubscribe_factor': normalize_positive_float_setting(
+                    local_oversubscribe_factor_input.value,
+                    'Local oversubscribe factor',
+                    1.0,
+                    minimum=1.0,
+                ),
             },
             'slurm': {
                 'orca_base': normalize_local_directory_setting(
@@ -906,6 +929,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     ctx.backend.max_cores = int(local_settings.get('max_cores', ctx.backend.max_cores))
                 if hasattr(ctx.backend, 'max_ram_mb'):
                     ctx.backend.max_ram_mb = int(local_settings.get('max_ram_mb', ctx.backend.max_ram_mb))
+                if hasattr(ctx.backend, 'allow_oversubscribe'):
+                    ctx.backend.allow_oversubscribe = bool(
+                        local_settings.get('allow_oversubscribe', ctx.backend.allow_oversubscribe)
+                    )
+                if hasattr(ctx.backend, 'oversubscribe_factor'):
+                    ctx.backend.oversubscribe_factor = float(
+                        local_settings.get('oversubscribe_factor', ctx.backend.oversubscribe_factor)
+                    )
             if effective_backend == 'slurm':
                 ctx.submit_templates_dir = Path(submit_templates_dir)
                 if hasattr(ctx.backend, 'submit_templates_dir'):
@@ -2860,6 +2891,20 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     detect_local_resources_btn,
                 ],
                 layout=_row_layout,
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Local queue oversubscribe</b>'),
+                    local_oversubscribe_toggle,
+                    widgets.HTML('<b>Factor</b>'),
+                    local_oversubscribe_factor_input,
+                ],
+                layout=_row_layout,
+            ),
+            widgets.HTML(
+                '<span style="color:#616161;">Only affects the local dashboard queue budget. '
+                'It can start more jobs in parallel than physical cores, but does not raise the '
+                'PAL of a single job.</span>'
             ),
             widgets.HTML(
                 '<hr style="border:none; border-top:1px solid #e0e0e0; margin:4px 0;">'
