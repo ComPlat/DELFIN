@@ -721,6 +721,11 @@ cleanup() {
 
 # Periodic copy-back to mitigate hard timeouts.
 periodic_copy() {
+    # First sync after 60s so short jobs get at least one copy-back
+    sleep 60
+    if [ -d "$RUN_DIR" ]; then
+        sync_results_back "initial-60s" "minimal"
+    fi
     while true; do
         sleep 7200
         if [ -d "$RUN_DIR" ]; then
@@ -785,11 +790,24 @@ stop_periodic_copy() {
     fi
 }
 
+# SIGUSR1: early warning before walltime (sent by --signal=B:USR1@N in sbatch).
+# Syncs results immediately while DELFIN keeps running.
+handle_early_warning() {
+    set +e
+    echo ""
+    echo "[warning] Approaching walltime -- performing preemptive sync..."
+    if [ -d "$RUN_DIR" ]; then
+        sync_results_back "preemptive-walltime" "full"
+        echo "[warning] Preemptive sync done."
+    fi
+}
+
 # Set trap for cleanup on termination signals (including SLURM timeout)
 trap 'stop_periodic_copy' EXIT
 trap 'cleanup SIGTERM' SIGTERM
 trap 'cleanup SIGINT' SIGINT
 trap 'cleanup SIGHUP' SIGHUP
+trap 'handle_early_warning' SIGUSR1
 
 # Job info
 echo "========================================"
