@@ -275,6 +275,10 @@ class SlurmJobBackend(JobBackend):
         )
         if self.orca_base:
             env_vars += f',DELFIN_ORCA_BASE={self.orca_base}'
+        env_vars = self._append_extra_env(env_vars, {
+            'DELFIN_TADF_XTB_PREOPT': 'xtb',
+            'DELFIN_TADF_XTB_T1_OPT': 'yes',
+        })
         env_vars = self._append_tool_exports(env_vars)
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
