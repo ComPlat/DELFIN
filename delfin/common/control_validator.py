@@ -1521,6 +1521,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("multiplicity_global_opt", _as_int, allow_none=True),
     FieldSpec("PAL", _as_int, default=6),
     FieldSpec("smiles_converter", _as_smiles_converter, default=""),
+    FieldSpec("GUPPY", _as_yes_no, default="no"),
     FieldSpec("GUPPY_RUNS", _as_positive_int, default=20),
     FieldSpec("GUPPY_GOAT", _as_guppy_goat_topk, default=0),
     FieldSpec("GUPPY_PARALLEL_JOBS", _as_positive_int, default=4),
