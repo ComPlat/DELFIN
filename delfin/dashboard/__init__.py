@@ -179,6 +179,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
             max_cores=int((runtime_settings.get('local', {}) or {}).get('max_cores', detected_local_cores)),
             max_ram_mb=int((runtime_settings.get('local', {}) or {}).get('max_ram_mb', detected_local_ram_mb)),
+            allow_oversubscribe=bool((runtime_settings.get('local', {}) or {}).get('allow_oversubscribe', False)),
+            oversubscribe_factor=float((runtime_settings.get('local', {}) or {}).get('oversubscribe_factor', 1.0)),
         )
         only_goat_template_path = None
 

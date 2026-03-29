@@ -1,0 +1,104 @@
+{
+  "_meta": {
+    "version": 2,
+    "description": "Local scheduler stage profiles. Edit or regenerate locally; DELFIN never depends on external archive paths at runtime."
+  },
+  "initial": {
+    "duration_s": 2679.0,
+    "observed_avg_cores": 27.5,
+    "samples": 1164,
+    "reference_atoms": 48.9,
+    "atom_scaling_exp": 1.868
+  },
+  "ox_step_1": {
+    "duration_s": 6417.6,
+    "observed_avg_cores": 7.8,
+    "samples": 1163,
+    "reference_atoms": 49.5,
+    "atom_scaling_exp": 1.979
+  },
+  "red_step_1": {
+    "duration_s": 5799.1,
+    "observed_avg_cores": 11.5,
+    "samples": 1359,
+    "reference_atoms": 49.5,
+    "atom_scaling_exp": 1.833
+  },
+  "red_step_2": {
+    "duration_s": 4916.6,
+    "observed_avg_cores": 13.0,
+    "samples": 1501,
+    "reference_atoms": 49.0,
+    "atom_scaling_exp": 1.623
+  },
+  "red_step_3": {
+    "duration_s": 5253.7,
+    "observed_avg_cores": 15.2,
+    "samples": 553,
+    "reference_atoms": 52.2,
+    "atom_scaling_exp": 1.178
+  },
+  "single_point": {
+    "duration_s": 431.4,
+    "observed_avg_cores": 6.2,
+    "samples": 20,
+    "reference_atoms": 83.2,
+    "atom_scaling_exp": 1.381
+  },
+  "esd_S0": {
+    "duration_s": 16882.1,
+    "observed_avg_cores": 17.2,
+    "samples": 237,
+    "reference_atoms": 90.6,
+    "atom_scaling_exp": 2.61
+  },
+  "esd_S1": {
+    "duration_s": 44625.1,
+    "observed_avg_cores": 11.9,
+    "samples": 194,
+    "reference_atoms": 90.0,
+    "atom_scaling_exp": 1.886
+  },
+  "esd_S2": {
+    "duration_s": 32768.6,
+    "observed_avg_cores": 9.6,
+    "samples": 5,
+    "reference_atoms": 53.0,
+    "atom_scaling_exp": 1.0
+  },
+  "esd_T1": {
+    "duration_s": 26298.3,
+    "observed_avg_cores": 15.1,
+    "samples": 32,
+    "reference_atoms": 72.8,
+    "atom_scaling_exp": 1.024
+  },
+  "esd_T2": {
+    "duration_s": 134006.8,
+    "observed_avg_cores": 18.0,
+    "samples": 4,
+    "reference_atoms": 60.2,
+    "atom_scaling_exp": 3.0
+  },
+  "esd_T3": {
+    "duration_s": 177340.3,
+    "observed_avg_cores": 18.7,
+    "samples": 3,
+    "reference_atoms": 62.7,
+    "atom_scaling_exp": 3.0
+  },
+  "esd_T4": {
+    "duration_s": 183905.0,
+    "observed_avg_cores": 22.7,
+    "samples": 3,
+    "reference_atoms": 75.7,
+    "atom_scaling_exp": 2.595
+  },
+  "other": {
+    "duration_s": 22225.7,
+    "observed_avg_cores": 12.1,
+    "samples": 602,
+    "reference_atoms": 73.8,
+    "atom_scaling_exp": 3.0
+  }
+}
