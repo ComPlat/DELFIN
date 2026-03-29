@@ -232,6 +232,10 @@ odd_seq = [
 ORCA base overrides (optional):
 keyword:basename=[]
 additions:basename=[]
+--------------------
+CO2 Coordination:
+co2_coordination=off
+co2_species_delta=0
 
 INFOS:
 -------------------------------------------------
