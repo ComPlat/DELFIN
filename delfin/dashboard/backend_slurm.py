@@ -5,7 +5,13 @@ import subprocess
 from pathlib import Path
 from typing import List, Tuple
 
-from delfin.qm_runtime import binary_env_var_name, canonical_tool_name
+from delfin.qm_runtime import (
+    binary_env_var_name,
+    canonical_tool_name,
+    resolve_tool,
+    settings_selectable_tools,
+)
+from delfin.runtime_setup import _tool_environment_overrides
 
 from .backend_base import JobBackend, JobInfo, SubmitResult
 from .input_processing import parse_resource_settings, parse_inp_resources
@@ -14,14 +20,42 @@ from .input_processing import parse_resource_settings, parse_inp_resources
 class SlurmJobBackend(JobBackend):
     """SLURM cluster backend (sbatch/squeue/scancel)."""
 
+    _auto_detected_cache: dict[str, str] | None = None
+
+    # Tools with expensive system-wide scans (module spider, deep /opt
+    # traversal) that are not needed for auto-export to SLURM jobs.
+    # Users configure these explicitly in the Settings tab instead.
+    _SKIP_AUTO_DETECT = frozenset({"turbomole", "gaussian"})
+
+    @classmethod
+    def _auto_detected_tools(cls) -> dict[str, str]:
+        """Resolve tool binaries once per process and cache the result."""
+        if cls._auto_detected_cache is None:
+            detected: dict[str, str] = {}
+            for tool_name in settings_selectable_tools():
+                if tool_name in cls._SKIP_AUTO_DETECT:
+                    continue
+                resolved = resolve_tool(tool_name)
+                if resolved is not None:
+                    detected[tool_name] = resolved.path
+            cls._auto_detected_cache = detected
+        return cls._auto_detected_cache
+
     def __init__(self, submit_templates_dir, orca_base=None, tool_binaries=None):
         self.submit_templates_dir = Path(submit_templates_dir)
         self.orca_base = orca_base
-        self.tool_binaries = {
+        explicit = {
             canonical_tool_name(name): str(value).strip()
             for name, value in (tool_binaries or {}).items()
             if str(value or '').strip()
         }
+        # Only auto-detect if no tools were configured in settings.
+        # Users configure tools via Settings tab "Scan" buttons which
+        # persist paths to ~/.delfin_settings.json.
+        if not explicit:
+            for tool_name, path in self._auto_detected_tools().items():
+                explicit[tool_name] = path
+        self.tool_binaries = explicit
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -68,9 +102,9 @@ class SlurmJobBackend(JobBackend):
         return pal_used, mem_used
 
     def _append_tool_exports(self, env_vars: str) -> str:
-        exports = []
-        for tool_name, binary_path in self.tool_binaries.items():
-            exports.append(f'{binary_env_var_name(tool_name)}={binary_path}')
+        # Compute all tool env vars: DELFIN_*_BINARY + XTB4STDAHOME, STD2HOME, TURBODIR
+        tool_env, _path_entries = _tool_environment_overrides(self.tool_binaries)
+        exports = [f'{key}={value}' for key, value in tool_env.items()]
         if not exports:
             return env_vars
         return f'{env_vars},{",".join(exports)}'
