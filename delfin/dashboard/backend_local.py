@@ -23,7 +23,8 @@ class LocalJobBackend(JobBackend):
 
     def __init__(self, run_script, orca_base=None,
                  jobs_file=None, tool_binaries=None,
-                 max_cores=384, max_ram_mb=1_400_000):
+                 max_cores=384, max_ram_mb=1_400_000,
+                 allow_oversubscribe=False, oversubscribe_factor=1.0):
         self.run_script = Path(run_script)
         self.orca_base = orca_base
         self.jobs_file = Path(jobs_file) if jobs_file else Path.home() / '.delfin_jobs.json'
@@ -34,6 +35,12 @@ class LocalJobBackend(JobBackend):
         }
         self.max_cores = max_cores
         self.max_ram_mb = max_ram_mb
+        self.allow_oversubscribe = bool(allow_oversubscribe)
+        try:
+            factor = float(oversubscribe_factor)
+        except (TypeError, ValueError):
+            factor = 1.0
+        self.oversubscribe_factor = max(1.0, factor)
         self._next_job_id_key = '_next_job_id'
         self._lock = threading.Lock()
         self._worker_running = True
@@ -41,6 +48,13 @@ class LocalJobBackend(JobBackend):
             target=self._queue_worker, daemon=True, name='delfin-queue'
         )
         self._worker_thread.start()
+
+    def _core_budget(self) -> int:
+        budget = int(self.max_cores)
+        if not self.allow_oversubscribe:
+            return budget
+        boosted = int(round(float(self.max_cores) * float(self.oversubscribe_factor)))
+        return max(budget, boosted)
 
     def _has_launch_target(self):
         return self.run_script.exists() or importlib.util.find_spec(
@@ -196,13 +210,14 @@ class LocalJobBackend(JobBackend):
             used_cores = sum(j.get('pal', 0) for j in jobs if j['status'] == 'RUNNING')
             used_ram = sum(j.get('pal', 0) * j.get('maxcore', 0)
                           for j in jobs if j['status'] == 'RUNNING')
+            core_budget = self._core_budget()
 
             for job in jobs:
                 if job['status'] != 'PENDING':
                     continue
                 needed_cores = job.get('pal', 40)
                 needed_ram = job.get('pal', 40) * job.get('maxcore', 6000)
-                if (used_cores + needed_cores <= self.max_cores and
+                if (used_cores + needed_cores <= core_budget and
                         used_ram + needed_ram <= self.max_ram_mb):
                     if self._start_job(job, data):
                         used_cores += needed_cores

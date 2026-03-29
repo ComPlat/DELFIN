@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from .global_manager import get_global_manager
 from .orca import run_orca
 from .qm_runtime import find_tool_executable, run_tool
 from .xyz_io import modify_file2
@@ -20,6 +21,22 @@ def _resolve_work_input(config) -> Path:
     if not path.is_absolute():
         path = Path.cwd() / path
     return path
+
+
+def _resolve_global_job_limits(requested_cores: int, requested_maxcore: int | None = None) -> tuple[int, int]:
+    manager = get_global_manager()
+    try:
+        if manager.is_initialized():
+            return manager.resolve_job_resources(
+                requested_cores=requested_cores,
+                requested_maxcore=requested_maxcore,
+            )
+    except Exception:
+        pass
+
+    fallback_cores = max(1, int(requested_cores))
+    fallback_maxcore = max(256, int(requested_maxcore if requested_maxcore is not None else 1000))
+    return fallback_cores, fallback_maxcore
 
 OK_MARKER = "ORCA TERMINATED NORMALLY"
 
@@ -80,6 +97,10 @@ def _bootstrap_fingerprint_from_complete_output(
 
 def XTB(multiplicity, charge, config):
     print("\nstarting xTB\n")
+    cores_limit, _ = _resolve_global_job_limits(
+        int(config.get('PAL', 1) or 1),
+        int(config.get('maxcore', 1000) or 1000),
+    )
     folder_name = config['xTB_method']
     cwd = Path.cwd()
     work = cwd / folder_name
@@ -98,7 +119,7 @@ def XTB(multiplicity, charge, config):
     # nie verschieben – immer kopieren (idempotent)
     shutil.copyfile(src_input, inp)
     modify_file2(str(inp),
-                 f"!{config['xTB_method']} OPT\n%pal nprocs {config['PAL']} end\n*xyz {charge} {multiplicity}\n",
+                 f"!{config['xTB_method']} OPT\n%pal nprocs {cores_limit} end\n*xyz {charge} {multiplicity}\n",
                  "\n*\n")
     print("File was successfully updated.")
 
@@ -123,6 +144,10 @@ def XTB(multiplicity, charge, config):
 
 def XTB_GOAT(multiplicity, charge, config):
     print("\nstarting GOAT\n")
+    cores_limit, _ = _resolve_global_job_limits(
+        int(config.get('PAL', 1) or 1),
+        int(config.get('maxcore', 1000) or 1000),
+    )
     folder_name = f"{config['xTB_method']}_GOAT"
     cwd = Path.cwd()
     work = cwd / folder_name
@@ -140,7 +165,7 @@ def XTB_GOAT(multiplicity, charge, config):
 
     shutil.copyfile(src_input, inp)
     modify_file2(str(inp),
-                 f"!{config['xTB_method']} GOAT \n%pal nprocs {config['PAL']} end\n*xyz {charge} {multiplicity}\n",
+                 f"!{config['xTB_method']} GOAT \n%pal nprocs {cores_limit} end\n*xyz {charge} {multiplicity}\n",
                  "\n*\n")
     print("File was successfully updated.")
 
@@ -166,6 +191,7 @@ def XTB_GOAT(multiplicity, charge, config):
 
 def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="start.txt", crest_dir="CREST"):
     print("\nstarting CREST\n")
+    crest_cores, _ = _resolve_global_job_limits(PAL)
     cwd = Path.cwd()
     work = cwd / crest_dir
     work.mkdir(parents=True, exist_ok=True)
@@ -197,7 +223,7 @@ def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="start.txt
     else:
         # CREST laufen lassen
         env = os.environ.copy()
-        env["OMP_NUM_THREADS"] = str(PAL)
+        env["OMP_NUM_THREADS"] = str(crest_cores)
         crest_executable = find_tool_executable("crest")
         if not crest_executable:
             logging.error("CREST executable not found via DELFIN QM runtime.")
@@ -246,7 +272,7 @@ def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="start.txt
                     prescreening=True,
                     screening=True,
                     optimization=False,
-                    nprocs=max(1, PAL // 2),
+                    nprocs=max(1, crest_cores // 2),
                     omp=2,
                     working_dir=work,
                 )
@@ -273,6 +299,10 @@ def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="start.txt
 
 def XTB_SOLVATOR(source_file, multiplicity, charge, solvent, number_explicit_solv_molecules, config):
     print("\nstarting XTB_SOLVATOR\n")
+    cores_limit, _ = _resolve_global_job_limits(
+        int(config.get('PAL', 1) or 1),
+        int(config.get('maxcore', 1000) or 1000),
+    )
     folder_name = "XTB_SOLVATOR"
     cwd = Path.cwd()
     work = cwd / folder_name
@@ -297,7 +327,7 @@ def XTB_SOLVATOR(source_file, multiplicity, charge, solvent, number_explicit_sol
 
     modify_file2(
         str(inp),
-        f"!{config['xTB_method']} ALPB({solvent})\n%SOLVATOR NSOLV {number_explicit_solv_molecules} END\n%pal nprocs {config['PAL']} end\n*xyz {charge} {multiplicity}\n",
+        f"!{config['xTB_method']} ALPB({solvent})\n%SOLVATOR NSOLV {number_explicit_solv_molecules} END\n%pal nprocs {cores_limit} end\n*xyz {charge} {multiplicity}\n",
         "\n*\n"
     )
     print("File was successfully updated.")

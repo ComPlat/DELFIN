@@ -575,6 +575,19 @@ def run_single_hyperpol_workflow(
     )
 
 
+def _resolve_global_limits(requested_cores: int, requested_maxcore: int) -> tuple[int, int]:
+    manager = get_global_manager()
+    try:
+        if manager.is_initialized():
+            return manager.resolve_job_resources(
+                requested_cores=requested_cores,
+                requested_maxcore=requested_maxcore,
+            )
+    except Exception:
+        logger.debug("Could not resolve global limits for hyperpol_xtb", exc_info=True)
+    return max(1, int(requested_cores)), max(256, int(requested_maxcore))
+
+
 def _load_wavelengths(
     wavelength_values: list[float],
     wavelength_file: Optional[str],
@@ -758,6 +771,7 @@ def run_cli(argv: list[str]) -> int:
     if len(entries) == 1 or args.parallel_jobs <= 1:
         for entry in entries:
             try:
+                cores_limit, maxcore_limit = _resolve_global_limits(args.pal, args.maxcore)
                 result = run_single_hyperpol_workflow(
                     entry,
                     charge=args.charge,
@@ -766,8 +780,8 @@ def run_cli(argv: list[str]) -> int:
                     preopt=args.preopt,
                     wavelengths_nm=wavelengths_nm,
                     energy_window_ev=args.energy_window,
-                    cores=args.pal,
-                    maxcore=args.maxcore,
+                    cores=cores_limit,
+                    maxcore=maxcore_limit,
                     workdir=base_workdir / _safe_label(entry.label, entry.label),
                 )
                 results.append(result)
@@ -795,6 +809,7 @@ def run_cli(argv: list[str]) -> int:
             def runner(*_args, _entry=entry, _workdir=workdir, **kwargs) -> None:
                 allocated = kwargs.get("cores", args.pal)
                 try:
+                    cores_limit, maxcore_limit = _resolve_global_limits(int(allocated), args.maxcore)
                     result = run_single_hyperpol_workflow(
                         _entry,
                         charge=args.charge,
@@ -803,8 +818,8 @@ def run_cli(argv: list[str]) -> int:
                         preopt=args.preopt,
                         wavelengths_nm=wavelengths_nm,
                         energy_window_ev=args.energy_window,
-                        cores=max(1, int(allocated)),
-                        maxcore=args.maxcore,
+                        cores=cores_limit,
+                        maxcore=maxcore_limit,
                         workdir=_workdir,
                     )
                     with lock:

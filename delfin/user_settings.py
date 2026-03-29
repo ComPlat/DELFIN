@@ -44,6 +44,8 @@ DEFAULT_SETTINGS = {
             "orca_base": "",
             "max_cores": _DEFAULT_LOCAL_CORES,
             "max_ram_mb": _DEFAULT_LOCAL_RAM_MB,
+            "allow_oversubscribe": False,
+            "oversubscribe_factor": 1.0,
         },
         "slurm": {
             "orca_base": "",
@@ -123,6 +125,31 @@ def normalize_positive_int_setting(value, label, default, minimum=1):
     if normalized < minimum:
         raise ValueError(f"{label} must be at least {minimum}.")
     return normalized
+
+
+def normalize_positive_float_setting(value, label, default, minimum=1.0):
+    if value in ("", None):
+        return float(default)
+    try:
+        normalized = float(value)
+    except Exception as exc:
+        raise ValueError(f"{label} must be a number.") from exc
+    if normalized < minimum:
+        raise ValueError(f"{label} must be at least {minimum}.")
+    return float(normalized)
+
+
+def normalize_bool_setting(value, default=False):
+    if value in ("", None):
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enable", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disable", "disabled"}:
+        return False
+    return bool(default)
 
 
 def normalize_string_list_setting(value, label):
@@ -258,6 +285,22 @@ def _normalized_settings_dict(payload):
                 local_runtime.get("max_ram_mb", DEFAULT_SETTINGS["runtime"]["local"]["max_ram_mb"]),
                 "Local max RAM (MB)",
                 DEFAULT_SETTINGS["runtime"]["local"]["max_ram_mb"],
+            ),
+            "allow_oversubscribe": normalize_bool_setting(
+                local_runtime.get(
+                    "allow_oversubscribe",
+                    DEFAULT_SETTINGS["runtime"]["local"]["allow_oversubscribe"],
+                ),
+                DEFAULT_SETTINGS["runtime"]["local"]["allow_oversubscribe"],
+            ),
+            "oversubscribe_factor": normalize_positive_float_setting(
+                local_runtime.get(
+                    "oversubscribe_factor",
+                    DEFAULT_SETTINGS["runtime"]["local"]["oversubscribe_factor"],
+                ),
+                "Local oversubscribe factor",
+                DEFAULT_SETTINGS["runtime"]["local"]["oversubscribe_factor"],
+                minimum=1.0,
             ),
         },
         "slurm": {

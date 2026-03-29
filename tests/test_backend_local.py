@@ -66,3 +66,45 @@ def test_local_backend_prefers_explicit_run_script_when_present(monkeypatch, tmp
         "bash",
         str(run_script),
     ]
+
+
+def test_local_backend_can_oversubscribe_cores_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
+    backend = _MODULE.LocalJobBackend(
+        run_script=tmp_path / "missing.sh",
+        max_cores=12,
+        max_ram_mb=1_400_000,
+        allow_oversubscribe=True,
+        oversubscribe_factor=2.0,
+    )
+
+    jobs_data = {
+        "jobs": [
+            {"job_id": 1, "status": "RUNNING", "pal": 8, "maxcore": 1000},
+            {"job_id": 2, "status": "PENDING", "pal": 8, "maxcore": 1000, "job_dir": str(tmp_path)},
+        ]
+    }
+
+    monkeypatch.setattr(backend, "_load_jobs", lambda: jobs_data)
+    monkeypatch.setattr(backend, "_save_jobs", lambda data: None)
+    monkeypatch.setattr(backend, "_update_job_status", lambda job: job)
+    started = []
+    monkeypatch.setattr(backend, "_start_job", lambda job, data: started.append(job["job_id"]) or True)
+
+    changed = backend._try_start_pending_jobs()
+
+    assert changed is True
+    assert started == [2]
+
+
+def test_local_backend_oversubscribe_budget_is_integer(monkeypatch, tmp_path):
+    monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
+    backend = _MODULE.LocalJobBackend(
+        run_script=tmp_path / "missing.sh",
+        max_cores=12,
+        max_ram_mb=1_400_000,
+        allow_oversubscribe=True,
+        oversubscribe_factor=1.1,
+    )
+
+    assert backend._core_budget() == 13
