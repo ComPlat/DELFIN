@@ -232,6 +232,23 @@ def _run_mode(mode: str) -> int:
         ]
         if resolved_mode == 'hyperpol_xtb':
             cmd.extend(['--engine', 'std2', '--preopt', 'none', '--static-only', '--energy-window', '15'])
+        elif resolved_mode == 'tadf_xtb':
+            tadf_preopt = str(os.environ.get('DELFIN_TADF_XTB_PREOPT') or 'xtb').strip().lower() or 'xtb'
+            tadf_excited_method = (
+                str(os.environ.get('DELFIN_TADF_XTB_EXCITED_METHOD') or 'stda').strip().lower() or 'stda'
+            )
+            tadf_energy_window = str(os.environ.get('DELFIN_TADF_XTB_ENERGY_WINDOW') or '10').strip() or '10'
+            tadf_t1_opt = str(os.environ.get('DELFIN_TADF_XTB_T1_OPT') or 'yes').strip().lower()
+            cmd.extend([
+                '--preopt',
+                tadf_preopt,
+                '--excited-method',
+                tadf_excited_method,
+                '--energy-window',
+                tadf_energy_window,
+            ])
+            if tadf_t1_opt in {'1', 'true', 'yes', 'on'}:
+                cmd.append('--t1-opt')
         return _run_and_tee(cmd, Path.cwd() / output_name)
     if resolved_mode == 'delfin-co2-chain':
         species_delta = str(os.environ.get('DELFIN_CO2_SPECIES_DELTA') or '0')
