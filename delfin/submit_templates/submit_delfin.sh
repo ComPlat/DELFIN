@@ -72,6 +72,10 @@ _start_periodic_sync() {
   if [ "$WORK_DIR" = "$ORIGIN_DIR" ]; then return; fi
   if [ "$SYNC_INTERVAL" -le 0 ] 2>/dev/null; then return; fi
   (
+    # First sync after 60s so short jobs get at least one copy-back
+    sleep 60
+    rsync -a --update $RSYNC_EXCLUDES "$WORK_DIR/" "$ORIGIN_DIR/" 2>/dev/null || true
+    echo "[sync] Initial sync completed at $(date +%H:%M:%S)"
     while true; do
       sleep "$SYNC_INTERVAL"
       rsync -a --update $RSYNC_EXCLUDES "$WORK_DIR/" "$ORIGIN_DIR/" 2>/dev/null || true
@@ -105,7 +109,7 @@ _stage_out() {
     echo ""
     echo "[stage-out] Copying results $WORK_DIR -> $ORIGIN_DIR"
     if command -v rsync >/dev/null 2>&1; then
-      rsync -a --update "$WORK_DIR/" "$ORIGIN_DIR/" 2>&1 || echo "[stage-out] WARNING: rsync had errors"
+      timeout 90 rsync -a --update "$WORK_DIR/" "$ORIGIN_DIR/" 2>&1 || echo "[stage-out] WARNING: rsync had errors or timed out"
     else
       cp -ru "$WORK_DIR/." "$ORIGIN_DIR/" 2>&1 || echo "[stage-out] WARNING: cp had errors"
     fi
@@ -115,6 +119,7 @@ _stage_out() {
 }
 
 _handle_signal() {
+  set +e  # must not abort inside trap (matches _stage_out)
   echo ""
   echo "[signal] Received termination signal — stopping DELFIN and saving results..."
   if [ -n "$_DELFIN_PID" ]; then

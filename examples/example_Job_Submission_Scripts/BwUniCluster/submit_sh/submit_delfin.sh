@@ -696,6 +696,7 @@ sync_results_back() {
 
 # Cleanup function for trap (handles SIGTERM from timeout, SIGINT, etc.)
 cleanup() {
+    set +e  # must not abort inside trap
     local signal_name="${1:-UNKNOWN}"
     echo ""
     echo "========================================"
