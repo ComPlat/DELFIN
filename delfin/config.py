@@ -286,6 +286,22 @@ def _load_template_defaults() -> Dict[str, Any]:
     return deepcopy(_TEMPLATE_DEFAULTS_CACHE)
 
 
+def _apply_guppy_legacy(config: Dict[str, Any]) -> None:
+    """Translate legacy ``GUPPY=yes`` to ``smiles_converter=GUPPY``.
+
+    Old CONTROL files use ``GUPPY=yes`` instead of the newer
+    ``smiles_converter=GUPPY`` key.  When ``GUPPY`` is *yes* and
+    ``smiles_converter`` is absent or still a template placeholder,
+    inject the correct value so that the required-key check passes.
+    """
+    guppy_val = str(config.get("GUPPY", "no")).strip().lower()
+    if guppy_val != "yes":
+        return
+    sc = config.get("smiles_converter", "")
+    if not sc or _is_placeholder_value(sc):
+        config["smiles_converter"] = "GUPPY"
+
+
 def _collect_missing_required_keys(user_keys: Set[str], placeholder_keys: Set[str],
                                     esd_enabled: bool = True) -> List[str]:
     required_missing = {key for key in _TEMPLATE_REQUIRED_KEYS if key not in user_keys}
@@ -435,6 +451,7 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     sanitized = remove_existing_sequence_blocks(Path(file_path), persist=False)
     text = sanitized or Path(file_path).read_text(encoding="utf-8")
     config = _parse_control_file(file_path, keep_steps_literal=True, content=text)
+    _apply_guppy_legacy(config)
     override_errors = _validate_orca_override_entries(config)
     if override_errors:
         raise ValueError("; ".join(override_errors))
@@ -474,6 +491,7 @@ def validate_control_text(control_text: str) -> List[str]:
     except Exception as exc:
         return [f"Failed to parse CONTROL content: {exc}"]
 
+    _apply_guppy_legacy(config)
     all_errors.extend(_validate_orca_override_entries(config))
 
     user_keys = set(config.keys())
@@ -619,6 +637,7 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     sanitized = remove_existing_sequence_blocks(Path(path), persist=False)
     text = sanitized or Path(path).read_text(encoding="utf-8")
     config = _parse_control_file(path, keep_steps_literal=False, content=text)
+    _apply_guppy_legacy(config)
     override_errors = _validate_orca_override_entries(config)
     if override_errors:
         raise ValueError("; ".join(override_errors))
