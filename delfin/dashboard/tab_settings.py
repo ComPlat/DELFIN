@@ -2923,6 +2923,18 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 ],
                 layout=_row_layout,
             ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Install individual:</b> '),
+                    install_xtb_btn,
+                    install_crest_btn,
+                    install_dftbplus_btn,
+                    install_stda_btn,
+                    install_std2_btn,
+                    install_micromamba_btn,
+                ],
+                layout=_row_layout,
+            ),
             qm_status_box,
             qm_tools_log,
         ],
