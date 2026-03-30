@@ -328,7 +328,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     )
     local_oversubscribe_toggle = widgets.Checkbox(
         value=False,
-        description='Allow local queue oversubscription',
+        description='Allow local queue oversubscription (cores/RAM)',
         indent=False,
         layout=widgets.Layout(width='250px', min_width='250px', height='28px'),
     )

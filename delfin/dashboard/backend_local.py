@@ -56,6 +56,13 @@ class LocalJobBackend(JobBackend):
         boosted = int(round(float(self.max_cores) * float(self.oversubscribe_factor)))
         return max(budget, boosted)
 
+    def _ram_budget(self) -> int:
+        budget = int(self.max_ram_mb)
+        if not self.allow_oversubscribe:
+            return budget
+        boosted = int(round(float(self.max_ram_mb) * float(self.oversubscribe_factor)))
+        return max(budget, boosted)
+
     def _has_launch_target(self):
         return self.run_script.exists() or importlib.util.find_spec(
             'delfin.dashboard.local_runner'
@@ -211,6 +218,7 @@ class LocalJobBackend(JobBackend):
             used_ram = sum(j.get('pal', 0) * j.get('maxcore', 0)
                           for j in jobs if j['status'] == 'RUNNING')
             core_budget = self._core_budget()
+            ram_budget = self._ram_budget()
 
             for job in jobs:
                 if job['status'] != 'PENDING':
@@ -218,7 +226,7 @@ class LocalJobBackend(JobBackend):
                 needed_cores = job.get('pal', 40)
                 needed_ram = job.get('pal', 40) * job.get('maxcore', 6000)
                 if (used_cores + needed_cores <= core_budget and
-                        used_ram + needed_ram <= self.max_ram_mb):
+                        used_ram + needed_ram <= ram_budget):
                     if self._start_job(job, data):
                         used_cores += needed_cores
                         used_ram += needed_ram
