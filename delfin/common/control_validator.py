@@ -923,9 +923,11 @@ def _as_on_off(value: Any) -> str:
 
 def _as_preopt_mode(value: Any) -> str:
     text = str(value or "none").strip().lower()
+    if text in {"no", "false", "off", "0"}:
+        text = "none"
     if text in {"none", "xtb", "crest", "goat"}:
         return text
-    raise ValueError("must be none, xtb, crest, or goat")
+    raise ValueError("must be none/no, xtb, crest, or goat")
 
 
 def _as_response_engine(value: Any) -> str:
@@ -1582,6 +1584,12 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("tadf_xTB_excited_method", _as_response_engine, default="stda"),
     FieldSpec("tadf_xTB_energy_window", _as_non_negative_float, default=10.0),
     FieldSpec("tadf_xTB_run_t1_opt", _as_yes_no, default="yes"),
+    # Stability Constant
+    FieldSpec("stability_constant", _as_yes_no, default="no"),
+    FieldSpec("n_explicit_solvent", _as_positive_int, default=6),
+    FieldSpec("logK_exp", _as_str, default=""),
+    FieldSpec("sc_smiles_converter", _as_smiles_converter, default="NORMAL"),
+    FieldSpec("sc_preopt", _as_preopt_mode, default="xtb"),
 )
 
 
