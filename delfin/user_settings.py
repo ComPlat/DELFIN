@@ -46,6 +46,9 @@ DEFAULT_SETTINGS = {
             "max_ram_mb": _DEFAULT_LOCAL_RAM_MB,
             "allow_oversubscribe": False,
             "oversubscribe_factor": 1.0,
+            "allow_live_load_bypass": False,
+            "live_cpu_target_factor": 0.95,
+            "live_min_free_ram_mb": 64_000,
         },
         "slurm": {
             "orca_base": "",
@@ -301,6 +304,31 @@ def _normalized_settings_dict(payload):
                 "Local oversubscribe factor",
                 DEFAULT_SETTINGS["runtime"]["local"]["oversubscribe_factor"],
                 minimum=1.0,
+            ),
+            "allow_live_load_bypass": normalize_bool_setting(
+                local_runtime.get(
+                    "allow_live_load_bypass",
+                    DEFAULT_SETTINGS["runtime"]["local"]["allow_live_load_bypass"],
+                ),
+                DEFAULT_SETTINGS["runtime"]["local"]["allow_live_load_bypass"],
+            ),
+            "live_cpu_target_factor": normalize_positive_float_setting(
+                local_runtime.get(
+                    "live_cpu_target_factor",
+                    DEFAULT_SETTINGS["runtime"]["local"]["live_cpu_target_factor"],
+                ),
+                "Local live CPU target factor",
+                DEFAULT_SETTINGS["runtime"]["local"]["live_cpu_target_factor"],
+                minimum=0.1,
+            ),
+            "live_min_free_ram_mb": normalize_positive_int_setting(
+                local_runtime.get(
+                    "live_min_free_ram_mb",
+                    DEFAULT_SETTINGS["runtime"]["local"]["live_min_free_ram_mb"],
+                ),
+                "Local live minimum free RAM (MB)",
+                DEFAULT_SETTINGS["runtime"]["local"]["live_min_free_ram_mb"],
+                minimum=1,
             ),
         },
         "slurm": {

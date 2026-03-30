@@ -339,6 +339,26 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         step=0.1,
         layout=widgets.Layout(width='120px', min_width='120px', height='28px'),
     )
+    local_live_load_toggle = widgets.Checkbox(
+        value=False,
+        description='Allow live-load queue bypass',
+        indent=False,
+        layout=widgets.Layout(width='230px', min_width='230px', height='28px'),
+    )
+    local_live_cpu_target_input = widgets.BoundedFloatText(
+        value=0.95,
+        min=0.1,
+        max=2.0,
+        step=0.05,
+        layout=widgets.Layout(width='120px', min_width='120px', height='28px'),
+    )
+    local_live_min_ram_input = widgets.BoundedIntText(
+        value=64_000,
+        min=1,
+        max=100_000_000,
+        step=1000,
+        layout=widgets.Layout(width='140px', min_width='140px', height='28px'),
+    )
     slurm_orca_input = widgets.Text(
         placeholder='Optional SLURM ORCA override',
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
@@ -777,6 +797,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         local_max_ram_input.value = int(local_payload.get('max_ram_mb', detected_local_ram_mb))
         local_oversubscribe_toggle.value = bool(local_payload.get('allow_oversubscribe', False))
         local_oversubscribe_factor_input.value = float(local_payload.get('oversubscribe_factor', 1.0))
+        local_live_load_toggle.value = bool(local_payload.get('allow_live_load_bypass', False))
+        local_live_cpu_target_input.value = float(local_payload.get('live_cpu_target_factor', 0.95))
+        local_live_min_ram_input.value = int(local_payload.get('live_min_free_ram_mb', 64_000))
         slurm_orca_input.value = str(slurm_payload.get('orca_base') or '')
         slurm_templates_input.value = str(slurm_payload.get('submit_templates_dir') or '')
         slurm_profile_input.value = str(slurm_payload.get('profile') or '')
@@ -874,6 +897,19 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     1.0,
                     minimum=1.0,
                 ),
+                'allow_live_load_bypass': bool(local_live_load_toggle.value),
+                'live_cpu_target_factor': normalize_positive_float_setting(
+                    local_live_cpu_target_input.value,
+                    'Local live CPU target factor',
+                    0.95,
+                    minimum=0.1,
+                ),
+                'live_min_free_ram_mb': normalize_positive_int_setting(
+                    local_live_min_ram_input.value,
+                    'Local live minimum free RAM (MB)',
+                    64_000,
+                    minimum=1,
+                ),
             },
             'slurm': {
                 'orca_base': normalize_local_directory_setting(
@@ -936,6 +972,27 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 if hasattr(ctx.backend, 'oversubscribe_factor'):
                     ctx.backend.oversubscribe_factor = float(
                         local_settings.get('oversubscribe_factor', ctx.backend.oversubscribe_factor)
+                    )
+                if hasattr(ctx.backend, 'allow_live_load_bypass'):
+                    ctx.backend.allow_live_load_bypass = bool(
+                        local_settings.get(
+                            'allow_live_load_bypass',
+                            ctx.backend.allow_live_load_bypass,
+                        )
+                    )
+                if hasattr(ctx.backend, 'live_cpu_target_factor'):
+                    ctx.backend.live_cpu_target_factor = float(
+                        local_settings.get(
+                            'live_cpu_target_factor',
+                            ctx.backend.live_cpu_target_factor,
+                        )
+                    )
+                if hasattr(ctx.backend, 'live_min_free_ram_mb'):
+                    ctx.backend.live_min_free_ram_mb = int(
+                        local_settings.get(
+                            'live_min_free_ram_mb',
+                            ctx.backend.live_min_free_ram_mb,
+                        )
                     )
             if effective_backend == 'slurm':
                 ctx.submit_templates_dir = Path(submit_templates_dir)
@@ -2905,6 +2962,22 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 '<span style="color:#616161;">Only affects the local dashboard queue budget. '
                 'It can start more jobs in parallel than physical cores, but does not raise the '
                 'PAL of a single job.</span>'
+            ),
+            widgets.HBox(
+                [
+                    widgets.HTML('<b>Live-load queue bypass</b>'),
+                    local_live_load_toggle,
+                    widgets.HTML('<b>CPU target factor</b>'),
+                    local_live_cpu_target_input,
+                    widgets.HTML('<b>Min free RAM (MB)</b>'),
+                    local_live_min_ram_input,
+                ],
+                layout=_row_layout,
+            ),
+            widgets.HTML(
+                '<span style="color:#616161;">Local only. If PAL/maxcore reservations would keep a '
+                'job pending, the queue may still start one extra job per poll cycle when the live '
+                'CPU load is below the target and the free-RAM floor is still respected.</span>'
             ),
             widgets.HTML(
                 '<hr style="border:none; border-top:1px solid #e0e0e0; margin:4px 0;">'

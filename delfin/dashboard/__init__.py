@@ -181,6 +181,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             max_ram_mb=int((runtime_settings.get('local', {}) or {}).get('max_ram_mb', detected_local_ram_mb)),
             allow_oversubscribe=bool((runtime_settings.get('local', {}) or {}).get('allow_oversubscribe', False)),
             oversubscribe_factor=float((runtime_settings.get('local', {}) or {}).get('oversubscribe_factor', 1.0)),
+            allow_live_load_bypass=bool((runtime_settings.get('local', {}) or {}).get('allow_live_load_bypass', False)),
+            live_cpu_target_factor=float((runtime_settings.get('local', {}) or {}).get('live_cpu_target_factor', 0.95)),
+            live_min_free_ram_mb=int((runtime_settings.get('local', {}) or {}).get('live_min_free_ram_mb', 64_000)),
         )
         only_goat_template_path = None
 
