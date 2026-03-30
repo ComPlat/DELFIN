@@ -150,6 +150,7 @@ class WorkflowJob:
     inline: bool = False  # Run inline without reserving pool cores
     preserve_cores_optimal: bool = False  # Skip auto-tuning for explicit core allocations
     working_dir: Optional[Path] = None  # Working directory for job-specific process tracking
+    precomplete_check: Optional[Callable[[], bool]] = None  # Recalc-aware pre-scheduler completion shortcut
 
     # Cache original core preferences so dynamic scheduling can adjust per run.
     base_cores_min: int = field(init=False, repr=False)
@@ -369,6 +370,19 @@ class _WorkflowManager:
                 # Remove the job that caused the cycle
                 self._jobs.pop(job.job_id, None)
                 raise ValueError(f"Cannot add job {job.job_id}: {e}") from e
+
+            precompleted = False
+            if callable(job.precomplete_check):
+                try:
+                    precompleted = bool(job.precomplete_check())
+                except Exception:
+                    logger.debug("[%s] precomplete check raised for %s", self.label, job.job_id, exc_info=True)
+
+            if precompleted:
+                self._completed.add(job.job_id)
+                logger.info("[%s] Pre-marked %s as completed before scheduling", self.label, job.job_id)
+                self._event.set()
+                return
 
             # Accumulate job registration for batch logging
             self._pending_job_registrations.append(job.job_id)

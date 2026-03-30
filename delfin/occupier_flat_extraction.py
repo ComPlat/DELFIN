@@ -427,6 +427,8 @@ def _create_occupier_fob_jobs(
         inp_name = f"{stem}.inp"
         out_name = "output.out" if idx == 1 else f"output{idx}.out"
         job_id = f"{stage_prefix}_fob_{idx}"
+        inp_path = folder_path / inp_name
+        out_path = folder_path / out_name
 
         def make_work(
             _idx: int = idx,
@@ -709,6 +711,7 @@ def _create_occupier_fob_jobs(
             cores_max=cores_max,
             preserve_cores_optimal=True,  # Preserve weighted allocation
             working_dir=job_workdir,
+            precomplete_check=lambda _inp=inp_path, _out=out_path, _recalc=recalc_enabled: _should_skip_recalc(_inp, _out, _recalc),
         )
         jobs.append(job)
 
@@ -863,6 +866,9 @@ def _create_occupier_fob_jobs(
         cores_optimal=0,
         cores_max=0,
         inline=True,
+        precomplete_check=lambda _folder=folder_name, _dir=folder_path: (
+            _update_runtime_cache(_folder, _dir, global_config, occ_results) or True
+        ) if recalc_enabled and (_dir / "OCCUPIER.txt").exists() else False,
     )
     jobs.append(best_job)
 
