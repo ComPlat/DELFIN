@@ -148,6 +148,11 @@ def analyze_complex(smiles: str, solvent: str, n_explicit_solvent: int) -> Stabi
     if not ligand_smiles_list:
         raise ValueError(f"No ligands found in SMILES '{smiles}'")
 
+    mol = Chem.MolFromSmiles(smiles, sanitize=False)
+    if mol is None:
+        raise ValueError(f"Could not parse complex SMILES '{smiles}' for charge analysis")
+    total_complex_charge = sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
+
     # Determine denticity per ligand by counting coordinating atoms
     denticities = _determine_denticities(smiles, ligand_smiles_list)
 
@@ -186,8 +191,23 @@ def analyze_complex(smiles: str, solvent: str, n_explicit_solvent: int) -> Stabi
         )
     solv_info = SOLVENT_DB[solvent_key]
 
-    # Total metal charge
-    metal_charge = sum(chg for _, chg in metals)
+    # Total metal charge after charge-separated coordination notation is
+    # unfolded into free ligands + solvated metal reference.
+    metal_charge = total_complex_charge - sum(lig.charge for lig in ligands)
+    if len(metals) == 1:
+        metal_symbol = metals[0][0]
+        metals = [(metal_symbol, metal_charge)]
+    else:
+        formal_charge_sum = sum(chg for _, chg in metals)
+        if formal_charge_sum != metal_charge:
+            logger.warning(
+                "[SC] Multi-metal charge reconstruction mismatch: formal metal charge sum=%+d, "
+                "resolved total metal charge=%+d from complex charge %d and ligand charges. "
+                "Keeping per-metal formal charges for SMILES construction.",
+                formal_charge_sum,
+                metal_charge,
+                total_complex_charge,
+            )
 
     # Build solvation complex SMILES
     solv_complex_smiles = build_solvation_complex_smiles(
