@@ -190,7 +190,10 @@ def create_tab(ctx):
     )
     keyboard_action_input.add_class("remote-cmd-keyboard-action")
     file_info_html = widgets.HTML(value="")
-    selected_path_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
+    selected_path_html = widgets.HTML(
+        value="",
+        layout=widgets.Layout(width="100%", overflow_x="hidden"),
+    )
     transfer_back_btn = widgets.Button(
         description="→ Calculations",
         button_style="info",
@@ -367,9 +370,10 @@ def create_tab(ctx):
         [path_prefix_html, path_input],
         layout=widgets.Layout(
             width="100%", overflow_x="hidden",
-            align_items="stretch", gap="2px",
+            align_items="stretch", gap="4px",
         ),
     )
+    path_input_box.add_class("remote-path-label")
 
     # -- Table presets (same as Calculations Browser) ---------------------------
     _TABLE_PRESETS = [
@@ -854,6 +858,10 @@ def create_tab(ctx):
             left_panel.remove_class("remote-transfer-jobs-mode")
             filter_row.layout.display = "flex"
             file_list.layout.display = ""
+        _run_js(
+            f'(function(){{var fn=window[{json.dumps(remote_resize_mol_fn)}];'
+            'if(typeof fn === "function"){setTimeout(fn, 0); setTimeout(fn, 120);}})();'
+        )
 
     def _settings_summary(config):
         if not config:
@@ -4229,8 +4237,9 @@ def create_tab(ctx):
             pat_w = widgets.Text(
                 value=col.get("pattern", ""),
                 placeholder=_pat_placeholders.get(col.get("type", "text"), "literal text"),
-                layout=widgets.Layout(flex="1 1 auto", min_width="80px", height="26px"),
+                layout=widgets.Layout(flex="1 1 0", min_width="0", width="1px", height="26px"),
             )
+            pat_w.add_class("remote-table-pattern-input")
             preset_dd = widgets.Dropdown(
                 options=_tp_labels,
                 value=_tp_labels[0],
@@ -4271,10 +4280,12 @@ def create_tab(ctx):
             preset_dd.observe(_on_preset, names="value")
             rm_btn.on_click(_on_remove)
 
-            rows.append(widgets.HBox(
+            row_box = widgets.HBox(
                 [name_w, type_dd, occ_dd, pat_w, preset_dd, rm_btn],
                 layout=widgets.Layout(gap="4px", align_items="center", width="100%"),
-            ))
+            )
+            row_box.add_class("remote-table-col-row")
+            rows.append(row_box)
             state["table_col_widgets"].append({
                 "name": name_w, "type_dd": type_dd, "occ_dd": occ_dd,
                 "pattern": pat_w, "preset_dd": preset_dd,
@@ -4510,8 +4521,23 @@ def create_tab(ctx):
     # -- Layout -----------------------------------------------------------------
 
     controls_row = widgets.HBox(
-        [up_btn, home_btn, refresh_btn, open_btn, new_folder_btn, rename_btn, duplicate_btn, delete_btn, table_btn],
-        layout=widgets.Layout(width="100%", gap="6px", flex_flow="row wrap"),
+        [up_btn, home_btn, refresh_btn, delete_btn, table_btn],
+        layout=widgets.Layout(
+            width="100%", overflow_x="hidden",
+            justify_content="flex-start", gap="6px",
+        ),
+    )
+    selection_row = widgets.HBox(
+        [new_folder_btn, rename_btn, duplicate_btn, transfer_back_btn, transfer_to_archive_btn],
+        layout=widgets.Layout(
+            width="100%", overflow_x="hidden",
+            justify_content="flex-start", gap="6px",
+            display="flex", flex_flow="row wrap",
+        ),
+    )
+    remote_nav_bar = widgets.VBox(
+        [info_html, path_input_box, controls_row, selection_row],
+        layout=widgets.Layout(width="100%", overflow_x="hidden"),
     )
     filter_row = widgets.HBox(
         [filter_input, sort_dropdown],
@@ -4519,14 +4545,16 @@ def create_tab(ctx):
     )
     filter_row.add_class("remote-filter-row")
     left_panel = widgets.VBox(
-        [info_html, path_input_box, controls_row, filter_row, file_list, transfer_jobs_panel],
+        [remote_nav_bar, filter_row, file_list, transfer_jobs_panel],
         layout=widgets.Layout(
             flex=f"0 0 {REMOTE_LEFT_DEFAULT}px",
             min_width=f"{REMOTE_LEFT_MIN}px",
             max_width=f"{REMOTE_LEFT_MAX}px",
+            min_height="0",
+            height="100%",
             padding="5px",
-            gap="6px",
-            overflow="hidden",
+            overflow_x="hidden",
+            overflow_y="hidden",
         ),
     )
     xyz_controls = widgets.HBox(
@@ -4601,7 +4629,7 @@ def create_tab(ctx):
         [
             file_info_html,
             widgets.HBox(
-                [transfer_jobs_btn, transfer_back_btn, transfer_to_archive_btn, copy_path_btn, copy_btn, download_btn, view_toggle],
+                [transfer_jobs_btn, copy_path_btn, copy_btn, download_btn, view_toggle],
                 layout=widgets.Layout(
                     gap="10px",
                     flex_flow="row wrap",
@@ -4648,6 +4676,7 @@ def create_tab(ctx):
     right_panel = widgets.VBox(
         [
             top_toolbar,
+            selected_path_html,
             download_status_row,
             ops_status_html,
             confirm_panel,
@@ -4676,9 +4705,27 @@ def create_tab(ctx):
         f".{scope_id}, .{scope_id} * {{ overflow-x:hidden !important; box-sizing:border-box; }}"
         f".{scope_id} {{ height:calc(100vh - 145px); max-height:calc(100vh - 145px); "
         "display:flex; flex-direction:column; overflow:hidden !important; }}"
-        f".{scope_id} .remote-left {{ display:flex !important; flex-direction:column !important; }}"
-        f".{scope_id} .remote-right {{ display:flex !important; flex-direction:column !important; overflow:hidden !important; }}"
+        f".{scope_id} .remote-left {{ display:flex !important; flex-direction:column !important; min-height:0 !important; height:100% !important; }}"
+        f".{scope_id} .remote-right {{ display:flex !important; flex-direction:column !important; overflow:hidden !important; min-height:0 !important; }}"
+        f".{scope_id} .remote-left, .{scope_id} .remote-right {{ overflow-x:hidden !important; }}"
+        f".{scope_id} .remote-left * {{ max-width:100% !important; }}"
+        f".{scope_id} .remote-right * {{ max-width:100% !important; }}"
         f".{scope_id} .widget-vbox, .{scope_id} .widget-hbox {{ overflow-y:hidden !important; }}"
+        f".{scope_id} .remote-left .widget-select {{ flex:1 1 0 !important; min-height:0 !important; }}"
+        f".{scope_id} .remote-left .widget-select select {{ height:100% !important; min-height:0 !important; overflow-y:auto !important; }}"
+        f".{scope_id} .remote-left .widget-select, .{scope_id} .remote-left .widget-select select {{ overflow-x:hidden !important; }}"
+        f".{scope_id} .remote-left .widget-vbox {{ overflow:hidden !important; }}"
+        f".{scope_id} .remote-left .widget-text {{ flex:1 1 auto !important; min-width:0 !important; width:auto !important; }}"
+        f".{scope_id} .remote-left .widget-text input {{ width:100% !important; min-width:0 !important; overflow-x:hidden !important; overflow-y:hidden !important; text-overflow:ellipsis !important; }}"
+        f".{scope_id} .remote-path-label {{ gap:2px !important; align-items:stretch !important; }}"
+        f".{scope_id} .remote-path-label > .widget-html {{ width:100% !important; margin:0 !important; }}"
+        f".{scope_id} .remote-path-label > .widget-text {{ flex:1 1 auto !important; min-width:0 !important; width:auto !important; max-width:100% !important; margin:0 !important; overflow:hidden !important; }}"
+        f".{scope_id} .remote-path-label > .widget-text input {{ width:100% !important; height:24px !important; line-height:24px !important; padding:2px 5px !important; margin:0 !important; border:0 !important; border-radius:0 !important; box-shadow:none !important; background:#eee !important; font-family:monospace !important; overflow:hidden !important; text-overflow:ellipsis !important; white-space:nowrap !important; scrollbar-width:none !important; }}"
+        f".{scope_id} .remote-path-label > .widget-text input::-webkit-scrollbar {{ width:0 !important; height:0 !important; display:none !important; }}"
+        f".{scope_id} .remote-filter-row {{ width:100% !important; display:flex !important; }}"
+        f".{scope_id} .remote-filter-row > .widget-text {{ flex:1 1 auto !important; min-width:0 !important; width:auto !important; }}"
+        f".{scope_id} .remote-filter-row > .widget-text input {{ width:100% !important; min-width:0 !important; }}"
+        f".{scope_id} .remote-filter-row > .widget-dropdown {{ flex:0 0 98px !important; margin-left:auto !important; }}"
         f".{scope_id} .remote-content-area {{ flex:1 1 0 !important; min-height:0 !important; overflow-x:hidden !important; }}"
         f".{scope_id} .remote-content-area .widget-html-content {{ height:100%; overflow:hidden !important; }}"
         f".{scope_id} #remote-content-box {{ overflow-y:auto !important; overflow-x:hidden !important; }}"
@@ -4994,15 +5041,38 @@ def create_tab(ctx):
                 document.addEventListener('mouseup', onUp);
             }});
         }}
+        function syncRemoteArchiveLeftPane(root) {{
+            if (!root) return;
+            var left = root.querySelector('.remote-left');
+            if (!left) return;
+            left.style.minHeight = '0';
+            left.style.height = '100%';
+            var fileWrap = root.querySelector('.remote-file-list');
+            if (fileWrap) {{
+                fileWrap.style.flex = '1 1 0';
+                fileWrap.style.minHeight = '0';
+                fileWrap.style.maxHeight = 'none';
+            }}
+            var selectEl = root.querySelector('.remote-file-list select');
+            if (selectEl) {{
+                selectEl.style.height = '100%';
+                selectEl.style.minHeight = '0';
+                selectEl.style.maxHeight = 'none';
+            }}
+        }}
         function bootRemoteArchiveEnter() {{
             var root = document.querySelector('.{scope_id}');
             if (!root) return;
             window["{remote_resize_mol_fn}"] = function() {{
-                resizeRemoteArchiveViewer(document.querySelector('.{scope_id}'));
+                var scopedRoot = document.querySelector('.{scope_id}');
+                syncRemoteArchiveLeftPane(scopedRoot);
+                resizeRemoteArchiveViewer(scopedRoot);
             }};
             installRemoteArchiveEnter(root);
             installRemoteArchiveSplitter(root);
+            window["{remote_resize_mol_fn}"]();
             setTimeout(window["{remote_resize_mol_fn}"], 150);
+            setTimeout(window["{remote_resize_mol_fn}"], 450);
         }}
         if (document.readyState === 'loading') {{
             document.addEventListener('DOMContentLoaded', bootRemoteArchiveEnter, {{ once: true }});

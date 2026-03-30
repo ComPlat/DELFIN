@@ -347,9 +347,8 @@ def create_tab(ctx):
     )
     calc_keyboard_action_input.add_class('calc-cmd-keyboard-action')
     calc_explorer_new_btn = widgets.Button(
-        description='New Folder',
-        button_style='success',
-        layout=widgets.Layout(width='102px', height='26px'),
+        description='📁 New Folder',
+        layout=widgets.Layout(width='110px', min_width='110px', height='26px'),
     )
     calc_explorer_rename_btn = widgets.Button(
         description='✏ Rename',

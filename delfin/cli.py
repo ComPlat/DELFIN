@@ -1677,7 +1677,6 @@ def main(argv: list[str] | None = None) -> int:
         raw_method = str(config.get('method', '')).strip()
         method_lower = raw_method.lower()
         esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
-
         hyperpol_xtb_enabled = str(config.get('hyperpol_xTB', 'no')).strip().lower() == 'yes'
         tadf_xtb_enabled = str(config.get('tadf_xTB', 'no')).strip().lower() == 'yes'
 
