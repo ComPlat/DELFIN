@@ -156,6 +156,28 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             # Build ALL OCCUPIER FoBs as flat top-level jobs
             # This avoids nested managers and deadlocks!
             all_jobs = build_flat_occupier_fob_jobs(config)
+            sc_embedded = False
+            if str(config.get("stability_constant", "no")).strip().lower() == "yes":
+                from delfin.stability_constant import build_stability_constant_plan
+
+                try:
+                    sc_plan = build_stability_constant_plan(
+                        ctx,
+                        initial_completion_dependency=config.get("_occ_initial_completion_job"),
+                    )
+                    all_jobs.extend(sc_plan.jobs)
+                    sc_embedded = True
+                    logger.info(
+                        "[SC] Embedded stability constant jobs into the OCCUPIER shared scheduler "
+                        "(initial dependency: %s).",
+                        config.get("_occ_initial_completion_job") or "none",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[SC] Could not embed stability constant workflow into OCCUPIER run: %s",
+                        exc,
+                        exc_info=True,
+                    )
 
             if all_jobs:
                 manager = _WorkflowManager(config, label="occupier_all")
@@ -174,6 +196,15 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                         manager.add_job(job)
 
                     manager.run()
+
+                    if sc_embedded and "sc_postprocess" in manager.completed_jobs:
+                        ctx.extra["stability_constant_embedded_complete"] = True
+                        logger.info("[SC] Embedded stability constant workflow completed within OCCUPIER run.")
+                    elif sc_embedded:
+                        logger.warning(
+                            "[SC] Embedded stability constant workflow did not complete inside OCCUPIER run; "
+                            "the standalone SC phase remains available as fallback."
+                        )
 
                     if manager.failed_jobs:
                         logger.warning("OCCUPIER workflows completed with failures (continuing): %s", list(manager.failed_jobs.keys()))
