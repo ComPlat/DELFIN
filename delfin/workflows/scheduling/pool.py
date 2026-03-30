@@ -27,9 +27,19 @@ def get_current_job_id() -> Optional[str]:
     return getattr(_job_context, 'current_job_id', None)
 
 
+def get_current_job_cores() -> Optional[int]:
+    """Get the currently allocated core count for the executing pool job."""
+    return getattr(_job_context, 'current_job_cores', None)
+
+
 def _set_current_job_id(job_id: Optional[str]) -> None:
     """Set the current job ID in thread-local context (internal use only)."""
     _job_context.current_job_id = job_id
+
+
+def _set_current_job_cores(cores: Optional[int]) -> None:
+    """Set the current job core allocation in thread-local context (internal use only)."""
+    _job_context.current_job_cores = cores
 
 
 class JobPriority(Enum):
@@ -538,6 +548,7 @@ class DynamicCorePool:
             def execute_with_cores():
                 # Set job context so child jobs can detect their parent
                 _set_current_job_id(job.job_id)
+                _set_current_job_cores(allocated_cores)
                 try:
                     # Add allocated cores and pool usage snapshot to kwargs
                     modified_kwargs = job.kwargs.copy()
@@ -550,6 +561,7 @@ class DynamicCorePool:
                     return job.execute_func(*job.args, **modified_kwargs)
                 finally:
                     # Clear job context when done
+                    _set_current_job_cores(None)
                     _set_current_job_id(None)
 
             # Submit to executor
