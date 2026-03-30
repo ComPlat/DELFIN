@@ -53,6 +53,11 @@ _BASE_DIRECTIVE_RE = re.compile(
 _ORCA_BANG_RE = re.compile(r'^\s*!', re.MULTILINE)
 _ORCA_BLOCK_RE = re.compile(r'^\s*%(?:pal|scf|base|moinp)\b', re.IGNORECASE | re.MULTILINE)
 _ORCA_XYZFILE_RE = re.compile(r'^\s*\*\s*xyzfile\b', re.IGNORECASE | re.MULTILINE)
+_SPECIAL_REQUIRED_OUTPUTS = {
+    "xtb.inp": ("XTB.xyz",),
+    "xtb_goat.inp": ("XTB_GOAT.globalminimum.xyz",),
+    "xtb_solvator.inp": ("XTB_SOLVATOR.solvator.xyz",),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +115,11 @@ def required_orca_outputs(inp_path=None, out_path=None) -> List[Path]:
 
     if inp is None and out is None:
         return []
+
+    if inp is not None:
+        special_outputs = _SPECIAL_REQUIRED_OUTPUTS.get(inp.name.lower())
+        if special_outputs is not None:
+            return [inp.parent / name for name in special_outputs]
 
     if inp is not None and not _looks_like_orca_job(inp):
         return []

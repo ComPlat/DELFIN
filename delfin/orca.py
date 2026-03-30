@@ -1313,6 +1313,27 @@ def run_orca(
         )
         return True
 
+    # Legacy completed runs may predate the .fprint sidecar. Bootstrap it here so
+    # recalc can resume deterministically for xTB/GOAT/GUPPY and regular ORCA jobs.
+    fp_path = input_path.with_suffix(input_path.suffix + ".fprint")
+    required_outputs = smart_recalc.required_orca_outputs(inp_path=input_path, out_path=output_path)
+    if (
+        smart_recalc.recalc_enabled()
+        and smart_recalc.smart_mode_enabled()
+        and not fp_path.exists()
+        and smart_recalc.outputs_complete(
+            input_path,
+            output_path,
+            required_outputs=required_outputs,
+        )
+    ):
+        smart_recalc.store_fingerprint(input_path, extra_deps=extra_deps)
+        logger.info(
+            "[smart_recalc] Skipping ORCA for '%s'; complete output found and missing fingerprint bootstrapped.",
+            input_file_path,
+        )
+        return True
+
     # Isolated execution: run ORCA in a separate subdirectory to avoid
     # race conditions on parallel filesystems (Lustre)
     if isolate:
