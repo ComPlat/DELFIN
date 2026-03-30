@@ -36,6 +36,7 @@ def _load_full_cli_dependencies() -> None:
     global PipelineContext, compute_summary, interpret_method_alias
     global normalize_input_file, run_classic_phase, run_manual_phase, run_occuper_phase, run_esd_phase
     global run_hyperpol_xtb_phase, run_tadf_xtb_phase
+    global run_stability_constant_phase
     global extract_preferred_spin, read_occupier_file
     global FileBundle
 
@@ -83,6 +84,7 @@ def _load_full_cli_dependencies() -> None:
         run_hyperpol_xtb_phase as _run_hyperpol_xtb_phase,
         run_tadf_xtb_phase as _run_tadf_xtb_phase,
     )
+    from .stability_constant import run_stability_constant_phase as _run_stability_constant_phase
     from .copy_helpers import extract_preferred_spin as _extract_preferred_spin, read_occupier_file as _read_occupier_file
 
     add_file_handler = _add_file_handler
@@ -123,6 +125,7 @@ def _load_full_cli_dependencies() -> None:
     run_esd_phase = _run_esd_phase
     run_hyperpol_xtb_phase = _run_hyperpol_xtb_phase
     run_tadf_xtb_phase = _run_tadf_xtb_phase
+    run_stability_constant_phase = _run_stability_constant_phase
     extract_preferred_spin = _extract_preferred_spin
     read_occupier_file = _read_occupier_file
     _FULL_CLI_IMPORTS_LOADED = True
@@ -1678,9 +1681,19 @@ def main(argv: list[str] | None = None) -> int:
         hyperpol_xtb_enabled = str(config.get('hyperpol_xTB', 'no')).strip().lower() == 'yes'
         tadf_xtb_enabled = str(config.get('tadf_xTB', 'no')).strip().lower() == 'yes'
 
+        # Stability constant requires initial calculation + FREQ
+        sc_enabled_early = str(config.get('stability_constant', 'no')).strip().lower() == 'yes'
+        if sc_enabled_early:
+            if str(config.get('calc_initial', '')).strip().lower() == 'no':
+                logger.info("[SC] stability_constant=yes → forcing calc_initial=yes")
+                config['calc_initial'] = 'yes'
+            if str(config.get('frequency_calculation_OCCUPIER', 'no')).strip().lower() != 'yes':
+                logger.info("[SC] stability_constant=yes → forcing frequency_calculation_OCCUPIER=yes")
+                config['frequency_calculation_OCCUPIER'] = 'yes'
+
         method_token: Optional[str]
         if method_lower in {'', 'none', 'esd'}:
-            if not esd_enabled and not hyperpol_xtb_enabled and not tadf_xtb_enabled:
+            if not esd_enabled and not hyperpol_xtb_enabled and not tadf_xtb_enabled and not sc_enabled_early:
                 logger.error(
                     "No method specified in CONTROL.txt and no analysis module enabled (ESD/hyperpol_xTB/tadf_xTB). "
                     "Supported methods: classic, manually, OCCUPIER"
@@ -1778,6 +1791,13 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("Running tadf_xTB phase...")
             if not run_tadf_xtb_phase(pipeline_ctx):
                 logger.warning("tadf_xTB phase encountered issues, continuing...")
+
+        # ------------------- stability_constant --------------------
+        sc_enabled = str(config.get('stability_constant', 'no')).strip().lower() == 'yes'
+        if sc_enabled:
+            logger.info("Running stability_constant phase...")
+            if not run_stability_constant_phase(pipeline_ctx):
+                logger.warning("stability_constant phase encountered issues, continuing...")
 
         # Finalize redox and emission summary
         if method_token == "OCCUPIER":

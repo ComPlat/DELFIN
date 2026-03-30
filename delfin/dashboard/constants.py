@@ -143,6 +143,13 @@ tadf_xTB_excited_method=stda
 tadf_xTB_energy_window=10.0
 tadf_xTB_run_t1_opt=yes
 --------------------
+Stability Constant:
+stability_constant=no
+n_explicit_solvent=6
+logK_exp=
+sc_smiles_converter=NORMAL
+sc_preopt=XTB
+--------------------
 Electrical Properties:
 elprop_Dipole=no
 elprop_Quadrupole=no
@@ -379,6 +386,13 @@ tadf_xTB_preopt=none
 tadf_xTB_excited_method=stda
 tadf_xTB_energy_window=10.0
 tadf_xTB_run_t1_opt=yes
+--------------------
+Stability Constant:
+stability_constant=no
+n_explicit_solvent=6
+logK_exp=
+sc_smiles_converter=NORMAL
+sc_preopt=XTB
 --------------------
 Electrical Properties:
 elprop_Dipole=no
