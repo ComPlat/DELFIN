@@ -602,15 +602,22 @@ def extract_free_energy(out_path: Path) -> SpeciesEnergy:
 
     # Extract thermal free energy correction (from FREQ)
     g_rrho = None
-    match = re.search(r"Total thermal Free Energy correction\s+([-+]?\d+\.\d+)\s+Eh", text)
+    match = re.search(r"Total thermal Free Energy correction\s+\.{3}\s+([-+]?\d+\.\d+)\s+Eh", text)
     if match:
         g_rrho = float(match.group(1))
 
-    # Also try "Final Gibbs free energy" as alternative
+    # Also try "Final Gibbs free energy" as alternative (ORCA 6 format)
     if g_rrho is None:
-        match = re.search(r"Final Gibbs free energy\s+\.\.\.\s+([-+]?\d+\.\d+)\s+Eh", text)
+        match = re.search(r"Final Gibbs free energy\s+\.{3}\s+([-+]?\d+\.\d+)\s+Eh", text)
         if match:
             # This is already E_el + G_corr, so compute G_corr
+            g_total_direct = float(match.group(1))
+            g_rrho = g_total_direct - e_el
+
+    # Fallback: try without ... separator
+    if g_rrho is None:
+        match = re.search(r"Final Gibbs free energy\s+([-+]?\d+\.\d+)\s+Eh", text)
+        if match:
             g_total_direct = float(match.group(1))
             g_rrho = g_total_direct - e_el
 
@@ -696,7 +703,12 @@ def write_stability_report(report_path: Path, result: StabilityResult) -> None:
     lines.append(sep)
     lines.append("")
     lines.append(f"  Complex SMILES:    {a.complex_smiles}")
-    metal_str = ", ".join(f"{sym}{'+' * chg if chg > 0 else ''}{chg if chg != 0 else ''}" for sym, chg in a.metals)
+    def _fmt_charge(chg: int) -> str:
+        if chg == 0:
+            return ""
+        return f"{abs(chg)}+" if chg > 0 else f"{abs(chg)}-"
+
+    metal_str = ", ".join(f"{sym}({_fmt_charge(chg)})" if chg else sym for sym, chg in a.metals)
     lines.append(f"  Metal:             {metal_str}")
     lines.append(f"  Solvent:           {a.solvent_name}  (SMILES: {a.solvent_smiles}, donor: {a.solvent_donor})")
     lines.append(f"  Explicit Solvent:  {a.n_explicit_solvent}")
@@ -1059,23 +1071,27 @@ def build_stability_constant_plan(
 # ---------------------------------------------------------------------------
 
 def _find_initial_output(cwd: Path, config: Dict[str, Any]) -> Optional[Path]:
-    """Locate the initial.out file from the main DELFIN workflow."""
-    method = str(config.get("method", "OCCUPIER")).strip()
+    """Locate the initial.out file from the main DELFIN workflow.
 
+    Priority: initial.out in main dir (has FREQ from final calculation),
+    then fallback to initial_OCCUPIER/ outputs (which may lack FREQ).
+    """
+    # Prefer initial.out in main directory — this is the final calculation
+    # with OCCUPIER-determined multiplicity and (if enabled) FREQ.
+    candidates = [cwd / "initial.out"]
+
+    method = str(config.get("method", "OCCUPIER")).strip()
     if method == "OCCUPIER":
-        candidates = [
-            cwd / "initial_OCCUPIER" / "initial.out",
-            cwd / "initial_OCCUPIER" / "OCCUPIER_initial.out",
-        ]
-        # Also check for any .out in initial_OCCUPIER
+        # Fallback: check initial_OCCUPIER/ for outputs
         occ_dir = cwd / "initial_OCCUPIER"
+        candidates.append(occ_dir / "initial.out")
+        candidates.append(occ_dir / "OCCUPIER_initial.out")
         if occ_dir.is_dir():
             for f in sorted(occ_dir.glob("*.out")):
-                if "ORCA TERMINATED NORMALLY" in f.read_text(encoding="utf-8", errors="replace"):
-                    candidates.insert(0, f)
+                text = f.read_text(encoding="utf-8", errors="replace")
+                if "ORCA TERMINATED NORMALLY" in text:
+                    candidates.append(f)
                     break
-    else:
-        candidates = [cwd / "initial.out"]
 
     for c in candidates:
         if c.exists():
