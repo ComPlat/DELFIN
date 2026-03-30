@@ -88,7 +88,7 @@ def test_local_backend_can_oversubscribe_cores_when_enabled(monkeypatch, tmp_pat
 
     monkeypatch.setattr(backend, "_load_jobs", lambda: jobs_data)
     monkeypatch.setattr(backend, "_save_jobs", lambda data: None)
-    monkeypatch.setattr(backend, "_update_job_status", lambda job: job)
+    monkeypatch.setattr(backend, "_update_job_status", lambda job, **_kwargs: job)
     started = []
     monkeypatch.setattr(backend, "_start_job", lambda job, data: started.append(job["job_id"]) or True)
 
@@ -117,7 +117,7 @@ def test_local_backend_can_oversubscribe_ram_when_enabled(monkeypatch, tmp_path)
 
     monkeypatch.setattr(backend, "_load_jobs", lambda: jobs_data)
     monkeypatch.setattr(backend, "_save_jobs", lambda data: None)
-    monkeypatch.setattr(backend, "_update_job_status", lambda job: job)
+    monkeypatch.setattr(backend, "_update_job_status", lambda job, **_kwargs: job)
     started = []
     monkeypatch.setattr(backend, "_start_job", lambda job, data: started.append(job["job_id"]) or True)
 
@@ -139,3 +139,99 @@ def test_local_backend_oversubscribe_budget_is_integer(monkeypatch, tmp_path):
 
     assert backend._core_budget() == 13
     assert backend._ram_budget() == 1_540_000
+
+
+def test_local_backend_keeps_running_when_wrapper_pid_is_gone_but_children_are_active(monkeypatch, tmp_path):
+    monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
+    backend = _MODULE.LocalJobBackend(run_script=tmp_path / "missing.sh")
+
+    job = {
+        "job_id": 42,
+        "status": "RUNNING",
+        "pid": 1234,
+        "pgid": 1234,
+        "job_dir": str(tmp_path),
+    }
+
+    def _raise_child_process_error(pid, flags):
+        raise ChildProcessError
+
+    def _raise_process_lookup_error(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(_MODULE.os, "waitpid", _raise_child_process_error)
+    monkeypatch.setattr(_MODULE.os, "kill", _raise_process_lookup_error)
+    monkeypatch.setattr(backend, "_job_has_active_processes", lambda *_args, **_kwargs: True)
+
+    updated = backend._update_job_status(job)
+
+    assert updated["status"] == "RUNNING"
+
+
+def test_local_backend_marks_wrapperless_job_failed_when_no_active_process_or_exit_code(monkeypatch, tmp_path):
+    monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
+    backend = _MODULE.LocalJobBackend(run_script=tmp_path / "missing.sh")
+
+    job = {
+        "job_id": 43,
+        "status": "RUNNING",
+        "pid": 5678,
+        "pgid": 5678,
+        "job_dir": str(tmp_path),
+    }
+
+    def _raise_child_process_error(pid, flags):
+        raise ChildProcessError
+
+    def _raise_process_lookup_error(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(_MODULE.os, "waitpid", _raise_child_process_error)
+    monkeypatch.setattr(_MODULE.os, "kill", _raise_process_lookup_error)
+    monkeypatch.setattr(backend, "_job_has_active_processes", lambda *_args, **_kwargs: False)
+
+    updated = backend._update_job_status(job)
+
+    assert updated["status"] == "FAILED"
+
+
+def test_local_backend_detects_active_job_processes_from_process_table(monkeypatch, tmp_path):
+    monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
+    backend = _MODULE.LocalJobBackend(run_script=tmp_path / "missing.sh")
+
+    job = {
+        "job_id": 44,
+        "status": "RUNNING",
+        "pid": 1111,
+        "pgid": 2222,
+        "job_dir": str(tmp_path / "calc_job"),
+    }
+
+    process_table = [
+        (3333, 9999, "/opt/orca_6_1_1/orca /elsewhere/input.inp", "/elsewhere"),
+        (4444, 2222, "/opt/orca_6_1_1/orca /elsewhere/other.inp", "/elsewhere"),
+        (5555, 7777, f"/opt/orca_6_1_1/orca {job['job_dir']}/input.inp", "/elsewhere"),
+    ]
+
+    assert backend._job_has_active_processes(job, process_table=process_table) is True
+
+
+def test_local_backend_detects_active_job_processes_from_cwd(monkeypatch, tmp_path):
+    monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
+    backend = _MODULE.LocalJobBackend(run_script=tmp_path / "missing.sh")
+
+    job_dir = tmp_path / "calc_job"
+    job = {
+        "job_id": 45,
+        "status": "RUNNING",
+        "pid": 1111,
+        "pgid": 2222,
+        "job_dir": str(job_dir),
+    }
+
+    process_table = [
+        (3333, 9999, "/opt/orca_6_1_1/orca /elsewhere/input.inp", "/elsewhere"),
+        (4444, 7777, "/opt/orca_6_1_1/orca /elsewhere/other.inp", str(job_dir / "tmp")),
+    ]
+
+    assert backend._job_has_active_processes(job, process_table=process_table) is True
