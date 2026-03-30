@@ -345,3 +345,44 @@ def should_skip(
     if not fingerprint_unchanged(inp_path, extra_deps=extra_deps):
         return False
     return True
+
+
+def can_precomplete(
+    inp_path,
+    out_path,
+    extra_deps: Optional[Iterable] = None,
+    required_outputs: Optional[Iterable] = None,
+) -> bool:
+    """Return True when a recalc job can be marked complete before scheduling.
+
+    In smart mode this mirrors ``should_skip()`` and also bootstraps a missing
+    fingerprint once for legacy completed outputs.
+    """
+    if not recalc_enabled():
+        return False
+
+    inp = Path(inp_path) if inp_path is not None else None
+    out = Path(out_path)
+
+    if smart_mode_enabled():
+        if inp is not None and should_skip(
+            inp,
+            out,
+            extra_deps=extra_deps,
+            required_outputs=required_outputs,
+        ):
+            return True
+
+        if inp is None:
+            return False
+
+        if not outputs_complete(inp, out, required_outputs=required_outputs):
+            return False
+
+        fp_path = _fprint_path(inp)
+        if not fp_path.exists():
+            store_fingerprint(inp, extra_deps=extra_deps)
+            return fp_path.exists()
+        return fingerprint_unchanged(inp, extra_deps=extra_deps)
+
+    return outputs_complete(inp, out, required_outputs=required_outputs)
