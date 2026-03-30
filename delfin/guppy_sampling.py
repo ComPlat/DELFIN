@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from delfin.common.logging import get_logger
-from delfin.dynamic_pool import JobPriority, PoolJob
+from delfin.dynamic_pool import JobPriority, PoolJob, get_current_job_id
 from delfin.global_manager import get_global_manager
 from delfin.orca import run_orca
 from delfin.smiles_converter import (
@@ -639,26 +639,34 @@ def _run_topk_goat_refinement(
                 logger.error("[goat run %02d] Unexpected error: %s", run_idx, exc)
                 goat_failed_runs.append(f"{run_idx:02d}")
 
+    nested_job_id = get_current_job_id()
     use_pool = False
     pool = None
-    try:
-        manager = get_global_manager()
-        manager.ensure_initialized(
-            {
-                "PAL": pal,
-                "maxcore": maxcore,
-                "pal_jobs": resolved_parallel_jobs,
-                "parallel_workflows": "enable",
-            }
+    if nested_job_id is not None:
+        logger.info(
+            "Detected nested pool job %s during GUPPY GOAT refinement; "
+            "using local worker threads instead of the global pool.",
+            nested_job_id,
         )
-        pool = manager.get_pool()
-        use_pool = True
-        logger.info("Using global manager pool scheduling for GUPPY GOAT refinement.")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Global manager unavailable for GUPPY GOAT refinement (%s). Falling back to sequential runs.",
-            exc,
-        )
+    else:
+        try:
+            manager = get_global_manager()
+            manager.ensure_initialized(
+                {
+                    "PAL": pal,
+                    "maxcore": maxcore,
+                    "pal_jobs": resolved_parallel_jobs,
+                    "parallel_workflows": "enable",
+                }
+            )
+            pool = manager.get_pool()
+            use_pool = True
+            logger.info("Using global manager pool scheduling for GUPPY GOAT refinement.")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Global manager unavailable for GUPPY GOAT refinement (%s). Falling back to local worker threads.",
+                exc,
+            )
 
     if use_pool and pool is not None:
         estimated_runtime = float(max(300, int(os.environ.get("GUPPY_GOAT_EST_RUNTIME_S", "2400"))))
@@ -697,8 +705,13 @@ def _run_topk_goat_refinement(
 
         pool.wait_for_completion()
     else:
-        for rank, candidate in enumerate(candidates, start=1):
-            _record_goat(rank, candidate, per_job_pal)
+        with ThreadPoolExecutor(max_workers=resolved_parallel_jobs) as executor:
+            futures = [
+                executor.submit(_record_goat, rank, candidate, per_job_pal)
+                for rank, candidate in enumerate(candidates, start=1)
+            ]
+            for future in futures:
+                future.result()
 
     goat_results.sort(key=lambda item: (item[0], item[3]))
     return goat_results, goat_failed_runs
@@ -808,23 +821,31 @@ def run_sampling(
                 logger.error("[run %02d] Unexpected error: %s", run_idx, exc)
                 failed_runs.append(f"{run_idx:02d}")
 
+    nested_job_id = get_current_job_id()
     use_pool = False
     pool = None
-    try:
-        manager = get_global_manager()
-        manager.ensure_initialized(
-            {
-                "PAL": pal,
-                "maxcore": maxcore,
-                "pal_jobs": resolved_parallel_jobs,
-                "parallel_workflows": "enable",
-            }
+    if nested_job_id is not None:
+        logger.info(
+            "Detected nested pool job %s during GUPPY sampling; "
+            "using local worker threads instead of the global pool.",
+            nested_job_id,
         )
-        pool = manager.get_pool()
-        use_pool = True
-        logger.info("Using global manager pool scheduling for GUPPY runs.")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Global manager unavailable for GUPPY (%s). Falling back to sequential runs.", exc)
+    else:
+        try:
+            manager = get_global_manager()
+            manager.ensure_initialized(
+                {
+                    "PAL": pal,
+                    "maxcore": maxcore,
+                    "pal_jobs": resolved_parallel_jobs,
+                    "parallel_workflows": "enable",
+                }
+            )
+            pool = manager.get_pool()
+            use_pool = True
+            logger.info("Using global manager pool scheduling for GUPPY runs.")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Global manager unavailable for GUPPY (%s). Falling back to local worker threads.", exc)
 
     if use_pool and pool is not None:
         estimated_runtime = float(max(300, int(os.environ.get("GUPPY_EST_RUNTIME_S", "1800"))))
@@ -864,8 +885,13 @@ def run_sampling(
 
         pool.wait_for_completion()
     else:
-        for run_idx, start_coords, start_label, start_source in start_geometries:
-            _record_run(run_idx, start_coords, start_label, start_source, per_job_pal)
+        with ThreadPoolExecutor(max_workers=resolved_parallel_jobs) as executor:
+            futures = [
+                executor.submit(_record_run, run_idx, start_coords, start_label, start_source, per_job_pal)
+                for run_idx, start_coords, start_label, start_source in start_geometries
+            ]
+            for future in futures:
+                future.result()
 
     if not results:
         logger.error("No successful XTB runs. Nothing to write.")
