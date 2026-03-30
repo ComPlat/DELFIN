@@ -900,6 +900,18 @@ def build_stability_constant_plan(
     total_cores = max(1, int(str(config.get("PAL", 1)).strip()))
     cwd_lock = threading.RLock()
     jobs: List[WorkflowJob] = []
+    recalc_enabled = str(os.environ.get("DELFIN_RECALC", "0")).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+    def _precomplete_orca(inp_path: Path, out_path: Path) -> bool:
+        if not recalc_enabled:
+            return False
+        try:
+            from delfin import smart_recalc
+
+            return smart_recalc.can_precomplete(inp_path, out_path)
+        except Exception:
+            logger.debug("[SC] precomplete check failed for %s / %s", inp_path, out_path, exc_info=True)
+            return False
 
     solv_dir = sc_dir / "solv_complex"
 
@@ -925,6 +937,7 @@ def build_stability_constant_plan(
         cores_optimal=max(2, min(total_cores, total_cores // 2)),
         cores_max=total_cores,
         working_dir=solv_dir,
+        precomplete_check=lambda _dir=solv_dir: recalc_enabled and (_dir / "solv_OCCUPIER" / "OCCUPIER.txt").exists(),
     ))
 
     def _work_solv_freq(cores: int) -> None:
@@ -946,6 +959,7 @@ def build_stability_constant_plan(
         cores_optimal=total_cores,
         cores_max=total_cores,
         working_dir=solv_dir,
+        precomplete_check=lambda _dir=solv_dir: _precomplete_orca(_dir / "solv_complex.inp", _dir / "solv_complex.out"),
     ))
 
     for i, lig in enumerate(analysis.unique_ligands):
@@ -975,6 +989,7 @@ def build_stability_constant_plan(
             cores_optimal=max(2, total_cores // 2),
             cores_max=total_cores,
             working_dir=lig_dir,
+            precomplete_check=lambda _dir=lig_dir: _precomplete_orca(_dir / "calc.inp", _dir / "calc.out"),
         ))
 
     solvent_label = re.sub(r"[^a-zA-Z0-9_]", "", analysis.solvent_name) or "solvent"
@@ -1003,6 +1018,7 @@ def build_stability_constant_plan(
         cores_optimal=max(2, total_cores // 4),
         cores_max=total_cores,
         working_dir=solvent_dir,
+        precomplete_check=lambda _dir=solvent_dir: _precomplete_orca(_dir / "calc.inp", _dir / "calc.out"),
     ))
 
     all_dep_ids = {"sc_solv_freq", "sc_solvent"} | {f"sc_ligand_{i + 1}" for i in range(len(analysis.unique_ligands))}

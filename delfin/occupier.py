@@ -1373,11 +1373,15 @@ def run_OCCUPIER():
         try:
             for entry in sequence:
                 idx = int(entry["index"])
+                stem = _stem(idx)
+                precomplete_inp = Path(f"{stem}.inp")
+                precomplete_out = Path("output.out" if idx == 1 else f"output{idx}.out")
                 job = WorkflowJob(
                     job_id=f"occ_{idx}",
                     work=make_work(entry),
                     description=f"FoB index {idx}",
                     dependencies=dependencies_map.get(idx, set()),
+                    precomplete_check=lambda _inp=precomplete_inp, _out=precomplete_out: _should_skip_orca(str(_inp), str(_out)),
                 )
                 cores_bounds = manager.derive_core_bounds(hint=job.description)
                 job.cores_min, job.cores_optimal, job.cores_max = cores_bounds
