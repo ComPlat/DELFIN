@@ -414,35 +414,35 @@ def _resolve_main_preopt_steps(config: Dict[str, Any]) -> List[str]:
 
 
 def _run_preopt(workdir: Path, config: Dict[str, Any], preopt: str,
-                charge: int, multiplicity: int, solvent: str) -> None:
+                charge: int, multiplicity: int, solvent: str,
+                *, pal_override: Optional[int] = None) -> None:
     """Run preoptimization in workdir using the specified method."""
     if preopt == "no" or not preopt:
         return
 
-    original_cwd = os.getcwd()
-    try:
-        os.chdir(workdir)
+    local_config = dict(config)
+    local_config["input_file"] = str((workdir / "start.txt").resolve())
+    if pal_override is not None:
+        local_config["PAL"] = pal_override
 
-        if preopt.upper() == "XTB":
-            from delfin.xtb_crest import XTB
-            XTB(multiplicity, charge, config)
+    if preopt.upper() == "XTB":
+        from delfin.xtb_crest import XTB
+        XTB(multiplicity, charge, local_config)
 
-        elif preopt.upper() == "GOAT":
-            from delfin.xtb_crest import XTB_GOAT
-            XTB_GOAT(multiplicity, charge, config)
+    elif preopt.upper() == "GOAT":
+        from delfin.xtb_crest import XTB_GOAT
+        XTB_GOAT(multiplicity, charge, local_config)
 
-        elif preopt.upper() == "CREST":
-            from delfin.xtb_crest import run_crest_workflow
-            run_crest_workflow(
-                config.get("PAL", 1),
-                solvent,
-                charge,
-                multiplicity,
-                input_file="start.txt",
-                crest_dir="CREST",
-            )
-    finally:
-        os.chdir(original_cwd)
+    elif preopt.upper() == "CREST":
+        from delfin.xtb_crest import run_crest_workflow
+        run_crest_workflow(
+            int(local_config.get("PAL", 1) or 1),
+            solvent,
+            charge,
+            multiplicity,
+            input_file=local_config["input_file"],
+            crest_dir="CREST",
+        )
 
 
 def _run_preopt_sequence(
@@ -454,6 +454,7 @@ def _run_preopt_sequence(
     solvent: str,
     *,
     label: str,
+    pal_override: Optional[int] = None,
 ) -> None:
     from delfin.pipeline import _skip_xtb_goat_after_guppy
 
@@ -461,7 +462,15 @@ def _run_preopt_sequence(
         if step == "GOAT" and _skip_xtb_goat_after_guppy(config):
             logger.info("[SC] Skipping XTB_GOAT for %s: GUPPY already delivered a GOAT-refined geometry.", label)
             continue
-        _run_preopt(workdir, config, step, charge, multiplicity, solvent)
+        _run_preopt(
+            workdir,
+            config,
+            step,
+            charge,
+            multiplicity,
+            solvent,
+            pal_override=pal_override,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -883,6 +892,7 @@ def build_stability_constant_plan(
             converter=solv_converter,
             preopt_steps=solv_preopt_steps,
             solvent=solvent,
+            cores=cores,
             cwd_lock=cwd_lock,
         )
 
@@ -1049,6 +1059,7 @@ def _run_solv_complex_occupier(
     converter: str,
     preopt_steps: List[str],
     solvent: str,
+    cores: int,
     cwd_lock: threading.RLock,
 ) -> None:
     """Set up solvation complex folder and run OCCUPIER (like initial_OCCUPIER)."""
@@ -1076,6 +1087,7 @@ def _run_solv_complex_occupier(
             mult_guess,
             solvent,
             label="solvation complex",
+            pal_override=cores,
         )
 
     # Step 3: Prepare OCCUPIER folder (similar to prepare_occ_folder_only_setup)
@@ -1092,34 +1104,38 @@ def _run_solv_complex_occupier(
     shutil.copy(input_xyz, occ_dir / "input0.xyz")
 
     # Create CONTROL.txt for OCCUPIER folder with solv complex charge
-    _write_occupier_control(occ_dir, config, charge=analysis.metal_charge)
+    _write_occupier_control(occ_dir, config, charge=analysis.metal_charge, pal=cores)
 
     # Step 4: Run OCCUPIER
     with cwd_lock:
         prev_cwd = os.getcwd()
-    try:
-        os.chdir(occ_dir)
-        logger.info("[SC] Running OCCUPIER in %s", occ_dir)
-        run_OCCUPIER()
-    finally:
-        os.chdir(prev_cwd)
+        try:
+            os.chdir(occ_dir)
+            logger.info("[SC] Running OCCUPIER in %s", occ_dir)
+            run_OCCUPIER()
+        finally:
+            os.chdir(prev_cwd)
 
     logger.info("[SC] OCCUPIER completed for solvation complex")
 
 
-def _write_occupier_control(occ_dir: Path, config: Dict[str, Any], charge: int) -> None:
+def _write_occupier_control(
+    occ_dir: Path,
+    config: Dict[str, Any],
+    charge: int,
+    *,
+    pal: Optional[int] = None,
+) -> None:
     """Write a CONTROL.txt for an OCCUPIER sub-folder, inheriting main settings."""
-    # Find parent CONTROL.txt
-    parent_control = Path.cwd() / "CONTROL.txt"
-    if not parent_control.exists():
-        # Try two levels up (from within stability_constant/solv_complex/solv_OCCUPIER/)
-        for p in [occ_dir.parent.parent.parent, occ_dir.parent.parent]:
-            candidate = p / "CONTROL.txt"
-            if candidate.exists():
-                parent_control = candidate
-                break
+    # Prefer the original run directory over the process cwd.
+    parent_control: Optional[Path] = None
+    for p in [occ_dir.parent.parent.parent, occ_dir.parent.parent, occ_dir.parent, Path.cwd()]:
+        candidate = p / "CONTROL.txt"
+        if candidate.exists():
+            parent_control = candidate
+            break
 
-    if parent_control.exists():
+    if parent_control is not None:
         shutil.copy(parent_control, occ_dir / "CONTROL.txt")
     else:
         raise FileNotFoundError("Cannot find parent CONTROL.txt for OCCUPIER setup")
@@ -1129,6 +1145,16 @@ def _write_occupier_control(occ_dir: Path, config: Dict[str, Any], charge: int) 
     text = control_path.read_text(encoding="utf-8")
     text = re.sub(r"charge=[+-]?\d+", f"charge={charge}", text)
     text = re.sub(r"input_file=\S+", "input_file=input.xyz", text)
+    if pal is not None:
+        pal_value = max(1, int(pal))
+        if re.search(r"^PAL=.*$", text, flags=re.MULTILINE):
+            text = re.sub(r"^PAL=.*$", f"PAL={pal_value}", text, flags=re.MULTILINE)
+        else:
+            text = text.rstrip() + f"\nPAL={pal_value}\n"
+    if re.search(r"^maxcore=.*$", text, flags=re.MULTILINE):
+        text = re.sub(r"^maxcore=.*$", f"maxcore={config.get('maxcore', 6000)}", text, flags=re.MULTILINE)
+    else:
+        text = text.rstrip() + f"\nmaxcore={config.get('maxcore', 6000)}\n"
     control_path.write_text(text, encoding="utf-8")
 
 
@@ -1216,7 +1242,7 @@ def _run_solv_complex_freq(
         inp_path.write_text(text, encoding="utf-8")
 
     # Run ORCA
-    run_orca(str(inp_path), cores)
+    run_orca(str(inp_path), str(out_path))
     smart_recalc.store_fingerprint(inp_path)
 
     # Verify success
@@ -1260,7 +1286,7 @@ def _run_closed_shell_species(
 
     # Preopt
     if sc_preopt:
-        _run_preopt(workdir, config, sc_preopt, charge, 1, solvent)
+        _run_preopt(workdir, config, sc_preopt, charge, 1, solvent, pal_override=cores)
 
     # Detect metals in coordinates (for basis set selection)
     has_metal = contains_metal(smiles)
@@ -1289,7 +1315,7 @@ def _run_closed_shell_species(
     )
 
     # Run ORCA
-    run_orca(str(inp_path), cores)
+    run_orca(str(inp_path), str(out_path))
     smart_recalc.store_fingerprint(inp_path)
 
     # Verify
