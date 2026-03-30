@@ -170,8 +170,14 @@ def extract_ligands_from_complex(smiles: str) -> Tuple[
             else:
                 idx_map[old_idx] = old_idx - removed_count
 
-        # Apply original atom properties
-        # For coordinating atoms: we need to handle the lost metal bond
+        # Apply original atom properties.
+        # Coordinating atoms need special handling because removing the metal
+        # bond changes their standalone valence/charge state.
+        metal_set = set(metal_atoms)
+        typical_valence = {
+            'B': 3, 'C': 4, 'N': 3, 'O': 2, 'P': 3, 'S': 2,
+            'F': 1, 'Cl': 1, 'Br': 1, 'I': 1,
+        }
         for old_idx, props in orig_props.items():
             if old_idx in metal_atoms:
                 continue
@@ -183,11 +189,47 @@ def extract_ligands_from_complex(smiles: str) -> Tuple[
                 a.SetNumRadicalElectrons(props['rad_e'])
 
                 if old_idx in coordinating_atoms:
-                    # Coordinating atom lost a bond to metal
-                    # Set NoImplicit=True and explicit Hs to 0 to prevent H addition
-                    a.SetFormalCharge(props['formal_charge'])
-                    a.SetNumExplicitHs(0)
-                    a.SetNoImplicit(True)
+                    # Estimate the standalone donor state after detaching it
+                    # from the metal center.
+                    sym = props['symbol']
+                    typ_val = typical_valence.get(sym, 2)
+
+                    bo_sum = 0.0
+                    for bond in mol.GetBonds():
+                        begin_idx = bond.GetBeginAtomIdx()
+                        end_idx = bond.GetEndAtomIdx()
+                        if old_idx not in (begin_idx, end_idx):
+                            continue
+                        neighbor_idx = end_idx if begin_idx == old_idx else begin_idx
+                        if neighbor_idx in metal_set:
+                            continue
+                        bo_sum += bond.GetBondTypeAsDouble()
+
+                    adjusted_charge = int(props['formal_charge'])
+                    if adjusted_charge > 0:
+                        # Coordination written as [X+]-[M-] should collapse
+                        # back to the neutral donor atom in the free ligand.
+                        adjusted_charge -= 1
+
+                    saturated = (bo_sum + props['explicit_h']) >= typ_val
+
+                    if adjusted_charge != 0:
+                        a.SetFormalCharge(adjusted_charge)
+                        a.SetNumExplicitHs(0)
+                        a.SetNoImplicit(True)
+                    elif saturated:
+                        # Standalone neutral donor with valence already satisfied
+                        # (e.g. pyridine N or carbonyl O) should not be forced
+                        # into an anionic form.
+                        a.SetFormalCharge(0)
+                        a.SetNumExplicitHs(props['explicit_h'])
+                        a.SetNoImplicit(props['no_implicit'])
+                    else:
+                        # Unsaturated donor lost the metal bond and corresponds
+                        # to an anionic donor site in the free ligand.
+                        a.SetFormalCharge(-1)
+                        a.SetNumExplicitHs(0)
+                        a.SetNoImplicit(True)
                 else:
                     a.SetFormalCharge(props['formal_charge'])
                     a.SetNumExplicitHs(props['explicit_h'])
