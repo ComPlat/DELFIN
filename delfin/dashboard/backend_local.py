@@ -96,25 +96,88 @@ class LocalJobBackend(JobBackend):
     # ------------------------------------------------------------------
     # Status helpers
     # ------------------------------------------------------------------
-    def _update_job_status(self, job):
+    def _list_processes(self):
+        """Return a best-effort snapshot of current processes."""
+        try:
+            result = subprocess.run(
+                ['ps', '-eo', 'pid=,pgid=,args='],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+        except Exception:
+            return []
+        if result.returncode != 0:
+            return []
+
+        processes = []
+        for line in result.stdout.splitlines():
+            parts = line.strip().split(None, 2)
+            if len(parts) < 3:
+                continue
+            try:
+                proc_pid = int(parts[0])
+                proc_pgid = int(parts[1])
+            except ValueError:
+                continue
+            try:
+                cwd = os.readlink(Path('/proc') / str(proc_pid) / 'cwd')
+            except Exception:
+                cwd = None
+            processes.append((proc_pid, proc_pgid, parts[2], cwd))
+        return processes
+
+    def _job_has_active_processes(self, job, process_table=None):
+        """Detect live descendants or subprocesses that still belong to a job."""
+        job_dir = str(job.get('job_dir') or '').strip()
+        if not job_dir:
+            return False
+        job_dir_prefix = job_dir.rstrip(os.sep) + os.sep
+
+        try:
+            wrapper_pid = int(job.get('pid')) if job.get('pid') is not None else None
+        except (TypeError, ValueError):
+            wrapper_pid = None
+        try:
+            wrapper_pgid = int(job.get('pgid')) if job.get('pgid') is not None else None
+        except (TypeError, ValueError):
+            wrapper_pgid = None
+
+        current_pid = os.getpid()
+        for proc_pid, proc_pgid, args, cwd in (process_table or self._list_processes()):
+            if proc_pid == current_pid:
+                continue
+            if wrapper_pid is not None and proc_pid == wrapper_pid:
+                return True
+            if wrapper_pgid is not None and proc_pgid == wrapper_pgid:
+                return True
+            if job_dir in args:
+                return True
+            if cwd == job_dir or cwd.startswith(job_dir_prefix):
+                return True
+        return False
+
+    def _update_job_status(self, job, process_table=None):
         if job['status'] not in ('RUNNING',):
             return job
         pid = job.get('pid')
-        if pid is None:
-            job['status'] = 'FAILED'
-            return job
-        try:
-            wpid, _ = os.waitpid(pid, os.WNOHANG)
-            if wpid == 0:
-                return job
-        except ChildProcessError:
+        if pid is not None:
             try:
-                os.kill(pid, 0)
-                return job
-            except ProcessLookupError:
-                pass
-            except PermissionError:
-                return job
+                wpid, _ = os.waitpid(pid, os.WNOHANG)
+                if wpid == 0:
+                    return job
+            except ChildProcessError:
+                try:
+                    os.kill(pid, 0)
+                    return job
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    return job
+
+        if self._job_has_active_processes(job, process_table=process_table):
+            return job
 
         job_dir = job.get('job_dir', '')
         job_id = job.get('job_id', 0)
@@ -205,12 +268,13 @@ class LocalJobBackend(JobBackend):
         with self._lock:
             data = self._load_jobs()
             jobs = data.get('jobs', [])
+            process_table = self._list_processes()
 
             changed = False
             for job in jobs:
                 if job['status'] == 'RUNNING':
                     old_status = job['status']
-                    self._update_job_status(job)
+                    self._update_job_status(job, process_table=process_table)
                     if job['status'] != old_status:
                         changed = True
 
@@ -338,9 +402,10 @@ class LocalJobBackend(JobBackend):
         with self._lock:
             data = self._load_jobs()
             jobs = data.get('jobs', [])
+            process_table = self._list_processes()
             for job in jobs:
                 if job['status'] == 'RUNNING':
-                    self._update_job_status(job)
+                    self._update_job_status(job, process_table=process_table)
             self._save_jobs(data)
 
         result = []
