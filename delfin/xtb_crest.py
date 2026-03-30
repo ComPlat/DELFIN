@@ -102,11 +102,10 @@ def XTB(multiplicity, charge, config):
         int(config.get('maxcore', 1000) or 1000),
     )
     folder_name = config['xTB_method']
-    cwd = Path.cwd()
+    work_input = _resolve_work_input(config)
+    cwd = work_input.parent
     work = cwd / folder_name
     work.mkdir(parents=True, exist_ok=True)
-
-    work_input = _resolve_work_input(config)
     src_input = work_input
     if not src_input.exists():
         print(f"{src_input.name} not found!")
@@ -123,17 +122,13 @@ def XTB(multiplicity, charge, config):
                  "\n*\n")
     print("File was successfully updated.")
 
-    try:
-        os.chdir(work)
-        if smart_recalc.should_skip(inp, out) and Path("XTB.xyz").exists():
-            logging.info("[smart_recalc] skipping xTB; inp+deps unchanged and output complete.")
-        else:
-            run_orca("XTB.inp", "output_XTB.out")
-        if not Path("XTB.xyz").exists():
-            print("XTB.xyz not found!")
-            return
-    finally:
-        os.chdir(cwd)
+    if smart_recalc.should_skip(inp, out) and xyz.exists():
+        logging.info("[smart_recalc] skipping xTB; inp+deps unchanged and output complete.")
+    else:
+        run_orca(str(inp), str(out), working_dir=work)
+    if not xyz.exists():
+        print("XTB.xyz not found!")
+        return
 
     # Ergebnis nach oben spiegeln (Header entfernen)
     tmp_xyz = cwd / "_tmp_xtb.xyz"
@@ -149,11 +144,10 @@ def XTB_GOAT(multiplicity, charge, config):
         int(config.get('maxcore', 1000) or 1000),
     )
     folder_name = f"{config['xTB_method']}_GOAT"
-    cwd = Path.cwd()
+    work_input = _resolve_work_input(config)
+    cwd = work_input.parent
     work = cwd / folder_name
     work.mkdir(parents=True, exist_ok=True)
-
-    work_input = _resolve_work_input(config)
     src_input = work_input
     if not src_input.exists():
         print(f"{src_input.name} not found!")
@@ -169,19 +163,15 @@ def XTB_GOAT(multiplicity, charge, config):
                  "\n*\n")
     print("File was successfully updated.")
 
-    try:
-        os.chdir(work)
-        if smart_recalc.should_skip(inp, out) and Path("XTB_GOAT.globalminimum.xyz").exists():
-            logging.info("[smart_recalc] skipping GOAT; inp+deps unchanged and output complete.")
-        elif _bootstrap_fingerprint_from_complete_output(inp, out, xyz, "GOAT"):
-            pass
-        else:
-            run_orca("XTB_GOAT.inp", "output_XTB_GOAT.out")
-        if not Path("XTB_GOAT.globalminimum.xyz").exists():
-            print("XTB_GOAT.globalminimum.xyz not found!")
-            return
-    finally:
-        os.chdir(cwd)
+    if smart_recalc.should_skip(inp, out) and xyz.exists():
+        logging.info("[smart_recalc] skipping GOAT; inp+deps unchanged and output complete.")
+    elif _bootstrap_fingerprint_from_complete_output(inp, out, xyz, "GOAT"):
+        pass
+    else:
+        run_orca(str(inp), str(out), working_dir=work)
+    if not xyz.exists():
+        print("XTB_GOAT.globalminimum.xyz not found!")
+        return
 
     tmp_xyz = cwd / "_tmp_goat.xyz"
     shutil.copyfile(xyz, tmp_xyz)
@@ -192,13 +182,12 @@ def XTB_GOAT(multiplicity, charge, config):
 def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="start.txt", crest_dir="CREST"):
     print("\nstarting CREST\n")
     crest_cores, _ = _resolve_global_job_limits(PAL)
-    cwd = Path.cwd()
-    work = cwd / crest_dir
-    work.mkdir(parents=True, exist_ok=True)
-
     input_path = Path(input_file)
     if not input_path.is_absolute():
-        input_path = cwd / input_path
+        input_path = Path.cwd() / input_path
+    cwd = input_path.parent
+    work = cwd / crest_dir
+    work.mkdir(parents=True, exist_ok=True)
 
     src_input = input_path
     if not src_input.exists():
