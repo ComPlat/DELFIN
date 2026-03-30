@@ -163,14 +163,14 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                 try:
                     sc_plan = build_stability_constant_plan(
                         ctx,
-                        initial_completion_dependency=config.get("_occ_initial_completion_job"),
+                        initial_completion_dependency=config.get("_occ_initial_energy_job"),
                     )
                     all_jobs.extend(sc_plan.jobs)
                     sc_embedded = True
                     logger.info(
                         "[SC] Embedded stability constant jobs into the OCCUPIER shared scheduler "
                         "(initial dependency: %s).",
-                        config.get("_occ_initial_completion_job") or "none",
+                        config.get("_occ_initial_energy_job") or "none",
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(

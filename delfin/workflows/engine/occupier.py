@@ -1805,6 +1805,11 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         len(reduction_steps),
     )
     config["_occ_initial_completion_job"] = stage_completion.get("initial")
+    freq_mode = str(config.get("frequency_calculation_OCCUPIER", "no")).strip().lower()
+    if freq_mode == "yes":
+        config["_occ_initial_energy_job"] = stage_completion.get("initial")
+    else:
+        config["_occ_initial_energy_job"] = "occupier_initial"
     return jobs
 
 

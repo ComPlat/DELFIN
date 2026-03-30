@@ -1687,9 +1687,6 @@ def main(argv: list[str] | None = None) -> int:
             if str(config.get('calc_initial', '')).strip().lower() == 'no':
                 logger.info("[SC] stability_constant=yes → forcing calc_initial=yes")
                 config['calc_initial'] = 'yes'
-            if str(config.get('frequency_calculation_OCCUPIER', 'no')).strip().lower() != 'yes':
-                logger.info("[SC] stability_constant=yes → forcing frequency_calculation_OCCUPIER=yes")
-                config['frequency_calculation_OCCUPIER'] = 'yes'
 
         method_token: Optional[str]
         if method_lower in {'', 'none', 'esd'}:
