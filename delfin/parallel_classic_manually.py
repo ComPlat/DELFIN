@@ -8,13 +8,21 @@ import re
 import time
 import statistics
 import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Optional, Set, List
 
 from delfin.common.logging import get_logger
-from delfin.dynamic_pool import PoolJob, JobPriority
+from delfin.dynamic_pool import (
+    PoolJob,
+    JobPriority,
+    get_current_job_cores,
+    get_current_job_id,
+    _set_current_job_cores,
+    _set_current_job_id,
+)
 from delfin.esd_input_generator import (
     append_properties_of_interest_jobs,
     append_reorganisation_energy_jobs,
@@ -38,6 +46,91 @@ STAGE_CORE_HISTORY: Dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=3
 # Global registry of active workflow managers for nested workflow coordination
 _ACTIVE_MANAGERS: Dict[int, '_WorkflowManager'] = {}
 _ACTIVE_MANAGERS_LOCK = threading.Lock()
+
+
+class _LocalWorkflowPool:
+    """Minimal pool adapter for nested workflows inside an already running pool job."""
+
+    def __init__(self, total_cores: int, max_jobs: int):
+        self.total_cores = max(1, int(total_cores))
+        self.max_concurrent_jobs = max(1, int(max_jobs))
+        self._executor = ThreadPoolExecutor(max_workers=self.max_concurrent_jobs)
+        self._lock = threading.RLock()
+        self._condition = threading.Condition(self._lock)
+        self._running_jobs: Dict[str, PoolJob] = {}
+        self._queued_jobs = 0
+        self._allocated_cores = 0
+        self._futures: Dict[str, Future] = {}
+
+    def submit_job(self, job: PoolJob) -> str:
+        planned_cores = max(1, int(job.cores_optimal))
+        with self._lock:
+            self._queued_jobs += 1
+
+        def execute_with_cores() -> None:
+            with self._lock:
+                self._queued_jobs = max(0, self._queued_jobs - 1)
+                job.allocated_cores = planned_cores
+                self._running_jobs[job.job_id] = job
+                self._allocated_cores += planned_cores
+                snapshot = (self._allocated_cores, self.total_cores)
+
+            _set_current_job_id(job.job_id)
+            _set_current_job_cores(planned_cores)
+            try:
+                modified_kwargs = job.kwargs.copy()
+                modified_kwargs["cores"] = planned_cores
+                modified_kwargs["pool_snapshot"] = snapshot
+                job.execute_func(*job.args, **modified_kwargs)
+            finally:
+                _set_current_job_cores(None)
+                _set_current_job_id(None)
+                with self._lock:
+                    self._allocated_cores = max(0, self._allocated_cores - planned_cores)
+                    self._running_jobs.pop(job.job_id, None)
+                    job.allocated_cores = 0
+                    self._condition.notify_all()
+
+        future = self._executor.submit(execute_with_cores)
+        with self._lock:
+            self._futures[job.job_id] = future
+
+        def _done(_future: Future, job_id: str = job.job_id) -> None:
+            with self._lock:
+                self._futures.pop(job_id, None)
+                self._condition.notify_all()
+
+        future.add_done_callback(_done)
+        return job.job_id
+
+    def wait_for_completion(self, timeout: Optional[float] = None) -> bool:
+        deadline = time.time() + timeout if timeout else None
+        with self._condition:
+            while self._running_jobs or self._queued_jobs or self._futures:
+                remaining = None if deadline is None else max(0.0, deadline - time.time())
+                if deadline is not None and remaining <= 0:
+                    return False
+                self._condition.wait(timeout=remaining)
+        return True
+
+    def get_status(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "total_cores": self.total_cores,
+                "allocated_cores": self._allocated_cores,
+                "utilization_percent": (self._allocated_cores / self.total_cores) * 100,
+                "running_jobs": len(self._running_jobs),
+                "queued_jobs": self._queued_jobs,
+                "completed_jobs": 0,
+                "failed_jobs": 0,
+                "job_details": {
+                    job_id: {"cores": job.allocated_cores or job.cores_optimal}
+                    for job_id, job in self._running_jobs.items()
+                },
+            }
+
+    def shutdown(self) -> None:
+        self._executor.shutdown(wait=True)
 
 
 @dataclass
@@ -96,10 +189,11 @@ class _WorkflowManager:
                 f"[{label}] Global job manager not initialized; call get_global_manager().initialize(config) first."
             )
 
-        self.pool = global_mgr.get_pool()
-        pool_id = id(self.pool)
+        parent_job_id = get_current_job_id()
+        parent_job_cores = get_current_job_cores()
+        nested_mode = parent_job_id is not None and parent_job_cores is not None
 
-        self.total_cores = max(1, global_mgr.total_cores)
+        self.total_cores = max(1, int(parent_job_cores if nested_mode else global_mgr.total_cores))
         self.maxcore_mb = max(256, _parse_int(config.get('maxcore'), fallback=1000))
 
         if max_jobs_override is not None and max_jobs_override > 0:
@@ -107,14 +201,28 @@ class _WorkflowManager:
         else:
             desired_jobs = max(1, global_mgr.max_jobs)
 
-        self.max_jobs = max(1, min(desired_jobs, self.pool.max_concurrent_jobs))
-
-        logger.info(
-            "[%s] ✓ USING GLOBAL SHARED POOL (pool_id=%d, %d cores)",
-            label,
-            pool_id,
-            self.total_cores,
-        )
+        if nested_mode:
+            self._using_local_pool = True
+            self.max_jobs = max(1, min(desired_jobs, self.total_cores))
+            self.pool = _LocalWorkflowPool(self.total_cores, self.max_jobs)
+            logger.info(
+                "[%s] ✓ USING LOCAL NESTED POOL (%d cores from parent job %s, max_jobs=%d)",
+                label,
+                self.total_cores,
+                parent_job_id,
+                self.max_jobs,
+            )
+        else:
+            self._using_local_pool = False
+            self.pool = global_mgr.get_pool()
+            pool_id = id(self.pool)
+            self.max_jobs = max(1, min(desired_jobs, self.pool.max_concurrent_jobs))
+            logger.info(
+                "[%s] ✓ USING GLOBAL SHARED POOL (pool_id=%d, %d cores)",
+                label,
+                pool_id,
+                self.total_cores,
+            )
 
         self._sync_parallel_flag()
 
@@ -526,11 +634,15 @@ class _WorkflowManager:
         pending: Dict[str, WorkflowJob] = {}
         self._sync_parallel_flag()
         logger.info(
-            "[%s] Scheduling %d jobs across %d cores using GLOBAL SHARED pool (pool_id=%d)",
+            "[%s] Scheduling %d jobs across %d cores using %s",
             self.label,
             len(self._jobs),
             self.total_cores,
-            id(self.pool),
+            (
+                f"LOCAL NESTED pool (pool_id={id(self.pool)})"
+                if self._using_local_pool
+                else f"GLOBAL SHARED pool (pool_id={id(self.pool)})"
+            ),
         )
 
         # Deadlock detection: Track last progress to detect infinite blocking
@@ -783,7 +895,11 @@ class _WorkflowManager:
             )
 
     def shutdown(self) -> None:
-        logger.debug("[%s] Global pool in use - shutdown handled by GlobalJobManager", self.label)
+        if self._using_local_pool:
+            self.pool.shutdown()
+            logger.debug("[%s] Local nested pool shut down", self.label)
+        else:
+            logger.debug("[%s] Global pool in use - shutdown handled by GlobalJobManager", self.label)
         # Unregister from global registry
         with _ACTIVE_MANAGERS_LOCK:
             _ACTIVE_MANAGERS.pop(id(self), None)
