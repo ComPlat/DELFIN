@@ -38,6 +38,7 @@ _MODULE = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = _MODULE
 _SPEC.loader.exec_module(_MODULE)
 
+
 def test_local_backend_falls_back_to_python_runner_when_script_is_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
 
@@ -97,6 +98,35 @@ def test_local_backend_can_oversubscribe_cores_when_enabled(monkeypatch, tmp_pat
     assert started == [2]
 
 
+def test_local_backend_can_oversubscribe_ram_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
+    backend = _MODULE.LocalJobBackend(
+        run_script=tmp_path / "missing.sh",
+        max_cores=384,
+        max_ram_mb=1_000,
+        allow_oversubscribe=True,
+        oversubscribe_factor=1.5,
+    )
+
+    jobs_data = {
+        "jobs": [
+            {"job_id": 1, "status": "RUNNING", "pal": 1, "maxcore": 900},
+            {"job_id": 2, "status": "PENDING", "pal": 1, "maxcore": 500, "job_dir": str(tmp_path)},
+        ]
+    }
+
+    monkeypatch.setattr(backend, "_load_jobs", lambda: jobs_data)
+    monkeypatch.setattr(backend, "_save_jobs", lambda data: None)
+    monkeypatch.setattr(backend, "_update_job_status", lambda job: job)
+    started = []
+    monkeypatch.setattr(backend, "_start_job", lambda job, data: started.append(job["job_id"]) or True)
+
+    changed = backend._try_start_pending_jobs()
+
+    assert changed is True
+    assert started == [2]
+
+
 def test_local_backend_oversubscribe_budget_is_integer(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
     backend = _MODULE.LocalJobBackend(
@@ -108,3 +138,4 @@ def test_local_backend_oversubscribe_budget_is_integer(monkeypatch, tmp_path):
     )
 
     assert backend._core_budget() == 13
+    assert backend._ram_budget() == 1_540_000
