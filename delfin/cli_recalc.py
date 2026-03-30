@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional, Set
 
 from delfin.common.logging import get_logger
-from delfin.common.paths import resolve_path, scratch_path
+from delfin.common.paths import resolve_path
 from delfin import smart_recalc
 
 logger = get_logger(__name__)
@@ -119,57 +119,16 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
         return _run_orca_real(inp_file, out_file, *args, **kwargs)
 
     def _xtb_wrapper(multiplicity, charge, config):
-        # Skip if typical XTB artifacts or a marker exist
-        artifacts = ("xtbopt.xyz", "xtb.trj", "xtbopt.log")
-        marker = scratch_path(".delfin_done_xtb")
-        if marker.exists() or any(scratch_path(a).exists() for a in artifacts):
-            logger.info("[recalc] skipping XTB; artifacts/marker found.")
-            return None
-        res = _XTB_real(multiplicity, charge, config)
-        try:
-            marker.touch()
-        except Exception:
-            pass
-        return res
+        return _XTB_real(multiplicity, charge, config)
 
     def _goat_wrapper(multiplicity, charge, config):
-        artifacts = ("GOAT.txt", "goat.out", "goat.log")
-        marker = scratch_path(".delfin_done_goat")
-        if marker.exists() or any(scratch_path(a).exists() for a in artifacts):
-            logger.info("[recalc] skipping XTB_GOAT; artifacts/marker found.")
-            return None
-        res = _XTB_GOAT_real(multiplicity, charge, config)
-        try:
-            marker.touch()
-        except Exception:
-            pass
-        return res
+        return _XTB_GOAT_real(multiplicity, charge, config)
 
     def _crest_wrapper(PAL, solvent, charge, multiplicity):
-        artifacts = ("crest_conformers.xyz", "crest_best.xyz", "crest.energies", "crest.out")
-        marker = scratch_path(".delfin_done_crest")
-        if marker.exists() or any(scratch_path(a).exists() for a in artifacts):
-            logger.info("[recalc] skipping CREST; artifacts/marker found.")
-            return None
-        res = _CREST_real(PAL, solvent, charge, multiplicity)
-        try:
-            marker.touch()
-        except Exception:
-            pass
-        return res
+        return _CREST_real(PAL, solvent, charge, multiplicity)
 
     def _solv_wrapper(input_path, multiplicity, charge, solvent, n_solv, config):
-        # If your implementation produces a specific, stable output, prefer checking for it.
-        marker = scratch_path(".delfin_done_xtb_solvator")
-        if marker.exists():
-            logger.info("[recalc] skipping XTB_SOLVATOR; marker found.")
-            return None
-        res = _SOLV_real(input_path, multiplicity, charge, solvent, n_solv, config)
-        try:
-            marker.touch()
-        except Exception:
-            pass
-        return res
+        return _SOLV_real(input_path, multiplicity, charge, solvent, n_solv, config)
 
     wrappers = {
         'run_orca': _run_orca_wrapper,
@@ -195,6 +154,9 @@ def patch_modules_for_recalc(wrappers):
     from . import orca as _orca_mod
     from . import occupier as _occupier_mod
     from . import cli as _cli_mod
+    from . import xtb_crest as _xtb_crest_mod
+    from . import guppy_sampling as _guppy_sampling_mod
+    from . import pipeline as _pipeline_mod
     from . import parallel_classic_manually as _parallel_classic_mod
     from . import parallel_occupier as _parallel_occupier_mod
     from . import esd_module as _esd_module
@@ -202,6 +164,20 @@ def patch_modules_for_recalc(wrappers):
     _orca_mod.run_orca = wrappers['run_orca']
     _occupier_mod.run_orca = wrappers['run_orca']
     _cli_mod.run_orca = wrappers['run_orca']
+    _cli_mod.XTB = wrappers['XTB']
+    _cli_mod.XTB_GOAT = wrappers['XTB_GOAT']
+    _cli_mod.run_crest_workflow = wrappers['run_crest_workflow']
+    _cli_mod.XTB_SOLVATOR = wrappers['XTB_SOLVATOR']
+    _xtb_crest_mod.run_orca = wrappers['run_orca']
+    _xtb_crest_mod.XTB = wrappers['XTB']
+    _xtb_crest_mod.XTB_GOAT = wrappers['XTB_GOAT']
+    _xtb_crest_mod.run_crest_workflow = wrappers['run_crest_workflow']
+    _xtb_crest_mod.XTB_SOLVATOR = wrappers['XTB_SOLVATOR']
+    _guppy_sampling_mod.run_orca = wrappers['run_orca']
+    _pipeline_mod.XTB = wrappers['XTB']
+    _pipeline_mod.XTB_GOAT = wrappers['XTB_GOAT']
+    _pipeline_mod.run_crest_workflow = wrappers['run_crest_workflow']
+    _pipeline_mod.XTB_SOLVATOR = wrappers['XTB_SOLVATOR']
     _parallel_classic_mod.run_orca = wrappers['run_orca']
     _parallel_occupier_mod.run_orca = wrappers['run_orca']
     _esd_module.run_orca = wrappers['run_orca']
