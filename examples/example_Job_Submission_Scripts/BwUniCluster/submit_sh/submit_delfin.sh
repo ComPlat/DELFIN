@@ -188,16 +188,19 @@ fi
 BASE_DIR="$SEARCH_DIR/software"
 DELFIN_DIR="$BASE_DIR/delfin"
 
+# Normalise SLURM scratch hints early — needed for ORCA/OpenMPI/venv staging below.
+if [ -z "${TMPDIR:-}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
+    export TMPDIR="$SLURM_TMPDIR"
+fi
+STAGE_BASE="${TMPDIR:-${BEEOND_MOUNTPOINT:-}}"
+
 # Use custom OpenMPI 4.1.8 (compatible with ORCA)
-if [ ! -d "$BASE_DIR/openmpi-4.1.8" ]; then
-    echo "ERROR: OpenMPI 4.1.8 not found in $BASE_DIR/openmpi-4.1.8"
+OMPI_HOME="$BASE_DIR/openmpi-4.1.8"
+if [ ! -d "$OMPI_HOME" ]; then
+    echo "ERROR: OpenMPI 4.1.8 not found in $OMPI_HOME"
     echo "Please install it first. See installation instructions."
     exit 1
 fi
-
-echo "Using custom OpenMPI 4.1.8 from $BASE_DIR/openmpi-4.1.8"
-export PATH="$BASE_DIR/openmpi-4.1.8/bin:$PATH"
-export LD_LIBRARY_PATH="$BASE_DIR/openmpi-4.1.8/lib:$LD_LIBRARY_PATH"
 
 # Set ORCA path (allow override from environment)
 ORCA_BASE_DEFAULT="$BASE_DIR/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2"
@@ -207,6 +210,35 @@ if [ ! -d "$ORCA_BASE" ]; then
     echo "Please install ORCA or set DELFIN_ORCA_BASE."
     exit 1
 fi
+
+# ------------------------------------------------------------------
+# Stage ORCA + OpenMPI to node-local SSD to avoid HOME filesystem I/O.
+# A single copy (~17 GB) at job start prevents hundreds of GB of
+# repeated reads from HOME over the job lifetime.
+# Set DELFIN_STAGE_ORCA=0 to disable and load directly from HOME.
+# ------------------------------------------------------------------
+STAGE_ORCA="${DELFIN_STAGE_ORCA:-1}"
+if [ "$STAGE_ORCA" = "1" ] && [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
+    ORCA_LOCAL="$STAGE_BASE/orca_${SLURM_JOB_ID}"
+    OMPI_LOCAL="$STAGE_BASE/openmpi_${SLURM_JOB_ID}"
+
+    echo "Staging OpenMPI to local SSD ($OMPI_LOCAL)..."
+    cp -a "$OMPI_HOME" "$OMPI_LOCAL" && OMPI_HOME="$OMPI_LOCAL" \
+        || echo "WARNING: OpenMPI staging failed, using HOME."
+
+    echo "Staging ORCA to local SSD ($ORCA_LOCAL)..."
+    cp -a "$ORCA_BASE" "$ORCA_LOCAL" && ORCA_BASE="$ORCA_LOCAL" \
+        || echo "WARNING: ORCA staging failed, using HOME."
+
+    echo "ORCA + OpenMPI staged to local SSD."
+else
+    echo "Using ORCA + OpenMPI directly from HOME (STAGE_ORCA=${STAGE_ORCA})."
+fi
+
+echo "Using custom OpenMPI 4.1.8 from $OMPI_HOME"
+export PATH="$OMPI_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$OMPI_HOME/lib:$LD_LIBRARY_PATH"
+
 export PATH="$ORCA_BASE:$PATH"
 export LD_LIBRARY_PATH="$ORCA_BASE:$LD_LIBRARY_PATH"
 export ORCA_DIR="$ORCA_BASE"
@@ -234,12 +266,6 @@ unset OMPI_MCA_btl_tcp_if_exclude
 export OMPI_MCA_hwloc_base_binding_policy=none
 export OMPI_MCA_rmaps_base_mapping_policy=core
 export OMPI_MCA_rmaps_base_oversubscribe=true # Allow ORCA's dynamic parallelism
-
-# Normalise SLURM scratch hints before touching the Python runtime.
-if [ -z "${TMPDIR:-}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
-    export TMPDIR="$SLURM_TMPDIR"
-fi
-STAGE_BASE="${TMPDIR:-${BEEOND_MOUNTPOINT:-}}"
 
 # Activate DELFIN virtual environment from a single tarball to keep HOME I/O low.
 VENV_TAR="$DELFIN_DIR/delfin_venv.tar"
@@ -713,8 +739,8 @@ cleanup() {
     echo "Copying results back to $SLURM_SUBMIT_DIR..."
     sync_results_back "signal-${signal_name}" "full"
 
-    # Cleanup scratch (only after successful copy)
-    rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}" 2>/dev/null || true
+    # Cleanup scratch and staged binaries (only after successful copy)
+    rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}" "${ORCA_LOCAL:-}" "${OMPI_LOCAL:-}" 2>/dev/null || true
     echo "Cleanup completed at $(date)"
     exit 1
 }
@@ -1104,6 +1130,6 @@ echo "========================================"
 sync_results_back "job-end" "full"
 
 # Cleanup scratch
-rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}"
+rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}" "${ORCA_LOCAL:-}" "${OMPI_LOCAL:-}"
 
 exit $EXIT_CODE
