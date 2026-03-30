@@ -117,6 +117,14 @@ class StabilityResult:
     logK_exp: Optional[float] = None
 
 
+@dataclass
+class StabilityWorkflowPlan:
+    """Prepared SC workflow jobs plus the parsed reaction analysis."""
+    analysis: StabilityAnalysis
+    sc_dir: Path
+    jobs: List["WorkflowJob"]
+
+
 # ---------------------------------------------------------------------------
 # 1. Analysis: extract ligands with denticity from complex SMILES
 # ---------------------------------------------------------------------------
@@ -341,13 +349,25 @@ def _convert_smiles_and_write(
     config: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Convert SMILES to XYZ and write start.txt in output_dir."""
-    from delfin.smiles_converter import smiles_to_xyz, smiles_to_xyz_quick
+    from delfin.pipeline import _run_guppy_for_smiles
+    from delfin.smiles_converter import (
+        smiles_to_xyz,
+        smiles_to_xyz_architector,
+        smiles_to_xyz_quick,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     start_path = output_dir / "start.txt"
 
     if converter == "QUICK":
         xyz_content, error = smiles_to_xyz_quick(smiles)
+    elif converter == "ARCHITECTOR":
+        xyz_content, error = smiles_to_xyz_architector(smiles)
+    elif converter == "GUPPY":
+        run_config = dict(config or {})
+        _run_guppy_for_smiles(smiles, start_path, run_config)
+        xyz_content = start_path.read_text(encoding="utf-8")
+        error = None
     else:
         # NORMAL: try full converter, fallback to quick
         xyz_content, error = smiles_to_xyz(smiles)
@@ -366,6 +386,32 @@ def _convert_smiles_and_write(
 # ---------------------------------------------------------------------------
 # 4. Preoptimization (xTB / GOAT / CREST)
 # ---------------------------------------------------------------------------
+
+def _is_yes_token(value: Any) -> bool:
+    return str(value).strip().lower() in {"yes", "true", "1", "on"}
+
+
+def _normalized_sc_preopt(config: Dict[str, Any]) -> str:
+    preopt = str(config.get("sc_preopt", "no")).strip().upper()
+    return "" if preopt == "NO" else preopt
+
+
+def _resolve_main_workflow_converter(config: Dict[str, Any]) -> str:
+    from delfin.pipeline import _resolve_smiles_converter
+
+    return _resolve_smiles_converter(config)
+
+
+def _resolve_main_preopt_steps(config: Dict[str, Any]) -> List[str]:
+    steps: List[str] = []
+    if _is_yes_token(config.get("XTB_OPT", "no")):
+        steps.append("XTB")
+    if _is_yes_token(config.get("XTB_GOAT", "no")):
+        steps.append("GOAT")
+    if _is_yes_token(config.get("CREST", "no")):
+        steps.append("CREST")
+    return steps
+
 
 def _run_preopt(workdir: Path, config: Dict[str, Any], preopt: str,
                 charge: int, multiplicity: int, solvent: str) -> None:
@@ -397,6 +443,25 @@ def _run_preopt(workdir: Path, config: Dict[str, Any], preopt: str,
             )
     finally:
         os.chdir(original_cwd)
+
+
+def _run_preopt_sequence(
+    workdir: Path,
+    config: Dict[str, Any],
+    steps: List[str],
+    charge: int,
+    multiplicity: int,
+    solvent: str,
+    *,
+    label: str,
+) -> None:
+    from delfin.pipeline import _skip_xtb_goat_after_guppy
+
+    for step in steps:
+        if step == "GOAT" and _skip_xtb_goat_after_guppy(config):
+            logger.info("[SC] Skipping XTB_GOAT for %s: GUPPY already delivered a GOAT-refined geometry.", label)
+            continue
+        _run_preopt(workdir, config, step, charge, multiplicity, solvent)
 
 
 # ---------------------------------------------------------------------------
@@ -713,10 +778,6 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
     This is called from cli.py after all other phases complete.
     """
     from delfin.global_scheduler import GlobalOrcaScheduler
-    from delfin.parallel_classic_manually import WorkflowJob, JobPriority
-    from delfin.orca import run_orca
-    from delfin.utils import search_transition_metals
-    from delfin import smart_recalc
 
     config = ctx.config
     if str(config.get("stability_constant", "no")).strip().lower() != "yes":
@@ -736,62 +797,96 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
         logger.error("[SC] No solvent specified in CONTROL.txt")
         return False
 
-    n_explicit = int(str(config.get("n_explicit_solvent", 6)).strip())
-    temperature = float(str(config.get("temperature", "298.15")).strip())
-    logK_exp_raw = str(config.get("logK_exp", "")).strip()
-    logK_exp = float(logK_exp_raw) if logK_exp_raw else None
-    sc_converter = str(config.get("sc_smiles_converter", "NORMAL")).strip().upper()
-    sc_preopt = str(config.get("sc_preopt", "no")).strip().upper()
-    if sc_preopt == "NO":
-        sc_preopt = ""
-
-    original_cwd = Path.cwd()
-    sc_dir = original_cwd / "stability_constant"
-    sc_dir.mkdir(parents=True, exist_ok=True)
-
-    # Phase 1: Analysis
-    logger.info("[SC] Analyzing complex SMILES: %s", smiles)
-    try:
-        analysis = analyze_complex(smiles, solvent, n_explicit)
-    except (ValueError, RuntimeError) as exc:
-        logger.error("[SC] Analysis failed: %s", exc)
-        return False
-
-    logger.info("[SC] Metal: %s", analysis.metals)
-    logger.info("[SC] Ligands: %s", [(l.label, l.charge, l.denticity) for l in analysis.ligands])
-    logger.info("[SC] Unique ligands: %d", len(analysis.unique_ligands))
-    logger.info("[SC] Solv complex SMILES: %s", analysis.solv_complex_smiles)
-    logger.info("[SC] Displaced solvent: %d", analysis.n_displaced)
-
-    # Verify initial.out exists (from main DELFIN workflow)
-    initial_out = _find_initial_output(original_cwd, config)
+    initial_out = _find_initial_output(ctx.control_file_path.parent.resolve(), config)
     if initial_out is None:
         logger.error("[SC] Cannot find initial.out — ensure calc_initial=yes")
         return False
     logger.info("[SC] Using complex energy from: %s", initial_out)
 
-    # Prepare scheduler
+    try:
+        plan = build_stability_constant_plan(ctx, resolved_initial_out=initial_out)
+    except (ValueError, RuntimeError) as exc:
+        logger.error("[SC] Analysis failed: %s", exc)
+        return False
+
     scheduler = GlobalOrcaScheduler(config, label="stability_constant")
+    scheduler.add_jobs(plan.jobs)
+    result = scheduler.run()
+
+    if "sc_postprocess" in result.completed:
+        logger.info("[SC] Stability constant calculation completed successfully")
+        return True
+
+    # Log failures
+    for job_id, reason in result.failed.items():
+        logger.error("[SC] Job %s failed: %s", job_id, reason)
+    for job_id, deps in result.skipped.items():
+        logger.warning("[SC] Job %s skipped (missing: %s)", job_id, ", ".join(deps))
+    return False
+
+
+def build_stability_constant_plan(
+    ctx: "PipelineContext",
+    *,
+    initial_completion_dependency: Optional[str] = None,
+    resolved_initial_out: Optional[Path] = None,
+) -> StabilityWorkflowPlan:
+    from delfin.parallel_classic_manually import WorkflowJob
+
+    config = ctx.config
+    smiles = str(config.get("SMILES", "")).strip()
+    if not smiles:
+        raise ValueError("No SMILES found in CONTROL.txt")
+
+    solvent = str(config.get("solvent", "")).strip()
+    if not solvent:
+        raise ValueError("No solvent specified in CONTROL.txt")
+
+    n_explicit = int(str(config.get("n_explicit_solvent", 6)).strip())
+    temperature = float(str(config.get("temperature", "298.15")).strip())
+    logK_exp_raw = str(config.get("logK_exp", "")).strip()
+    logK_exp = float(logK_exp_raw) if logK_exp_raw else None
+    sc_converter = str(config.get("sc_smiles_converter", "NORMAL")).strip().upper()
+    sc_preopt = _normalized_sc_preopt(config)
+    solv_converter = _resolve_main_workflow_converter(config)
+    solv_preopt_steps = _resolve_main_preopt_steps(config)
+
+    original_cwd = ctx.control_file_path.parent.resolve()
+    sc_dir = original_cwd / "stability_constant"
+    sc_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("[SC] Analyzing complex SMILES: %s", smiles)
+    analysis = analyze_complex(smiles, solvent, n_explicit)
+    logger.info("[SC] Metal: %s", analysis.metals)
+    logger.info("[SC] Ligands: %s", [(l.label, l.charge, l.denticity) for l in analysis.ligands])
+    logger.info("[SC] Unique ligands: %d", len(analysis.unique_ligands))
+    logger.info("[SC] Solv complex SMILES: %s", analysis.solv_complex_smiles)
+    logger.info("[SC] Displaced solvent: %d", analysis.n_displaced)
+    logger.info(
+        "[SC] Solv complex workflow mirrors main system: smiles_converter=%s, preopt=%s",
+        solv_converter,
+        " + ".join(solv_preopt_steps) if solv_preopt_steps else "none",
+    )
+
     total_cores = max(1, int(str(config.get("PAL", 1)).strip()))
-
     cwd_lock = threading.RLock()
+    jobs: List[WorkflowJob] = []
 
-    # ---- Job A: Solvation complex [M(Solv)_m]^x+ with OCCUPIER ----
     solv_dir = sc_dir / "solv_complex"
 
     def _work_solv_occupier(cores: int) -> None:
-        """Set up and run OCCUPIER for solvation complex."""
+        local_config = dict(config)
         _run_solv_complex_occupier(
             solv_dir=solv_dir,
             analysis=analysis,
-            config=config,
-            sc_converter=sc_converter,
-            sc_preopt=sc_preopt,
+            config=local_config,
+            converter=solv_converter,
+            preopt_steps=solv_preopt_steps,
             solvent=solvent,
             cwd_lock=cwd_lock,
         )
 
-    solv_occ_job = WorkflowJob(
+    jobs.append(WorkflowJob(
         job_id="sc_solv_occ",
         work=_work_solv_occupier,
         description=f"SC: OCCUPIER for [M(Solv)_{n_explicit}]",
@@ -800,11 +895,9 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
         cores_optimal=max(2, min(total_cores, total_cores // 2)),
         cores_max=total_cores,
         working_dir=solv_dir,
-    )
+    ))
 
-    # Job A2: OPT+FREQ for solv complex after OCCUPIER
     def _work_solv_freq(cores: int) -> None:
-        """Run OPT+FREQ for solvation complex with OCCUPIER-determined mult."""
         _run_solv_complex_freq(
             solv_dir=solv_dir,
             analysis=analysis,
@@ -814,7 +907,7 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
             cwd_lock=cwd_lock,
         )
 
-    solv_freq_job = WorkflowJob(
+    jobs.append(WorkflowJob(
         job_id="sc_solv_freq",
         work=_work_solv_freq,
         description=f"SC: OPT+FREQ [M(Solv)_{n_explicit}]",
@@ -823,10 +916,8 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
         cores_optimal=total_cores,
         cores_max=total_cores,
         working_dir=solv_dir,
-    )
+    ))
 
-    # ---- Jobs B: Ligands (closed-shell, mult=1) ----
-    ligand_jobs = []
     for i, lig in enumerate(analysis.unique_ligands):
         safe_label = re.sub(r"[^a-zA-Z0-9_]", "", lig.label) or f"L{i + 1}"
         lig_dir = sc_dir / f"ligand_{i + 1}_{safe_label}"
@@ -845,7 +936,7 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
                 cwd_lock=cwd_lock,
             )
 
-        job = WorkflowJob(
+        jobs.append(WorkflowJob(
             job_id=f"sc_ligand_{i + 1}",
             work=_work_ligand,
             description=f"SC: OPT+FREQ ligand {lig.label}",
@@ -854,10 +945,8 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
             cores_optimal=max(2, total_cores // 2),
             cores_max=total_cores,
             working_dir=lig_dir,
-        )
-        ligand_jobs.append(job)
+        ))
 
-    # ---- Job C: Free solvent molecule (closed-shell, mult=1) ----
     solvent_label = re.sub(r"[^a-zA-Z0-9_]", "", analysis.solvent_name) or "solvent"
     solvent_dir = sc_dir / f"solvent_{solvent_label}"
 
@@ -875,7 +964,7 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
             cwd_lock=cwd_lock,
         )
 
-    solvent_job = WorkflowJob(
+    jobs.append(WorkflowJob(
         job_id="sc_solvent",
         work=_work_solvent,
         description=f"SC: OPT+FREQ solvent {analysis.solvent_name}",
@@ -884,22 +973,23 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
         cores_optimal=max(2, total_cores // 4),
         cores_max=total_cores,
         working_dir=solvent_dir,
-    )
+    ))
 
-    # ---- Job D: Post-processing ----
     all_dep_ids = {"sc_solv_freq", "sc_solvent"} | {f"sc_ligand_{i + 1}" for i in range(len(analysis.unique_ligands))}
+    if initial_completion_dependency:
+        all_dep_ids.add(initial_completion_dependency)
 
     def _work_postprocess(cores: int) -> None:
         _run_postprocessing(
             sc_dir=sc_dir,
-            initial_out=initial_out,
+            initial_out=resolved_initial_out,
             analysis=analysis,
             config=config,
             temperature=temperature,
             logK_exp=logK_exp,
         )
 
-    post_job = WorkflowJob(
+    jobs.append(WorkflowJob(
         job_id="sc_postprocess",
         work=_work_postprocess,
         description="SC: Compute DeltaG and log K",
@@ -909,23 +999,13 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
         cores_max=1,
         inline=True,
         working_dir=sc_dir,
+    ))
+
+    return StabilityWorkflowPlan(
+        analysis=analysis,
+        sc_dir=sc_dir,
+        jobs=jobs,
     )
-
-    # Register all jobs
-    scheduler.add_jobs([solv_occ_job, solv_freq_job] + ligand_jobs + [solvent_job, post_job])
-
-    result = scheduler.run()
-
-    if "sc_postprocess" in result.completed:
-        logger.info("[SC] Stability constant calculation completed successfully")
-        return True
-
-    # Log failures
-    for job_id, reason in result.failed.items():
-        logger.error("[SC] Job %s failed: %s", job_id, reason)
-    for job_id, deps in result.skipped.items():
-        logger.warning("[SC] Job %s skipped (missing: %s)", job_id, ", ".join(deps))
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -966,8 +1046,8 @@ def _run_solv_complex_occupier(
     solv_dir: Path,
     analysis: StabilityAnalysis,
     config: Dict[str, Any],
-    sc_converter: str,
-    sc_preopt: str,
+    converter: str,
+    preopt_steps: List[str],
     solvent: str,
     cwd_lock: threading.RLock,
 ) -> None:
@@ -982,13 +1062,21 @@ def _run_solv_complex_occupier(
     start_path = solv_dir / "start.txt"
     if not start_path.exists():
         _convert_smiles_and_write(
-            analysis.solv_complex_smiles, solv_dir, converter=sc_converter,
+            analysis.solv_complex_smiles, solv_dir, converter=converter, config=config,
         )
 
-    # Step 2: Preopt
-    if sc_preopt:
+    # Step 2: Mirror the main-system preopt sequence before OCCUPIER.
+    if preopt_steps:
         mult_guess = 1  # initial guess, OCCUPIER will determine the right one
-        _run_preopt(solv_dir, config, sc_preopt, analysis.metal_charge, mult_guess, solvent)
+        _run_preopt_sequence(
+            solv_dir,
+            config,
+            preopt_steps,
+            analysis.metal_charge,
+            mult_guess,
+            solvent,
+            label="solvation complex",
+        )
 
     # Step 3: Prepare OCCUPIER folder (similar to prepare_occ_folder_only_setup)
     # Copy start.txt → input.xyz in OCCUPIER folder
@@ -1213,7 +1301,7 @@ def _run_closed_shell_species(
 
 def _run_postprocessing(
     sc_dir: Path,
-    initial_out: Path,
+    initial_out: Optional[Path],
     analysis: StabilityAnalysis,
     config: Dict[str, Any],
     temperature: float,
@@ -1221,6 +1309,11 @@ def _run_postprocessing(
 ) -> None:
     """Collect all energies and compute stability constant."""
     from delfin.copy_helpers import read_occupier_file
+
+    if initial_out is None:
+        initial_out = _find_initial_output(sc_dir.parent, config)
+    if initial_out is None:
+        raise FileNotFoundError("Could not locate initial.out for stability constant post-processing")
 
     # 1. Complex energy (from main workflow initial.out)
     logger.info("[SC] Extracting complex energy from %s", initial_out)
