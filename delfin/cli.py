@@ -1795,9 +1795,15 @@ def main(argv: list[str] | None = None) -> int:
         # ------------------- stability_constant --------------------
         sc_enabled = str(config.get('stability_constant', 'no')).strip().lower() == 'yes'
         if sc_enabled:
-            logger.info("Running stability_constant phase...")
-            if not run_stability_constant_phase(pipeline_ctx):
-                logger.warning("stability_constant phase encountered issues, continuing...")
+            if pipeline_ctx.extra.get("stability_constant_embedded_complete"):
+                logger.info(
+                    "stability_constant jobs already completed in parallel with OCCUPIER "
+                    "(skipping separate stability_constant phase)"
+                )
+            else:
+                logger.info("Running stability_constant phase...")
+                if not run_stability_constant_phase(pipeline_ctx):
+                    logger.warning("stability_constant phase encountered issues, continuing...")
 
         # Finalize redox and emission summary
         if method_token == "OCCUPIER":

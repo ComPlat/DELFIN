@@ -1804,6 +1804,7 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         len(oxidation_steps),
         len(reduction_steps),
     )
+    config["_occ_initial_completion_job"] = stage_completion.get("initial")
     return jobs
 
 
