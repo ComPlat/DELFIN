@@ -235,3 +235,72 @@ def test_local_backend_detects_active_job_processes_from_cwd(monkeypatch, tmp_pa
     ]
 
     assert backend._job_has_active_processes(job, process_table=process_table) is True
+
+
+def test_local_backend_live_load_bypass_can_start_one_extra_job(monkeypatch, tmp_path):
+    monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
+    backend = _MODULE.LocalJobBackend(
+        run_script=tmp_path / "missing.sh",
+        max_cores=16,
+        max_ram_mb=1_000,
+        allow_live_load_bypass=True,
+        live_cpu_target_factor=0.95,
+        live_min_free_ram_mb=128,
+    )
+
+    jobs_data = {
+        "jobs": [
+            {"job_id": 1, "status": "RUNNING", "pal": 8, "maxcore": 100},
+            {"job_id": 2, "status": "RUNNING", "pal": 8, "maxcore": 100},
+            {"job_id": 3, "status": "PENDING", "pal": 4, "maxcore": 100, "job_dir": str(tmp_path / "job3")},
+            {"job_id": 4, "status": "PENDING", "pal": 4, "maxcore": 100, "job_dir": str(tmp_path / "job4")},
+        ]
+    }
+
+    monkeypatch.setattr(backend, "_load_jobs", lambda: jobs_data)
+    monkeypatch.setattr(backend, "_save_jobs", lambda data: None)
+    monkeypatch.setattr(backend, "_update_job_status", lambda job, **_kwargs: job)
+    monkeypatch.setattr(backend, "_list_processes", lambda: [])
+    monkeypatch.setattr(backend, "_current_cpu_load", lambda: 8.0)
+    monkeypatch.setattr(backend, "_current_available_ram_mb", lambda: 512)
+    started = []
+    monkeypatch.setattr(backend, "_start_job", lambda job, data: started.append(job["job_id"]) or True)
+
+    changed = backend._try_start_pending_jobs()
+
+    assert changed is True
+    assert started == [3]
+
+
+def test_local_backend_live_load_bypass_respects_cpu_and_ram_guards(monkeypatch, tmp_path):
+    monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
+    backend = _MODULE.LocalJobBackend(
+        run_script=tmp_path / "missing.sh",
+        max_cores=16,
+        max_ram_mb=1_000,
+        allow_live_load_bypass=True,
+        live_cpu_target_factor=0.95,
+        live_min_free_ram_mb=256,
+    )
+
+    jobs_data = {
+        "jobs": [
+            {"job_id": 1, "status": "RUNNING", "pal": 8, "maxcore": 100},
+            {"job_id": 2, "status": "RUNNING", "pal": 8, "maxcore": 100},
+            {"job_id": 3, "status": "PENDING", "pal": 4, "maxcore": 100, "job_dir": str(tmp_path / "job3")},
+        ]
+    }
+
+    monkeypatch.setattr(backend, "_load_jobs", lambda: jobs_data)
+    monkeypatch.setattr(backend, "_save_jobs", lambda data: None)
+    monkeypatch.setattr(backend, "_update_job_status", lambda job, **_kwargs: job)
+    monkeypatch.setattr(backend, "_list_processes", lambda: [])
+    monkeypatch.setattr(backend, "_current_cpu_load", lambda: 13.0)
+    monkeypatch.setattr(backend, "_current_available_ram_mb", lambda: 128)
+    started = []
+    monkeypatch.setattr(backend, "_start_job", lambda job, data: started.append(job["job_id"]) or True)
+
+    changed = backend._try_start_pending_jobs()
+
+    assert changed is False
+    assert started == []

@@ -24,7 +24,9 @@ class LocalJobBackend(JobBackend):
     def __init__(self, run_script, orca_base=None,
                  jobs_file=None, tool_binaries=None,
                  max_cores=384, max_ram_mb=1_400_000,
-                 allow_oversubscribe=False, oversubscribe_factor=1.0):
+                 allow_oversubscribe=False, oversubscribe_factor=1.0,
+                 allow_live_load_bypass=False, live_cpu_target_factor=0.95,
+                 live_min_free_ram_mb=64_000):
         self.run_script = Path(run_script)
         self.orca_base = orca_base
         self.jobs_file = Path(jobs_file) if jobs_file else Path.home() / '.delfin_jobs.json'
@@ -41,6 +43,17 @@ class LocalJobBackend(JobBackend):
         except (TypeError, ValueError):
             factor = 1.0
         self.oversubscribe_factor = max(1.0, factor)
+        self.allow_live_load_bypass = bool(allow_live_load_bypass)
+        try:
+            live_factor = float(live_cpu_target_factor)
+        except (TypeError, ValueError):
+            live_factor = 0.95
+        self.live_cpu_target_factor = max(0.1, live_factor)
+        try:
+            live_min_ram = int(live_min_free_ram_mb)
+        except (TypeError, ValueError):
+            live_min_ram = 64_000
+        self.live_min_free_ram_mb = max(1, live_min_ram)
         self._next_job_id_key = '_next_job_id'
         self._lock = threading.Lock()
         self._worker_running = True
@@ -62,6 +75,9 @@ class LocalJobBackend(JobBackend):
             return budget
         boosted = int(round(float(self.max_ram_mb) * float(self.oversubscribe_factor)))
         return max(budget, boosted)
+
+    def _live_cpu_target(self) -> float:
+        return max(1.0, float(self.max_cores) * float(self.live_cpu_target_factor))
 
     def _has_launch_target(self):
         return self.run_script.exists() or importlib.util.find_spec(
@@ -207,6 +223,43 @@ class LocalJobBackend(JobBackend):
                 total_ram_mb += job.get('pal', 0) * job.get('maxcore', 0)
         return total_cores, total_ram_mb
 
+    def _current_cpu_load(self):
+        try:
+            return max(0.0, float(os.getloadavg()[0]))
+        except (AttributeError, OSError, ValueError):
+            return None
+
+    def _current_available_ram_mb(self):
+        meminfo = Path('/proc/meminfo')
+        try:
+            for line in meminfo.read_text().splitlines():
+                if not line.startswith('MemAvailable:'):
+                    continue
+                parts = line.split()
+                if len(parts) < 2:
+                    break
+                return max(0, int(parts[1]) // 1024)
+        except Exception:
+            return None
+        return None
+
+    def _can_start_with_live_headroom(self, job, current_cpu_load=None, available_ram_mb=None):
+        if not self.allow_live_load_bypass:
+            return False
+        if current_cpu_load is None:
+            current_cpu_load = self._current_cpu_load()
+        if available_ram_mb is None:
+            available_ram_mb = self._current_available_ram_mb()
+        if current_cpu_load is None or available_ram_mb is None:
+            return False
+
+        needed_cores = max(1, int(job.get('pal', 40) or 40))
+        if current_cpu_load + needed_cores > self._live_cpu_target():
+            return False
+        if available_ram_mb < self.live_min_free_ram_mb:
+            return False
+        return True
+
     # ------------------------------------------------------------------
     # Job start / queue management
     # ------------------------------------------------------------------
@@ -283,17 +336,38 @@ class LocalJobBackend(JobBackend):
                           for j in jobs if j['status'] == 'RUNNING')
             core_budget = self._core_budget()
             ram_budget = self._ram_budget()
+            live_cpu_load = self._current_cpu_load() if self.allow_live_load_bypass else None
+            available_ram_mb = (
+                self._current_available_ram_mb() if self.allow_live_load_bypass else None
+            )
+            live_bypass_used = False
 
             for job in jobs:
                 if job['status'] != 'PENDING':
                     continue
                 needed_cores = job.get('pal', 40)
                 needed_ram = job.get('pal', 40) * job.get('maxcore', 6000)
-                if (used_cores + needed_cores <= core_budget and
-                        used_ram + needed_ram <= ram_budget):
+                fits_static_budget = (
+                    used_cores + needed_cores <= core_budget and
+                    used_ram + needed_ram <= ram_budget
+                )
+                fits_live_headroom = (
+                    not fits_static_budget and
+                    not live_bypass_used and
+                    self._can_start_with_live_headroom(
+                        job,
+                        current_cpu_load=live_cpu_load,
+                        available_ram_mb=available_ram_mb,
+                    )
+                )
+                if fits_static_budget or fits_live_headroom:
                     if self._start_job(job, data):
                         used_cores += needed_cores
                         used_ram += needed_ram
+                        if fits_live_headroom:
+                            live_bypass_used = True
+                            if live_cpu_load is not None:
+                                live_cpu_load += max(1, int(needed_cores or 0))
                         changed = True
             if changed:
                 self._save_jobs(data)

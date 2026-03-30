@@ -90,7 +90,16 @@ def test_load_settings_appends_missing_defaults_without_overwriting_existing(tmp
                 "backend": "auto",
                 "orca_base": "",
                 "qm_tools_root": "",
-                "local": {"orca_base": "", "max_cores": 384, "max_ram_mb": 1_400_000},
+                "local": {
+                    "orca_base": "",
+                    "max_cores": 384,
+                    "max_ram_mb": 1_400_000,
+                    "allow_oversubscribe": False,
+                    "oversubscribe_factor": 1.0,
+                    "allow_live_load_bypass": False,
+                    "live_cpu_target_factor": 0.95,
+                    "live_min_free_ram_mb": 64_000,
+                },
                 "slurm": {"orca_base": "", "submit_templates_dir": "", "profile": ""},
             },
             "features": {"remote_archive_enabled": False},
@@ -168,6 +177,9 @@ def test_load_settings_normalizes_runtime_payload(tmp_path):
                         "orca_base": "~/orca_local",
                         "max_cores": 32,
                         "max_ram_mb": 128000,
+                        "allow_live_load_bypass": True,
+                        "live_cpu_target_factor": 0.9,
+                        "live_min_free_ram_mb": 96000,
                     },
                     "slurm": {
                         "orca_base": "~/orca_slurm",
@@ -188,6 +200,9 @@ def test_load_settings_normalizes_runtime_payload(tmp_path):
     assert loaded["runtime"]["local"]["orca_base"] == str(Path("~/orca_local").expanduser())
     assert loaded["runtime"]["local"]["max_cores"] == 32
     assert loaded["runtime"]["local"]["max_ram_mb"] == 128000
+    assert loaded["runtime"]["local"]["allow_live_load_bypass"] is True
+    assert loaded["runtime"]["local"]["live_cpu_target_factor"] == 0.9
+    assert loaded["runtime"]["local"]["live_min_free_ram_mb"] == 96000
     assert loaded["runtime"]["slurm"]["orca_base"] == str(Path("~/orca_slurm").expanduser())
     assert loaded["runtime"]["slurm"]["submit_templates_dir"] == str(
         Path("~/submit_templates").expanduser()
@@ -203,6 +218,10 @@ def test_load_runtime_settings_returns_defaults_when_missing(tmp_path):
     assert runtime["backend"] == "auto"
     assert runtime["local"]["max_cores"] == _MODULE.DEFAULT_SETTINGS["runtime"]["local"]["max_cores"]
     assert runtime["local"]["max_ram_mb"] == _MODULE.DEFAULT_SETTINGS["runtime"]["local"]["max_ram_mb"]
+    assert (
+        runtime["local"]["allow_live_load_bypass"]
+        == _MODULE.DEFAULT_SETTINGS["runtime"]["local"]["allow_live_load_bypass"]
+    )
     assert runtime["slurm"]["submit_templates_dir"] == ""
 
 
