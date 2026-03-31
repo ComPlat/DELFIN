@@ -453,15 +453,20 @@ class LocalJobBackend(JobBackend):
         )
 
     def submit_hyperpol_xtb(self, job_dir, job_name, xyz_file, label,
-                            time_limit='48:00:00', pal=4, maxcore=1000) -> SubmitResult:
+                            time_limit='48:00:00', pal=4, maxcore=1000,
+                            use_bfw: bool = False) -> SubmitResult:
         return self._enqueue(
             job_dir, 'hyperpol_xtb', job_name,
             time_limit=time_limit, pal=pal, maxcore=maxcore,
             xyz_file=xyz_file, workflow_label=label,
+            extra_env={
+                'DELFIN_HYPERPOL_XTB_BFW': '1' if use_bfw else '0',
+            },
         )
 
     def submit_tadf_xtb(self, job_dir, job_name, xyz_file, label,
-                        time_limit='48:00:00', pal=4, maxcore=1000) -> SubmitResult:
+                        time_limit='48:00:00', pal=4, maxcore=1000,
+                        use_bfw: bool = False) -> SubmitResult:
         return self._enqueue(
             job_dir, 'tadf_xtb', job_name,
             time_limit=time_limit, pal=pal, maxcore=maxcore,
@@ -469,6 +474,7 @@ class LocalJobBackend(JobBackend):
             extra_env={
                 'DELFIN_TADF_XTB_PREOPT': 'xtb',
                 'DELFIN_TADF_XTB_T1_OPT': 'yes',
+                'DELFIN_TADF_XTB_BFW': '1' if use_bfw else '0',
             },
         )
 

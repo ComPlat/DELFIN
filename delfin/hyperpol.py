@@ -214,14 +214,18 @@ def _run_response(
     energy_window_ev: float,
     wavelength_count: int,
     cores: int,
+    use_bfw: bool,
 ) -> tuple[Path, Path, Path]:
     output_path = workdir / f"{engine}_hyperpol.out"
     with output_path.open("w", encoding="utf-8") as log_file:
         # std2 returns non-zero exit codes (e.g. 191) even on success;
         # rely on output file checks below instead of check=True.
+        args = ["-xtb", "-e", str(energy_window_ev), "-resp", str(wavelength_count)]
+        if use_bfw:
+            args.append("-BFW")
         run_tool(
             engine,
-            ["-xtb", "-e", str(energy_window_ev), "-resp", str(wavelength_count)],
+            args,
             cwd=workdir,
             env=_tool_env(cores),
             stdout=log_file,
@@ -468,6 +472,7 @@ def run_single_hyperpol_workflow(
     cores: int,
     maxcore: int = 1000,
     workdir: Path,
+    use_bfw: bool = False,
 ) -> HyperpolResult:
     workdir.mkdir(parents=True, exist_ok=True)
     initial_xyz = _write_inputs(entry, workdir)
@@ -536,6 +541,7 @@ def run_single_hyperpol_workflow(
         energy_window_ev=energy_window_ev,
         wavelength_count=len(wavelengths_nm),
         cores=cores,
+        use_bfw=use_bfw,
     )
     response_points = _annotate_tensor_metrics(
         _extract_response_points(response_output, beta_hrs_file),
