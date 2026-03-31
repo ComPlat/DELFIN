@@ -192,12 +192,12 @@ def create_tab(ctx):
                 if not job_dir:
                     # No directory and we only want calc jobs
                     continue
-                if not job_dir.startswith(calc_root):
+                if not str(job_dir).startswith(calc_root):
                     # Only show calc jobs to reduce noise
                     continue
 
             # Derive a human-friendly job name from calc directory
-            if calc_root and job_dir.startswith(calc_root):
+            if calc_root and str(job_dir or '').startswith(calc_root):
                 try:
                     rel = Path(job_dir).relative_to(calc_root)
                     # e.g., Ir_8/builder -> Ir_8
