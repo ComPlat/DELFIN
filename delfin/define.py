@@ -69,6 +69,7 @@ hyperpol_xTB=no
 hyperpol_xTB_xyz=start.txt
 hyperpol_xTB_preopt=none
 hyperpol_xTB_engine=std2
+hyperpol_xTB_bfw=no
 hyperpol_xTB_wavelengths=
 hyperpol_xTB_energy_window=15.0
 --------------------
@@ -77,6 +78,7 @@ tadf_xTB=no
 tadf_xTB_xyz=start.txt
 tadf_xTB_preopt=none
 tadf_xTB_excited_method=stda
+tadf_xTB_bfw=no
 tadf_xTB_energy_window=10.0
 tadf_xTB_run_t1_opt=yes
 --------------------
@@ -357,6 +359,7 @@ tadf_xTB: yes/no - xTB-based TADF screening via sTD-DFT-xTB
   _xyz: Source geometry file (start.txt, xtb_opt.xyz, S0.xyz, etc.)
   _preopt: none (use XYZ as-is), xtb, crest, goat
   _engine/_excited_method: std2 or stda
+  _bfw: yes/no - pass -BFW to std2/stda for ill-conditioned overlap matrices
   _wavelengths: comma-separated nm values (e.g. 1064,532,800). Empty = static only
   Uses central PAL/maxcore from Resource Settings
   Calculations run in hyperpol_xtb/ and tadf_xtb/ subdirectories

@@ -366,6 +366,7 @@ def _run_hyperpol_xtb(argv: list[str]) -> int:
     parser.add_argument("--preopt", choices=("xtb", "crest", "none"), default="none")
     parser.add_argument("--static-only", action="store_true")
     parser.add_argument("--energy-window", type=float, default=15.0)
+    parser.add_argument("--bfw", action="store_true", help="Pass -BFW to stda/std2.")
     parser.add_argument("--pal", type=int, default=4)
     parser.add_argument("--maxcore", type=int, default=1000)
     parser.add_argument("--json-out", help="Optional JSON summary file.")
@@ -393,6 +394,7 @@ def _run_hyperpol_xtb(argv: list[str]) -> int:
             cores=resolved_cores,
             maxcore=resolved_maxcore,
             workdir=workdir,
+            use_bfw=bool(args.bfw),
         )
         payload = {
             "summary": _hyperpol_summary_payload(result),
@@ -469,6 +471,7 @@ def _run_tadf_xtb(argv: list[str]) -> int:
     parser.add_argument("--goat", action="store_true")
     parser.add_argument("--t1-opt", action="store_true")
     parser.add_argument("--t1-multiplicity", type=int, default=3)
+    parser.add_argument("--bfw", action="store_true", help="Pass -BFW to stda/std2.")
     parser.add_argument("--pal", type=int, default=4)
     parser.add_argument("--maxcore", type=int, default=1000)
     parser.add_argument("--json-out", help="Optional JSON summary file.")
@@ -501,6 +504,7 @@ def _run_tadf_xtb(argv: list[str]) -> int:
             run_t1_opt=bool(args.t1_opt),
             t1_multiplicity=args.t1_multiplicity,
             optimize_s0=(args.preopt == "xtb"),
+            use_bfw=bool(args.bfw),
         )
         payload = {
             "summary": _tadf_summary_payload(result),

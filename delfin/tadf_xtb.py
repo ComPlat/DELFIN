@@ -513,10 +513,13 @@ def _run_excited_method(
     triplet: bool,
     energy_window: float,
     cores: int,
+    use_bfw: bool,
 ) -> tuple[Path, Optional[Path]]:
     output_stem = f"{method}_{'triplet' if triplet else 'singlet'}"
     output_path = workdir / f"{output_stem}.out"
     args = ["-xtb", "-e", str(energy_window)]
+    if use_bfw:
+        args.append("-BFW")
     if triplet:
         args.insert(1, "-t")
     with output_path.open("w", encoding="utf-8") as log_file:
@@ -609,6 +612,7 @@ def run_single_tadf_xtb(
     run_t1_opt: bool,
     t1_multiplicity: int,
     optimize_s0: bool = True,
+    use_bfw: bool = False,
 ) -> TadfXtbResult:
     workdir.mkdir(parents=True, exist_ok=True)
     if entry.xyz_path:
@@ -686,6 +690,7 @@ def run_single_tadf_xtb(
         triplet=False,
         energy_window=energy_window,
         cores=cores,
+        use_bfw=use_bfw,
     )
     triplet_out, tda_triplet = _run_excited_method(
         workdir,
@@ -693,6 +698,7 @@ def run_single_tadf_xtb(
         triplet=True,
         energy_window=energy_window,
         cores=cores,
+        use_bfw=use_bfw,
     )
 
     singlets = _parse_stda_states(singlet_out)

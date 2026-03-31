@@ -746,6 +746,7 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
 
     preopt = str(config.get('hyperpol_xTB_preopt', 'none')).strip().lower()
     engine = str(config.get('hyperpol_xTB_engine', 'std2')).strip().lower()
+    use_bfw = str(config.get('hyperpol_xTB_bfw', 'no')).strip().lower() == 'yes'
     import math
     raw_wl = str(config.get('hyperpol_xTB_wavelengths', '')).strip()
     if raw_wl and raw_wl.lower() not in ('', 'none', 'static'):
@@ -778,6 +779,7 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
             cores=resolved_cores,
             maxcore=resolved_maxcore,
             workdir=workdir,
+            use_bfw=use_bfw,
         )
         ctx.extra['hyperpol_xtb_result'] = result
 
@@ -793,6 +795,7 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
                     "charge": result.charge,
                     "multiplicity": result.multiplicity,
                     "energy_window_ev": result.energy_window_ev,
+                    "bfw": use_bfw,
                     "requested_wavelengths_nm": result.requested_wavelengths_nm,
                 },
                 "dipole_moment": {
@@ -840,6 +843,7 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
             f"  Charge         = {result.charge}",
             f"  Multiplicity   = {result.multiplicity}",
             f"  Energy window  = {result.energy_window_ev} eV",
+            f"  BFW            = {'yes' if use_bfw else 'no'}",
             "",
             sep,
             "Dipole moment:",
@@ -909,6 +913,7 @@ def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
 
     preopt = str(config.get('tadf_xTB_preopt', 'none')).strip().lower()
     excited_method = str(config.get('tadf_xTB_excited_method', 'stda')).strip().lower()
+    use_bfw = str(config.get('tadf_xTB_bfw', 'no')).strip().lower() == 'yes'
     energy_window = float(config.get('tadf_xTB_energy_window', 10.0))
     run_t1_opt = str(config.get('tadf_xTB_run_t1_opt', 'yes')).strip().lower() == 'yes'
     xtb_method = str(config.get('xTB_method', 'XTB2')).strip()
@@ -945,6 +950,7 @@ def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
             run_t1_opt=run_t1_opt,
             t1_multiplicity=3,
             optimize_s0=optimize_s0,
+            use_bfw=use_bfw,
         )
         ctx.extra['tadf_xtb_result'] = result
 
@@ -965,6 +971,7 @@ def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
                     "multiplicity": result.multiplicity,
                     "energy_window_ev": energy_window,
                     "preopt": preopt,
+                    "bfw": use_bfw,
                     "run_t1_opt": run_t1_opt,
                 },
                 "excited_states": {
@@ -1032,6 +1039,7 @@ def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
             f"  Charge            = {result.charge}",
             f"  Multiplicity      = {result.multiplicity}",
             f"  Preopt            = {preopt}",
+            f"  BFW               = {'yes' if use_bfw else 'no'}",
             f"  Energy window     = {energy_window} eV",
             f"  T1 optimization   = {'yes' if run_t1_opt else 'no'}",
             "",
