@@ -395,6 +395,23 @@ def create_tab(ctx):
         value='', placeholder='e.g. water', description='Solvent:',
         style=COMMON_STYLE, layout=widgets.Layout(width='220px'),
     )
+    only_goat_smiles_converter = widgets.Dropdown(
+        options=['QUICK', 'NORMAL', 'GUPPY', 'ARCHITECTOR'],
+        value='QUICK', description='Converter:', style=COMMON_STYLE,
+        layout=widgets.Layout(width='220px'),
+    )
+    only_goat_pal = widgets.IntText(
+        value=12, description='PAL:', style=COMMON_STYLE,
+        layout=widgets.Layout(width='140px'),
+    )
+    only_goat_maxcore = widgets.IntText(
+        value=600, description='MaxCore:', style=COMMON_STYLE,
+        layout=widgets.Layout(width='170px'),
+    )
+    only_goat_time = widgets.Text(
+        value='24:00:00', description='Time:', style=COMMON_STYLE,
+        layout=widgets.Layout(width='200px'),
+    )
     only_goat_submit_button = widgets.Button(
         description='SUBMIT ONLY GOAT', button_style='success',
         layout=widgets.Layout(width='150px'),
@@ -555,7 +572,7 @@ def create_tab(ctx):
         if error or not isomers:
             _replace_mol_output_text(
                 f'SMILES: {cleaned_data}',
-                f'Fehler: {error or "No isomers generated"}',
+                f'Error: {error or "No isomers generated"}',
             )
             state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
             state['isomers'] = []
@@ -596,7 +613,9 @@ def create_tab(ctx):
             state['current_xyz_for_copy'] = {'content': None}
             xyz_copy_btn.disabled = True
             xyz_copy_status.value = ''
-            _replace_mol_output_text("SMILES erkannt. Bitte 'CONVERT SMILES' oder 'CONVERT SMILES + UFF' klicken.")
+            _replace_mol_output_text(
+                "SMILES detected. Click 'CONVERT SMILES' or 'CONVERT SMILES + UFF'."
+            )
             return
 
         state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
@@ -1731,6 +1750,10 @@ def create_tab(ctx):
         custom_time_widget.value = 72
         only_goat_charge.value = 0
         only_goat_solvent.value = ''
+        only_goat_smiles_converter.value = 'QUICK'
+        only_goat_pal.value = 12
+        only_goat_maxcore.value = 600
+        only_goat_time.value = '24:00:00'
         co2_species_delta.value = -2
         guppy_pal.value = 12
         guppy_goat_topk.value = 0
@@ -1870,6 +1893,12 @@ def create_tab(ctx):
             raw_input = coords_widget.value.strip()
             charge_value = only_goat_charge.value
             solvent_value = only_goat_solvent.value.strip()
+            smiles_converter_value = (
+                _normalize_smiles_converter_value(only_goat_smiles_converter.value) or 'QUICK'
+            )
+            pal_value = int(only_goat_pal.value or 0)
+            maxcore_value = int(only_goat_maxcore.value or 0)
+            time_limit = str(only_goat_time.value or '').strip() or '48:00:00'
 
             if not job_name:
                 print('Error: Job name cannot be empty!')
@@ -1879,6 +1908,17 @@ def create_tab(ctx):
                 return
             if not solvent_value:
                 print('Error: Solvent cannot be empty!')
+                return
+            if pal_value <= 0:
+                print('Error: PAL must be > 0.')
+                return
+            if maxcore_value <= 0:
+                print('Error: MaxCore must be > 0.')
+                return
+            try:
+                parse_time_to_seconds(time_limit)
+            except Exception:
+                print('Error: Time must use HH:MM:SS, e.g. 48:00:00.')
                 return
 
             input_content, input_type, submit_smiles = _prepare_delfin_submit_input(
@@ -1896,7 +1936,6 @@ def create_tab(ctx):
                 return
 
             job_dir = ctx.calc_dir / safe_job_name
-            time_limit = resolve_time_limit(job_type_widget, custom_time_widget, '48:00:00')
 
             try:
                 job_dir.mkdir(parents=True, exist_ok=True)
@@ -1910,6 +1949,21 @@ def create_tab(ctx):
                     template
                     .replace('[CHARGE]', str(charge_value))
                     .replace('[SOLVENT]', solvent_value)
+                )
+                control_content = _set_control_value(
+                    control_content,
+                    'smiles_converter',
+                    smiles_converter_value,
+                )
+                control_content = _set_control_value(
+                    control_content,
+                    'PAL',
+                    str(pal_value),
+                )
+                control_content = _set_control_value(
+                    control_content,
+                    'maxcore',
+                    str(maxcore_value),
                 )
 
                 if submit_smiles:
@@ -1925,20 +1979,23 @@ def create_tab(ctx):
                 (job_dir / 'CONTROL.txt').write_text(control_content)
                 (job_dir / 'input.txt').write_text(input_content)
 
-                pal, maxcore = parse_resource_settings(control_content)
                 result = ctx.backend.submit_delfin(
                     job_dir=job_dir, job_name=safe_job_name, mode='delfin',
-                    time_limit=time_limit, pal=pal or 40, maxcore=maxcore or 6000,
+                    time_limit=time_limit, pal=pal_value, maxcore=maxcore_value,
                 )
 
                 if result.returncode == 0:
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
-                    print('Only GOAT job successfully submitted!')
+                    print('GOAT job successfully submitted!')
                     print(f'Job ID: {job_id}')
                     print(f'Time Limit: {time_limit}')
                     print(f'Input Type: {input_type.upper()}')
                     print(f'Charge: {charge_value}')
                     print(f'Solvent: {solvent_value}')
+                    print(f'PAL: {pal_value}')
+                    print(f'MaxCore: {maxcore_value}')
+                    if input_type == 'smiles':
+                        print(f'SMILES Converter: {smiles_converter_value}')
                     print(f'Directory: {job_dir}')
                     print('')
                     print('Check status in Job Status tab')
@@ -2084,11 +2141,26 @@ def create_tab(ctx):
         widgets.HBox([xyz_copy_btn, xyz_copy_status],
                      layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap')),
         spacer_large,
-        widgets.HTML('<b>Only GOAT:</b>'),
-        widgets.HBox(
-            [only_goat_charge, only_goat_solvent, only_goat_submit_button],
-            layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-        ),
+        widgets.HTML('<b>GOAT:</b>'),
+        widgets.VBox([
+            widgets.HBox(
+                [
+                    only_goat_charge,
+                    only_goat_solvent,
+                    only_goat_smiles_converter,
+                ],
+                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
+            ),
+            widgets.HBox(
+                [
+                    only_goat_pal,
+                    only_goat_maxcore,
+                    only_goat_time,
+                    only_goat_submit_button,
+                ],
+                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
+            ),
+        ], layout=widgets.Layout(gap='8px')),
         only_goat_output,
         spacer_large,
         widgets.HTML('<b>CO2 Coordinator:</b>'),

@@ -170,7 +170,7 @@ class LocalJobBackend(JobBackend):
                 return True
             if job_dir in args:
                 return True
-            if cwd == job_dir or cwd.startswith(job_dir_prefix):
+            if cwd and (cwd == job_dir or cwd.startswith(job_dir_prefix)):
                 return True
         return False
 
