@@ -132,6 +132,7 @@ hyperpol_xTB=no
 hyperpol_xTB_xyz=start.txt
 hyperpol_xTB_preopt=none
 hyperpol_xTB_engine=std2
+hyperpol_xTB_bfw=no
 hyperpol_xTB_wavelengths=
 hyperpol_xTB_energy_window=15.0
 --------------------
@@ -140,6 +141,7 @@ tadf_xTB=no
 tadf_xTB_xyz=start.txt
 tadf_xTB_preopt=none
 tadf_xTB_excited_method=stda
+tadf_xTB_bfw=no
 tadf_xTB_energy_window=10.0
 tadf_xTB_run_t1_opt=yes
 --------------------
@@ -376,6 +378,7 @@ hyperpol_xTB=no
 hyperpol_xTB_xyz=start.txt
 hyperpol_xTB_preopt=none
 hyperpol_xTB_engine=std2
+hyperpol_xTB_bfw=no
 hyperpol_xTB_wavelengths=
 hyperpol_xTB_energy_window=15.0
 --------------------
@@ -384,6 +387,7 @@ tadf_xTB=no
 tadf_xTB_xyz=start.txt
 tadf_xTB_preopt=none
 tadf_xTB_excited_method=stda
+tadf_xTB_bfw=no
 tadf_xTB_energy_window=10.0
 tadf_xTB_run_t1_opt=yes
 --------------------

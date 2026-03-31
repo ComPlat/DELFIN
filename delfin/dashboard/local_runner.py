@@ -110,6 +110,12 @@ def _run_mode(mode: str) -> int:
     override = str(os.environ.get('DELFIN_OVERRIDE') or '').strip()
     xyz_file = str(os.environ.get('DELFIN_XYZ_FILE') or '').strip()
     workflow_label = str(os.environ.get('DELFIN_WORKFLOW_LABEL') or '').strip()
+    hyperpol_use_bfw = str(os.environ.get('DELFIN_HYPERPOL_XTB_BFW') or '').strip().lower() in (
+        '1', 'true', 'yes', 'on'
+    )
+    tadf_use_bfw = str(os.environ.get('DELFIN_TADF_XTB_BFW') or '').strip().lower() in (
+        '1', 'true', 'yes', 'on'
+    )
     build_mult = str(os.environ.get('BUILD_MULTIPLICITY') or '1')
     delfin_pal = str(os.environ.get('DELFIN_PAL') or '4')
     delfin_maxcore = str(os.environ.get('DELFIN_MAXCORE') or '1000')
@@ -232,6 +238,8 @@ def _run_mode(mode: str) -> int:
         ]
         if resolved_mode == 'hyperpol_xtb':
             cmd.extend(['--engine', 'std2', '--preopt', 'none', '--static-only', '--energy-window', '15'])
+            if hyperpol_use_bfw:
+                cmd.append('--bfw')
         elif resolved_mode == 'tadf_xtb':
             tadf_preopt = str(os.environ.get('DELFIN_TADF_XTB_PREOPT') or 'xtb').strip().lower() or 'xtb'
             tadf_excited_method = (
@@ -249,6 +257,8 @@ def _run_mode(mode: str) -> int:
             ])
             if tadf_t1_opt in {'1', 'true', 'yes', 'on'}:
                 cmd.append('--t1-opt')
+            if tadf_use_bfw:
+                cmd.append('--bfw')
         return _run_and_tee(cmd, Path.cwd() / output_name)
     if resolved_mode == 'delfin-co2-chain':
         species_delta = str(os.environ.get('DELFIN_CO2_SPECIES_DELTA') or '0')

@@ -45,12 +45,14 @@ class JobBackend(ABC):
         """Submit a standalone ORCA job."""
 
     def submit_hyperpol_xtb(self, job_dir, job_name, xyz_file, label,
-                            time_limit='48:00:00', pal=4, maxcore=1000) -> SubmitResult:
+                            time_limit='48:00:00', pal=4, maxcore=1000,
+                            use_bfw: bool = False) -> SubmitResult:
         """Submit a single-file hyperpol_xtb job."""
         return SubmitResult(1, stderr='hyperpol_xtb not supported on this backend')
 
     def submit_tadf_xtb(self, job_dir, job_name, xyz_file, label,
-                        time_limit='48:00:00', pal=4, maxcore=1000) -> SubmitResult:
+                        time_limit='48:00:00', pal=4, maxcore=1000,
+                        use_bfw: bool = False) -> SubmitResult:
         """Submit a single-file tadf_xtb job."""
         return SubmitResult(1, stderr='tadf_xtb not supported on this backend')
 

@@ -1575,6 +1575,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("hyperpol_xTB_xyz", _as_str, default="start.txt"),
     FieldSpec("hyperpol_xTB_preopt", _as_preopt_mode, default="none"),
     FieldSpec("hyperpol_xTB_engine", _as_response_engine, default="std2"),
+    FieldSpec("hyperpol_xTB_bfw", _as_yes_no, default="no"),
     FieldSpec("hyperpol_xTB_wavelengths", _as_str, default="1064"),
     FieldSpec("hyperpol_xTB_energy_window", _as_non_negative_float, default=15.0),
     # xTB TADF Screening
@@ -1582,6 +1583,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("tadf_xTB_xyz", _as_str, default="start.txt"),
     FieldSpec("tadf_xTB_preopt", _as_preopt_mode, default="none"),
     FieldSpec("tadf_xTB_excited_method", _as_response_engine, default="stda"),
+    FieldSpec("tadf_xTB_bfw", _as_yes_no, default="no"),
     FieldSpec("tadf_xTB_energy_window", _as_non_negative_float, default=10.0),
     FieldSpec("tadf_xTB_run_t1_opt", _as_yes_no, default="yes"),
     # Stability Constant

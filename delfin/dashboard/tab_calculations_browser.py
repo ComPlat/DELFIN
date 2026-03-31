@@ -1005,6 +1005,13 @@ def create_tab(ctx):
         description='JobTime',
         layout=widgets.Layout(width='220px', height='26px'),
     )
+    calc_xyz_workflow_bfw = widgets.ToggleButton(
+        value=False,
+        description='BFW Off',
+        tooltip='Aktiviere -BFW fuer tadf_xtb/std2.',
+        button_style='',
+        layout=widgets.Layout(width='110px', min_width='110px', height='26px', display='none'),
+    )
     calc_submit_xyz_workflow_btn = widgets.Button(
         description='Submit', button_style='success',
         layout=widgets.Layout(width='90px', min_width='90px', height='26px'), disabled=True,
@@ -1012,6 +1019,14 @@ def create_tab(ctx):
     calc_xyz_workflow_status = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+
+    def _calc_update_bfw_toggle(*_args):
+        enabled = bool(calc_xyz_workflow_bfw.value)
+        calc_xyz_workflow_bfw.description = 'BFW On' if enabled else 'BFW Off'
+        calc_xyz_workflow_bfw.button_style = 'success' if enabled else ''
+
+    calc_xyz_workflow_bfw.observe(_calc_update_bfw_toggle, names='value')
+    _calc_update_bfw_toggle()
     calc_edit_area = widgets.Textarea(
         value='',
         layout=widgets.Layout(
@@ -1426,7 +1441,7 @@ def create_tab(ctx):
     calc_xyz_workflow_toolbar = widgets.VBox([
         calc_xyz_workflow_info,
         widgets.HBox(
-            [calc_xyz_workflow_pal, calc_xyz_workflow_time, calc_submit_xyz_workflow_btn],
+            [calc_xyz_workflow_pal, calc_xyz_workflow_time, calc_xyz_workflow_bfw, calc_submit_xyz_workflow_btn],
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden', gap='8px',
                 flex_flow='row wrap', align_items='center',
@@ -1723,6 +1738,7 @@ def create_tab(ctx):
         state['xyz_workflow_source_path'] = selected_path
         calc_xyz_workflow_pal.value = CALC_BROWSER_WORKFLOW_PAL
         calc_xyz_workflow_time.value = CALC_BROWSER_WORKFLOW_TIMELIMIT
+        calc_xyz_workflow_bfw.layout.display = 'inline-flex'
         calc_submit_xyz_workflow_btn.disabled = False
         calc_xyz_workflow_info.value = (
             f'<b>{_html.escape(mode)}</b> for '
@@ -1808,6 +1824,7 @@ def create_tab(ctx):
                 time_limit=time_limit,
                 pal=pal_used,
                 maxcore=CALC_BROWSER_WORKFLOW_MAXCORE,
+                use_bfw=bool(calc_xyz_workflow_bfw.value),
             )
         except Exception as exc:
             calc_xyz_workflow_status.value = (
@@ -7270,6 +7287,10 @@ def create_tab(ctx):
         state['xyz_workflow_source_path'] = None
         calc_xyz_workflow_pal.value = CALC_BROWSER_WORKFLOW_PAL
         calc_xyz_workflow_time.value = CALC_BROWSER_WORKFLOW_TIMELIMIT
+        calc_xyz_workflow_bfw.value = False
+        calc_xyz_workflow_bfw.description = 'BFW Off'
+        calc_xyz_workflow_bfw.button_style = ''
+        calc_xyz_workflow_bfw.layout.display = 'none'
         calc_submit_xyz_workflow_btn.disabled = True
         calc_xyz_workflow_info.value = ''
         calc_xyz_workflow_status.value = ''
