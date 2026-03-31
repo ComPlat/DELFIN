@@ -147,6 +147,8 @@ tadf_xTB_run_t1_opt=yes
 --------------------
 Stability Constant:
 stability_constant=no
+stability_constant_mode=auto
+stability_reaction=
 n_explicit_solvent=6
 logK_exp=
 sc_smiles_converter=NORMAL
@@ -393,6 +395,8 @@ tadf_xTB_run_t1_opt=yes
 --------------------
 Stability Constant:
 stability_constant=no
+stability_constant_mode=auto
+stability_reaction=
 n_explicit_solvent=6
 logK_exp=
 sc_smiles_converter=NORMAL
