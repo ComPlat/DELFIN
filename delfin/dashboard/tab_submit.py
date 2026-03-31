@@ -999,8 +999,9 @@ def create_tab(ctx):
                 'GUPPY_GOAT_PARALLEL_JOBS': str(guppy_goat_parallel_jobs),
             }
 
+            raw_input = coords_widget.value.strip()
             batch_text = smiles_batch_widget.value.strip()
-            if batch_text:
+            if not raw_input and batch_text:
                 if not job_name:
                     print('Error: Job name is required for GUPPY batch submission.')
                     return
@@ -1096,7 +1097,6 @@ def create_tab(ctx):
                 print('Error: Job name is required!')
                 return
 
-            raw_input = coords_widget.value.strip()
             if not raw_input:
                 print('Error: Please enter a SMILES string in the input box.')
                 return
@@ -1625,6 +1625,46 @@ def create_tab(ctx):
             delta = 0
         return 'delfin-co2-chain', delta
 
+    def _build_goat_control_content(
+        *,
+        template,
+        charge_value,
+        solvent_value,
+        smiles_converter_value,
+        pal_value,
+        maxcore_value,
+        submit_smiles=None,
+        source_path='',
+        extras=None,
+    ):
+        control_content = (
+            template
+            .replace('[CHARGE]', str(charge_value))
+            .replace('[SOLVENT]', solvent_value)
+        )
+        control_content = _set_control_value(
+            control_content,
+            'smiles_converter',
+            smiles_converter_value,
+        )
+        control_content = _set_control_value(
+            control_content,
+            'PAL',
+            str(pal_value),
+        )
+        control_content = _set_control_value(
+            control_content,
+            'maxcore',
+            str(maxcore_value),
+        )
+        if submit_smiles:
+            control_content = _set_control_smiles(control_content, submit_smiles)
+        for key, value in (extras or {}).items():
+            control_content = _set_control_value(control_content, key, value)
+        if source_path:
+            control_content = _set_control_value(control_content, 'source', source_path)
+        return control_content
+
     def handle_submit_smiles_list(button):
         with smiles_batch_output:
             clear_output()
@@ -1903,9 +1943,6 @@ def create_tab(ctx):
             if not job_name:
                 print('Error: Job name cannot be empty!')
                 return
-            if not raw_input:
-                print('Error: Input (coordinates or SMILES) cannot be empty!')
-                return
             if not solvent_value:
                 print('Error: Solvent cannot be empty!')
                 return
@@ -1921,88 +1958,178 @@ def create_tab(ctx):
                 print('Error: Time must use HH:MM:SS, e.g. 48:00:00.')
                 return
 
-            input_content, input_type, submit_smiles = _prepare_delfin_submit_input(
-                raw_input,
-                state['converted_xyz_cache'],
-            )
-
-            if not input_content:
-                print('Error: No valid input found!')
-                return
-
-            safe_job_name = ''.join(c for c in job_name if c.isalnum() or c in ('_', '-'))
-            if not safe_job_name:
-                print('Error: Job name contains only invalid characters!')
-                return
-
-            job_dir = ctx.calc_dir / safe_job_name
-
             try:
-                job_dir.mkdir(parents=True, exist_ok=True)
-
                 # Use template from file (BwUni) or inline (local)
                 template = ctx.only_goat_template
                 if ctx.only_goat_template_path and ctx.only_goat_template_path.exists():
                     template = ctx.only_goat_template_path.read_text()
+                if raw_input:
+                    input_content, input_type, submit_smiles = _prepare_delfin_submit_input(
+                        raw_input,
+                        state['converted_xyz_cache'],
+                    )
 
-                control_content = (
-                    template
-                    .replace('[CHARGE]', str(charge_value))
-                    .replace('[SOLVENT]', solvent_value)
-                )
-                control_content = _set_control_value(
-                    control_content,
-                    'smiles_converter',
-                    smiles_converter_value,
-                )
-                control_content = _set_control_value(
-                    control_content,
-                    'PAL',
-                    str(pal_value),
-                )
-                control_content = _set_control_value(
-                    control_content,
-                    'maxcore',
-                    str(maxcore_value),
-                )
+                    if not input_content:
+                        print('Error: No valid input found!')
+                        return
 
-                if submit_smiles:
-                    control_content = _set_control_smiles(control_content, submit_smiles)
+                    safe_job_name = ''.join(c for c in job_name if c.isalnum() or c in ('_', '-'))
+                    if not safe_job_name:
+                        print('Error: Job name contains only invalid characters!')
+                        return
 
-                control_errors = validate_control_text(control_content)
-                if control_errors:
-                    print('CONTROL.txt validation failed:')
-                    for err in control_errors:
-                        print(f'- {err}')
+                    job_dir = ctx.calc_dir / safe_job_name
+                    job_dir.mkdir(parents=True, exist_ok=True)
+
+                    control_content = _build_goat_control_content(
+                        template=template,
+                        charge_value=charge_value,
+                        solvent_value=solvent_value,
+                        smiles_converter_value=smiles_converter_value,
+                        pal_value=pal_value,
+                        maxcore_value=maxcore_value,
+                        submit_smiles=submit_smiles,
+                    )
+
+                    control_errors = validate_control_text(control_content)
+                    if control_errors:
+                        print('CONTROL.txt validation failed:')
+                        for err in control_errors:
+                            print(f'- {err}')
+                        return
+
+                    (job_dir / 'CONTROL.txt').write_text(control_content)
+                    (job_dir / 'input.txt').write_text(input_content)
+
+                    result = ctx.backend.submit_delfin(
+                        job_dir=job_dir, job_name=safe_job_name, mode='delfin',
+                        time_limit=time_limit, pal=pal_value, maxcore=maxcore_value,
+                    )
+
+                    if result.returncode == 0:
+                        job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                        print('GOAT job successfully submitted!')
+                        print(f'Job ID: {job_id}')
+                        print(f'Time Limit: {time_limit}')
+                        print(f'Input Type: {input_type.upper()}')
+                        print(f'Charge: {charge_value}')
+                        print(f'Solvent: {solvent_value}')
+                        print(f'PAL: {pal_value}')
+                        print(f'MaxCore: {maxcore_value}')
+                        if input_type == 'smiles':
+                            print(f'SMILES Converter: {smiles_converter_value}')
+                        print(f'Directory: {job_dir}')
+                        print('')
+                        print('Check status in Job Status tab')
+                        reset_form()
+                    else:
+                        print('Error submitting job:')
+                        print(result.stderr)
                     return
 
-                (job_dir / 'CONTROL.txt').write_text(control_content)
-                (job_dir / 'input.txt').write_text(input_content)
+                entries, parse_errors = parse_batch_entries()
+                for err in parse_errors:
+                    print(err)
+                if not entries:
+                    print('Error: Input is empty and no valid batch entries were found.')
+                    return
 
-                result = ctx.backend.submit_delfin(
-                    job_dir=job_dir, job_name=safe_job_name, mode='delfin',
-                    time_limit=time_limit, pal=pal_value, maxcore=maxcore_value,
-                )
+                submitted = 0
+                for entry in entries:
+                    line_no = entry.get('line_no', '?')
+                    name_raw = entry.get('name', '').strip()
+                    extras = dict(entry.get('extras', {}))
+                    input_kind = entry.get('input_kind', 'smiles')
+                    source_path = str(entry.get('source_path') or '').strip()
+                    safe_name = ''.join(c for c in name_raw if c.isalnum() or c in ('_', '-'))
+                    if not safe_name:
+                        print(f'Line {line_no}: Invalid name -> {name_raw}')
+                        continue
 
-                if result.returncode == 0:
-                    job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
-                    print('GOAT job successfully submitted!')
-                    print(f'Job ID: {job_id}')
-                    print(f'Time Limit: {time_limit}')
-                    print(f'Input Type: {input_type.upper()}')
-                    print(f'Charge: {charge_value}')
-                    print(f'Solvent: {solvent_value}')
-                    print(f'PAL: {pal_value}')
-                    print(f'MaxCore: {maxcore_value}')
-                    if input_type == 'smiles':
-                        print(f'SMILES Converter: {smiles_converter_value}')
-                    print(f'Directory: {job_dir}')
+                    full_job_name = f'{job_name}_{safe_name}'
+                    safe_job_name = ''.join(c for c in full_job_name if c.isalnum() or c in ('_', '-'))
+                    if not safe_job_name:
+                        print(f'Line {line_no}: Invalid job name -> {full_job_name}')
+                        continue
+
+                    job_dir = ctx.calc_dir / safe_job_name
+                    job_dir.mkdir(parents=True, exist_ok=True)
+
+                    entry_charge = charge_value
+                    submit_smiles = None
+                    if input_kind == 'smiles':
+                        smi = entry.get('input_raw', '').strip()
+                        if not smi:
+                            print(f'Line {line_no}: Missing SMILES payload for {safe_name}')
+                            continue
+                        input_content = smi + '\n'
+                        submit_smiles = smi
+                        if _needs_smiles_charge(template, extras):
+                            entry_charge = _get_smiles_charge(smi)
+                    else:
+                        input_content = (entry.get('input_content') or '').strip()
+                        if not input_content:
+                            print(f'Line {line_no}: {safe_name} - empty XYZ payload')
+                            continue
+                        input_content = _clean_xyz_block(input_content)
+                        if not input_content:
+                            print(f'Line {line_no}: {safe_name} - empty XYZ payload')
+                            continue
+                        if 'charge' in extras:
+                            try:
+                                entry_charge = int(str(extras['charge']).strip())
+                            except Exception:
+                                entry_charge = extras['charge']
+
+                    control_content = _build_goat_control_content(
+                        template=template,
+                        charge_value=entry_charge,
+                        solvent_value=solvent_value,
+                        smiles_converter_value=smiles_converter_value,
+                        pal_value=pal_value,
+                        maxcore_value=maxcore_value,
+                        submit_smiles=submit_smiles,
+                        source_path=source_path,
+                        extras=extras,
+                    )
+
+                    control_errors = validate_control_text(control_content)
+                    if control_errors:
+                        print(f'Line {line_no}: CONTROL.txt validation failed for {safe_job_name}:')
+                        for err in control_errors:
+                            print(f'- {err}')
+                        continue
+
+                    (job_dir / 'CONTROL.txt').write_text(control_content)
+                    (job_dir / 'input.txt').write_text(input_content)
+                    batch_metadata = {
+                        'line_no': line_no,
+                        'name': safe_name,
+                        'input_kind': input_kind,
+                        'source': source_path or None,
+                        'extras': extras,
+                        'header_raw': entry.get('header_raw', ''),
+                    }
+                    (job_dir / 'input_metadata.json').write_text(
+                        json.dumps(batch_metadata, indent=2),
+                        encoding='utf-8',
+                    )
+
+                    result = ctx.backend.submit_delfin(
+                        job_dir=job_dir, job_name=safe_job_name, mode='delfin',
+                        time_limit=time_limit, pal=pal_value, maxcore=maxcore_value,
+                    )
+                    if result.returncode == 0:
+                        job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                        print(f'Submitted {safe_job_name} [GOAT {input_kind.upper()}] (ID: {job_id})')
+                        submitted += 1
+                    else:
+                        print(f'Failed {safe_job_name}: {result.stderr or result.stdout}')
+
+                if submitted:
                     print('')
                     print('Check status in Job Status tab')
                     reset_form()
-                else:
-                    print('Error submitting job:')
-                    print(result.stderr)
             except Exception as e:
                 print(f'Error creating job: {e}')
 
