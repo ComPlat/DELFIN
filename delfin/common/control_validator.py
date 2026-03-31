@@ -937,6 +937,13 @@ def _as_response_engine(value: Any) -> str:
     raise ValueError("must be std2 or stda")
 
 
+def _as_stability_constant_mode(value: Any) -> str:
+    text = str(value or "auto").strip().lower()
+    if text in {"auto", "reaction"}:
+        return text
+    raise ValueError("must be auto or reaction")
+
+
 def _as_charge(value: Any) -> int:
     if value is None or value == "":
         raise ValueError("must be an integer like -2, 0, or +3")
@@ -1588,6 +1595,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("tadf_xTB_run_t1_opt", _as_yes_no, default="yes"),
     # Stability Constant
     FieldSpec("stability_constant", _as_yes_no, default="no"),
+    FieldSpec("stability_constant_mode", _as_stability_constant_mode, default="auto"),
+    FieldSpec("stability_reaction", _as_str, default=""),
     FieldSpec("n_explicit_solvent", _as_positive_int, default=6),
     FieldSpec("logK_exp", _as_str, default=""),
     FieldSpec("sc_smiles_converter", _as_smiles_converter, default="NORMAL"),

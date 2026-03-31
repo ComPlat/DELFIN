@@ -67,6 +67,15 @@ def _strip_xyz_header(src_path: str | Path, dst_path: str | Path):
         f.writelines(lines[2:])
 
 
+def _count_coordinate_atoms(path: str | Path) -> int:
+    candidate = Path(path)
+    try:
+        with candidate.open("r", encoding="utf-8", errors="replace") as handle:
+            return sum(1 for line in handle if _XYZ_COORD_LINE_RE.match(line))
+    except Exception:
+        return 0
+
+
 def _bootstrap_fingerprint_from_complete_output(
     inp: Path,
     out: Path,
@@ -117,9 +126,15 @@ def XTB(multiplicity, charge, config):
 
     # nie verschieben – immer kopieren (idempotent)
     shutil.copyfile(src_input, inp)
-    modify_file2(str(inp),
-                 f"!{config['xTB_method']} OPT\n%pal nprocs {cores_limit} end\n*xyz {charge} {multiplicity}\n",
-                 "\n*\n")
+    atom_count = _count_coordinate_atoms(src_input)
+    job_tokens = [str(config['xTB_method'])]
+    if atom_count != 1:
+        job_tokens.append("OPT")
+    modify_file2(
+        str(inp),
+        f"!{' '.join(job_tokens)}\n%pal nprocs {cores_limit} end\n*xyz {charge} {multiplicity}\n",
+        "\n*\n",
+    )
     print("File was successfully updated.")
 
     if smart_recalc.should_skip(inp, out) and xyz.exists():

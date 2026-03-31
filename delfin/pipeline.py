@@ -158,18 +158,29 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             all_jobs = build_flat_occupier_fob_jobs(config)
             sc_embedded = False
             if str(config.get("stability_constant", "no")).strip().lower() == "yes":
-                from delfin.stability_constant import build_stability_constant_plan
+                from delfin.stability_constant import (
+                    build_stability_constant_plan,
+                    build_stability_reaction_plan,
+                )
 
                 try:
-                    sc_plan = build_stability_constant_plan(
-                        ctx,
-                        initial_completion_dependency=config.get("_occ_initial_energy_job"),
-                    )
+                    sc_mode = str(config.get("stability_constant_mode", "auto")).strip().lower() or "auto"
+                    if sc_mode == "reaction":
+                        sc_plan = build_stability_reaction_plan(
+                            ctx,
+                            initial_completion_dependency=config.get("_occ_initial_energy_job"),
+                        )
+                    else:
+                        sc_plan = build_stability_constant_plan(
+                            ctx,
+                            initial_completion_dependency=config.get("_occ_initial_energy_job"),
+                        )
                     all_jobs.extend(sc_plan.jobs)
                     sc_embedded = True
                     logger.info(
                         "[SC] Embedded stability constant jobs into the OCCUPIER shared scheduler "
-                        "(initial dependency: %s).",
+                        "(mode=%s, initial dependency: %s).",
+                        sc_mode,
                         config.get("_occ_initial_energy_job") or "none",
                     )
                 except Exception as exc:  # noqa: BLE001

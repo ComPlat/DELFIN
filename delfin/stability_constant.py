@@ -125,6 +125,48 @@ class StabilityWorkflowPlan:
     jobs: List["WorkflowJob"]
 
 
+@dataclass
+class ReactionSpeciesSpec:
+    """Normalized species definition for reaction-mode stability constants."""
+    key: str
+    smiles: str
+    label: str
+    charge: int
+    has_metal: bool
+    folder_name: str
+    use_input_reference: bool = False
+    source_token: str = ""
+
+
+@dataclass
+class ReactionParticipant:
+    """Single reactant/product entry with stoichiometric coefficient."""
+    coefficient: int
+    token: str
+    smiles: str
+    species_key: str
+    label: str
+    is_input: bool = False
+
+
+@dataclass
+class ReactionStabilityAnalysis:
+    """Parsed user-defined stability-reaction."""
+    raw_reaction: str
+    expanded_reaction: str
+    reactants: List[ReactionParticipant]
+    products: List[ReactionParticipant]
+    unique_species: List[ReactionSpeciesSpec]
+
+
+@dataclass
+class ReactionStabilityWorkflowPlan:
+    """Prepared workflow jobs for reaction-mode stability constants."""
+    analysis: ReactionStabilityAnalysis
+    sc_dir: Path
+    jobs: List["WorkflowJob"]
+
+
 # ---------------------------------------------------------------------------
 # 1. Analysis: extract ligands with denticity from complex SMILES
 # ---------------------------------------------------------------------------
@@ -322,6 +364,203 @@ def _make_ligand_label(smiles: str, index: int) -> str:
     # Fallback: use first 10 chars
     short = canonical[:10].replace("[", "").replace("]", "").replace("(", "").replace(")", "")
     return short or f"L{index + 1}"
+
+
+def _sc_mode(config: Dict[str, Any]) -> str:
+    mode = str(config.get("stability_constant_mode", "auto")).strip().lower() or "auto"
+    return mode if mode in {"auto", "reaction"} else "auto"
+
+
+def _canonicalize_sc_smiles(smiles: str) -> str:
+    text = _normalize_simple_species_smiles(smiles)
+    if not text:
+        return text
+    try:
+        from rdkit import Chem
+
+        mol = Chem.MolFromSmiles(text, sanitize=False)
+        if mol is None:
+            return text
+        return Chem.MolToSmiles(mol, canonical=True)
+    except Exception:
+        return text
+
+
+def _species_charge_from_smiles(smiles: str) -> int:
+    text = _normalize_simple_species_smiles(smiles)
+    if not text:
+        return 0
+    try:
+        from rdkit import Chem
+
+        mol = Chem.MolFromSmiles(text, sanitize=False)
+        if mol is None:
+            return 0
+        return sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
+    except Exception:
+        return 0
+
+
+def _split_reaction_side(side: str) -> List[str]:
+    parts: List[str] = []
+    current: List[str] = []
+    brace_level = 0
+    for char in str(side or ""):
+        if char == "{":
+            brace_level += 1
+        elif char == "}":
+            brace_level = max(0, brace_level - 1)
+        if char == "+" and brace_level == 0:
+            token = "".join(current).strip()
+            if token:
+                parts.append(token)
+            current = []
+            continue
+        current.append(char)
+    token = "".join(current).strip()
+    if token:
+        parts.append(token)
+    return parts
+
+
+def _parse_reaction_term(term: str) -> Tuple[int, str]:
+    match = re.fullmatch(r"\s*(?:(\d+)\s*\*\s*)?\{(.*)\}\s*", str(term or ""))
+    if not match:
+        raise ValueError(
+            f"Invalid stability_reaction term '{term}'. Expected e.g. 3*{{SMILES}} or {{input}}."
+        )
+    coeff = int(match.group(1) or "1")
+    token = (match.group(2) or "").strip()
+    if coeff <= 0:
+        raise ValueError(f"Invalid stoichiometric coefficient in term '{term}'.")
+    if not token:
+        raise ValueError(f"Empty species token in term '{term}'.")
+    return coeff, token
+
+
+def _make_reaction_species_label(token: str, *, fallback_index: int) -> str:
+    text = str(token or "").strip()
+    if text.lower() == "input":
+        return "input"
+    short = re.sub(r"[^a-zA-Z0-9]+", "_", text).strip("_")
+    if len(short) > 24:
+        short = short[:24]
+    return short or f"species_{fallback_index}"
+
+
+def _spec_label_for_desc(spec: ReactionSpeciesSpec) -> str:
+    return spec.label if len(spec.label) <= 32 else (spec.label[:29] + "...")
+
+
+def _normalize_simple_species_smiles(smiles: Any) -> str:
+    text = str(smiles or "").strip()
+    if not text:
+        return text
+    if text.startswith("[") and text.endswith("]"):
+        return text
+    match = re.fullmatch(r"([A-Z][a-z]?)(?:(\d+)([+-])|([+-])(\d+)?)", text)
+    if not match:
+        return text
+    symbol = match.group(1)
+    if match.group(2) is not None and match.group(3) is not None:
+        magnitude = int(match.group(2))
+        sign = match.group(3)
+    else:
+        sign = match.group(4)
+        magnitude = int(match.group(5) or "1")
+    charge_text = f"{sign}{magnitude}" if magnitude != 1 else sign
+    return f"[{symbol}{charge_text}]"
+
+
+def parse_stability_reaction(
+    reaction: str,
+    *,
+    input_smiles: str,
+) -> ReactionStabilityAnalysis:
+    """Parse user-defined stability_reaction syntax into normalized species entries."""
+    from delfin.smiles_converter import contains_metal
+
+    raw = str(reaction or "").strip()
+    if not raw:
+        raise ValueError("stability_reaction is empty.")
+
+    if ">>>" in raw:
+        left_raw, right_raw = raw.split(">>>", 1)
+    elif ">>" in raw:
+        left_raw, right_raw = raw.split(">>", 1)
+    else:
+        raise ValueError("stability_reaction must contain '>>>' (or '>>') between reactants and products.")
+
+    left_terms = _split_reaction_side(left_raw)
+    right_terms = _split_reaction_side(right_raw)
+    if not left_terms or not right_terms:
+        raise ValueError("stability_reaction must define at least one reactant and one product.")
+
+    input_smiles = str(input_smiles or "").strip()
+    input_key = _canonicalize_sc_smiles(input_smiles) if input_smiles else ""
+    if any("{input}" in raw.lower() for raw in left_terms + right_terms) and not input_smiles:
+        raise ValueError("stability_reaction uses {input}, but CONTROL.txt has no SMILES entry.")
+
+    unique_species: Dict[str, ReactionSpeciesSpec] = {}
+    species_order: List[str] = []
+
+    def _convert_participants(terms: List[str], side_name: str) -> List[ReactionParticipant]:
+        participants: List[ReactionParticipant] = []
+        for idx, term in enumerate(terms, start=1):
+            coeff, token = _parse_reaction_term(term)
+            is_input = token.strip().lower() == "input"
+            smiles = input_smiles if is_input else _normalize_simple_species_smiles(token.strip())
+            if not smiles:
+                raise ValueError(f"{side_name} term '{term}' resolves to an empty SMILES.")
+            species_key = input_key if (is_input and input_key) else _canonicalize_sc_smiles(smiles)
+            if input_key and species_key == input_key:
+                is_input = True
+            if species_key not in unique_species:
+                label = _make_reaction_species_label("input" if is_input else token, fallback_index=len(unique_species) + 1)
+                safe = re.sub(r"[^a-zA-Z0-9_]", "_", label).strip("_") or f"species_{len(unique_species) + 1:02d}"
+                folder_name = f"spec_{len(unique_species) + 1:02d}_{safe}"
+                unique_species[species_key] = ReactionSpeciesSpec(
+                    key=species_key,
+                    smiles=smiles,
+                    label=label,
+                    charge=_species_charge_from_smiles(smiles),
+                    has_metal=bool(contains_metal(smiles)),
+                    folder_name=folder_name,
+                    use_input_reference=is_input,
+                    source_token=token,
+                )
+                species_order.append(species_key)
+            elif is_input:
+                unique_species[species_key].use_input_reference = True
+            participants.append(
+                ReactionParticipant(
+                    coefficient=coeff,
+                    token=token,
+                    smiles=smiles,
+                    species_key=species_key,
+                    label=unique_species[species_key].label,
+                    is_input=unique_species[species_key].use_input_reference,
+                )
+            )
+        return participants
+
+    reactants = _convert_participants(left_terms, "reactant")
+    products = _convert_participants(right_terms, "product")
+
+    def _fmt_side(entries: List[ReactionParticipant]) -> str:
+        parts = []
+        for item in entries:
+            token = "{input}" if item.is_input else f"{{{item.smiles}}}"
+            parts.append(f"{item.coefficient}*{token}")
+        return " + ".join(parts)
+
+    return ReactionStabilityAnalysis(
+        raw_reaction=raw,
+        expanded_reaction=f"{_fmt_side(reactants)} >>> {_fmt_side(products)}",
+        reactants=reactants,
+        products=products,
+        unique_species=[unique_species[key] for key in species_order],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +767,7 @@ def build_orca_input(
         coord_lines = [ln for ln in f.readlines() if ln.strip() and ln.strip() != "*"]
 
     geom_lines, qmmm_range, _ = split_qmmm_sections(coord_lines, coord_file)
+    atom_count = len(geom_lines)
 
     # Resolve level of theory
     main_basisset = str(config.get("main_basisset", "")).strip() or None
@@ -547,6 +787,9 @@ def build_orca_input(
         include_freq=include_freq,
         geom_key="geom_opt",
     )
+    if atom_count == 1:
+        bang = re.sub(r"\b(?:VeryTightOpt|TightOpt|Opt)\b", "", bang, flags=re.IGNORECASE)
+        bang = " ".join(bang.split())
 
     # Build input
     output_blocks = collect_output_blocks(config, allow=True)
@@ -823,13 +1066,14 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
     config = ctx.config
     if str(config.get("stability_constant", "no")).strip().lower() != "yes":
         return True
+    mode = _sc_mode(config)
 
     logger.info("=" * 60)
-    logger.info("  Stability Constant Phase")
+    logger.info("  Stability Constant Phase (%s)", mode)
     logger.info("=" * 60)
 
     smiles = str(config.get("SMILES", "")).strip()
-    if not smiles:
+    if not smiles and mode == "auto":
         logger.error("[SC] No SMILES found in CONTROL.txt")
         return False
 
@@ -838,14 +1082,16 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
         logger.error("[SC] No solvent specified in CONTROL.txt")
         return False
 
-    initial_out = _find_initial_output(ctx.control_file_path.parent.resolve(), config)
-    if initial_out is None:
-        logger.error("[SC] Cannot find initial.out — ensure calc_initial=yes")
-        return False
-    logger.info("[SC] Using complex energy from: %s", initial_out)
-
     try:
-        plan = build_stability_constant_plan(ctx, resolved_initial_out=initial_out)
+        if mode == "reaction":
+            plan = build_stability_reaction_plan(ctx)
+        else:
+            initial_out = _find_initial_output(ctx.control_file_path.parent.resolve(), config)
+            if initial_out is None:
+                logger.error("[SC] Cannot find initial.out — ensure calc_initial=yes")
+                return False
+            logger.info("[SC] Using complex energy from: %s", initial_out)
+            plan = build_stability_constant_plan(ctx, resolved_initial_out=initial_out)
     except (ValueError, RuntimeError) as exc:
         logger.error("[SC] Analysis failed: %s", exc)
         return False
@@ -1060,6 +1306,165 @@ def build_stability_constant_plan(
     ))
 
     return StabilityWorkflowPlan(
+        analysis=analysis,
+        sc_dir=sc_dir,
+        jobs=jobs,
+    )
+
+
+def build_stability_reaction_plan(
+    ctx: "PipelineContext",
+    *,
+    initial_completion_dependency: Optional[str] = None,
+    resolved_initial_out: Optional[Path] = None,
+) -> ReactionStabilityWorkflowPlan:
+    from delfin.parallel_classic_manually import WorkflowJob
+
+    config = ctx.config
+    reaction = str(config.get("stability_reaction", "")).strip()
+    if not reaction:
+        raise ValueError("stability_constant_mode=reaction requires stability_reaction=...")
+
+    input_smiles = str(config.get("SMILES", "")).strip()
+    solvent = str(config.get("solvent", "")).strip()
+    if not solvent:
+        raise ValueError("No solvent specified in CONTROL.txt")
+
+    temperature = float(str(config.get("temperature", "298.15")).strip())
+    logK_exp_raw = str(config.get("logK_exp", "")).strip()
+    logK_exp = float(logK_exp_raw) if logK_exp_raw else None
+    sc_converter = str(config.get("sc_smiles_converter", "NORMAL")).strip().upper()
+    sc_preopt = _normalized_sc_preopt(config)
+    total_cores = max(1, int(str(config.get("PAL", 1)).strip()))
+    recalc_enabled = str(os.environ.get("DELFIN_RECALC", "0")).strip().lower() in {"1", "true", "yes", "on", "y"}
+    cwd_lock = threading.RLock()
+
+    original_cwd = ctx.control_file_path.parent.resolve()
+    sc_dir = original_cwd / "stability_constant"
+    sc_dir.mkdir(parents=True, exist_ok=True)
+    (sc_dir / "REACTION_MODE.txt").write_text(
+        "stability_constant_mode=reaction\n",
+        encoding="utf-8",
+    )
+
+    analysis = parse_stability_reaction(reaction, input_smiles=input_smiles)
+    needs_input_reference = any(spec.use_input_reference for spec in analysis.unique_species)
+    if needs_input_reference and resolved_initial_out is None:
+        resolved_initial_out = _find_initial_output(original_cwd, config)
+    if needs_input_reference and resolved_initial_out is None:
+        if initial_completion_dependency:
+            logger.info(
+                "[SC] Deferring {input} energy resolution until dependency '%s' completes.",
+                initial_completion_dependency,
+            )
+        else:
+            raise ValueError(
+                "stability_reaction references {input} (or the main-system SMILES), but no initial.out was found."
+            )
+
+    logger.info("[SC] Reaction mode: %s", analysis.expanded_reaction)
+
+    def _precomplete_orca(inp_path: Path, out_path: Path) -> bool:
+        if not recalc_enabled:
+            return False
+        try:
+            from delfin import smart_recalc
+
+            return smart_recalc.can_precomplete(inp_path, out_path)
+        except Exception:
+            logger.debug("[SC] reaction precomplete check failed for %s / %s", inp_path, out_path, exc_info=True)
+            return False
+
+    jobs: List[WorkflowJob] = []
+    postprocess_dependencies: Set[str] = set()
+    if needs_input_reference and initial_completion_dependency:
+        postprocess_dependencies.add(initial_completion_dependency)
+
+    for spec in analysis.unique_species:
+        if spec.use_input_reference:
+            logger.info("[SC] Reusing main-system energy for reaction species '%s'", spec.label)
+            continue
+
+        workdir = sc_dir / spec.folder_name
+        job_id = f"sc_rxn_{spec.folder_name}"
+        postprocess_dependencies.add(job_id)
+
+        if spec.has_metal:
+            def _work_metal(cores: int, _spec=spec, _dir=workdir) -> None:
+                _run_metal_reaction_species(
+                    workdir=_dir,
+                    smiles=_spec.smiles,
+                    charge=_spec.charge,
+                    label=_spec.label,
+                    config=config,
+                    sc_converter=sc_converter,
+                    sc_preopt=sc_preopt,
+                    solvent=solvent,
+                    cores=cores,
+                    cwd_lock=cwd_lock,
+                )
+
+            jobs.append(WorkflowJob(
+                job_id=job_id,
+                work=_work_metal,
+                description=f"SC reaction: metal species {_spec_label_for_desc(spec)}",
+                dependencies=set(),
+                cores_min=max(1, min(total_cores, 2)),
+                cores_optimal=max(2, min(total_cores, total_cores // 2)),
+                cores_max=total_cores,
+                working_dir=workdir,
+                precomplete_check=lambda _dir=workdir: _precomplete_orca(_dir / "calc.inp", _dir / "calc.out"),
+            ))
+        else:
+            def _work_closed(cores: int, _spec=spec, _dir=workdir) -> None:
+                _run_closed_shell_species(
+                    workdir=_dir,
+                    smiles=_spec.smiles,
+                    charge=_spec.charge,
+                    label=_spec.label,
+                    config=config,
+                    sc_converter=sc_converter,
+                    sc_preopt=sc_preopt,
+                    solvent=solvent,
+                    cores=cores,
+                    cwd_lock=cwd_lock,
+                )
+
+            jobs.append(WorkflowJob(
+                job_id=job_id,
+                work=_work_closed,
+                description=f"SC reaction: species {_spec_label_for_desc(spec)}",
+                dependencies=set(),
+                cores_min=1,
+                cores_optimal=max(2, total_cores // 3),
+                cores_max=total_cores,
+                working_dir=workdir,
+                precomplete_check=lambda _dir=workdir: _precomplete_orca(_dir / "calc.inp", _dir / "calc.out"),
+            ))
+
+    def _work_postprocess(_cores: int) -> None:
+        _run_reaction_postprocessing(
+            sc_dir=sc_dir,
+            analysis=analysis,
+            config=config,
+            temperature=temperature,
+            logK_exp=logK_exp,
+            initial_out=resolved_initial_out,
+        )
+
+    jobs.append(WorkflowJob(
+        job_id="sc_postprocess",
+        work=_work_postprocess,
+        description="SC reaction: Compute DeltaG and log K",
+        dependencies=postprocess_dependencies,
+        cores_min=1,
+        cores_optimal=1,
+        cores_max=1,
+        inline=True,
+        working_dir=sc_dir,
+    ))
+
+    return ReactionStabilityWorkflowPlan(
         analysis=analysis,
         sc_dir=sc_dir,
         jobs=jobs,
@@ -1375,6 +1780,305 @@ def _run_closed_shell_species(
         raise RuntimeError(f"ORCA failed for {label}: {out_path}")
 
     logger.info("[SC] %s OPT+FREQ completed: %s", label, out_path)
+
+
+def _run_metal_reaction_species(
+    workdir: Path,
+    smiles: str,
+    charge: int,
+    label: str,
+    config: Dict[str, Any],
+    sc_converter: str,
+    sc_preopt: str,
+    solvent: str,
+    cores: int,
+    cwd_lock: threading.RLock,
+) -> None:
+    """Run OCCUPIER + ORCA OPT/FREQ for a metal-containing reaction species."""
+    from delfin.copy_helpers import read_occupier_file
+    from delfin.occupier import run_OCCUPIER
+    from delfin.orca import run_orca
+    from delfin.utils import search_transition_metals
+    from delfin import smart_recalc
+
+    workdir.mkdir(parents=True, exist_ok=True)
+    inp_path = workdir / "calc.inp"
+    out_path = workdir / "calc.out"
+
+    if smart_recalc.should_skip(inp_path, out_path):
+        logger.info("[SC] Skipping metal species %s (recalc, inputs unchanged)", label)
+        return
+
+    start_path = workdir / "start.txt"
+    if not start_path.exists():
+        _convert_smiles_and_write(smiles, workdir, converter=sc_converter, config=config)
+
+    if sc_preopt:
+        _run_preopt(workdir, config, sc_preopt, charge, 1, solvent, pal_override=cores)
+
+    occ_dir = workdir / "species_OCCUPIER"
+    occ_dir.mkdir(parents=True, exist_ok=True)
+
+    input_xyz = occ_dir / "input.xyz"
+    coord_text = start_path.read_text(encoding="utf-8")
+    coord_lines = [line for line in coord_text.splitlines() if line.strip()]
+    with input_xyz.open("w", encoding="utf-8") as handle:
+        handle.write(f"{len(coord_lines)}\n\n")
+        handle.write("\n".join(coord_lines) + "\n")
+    shutil.copy(input_xyz, occ_dir / "input0.xyz")
+
+    _write_occupier_control(occ_dir, config, charge=charge, pal=cores)
+
+    with cwd_lock:
+        prev_cwd = os.getcwd()
+        try:
+            os.chdir(occ_dir)
+            logger.info("[SC] Running OCCUPIER for reaction species '%s' in %s", label, occ_dir)
+            run_OCCUPIER()
+        finally:
+            os.chdir(prev_cwd)
+
+    mult, broken_sym, preferred_idx, gbw_path = read_occupier_file(
+        str(occ_dir), "OCCUPIER.txt", multiplicity=1, broken_sym="",
+        min_fspe_index=None, config=config, verbose=False,
+    )
+    if mult is None:
+        raise RuntimeError(f"Could not determine preferred OCCUPIER spin state for {label}")
+
+    coord_file = workdir / f"input_{occ_dir.name}.xyz"
+    if not coord_file.exists():
+        coord_file = occ_dir / (f"input{preferred_idx}.xyz" if preferred_idx and preferred_idx != 1 else "input.xyz")
+    if not coord_file.exists():
+        coord_file = start_path
+
+    if coord_file.suffix == ".xyz":
+        lines = coord_file.read_text(encoding="utf-8").splitlines()
+        coord_lines = [line for line in lines[2:] if line.strip()]
+        coord_path = workdir / "species_coords.txt"
+        coord_path.write_text("\n".join(coord_lines) + "\n", encoding="utf-8")
+    else:
+        coord_path = coord_file
+
+    try:
+        metals = search_transition_metals(str(coord_path))
+    except Exception:
+        metals = []
+
+    sc_config = dict(config)
+    sc_config["PAL"] = cores
+    build_orca_input(
+        config=sc_config,
+        coord_file=coord_path,
+        output_file=inp_path,
+        charge=charge,
+        multiplicity=mult,
+        found_metals=metals,
+        solvent=solvent,
+        broken_sym=broken_sym or "",
+        include_freq=True,
+    )
+
+    if gbw_path and Path(gbw_path).exists():
+        text = inp_path.read_text(encoding="utf-8")
+        gbw_line = f'%moinp "{gbw_path}"\n'
+        text = text.replace("\n* xyz", f"\n{gbw_line}* xyz", 1)
+        inp_path.write_text(text, encoding="utf-8")
+
+    run_orca(str(inp_path), str(out_path))
+    smart_recalc.store_fingerprint(inp_path)
+
+    if not out_path.exists() or "ORCA TERMINATED NORMALLY" not in out_path.read_text(encoding="utf-8", errors="replace"):
+        raise RuntimeError(f"ORCA failed for metal reaction species {label}: {out_path}")
+
+    logger.info("[SC] Metal reaction species %s completed: %s", label, out_path)
+
+
+def _compute_reaction_delta_g(
+    analysis: ReactionStabilityAnalysis,
+    species_map: Dict[str, SpeciesEnergy],
+    *,
+    temperature: float,
+) -> Tuple[float, float, float, float]:
+    delta_g = 0.0
+    for item in analysis.products:
+        delta_g += item.coefficient * species_map[item.species_key].g_total
+    for item in analysis.reactants:
+        delta_g -= item.coefficient * species_map[item.species_key].g_total
+    delta_g_kcal = delta_g * HARTREE_TO_KCAL
+    delta_g_kj = delta_g * HARTREE_TO_KJ
+    log_k = -delta_g_kcal / (2.303 * R_KCAL * temperature)
+    return delta_g, delta_g_kcal, delta_g_kj, log_k
+
+
+def _write_reaction_stability_report(
+    report_path: Path,
+    analysis: ReactionStabilityAnalysis,
+    species_map: Dict[str, SpeciesEnergy],
+    *,
+    temperature: float,
+    delta_g_h: float,
+    delta_g_kcal: float,
+    delta_g_kj: float,
+    log_k: float,
+    logK_exp: Optional[float],
+) -> None:
+    sep = "=" * 70
+    thin = "-" * 70
+    lines: List[str] = [
+        sep,
+        "         DELFIN Stability Constant Report (Reaction Mode)",
+        sep,
+        "",
+        "  Mode:              reaction",
+        f"  Temperature:       {temperature:.2f} K",
+        "",
+        sep,
+        "  User-defined Reaction:",
+        sep,
+        "",
+        f"  Raw:       {analysis.raw_reaction}",
+        f"  Expanded:  {analysis.expanded_reaction}",
+        "",
+        sep,
+        "  Species Details:",
+        sep,
+        "",
+    ]
+
+    for spec in analysis.unique_species:
+        sp = species_map[spec.key]
+        lines.append(f"  {spec.label}")
+        lines.append(f"    SMILES:       {spec.smiles}")
+        lines.append(f"    Parsed charge:{spec.charge:+d}")
+        lines.append(f"    Folder:       {sp.folder}")
+        lines.append(f"    Charge:       {sp.charge:+d}")
+        lines.append(f"    Multiplicity: {sp.multiplicity}")
+        lines.append(f"    E(el):        {sp.e_el:.10f} Eh" if sp.e_el is not None else "    E(el):        N/A")
+        lines.append(f"    G(RRHO):      {sp.g_rrho:+.10f} Eh" if sp.g_rrho is not None else "    G(RRHO):      N/A")
+        lines.append(f"    G(total):     {sp.g_total:.10f} Eh" if sp.g_total is not None else "    G(total):     N/A")
+        lines.append(
+            "    Source:       reused from main input workflow"
+            if spec.use_input_reference
+            else "    Source:       user-defined reaction species"
+        )
+        lines.append("")
+
+    lines.extend([
+        sep,
+        "  Energy Balance:",
+        sep,
+        "",
+    ])
+    prod_terms = [f"{item.coefficient}*G({species_map[item.species_key].label})" for item in analysis.products]
+    react_terms = [f"{item.coefficient}*G({species_map[item.species_key].label})" for item in analysis.reactants]
+    lines.append(f"  DeltaG = {' + '.join(prod_terms)} - {' - '.join(react_terms)}")
+    lines.append("")
+    lines.append(f"  DeltaG = {delta_g_h:+.10f} Eh")
+    lines.append(f"         = {delta_g_kcal:+.4f} kcal/mol")
+    lines.append(f"         = {delta_g_kj:+.4f} kJ/mol")
+    lines.append("")
+    lines.append(thin)
+    lines.append("  Result:")
+    lines.append(thin)
+    lines.append("")
+    lines.append(f"  DeltaG(aq)    = {delta_g_kcal:+.4f} kcal/mol")
+    lines.append(f"  log K(calc)   = {log_k:.2f}")
+    if logK_exp is not None:
+        lines.append(f"  log K(exp)    = {logK_exp:.2f}")
+        lines.append(f"  Delta log K   = {log_k - logK_exp:+.2f}")
+    lines.append("")
+    lines.append(sep)
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _run_reaction_postprocessing(
+    sc_dir: Path,
+    analysis: ReactionStabilityAnalysis,
+    config: Dict[str, Any],
+    temperature: float,
+    logK_exp: Optional[float],
+    initial_out: Optional[Path],
+) -> None:
+    from delfin.copy_helpers import read_occupier_file
+
+    species_map: Dict[str, SpeciesEnergy] = {}
+    initial_occ_dir = sc_dir.parent / "initial_OCCUPIER"
+    needs_input_reference = any(spec.use_input_reference for spec in analysis.unique_species)
+
+    if needs_input_reference and initial_out is None:
+        initial_out = _find_initial_output(sc_dir.parent, config)
+
+    for spec in analysis.unique_species:
+        if spec.use_input_reference:
+            if initial_out is None:
+                raise FileNotFoundError("Reaction mode expected a reusable main input energy, but initial.out is missing.")
+            sp = extract_free_energy(initial_out)
+            sp.label = spec.label
+            sp.folder = str(initial_out.parent.relative_to(sc_dir.parent))
+            sp.charge = spec.charge
+            if initial_occ_dir.is_dir() and (initial_occ_dir / "OCCUPIER.txt").exists():
+                mult, bs, idx, _gbw = read_occupier_file(
+                    str(initial_occ_dir), "OCCUPIER.txt", 1, "", None, config, verbose=False,
+                )
+                if mult is not None:
+                    sp.multiplicity = mult
+                    sp.occupier_mult = mult
+                    sp.occupier_bs = bs
+                    sp.occupier_idx = idx
+            species_map[spec.key] = sp
+            continue
+
+        out_path = sc_dir / spec.folder_name / "calc.out"
+        sp = extract_free_energy(out_path)
+        sp.label = spec.label
+        sp.folder = f"stability_constant/{spec.folder_name}"
+        sp.charge = spec.charge
+        if spec.has_metal:
+            occ_dir = sc_dir / spec.folder_name / "species_OCCUPIER"
+            if occ_dir.is_dir() and (occ_dir / "OCCUPIER.txt").exists():
+                mult, bs, idx, _gbw = read_occupier_file(
+                    str(occ_dir), "OCCUPIER.txt", 1, "", None, config, verbose=False,
+                )
+                if mult is not None:
+                    sp.multiplicity = mult
+                    sp.occupier_mult = mult
+                    sp.occupier_bs = bs
+                    sp.occupier_idx = idx
+        else:
+            sp.multiplicity = 1
+        species_map[spec.key] = sp
+
+    for sp in species_map.values():
+        if sp.g_total is None:
+            raise ValueError(f"Species '{sp.label}' is missing G_total. Ensure OPT+FREQ completed.")
+
+    delta_g_h, delta_g_kcal, delta_g_kj, log_k = _compute_reaction_delta_g(
+        analysis, species_map, temperature=temperature,
+    )
+
+    report_path = sc_dir / "STABILITY.txt"
+    _write_reaction_stability_report(
+        report_path,
+        analysis,
+        species_map,
+        temperature=temperature,
+        delta_g_h=delta_g_h,
+        delta_g_kcal=delta_g_kcal,
+        delta_g_kj=delta_g_kj,
+        log_k=log_k,
+        logK_exp=logK_exp,
+    )
+
+    logger.info("[SC] reaction DeltaG = %.4f kcal/mol", delta_g_kcal)
+    logger.info("[SC] reaction log K = %.2f", log_k)
+    if logK_exp is not None:
+        logger.info("[SC] reaction log K(exp) = %.2f  (Delta = %+.2f)", logK_exp, log_k - logK_exp)
+    print("\n  Stability Constant Result (reaction mode):")
+    print(f"  DeltaG = {delta_g_kcal:+.4f} kcal/mol")
+    print(f"  log K  = {log_k:.2f}")
+    if logK_exp is not None:
+        print(f"  log K(exp) = {logK_exp:.2f}  (Delta = {log_k - logK_exp:+.2f})")
+    print(f"  Report: {report_path}\n")
 
 
 def _run_postprocessing(
