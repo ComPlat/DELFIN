@@ -145,14 +145,14 @@ tadf_xTB_bfw=no
 tadf_xTB_energy_window=10.0
 tadf_xTB_run_t1_opt=yes
 --------------------
-Stability Constant:
-stability_constant=no
-stability_constant_mode=auto
-stability_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
+Thermodynamics:
+thermodynamics=no
+thermodynamics_mode=[auto|reaction]
+thermodynamics_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
 n_explicit_solvent=6
 logK_exp=
-sc_smiles_converter=NORMAL
-sc_preopt=XTB
+sc_smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
+sc_preopt=[none|xtb|crest|goat]
 --------------------
 Electrical Properties:
 elprop_Dipole=no
@@ -393,14 +393,14 @@ tadf_xTB_bfw=no
 tadf_xTB_energy_window=10.0
 tadf_xTB_run_t1_opt=yes
 --------------------
-Stability Constant:
-stability_constant=no
-stability_constant_mode=auto
-stability_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
+Thermodynamics:
+thermodynamics=no
+thermodynamics_mode=[auto|reaction]
+thermodynamics_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
 n_explicit_solvent=6
 logK_exp=
-sc_smiles_converter=NORMAL
-sc_preopt=XTB
+sc_smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
+sc_preopt=[none|xtb|crest|goat]
 --------------------
 Electrical Properties:
 elprop_Dipole=no

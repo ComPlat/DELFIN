@@ -3,7 +3,7 @@ import pytest
 pytest.importorskip("rdkit")
 
 from delfin.common.control_validator import validate_control_config
-from delfin.config import _load_template_defaults
+from delfin.config import _load_template_defaults, parse_control_text
 from delfin.stability_constant import (
     STABILITY_REACTION_TEMPLATE,
     validate_stability_reaction_syntax,
@@ -39,3 +39,24 @@ def test_control_validator_allows_stability_reaction_template():
     validated = validate_control_config(config)
 
     assert validated["stability_reaction"] == STABILITY_REACTION_TEMPLATE
+
+
+def test_thermodynamics_aliases_map_to_stability_keys():
+    config = parse_control_text(
+        "\n".join(
+            [
+                "SMILES=O",
+                "charge=0",
+                "solvent=water",
+                "method=classic",
+                "smiles_converter=NORMAL",
+                "thermodynamics=yes",
+                "thermodynamics_mode=reaction",
+                f"thermodynamics_reaction={STABILITY_REACTION_TEMPLATE}",
+            ]
+        )
+    )
+
+    assert config["stability_constant"] == "yes"
+    assert config["stability_constant_mode"] == "reaction"
+    assert config["stability_reaction"] == STABILITY_REACTION_TEMPLATE

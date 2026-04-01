@@ -1681,11 +1681,11 @@ def main(argv: list[str] | None = None) -> int:
         hyperpol_xtb_enabled = str(config.get('hyperpol_xTB', 'no')).strip().lower() == 'yes'
         tadf_xtb_enabled = str(config.get('tadf_xTB', 'no')).strip().lower() == 'yes'
 
-        # Stability constant requires initial calculation + FREQ
+        # Thermodynamics workflow requires initial calculation + FREQ
         sc_enabled_early = str(config.get('stability_constant', 'no')).strip().lower() == 'yes'
         if sc_enabled_early:
             if str(config.get('calc_initial', '')).strip().lower() == 'no':
-                logger.info("[SC] stability_constant=yes → forcing calc_initial=yes")
+                logger.info("[SC] thermodynamics/stability_constant=yes -> forcing calc_initial=yes")
                 config['calc_initial'] = 'yes'
 
         method_token: Optional[str]
@@ -1789,18 +1789,18 @@ def main(argv: list[str] | None = None) -> int:
             if not run_tadf_xtb_phase(pipeline_ctx):
                 logger.warning("tadf_xTB phase encountered issues, continuing...")
 
-        # ------------------- stability_constant --------------------
+        # ------------------- thermodynamics --------------------
         sc_enabled = str(config.get('stability_constant', 'no')).strip().lower() == 'yes'
         if sc_enabled:
             if pipeline_ctx.extra.get("stability_constant_embedded_complete"):
                 logger.info(
-                    "stability_constant jobs already completed in parallel with OCCUPIER "
-                    "(skipping separate stability_constant phase)"
+                    "Thermodynamics jobs already completed in parallel with OCCUPIER "
+                    "(skipping separate thermodynamics phase)"
                 )
             else:
-                logger.info("Running stability_constant phase...")
+                logger.info("Running thermodynamics phase...")
                 if not run_stability_constant_phase(pipeline_ctx):
-                    logger.warning("stability_constant phase encountered issues, continuing...")
+                    logger.warning("thermodynamics phase encountered issues, continuing...")
 
         # Finalize redox and emission summary
         if method_token == "OCCUPIER":

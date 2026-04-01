@@ -16,7 +16,7 @@
 | Capability | Description |
 |------------|-------------|
 | **Redox Potentials** | Automated spin-state prediction and redox potential calculation via OCCUPIER/classic workflows |
-| **Stability Constants** | Automated log K prediction via Born-Haber thermodynamic cycles with OCCUPIER-aware metal, ligand, and solvent sub-workflows |
+| **Thermodynamics Simulations** | Automated log K prediction and free-energy analysis via Born-Haber thermodynamic cycles with OCCUPIER-aware metal, ligand, and solvent sub-workflows |
 | **Excited-State Dynamics** | ISC/RISC rates, fluorescence, phosphorescence, SOC coupling, E₀₀ energies, ΔE(S-T) gaps |
 | **TADF Screening** | xTB-based singlet-triplet gap estimation for OLED material discovery |
 | **Spectroscopy** | UV-Vis absorption, IR vibrational spectra, AFP (absorption/fluorescence/phosphorescence) plots |
@@ -153,9 +153,9 @@ DELFIN's core workflow automates spin-state identification and redox potential c
 - **Parallel workflows**: Oxidation and reduction run simultaneously with automatic PAL splitting
 - **Smart recalc**: Fingerprint-based skip logic avoids unnecessary reruns
 
-### Stability Constant Prediction
+### Thermodynamics Simulations
 
-DELFIN can compute coordination-complex stability constants (`log K`) from a Born-Haber-type thermodynamic cycle:
+DELFIN can run thermodynamics simulations for coordination complexes, including stability-constant (`log K`) prediction from a Born-Haber-type thermodynamic cycle:
 
 - **Automatic reaction analysis**: Extracts unique ligands, denticities, displaced solvent count, and the matching metal-solvent reference complex directly from complex SMILES
 - **OCCUPIER-aware metal treatment**: Both the target complex and the solvated metal reference can use the same converter, preoptimization, multiplicity, and broken-symmetry logic as the main workflow

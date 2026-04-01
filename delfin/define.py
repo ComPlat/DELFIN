@@ -82,14 +82,14 @@ tadf_xTB_bfw=no
 tadf_xTB_energy_window=10.0
 tadf_xTB_run_t1_opt=yes
 --------------------
-Stability Constant:
-stability_constant=no
-stability_constant_mode=auto
-stability_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
+Thermodynamics:
+thermodynamics=no
+thermodynamics_mode=[auto|reaction]
+thermodynamics_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
 n_explicit_solvent=6
 logK_exp=
-sc_smiles_converter=NORMAL
-sc_preopt=XTB
+sc_smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
+sc_preopt=[none|xtb|crest|goat]
 --------------------
 Electrical Properties:
 elprop_Dipole=no
@@ -367,11 +367,12 @@ tadf_xTB: yes/no - xTB-based TADF screening via sTD-DFT-xTB
   Calculations run in hyperpol_xtb/ and tadf_xtb/ subdirectories
   Can run standalone (SMILES -> smiles_converter -> hyperpol/tadf) or after ORCA/ESD
 -------------------------------------------------
-Stability Constant:
-stability_constant_mode: auto|reaction
+Thermodynamics:
+thermodynamics / stability_constant: yes/no
+thermodynamics_mode / stability_constant_mode: auto|reaction
   auto     = current built-in Born-Haber cycle from complex SMILES
-  reaction = user-defined reaction from stability_reaction
-stability_reaction:
+  reaction = user-defined reaction from thermodynamics_reaction
+thermodynamics_reaction / stability_reaction:
   Template: a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
   Syntax:   1*{SMILES_A}+3*{SMILES_B}>>>1*{SMILES_C}+2*{SMILES_D}
   Special token: {input} reuses the current DELFIN main system
