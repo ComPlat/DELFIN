@@ -178,14 +178,14 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
                     all_jobs.extend(sc_plan.jobs)
                     sc_embedded = True
                     logger.info(
-                        "[SC] Embedded stability constant jobs into the OCCUPIER shared scheduler "
+                        "[SC] Embedded thermodynamics jobs into the OCCUPIER shared scheduler "
                         "(mode=%s, initial dependency: %s).",
                         sc_mode,
                         config.get("_occ_initial_energy_job") or "none",
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
-                        "[SC] Could not embed stability constant workflow into OCCUPIER run: %s",
+                        "[SC] Could not embed thermodynamics workflow into OCCUPIER run: %s",
                         exc,
                         exc_info=True,
                     )
@@ -210,10 +210,10 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
 
                     if sc_embedded and "sc_postprocess" in manager.completed_jobs:
                         ctx.extra["stability_constant_embedded_complete"] = True
-                        logger.info("[SC] Embedded stability constant workflow completed within OCCUPIER run.")
+                        logger.info("[SC] Embedded thermodynamics workflow completed within OCCUPIER run.")
                     elif sc_embedded:
                         logger.warning(
-                            "[SC] Embedded stability constant workflow did not complete inside OCCUPIER run; "
+                            "[SC] Embedded thermodynamics workflow did not complete inside OCCUPIER run; "
                             "the standalone SC phase remains available as fallback."
                         )
 
