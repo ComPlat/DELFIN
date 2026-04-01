@@ -1714,6 +1714,18 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     if disp_val is not None and func_val is not None:
         errors.extend(validate_disp_corr_functional_combo(disp_val, func_val))
 
+    stability_reaction = str(config.get("stability_reaction", "") or "").strip()
+    if stability_reaction:
+        try:
+            from delfin.stability_constant import validate_stability_reaction_syntax
+
+            validate_stability_reaction_syntax(
+                stability_reaction,
+                input_smiles=str(validated.get("SMILES", config.get("SMILES", "")) or "").strip(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Invalid value for stability_reaction: {exc}")
+
     if errors:
         raise ValueError("; ".join(errors))
 

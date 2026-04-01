@@ -32,6 +32,7 @@ logger = get_logger(__name__)
 HARTREE_TO_KCAL = 627.5095  # 1 Eh = 627.5095 kcal/mol
 HARTREE_TO_KJ = 2625.5     # 1 Eh = 2625.5 kJ/mol
 R_KCAL = 0.001987204       # gas constant in kcal/(mol·K)
+STABILITY_REACTION_TEMPLATE = "a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}..."
 
 # ---------------------------------------------------------------------------
 # Solvent database: name → {smiles, donor atom, display name}
@@ -371,6 +372,16 @@ def _sc_mode(config: Dict[str, Any]) -> str:
     return mode if mode in {"auto", "reaction"} else "auto"
 
 
+def _compact_stability_reaction_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or ""))
+
+
+def is_stability_reaction_template(reaction: Any) -> bool:
+    return _compact_stability_reaction_text(reaction) == _compact_stability_reaction_text(
+        STABILITY_REACTION_TEMPLATE
+    )
+
+
 def _canonicalize_sc_smiles(smiles: str) -> str:
     text = _normalize_simple_species_smiles(smiles)
     if not text:
@@ -399,6 +410,19 @@ def _species_charge_from_smiles(smiles: str) -> int:
         return sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
     except Exception:
         return 0
+
+
+def _validate_reaction_braces(reaction: str) -> None:
+    level = 0
+    for idx, char in enumerate(str(reaction or ""), start=1):
+        if char == "{":
+            level += 1
+        elif char == "}":
+            if level == 0:
+                raise ValueError(f"stability_reaction contains unmatched '}}' at position {idx}.")
+            level -= 1
+    if level != 0:
+        raise ValueError("stability_reaction contains unmatched '{'.")
 
 
 def _split_reaction_side(side: str) -> List[str]:
@@ -472,6 +496,72 @@ def _normalize_simple_species_smiles(smiles: Any) -> str:
     return f"[{symbol}{charge_text}]"
 
 
+def _reaction_species_mol(smiles: str, *, token: str):
+    from rdkit import Chem
+
+    text = _normalize_simple_species_smiles(smiles)
+    mol = Chem.MolFromSmiles(text, sanitize=False)
+    if mol is None:
+        raise ValueError(f"Invalid SMILES '{token}' in stability_reaction.")
+    try:
+        mol.UpdatePropertyCache(strict=False)
+        Chem.SanitizeMol(mol)
+    except Exception:
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+    return mol
+
+
+def _count_atoms_in_mol(mol: Any) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for atom in mol.GetAtoms():
+        symbol = atom.GetSymbol()
+        counts[symbol] += 1
+        try:
+            h_count = int(atom.GetTotalNumHs())
+        except Exception:
+            h_count = 0
+        if h_count:
+            counts["H"] += h_count
+    return counts
+
+
+def _count_reaction_side_atoms(entries: List[ReactionParticipant]) -> Counter[str]:
+    total: Counter[str] = Counter()
+    for item in entries:
+        mol = _reaction_species_mol(item.smiles, token=item.token)
+        atom_counts = _count_atoms_in_mol(mol)
+        for symbol, count in atom_counts.items():
+            total[symbol] += count * item.coefficient
+    return total
+
+
+def _format_atom_balance(counts: Counter[str]) -> str:
+    return ", ".join(f"{symbol}:{counts[symbol]}" for symbol in sorted(counts))
+
+
+def validate_stability_reaction_syntax(
+    reaction: Any,
+    *,
+    input_smiles: str = "",
+) -> None:
+    raw = str(reaction or "").strip()
+    if not raw or is_stability_reaction_template(raw):
+        return
+
+    analysis = parse_stability_reaction(raw, input_smiles=input_smiles)
+    reactant_atoms = _count_reaction_side_atoms(analysis.reactants)
+    product_atoms = _count_reaction_side_atoms(analysis.products)
+    if reactant_atoms != product_atoms:
+        raise ValueError(
+            "stability_reaction is not atom-balanced: "
+            f"reactants [{_format_atom_balance(reactant_atoms)}] vs "
+            f"products [{_format_atom_balance(product_atoms)}]."
+        )
+
+
 def parse_stability_reaction(
     reaction: str,
     *,
@@ -483,6 +573,7 @@ def parse_stability_reaction(
     raw = str(reaction or "").strip()
     if not raw:
         raise ValueError("stability_reaction is empty.")
+    _validate_reaction_braces(raw)
 
     if ">>>" in raw:
         left_raw, right_raw = raw.split(">>>", 1)
@@ -512,6 +603,7 @@ def parse_stability_reaction(
             smiles = input_smiles if is_input else _normalize_simple_species_smiles(token.strip())
             if not smiles:
                 raise ValueError(f"{side_name} term '{term}' resolves to an empty SMILES.")
+            _reaction_species_mol(smiles, token=token)
             species_key = input_key if (is_input and input_key) else _canonicalize_sc_smiles(smiles)
             if input_key and species_key == input_key:
                 is_input = True
@@ -1322,7 +1414,7 @@ def build_stability_reaction_plan(
 
     config = ctx.config
     reaction = str(config.get("stability_reaction", "")).strip()
-    if not reaction:
+    if not reaction or is_stability_reaction_template(reaction):
         raise ValueError("stability_constant_mode=reaction requires stability_reaction=...")
 
     input_smiles = str(config.get("SMILES", "")).strip()

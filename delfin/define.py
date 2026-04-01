@@ -85,7 +85,7 @@ tadf_xTB_run_t1_opt=yes
 Stability Constant:
 stability_constant=no
 stability_constant_mode=auto
-stability_reaction=
+stability_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
 n_explicit_solvent=6
 logK_exp=
 sc_smiles_converter=NORMAL
@@ -372,7 +372,8 @@ stability_constant_mode: auto|reaction
   auto     = current built-in Born-Haber cycle from complex SMILES
   reaction = user-defined reaction from stability_reaction
 stability_reaction:
-  Syntax: 1*{SMILES_A}+3*{SMILES_B}>>>{SMILES_C}+2*{SMILES_D}
+  Template: a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
+  Syntax:   1*{SMILES_A}+3*{SMILES_B}>>>1*{SMILES_C}+2*{SMILES_D}
   Special token: {input} reuses the current DELFIN main system
   Example: 1*{input}+3*{Cl-}>>>{SomeProduct}
   Reaction mode computes log K for exactly this balanced user-defined reaction
