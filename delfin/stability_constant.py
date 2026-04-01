@@ -1,4 +1,4 @@
-"""Stability constant (log K) calculation via Born-Haber thermodynamic cycle.
+"""Thermodynamics calculation for log K via a Born-Haber thermodynamic cycle.
 
 Thermodynamic cycle:
   [M(Solv)_m]^x+  +  Σ L_i  →  [ML_1...L_k(Solv)_{m-n}]^y+  +  n·Solv
@@ -75,7 +75,7 @@ class LigandInfo:
 
 @dataclass
 class StabilityAnalysis:
-    """Complete analysis of the stability constant reaction."""
+    """Complete analysis of the thermodynamics reaction."""
     complex_smiles: str
     metals: List[Tuple[str, int]]           # [(symbol, charge), ...]
     ligands: List[LigandInfo]               # all ligands (may have duplicates)
@@ -107,7 +107,7 @@ class SpeciesEnergy:
 
 @dataclass
 class StabilityResult:
-    """Final stability constant result."""
+    """Final thermodynamics result."""
     delta_g_hartree: float
     delta_g_kcal: float
     delta_g_kj: float
@@ -128,7 +128,7 @@ class StabilityWorkflowPlan:
 
 @dataclass
 class ReactionSpeciesSpec:
-    """Normalized species definition for reaction-mode stability constants."""
+    """Normalized species definition for reaction-mode thermodynamics."""
     key: str
     smiles: str
     label: str
@@ -162,7 +162,7 @@ class ReactionStabilityAnalysis:
 
 @dataclass
 class ReactionStabilityWorkflowPlan:
-    """Prepared workflow jobs for reaction-mode stability constants."""
+    """Prepared workflow jobs for reaction-mode thermodynamics."""
     analysis: ReactionStabilityAnalysis
     sc_dir: Path
     jobs: List["WorkflowJob"]
@@ -178,7 +178,7 @@ def analyze_complex(smiles: str, solvent: str, n_explicit_solvent: int) -> Stabi
     from delfin.smiles_converter import _METALS, RDKIT_AVAILABLE
 
     if not RDKIT_AVAILABLE:
-        raise RuntimeError("RDKit is required for stability constant analysis")
+        raise RuntimeError("RDKit is required for thermodynamics analysis")
 
     from rdkit import Chem
 
@@ -839,7 +839,7 @@ def build_orca_input(
     broken_sym: str = "",
     include_freq: bool = True,
 ) -> None:
-    """Generate ORCA input file for a stability constant sub-job.
+    """Generate ORCA input file for a thermodynamics sub-job.
 
     Uses the same keyword construction as the main DELFIN workflow
     (read_and_modify_file in xyz_io.py) to ensure maximum error cancellation.
@@ -1034,7 +1034,7 @@ def write_stability_report(report_path: Path, result: StabilityResult) -> None:
     thin = "-" * 70
 
     lines.append(sep)
-    lines.append("              DELFIN Stability Constant Report")
+    lines.append("                DELFIN Thermodynamics Report")
     lines.append(sep)
     lines.append("")
     lines.append(f"  Complex SMILES:    {a.complex_smiles}")
@@ -1149,7 +1149,7 @@ def write_stability_report(report_path: Path, result: StabilityResult) -> None:
 # ---------------------------------------------------------------------------
 
 def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
-    """Execute the stability constant calculation phase.
+    """Execute the thermodynamics calculation phase.
 
     This is called from cli.py after all other phases complete.
     """
@@ -1161,7 +1161,7 @@ def run_stability_constant_phase(ctx: "PipelineContext") -> bool:
     mode = _sc_mode(config)
 
     logger.info("=" * 60)
-    logger.info("  Stability Constant Phase (%s)", mode)
+    logger.info("  Thermodynamics Phase (%s)", mode)
     logger.info("=" * 60)
 
     smiles = str(config.get("SMILES", "")).strip()
@@ -1388,7 +1388,7 @@ def build_stability_constant_plan(
     jobs.append(WorkflowJob(
         job_id="sc_postprocess",
         work=_work_postprocess,
-        description="SC: Compute DeltaG and log K",
+        description="Thermodynamics: Compute DeltaG and log K",
         dependencies=all_dep_ids,
         cores_min=1,
         cores_optimal=1,
@@ -1547,7 +1547,7 @@ def build_stability_reaction_plan(
     jobs.append(WorkflowJob(
         job_id="sc_postprocess",
         work=_work_postprocess,
-        description="SC reaction: Compute DeltaG and log K",
+        description="Thermodynamics reaction: Compute DeltaG and log K",
         dependencies=postprocess_dependencies,
         cores_min=1,
         cores_optimal=1,
@@ -2018,7 +2018,7 @@ def _write_reaction_stability_report(
     thin = "-" * 70
     lines: List[str] = [
         sep,
-        "         DELFIN Stability Constant Report (Reaction Mode)",
+        "           DELFIN Thermodynamics Report (Reaction Mode)",
         sep,
         "",
         "  Mode:              reaction",
@@ -2165,7 +2165,7 @@ def _run_reaction_postprocessing(
     logger.info("[SC] reaction log K = %.2f", log_k)
     if logK_exp is not None:
         logger.info("[SC] reaction log K(exp) = %.2f  (Delta = %+.2f)", logK_exp, log_k - logK_exp)
-    print("\n  Stability Constant Result (reaction mode):")
+    print("\n  Thermodynamics Result (reaction mode):")
     print(f"  DeltaG = {delta_g_kcal:+.4f} kcal/mol")
     print(f"  log K  = {log_k:.2f}")
     if logK_exp is not None:
@@ -2181,13 +2181,13 @@ def _run_postprocessing(
     temperature: float,
     logK_exp: Optional[float],
 ) -> None:
-    """Collect all energies and compute stability constant."""
+    """Collect all energies and compute thermodynamics result."""
     from delfin.copy_helpers import read_occupier_file
 
     if initial_out is None:
         initial_out = _find_initial_output(sc_dir.parent, config)
     if initial_out is None:
-        raise FileNotFoundError("Could not locate initial.out for stability constant post-processing")
+        raise FileNotFoundError("Could not locate initial.out for thermodynamics post-processing")
 
     # 1. Complex energy (from main workflow initial.out)
     logger.info("[SC] Extracting complex energy from %s", initial_out)
@@ -2253,8 +2253,8 @@ def _run_postprocessing(
     g_solvent.charge = 0
     g_solvent.multiplicity = 1
 
-    # 5. Compute stability constant
-    logger.info("[SC] Computing stability constant...")
+    # 5. Compute thermodynamics result
+    logger.info("[SC] Computing thermodynamics result...")
     result = compute_stability_constant(
         analysis=analysis,
         g_complex=g_complex,
@@ -2277,7 +2277,7 @@ def _run_postprocessing(
         logger.info("[SC]  log K(exp) = %.2f  (Delta = %+.2f)", logK_exp, result.log_k - logK_exp)
     logger.info("[SC] " + "=" * 50)
 
-    print(f"\n  Stability Constant Result:")
+    print(f"\n  Thermodynamics Result:")
     print(f"  DeltaG = {result.delta_g_kcal:+.4f} kcal/mol")
     print(f"  log K  = {result.log_k:.2f}")
     if logK_exp is not None:

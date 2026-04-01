@@ -23,12 +23,18 @@ _PLACEHOLDER_VALIDATION_VALUES: Dict[str, Any] = {
     "solvent": "DMF",
     "method": "classic",
     "smiles_converter": "NORMAL",
+    "stability_constant_mode": "auto",
+    "sc_smiles_converter": "NORMAL",
+    "sc_preopt": "xtb",
     "ESD_modus": "tddft",
     "ESD_T1_opt": "uks",
 }
 _PLACEHOLDER_MESSAGES: Dict[str, str] = {
     "method": "Placeholder [METHOD] must be set to one of: classic, manually, OCCUPIER",
     "smiles_converter": "Placeholder [SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, GUPPY, ARCHITECTOR",
+    "stability_constant_mode": "Placeholder [STABILITY_CONSTANT_MODE] must be set to one of: auto, reaction",
+    "sc_smiles_converter": "Placeholder [SC_SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, GUPPY, ARCHITECTOR",
+    "sc_preopt": "Placeholder [SC_PREOPT] must be set to one of: none, xtb, crest, goat",
     "ESD_modus": "Placeholder [ESD_MODUS] must be set to one of: TDDFT, deltaSCF, hybrid1",
     "ESD_T1_opt": "Placeholder [ESD_T1_OPT] must be set to one of: uks, tddft",
 }
@@ -67,6 +73,16 @@ _CONTROL_KEY_ALIASES: Dict[str, str] = {
     "co2delta": "co2_species_delta",
     "co2coordination": "co2_coordination",
     "co2coordinationonoff": "co2_coordination",
+    "thermodynamics": "stability_constant",
+    "thermodynamicconstant": "stability_constant",
+    "thermodynamicsconstant": "stability_constant",
+    "thermodynconstant": "stability_constant",
+    "thermodynamicsmode": "stability_constant_mode",
+    "thermodynamicmode": "stability_constant_mode",
+    "thermodynmode": "stability_constant_mode",
+    "thermodynamicsreaction": "stability_reaction",
+    "thermodynamicreaction": "stability_reaction",
+    "thermodynreaction": "stability_reaction",
 }
 _COLON_ASSIGNMENT_KEYS: Set[str] = {"co2_coordination", "co2_species_delta"}
 _STRING_ONLY_KEYS: Set[str] = {"smiles"}
