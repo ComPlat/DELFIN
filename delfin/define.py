@@ -88,8 +88,8 @@ thermodynamics_mode=[auto|reaction]
 thermodynamics_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
 n_explicit_solvent=6
 logK_exp=
-sc_smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
-sc_preopt=[none|xtb|crest|goat]
+thdy_smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
+thdy_preopt=[none|xtb|crest|goat]
 --------------------
 Electrical Properties:
 elprop_Dipole=no
@@ -377,6 +377,10 @@ thermodynamics_reaction / stability_reaction:
   Syntax:   1*{SMILES_A}+3*{SMILES_B}>>>1*{SMILES_C}+2*{SMILES_D}
   Special token: {input} reuses the current DELFIN main system
   Example: 1*{input}+3*{Cl-}>>>{SomeProduct}
+thdy_smiles_converter / sc_smiles_converter:
+  QUICK | NORMAL | GUPPY | ARCHITECTOR
+thdy_preopt / sc_preopt:
+  none | xtb | crest | goat
   Reaction mode computes log K for exactly this balanced user-defined reaction
 -------------------------------------------------
 """
