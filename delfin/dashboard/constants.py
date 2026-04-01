@@ -151,8 +151,8 @@ thermodynamics_mode=[auto|reaction]
 thermodynamics_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
 n_explicit_solvent=6
 logK_exp=
-sc_smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
-sc_preopt=[none|xtb|crest|goat]
+thdy_smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
+thdy_preopt=[none|xtb|crest|goat]
 --------------------
 Electrical Properties:
 elprop_Dipole=no
@@ -399,8 +399,8 @@ thermodynamics_mode=[auto|reaction]
 thermodynamics_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
 n_explicit_solvent=6
 logK_exp=
-sc_smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
-sc_preopt=[none|xtb|crest|goat]
+thdy_smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
+thdy_preopt=[none|xtb|crest|goat]
 --------------------
 Electrical Properties:
 elprop_Dipole=no

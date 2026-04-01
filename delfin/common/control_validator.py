@@ -923,6 +923,8 @@ def _as_on_off(value: Any) -> str:
 
 def _as_preopt_mode(value: Any) -> str:
     text = str(value or "none").strip().lower()
+    if text == "[none|xtb|crest|goat]":
+        return "xtb"
     if text in {"no", "false", "off", "0"}:
         text = "none"
     if text in {"none", "xtb", "crest", "goat"}:
@@ -939,6 +941,8 @@ def _as_response_engine(value: Any) -> str:
 
 def _as_stability_constant_mode(value: Any) -> str:
     text = str(value or "auto").strip().lower()
+    if text == "[auto|reaction]":
+        return "auto"
     if text in {"auto", "reaction"}:
         return text
     raise ValueError("must be auto or reaction")
@@ -1513,14 +1517,20 @@ def _as_ap_method(value: Any) -> int | None:
 def _as_smiles_converter(value: Any) -> str:
     """Coerce smiles_converter into one of the supported modes."""
     text = str(value or "").strip()
-    if not text or text == "[QUICK|NORMAL|GUPPY|ARCHITECTOR]":
+    if not text:
         return ""
+    if text == "[QUICK|NORMAL|GUPPY|ARCHITECTOR]":
+        return "NORMAL"
 
     normalized = text.upper()
     allowed = {"QUICK", "NORMAL", "GUPPY", "ARCHITECTOR"}
     if normalized not in allowed:
         raise ValueError("must be QUICK, NORMAL, GUPPY, or ARCHITECTOR")
     return normalized
+
+
+def _is_placeholder_literal(value: Any, literal: str) -> bool:
+    return str(value or "").strip() == literal
 
 
 CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
@@ -1599,13 +1609,18 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("stability_reaction", _as_str, default=""),
     FieldSpec("n_explicit_solvent", _as_positive_int, default=6),
     FieldSpec("logK_exp", _as_str, default=""),
-    FieldSpec("sc_smiles_converter", _as_smiles_converter, default="NORMAL"),
-    FieldSpec("sc_preopt", _as_preopt_mode, default="xtb"),
+    FieldSpec("thdy_smiles_converter", _as_smiles_converter, default="NORMAL"),
+    FieldSpec("thdy_preopt", _as_preopt_mode, default="xtb"),
 )
 
 
 def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     """Validate and coerce CONTROL configuration values."""
+    if "sc_smiles_converter" in config and "thdy_smiles_converter" not in config:
+        config["thdy_smiles_converter"] = config["sc_smiles_converter"]
+    if "sc_preopt" in config and "thdy_preopt" not in config:
+        config["thdy_preopt"] = config["sc_preopt"]
+
     errors: list[str] = []
     validated: dict[str, Any] = dict(config)
 
@@ -1713,6 +1728,46 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
         func_val = None
     if disp_val is not None and func_val is not None:
         errors.extend(validate_disp_corr_functional_combo(disp_val, func_val))
+
+    thermodynamics_enabled = str(validated.get("stability_constant", config.get("stability_constant", "no"))).strip().lower() == "yes"
+    stability_mode = str(validated.get("stability_constant_mode", config.get("stability_constant_mode", "auto"))).strip().lower() or "auto"
+    if thermodynamics_enabled:
+        if (
+            "stability_constant_mode" not in config
+            or str(config.get("stability_constant_mode", "")).strip() == ""
+            or _is_placeholder_literal(config.get("stability_constant_mode"), "[auto|reaction]")
+        ):
+            errors.append(
+                "thermodynamics=yes requires thermodynamics_mode / stability_constant_mode to be set to auto or reaction."
+            )
+        if (
+            "thdy_smiles_converter" not in config
+            or str(config.get("thdy_smiles_converter", "")).strip() == ""
+            or _is_placeholder_literal(config.get("thdy_smiles_converter"), "[QUICK|NORMAL|GUPPY|ARCHITECTOR]")
+        ):
+            errors.append(
+                "thermodynamics=yes requires thdy_smiles_converter to be set to QUICK, NORMAL, GUPPY, or ARCHITECTOR."
+            )
+        if (
+            "thdy_preopt" not in config
+            or str(config.get("thdy_preopt", "")).strip() == ""
+            or _is_placeholder_literal(config.get("thdy_preopt"), "[none|xtb|crest|goat]")
+        ):
+            errors.append(
+                "thermodynamics=yes requires thdy_preopt to be set to none, xtb, crest, or goat."
+            )
+        if stability_mode == "reaction":
+            raw_reaction = str(config.get("stability_reaction", "") or "").strip()
+            try:
+                from delfin.stability_constant import is_stability_reaction_template
+            except Exception:  # noqa: BLE001
+                is_stability_reaction_template = None
+            if not raw_reaction or (
+                callable(is_stability_reaction_template) and is_stability_reaction_template(raw_reaction)
+            ):
+                errors.append(
+                    "thermodynamics_mode=reaction requires thermodynamics_reaction / stability_reaction to be set."
+                )
 
     stability_reaction = str(config.get("stability_reaction", "") or "").strip()
     if stability_reaction:

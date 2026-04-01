@@ -742,8 +742,8 @@ def _is_yes_token(value: Any) -> bool:
     return str(value).strip().lower() in {"yes", "true", "1", "on"}
 
 
-def _normalized_sc_preopt(config: Dict[str, Any]) -> str:
-    preopt = str(config.get("sc_preopt", "no")).strip().upper()
+def _normalized_thdy_preopt(config: Dict[str, Any]) -> str:
+    preopt = str(config.get("thdy_preopt", config.get("sc_preopt", "no"))).strip().upper()
     return "" if preopt == "NO" else preopt
 
 
@@ -1225,8 +1225,8 @@ def build_stability_constant_plan(
     temperature = float(str(config.get("temperature", "298.15")).strip())
     logK_exp_raw = str(config.get("logK_exp", "")).strip()
     logK_exp = float(logK_exp_raw) if logK_exp_raw else None
-    sc_converter = str(config.get("sc_smiles_converter", "NORMAL")).strip().upper()
-    sc_preopt = _normalized_sc_preopt(config)
+    sc_converter = str(config.get("thdy_smiles_converter", config.get("sc_smiles_converter", "NORMAL"))).strip().upper()
+    sc_preopt = _normalized_thdy_preopt(config)
     solv_converter = _resolve_main_workflow_converter(config)
     solv_preopt_steps = _resolve_main_preopt_steps(config)
 
@@ -1425,8 +1425,8 @@ def build_stability_reaction_plan(
     temperature = float(str(config.get("temperature", "298.15")).strip())
     logK_exp_raw = str(config.get("logK_exp", "")).strip()
     logK_exp = float(logK_exp_raw) if logK_exp_raw else None
-    sc_converter = str(config.get("sc_smiles_converter", "NORMAL")).strip().upper()
-    sc_preopt = _normalized_sc_preopt(config)
+    sc_converter = str(config.get("thdy_smiles_converter", config.get("sc_smiles_converter", "NORMAL"))).strip().upper()
+    sc_preopt = _normalized_thdy_preopt(config)
     total_cores = max(1, int(str(config.get("PAL", 1)).strip()))
     recalc_enabled = str(os.environ.get("DELFIN_RECALC", "0")).strip().lower() in {"1", "true", "yes", "on", "y"}
     cwd_lock = threading.RLock()
