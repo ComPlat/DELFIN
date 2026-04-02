@@ -38,6 +38,7 @@ from .molecule_viewer import (
     DEFAULT_3DMOL_STYLE_JS,
     patch_viewer_mouse_controls_js,
 )
+from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
 from delfin.reporting.delfin_docx_report import _orca_plot_binary
 from delfin.ssh_transfer_jobs import (
     create_transfer_job,
@@ -1528,6 +1529,69 @@ def create_tab(ctx):
             ),
         ),
         calc_nmr_status,
+    ], layout=widgets.Layout(
+        display='none', margin='8px 0 8px 0', width='100%',
+    ))
+    # --- Calc CENSO/ANMR panel widgets ---
+    calc_censo_nmr_pal = widgets.BoundedIntText(
+        value=12, min=1, max=999, description='PAL',
+        layout=widgets.Layout(width='130px', height='26px'),
+    )
+    calc_censo_nmr_maxcore = widgets.BoundedIntText(
+        value=3000, min=100, max=99999, description='MaxCore',
+        layout=widgets.Layout(width='160px', height='26px'),
+    )
+    calc_censo_nmr_time = widgets.Text(
+        value='12:00:00', description='JobTime',
+        layout=widgets.Layout(width='200px', height='26px'),
+    )
+    calc_censo_nmr_solvent = widgets.Dropdown(
+        options=list(CENSO_NMR_SOLVENT_CHOICES),
+        value='chcl3',
+        description='Solvent',
+        layout=widgets.Layout(width='220px', height='26px'),
+    )
+    calc_censo_nmr_charge = widgets.BoundedIntText(
+        value=0, min=-99, max=99, description='Charge',
+        layout=widgets.Layout(width='150px', height='26px'),
+    )
+    calc_censo_nmr_multiplicity = widgets.BoundedIntText(
+        value=1, min=1, max=20, description='Mult',
+        layout=widgets.Layout(width='140px', height='26px'),
+    )
+    calc_censo_nmr_mhz = widgets.BoundedIntText(
+        value=400, min=50, max=2000, description='MHz',
+        layout=widgets.Layout(width='140px', height='26px'),
+    )
+    calc_censo_nmr_submit_btn = widgets.Button(
+        description='Submit', button_style='primary',
+        layout=widgets.Layout(width='100px', height='26px'),
+    )
+    calc_censo_nmr_status = widgets.HTML(value='')
+    calc_censo_nmr_panel = widgets.VBox([
+        widgets.HTML('<b>Calc CENSO/ANMR</b>'),
+        widgets.HTML(
+            '<span style="color:#555;">Run an ensemble 1H NMR workflow via '
+            'CREST + CENSO + ANMR in a new subfolder. Missing CENSO/ANMR helper '
+            'tools are auto-installed on demand; crest, xtb, and ORCA must already exist.</span>'
+        ),
+        widgets.HBox(
+            [
+                calc_censo_nmr_pal,
+                calc_censo_nmr_maxcore,
+                calc_censo_nmr_time,
+                calc_censo_nmr_solvent,
+                calc_censo_nmr_charge,
+                calc_censo_nmr_multiplicity,
+                calc_censo_nmr_mhz,
+                calc_censo_nmr_submit_btn,
+            ],
+            layout=widgets.Layout(
+                width='100%', overflow_x='hidden', gap='8px',
+                flex_flow='row wrap', align_items='center',
+            ),
+        ),
+        calc_censo_nmr_status,
     ], layout=widgets.Layout(
         display='none', margin='8px 0 8px 0', width='100%',
     ))
@@ -3159,6 +3223,7 @@ def create_tab(ctx):
             calc_recalc_toolbar.layout.display = 'none'
             calc_xyz_workflow_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
+            calc_censo_nmr_panel.layout.display = 'none'
         else:
             calc_preselect_container.layout.display = 'none'
             # Restore toolbars based on current mode.
@@ -3179,6 +3244,7 @@ def create_tab(ctx):
                 calc_recalc_toolbar.layout.display = 'none'
                 calc_xyz_workflow_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
+            calc_censo_nmr_panel.layout.display = 'none'
 
     def _calc_preselect_prev_entry(_btn=None):
         entries = state['preselect']['entries']
@@ -4338,6 +4404,13 @@ def create_tab(ctx):
         else:
             calc_nmr_panel.layout.display = 'none'
 
+    def _calc_show_censo_nmr_panel(show):
+        if show:
+            calc_censo_nmr_status.value = ''
+            calc_censo_nmr_panel.layout.display = 'block'
+        else:
+            calc_censo_nmr_panel.layout.display = 'none'
+
     def _calc_run_print_nmr():
         """Generate 1H NMR spectrum PNG from selected ORCA .out file."""
         selected_path = _calc_get_selected_path()
@@ -4482,6 +4555,72 @@ def create_tab(ctx):
             calc_nmr_status.value = f'<span style="color:#d32f2f;">{_html.escape(msg)}</span>'
 
         _calc_show_nmr_panel(False)
+
+    def _calc_on_censo_nmr_submit(_button):
+        """Submit a CREST + CENSO + ANMR ensemble NMR workflow for the selected XYZ."""
+        selected_path = _calc_selected_item_path()
+        if selected_path is None or not selected_path.exists():
+            calc_censo_nmr_status.value = '<span style="color:#d32f2f;">Select a .xyz file first.</span>'
+            return
+        if selected_path.suffix.lower() != '.xyz':
+            calc_censo_nmr_status.value = '<span style="color:#d32f2f;">Selected file is not a .xyz file.</span>'
+            return
+
+        pal = max(1, int(calc_censo_nmr_pal.value or 12))
+        maxcore = max(100, int(calc_censo_nmr_maxcore.value or 3000))
+        time_limit = calc_censo_nmr_time.value.strip() or '12:00:00'
+        solvent = str(calc_censo_nmr_solvent.value or 'chcl3').strip().lower() or 'chcl3'
+        charge = int(calc_censo_nmr_charge.value or 0)
+        multiplicity = max(1, int(calc_censo_nmr_multiplicity.value or 1))
+        mhz = max(50, int(calc_censo_nmr_mhz.value or 400))
+
+        job_dir = _calc_next_available_dir(selected_path.parent, f'{selected_path.stem}_CENSO_ANMR')
+        job_name = job_dir.name
+        try:
+            job_dir.mkdir(parents=True, exist_ok=False)
+            source_copy = job_dir / selected_path.name
+            shutil.copy2(selected_path, source_copy)
+        except Exception as exc:
+            calc_censo_nmr_status.value = (
+                f'<span style="color:#d32f2f;">Failed to prepare workflow folder: {_html.escape(str(exc))}</span>'
+            )
+            return
+
+        try:
+            result = ctx.backend.submit_delfin(
+                job_dir=job_dir,
+                job_name=job_name,
+                mode='censo_anmr',
+                time_limit=time_limit,
+                pal=pal,
+                maxcore=maxcore,
+                extra_env={
+                    'DELFIN_XYZ_FILE': str(source_copy),
+                    'DELFIN_WORKFLOW_LABEL': job_name,
+                    'DELFIN_CENSO_NMR_SOLVENT': solvent,
+                    'DELFIN_CENSO_NMR_CHARGE': str(charge),
+                    'DELFIN_CENSO_NMR_MULTIPLICITY': str(multiplicity),
+                    'DELFIN_CENSO_NMR_MHZ': str(mhz),
+                },
+            )
+        except Exception as exc:
+            calc_censo_nmr_status.value = (
+                f'<span style="color:#d32f2f;">Submit error: {_html.escape(str(exc))}</span>'
+            )
+            return
+
+        if result.returncode == 0:
+            job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+            calc_censo_nmr_status.value = (
+                f'<span style="color:#2e7d32;">Submitted <code>{_html.escape(job_name)}</code>'
+                f' (ID: {_html.escape(job_id)}) for <code>{_html.escape(solvent)}</code>'
+                f' ensemble 1H NMR in <code>{_html.escape(job_dir.name)}</code>.</span>'
+            )
+            _calc_show_censo_nmr_panel(False)
+            return
+
+        msg = result.stderr or result.stdout or 'Unknown error'
+        calc_censo_nmr_status.value = f'<span style="color:#d32f2f;">{_html.escape(msg)}</span>'
 
     def _calc_render_traj_plot():
         selected_path = _calc_get_selected_path()
@@ -5495,6 +5634,7 @@ def create_tab(ctx):
             calc_recalc_toolbar.layout.display = 'none'
             calc_xyz_workflow_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
+            calc_censo_nmr_panel.layout.display = 'none'
             return
         show_mol = calc_view_toggle.value
         if show_mol:
@@ -5506,6 +5646,7 @@ def create_tab(ctx):
             calc_recalc_toolbar.layout.display = 'none'
             calc_xyz_workflow_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
+            calc_censo_nmr_panel.layout.display = 'none'
         else:
             _calc_stop_xyz_playback(update_button=True)
             calc_mol_container.layout.display = 'none'
@@ -5529,6 +5670,7 @@ def create_tab(ctx):
                 calc_recalc_toolbar.layout.display = 'none'
                 calc_xyz_workflow_toolbar.layout.display = 'none'
             calc_nmr_panel.layout.display = 'none'
+            calc_censo_nmr_panel.layout.display = 'none'
 
     def calc_set_message(message):
         calc_content_area.value = (
@@ -7757,7 +7899,7 @@ def create_tab(ctx):
                 calc_options_dropdown.layout.display = 'block'
                 return
         if selected and sel_lower.endswith('.xyz'):
-            xyz_options = ['(Options)', 'Build Batch from XYZ', 'Calc NMR']
+            xyz_options = ['(Options)', 'Build Batch from XYZ', 'Calc NMR', 'Calc CENSO/ANMR']
             selected_path = _calc_selected_item_path()
             if selected_path and _calc_is_single_structure_xyz(selected_path):
                 xyz_options.extend(['hyperpol_xtb', 'tadf_xtb'])
@@ -8496,6 +8638,8 @@ def create_tab(ctx):
             _calc_show_mo_plot_panel(False)
         if change['new'] != 'Calc NMR':
             _calc_show_nmr_panel(False)
+        if change['new'] != 'Calc CENSO/ANMR':
+            _calc_show_censo_nmr_panel(False)
         if change['new'] not in ('hyperpol_xtb', 'tadf_xtb'):
             calc_reset_xyz_workflow_state()
         if change['new'] == 'Override':
@@ -8663,6 +8807,19 @@ def create_tab(ctx):
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
             _calc_show_nmr_panel(True)
+            calc_content_area.layout.display = 'block'
+        elif change['new'] == 'Calc CENSO/ANMR':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(False)
+            _calc_show_mo_plot_panel(False)
+            _calc_show_censo_nmr_panel(True)
             calc_content_area.layout.display = 'block'
         elif change['new'] == 'RMSD':
             calc_override_input.layout.display = 'none'
@@ -11187,6 +11344,7 @@ def create_tab(ctx):
     _calc_update_mo_spin_button_styles()
     calc_mo_plot_btn.on_click(calc_on_mo_plot)
     calc_nmr_submit_btn.on_click(_calc_on_nmr_submit)
+    calc_censo_nmr_submit_btn.on_click(_calc_on_censo_nmr_submit)
     calc_report_btn.on_click(calc_on_report)
     disable_spellcheck(ctx, class_name='calc-search-input')
     disable_spellcheck(ctx, class_name='calc-table-preset-name')
@@ -12560,6 +12718,7 @@ def create_tab(ctx):
         calc_recalc_toolbar,
         calc_xyz_workflow_toolbar,
         calc_nmr_panel,
+        calc_censo_nmr_panel,
         calc_content_toolbar,
         calc_chunk_hidden_row,
         calc_override_status,

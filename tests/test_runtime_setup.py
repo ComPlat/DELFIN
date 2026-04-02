@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 from delfin.runtime_setup import (
@@ -14,6 +15,7 @@ from delfin.runtime_setup import (
     resolve_submit_templates_dir,
     stage_packaged_qm_tools,
 )
+import delfin.runtime_setup as runtime_setup
 
 
 def test_resolve_backend_choice_prefers_explicit_value():
@@ -40,6 +42,12 @@ def test_resolve_orca_base_prefers_backend_specific_setting(tmp_path):
     assert resolve_orca_base(None, runtime_settings, "slurm", auto_candidates=[]) == str(
         tmp_path / "slurm_orca"
     )
+
+
+def test_resolve_orca_base_has_no_hardcoded_local_fallback_by_default(monkeypatch):
+    monkeypatch.setattr(runtime_setup, "discover_orca_installations", lambda search_roots=None: [])
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert resolve_orca_base(None, {}, "local", auto_candidates=[]) == ""
 
 
 def test_packaged_submit_templates_dir_contains_required_scripts():

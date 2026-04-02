@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import which
@@ -80,6 +81,27 @@ _TOOL_SPECS: tuple[ToolSpec, ...] = (
         system_dirs=("/opt/bwhpc/common/chem/crest", "/opt/bwhpc/common/chem/xtb"),
         module_patterns=("chem/crest", "crest"),
         module_env_hints=("CREST_HOME", "CREST_PATH", "EBROOTCREST"),
+    ),
+    ToolSpec(
+        name="censo",
+        which_targets=("censo",),
+        prefer_qm_tools=False,
+    ),
+    ToolSpec(
+        name="anmr",
+        which_targets=("anmr",),
+        prefer_qm_tools=False,
+    ),
+    ToolSpec(
+        name="c2anmr",
+        which_targets=("c2anmr",),
+        prefer_qm_tools=False,
+    ),
+    ToolSpec(
+        name="nmrplot",
+        which_targets=("nmrplot", "nmrplot.py"),
+        aliases=("nmrplot.py",),
+        prefer_qm_tools=False,
     ),
     ToolSpec(
         name="std2",
@@ -274,6 +296,12 @@ def _iter_tool_candidates(spec: ToolSpec) -> Iterable[tuple[str, str]]:
         if value:
             for candidate in _candidate_variants(value, spec):
                 yield candidate, f"env:{key}"
+
+    active_bin_dir = Path(sys.executable).resolve().parent
+    for target in spec.which_targets or (spec.name,):
+        active_candidate = active_bin_dir / target
+        if active_candidate.exists():
+            yield str(active_candidate), "active_env"
 
     for target in spec.which_targets:
         located = which(target)

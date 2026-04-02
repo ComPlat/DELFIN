@@ -165,7 +165,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             runtime_settings,
             'local',
             auto_candidates=[],
-            local_default='/opt/orca',
+            local_default='',
         )
         orca_candidates = []
         apply_runtime_environment(
