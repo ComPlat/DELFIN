@@ -8,8 +8,14 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
+
+
+_ACTIVE_CHILD = None
+_ACTIVE_CHILD_LOCK = threading.RLock()
 
 
 def _job_id() -> str:
@@ -20,8 +26,83 @@ def _write_exit_code(code: int) -> None:
     (Path.cwd() / f'.exit_code_{_job_id()}').write_text(f'{int(code)}\n', encoding='utf-8')
 
 
+def _set_active_child(proc) -> None:
+    global _ACTIVE_CHILD
+    with _ACTIVE_CHILD_LOCK:
+        _ACTIVE_CHILD = proc
+
+
+def _clear_active_child(proc=None) -> None:
+    global _ACTIVE_CHILD
+    with _ACTIVE_CHILD_LOCK:
+        if proc is None or _ACTIVE_CHILD is proc:
+            _ACTIVE_CHILD = None
+
+
+def _signal_active_child(signum: int, *, kill_after_seconds: float = 10.0) -> None:
+    with _ACTIVE_CHILD_LOCK:
+        proc = _ACTIVE_CHILD
+    if proc is None:
+        return
+    try:
+        if proc.poll() is not None:
+            _clear_active_child(proc)
+            return
+    except Exception:
+        return
+
+    pgid = None
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        pgid = None
+
+    delivered = False
+    if pgid and pgid > 0:
+        try:
+            os.killpg(pgid, signum)
+            delivered = True
+        except ProcessLookupError:
+            _clear_active_child(proc)
+            return
+        except Exception:
+            pass
+    if not delivered:
+        try:
+            proc.send_signal(signum)
+            delivered = True
+        except ProcessLookupError:
+            _clear_active_child(proc)
+            return
+        except Exception:
+            pass
+
+    deadline = time.time() + max(0.0, float(kill_after_seconds))
+    while time.time() < deadline:
+        try:
+            if proc.poll() is not None:
+                _clear_active_child(proc)
+                return
+        except Exception:
+            break
+        time.sleep(0.1)
+
+    try:
+        if proc.poll() is None:
+            if pgid and pgid > 0:
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                proc.kill()
+            proc.wait(timeout=5)
+    except Exception:
+        pass
+    finally:
+        _clear_active_child(proc)
+
+
 def _handle_termination(signum, _frame):
     print(f'Received signal {signum}; stopping local DELFIN job.')
+    _signal_active_child(signum)
     _write_exit_code(124)
     raise SystemExit(124)
 
@@ -70,7 +151,16 @@ def _print_job_banner(mode: str, job_name: str, inp_file: str) -> None:
 
 
 def _run_command(cmd: list[str], *, cwd: Path | None = None) -> int:
-    return subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=False).returncode
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        start_new_session=True,
+    )
+    _set_active_child(proc)
+    try:
+        return proc.wait()
+    finally:
+        _clear_active_child(proc)
 
 
 def _run_and_tee(cmd: list[str], output_path: Path, *, cwd: Path | None = None) -> int:
@@ -82,12 +172,17 @@ def _run_and_tee(cmd: list[str], output_path: Path, *, cwd: Path | None = None) 
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            start_new_session=True,
         )
+        _set_active_child(proc)
         assert proc.stdout is not None
-        for line in proc.stdout:
-            sys.stdout.write(line)
-            handle.write(line)
-        return proc.wait()
+        try:
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                handle.write(line)
+            return proc.wait()
+        finally:
+            _clear_active_child(proc)
 
 
 def _detect_mode(mode: str) -> str:
@@ -293,6 +388,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         exit_code = _run_mode(mode)
         return int(exit_code)
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else 1
+        raise
     finally:
         _write_exit_code(int(exit_code))
 
