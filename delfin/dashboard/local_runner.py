@@ -241,6 +241,8 @@ def _run_mode(mode: str) -> int:
         print(f'Starting DELFIN --recalc --occupier-override {override}...')
         return _run_command(delfin_cmd + ['--recalc', '--occupier-override', override])
     if resolved_mode == 'orca':
+        from delfin.orca import run_orca
+
         if not inp_file:
             inp_candidates = sorted(Path.cwd().glob('*.inp'))
             inp_file = inp_candidates[0].name if inp_candidates else ''
@@ -256,21 +258,8 @@ def _run_mode(mode: str) -> int:
             return 1
         out_file = f'{Path(inp_file).stem}.out'
         print(f'Starting ORCA: {inp_file} -> {out_file}')
-        with Path(out_file).open('w', encoding='utf-8') as handle:
-            proc = subprocess.run([orca_bin, inp_file], stdout=handle, stderr=subprocess.STDOUT, check=False)
-        # Post-processing: generate NMR spectrum if this was an NMR job
-        if proc.returncode == 0:
-            try:
-                inp_text = Path(inp_file).read_text(encoding='utf-8', errors='replace')
-                if 'EPRNMR' in inp_text.upper():
-                    print(f'NMR job detected — generating spectrum from {out_file}')
-                    _run_command([
-                        sys.executable, '-m', 'delfin.cli_nmr_report',
-                        out_file, '--table',
-                    ])
-            except Exception as exc:
-                print(f'NMR post-processing skipped: {exc}')
-        return proc.returncode
+        ok = run_orca(inp_file, out_file)
+        return 0 if ok else 1
     if resolved_mode == 'build':
         print('Starting delfin-build (complex build-up)...')
         print(f'  Multiplicity: {build_mult}')
