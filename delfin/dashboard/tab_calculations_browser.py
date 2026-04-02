@@ -1462,7 +1462,7 @@ def create_tab(ctx):
         layout=widgets.Layout(width='160px', height='26px'),
     )
     calc_nmr_time = widgets.Text(
-        value='24:00:00', description='JobTime',
+        value='03:00:00', description='JobTime',
         layout=widgets.Layout(width='200px', height='26px'),
     )
     calc_nmr_submit_btn = widgets.Button(
@@ -4379,7 +4379,7 @@ def create_tab(ctx):
 
         pal = max(1, int(calc_nmr_pal.value or 12))
         maxcore = max(100, int(calc_nmr_maxcore.value or 3000))
-        time_limit = calc_nmr_time.value.strip() or '24:00:00'
+        time_limit = calc_nmr_time.value.strip() or '03:00:00'
 
         # Create NMR subfolder
         nmr_dir = _calc_next_available_dir(selected_path.parent, f'{selected_path.stem}_NMR')
