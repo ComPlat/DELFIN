@@ -93,7 +93,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     )
     assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
     assert captured["env"]["DELFIN_VOILA_ROOT_DIR"] == str(root_dir.resolve())
-    assert "--VoilaConfiguration.preheat_kernel=True" in captured["cmd"]
+    assert "--VoilaConfiguration.preheat_kernel=False" in captured["cmd"]
 
     stdout = capsys.readouterr().out
     assert "Starting DELFIN Dashboard on http://0.0.0.0:9001" in stdout
@@ -192,9 +192,11 @@ def test_main_defaults_to_open_browser_in_vscode(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
+    prepared_env = {"TERM_PROGRAM": "vscode"}
+
     def fake_prepare_voila_env(open_browser):
         observed["open_browser"] = open_browser
-        return {}
+        return prepared_env
 
     browser_urls = []
 
