@@ -1342,13 +1342,17 @@ def create_tab(ctx):
                 if not token:
                     continue
                 if '=' in token:
-                    key_candidate = token.split('=', 1)[0].strip()
-                    # Valid key: word-chars only; distinguish from SMILES atoms
-                    # (1-2 char uppercase like O, Cl, Fe look like elements → SMILES)
-                    if (key_candidate.replace('_', '').isalnum()
-                            and (key_candidate[:1].islower()
-                                 or len(key_candidate) > 2
-                                 or '_' in key_candidate)):
+                    # Distinguish key=value pairs from SMILES containing '='.
+                    # Use RDKit: if the whole token parses as a molecule it is
+                    # SMILES, not a key=value pair.
+                    _is_smi = False
+                    try:
+                        from rdkit import Chem
+                        _mol = Chem.MolFromSmiles(token, sanitize=False)
+                        _is_smi = _mol is not None and _mol.GetNumAtoms() > 0
+                    except Exception:
+                        _is_smi = False
+                    if not _is_smi:
                         key, value = token.split('=', 1)
                         key = key.strip()
                         value = value.strip()
