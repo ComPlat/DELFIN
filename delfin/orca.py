@@ -59,6 +59,53 @@ ORCA_PLOT_INPUT_TEMPLATE = (
 )
 
 
+def _is_nmr_input_file(input_path: Path) -> bool:
+    try:
+        return "EPRNMR" in input_path.read_text(encoding="utf-8", errors="replace").upper()
+    except Exception:
+        logger.exception("Failed to inspect ORCA input for NMR markers: %s", input_path)
+        return False
+
+
+def _auto_generate_nmr_report(input_path: Path, output_path: Path) -> bool:
+    if not _is_nmr_input_file(input_path):
+        return True
+
+    png_path = output_path.parent / f"NMR_{output_path.stem}.png"
+    if png_path.is_file():
+        logger.info("NMR report already present: %s", png_path)
+        return True
+
+    if not output_path.is_file():
+        logger.error("Cannot generate NMR report; ORCA output is missing: %s", output_path)
+        return False
+
+    try:
+        os.environ.setdefault("MPLBACKEND", "Agg")
+        from delfin.nmr_spectrum import parse_nmr_orca
+        from delfin.reporting.nmr_report import create_nmr_report
+
+        result = parse_nmr_orca(output_path)
+        if not result.h_shieldings:
+            logger.error("Automatic NMR report generation found no H shieldings in %s", output_path)
+            return False
+
+        title = output_path.stem.replace("_", " ")
+        create_nmr_report(
+            result,
+            output_png=png_path,
+            title=f"Calculated 1H NMR: {title}",
+        )
+        if not png_path.is_file():
+            logger.error("Automatic NMR report generation finished without PNG: %s", png_path)
+            return False
+        logger.info("NMR report saved to %s", png_path)
+        return True
+    except Exception:
+        logger.exception("Automatic NMR report generation failed for %s", output_path)
+        return False
+
+
 def _normalize_override_target(raw: str) -> str:
     """Normalize override target names (base labels or input stems)."""
     text = str(raw or "").strip().strip('"').strip("'")
@@ -1311,7 +1358,7 @@ def run_orca(
             "[smart_recalc] Skipping ORCA for '%s'; inp+deps unchanged and output complete.",
             input_file_path,
         )
-        return True
+        return _auto_generate_nmr_report(input_path, output_path)
 
     # Legacy completed runs may predate the .fprint sidecar. Bootstrap it here so
     # recalc can resume deterministically for xTB/GOAT/GUPPY and regular ORCA jobs.
@@ -1332,7 +1379,7 @@ def run_orca(
             "[smart_recalc] Skipping ORCA for '%s'; complete output found and missing fingerprint bootstrapped.",
             input_file_path,
         )
-        return True
+        return _auto_generate_nmr_report(input_path, output_path)
 
     # Isolated execution: run ORCA in a separate subdirectory to avoid
     # race conditions on parallel filesystems (Lustre)
@@ -1347,7 +1394,8 @@ def run_orca(
         )
         if result:
             smart_recalc.store_fingerprint(input_path, extra_deps=extra_deps)
-        return result
+            return _auto_generate_nmr_report(input_path, output_path)
+        return False
 
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1366,7 +1414,7 @@ def run_orca(
     ):
         logger.info(f"ORCA run successful for '{input_file_path}'")
         smart_recalc.store_fingerprint(input_path, extra_deps=extra_deps)
-        return True
+        return _auto_generate_nmr_report(input_path, output_path)
     return False
 
 

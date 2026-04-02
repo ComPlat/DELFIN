@@ -80,20 +80,18 @@ class LocalJobBackend(JobBackend):
         return max(1.0, float(self.max_cores) * float(self.live_cpu_target_factor))
 
     def _has_launch_target(self):
-        return self.run_script.exists() or importlib.util.find_spec(
-            'delfin.dashboard.local_runner'
-        ) is not None
+        return importlib.util.find_spec('delfin.dashboard.local_runner') is not None or self.run_script.exists()
 
     def _build_launch_command(self, timeout_secs):
-        if self.run_script.exists():
-            return ['timeout', str(timeout_secs), 'bash', str(self.run_script)]
-        return [
-            'timeout',
-            str(timeout_secs),
-            sys.executable,
-            '-m',
-            'delfin.dashboard.local_runner',
-        ]
+        if importlib.util.find_spec('delfin.dashboard.local_runner') is not None:
+            return [
+                'timeout',
+                str(timeout_secs),
+                sys.executable,
+                '-m',
+                'delfin.dashboard.local_runner',
+            ]
+        return ['timeout', str(timeout_secs), 'bash', str(self.run_script)]
 
     # ------------------------------------------------------------------
     # Persistence

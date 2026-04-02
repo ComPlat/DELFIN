@@ -54,7 +54,7 @@ def test_local_backend_falls_back_to_python_runner_when_script_is_missing(monkey
     ]
 
 
-def test_local_backend_prefers_explicit_run_script_when_present(monkeypatch, tmp_path):
+def test_local_backend_prefers_python_runner_even_when_run_script_is_present(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
     run_script = tmp_path / "run_local.sh"
     run_script.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
@@ -64,8 +64,9 @@ def test_local_backend_prefers_explicit_run_script_when_present(monkeypatch, tmp
     assert backend._build_launch_command(60) == [
         "timeout",
         "60",
-        "bash",
-        str(run_script),
+        sys.executable,
+        "-m",
+        "delfin.dashboard.local_runner",
     ]
 
 

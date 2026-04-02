@@ -85,3 +85,41 @@ def test_handle_termination_forwards_signal_and_exits(monkeypatch):
 
     assert forwarded == [signal.SIGTERM]
     assert written == [124]
+
+
+def test_run_mode_orca_triggers_nmr_postprocess(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    inp_path = tmp_path / "mol_NMR.inp"
+    inp_path.write_text("! test\n%EPRNMR\nEND\n", encoding="utf-8")
+
+    monkeypatch.setenv("DELFIN_INP_FILE", inp_path.name)
+    monkeypatch.setattr(_MODULE, "_resolve_orca_bin", lambda: "/opt/orca/orca")
+    run_calls = []
+    monkeypatch.setattr(
+        "delfin.orca.run_orca",
+        lambda inp_file, out_file: run_calls.append((inp_file, out_file)) or True,
+    )
+
+    rc = _MODULE._run_mode("orca")
+
+    assert rc == 0
+    assert run_calls == [(inp_path.name, "mol_NMR.out")]
+
+
+def test_run_mode_orca_skips_nmr_postprocess_for_non_nmr_input(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    inp_path = tmp_path / "plain.inp"
+    inp_path.write_text("! test\n* xyz 0 1\nH 0 0 0\n*\n", encoding="utf-8")
+
+    monkeypatch.setenv("DELFIN_INP_FILE", inp_path.name)
+    monkeypatch.setattr(_MODULE, "_resolve_orca_bin", lambda: "/opt/orca/orca")
+    run_calls = []
+    monkeypatch.setattr(
+        "delfin.orca.run_orca",
+        lambda inp_file, out_file: run_calls.append((inp_file, out_file)) or True,
+    )
+
+    rc = _MODULE._run_mode("orca")
+
+    assert rc == 0
+    assert run_calls == [(inp_path.name, "plain.out")]
