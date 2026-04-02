@@ -20,6 +20,17 @@ import time
 from pathlib import Path
 
 
+def _get_voila_static_root() -> str | None:
+    """Return the installed Voilà static root when available."""
+    spec = importlib.util.find_spec("voila")
+    if spec is None or not spec.origin:
+        return None
+    static_root = Path(spec.origin).resolve().parent / "static"
+    if static_root.is_dir():
+        return str(static_root)
+    return None
+
+
 def _find_notebook() -> str:
     """Locate the dashboard notebook, preferring the checkout copy."""
     search_roots = [Path.cwd(), *Path.cwd().parents, Path.home()]
@@ -325,7 +336,13 @@ def main(argv=None):
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
         "--Voila.tornado_settings=disable_check_xsrf=True",
+        "--ServerApp.websocket_ping_interval=30000",
+        "--ServerApp.websocket_ping_timeout=30000",
     ]
+
+    voila_static_root = _get_voila_static_root()
+    if voila_static_root:
+        cmd.append(f"--Voila.static_root={voila_static_root}")
 
     if open_browser:
         cmd.append("--Voila.open_browser=True")

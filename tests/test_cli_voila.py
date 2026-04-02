@@ -60,6 +60,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
     monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
+    monkeypatch.setattr(cli_voila, "_get_voila_static_root", lambda: "/tmp/voila-static")
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: False)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
@@ -92,6 +93,9 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
         in captured["cmd"]
     )
     assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.websocket_ping_interval=30000" in captured["cmd"]
+    assert "--ServerApp.websocket_ping_timeout=30000" in captured["cmd"]
+    assert "--Voila.static_root=/tmp/voila-static" in captured["cmd"]
     assert captured["env"]["DELFIN_VOILA_ROOT_DIR"] == str(root_dir.resolve())
     assert "--VoilaConfiguration.preheat_kernel=False" in captured["cmd"]
 
@@ -141,6 +145,7 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
     monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
+    monkeypatch.setattr(cli_voila, "_get_voila_static_root", lambda: "/tmp/voila-static")
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: False)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
@@ -160,6 +165,9 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
     assert "--no-browser" in captured["cmd"]
     assert "--Voila.ip=0.0.0.0" in captured["cmd"]
     assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.websocket_ping_interval=30000" in captured["cmd"]
+    assert "--ServerApp.websocket_ping_timeout=30000" in captured["cmd"]
+    assert "--Voila.static_root=/tmp/voila-static" in captured["cmd"]
     assert "--Voila.open_browser=True" not in captured["cmd"]
 
 
@@ -192,6 +200,7 @@ def test_main_defaults_to_open_browser_in_vscode(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
+    monkeypatch.setattr(cli_voila, "_get_voila_static_root", lambda: "/tmp/voila-static")
     prepared_env = {"TERM_PROGRAM": "vscode"}
 
     def fake_prepare_voila_env(open_browser):
@@ -254,6 +263,7 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
     monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
+    monkeypatch.setattr(cli_voila, "_get_voila_static_root", lambda: "/tmp/voila-static")
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
     def fake_popen(cmd, env):
@@ -270,4 +280,7 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
 
     assert "--Voila.open_browser=True" in captured["cmd"]
     assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.websocket_ping_interval=30000" in captured["cmd"]
+    assert "--ServerApp.websocket_ping_timeout=30000" in captured["cmd"]
+    assert "--Voila.static_root=/tmp/voila-static" in captured["cmd"]
     assert "--no-browser" not in captured["cmd"]
