@@ -308,6 +308,83 @@ def _looks_like_xyz(lines: List[str]) -> bool:
         return False
 
 
+def _sum_atomic_numbers_from_smiles(smiles: str) -> Optional[int]:
+    """Return the neutral electron count implied by a SMILES atom list.
+
+    The count is simply the sum of atomic numbers of all parsed atoms and is
+    therefore independent of any formal charge annotations. This avoids
+    expensive 3D conversion when a single-line SMILES is used as DELFIN input.
+    """
+    text = str(smiles or "").strip()
+    if not text:
+        return None
+
+    try:
+        from rdkit import Chem
+
+        params = Chem.SmilesParserParams()
+        params.sanitize = False
+        params.removeHs = False
+        params.strictParsing = False
+        mol = Chem.MolFromSmiles(text, params)
+        if mol is not None:
+            total = sum(int(atom.GetAtomicNum()) for atom in mol.GetAtoms())
+            return total if total > 0 else None
+    except Exception:
+        pass
+
+    total = 0
+    i = 0
+    n = len(text)
+    organic_subset = {
+        "b": "B",
+        "c": "C",
+        "n": "N",
+        "o": "O",
+        "p": "P",
+        "s": "S",
+    }
+    two_char = {"Cl", "Br", "Si", "Na", "Li", "Al", "Ca", "Sc", "Ti", "Cr", "Mn", "Fe",
+                "Co", "Ni", "Cu", "Zn", "Ga", "Ge", "As", "Se", "Kr", "Rb", "Sr", "Zr",
+                "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Sb", "Te",
+                "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb",
+                "Dy", "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "Re", "Os", "Ir", "Pt",
+                "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th",
+                "Pa", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm", "Md", "No", "Lr",
+                "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn", "Nh", "Fl", "Mc",
+                "Lv", "Ts", "Og"}
+
+    while i < n:
+        ch = text[i]
+        if ch == "[":
+            end = text.find("]", i + 1)
+            if end == -1:
+                break
+            token = text[i + 1:end]
+            m = re.match(r"^([A-Z][a-z]?|[cnopsb])", token)
+            if m:
+                sym = m.group(1)
+                sym = organic_subset.get(sym, sym)
+                total += _ATOM_ELECTRONS.get(sym, 0)
+            i = end + 1
+            continue
+        if ch.isupper():
+            candidate = text[i:i + 2]
+            if candidate in two_char:
+                total += _ATOM_ELECTRONS.get(candidate, 0)
+                i += 2
+                continue
+            total += _ATOM_ELECTRONS.get(ch, 0)
+        elif ch in organic_subset:
+            total += _ATOM_ELECTRONS.get(organic_subset[ch], 0)
+        i += 1
+
+    if total > 0:
+        return total
+
+    return None
+
+
 def calculate_total_electrons_txt(control_file_path: str) -> Optional[Tuple[int, int]]:
     """Calculate total electron count and suggest spin multiplicity.
 
@@ -359,19 +436,32 @@ def calculate_total_electrons_txt(control_file_path: str) -> Optional[Tuple[int,
     # Check if input is SMILES (simple heuristic: single line = SMILES)
     non_empty_lines = [l for l in lines if l.strip()]
     if len(non_empty_lines) == 1:
-        try:
-            from delfin.smiles_converter import smiles_to_xyz
-            logger.info(f"Single line detected in {input_file_path.name}, treating as SMILES")
-            xyz_content, error = smiles_to_xyz(file_content.strip())
-            if error:
-                logger.warning(f"SMILES conversion failed: {error}")
-            elif xyz_content:
-                lines = xyz_content.splitlines(keepends=True)
-                logger.debug("Successfully converted SMILES to XYZ for electron counting")
-        except ImportError:
-            logger.warning("SMILES converter not available, cannot convert single-line input")
-        except Exception as e:
-            logger.warning(f"SMILES conversion failed: {e}")
+        logger.info(f"Single line detected in {input_file_path.name}, treating as SMILES")
+
+        # Fast path for DELFIN workflows that already normalized SMILES to start.txt.
+        start_path = input_file_path.parent / "start.txt"
+        if start_path.exists():
+            try:
+                lines = start_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+                logger.debug("Using existing start.txt for electron counting")
+            except Exception as e:
+                logger.warning(f"Could not read start.txt for electron counting: {e}")
+        else:
+            smiles_electrons = _sum_atomic_numbers_from_smiles(file_content.strip())
+            if smiles_electrons is not None:
+                total_electrons_actual = smiles_electrons - charge
+                multiplicity_guess = 1 if (total_electrons_actual % 2 == 0) else 2
+                logger.debug(
+                    "Electron count from SMILES: neutral=%d, charge=%d, actual=%d, multiplicity=%d",
+                    smiles_electrons,
+                    charge,
+                    total_electrons_actual,
+                    multiplicity_guess,
+                )
+                return smiles_electrons, multiplicity_guess
+            logger.warning(
+                "Could not derive electron count directly from SMILES; falling back to line-based parsing."
+            )
 
     # If XYZ: skip first two lines (natoms + comment)
     coord_lines = lines[2:] if _looks_like_xyz(lines) else lines[:]
