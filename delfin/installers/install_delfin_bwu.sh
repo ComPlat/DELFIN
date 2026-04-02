@@ -193,7 +193,7 @@ if not runtime["slurm"].get("orca_base"):
     runtime["slurm"]["orca_base"] = str(Path("$ORCA_DIR").expanduser())
 if not runtime["slurm"].get("submit_templates_dir"):
     runtime["slurm"]["submit_templates_dir"] = str(
-        Path("$DELFIN_REPO/examples/example_Job_Submission_Scripts/BwUniCluster/submit_sh").expanduser()
+        Path("$DELFIN_REPO/delfin/submit_templates").expanduser()
     )
 if not runtime["slurm"].get("profile"):
     runtime["slurm"]["profile"] = "bwunicluster3"

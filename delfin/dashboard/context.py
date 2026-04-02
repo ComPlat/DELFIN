@@ -41,9 +41,6 @@ class DashboardContext:
     # SLURM submit templates directory (BwUni only)
     submit_templates_dir: Optional[Path] = None
 
-    # Run script for local backend
-    run_script: Optional[Path] = None
-
     # Shared widgets (created by create_dashboard)
     js_output: widgets.Output = field(default_factory=widgets.Output)
     busy_indicator: widgets.HTML = field(default_factory=lambda: widgets.HTML(value=''))

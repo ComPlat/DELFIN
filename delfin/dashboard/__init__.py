@@ -127,7 +127,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
         submit_templates_dir = resolve_submit_templates_dir(
             runtime_settings,
-            _find_submit_templates_dir(notebook_dir),
+            get_packaged_submit_templates_dir(),
         )
         orca_candidates = _find_orca_candidates(notebook_dir)
         auto_orca_candidates = [str(path) for path in orca_candidates]
@@ -148,16 +148,17 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
         )
 
+        slurm_profile = (runtime_settings.get('slurm', {}) or {}).get('profile', '')
         backend_obj = SlurmJobBackend(
             submit_templates_dir=submit_templates_dir,
             orca_base=orca_base,
             tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
+            slurm_profile=slurm_profile,
         )
         only_goat_template_path = _find_only_goat_template(notebook_dir)
     else:
         from .backend_local import LocalJobBackend
 
-        run_script = _find_run_script(notebook_dir)
         detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
         orca_base = resolve_orca_base(
             orca_base,
@@ -174,7 +175,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
         )
         backend_obj = LocalJobBackend(
-            run_script=run_script,
             orca_base=orca_base,
             tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
             max_cores=int((runtime_settings.get('local', {}) or {}).get('max_cores', detected_local_cores)),
@@ -208,7 +208,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         orca_candidates=[str(p) for p in orca_candidates] if orca_candidates else [],
         only_goat_template_path=only_goat_template_path,
         submit_templates_dir=getattr(backend_obj, 'submit_templates_dir', None),
-        run_script=getattr(backend_obj, 'run_script', None),
         js_output=js_output,
         busy_indicator=busy_indicator,
         busy_css=busy_css,
@@ -1078,23 +1077,6 @@ def _list_local_git_branches(repo_dir):
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
-def _find_submit_templates_dir(notebook_dir):
-    """Locate the ``submit_sh`` directory for SLURM templates."""
-    root_dir = _find_root_dir(notebook_dir)
-    candidates = []
-    if root_dir:
-        candidates.append(
-            root_dir / 'software' / 'delfin' / 'examples'
-            / 'example_Job_Submission_Scripts' / 'BwUniCluster' / 'submit_sh'
-        )
-    candidates.append(notebook_dir / 'submit_sh')
-    candidates.append(get_packaged_submit_templates_dir())
-    for p in candidates:
-        if p.exists():
-            return p
-    return candidates[0] if candidates else notebook_dir / 'submit_sh'
-
-
 def _find_orca_candidates(notebook_dir):
     """Find local and system ORCA installations visible to the dashboard."""
     root_dir = _find_root_dir(notebook_dir)
@@ -1119,29 +1101,6 @@ def _find_only_goat_template(notebook_dir):
         if p.exists():
             return p
     return candidates[0] if candidates else None
-
-
-def _find_run_script(notebook_dir):
-    """Locate ``run_local.sh`` for the local backend."""
-    candidates = [notebook_dir / 'run_local.sh', Path.cwd() / 'run_local.sh']
-    # Look in repo examples
-    repo_dir = _find_delfin_root()
-    if repo_dir:
-        candidates.append(
-            repo_dir / 'examples' / 'example_Job_Submission_Scripts'
-            / 'LocalServer' / 'run_local.sh'
-        )
-    # Look in software/delfin if installed under a root_dir
-    root_dir = _find_root_dir(notebook_dir)
-    if root_dir:
-        candidates.append(
-            root_dir / 'software' / 'delfin' / 'examples'
-            / 'example_Job_Submission_Scripts' / 'LocalServer' / 'run_local.sh'
-        )
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return notebook_dir / 'run_local.sh'
 
 
 def _build_orca_version_widget(orca_base, orca_candidates):
