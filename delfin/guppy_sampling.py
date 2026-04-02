@@ -37,8 +37,10 @@ from delfin.orca import run_orca
 from delfin.smiles_converter import (
     RDKIT_AVAILABLE,
     _fragment_topology_ok,
+    _fragment_topology_relaxed_fallback_ok,
     _no_spurious_bonds,
     _roundtrip_ring_count_ok,
+    _xyz_passes_final_geometry_checks,
     smiles_to_xyz,
     smiles_to_xyz_isomers,
     smiles_to_xyz_quick,
@@ -433,6 +435,32 @@ def _derived_output_path(base_output: Path, suffix: str) -> Path:
     return base_output.with_name(f"{base_output.name}_{suffix}")
 
 
+def _topology_checks_pass(
+    *,
+    xyz_delfin: str,
+    smiles: str,
+    mol_template,
+    stage: str,
+) -> Tuple[bool, Optional[str]]:
+    """Validate sampled topology, including the relaxed fallback used elsewhere."""
+    if not smiles:
+        return True, None
+
+    if not _fragment_topology_ok(xyz_delfin, smiles):
+        if not _fragment_topology_relaxed_fallback_ok(xyz_delfin, smiles):
+            return False, f"Topology changed: fragment mismatch after {stage}"
+        if not _xyz_passes_final_geometry_checks(xyz_delfin, mol_template):
+            return False, f"Topology changed: final geometry checks failed after {stage}"
+        logger.info("Accepting %s candidate via relaxed fragment fallback.", stage)
+
+    if not _roundtrip_ring_count_ok(xyz_delfin, smiles):
+        return False, f"Topology changed: ring count mismatch after {stage}"
+    if not _no_spurious_bonds(xyz_delfin, smiles):
+        return False, f"Topology changed: spurious bonds after {stage}"
+
+    return True, None
+
+
 def _execute_single_sampling_run(
     *,
     run_idx: int,
@@ -446,6 +474,7 @@ def _execute_single_sampling_run(
     method: str,
     workdir: Path,
     smiles: str = "",
+    mol_template=None,
 ) -> Tuple[bool, Optional[RunResult], Optional[str]]:
     """Execute one SMILES->XTB2 run and return (ok, result, error)."""
     run_dir = workdir / f"run_{run_idx:02d}"
@@ -498,12 +527,14 @@ def _execute_single_sampling_run(
     # Topology check: detect broken/formed bonds after XTB optimization
     if smiles:
         xyz_delfin = "\n".join(opt_coords[:natoms])
-        if not _fragment_topology_ok(xyz_delfin, smiles):
-            return False, None, "Topology changed: fragment mismatch after XTB"
-        if not _roundtrip_ring_count_ok(xyz_delfin, smiles):
-            return False, None, "Topology changed: ring count mismatch after XTB"
-        if not _no_spurious_bonds(xyz_delfin, smiles):
-            return False, None, "Topology changed: spurious bonds after XTB"
+        topology_ok, topology_error = _topology_checks_pass(
+            xyz_delfin=xyz_delfin,
+            smiles=smiles,
+            mol_template=mol_template,
+            stage="XTB",
+        )
+        if not topology_ok:
+            return False, None, topology_error
 
     return True, (energy, natoms, opt_coords, run_idx, start_label, start_source), None
 
@@ -519,6 +550,7 @@ def _execute_single_goat_run(
     method: str,
     workdir: Path,
     smiles: str = "",
+    mol_template=None,
 ) -> Tuple[bool, Optional[RunResult], Optional[str]]:
     """Run GOAT on one candidate and return refined geometry + energy."""
     xtb_energy, natoms, coords, run_idx, start_label, start_source = candidate
@@ -569,12 +601,14 @@ def _execute_single_goat_run(
 
     if smiles:
         xyz_delfin = "\n".join(goat_coords[:goat_natoms])
-        if not _fragment_topology_ok(xyz_delfin, smiles):
-            return False, None, "Topology changed: fragment mismatch after GOAT"
-        if not _roundtrip_ring_count_ok(xyz_delfin, smiles):
-            return False, None, "Topology changed: ring count mismatch after GOAT"
-        if not _no_spurious_bonds(xyz_delfin, smiles):
-            return False, None, "Topology changed: spurious bonds after GOAT"
+        topology_ok, topology_error = _topology_checks_pass(
+            xyz_delfin=xyz_delfin,
+            smiles=smiles,
+            mol_template=mol_template,
+            stage="GOAT",
+        )
+        if not topology_ok:
+            return False, None, topology_error
 
     base_label = start_label or start_source
     goat_label = f"{base_label} goat".strip() if base_label else "goat"
@@ -591,6 +625,7 @@ def _run_topk_goat_refinement(
     method: str,
     workdir: Path,
     smiles: str,
+    mol_template,
     topk: int,
     parallel_jobs: int,
 ) -> Tuple[List[RunResult], List[str]]:
@@ -621,6 +656,7 @@ def _run_topk_goat_refinement(
                 method=method,
                 workdir=workdir,
                 smiles=smiles,
+                mol_template=mol_template,
             )
             with results_lock:
                 if ok and result is not None:
@@ -743,6 +779,7 @@ def run_sampling(
             derived_charge,
         )
     resolved_charge = derived_charge
+    mol_template = _prepare_mol_for_embedding(smiles) if (RDKIT_AVAILABLE and smiles) else None
     prephase_parallel_jobs = max(1, min(parallel_jobs, pal))
     start_geometries = _collect_start_geometries(
         smiles,
@@ -798,6 +835,7 @@ def run_sampling(
                 method=method,
                 workdir=workdir,
                 smiles=smiles,
+                mol_template=mol_template,
             )
             with results_lock:
                 if ok and result is not None:
@@ -919,6 +957,7 @@ def run_sampling(
             method=method,
             workdir=workdir,
             smiles=smiles,
+            mol_template=mol_template,
             topk=goat_topk_resolved,
             parallel_jobs=goat_parallel,
         )
