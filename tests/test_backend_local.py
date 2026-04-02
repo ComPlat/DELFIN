@@ -304,3 +304,45 @@ def test_local_backend_live_load_bypass_respects_cpu_and_ram_guards(monkeypatch,
 
     assert changed is False
     assert started == []
+
+
+def test_local_backend_does_not_enqueue_duplicate_active_submission(monkeypatch, tmp_path):
+    monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
+    backend = _MODULE.LocalJobBackend(run_script=tmp_path / "missing.sh")
+
+    job_dir = tmp_path / "calc_job"
+    jobs_data = {
+        "_next_job_id": 1002,
+        "jobs": [
+            {
+                "job_id": 1001,
+                "name": "recalc_calc_job",
+                "mode": "delfin-recalc",
+                "status": "RUNNING",
+                "pid": 1234,
+                "pgid": 1234,
+                "job_dir": str(job_dir),
+                "inp_file": None,
+                "override": None,
+                "xyz_file": None,
+                "workflow_label": None,
+                "pal": 40,
+                "maxcore": 6000,
+            }
+        ],
+    }
+
+    monkeypatch.setattr(backend, "_load_jobs", lambda: jobs_data)
+    saves = []
+    monkeypatch.setattr(backend, "_save_jobs", lambda data: saves.append(data.copy()))
+    monkeypatch.setattr(backend, "_list_processes", lambda: [])
+    monkeypatch.setattr(backend, "_update_job_status", lambda job, **_kwargs: job)
+    start_calls = []
+    monkeypatch.setattr(backend, "_try_start_pending_jobs", lambda: start_calls.append(True))
+
+    result = backend.submit_delfin(job_dir, "recalc_calc_job", mode="delfin-recalc")
+
+    assert result.returncode == 0
+    assert "already active as 1001" in result.stdout
+    assert len(jobs_data["jobs"]) == 1
+    assert start_calls == []

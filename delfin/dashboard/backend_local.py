@@ -213,6 +213,25 @@ class LocalJobBackend(JobBackend):
             job['status'] = 'FAILED'
         return job
 
+    def _same_submission_target(self, existing_job, *, job_dir, mode, inp_file=None,
+                                override=None, xyz_file=None, workflow_label=None):
+        """Return True when an enqueue request targets the same logical local job."""
+        if existing_job.get('mode') != mode:
+            return False
+        if str(existing_job.get('job_dir') or '') != str(job_dir):
+            return False
+
+        def _norm(value):
+            text = str(value).strip()
+            return text if text else None
+
+        return (
+            _norm(existing_job.get('inp_file')) == _norm(inp_file) and
+            _norm(existing_job.get('override')) == _norm(override) and
+            _norm(existing_job.get('xyz_file')) == _norm(xyz_file) and
+            _norm(existing_job.get('workflow_label')) == _norm(workflow_label)
+        )
+
     def _get_running_resources(self):
         data = self._load_jobs()
         total_cores = 0
@@ -399,6 +418,34 @@ class LocalJobBackend(JobBackend):
 
         with self._lock:
             data = self._load_jobs()
+            process_table = self._list_processes()
+            changed = False
+            for job in data.get('jobs', []):
+                if job.get('status') == 'RUNNING':
+                    old_status = job['status']
+                    self._update_job_status(job, process_table=process_table)
+                    if job['status'] != old_status:
+                        changed = True
+
+            for job in data.get('jobs', []):
+                if job.get('status') not in {'PENDING', 'RUNNING'}:
+                    continue
+                if self._same_submission_target(
+                    job,
+                    job_dir=job_dir,
+                    mode=mode,
+                    inp_file=inp_file,
+                    override=override,
+                    xyz_file=xyz_file,
+                    workflow_label=workflow_label,
+                ):
+                    if changed:
+                        self._save_jobs(data)
+                    return SubmitResult(
+                        0,
+                        stdout=f'Local job already active as {job["job_id"]} ({job["status"]})',
+                    )
+
             job_id = data.get(self._next_job_id_key, 1001)
             data[self._next_job_id_key] = job_id + 1
 
