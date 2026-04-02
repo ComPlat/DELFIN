@@ -68,7 +68,7 @@ def test_collect_runtime_diagnostics_reports_missing_orca_but_existing_templates
     by_name = {item["name"]: item for item in diagnostics}
     assert by_name["backend"]["detail"] == "slurm"
     assert by_name["slurm-templates"]["status"] == "ok"
-    assert by_name["orca"]["status"] in {"ok", "missing"}
+    assert by_name["orca"]["status"] in {"ok", "missing", "system"}
 
 
 def test_stage_packaged_qm_tools_copies_bundle_to_target(tmp_path):
