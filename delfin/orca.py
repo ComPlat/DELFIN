@@ -721,6 +721,13 @@ def _run_orca_subprocess(
     finally:
         # Ensure monitor thread is stopped
         stop_event.set()
+        if monitor_thread and monitor_thread.is_alive():
+            monitor_thread.join(timeout=1)
+        if manager and registration_token:
+            try:
+                manager.unregister_subprocess(registration_token)
+            except Exception:
+                logger.debug("Failed to unregister ORCA subprocess %s", registration_token, exc_info=True)
 
 
 def _copy_densitiesinfo(input_file_path: str, scratch_subdir: Optional[Path], working_dir: Optional[Path]) -> None:
@@ -743,13 +750,6 @@ def _copy_densitiesinfo(input_file_path: str, scratch_subdir: Optional[Path], wo
                 logger.debug("Failed to copy %s: %s", src, exc)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to copy densitiesinfo: %s", exc)
-        if monitor_thread and monitor_thread.is_alive():
-            monitor_thread.join(timeout=1)
-        if manager and registration_token:
-            try:
-                manager.unregister_subprocess(registration_token)
-            except Exception:
-                logger.debug("Failed to unregister ORCA subprocess %s", registration_token, exc_info=True)
 
 
 def _check_orca_success(output_file: str) -> bool:

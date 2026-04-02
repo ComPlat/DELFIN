@@ -1,4 +1,4 @@
-from delfin import cli_recalc, orca
+from delfin import cli_recalc, orca, smart_recalc
 
 
 def test_run_orca_wrapper_bootstraps_missing_fingerprint(monkeypatch, tmp_path):
@@ -44,3 +44,13 @@ def test_run_orca_wrapper_reruns_when_fingerprint_differs(monkeypatch, tmp_path)
 
     assert wrappers["run_orca"]("job.inp", "job.out") is True
     assert len(calls) == 1
+
+
+def test_required_orca_outputs_does_not_require_gbw_for_generic_orca_job(tmp_path):
+    inp = tmp_path / "job.inp"
+    out = tmp_path / "job.out"
+    inp.write_text("! SP\n* xyz 0 1\nH 0.0 0.0 0.0\n*\n", encoding="utf-8")
+    out.write_text("...\n****ORCA TERMINATED NORMALLY****\n", encoding="utf-8")
+
+    assert smart_recalc.required_orca_outputs(inp_path=inp, out_path=out) == []
+    assert smart_recalc.outputs_complete(inp, out) is True
