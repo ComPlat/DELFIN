@@ -4250,6 +4250,63 @@ def create_tab(ctx):
             f"}}, 80);"
         )
 
+    def _calc_run_print_nmr():
+        """Generate 1H NMR spectrum PNG from selected ORCA .out file."""
+        selected_path = _calc_get_selected_path()
+        if selected_path is None or not selected_path.exists():
+            calc_content_area.value = '<span style="color:#d32f2f;">Select a .out file first.</span>'
+            return
+        if selected_path.suffix.lower() != '.out':
+            calc_content_area.value = '<span style="color:#d32f2f;">Selected file is not a .out file.</span>'
+            return
+
+        calc_content_area.value = '<span style="color:#1565c0;">Generating NMR spectrum...</span>'
+
+        def _run():
+            try:
+                from delfin.nmr_spectrum import parse_nmr_orca
+                from delfin.reporting.nmr_report import (
+                    create_nmr_report,
+                    print_assignment_table,
+                )
+
+                result = parse_nmr_orca(selected_path)
+                if not result.h_shieldings:
+                    calc_content_area.value = (
+                        '<span style="color:#d32f2f;">No hydrogen shieldings found '
+                        'in this output file.</span>'
+                    )
+                    return
+
+                out_png = selected_path.with_name(f'NMR_{selected_path.stem}.png')
+                title = selected_path.stem.replace('_', ' ')
+                create_nmr_report(
+                    result,
+                    output_png=out_png,
+                    title=f'Calculated 1H NMR: {title}',
+                )
+
+                table_text = print_assignment_table(result)
+                table_html = _html.escape(table_text).replace('\n', '<br>')
+
+                calc_content_area.value = (
+                    f'<span style="color:#2e7d32;">NMR spectrum saved: '
+                    f'<code>{out_png.name}</code></span><br><br>'
+                    f'<img src="files/{out_png.relative_to(selected_path.parent)}" '
+                    f'style="max-width:100%;" /><br><br>'
+                    f'<pre style="font-size:11px;">{table_html}</pre>'
+                )
+            except Exception as exc:
+                import traceback as _tb
+                calc_content_area.value = (
+                    f'<span style="color:#d32f2f;">NMR generation failed: '
+                    f'{_html.escape(str(exc))}</span>'
+                    f'<pre style="font-size:10px;">{_html.escape(_tb.format_exc())}</pre>'
+                )
+
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
+
     def _calc_render_traj_plot():
         selected_path = _calc_get_selected_path()
         if selected_path is None or not selected_path.exists():
@@ -7544,7 +7601,7 @@ def create_tab(ctx):
             calc_options_dropdown.value = '(Options)'
             calc_options_dropdown.layout.display = 'block'
         elif selected and sel_lower.endswith('.out'):
-            out_options = ['(Options)', 'Print Mode', 'MO Plot']
+            out_options = ['(Options)', 'Print Mode', 'MO Plot', 'Print NMR']
             if rmsd_available:
                 out_options.append('RMSD')
             calc_options_dropdown.options = out_options
@@ -8398,6 +8455,20 @@ def create_tab(ctx):
             _calc_show_mo_plot_panel(False)
             _calc_render_traj_plot()
             calc_content_area.layout.display = 'block'
+            _calc_reset_options_dropdown()
+        elif change['new'] == 'Print NMR':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(False)
+            _calc_show_mo_plot_panel(False)
+            calc_content_area.layout.display = 'block'
+            _calc_run_print_nmr()
             _calc_reset_options_dropdown()
         elif change['new'] == 'RMSD':
             calc_override_input.layout.display = 'none'
