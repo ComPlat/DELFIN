@@ -109,7 +109,13 @@ def _looks_like_orca_job(inp_path: Path) -> bool:
 
 
 def required_orca_outputs(inp_path=None, out_path=None) -> List[Path]:
-    """Return generated ORCA artifacts required for a calculation to count as complete."""
+    """Return generated artifacts required for a calculation to count as complete.
+
+    Generic ORCA jobs only require a normal `.out` terminator marker. Extra
+    side products like `.gbw` are workflow-specific and should be enforced by
+    callers via `required_outputs` when a downstream step truly depends on
+    them. This keeps legacy completed outputs recalc-skippable.
+    """
     inp = Path(inp_path) if inp_path is not None else None
     out = Path(out_path) if out_path is not None else None
 
@@ -123,30 +129,7 @@ def required_orca_outputs(inp_path=None, out_path=None) -> List[Path]:
 
     if inp is not None and not _looks_like_orca_job(inp):
         return []
-
-    stem_path: Optional[Path] = None
-    if inp is not None:
-        try:
-            text = inp.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            text = ""
-        match = _BASE_DIRECTIVE_RE.search(text)
-        if match:
-            base_raw = (match.group(1) or match.group(2) or "").strip().strip('"').strip("'")
-            if base_raw:
-                base_path = Path(base_raw)
-                if not base_path.is_absolute():
-                    parent = out.parent if out is not None else inp.parent
-                    base_path = parent / base_path
-                stem_path = base_path
-
-    if stem_path is None:
-        if out is not None:
-            stem_path = out.with_suffix("")
-        elif inp is not None:
-            stem_path = inp.with_suffix("")
-
-    return [stem_path.with_suffix('.gbw')] if stem_path is not None else []
+    return []
 
 
 def outputs_complete(inp_path, out_path, required_outputs: Optional[Iterable] = None) -> bool:
