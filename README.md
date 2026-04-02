@@ -38,6 +38,7 @@
 - **Python 3.10 or 3.11**
 - **ORCA 6.1.1** in your `PATH` (`orca` and `orca_pltvib`) — [free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal)
 - **Optional:** `crest` and `xtb` (for CREST/xTB workflows)
+- **Optional:** `censo`, `anmr`, `c2anmr`, and `nmrplot` (for ensemble-averaged NMR workflows)
 - **Optional:** `xtb4stda`, `stda`, and `std2` plus the required `xtb4stda` runtime files (for xTB-based response/screening workflows)
 - **Optional:** Any of the 88 supported computational tools — auto-detected via PATH, installable via Dashboard
 - **Optional (Dashboard):** JupyterLab/Notebook or Voila for interactive UI usage
@@ -127,7 +128,7 @@ ctx = create_dashboard(backend="auto")
 | **ORCA Builder** | Interactive ORCA input generation with geometry preview |
 | **TURBOMOLE Builder** | Turbomole define workflow (SLURM backends) |
 | **Job Status** | Real-time queue monitoring (local/SLURM), resource usage, job cancellation |
-| **Calculations** | File browser, search, recalculation trigger, energy statistics |
+| **Calculations** | File browser, search, recalculation trigger, energy statistics, browser-launched workflows such as `Calc NMR` and `Calc ANMR` |
 | **Archive** | Archive browser with statistics |
 | **Settings** | Tool detection, per-tool Install/Update buttons, runtime configuration |
 
@@ -195,6 +196,24 @@ Fast screening of TADF candidates using semi-empirical methods:
 | **IR** | Vibrational frequencies, intensities, Lorentzian broadening, transmittance |
 | **AFP** | Combined absorption/fluorescence/phosphorescence spectrum plot |
 | **Hyperpolarizability** | Static & frequency-dependent β tensors (NLO), dipole moments |
+
+### Ensemble NMR via CREST + CENSO + ANMR
+
+DELFIN includes a browser-launched ensemble NMR workflow for `.xyz` inputs:
+
+- **`Calc NMR`**: single-structure ORCA NMR workflow
+- **`Calc ANMR`**: end-to-end ensemble workflow based on `CREST -> CENSO -> c2anmr -> ANMR`
+
+The ensemble workflow:
+
+- starts from an input `.xyz` geometry
+- performs CREST conformer sampling with `-nmr`
+- re-ranks and refines the ensemble with CENSO
+- runs ORCA-based NMR shieldings/couplings for the surviving conformers
+- builds Boltzmann-weighted ANMR spectra
+- writes `PNG`, `PDF`, `SVG`, and JSON/text summaries into the workflow folder
+
+The required helper tools (`censo`, `anmr`, `c2anmr`, `nmrplot`) are detected in DELFIN's shared runtime layer and can be installed or updated from the Dashboard `Settings` tab. When a supported analysis tool is missing, DELFIN can also auto-install it on first use in the workflow.
 
 ### SMILES→3D Structure Generation
 
@@ -330,10 +349,13 @@ Install/update buttons for pip-installable integrations are available in the Das
 [molSimplify](https://molsimplify.mit.edu/),
 [architector](https://github.com/lanl/Architector)
 
-**Analysis / Post-Processing (12):**
+**Analysis / Post-Processing (15):**
 [cclib](https://cclib.github.io/),
 [Multiwfn](http://sobereva.com/multiwfn/),
 [CENSO](https://github.com/grimme-lab/CENSO),
+[ANMR](https://xtb-docs.readthedocs.io/en/latest/CENSO_docs/censo_nmr.html),
+[c2anmr](https://xtb-docs.readthedocs.io/en/latest/CENSO_docs/censo_nmr.html),
+[nmrplot](https://xtb-docs.readthedocs.io/en/latest/CENSO_docs/censo_nmr.html),
 [morfeus](https://github.com/digital-chemistry-laboratory/morfeus),
 [nglview](https://github.com/nglviewer/nglview),
 [Packmol](https://m3g.github.io/packmol/userguide.shtml),
@@ -499,7 +521,7 @@ delfin/
   calculators.py       ← Unified ASE calculator factory (34 backends)
   mlp_tools/           ← ML potential backends with lazy loading
   ai_tools/            ← AI/ML tools registry and per-tool installers
-  analysis_tools/      ← Analysis wrappers (cclib, Packmol, Multiwfn, CENSO, morfeus)
+  analysis_tools/      ← Analysis wrappers (cclib, Packmol, Multiwfn, CENSO, ANMR, ...)
   csp_tools/           ← Crystal structure prediction (Genarris)
   runtime_setup.py     ← Auto-detection of 88 external programs
   dashboard/           ← 10-tab interactive dashboard (Voila/JupyterLab)
