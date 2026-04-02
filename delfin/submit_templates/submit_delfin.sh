@@ -146,15 +146,51 @@ trap '_handle_signal' SIGTERM SIGINT SIGHUP
 trap '_handle_early_warning' SIGUSR1
 
 # ------------------------------------------------------------------
+# Fallback NMR post-processing for ORCA jobs on SLURM.
+# If the Python runner finished successfully but the PNG is still
+# missing, generate it here before stage-out copies results back.
+# ------------------------------------------------------------------
+_postprocess_nmr_if_needed() {
+  if [ "${DELFIN_MODE:-}" != "orca" ]; then return; fi
+  local inp_file="${DELFIN_INP_FILE:-}"
+  if [ -z "$inp_file" ]; then
+    inp_file="$(find . -maxdepth 1 -type f -name '*.inp' | sort | head -n 1)"
+    inp_file="${inp_file#./}"
+  fi
+  if [ -z "$inp_file" ] || [ ! -f "$inp_file" ]; then return; fi
+  if ! grep -qi 'EPRNMR' "$inp_file"; then return; fi
+
+  local stem="${inp_file%.inp}"
+  local out_file="${stem}.out"
+  local png_file="NMR_${stem}.png"
+  if [ ! -f "$out_file" ]; then return; fi
+  if [ -f "$png_file" ]; then return; fi
+
+  echo "[nmr] Missing ${png_file}; running fallback NMR report generation"
+  "$PYTHON_BIN" -m delfin.cli_nmr_report "$out_file" --table || \
+    echo "[nmr] WARNING: fallback NMR report generation failed"
+}
+
+# ------------------------------------------------------------------
 # Run DELFIN
 # ------------------------------------------------------------------
 if [ "$WORK_DIR" = "$ORIGIN_DIR" ]; then
-  # No staging — exec directly (no trap needed)
-  exec "$PYTHON_BIN" -m delfin.dashboard.local_runner
+  # No staging - run inline so fallback NMR post-processing can still run.
+  "$PYTHON_BIN" -m delfin.dashboard.local_runner
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    _postprocess_nmr_if_needed
+  fi
+  exit "$rc"
 else
   _start_periodic_sync
   # Run in background so we can catch signals for stage-out
   "$PYTHON_BIN" -m delfin.dashboard.local_runner &
   _DELFIN_PID=$!
   wait "$_DELFIN_PID"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    _postprocess_nmr_if_needed
+  fi
+  exit "$rc"
 fi

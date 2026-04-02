@@ -207,11 +207,7 @@ case "$MODE" in
         if [ -z "$INP_FILE" ]; then
             INP_FILE=$(ls *.inp 2>/dev/null | head -1)
         fi
-        if [ -z "${ORCA_BIN:-}" ]; then
-            echo "ERROR: ORCA executable not found."
-            echo "       Set DELFIN_ORCA_BASE to a valid ORCA installation path or add ORCA to PATH."
-            EXIT_CODE=1
-        elif [ -z "$INP_FILE" ]; then
+        if [ -z "$INP_FILE" ]; then
             echo "ERROR: No .inp file found for ORCA mode"
             EXIT_CODE=1
         elif [ ! -f "$INP_FILE" ]; then
@@ -219,9 +215,8 @@ case "$MODE" in
             EXIT_CODE=1
         else
             OUT_FILE="${INP_FILE%.inp}.out"
-            echo "Starting ORCA: $INP_FILE -> $OUT_FILE"
-            echo "Using ORCA binary: $ORCA_BIN"
-            "$ORCA_BIN" "$INP_FILE" > "$OUT_FILE" 2>&1
+            echo "Starting DELFIN ORCA workflow: $INP_FILE -> $OUT_FILE"
+            "$DELFIN_BIN" run_orca "$INP_FILE" --output "$OUT_FILE"
             EXIT_CODE=$?
         fi
         ;;

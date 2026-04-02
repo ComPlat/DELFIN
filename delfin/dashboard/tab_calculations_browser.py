@@ -4382,7 +4382,7 @@ def create_tab(ctx):
         time_limit = calc_nmr_time.value.strip() or '24:00:00'
 
         # Create NMR subfolder
-        nmr_dir = _calc_next_available_dir(selected_path.parent, 'NMR')
+        nmr_dir = _calc_next_available_dir(selected_path.parent, f'{selected_path.stem}_NMR')
         job_name = nmr_dir.name
         try:
             nmr_dir.mkdir(parents=True, exist_ok=False)
