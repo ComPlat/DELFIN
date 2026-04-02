@@ -1452,6 +1452,41 @@ def create_tab(ctx):
         margin='5px 0', width='100%', overflow_x='hidden', gap='6px',
         display='none',
     ))
+    # --- Calc NMR panel widgets ---
+    calc_nmr_pal = widgets.BoundedIntText(
+        value=12, min=1, max=999, description='PAL',
+        layout=widgets.Layout(width='130px', height='26px'),
+    )
+    calc_nmr_maxcore = widgets.BoundedIntText(
+        value=3000, min=100, max=99999, description='MaxCore',
+        layout=widgets.Layout(width='160px', height='26px'),
+    )
+    calc_nmr_time = widgets.Text(
+        value='24:00:00', description='JobTime',
+        layout=widgets.Layout(width='200px', height='26px'),
+    )
+    calc_nmr_submit_btn = widgets.Button(
+        description='Submit', button_style='primary',
+        layout=widgets.Layout(width='100px', height='26px'),
+    )
+    calc_nmr_status = widgets.HTML(value='')
+    calc_nmr_panel = widgets.VBox([
+        widgets.HTML('<b>Calc NMR</b>'),
+        widgets.HTML(
+            '<span style="color:#555;">Generate ORCA 1H NMR input and submit SLURM job. '
+            'Creates an NMR/ subfolder with the .inp file.</span>'
+        ),
+        widgets.HBox(
+            [calc_nmr_pal, calc_nmr_maxcore, calc_nmr_time, calc_nmr_submit_btn],
+            layout=widgets.Layout(
+                width='100%', overflow_x='hidden', gap='8px',
+                flex_flow='row wrap', align_items='center',
+            ),
+        ),
+        calc_nmr_status,
+    ], layout=widgets.Layout(
+        display='none', margin='8px 0 8px 0', width='100%',
+    ))
     calc_chunk_hidden_row = widgets.HBox(
         [
             calc_chunk_prev_btn, calc_chunk_next_btn, calc_chunk_label,
@@ -3079,6 +3114,7 @@ def create_tab(ctx):
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
             calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_nmr_panel.layout.display = 'none'
         else:
             calc_preselect_container.layout.display = 'none'
             # Restore toolbars based on current mode.
@@ -3098,6 +3134,7 @@ def create_tab(ctx):
                 calc_content_toolbar.layout.display = 'flex'
                 calc_recalc_toolbar.layout.display = 'none'
                 calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_nmr_panel.layout.display = 'none'
 
     def _calc_preselect_prev_entry(_btn=None):
         entries = state['preselect']['entries']
@@ -4250,6 +4287,13 @@ def create_tab(ctx):
             f"}}, 80);"
         )
 
+    def _calc_show_nmr_panel(show):
+        if show:
+            calc_nmr_status.value = ''
+            calc_nmr_panel.layout.display = 'block'
+        else:
+            calc_nmr_panel.layout.display = 'none'
+
     def _calc_run_print_nmr():
         """Generate 1H NMR spectrum PNG from selected ORCA .out file."""
         selected_path = _calc_get_selected_path()
@@ -4306,6 +4350,105 @@ def create_tab(ctx):
 
         import threading
         threading.Thread(target=_run, daemon=True).start()
+
+    def _calc_on_nmr_submit(_button):
+        """Create ORCA NMR input from selected .xyz and submit SLURM job."""
+        selected_path = _calc_selected_item_path()
+        if selected_path is None or not selected_path.exists():
+            calc_nmr_status.value = '<span style="color:#d32f2f;">Select a .xyz file first.</span>'
+            return
+        if selected_path.suffix.lower() != '.xyz':
+            calc_nmr_status.value = '<span style="color:#d32f2f;">Selected file is not a .xyz file.</span>'
+            return
+
+        # Read xyz coordinates (skip first 2 lines: atom count + comment)
+        try:
+            xyz_lines = selected_path.read_text().splitlines()
+            coord_lines = xyz_lines[2:]  # skip atom count + comment
+            # Filter empty lines at the end
+            while coord_lines and not coord_lines[-1].strip():
+                coord_lines.pop()
+            if not coord_lines:
+                calc_nmr_status.value = '<span style="color:#d32f2f;">XYZ file is empty.</span>'
+                return
+        except Exception as exc:
+            calc_nmr_status.value = (
+                f'<span style="color:#d32f2f;">Failed to read XYZ: {_html.escape(str(exc))}</span>'
+            )
+            return
+
+        pal = max(1, int(calc_nmr_pal.value or 12))
+        maxcore = max(100, int(calc_nmr_maxcore.value or 3000))
+        time_limit = calc_nmr_time.value.strip() or '24:00:00'
+
+        # Create NMR subfolder
+        nmr_dir = _calc_next_available_dir(selected_path.parent, 'NMR')
+        job_name = nmr_dir.name
+        try:
+            nmr_dir.mkdir(parents=True, exist_ok=False)
+        except Exception as exc:
+            calc_nmr_status.value = (
+                f'<span style="color:#d32f2f;">Failed to create folder: {_html.escape(str(exc))}</span>'
+            )
+            return
+
+        # Generate .inp content
+        coords_text = '\n'.join(f'  {line.strip()}' for line in coord_lines)
+        inp_content = (
+            f'!TPSS PCSSEG-1 AUTOAUX NMR CPCM(CHCl3)\n'
+            f'\n'
+            f'%pal\n'
+            f'  nprocs {pal}\n'
+            f'end\n'
+            f'\n'
+            f'%maxcore {maxcore}\n'
+            f'\n'
+            f'* xyz 0 1\n'
+            f'{coords_text}\n'
+            f'*\n'
+            f'\n'
+            f'%EPRNMR\n'
+            f'   NUCLEI = ALL H {{SHIFT, SSALL}}\n'
+            f'   TAU DOBSON\n'
+            f'END\n'
+        )
+
+        inp_file = f'{job_name}.inp'
+        try:
+            (nmr_dir / inp_file).write_text(inp_content)
+        except Exception as exc:
+            calc_nmr_status.value = (
+                f'<span style="color:#d32f2f;">Failed to write .inp: {_html.escape(str(exc))}</span>'
+            )
+            return
+
+        # Submit
+        try:
+            result = ctx.backend.submit_orca(
+                job_dir=nmr_dir,
+                job_name=job_name,
+                inp_file=inp_file,
+                time_limit=time_limit,
+                pal=pal,
+                maxcore=maxcore,
+            )
+        except Exception as exc:
+            calc_nmr_status.value = (
+                f'<span style="color:#d32f2f;">Submit error: {_html.escape(str(exc))}</span>'
+            )
+            return
+
+        if result.returncode == 0:
+            job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+            calc_nmr_status.value = (
+                f'<span style="color:#2e7d32;">Submitted <code>{_html.escape(job_name)}</code>'
+                f' (ID: {_html.escape(job_id)}) &mdash; .inp in {_html.escape(nmr_dir.name)}/</span>'
+            )
+        else:
+            msg = result.stderr or result.stdout or 'Unknown error'
+            calc_nmr_status.value = f'<span style="color:#d32f2f;">{_html.escape(msg)}</span>'
+
+        _calc_show_nmr_panel(False)
 
     def _calc_render_traj_plot():
         selected_path = _calc_get_selected_path()
@@ -5318,6 +5461,7 @@ def create_tab(ctx):
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
             calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_nmr_panel.layout.display = 'none'
             return
         show_mol = calc_view_toggle.value
         if show_mol:
@@ -5328,6 +5472,7 @@ def create_tab(ctx):
             calc_content_toolbar.layout.display = 'none'
             calc_recalc_toolbar.layout.display = 'none'
             calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_nmr_panel.layout.display = 'none'
         else:
             _calc_stop_xyz_playback(update_button=True)
             calc_mol_container.layout.display = 'none'
@@ -5350,6 +5495,7 @@ def create_tab(ctx):
                 calc_edit_area.layout.display = 'none'
                 calc_recalc_toolbar.layout.display = 'none'
                 calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_nmr_panel.layout.display = 'none'
 
     def calc_set_message(message):
         calc_content_area.value = (
@@ -7578,7 +7724,7 @@ def create_tab(ctx):
                 calc_options_dropdown.layout.display = 'block'
                 return
         if selected and sel_lower.endswith('.xyz'):
-            xyz_options = ['(Options)', 'Build Batch from XYZ']
+            xyz_options = ['(Options)', 'Build Batch from XYZ', 'Calc NMR']
             selected_path = _calc_selected_item_path()
             if selected_path and _calc_is_single_structure_xyz(selected_path):
                 xyz_options.extend(['hyperpol_xtb', 'tadf_xtb'])
@@ -8315,6 +8461,8 @@ def create_tab(ctx):
             _calc_show_print_mode_panel(False)
         if change['new'] != 'MO Plot':
             _calc_show_mo_plot_panel(False)
+        if change['new'] != 'Calc NMR':
+            _calc_show_nmr_panel(False)
         if change['new'] not in ('hyperpol_xtb', 'tadf_xtb'):
             calc_reset_xyz_workflow_state()
         if change['new'] == 'Override':
@@ -8470,6 +8618,19 @@ def create_tab(ctx):
             calc_content_area.layout.display = 'block'
             _calc_run_print_nmr()
             _calc_reset_options_dropdown()
+        elif change['new'] == 'Calc NMR':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(False)
+            _calc_show_mo_plot_panel(False)
+            _calc_show_nmr_panel(True)
+            calc_content_area.layout.display = 'block'
         elif change['new'] == 'RMSD':
             calc_override_input.layout.display = 'none'
             calc_override_time.layout.display = 'none'
@@ -10992,6 +11153,7 @@ def create_tab(ctx):
     calc_mo_plot_beta_cb.observe(_calc_update_mo_spin_button_styles, names='value')
     _calc_update_mo_spin_button_styles()
     calc_mo_plot_btn.on_click(calc_on_mo_plot)
+    calc_nmr_submit_btn.on_click(_calc_on_nmr_submit)
     calc_report_btn.on_click(calc_on_report)
     disable_spellcheck(ctx, class_name='calc-search-input')
     disable_spellcheck(ctx, class_name='calc-table-preset-name')
@@ -12364,6 +12526,7 @@ def create_tab(ctx):
     calc_right_children.extend([
         calc_recalc_toolbar,
         calc_xyz_workflow_toolbar,
+        calc_nmr_panel,
         calc_content_toolbar,
         calc_chunk_hidden_row,
         calc_override_status,
