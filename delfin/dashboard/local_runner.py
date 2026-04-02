@@ -258,6 +258,18 @@ def _run_mode(mode: str) -> int:
         print(f'Starting ORCA: {inp_file} -> {out_file}')
         with Path(out_file).open('w', encoding='utf-8') as handle:
             proc = subprocess.run([orca_bin, inp_file], stdout=handle, stderr=subprocess.STDOUT, check=False)
+        # Post-processing: generate NMR spectrum if this was an NMR job
+        if proc.returncode == 0:
+            try:
+                inp_text = Path(inp_file).read_text(encoding='utf-8', errors='replace')
+                if 'EPRNMR' in inp_text.upper():
+                    print(f'NMR job detected — generating spectrum from {out_file}')
+                    _run_command([
+                        sys.executable, '-m', 'delfin.cli_nmr_report',
+                        out_file, '--table',
+                    ])
+            except Exception as exc:
+                print(f'NMR post-processing skipped: {exc}')
         return proc.returncode
     if resolved_mode == 'build':
         print('Starting delfin-build (complex build-up)...')
