@@ -145,14 +145,30 @@ def create_tab(ctx):
         except Exception:
             return []
 
-        patterns = (
-            '/opt/orca',
+        orca_markers = []
+        resolved_orca_base = str(getattr(ctx, 'orca_base', '') or '').strip()
+        if resolved_orca_base:
+            orca_markers.extend(
+                [
+                    resolved_orca_base,
+                    os.path.join(resolved_orca_base, 'orca'),
+                ]
+            )
+        orca_markers.extend(
+            [
+                ' orca ',
+                '/orca ',
+                ' orca"',
+                '/orca"',
+            ]
+        )
+        patterns = tuple(dict.fromkeys(orca_markers + [
             'orca_numfreq',
             'orca_esd',
             'delfin.build_up_complex',
             'delfin.guppy_sampling',
             'delfin-build',
-        )
+        ]))
         detected = []
         calc_root = str(ctx.calc_dir) if getattr(ctx, 'calc_dir', None) else ''
         by_dir = {}

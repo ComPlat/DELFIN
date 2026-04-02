@@ -23,7 +23,7 @@ set -euo pipefail
 #
 # MODES (set via DELFIN_MODE environment variable):
 #   delfin | delfin-recalc | delfin-recalc-classic | orca | build | guppy
-#   | hyperpol_xtb | tadf_xtb | delfin-co2-chain | auto (default: auto)
+#   | hyperpol_xtb | tadf_xtb | censo_anmr | delfin-co2-chain | auto (default: auto)
 #
 # SITE-SPECIFIC FEATURES (all off by default):
 #   DELFIN_AUTO_RESOURCES=1  Parse CONTROL.txt to derive sbatch args
@@ -620,7 +620,7 @@ copy_workspace_to_scratch() {
 # runs keep the full workspace copy because they may depend on existing outputs.
 COPY_PROFILE="full"
 case "$MODE" in
-    delfin|build|guppy|hyperpol_xtb|tadf_xtb|delfin-co2-chain)
+    delfin|build|guppy|hyperpol_xtb|tadf_xtb|censo_anmr|delfin-co2-chain)
         COPY_PROFILE="fresh"
         ;;
 esac

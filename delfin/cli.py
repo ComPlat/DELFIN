@@ -355,7 +355,7 @@ def _run_mlp_check_subcommand(argv: list[str]) -> int:
 def _run_analysis_check_subcommand(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="delfin analysis_check",
-        description="Inspect DELFIN analysis tools availability (Multiwfn, CENSO, morfeus).",
+        description="Inspect DELFIN analysis tools availability (Multiwfn, CENSO, ANMR, morfeus).",
     )
     parser.parse_args(argv)
 
@@ -364,10 +364,19 @@ def _run_analysis_check_subcommand(argv: list[str]) -> int:
             get_analysis_tools_root,
             multiwfn_available,
             censo_available,
+            anmr_available,
+            c2anmr_available,
+            nmrplot_available,
             morfeus_available,
             get_multiwfn_version,
             get_multiwfn_path,
             get_censo_version,
+            get_anmr_version,
+            get_anmr_path,
+            get_c2anmr_version,
+            get_c2anmr_path,
+            get_nmrplot_version,
+            get_nmrplot_path,
             get_morfeus_version,
         )
 
@@ -387,6 +396,25 @@ def _run_analysis_check_subcommand(argv: list[str]) -> int:
         else:
             print("  CENSO: NOT INSTALLED")
             print("    Install with: conda install -c conda-forge censo")
+
+        # ANMR helpers
+        if anmr_available():
+            print(f"  ANMR: {get_anmr_version()} [{get_anmr_path()}]")
+        else:
+            print("  ANMR: NOT INSTALLED")
+            print("    Install via Settings -> analysis_tools or install_analysis_tools.sh")
+
+        if c2anmr_available():
+            print(f"  c2anmr: {get_c2anmr_version()} [{get_c2anmr_path()}]")
+        else:
+            print("  c2anmr: NOT INSTALLED")
+            print("    Usually installed with CENSO scripts")
+
+        if nmrplot_available():
+            print(f"  nmrplot: {get_nmrplot_version()} [{get_nmrplot_path()}]")
+        else:
+            print("  nmrplot: NOT INSTALLED")
+            print("    Usually installed with CENSO scripts")
 
         # morfeus
         if morfeus_available():

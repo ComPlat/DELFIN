@@ -303,7 +303,7 @@ def _run_mode(mode: str) -> int:
             '--output',
             'GUPPY_try.xyz',
         ])
-    if resolved_mode in {'hyperpol_xtb', 'tadf_xtb'}:
+    if resolved_mode in {'hyperpol_xtb', 'tadf_xtb', 'censo_anmr'}:
         if not xyz_file:
             print(f'ERROR: DELFIN_XYZ_FILE not set for {resolved_mode} mode')
             return 1
@@ -355,6 +355,21 @@ def _run_mode(mode: str) -> int:
                 cmd.append('--t1-opt')
             if tadf_use_bfw:
                 cmd.append('--bfw')
+        elif resolved_mode == 'censo_anmr':
+            censo_solvent = str(os.environ.get('DELFIN_CENSO_NMR_SOLVENT') or 'chcl3').strip().lower() or 'chcl3'
+            censo_charge = str(os.environ.get('DELFIN_CENSO_NMR_CHARGE') or '0').strip() or '0'
+            censo_multiplicity = str(os.environ.get('DELFIN_CENSO_NMR_MULTIPLICITY') or '1').strip() or '1'
+            censo_mhz = str(os.environ.get('DELFIN_CENSO_NMR_MHZ') or '400').strip() or '400'
+            cmd.extend([
+                '--solvent',
+                censo_solvent,
+                '--charge',
+                censo_charge,
+                '--multiplicity',
+                censo_multiplicity,
+                '--mhz',
+                censo_mhz,
+            ])
         return _run_and_tee(cmd, Path.cwd() / output_name)
     if resolved_mode == 'delfin-co2-chain':
         species_delta = str(os.environ.get('DELFIN_CO2_SPECIES_DELTA') or '0')

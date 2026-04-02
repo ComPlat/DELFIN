@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,33 @@ def get_analysis_tools_root() -> Path:
     if env_root:
         return Path(env_root).expanduser().resolve()
     return Path(__file__).resolve().parent
+
+
+def _which_any(*names: str) -> Optional[str]:
+    """Return the first matching executable found in PATH."""
+    for name in names:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def _probe_cli_version(command: list[str], *, timeout: int = 10) -> Optional[str]:
+    """Best-effort version probe for a CLI tool."""
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except Exception:
+        return None
+
+    output = (result.stdout + result.stderr).strip()
+    if not output:
+        return None
+    return output.splitlines()[0].strip()
 
 
 # ── Multiwfn ──────────────────────────────────────────────────────────
@@ -43,8 +71,6 @@ def get_multiwfn_version() -> Optional[str]:
     if not multiwfn_available():
         return None
     try:
-        import subprocess
-
         result = subprocess.run(
             ["Multiwfn", "--version"],
             capture_output=True,
@@ -84,20 +110,71 @@ def get_censo_version() -> Optional[str]:
     except Exception:
         pass
     try:
-        import subprocess
-
-        result = subprocess.run(
-            ["censo", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        output = (result.stdout + result.stderr).strip()
+        output = _probe_cli_version(["censo", "--version"])
         if output:
-            return output.splitlines()[0]
+            return output
     except Exception:
         pass
     return "installed"
+
+
+# ── ANMR / CENSO helper CLIs ──────────────────────────────────────────
+
+def anmr_available() -> bool:
+    """Check whether the ANMR executable is in PATH."""
+    return _which_any("anmr") is not None
+
+
+def get_anmr_path() -> Optional[str]:
+    """Return the ANMR executable path, or None."""
+    return _which_any("anmr")
+
+
+def get_anmr_version() -> Optional[str]:
+    """Return the ANMR version string, or None."""
+    if not anmr_available():
+        return None
+    output = _probe_cli_version(["anmr", "--version"])
+    return output or "installed"
+
+
+def c2anmr_available() -> bool:
+    """Check whether the c2anmr helper executable is in PATH."""
+    return _which_any("c2anmr") is not None
+
+
+def get_c2anmr_path() -> Optional[str]:
+    """Return the c2anmr executable path, or None."""
+    return _which_any("c2anmr")
+
+
+def get_c2anmr_version() -> Optional[str]:
+    """Return the c2anmr version string, or None."""
+    if not c2anmr_available():
+        return None
+    output = _probe_cli_version(["c2anmr", "--version"])
+    return output or "installed"
+
+
+def nmrplot_available() -> bool:
+    """Check whether the nmrplot helper executable is in PATH."""
+    return _which_any("nmrplot", "nmrplot.py") is not None
+
+
+def get_nmrplot_path() -> Optional[str]:
+    """Return the nmrplot executable path, or None."""
+    return _which_any("nmrplot", "nmrplot.py")
+
+
+def get_nmrplot_version() -> Optional[str]:
+    """Return the nmrplot version string, or None."""
+    if not nmrplot_available():
+        return None
+    path = get_nmrplot_path()
+    if not path:
+        return None
+    output = _probe_cli_version([path, "--version"])
+    return output or "installed"
 
 
 # ── morfeus ───────────────────────────────────────────────────────────
@@ -183,7 +260,6 @@ def get_packmol_version() -> Optional[str]:
         return None
     try:
         import re
-        import subprocess
         result = subprocess.run(
             ["packmol"],
             input="",
@@ -229,6 +305,12 @@ def available_tools() -> list[str]:
         tools.append("multiwfn")
     if censo_available():
         tools.append("censo")
+    if anmr_available():
+        tools.append("anmr")
+    if c2anmr_available():
+        tools.append("c2anmr")
+    if nmrplot_available():
+        tools.append("nmrplot")
     if morfeus_available():
         tools.append("morfeus")
     if cclib_available():
@@ -250,6 +332,12 @@ def collect_analysis_summary() -> dict:
          "Wavefunction analysis: orbitals, bond orders, ESP, ELF, population analysis"),
         ("CENSO", censo_available, get_censo_version,
          "Conformer ensemble sorting with DFT refinement and thermochemistry"),
+        ("ANMR", anmr_available, get_anmr_version,
+         "Boltzmann-weighted NMR spectrum simulation for CENSO/ENSO ensembles"),
+        ("c2anmr", c2anmr_available, get_c2anmr_version,
+         "Prepare ANMR-ready folders and metadata from a CENSO run"),
+        ("nmrplot", nmrplot_available, get_nmrplot_version,
+         "Plot ANMR spectra from generated anmr.dat outputs"),
         ("morfeus", morfeus_available, get_morfeus_version,
          "Steric descriptors: buried volume, cone angle, bite angle, Sterimol"),
         ("cclib", cclib_available, get_cclib_version,
