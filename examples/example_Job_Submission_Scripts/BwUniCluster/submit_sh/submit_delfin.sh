@@ -976,8 +976,8 @@ case "$MODE" in
             EXIT_CODE=1
         else
             OUT_FILE="${INP_FILE%.inp}.out"
-            echo "Starting ORCA: $INP_FILE -> $OUT_FILE"
-            "$ORCA_BASE/orca" "$INP_FILE" > "$OUT_FILE" 2>&1
+            echo "Starting DELFIN ORCA workflow: $INP_FILE -> $OUT_FILE"
+            delfin run_orca "$INP_FILE" --output "$OUT_FILE"
             EXIT_CODE=$?
         fi
         ;;
