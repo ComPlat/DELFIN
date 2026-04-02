@@ -804,12 +804,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         slurm_templates_input.value = str(slurm_payload.get('submit_templates_dir') or '')
         slurm_profile_input.value = str(slurm_payload.get('profile') or '')
 
-        current_orca = global_orca_input.value
-        orca_options = [('Auto-detect / PATH', '')]
-        if current_orca:
-            orca_options.append((_format_orca_option_label(current_orca, configured=True), current_orca))
-        detected_orca_dropdown.options = orca_options
-        detected_orca_dropdown.value = current_orca if current_orca else ''
+        current_orca = str(global_orca_input.value or '').strip()
+        _refresh_orca_dropdown(current_orca)
         detected_orca_dropdown.disabled = True
 
         tool_binaries_payload = runtime_payload.get('tool_binaries', {}) or {}
