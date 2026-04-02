@@ -277,6 +277,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         'turbomole': 'Turbomole',
         'xtb': 'xTB',
         'crest': 'CREST',
+        'censo': 'CENSO',
+        'anmr': 'ANMR',
+        'c2anmr': 'c2anmr',
+        'nmrplot': 'nmrplot',
         'std2': 'STD2',
         'stda': 'STDA',
         'xtb4stda': 'xtb4stda',
@@ -631,7 +635,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             runtime_payload,
             effective_backend,
             auto_candidates=_runtime_auto_candidates(),
-            local_default='/opt/orca' if effective_backend == 'local' else '',
+            local_default='',
         )
         submit_templates_dir = resolve_submit_templates_dir(
             runtime_payload,
@@ -995,7 +999,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 if hasattr(ctx.backend, 'submit_templates_dir'):
                     ctx.backend.submit_templates_dir = Path(submit_templates_dir)
                 if hasattr(ctx.backend, 'slurm_profile'):
-                    ctx.backend.slurm_profile = str((runtime_settings.get('slurm', {}) or {}).get('profile', '')).strip()
+                    ctx.backend.slurm_profile = str(
+                        (runtime_payload.get('slurm', {}) or {}).get('profile', '')
+                    ).strip()
 
         return backend_switch_required, effective_backend, effective_orca_base
 
@@ -1753,13 +1759,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     def _on_install_analysis_tools(button):
         try:
-            target, result = run_analysis_tools_installer()
+            target, result = run_analysis_tools_installer(
+                extra_env={'CENSO_PREFER_LATEST': '1'}
+            )
             analysis_tools_log.value = result.stdout or '(no installer output)'
             if result.returncode == 0:
                 _set_status(
                     (
                         f'analysis_tools installed in <code>{html.escape(str(target))}</code>. '
-                        'morfeus and CENSO are now available.'
+                        'morfeus, CENSO, ANMR, c2anmr, and nmrplot are now available when their installs succeed.'
                     ),
                     color='#2e7d32',
                 )
@@ -1782,7 +1790,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     def _on_update_analysis_tools(button):
         try:
             target, result = run_analysis_tools_installer(
-                extra_env={'FORCE_REINSTALL': '1'}
+                extra_env={'FORCE_REINSTALL': '1', 'CENSO_PREFER_LATEST': '1'}
             )
             analysis_tools_log.value = result.stdout or '(no updater output)'
             if result.returncode == 0:
@@ -1822,10 +1830,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 submit_templates_dir=submit_templates_dir if effective_backend == 'slurm' else None,
             )
 
-            _QM_TOOL_NAMES = {'xtb', 'crest', 'std2', 'stda', 'xtb4stda', 'dftb+'}
+            _QM_TOOL_NAMES = {'xtb', 'crest', 'censo', 'anmr', 'c2anmr', 'nmrplot', 'std2', 'stda', 'xtb4stda', 'dftb+'}
             _QM_DESCRIPTIONS = {
                 'xtb': 'Extended tight-binding semi-empirical method (GFN-xTB)',
                 'crest': 'Conformer-Rotamer Ensemble Sampling Tool',
+                'censo': 'Conformer ensemble refinement and Boltzmann weighting',
+                'anmr': 'Automatic NMR spectrum simulation from weighted conformer ensembles',
+                'c2anmr': 'Prepare ANMR-compatible folder structure from a CENSO run',
+                'nmrplot': 'Plot ANMR spectra from anmr.dat',
                 'std2': 'Simplified TD-DFT v2 for UV/Vis spectra',
                 'stda': 'Simplified Tamm-Dancoff approximation for UV/Vis',
                 'xtb4stda': 'xTB optimized for sTDA input generation',
@@ -1957,6 +1969,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             _ANALYSIS_PKGS = {
                 'Multiwfn': ('', '', ''),                    # manual binary
                 'CENSO':    ('censo', 'censo', ''),
+                'ANMR':     ('', '', ''),
+                'c2anmr':   ('', '', ''),
+                'nmrplot':  ('', '', ''),
                 'morfeus':  ('morfeus-ml', 'morfeus-ml', ''),
                 'cclib':    ('cclib', 'cclib', ''),
                 'nglview':  ('nglview', 'nglview', ''),
@@ -3121,7 +3136,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     refresh_analysis_status_btn,
                     widgets.HTML(
                         f'<span style="color:#616161;">'
-                        f'Installs morfeus + CENSO into <code>{html.escape(str(get_user_analysis_tools_dir()))}</code>. '
+                        f'Installs morfeus, CENSO, ANMR, c2anmr, nmrplot, cclib, nglview and Packmol support into '
+                        f'<code>{html.escape(str(get_user_analysis_tools_dir()))}</code>. '
+                        'The installer uses the currently active Python environment '
+                        '(micromamba/conda or venv). '
                         'Multiwfn requires manual binary download.'
                         f'</span>'
                     ),
@@ -3168,7 +3186,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     tools_accordion.set_title(0, 'QM Tools (xtb, crest, dftb+, stda, std2)')
     tools_accordion.set_title(1, 'CSP Tools (Crystal Structure Prediction)')
     tools_accordion.set_title(2, 'MLP Tools (Machine Learning Potentials)')
-    tools_accordion.set_title(3, 'Analysis Tools (Multiwfn, CENSO, morfeus, cclib, nglview, Packmol)')
+    tools_accordion.set_title(3, 'Analysis Tools (Multiwfn, CENSO, ANMR, morfeus, cclib, nglview, Packmol)')
     tools_accordion.set_title(4, 'AI/ML Tools (Foundation Models, Generative, Retrosynthesis, ADMET)')
     tools_accordion.selected_index = None  # all collapsed by default
 

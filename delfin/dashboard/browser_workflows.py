@@ -5,11 +5,25 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import re
+import shlex
+import shutil
+import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
 from delfin.common.paths import resolve_path
+from delfin.dashboard.input_processing import smiles_to_xyz_quick
+from delfin.ensemble_nmr import (
+    build_anmrrc_text,
+    build_censo_anmr_rc,
+    build_orca_reference_input,
+    normalize_cpcm_solvent_name,
+    write_text_file,
+    xyz_body_to_coord_text,
+)
 from delfin.global_manager import get_global_manager
 from delfin.hyperpol import (
     WorkflowEntry as HyperpolWorkflowEntry,
@@ -17,6 +31,9 @@ from delfin.hyperpol import (
     _print_result as _print_hyperpol_result,
     run_single_hyperpol_workflow,
 )
+from delfin.nmr_spectrum import parse_nmr_orca
+from delfin.qm_runtime import resolve_tool
+from delfin.runtime_setup import run_analysis_tools_installer
 from delfin.tadf_xtb import (
     WorkflowEntry as TadfWorkflowEntry,
     _print_result as _print_tadf_result,
@@ -352,6 +369,603 @@ def _write_error_summaries(
             _write_json(str(resolved_json), payload)
 
 
+def _resolved_path_or_empty(tool_name: str) -> str:
+    resolved = resolve_tool(tool_name)
+    return resolved.path if resolved is not None else ""
+
+
+_AUTO_INSTALLABLE_ANALYSIS_TOOLS = frozenset({"censo", "anmr", "c2anmr", "nmrplot"})
+
+
+def _minimum_supported_censo_version() -> tuple[int, int, int]:
+    return (3, 0, 0) if sys.version_info >= (3, 12) else (2, 1, 4)
+
+
+def _censo_requires_upgrade(censo_path: str) -> bool:
+    version = _detect_censo_version(censo_path)
+    if version is None:
+        return False
+    return version < _minimum_supported_censo_version()
+
+
+def _censo_refinement_threshold(censo_path: str) -> float:
+    version = _detect_censo_version(censo_path)
+    if version is not None and version >= (3, 0, 0):
+        return 0.001
+    return 0.0
+
+
+def _auto_install_analysis_tools_enabled() -> bool:
+    value = str(os.environ.get("DELFIN_AUTO_INSTALL_ANALYSIS_TOOLS", "1")).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _maybe_auto_install_analysis_tools(missing_tools: list[str], *, workdir: Path) -> list[str]:
+    supported_missing = [
+        tool_name for tool_name in missing_tools if tool_name in _AUTO_INSTALLABLE_ANALYSIS_TOOLS
+    ]
+    if not supported_missing or not _auto_install_analysis_tools_enabled():
+        return []
+
+    installer_env = {
+        "INSTALL_MORFEUS": "0",
+        "INSTALL_CCLIB": "0",
+        "INSTALL_NGLVIEW": "0",
+        "INSTALL_PACKMOL": "0",
+        "INSTALL_MULTIWFN": "0",
+        "CENSO_PREFER_LATEST": "1",
+        "INSTALL_CENSO": "1" if any(
+            tool in supported_missing for tool in ("censo", "c2anmr", "nmrplot")
+        ) else "0",
+        "INSTALL_ANMR": "1" if "anmr" in supported_missing else "0",
+        "FORCE_REINSTALL": "1" if "censo" in supported_missing else "0",
+    }
+    target, result = run_analysis_tools_installer(extra_env=installer_env)
+    log_lines = [
+        "Auto-install missing analysis tools",
+        f"Requested: {', '.join(supported_missing)}",
+        f"Target: {target}",
+        "",
+        result.stdout or "(no installer output)",
+    ]
+    write_text_file(workdir / "analysis_tools_auto_install.log", "\n".join(log_lines))
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Automatic installation of missing analysis tools failed. "
+            f"See {workdir / 'analysis_tools_auto_install.log'} for details."
+        )
+
+    active_bin = str(Path(sys.executable).resolve().parent)
+    current_path = os.environ.get("PATH", "")
+    path_parts = current_path.split(os.pathsep) if current_path else []
+    if active_bin not in path_parts:
+        os.environ["PATH"] = active_bin if not current_path else f"{active_bin}{os.pathsep}{current_path}"
+
+    installed_now: list[str] = []
+    for tool_name in supported_missing:
+        if _resolved_path_or_empty(tool_name):
+            installed_now.append(tool_name)
+    return installed_now
+
+
+def _require_tools(tool_names: list[str], *, workdir: Path | None = None) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+    for tool_name in tool_names:
+        path = _resolved_path_or_empty(tool_name)
+        if tool_name == "censo" and path and _censo_requires_upgrade(path):
+            missing.append(tool_name)
+        elif path:
+            resolved[tool_name] = path
+        else:
+            missing.append(tool_name)
+    if missing and workdir is not None:
+        _maybe_auto_install_analysis_tools(missing, workdir=workdir)
+        resolved.clear()
+        missing = []
+        for tool_name in tool_names:
+            path = _resolved_path_or_empty(tool_name)
+            if tool_name == "censo" and path and _censo_requires_upgrade(path):
+                missing.append(tool_name)
+            elif path:
+                resolved[tool_name] = path
+            else:
+                missing.append(tool_name)
+    if missing:
+        raise RuntimeError(
+            "Missing required tools for CENSO/ANMR workflow: "
+            + ", ".join(missing)
+            + ". Configure them in Settings or ensure they are on PATH. "
+            + "DELFIN auto-installs supported analysis tools by default; unsupported tools such as crest, xtb, and orca must already exist."
+        )
+    return resolved
+
+
+def _run_logged(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    log_path: Path,
+    env: dict[str, str] | None = None,
+    input_text: str | None = None,
+) -> None:
+    env_map = os.environ.copy()
+    if env:
+        env_map.update({str(k): str(v) for k, v in env.items() if str(v).strip()})
+    result = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        env=env_map,
+        capture_output=True,
+        text=True,
+        input=input_text,
+        check=False,
+    )
+    log_text = (
+        "$ " + " ".join(shlex.quote(part) for part in cmd) + "\n\n"
+        + result.stdout
+        + ("\n" if result.stdout and not result.stdout.endswith("\n") else "")
+        + result.stderr
+    )
+    write_text_file(log_path, log_text)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Command failed ({result.returncode}): {' '.join(shlex.quote(part) for part in cmd)}"
+        )
+
+
+def _resolve_orca_reference_result_path(*, workdir: Path, stem: str) -> Path:
+    """Return the best ORCA result file for downstream parsing."""
+    out_path = workdir / f"{stem}.out"
+    if out_path.is_file():
+        return out_path
+
+    log_path = workdir / f"{stem}.log"
+    if log_path.is_file():
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        if "ORCA TERMINATED NORMALLY" in log_text:
+            return log_path
+
+    raise RuntimeError(f"ORCA reference run finished without {stem}.out")
+
+
+def _extract_xyz_body_from_orca_input(inp_path: Path) -> str:
+    """Extract the `* xyz` geometry block from an ORCA input file."""
+    lines = inp_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    in_xyz = False
+    xyz_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not in_xyz:
+            if stripped.lower().startswith("* xyz"):
+                in_xyz = True
+            continue
+        if stripped == "*":
+            break
+        if stripped:
+            xyz_lines.append(stripped)
+    return "\n".join(xyz_lines)
+
+
+def _ensure_censo_nmr_coords(workdir: Path) -> None:
+    """Backfill missing `coord` files for CENSO NMR conformers from ORCA inputs."""
+    nmr_root = workdir / "4_NMR"
+    if not nmr_root.is_dir():
+        return
+
+    for conf_dir in sorted(path for path in nmr_root.iterdir() if path.is_dir()):
+        coord_path = conf_dir / "coord"
+        if coord_path.is_file():
+            continue
+        inp_path = conf_dir / "nmr" / "nmr.inp"
+        if not inp_path.is_file():
+            continue
+        xyz_body = _extract_xyz_body_from_orca_input(inp_path)
+        if not xyz_body.strip():
+            continue
+        write_text_file(coord_path, xyz_body_to_coord_text(xyz_body))
+
+
+def _ensure_anmr_coord_inputs(*, workdir: Path, anmr_dir: Path) -> None:
+    """Copy CENSO NMR `coord` files into the ANMR workspace layout."""
+    nmr_root = workdir / "4_NMR"
+    if not nmr_root.is_dir() or not anmr_dir.is_dir():
+        return
+
+    first_coord_text = ""
+    for conf_dir in sorted(path for path in anmr_dir.iterdir() if path.is_dir() and path.name.startswith("CONF")):
+        source_coord = nmr_root / conf_dir.name / "coord"
+        if not source_coord.is_file():
+            continue
+        coord_text = source_coord.read_text(encoding="utf-8", errors="replace")
+        if not coord_text.strip():
+            continue
+        if not first_coord_text:
+            first_coord_text = coord_text
+        target_coord = conf_dir / "coord"
+        if not target_coord.is_file():
+            write_text_file(target_coord, coord_text)
+
+    root_coord = anmr_dir / "coord"
+    if first_coord_text and not root_coord.is_file():
+        write_text_file(root_coord, first_coord_text)
+
+
+def _helper_launch_command(tool_path: str, extra_args: list[str] | None = None) -> list[str]:
+    """Build a launcher command that respects shell-vs-Python helper scripts."""
+    extra_args = list(extra_args or [])
+    path = Path(tool_path).expanduser().resolve()
+    try:
+        header = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return [str(path), *extra_args]
+
+    exec_match = re.search(r'^exec\s+"([^"]+)"\s+"([^"]+)"\s+"\$@"', header, re.MULTILINE)
+    if exec_match:
+        wrapper_interpreter = exec_match.group(1)
+        target_path = Path(exec_match.group(2)).expanduser()
+        if target_path.is_file():
+            return _helper_launch_command(str(target_path), extra_args=extra_args)
+        return [wrapper_interpreter, str(target_path), *extra_args]
+
+    first_line = header.splitlines()[0].strip() if header.splitlines() else ""
+    shebang = first_line[2:].strip().lower() if first_line.startswith("#!") else ""
+    if "bash" in shebang or shebang.endswith("/sh") or " sh" in shebang:
+        return ["bash", str(path), *extra_args]
+    if "python" in shebang:
+        return [sys.executable, str(path), *extra_args]
+    return [str(path), *extra_args]
+
+
+def _parse_censo_version_text(text: str) -> tuple[int, int, int] | None:
+    match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", str(text or ""))
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _detect_censo_version(censo_path: str) -> tuple[int, int, int] | None:
+    try:
+        result = subprocess.run(
+            [censo_path, "-v"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return None
+    return _parse_censo_version_text((result.stdout or "") + "\n" + (result.stderr or ""))
+
+
+def _build_censo_command(
+    *,
+    censo_path: str,
+    ensemble_name: str,
+    charge: int,
+    multiplicity: int,
+    rc_name: str,
+    pal: int,
+    solvent: str,
+) -> list[str]:
+    version = _detect_censo_version(censo_path)
+    solvent_name = normalize_cpcm_solvent_name(solvent)
+    base_cmd = [
+        censo_path,
+        "-i",
+        ensemble_name,
+        "-c",
+        str(int(charge)),
+        "-u",
+        str(max(0, int(multiplicity) - 1)),
+        "--inprc",
+        rc_name,
+        "--maxcores",
+        str(max(1, int(pal))),
+    ]
+    if version and version[0] >= 3:
+        base_cmd[1:1] = ["--prescreening", "--screening", "--optimization", "--nmr"]
+        base_cmd.extend(["--omp-min", "1"])
+        if solvent_name != "gas":
+            base_cmd.extend(["--solvent", solvent_name])
+        else:
+            base_cmd.append("--gas-phase")
+        return base_cmd
+
+    base_cmd.extend(["-O", "1"])
+    if solvent_name != "gas":
+        base_cmd.extend(["-s", solvent_name])
+    else:
+        base_cmd.append("--gas-phase")
+    return base_cmd
+
+
+def _run_logged_shell(
+    command: str,
+    *,
+    cwd: Path,
+    log_path: Path,
+    env: dict[str, str] | None = None,
+) -> None:
+    env_map = os.environ.copy()
+    if env:
+        env_map.update({str(k): str(v) for k, v in env.items() if str(v).strip()})
+    result = subprocess.run(
+        ["bash", "-lc", command],
+        cwd=str(cwd),
+        env=env_map,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    log_text = "$ bash -lc " + shlex.quote(command) + "\n\n" + result.stdout + result.stderr
+    write_text_file(log_path, log_text)
+    if result.returncode != 0:
+        raise RuntimeError(f"Shell command failed ({result.returncode}): {command}")
+
+
+def _guess_plot_window(solvent: str) -> tuple[float, float]:
+    if str(solvent).strip().lower() == "h2o":
+        return 0.0, 12.0
+    return 0.0, 10.5
+
+
+def _render_anmr_png(anmr_data_path: Path, output_png: Path, *, title: str) -> Path | None:
+    """Render a simple headless PNG spectrum from `anmr.dat`."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+
+    x_vals: list[float] = []
+    y_vals: list[float] = []
+    for line in anmr_data_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            x_vals.append(float(parts[0]))
+            y_vals.append(float(parts[1]))
+        except ValueError:
+            continue
+    if not x_vals:
+        return None
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(x_vals, y_vals, color="black", linewidth=1.0)
+    ax.fill_between(x_vals, y_vals, color="black", alpha=0.08)
+    ax.set_xlabel("Chemical Shift (ppm)")
+    ax.set_ylabel("Intensity")
+    ax.set_title(title)
+    ax.set_xlim(max(x_vals), min(x_vals))
+    ax.margins(x=0.01, y=0.05)
+    fig.tight_layout()
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_png, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+    return output_png if output_png.is_file() else None
+
+
+def _build_censo_anmr_summary(payload: dict[str, object]) -> str:
+    lines = [
+        f"label: {payload.get('label', 'censo_anmr')}",
+        "status: ok",
+        f"source_xyz: {payload.get('source_xyz', '')}",
+        f"workdir: {payload.get('workdir', '')}",
+        f"solvent: {payload.get('solvent', '')}",
+        f"charge: {payload.get('charge', 0)}",
+        f"multiplicity: {payload.get('multiplicity', 1)}",
+        f"resonance_frequency_mhz: {payload.get('resonance_frequency_mhz', 400.0)}",
+        f"files: {json.dumps(payload.get('files', {}), indent=2)}",
+    ]
+    return "\n".join(lines)
+
+
+def _run_censo_anmr(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m delfin.dashboard.browser_workflows censo_anmr",
+        description="Run a CREST + CENSO + ANMR ensemble NMR workflow in a dedicated workdir.",
+    )
+    parser.add_argument("--xyz-file", required=True, help="Source XYZ file.")
+    parser.add_argument("--label", required=True, help="Workflow label.")
+    parser.add_argument("--workdir", required=True, help="Exact work directory to write into.")
+    parser.add_argument("--charge", type=int, default=0)
+    parser.add_argument("--multiplicity", type=int, default=1)
+    parser.add_argument("--solvent", default="chcl3")
+    parser.add_argument("--pal", type=int, default=8)
+    parser.add_argument("--maxcore", type=int, default=3000)
+    parser.add_argument("--mhz", type=float, default=400.0)
+    parser.add_argument("--json-out", help="Optional JSON summary file.")
+    args = parser.parse_args(argv)
+
+    workdir = resolve_path(args.workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    label = str(args.label).strip() or Path(args.xyz_file).stem or "censo_anmr"
+    source_xyz = resolve_path(args.xyz_file)
+    if not source_xyz.is_file():
+        _write_error_summaries(
+            workdir,
+            label=label,
+            error_message=f"XYZ file not found: {source_xyz}",
+            json_out=args.json_out,
+        )
+        return 1
+
+    try:
+        tools = _require_tools(
+            ["crest", "censo", "c2anmr", "anmr", "orca", "xtb"],
+            workdir=workdir,
+        )
+        nmrplot_path = _resolved_path_or_empty("nmrplot")
+
+        xyz_target = workdir / source_xyz.name
+        if source_xyz.resolve() != xyz_target.resolve():
+            shutil.copy2(source_xyz, xyz_target)
+
+        xyz_lines = xyz_target.read_text(encoding="utf-8", errors="replace").splitlines()
+        xyz_body = "\n".join(line for line in xyz_lines[2:] if line.strip())
+        if not xyz_body.strip():
+            raise RuntimeError(f"XYZ file contains no coordinates: {xyz_target}")
+
+        coord_path = write_text_file(workdir / "coord", xyz_body_to_coord_text(xyz_body))
+
+        crest_cmd = [tools["crest"], str(coord_path)]
+        if str(args.solvent).strip().lower() != "gas":
+            crest_cmd.extend(["-g", str(args.solvent).strip().lower()])
+        crest_cmd.extend(["-gfn2", "-T", str(max(1, int(args.pal))), "-nmr"])
+        _run_logged(crest_cmd, cwd=workdir, log_path=workdir / "crest.out")
+
+        ensemble_path = workdir / "crest_conformers.xyz"
+        if not ensemble_path.is_file():
+            raise RuntimeError("CREST finished without writing crest_conformers.xyz")
+
+        rc_path = write_text_file(
+            workdir / "workflow.censo2rc",
+            build_censo_anmr_rc(
+                solvent=str(args.solvent).strip().lower(),
+                resonance_frequency=float(args.mhz),
+                active_nuclei=("h",),
+                orca_path=tools["orca"],
+                xtb_path=tools["xtb"],
+                refinement_threshold=_censo_refinement_threshold(tools["censo"]),
+            ),
+        )
+
+        censo_cmd = _build_censo_command(
+            censo_path=tools["censo"],
+            ensemble_name=str(ensemble_path.name),
+            charge=int(args.charge),
+            multiplicity=int(args.multiplicity),
+            rc_name=str(rc_path.name),
+            pal=max(1, int(args.pal)),
+            solvent=str(args.solvent).strip().lower(),
+        )
+        _run_logged(censo_cmd, cwd=workdir, log_path=workdir / "censo.out")
+        _ensure_censo_nmr_coords(workdir)
+
+        _run_logged(
+            _helper_launch_command(tools["c2anmr"]),
+            cwd=workdir,
+            log_path=workdir / "c2anmr.out",
+        )
+        anmr_dir = workdir / "anmr"
+        if not anmr_dir.is_dir():
+            raise RuntimeError("c2anmr finished without creating the anmr/ folder")
+        _ensure_anmr_coord_inputs(workdir=workdir, anmr_dir=anmr_dir)
+
+        tms_xyz, _num_atoms, _method, tms_error = smiles_to_xyz_quick("C[Si](C)(C)C")
+        if tms_error or not tms_xyz:
+            raise RuntimeError(f"Failed to generate TMS reference geometry: {tms_error or 'unknown error'}")
+        tms_body = "\n".join(line for line in tms_xyz.splitlines() if line.strip())
+        tms_inp = write_text_file(
+            workdir / "tms_reference.inp",
+            build_orca_reference_input(
+                tms_body,
+                solvent=str(args.solvent).strip().lower(),
+                pal=max(1, int(args.pal)),
+                maxcore=max(100, int(args.maxcore)),
+            ),
+        )
+        _run_logged([tools["orca"], str(tms_inp.name)], cwd=workdir, log_path=workdir / "tms_reference.log")
+        tms_out = _resolve_orca_reference_result_path(workdir=workdir, stem="tms_reference")
+
+        tms_result = parse_nmr_orca(tms_out)
+        h_vals = [item.isotropic_ppm for item in tms_result.shieldings if item.element == "H"]
+        c_vals = [item.isotropic_ppm for item in tms_result.shieldings if item.element == "C"]
+        if not h_vals or not c_vals:
+            raise RuntimeError("Could not extract 1H/13C shieldings from the ORCA TMS reference run")
+
+        write_text_file(
+            anmr_dir / ".anmrrc",
+            build_anmrrc_text(
+                solvent=str(args.solvent).strip().lower(),
+                resonance_frequency=float(args.mhz),
+                shielding_ref_h=sum(h_vals) / len(h_vals),
+                shielding_ref_c=sum(c_vals) / len(c_vals),
+            ),
+        )
+
+        anmr_cmd = f"ulimit -s unlimited && {shlex.quote(tools['anmr'])} -plain -mf {float(args.mhz):.1f}"
+        _run_logged_shell(anmr_cmd, cwd=anmr_dir, log_path=anmr_dir / "anmr.out")
+
+        plot_path = ""
+        if nmrplot_path:
+            ppm_min, ppm_max = _guess_plot_window(str(args.solvent).strip().lower())
+            plot_cmd = [
+                *_helper_launch_command(nmrplot_path),
+                "-i",
+                "anmr.dat",
+                "-start",
+                str(ppm_min),
+                "-end",
+                str(ppm_max),
+                "-o",
+                "anmr_spectrum",
+            ]
+            _run_logged(
+                plot_cmd,
+                cwd=anmr_dir,
+                log_path=anmr_dir / "nmrplot.out",
+                env={"MPLBACKEND": "Agg"},
+                input_text="n\n",
+            )
+            pdf_candidate = anmr_dir / "anmr_spectrum.pdf"
+            png_candidate = anmr_dir / "anmr_spectrum.png"
+            if pdf_candidate.is_file():
+                plot_path = str(pdf_candidate)
+            elif png_candidate.is_file():
+                plot_path = str(png_candidate)
+
+        rendered_png = _render_anmr_png(
+            anmr_dir / "anmr.dat",
+            anmr_dir / "anmr_spectrum.png",
+            title=f"ANMR Spectrum: {label}",
+        )
+        if rendered_png is not None:
+            plot_path = str(rendered_png)
+
+        payload = {
+            "label": label,
+            "source_xyz": str(source_xyz),
+            "workdir": str(workdir),
+            "solvent": str(args.solvent).strip().lower(),
+            "charge": int(args.charge),
+            "multiplicity": int(args.multiplicity),
+            "resonance_frequency_mhz": float(args.mhz),
+            "files": {
+                "crest_output": str(workdir / "crest.out"),
+                "ensemble_xyz": str(ensemble_path),
+                "censo_rc": str(rc_path),
+                "censo_log": str(workdir / "censo.out"),
+                "anmrrc": str(anmr_dir / ".anmrrc"),
+                "anmr_output": str(anmr_dir / "anmr.out"),
+                "anmr_data": str(anmr_dir / "anmr.dat"),
+                "nmrplot_output": plot_path,
+                "nmrplot_png": plot_path,
+                "tms_reference_out": str(tms_out),
+            },
+            "errors": {},
+        }
+        _write_success_summaries(
+            workdir,
+            payload=payload,
+            summary_text=_build_censo_anmr_summary(payload),
+            json_out=args.json_out,
+        )
+        print(json.dumps(payload, indent=2))
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        _write_error_summaries(
+            workdir,
+            label=label,
+            error_message=str(exc),
+            json_out=args.json_out,
+        )
+        print(json.dumps({"result": None, "errors": {label: str(exc)}}, indent=2))
+        return 1
+
+
 def _run_hyperpol_xtb(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m delfin.dashboard.browser_workflows hyperpol_xtb",
@@ -607,7 +1221,7 @@ def _run_tadf_xtb(argv: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        print("Usage: python -m delfin.dashboard.browser_workflows <hyperpol_xtb|tadf_xtb> [...]")
+        print("Usage: python -m delfin.dashboard.browser_workflows <hyperpol_xtb|tadf_xtb|censo_anmr> [...]")
         return 1
 
     command = args[0]
@@ -615,6 +1229,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_hyperpol_xtb(args[1:])
     if command == "tadf_xtb":
         return _run_tadf_xtb(args[1:])
+    if command == "censo_anmr":
+        return _run_censo_anmr(args[1:])
 
     print(f"Unknown browser workflow: {command}")
     return 1

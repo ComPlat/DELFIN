@@ -310,7 +310,7 @@ def resolve_orca_base(
     backend: str,
     *,
     auto_candidates: list[str] | None = None,
-    local_default: str = "/opt/orca",
+    local_default: str = "",
 ) -> str:
     runtime_settings = runtime_settings or {}
     local_settings = runtime_settings.get("local", {}) or {}
@@ -343,7 +343,7 @@ def resolve_orca_base(
     if which_orca:
         candidates.append(str(Path(which_orca).resolve().parent))
 
-    if backend == "local":
+    if backend == "local" and local_default:
         candidates.append(local_default)
 
     for candidate in candidates:
@@ -1441,7 +1441,9 @@ def collect_runtime_diagnostics(
         env_updates["DELFIN_ORCA_BASE"] = orca_root
 
     with temporary_environment(env_updates):
-        qm_results = check_tools(["xtb", "crest", "std2", "stda", "xtb4stda", "dftb+"])
+        qm_results = check_tools(
+            ["xtb", "crest", "censo", "anmr", "c2anmr", "nmrplot", "std2", "stda", "xtb4stda", "dftb+"]
+        )
     for name, resolved in qm_results:
         status, detail = _resolved_tool_status(resolved)
         diagnostics.append(
@@ -1770,12 +1772,18 @@ def collect_runtime_diagnostics(
         from delfin.analysis_tools import (
             multiwfn_available,
             censo_available,
+            anmr_available,
+            c2anmr_available,
+            nmrplot_available,
             morfeus_available,
             cclib_available,
             nglview_available,
             packmol_available,
             get_multiwfn_version,
             get_censo_version,
+            get_anmr_version,
+            get_c2anmr_version,
+            get_nmrplot_version,
             get_morfeus_version,
             get_cclib_version,
             get_nglview_version,
@@ -1785,6 +1793,9 @@ def collect_runtime_diagnostics(
         for check_fn, ver_fn, label in [
             (multiwfn_available, get_multiwfn_version, "multiwfn"),
             (censo_available, get_censo_version, "censo"),
+            (anmr_available, get_anmr_version, "anmr"),
+            (c2anmr_available, get_c2anmr_version, "c2anmr"),
+            (nmrplot_available, get_nmrplot_version, "nmrplot"),
             (morfeus_available, get_morfeus_version, "morfeus"),
             (cclib_available, get_cclib_version, "cclib"),
             (nglview_available, get_nglview_version, "nglview"),
