@@ -48,7 +48,11 @@ def create_tab(ctx):
     )
 
     # -- state ----------------------------------------------------------
-    state = {'job_data': []}
+    state = {'job_data': [], 'cancel_armed_job_id': None}
+
+    def _reset_cancel_arm():
+        state['cancel_armed_job_id'] = None
+        cancel_button.description = 'CANCEL JOB'
 
     # -- handlers -------------------------------------------------------
     def _pid_elapsed_seconds(pid):
@@ -355,6 +359,7 @@ def create_tab(ctx):
             return False, f'Failed to write queue: {e}'
 
     def refresh_job_list(button=None):
+        _reset_cancel_arm()
         with job_status_output:
             clear_output()
 
@@ -517,9 +522,16 @@ def create_tab(ctx):
         with job_status_output:
             clear_output()
             if not job_dropdown.value:
+                _reset_cancel_arm()
                 print('No job selected.')
                 return
             job_id = job_dropdown.value
+            if state.get('cancel_armed_job_id') != job_id:
+                state['cancel_armed_job_id'] = job_id
+                cancel_button.description = 'CONFIRM CANCEL'
+                print(f'Click CANCEL JOB again to confirm cancellation of job {job_id}.')
+                return
+            _reset_cancel_arm()
             success, msg = ctx.backend.cancel_job(job_id)
             print(msg)
             if success:
@@ -528,14 +540,20 @@ def create_tab(ctx):
     def rebuild_queue(button):
         with job_status_output:
             clear_output()
+            _reset_cancel_arm()
             ok, msg = _rebuild_queue_from_detected()
             print(msg)
             if ok:
                 refresh_job_list()
 
+    def _on_job_selection_change(change):
+        if change.get('name') == 'value':
+            _reset_cancel_arm()
+
     # -- wiring ---------------------------------------------------------
     refresh_button.on_click(refresh_job_list)
     cancel_button.on_click(cancel_selected_job)
+    job_dropdown.observe(_on_job_selection_change, names='value')
     # Only enable rebuild in local backend
     is_local_backend = not ctx.backend.supports_turbomole  # heuristic
     if is_local_backend:
