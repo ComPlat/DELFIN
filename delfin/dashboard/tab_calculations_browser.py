@@ -56,6 +56,44 @@ from rdkit.Chem import rdDepictor, AllChem
 from rdkit.Chem.Draw import MolToImage
 
 
+ORCA_CPCM_TOP10_SOLVENTS = (
+    "chloroform",
+    "water",
+    "acetonitrile",
+    "dmso",
+    "dmf",
+    "methanol",
+    "ethanol",
+    "thf",
+    "dichloromethane",
+    "toluene",
+)
+
+
+def build_calc_nmr_input(coord_lines, *, pal: int, maxcore: int, solvent: str) -> str:
+    """Build a standalone ORCA 1H NMR input with CPCM solvation."""
+    solvent_name = str(solvent or "chloroform").strip() or "chloroform"
+    coords_text = "\n".join(f"  {line.strip()}" for line in coord_lines if str(line).strip())
+    return (
+        f"!TPSS PCSSEG-1 AUTOAUX NMR CPCM({solvent_name})\n"
+        f"\n"
+        f"%pal\n"
+        f"  nprocs {pal}\n"
+        f"end\n"
+        f"\n"
+        f"%maxcore {maxcore}\n"
+        f"\n"
+        f"* xyz 0 1\n"
+        f"{coords_text}\n"
+        f"*\n"
+        f"\n"
+        f"%EPRNMR\n"
+        f"   NUCLEI = ALL H {{SHIFT, SSALL}}\n"
+        f"   TAU DOBSON\n"
+        f"END\n"
+    )
+
+
 def create_tab(ctx):
     """Create the Calculations Browser tab.
 
@@ -1465,6 +1503,12 @@ def create_tab(ctx):
         value='03:00:00', description='JobTime',
         layout=widgets.Layout(width='200px', height='26px'),
     )
+    calc_nmr_solvent = widgets.Dropdown(
+        options=list(ORCA_CPCM_TOP10_SOLVENTS),
+        value='chloroform',
+        description='Solvent',
+        layout=widgets.Layout(width='220px', height='26px'),
+    )
     calc_nmr_submit_btn = widgets.Button(
         description='Submit', button_style='primary',
         layout=widgets.Layout(width='100px', height='26px'),
@@ -1477,7 +1521,7 @@ def create_tab(ctx):
             'Creates an NMR/ subfolder with the .inp file.</span>'
         ),
         widgets.HBox(
-            [calc_nmr_pal, calc_nmr_maxcore, calc_nmr_time, calc_nmr_submit_btn],
+            [calc_nmr_pal, calc_nmr_maxcore, calc_nmr_time, calc_nmr_solvent, calc_nmr_submit_btn],
             layout=widgets.Layout(
                 width='100%', overflow_x='hidden', gap='8px',
                 flex_flow='row wrap', align_items='center',
@@ -4380,6 +4424,7 @@ def create_tab(ctx):
         pal = max(1, int(calc_nmr_pal.value or 12))
         maxcore = max(100, int(calc_nmr_maxcore.value or 3000))
         time_limit = calc_nmr_time.value.strip() or '03:00:00'
+        solvent = str(calc_nmr_solvent.value or 'chloroform').strip() or 'chloroform'
 
         # Create NMR subfolder
         nmr_dir = _calc_next_available_dir(selected_path.parent, f'{selected_path.stem}_NMR')
@@ -4393,24 +4438,11 @@ def create_tab(ctx):
             return
 
         # Generate .inp content
-        coords_text = '\n'.join(f'  {line.strip()}' for line in coord_lines)
-        inp_content = (
-            f'!TPSS PCSSEG-1 AUTOAUX NMR CPCM(CHCl3)\n'
-            f'\n'
-            f'%pal\n'
-            f'  nprocs {pal}\n'
-            f'end\n'
-            f'\n'
-            f'%maxcore {maxcore}\n'
-            f'\n'
-            f'* xyz 0 1\n'
-            f'{coords_text}\n'
-            f'*\n'
-            f'\n'
-            f'%EPRNMR\n'
-            f'   NUCLEI = ALL H {{SHIFT, SSALL}}\n'
-            f'   TAU DOBSON\n'
-            f'END\n'
+        inp_content = build_calc_nmr_input(
+            coord_lines,
+            pal=pal,
+            maxcore=maxcore,
+            solvent=solvent,
         )
 
         inp_file = f'{job_name}.inp'
@@ -4442,7 +4474,8 @@ def create_tab(ctx):
             job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
             calc_nmr_status.value = (
                 f'<span style="color:#2e7d32;">Submitted <code>{_html.escape(job_name)}</code>'
-                f' (ID: {_html.escape(job_id)}) &mdash; .inp in {_html.escape(nmr_dir.name)}/</span>'
+                f' (ID: {_html.escape(job_id)}) with <code>CPCM({_html.escape(solvent)})</code>'
+                f' &mdash; .inp in {_html.escape(nmr_dir.name)}/</span>'
             )
         else:
             msg = result.stderr or result.stdout or 'Unknown error'
