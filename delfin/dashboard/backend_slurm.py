@@ -41,8 +41,24 @@ class SlurmJobBackend(JobBackend):
             cls._auto_detected_cache = detected
         return cls._auto_detected_cache
 
-    def __init__(self, submit_templates_dir, orca_base=None, tool_binaries=None):
+    # Site-specific environment variables injected into every sbatch call
+    # based on the SLURM profile name from settings.
+    _PROFILE_ENV: dict[str, dict[str, str]] = {
+        'bwunicluster3': {
+            'DELFIN_MODULES': 'devel/python/3.11.7-gnu-14.2',
+            'DELFIN_STAGE_ORCA': '1',
+            'DELFIN_STAGE_VENV': '1',
+            'DELFIN_RUNTIME_CACHE': '1',
+            'DELFIN_NODE_CORES': '96',
+            'DELFIN_NODE_MEM_MB': str(384 * 1024),
+            'DELFIN_HIGHMEM_MB': str(2304 * 1024),
+        },
+    }
+
+    def __init__(self, submit_templates_dir, orca_base=None, tool_binaries=None,
+                 slurm_profile=None):
         self.submit_templates_dir = Path(submit_templates_dir)
+        self.slurm_profile = str(slurm_profile or '').strip()
         self.orca_base = orca_base
         explicit = {
             canonical_tool_name(name): str(value).strip()
@@ -160,6 +176,14 @@ class SlurmJobBackend(JobBackend):
             return int(parts[0]) * 60 + int(parts[1])
         return int(parts[0]) * 60  # SLURM treats bare number as minutes
 
+    def _append_profile_env(self, env_vars: str) -> str:
+        """Inject site-specific env vars based on the SLURM profile."""
+        profile_env = self._PROFILE_ENV.get(self.slurm_profile, {})
+        if not profile_env:
+            return env_vars
+        exports = [f'{key}={value}' for key, value in profile_env.items()]
+        return f'{env_vars},{",".join(exports)}'
+
     def _sbatch(self, job_dir, env_vars, time_limit, pal, mem_mb,
                 job_name, submit_script, *, gpu=None, partition=None):
         """Run sbatch with the given parameters.
@@ -173,6 +197,7 @@ class SlurmJobBackend(JobBackend):
             SLURM partition name, e.g. ``"gpu"`` or ``"gpu_4"``.
             Passed as ``--partition=<partition>`` when set.
         """
+        env_vars = self._append_profile_env(env_vars)
         # USR1 for preemptive sync: half the walltime, capped 30s–300s
         total_secs = self._time_limit_seconds(time_limit)
         usr1_offset = max(30, min(300, total_secs // 2))

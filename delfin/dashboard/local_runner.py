@@ -1,4 +1,4 @@
-"""Built-in local job runner used when ``run_local.sh`` is unavailable."""
+"""Central local job runner for all DELFIN execution modes."""
 
 from __future__ import annotations
 

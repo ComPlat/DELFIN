@@ -467,13 +467,7 @@ def get_repo_submit_templates_dir(repo_dir: str | Path | None) -> Path | None:
     if not repo_dir:
         return None
     repo_path = Path(repo_dir).expanduser()
-    candidate = (
-        repo_path
-        / "examples"
-        / "example_Job_Submission_Scripts"
-        / "BwUniCluster"
-        / "submit_sh"
-    )
+    candidate = repo_path / "delfin" / "submit_templates"
     return candidate if candidate.is_dir() else None
 
 

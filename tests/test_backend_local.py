@@ -39,10 +39,10 @@ sys.modules[_SPEC.name] = _MODULE
 _SPEC.loader.exec_module(_MODULE)
 
 
-def test_local_backend_falls_back_to_python_runner_when_script_is_missing(monkeypatch, tmp_path):
+def test_local_backend_always_uses_python_runner(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
 
-    backend = _MODULE.LocalJobBackend(run_script=tmp_path / "missing.sh")
+    backend = _MODULE.LocalJobBackend()
 
     assert backend._has_launch_target() is True
     assert backend._build_launch_command(3600) == [
@@ -54,26 +54,9 @@ def test_local_backend_falls_back_to_python_runner_when_script_is_missing(monkey
     ]
 
 
-def test_local_backend_prefers_python_runner_even_when_run_script_is_present(monkeypatch, tmp_path):
-    monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
-    run_script = tmp_path / "run_local.sh"
-    run_script.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
-
-    backend = _MODULE.LocalJobBackend(run_script=run_script)
-
-    assert backend._build_launch_command(60) == [
-        "timeout",
-        "60",
-        sys.executable,
-        "-m",
-        "delfin.dashboard.local_runner",
-    ]
-
-
 def test_local_backend_can_oversubscribe_cores_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
     backend = _MODULE.LocalJobBackend(
-        run_script=tmp_path / "missing.sh",
         max_cores=12,
         max_ram_mb=1_400_000,
         allow_oversubscribe=True,
@@ -102,7 +85,6 @@ def test_local_backend_can_oversubscribe_cores_when_enabled(monkeypatch, tmp_pat
 def test_local_backend_can_oversubscribe_ram_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
     backend = _MODULE.LocalJobBackend(
-        run_script=tmp_path / "missing.sh",
         max_cores=384,
         max_ram_mb=1_000,
         allow_oversubscribe=True,
@@ -131,7 +113,6 @@ def test_local_backend_can_oversubscribe_ram_when_enabled(monkeypatch, tmp_path)
 def test_local_backend_oversubscribe_budget_is_integer(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
     backend = _MODULE.LocalJobBackend(
-        run_script=tmp_path / "missing.sh",
         max_cores=12,
         max_ram_mb=1_400_000,
         allow_oversubscribe=True,
@@ -144,7 +125,7 @@ def test_local_backend_oversubscribe_budget_is_integer(monkeypatch, tmp_path):
 
 def test_local_backend_keeps_running_when_wrapper_pid_is_gone_but_children_are_active(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
-    backend = _MODULE.LocalJobBackend(run_script=tmp_path / "missing.sh")
+    backend = _MODULE.LocalJobBackend()
 
     job = {
         "job_id": 42,
@@ -171,7 +152,7 @@ def test_local_backend_keeps_running_when_wrapper_pid_is_gone_but_children_are_a
 
 def test_local_backend_marks_wrapperless_job_failed_when_no_active_process_or_exit_code(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
-    backend = _MODULE.LocalJobBackend(run_script=tmp_path / "missing.sh")
+    backend = _MODULE.LocalJobBackend()
 
     job = {
         "job_id": 43,
@@ -198,7 +179,7 @@ def test_local_backend_marks_wrapperless_job_failed_when_no_active_process_or_ex
 
 def test_local_backend_detects_active_job_processes_from_process_table(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
-    backend = _MODULE.LocalJobBackend(run_script=tmp_path / "missing.sh")
+    backend = _MODULE.LocalJobBackend()
 
     job = {
         "job_id": 44,
@@ -219,7 +200,7 @@ def test_local_backend_detects_active_job_processes_from_process_table(monkeypat
 
 def test_local_backend_detects_active_job_processes_from_cwd(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
-    backend = _MODULE.LocalJobBackend(run_script=tmp_path / "missing.sh")
+    backend = _MODULE.LocalJobBackend()
 
     job_dir = tmp_path / "calc_job"
     job = {
@@ -241,7 +222,6 @@ def test_local_backend_detects_active_job_processes_from_cwd(monkeypatch, tmp_pa
 def test_local_backend_live_load_bypass_can_start_one_extra_job(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
     backend = _MODULE.LocalJobBackend(
-        run_script=tmp_path / "missing.sh",
         max_cores=16,
         max_ram_mb=1_000,
         allow_live_load_bypass=True,
@@ -276,7 +256,6 @@ def test_local_backend_live_load_bypass_can_start_one_extra_job(monkeypatch, tmp
 def test_local_backend_live_load_bypass_respects_cpu_and_ram_guards(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
     backend = _MODULE.LocalJobBackend(
-        run_script=tmp_path / "missing.sh",
         max_cores=16,
         max_ram_mb=1_000,
         allow_live_load_bypass=True,
@@ -309,7 +288,7 @@ def test_local_backend_live_load_bypass_respects_cpu_and_ram_guards(monkeypatch,
 
 def test_local_backend_does_not_enqueue_duplicate_active_submission(monkeypatch, tmp_path):
     monkeypatch.setattr(_MODULE.threading.Thread, "start", lambda self: None)
-    backend = _MODULE.LocalJobBackend(run_script=tmp_path / "missing.sh")
+    backend = _MODULE.LocalJobBackend()
 
     job_dir = tmp_path / "calc_job"
     jobs_data = {

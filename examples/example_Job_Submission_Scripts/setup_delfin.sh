@@ -231,7 +231,7 @@ runtime.setdefault("slurm", {})
 orca_bin = Path("${ORCA_PATH:-}").expanduser() if "${ORCA_PATH:-}" else None
 orca_base = str(orca_bin.parent) if orca_bin else ""
 submit_templates_dir = str(
-    Path("$INSTALL_DIR/examples/example_Job_Submission_Scripts/BwUniCluster/submit_sh").expanduser()
+    Path("$INSTALL_DIR/delfin/submit_templates").expanduser()
 )
 qm_tools_root = str(Path("$INSTALL_DIR/delfin/qm_tools").expanduser())
 
