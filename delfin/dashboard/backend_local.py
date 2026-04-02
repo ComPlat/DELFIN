@@ -21,13 +21,12 @@ from .helpers import parse_time_to_seconds
 class LocalJobBackend(JobBackend):
     """Local server backend using a JSON job queue and subprocess execution."""
 
-    def __init__(self, run_script, orca_base=None,
+    def __init__(self, orca_base=None,
                  jobs_file=None, tool_binaries=None,
                  max_cores=384, max_ram_mb=1_400_000,
                  allow_oversubscribe=False, oversubscribe_factor=1.0,
                  allow_live_load_bypass=False, live_cpu_target_factor=0.95,
                  live_min_free_ram_mb=64_000):
-        self.run_script = Path(run_script)
         self.orca_base = orca_base
         self.jobs_file = Path(jobs_file) if jobs_file else Path.home() / '.delfin_jobs.json'
         self.tool_binaries = {
@@ -80,18 +79,16 @@ class LocalJobBackend(JobBackend):
         return max(1.0, float(self.max_cores) * float(self.live_cpu_target_factor))
 
     def _has_launch_target(self):
-        return importlib.util.find_spec('delfin.dashboard.local_runner') is not None or self.run_script.exists()
+        return importlib.util.find_spec('delfin.dashboard.local_runner') is not None
 
     def _build_launch_command(self, timeout_secs):
-        if importlib.util.find_spec('delfin.dashboard.local_runner') is not None:
-            return [
-                'timeout',
-                str(timeout_secs),
-                sys.executable,
-                '-m',
-                'delfin.dashboard.local_runner',
-            ]
-        return ['timeout', str(timeout_secs), 'bash', str(self.run_script)]
+        return [
+            'timeout',
+            str(timeout_secs),
+            sys.executable,
+            '-m',
+            'delfin.dashboard.local_runner',
+        ]
 
     # ------------------------------------------------------------------
     # Persistence

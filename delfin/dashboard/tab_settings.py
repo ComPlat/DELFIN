@@ -994,6 +994,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 ctx.submit_templates_dir = Path(submit_templates_dir)
                 if hasattr(ctx.backend, 'submit_templates_dir'):
                     ctx.backend.submit_templates_dir = Path(submit_templates_dir)
+                if hasattr(ctx.backend, 'slurm_profile'):
+                    ctx.backend.slurm_profile = str((runtime_settings.get('slurm', {}) or {}).get('profile', '')).strip()
 
         return backend_switch_required, effective_backend, effective_orca_base
 
