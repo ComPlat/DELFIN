@@ -33,6 +33,7 @@ HARTREE_TO_KCAL = 627.5095  # 1 Eh = 627.5095 kcal/mol
 HARTREE_TO_KJ = 2625.5     # 1 Eh = 2625.5 kJ/mol
 R_KCAL = 0.001987204       # gas constant in kcal/(mol·K)
 STABILITY_REACTION_TEMPLATE = "a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}..."
+THERMODYNAMICS_DIRNAME = "thermodynamics"
 
 # ---------------------------------------------------------------------------
 # Solvent database: name → {smiles, donor atom, display name}
@@ -1231,7 +1232,7 @@ def build_stability_constant_plan(
     solv_preopt_steps = _resolve_main_preopt_steps(config)
 
     original_cwd = ctx.control_file_path.parent.resolve()
-    sc_dir = original_cwd / "stability_constant"
+    sc_dir = original_cwd / THERMODYNAMICS_DIRNAME
     sc_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("[SC] Analyzing complex SMILES: %s", smiles)
@@ -1432,7 +1433,7 @@ def build_stability_reaction_plan(
     cwd_lock = threading.RLock()
 
     original_cwd = ctx.control_file_path.parent.resolve()
-    sc_dir = original_cwd / "stability_constant"
+    sc_dir = original_cwd / THERMODYNAMICS_DIRNAME
     sc_dir.mkdir(parents=True, exist_ok=True)
     (sc_dir / "REACTION_MODE.txt").write_text(
         "stability_constant_mode=reaction\n",
@@ -2123,7 +2124,7 @@ def _run_reaction_postprocessing(
         out_path = sc_dir / spec.folder_name / "calc.out"
         sp = extract_free_energy(out_path)
         sp.label = spec.label
-        sp.folder = f"stability_constant/{spec.folder_name}"
+        sp.folder = f"{THERMODYNAMICS_DIRNAME}/{spec.folder_name}"
         sp.charge = spec.charge
         if spec.has_metal:
             occ_dir = sc_dir / spec.folder_name / "species_OCCUPIER"
@@ -2215,7 +2216,7 @@ def _run_postprocessing(
     logger.info("[SC] Extracting solvation complex energy from %s", solv_out)
     g_solv = extract_free_energy(solv_out)
     g_solv.label = f"[M(Solv)_{analysis.n_explicit_solvent}]^{analysis.metal_charge}+"
-    g_solv.folder = "stability_constant/solv_complex"
+    g_solv.folder = f"{THERMODYNAMICS_DIRNAME}/solv_complex"
     g_solv.charge = analysis.metal_charge
 
     # Get OCCUPIER info for solv complex
@@ -2238,7 +2239,7 @@ def _run_postprocessing(
         logger.info("[SC] Extracting ligand %s energy from %s", lig.label, lig_out)
         g_lig = extract_free_energy(lig_out)
         g_lig.label = f"{lig.label} (charge: {lig.charge}, dent: {lig.denticity}, count: {analysis.ligand_counts[lig.smiles]})"
-        g_lig.folder = f"stability_constant/ligand_{i + 1}_{safe_label}"
+        g_lig.folder = f"{THERMODYNAMICS_DIRNAME}/ligand_{i + 1}_{safe_label}"
         g_lig.charge = lig.charge
         g_lig.multiplicity = 1
         g_ligands[lig.smiles] = g_lig
@@ -2249,7 +2250,7 @@ def _run_postprocessing(
     logger.info("[SC] Extracting solvent energy from %s", solv_mol_out)
     g_solvent = extract_free_energy(solv_mol_out)
     g_solvent.label = f"{analysis.solvent_name} (Solvent, displaced: {analysis.n_displaced})"
-    g_solvent.folder = f"stability_constant/solvent_{solvent_label}"
+    g_solvent.folder = f"{THERMODYNAMICS_DIRNAME}/solvent_{solvent_label}"
     g_solvent.charge = 0
     g_solvent.multiplicity = 1
 
