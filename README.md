@@ -135,8 +135,9 @@ ctx = create_dashboard(backend="auto")
 ### GUI with Voila
 
 ```bash
-delfin-voila                 # starts on port 8866
+delfin-voila                 # starts on localhost:8866
 delfin-voila --port 9000     # custom port
+delfin-voila --ip 0.0.0.0    # bind to all interfaces if required
 delfin-voila --dark          # dark theme
 ```
 

@@ -100,7 +100,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     assert "--VoilaConfiguration.preheat_kernel=False" in captured["cmd"]
 
     stdout = capsys.readouterr().out
-    assert "Starting DELFIN Dashboard on http://0.0.0.0:9001" in stdout
+    assert "Starting DELFIN Dashboard on http://localhost:9001" in stdout
 
 
 def test_main_reports_missing_voila_module(monkeypatch, capsys):
@@ -163,7 +163,7 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
         assert exc.code == 0
 
     assert "--no-browser" in captured["cmd"]
-    assert "--Voila.ip=0.0.0.0" in captured["cmd"]
+    assert "--Voila.ip=127.0.0.1" in captured["cmd"]
     assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
     assert "--ServerApp.websocket_ping_interval=30000" in captured["cmd"]
     assert "--ServerApp.websocket_ping_timeout=30000" in captured["cmd"]
