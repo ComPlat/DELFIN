@@ -278,8 +278,8 @@ def main(argv=None):
         "--ip",
         default=None,
         help=(
-            "IP to bind to (default: 0.0.0.0, or 127.0.0.1 inside VS Code; "
-            "set 127.0.0.1 for local-only access)"
+            "IP to bind to (default: 127.0.0.1 for local-only access; "
+            "set 0.0.0.0 only when direct network access is required)"
         ),
     )
     args = parser.parse_args(argv)
@@ -301,7 +301,7 @@ def main(argv=None):
         sys.exit(1)
 
     if args.ip is None:
-        args.ip = "127.0.0.1" if _is_vscode_session() else "0.0.0.0"
+        args.ip = "127.0.0.1"
 
     if args.open_browser is True:
         open_browser = True
