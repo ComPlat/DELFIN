@@ -360,6 +360,7 @@ def _run_mode(mode: str) -> int:
             censo_charge = str(os.environ.get('DELFIN_CENSO_NMR_CHARGE') or '0').strip() or '0'
             censo_multiplicity = str(os.environ.get('DELFIN_CENSO_NMR_MULTIPLICITY') or '1').strip() or '1'
             censo_mhz = str(os.environ.get('DELFIN_CENSO_NMR_MHZ') or '400').strip() or '400'
+            censo_resume = str(os.environ.get('DELFIN_CENSO_NMR_RESUME') or '').strip().lower()
             cmd.extend([
                 '--solvent',
                 censo_solvent,
@@ -370,6 +371,8 @@ def _run_mode(mode: str) -> int:
                 '--mhz',
                 censo_mhz,
             ])
+            if censo_resume in {'1', 'true', 'yes', 'on'}:
+                cmd.append('--resume')
         return _run_and_tee(cmd, Path.cwd() / output_name)
     if resolved_mode == 'delfin-co2-chain':
         species_delta = str(os.environ.get('DELFIN_CO2_SPECIES_DELTA') or '0')

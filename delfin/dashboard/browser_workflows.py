@@ -762,6 +762,67 @@ def _build_censo_anmr_summary(payload: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _truthy_env(name: str) -> bool:
+    value = str(os.environ.get(name, "")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _file_contains(path: Path, needle: str) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        return needle in path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+
+
+def _censo_resume_requested(cli_flag: bool) -> bool:
+    return bool(cli_flag) or _truthy_env("DELFIN_CENSO_NMR_RESUME")
+
+
+def _crest_outputs_complete(workdir: Path) -> bool:
+    required = [
+        workdir / "crest_conformers.xyz",
+        workdir / "anmr_nucinfo",
+        workdir / "anmr_rotamer",
+    ]
+    return all(path.is_file() and path.stat().st_size > 0 for path in required)
+
+
+def _censo_outputs_complete(workdir: Path) -> bool:
+    return _file_contains(workdir / "censo.out", "CENSO all done!")
+
+
+def _c2anmr_outputs_complete(workdir: Path) -> bool:
+    anmr_dir = workdir / "anmr"
+    return anmr_dir.is_dir() and (anmr_dir / "anmr_enso").is_file()
+
+
+def _tms_reference_complete(workdir: Path, anmr_dir: Path) -> bool:
+    return (
+        (anmr_dir / ".anmrrc").is_file()
+        and (
+            _file_contains(workdir / "tms_reference.log", "ORCA TERMINATED NORMALLY")
+            or (workdir / "tms_reference.out").is_file()
+        )
+    )
+
+
+def _anmr_outputs_complete(anmr_dir: Path) -> bool:
+    return (
+        (anmr_dir / "anmr.dat").is_file()
+        and _file_contains(anmr_dir / "anmr.out", "All done.")
+    )
+
+
+def _existing_anmr_plot(anmr_dir: Path) -> str:
+    for name in ("anmr_spectrum.png", "anmr_spectrum.pdf", "anmr_spectrum.svg"):
+        candidate = anmr_dir / name
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
 def _run_censo_anmr(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m delfin.dashboard.browser_workflows censo_anmr",
@@ -776,6 +837,7 @@ def _run_censo_anmr(argv: list[str]) -> int:
     parser.add_argument("--pal", type=int, default=8)
     parser.add_argument("--maxcore", type=int, default=3000)
     parser.add_argument("--mhz", type=float, default=400.0)
+    parser.add_argument("--resume", action="store_true", help="Reuse completed workflow stages in the existing workdir.")
     parser.add_argument("--json-out", help="Optional JSON summary file.")
     args = parser.parse_args(argv)
 
@@ -798,6 +860,7 @@ def _run_censo_anmr(argv: list[str]) -> int:
             workdir=workdir,
         )
         nmrplot_path = _resolved_path_or_empty("nmrplot")
+        resume_mode = _censo_resume_requested(args.resume)
 
         xyz_target = workdir / source_xyz.name
         if source_xyz.resolve() != xyz_target.resolve():
@@ -810,13 +873,13 @@ def _run_censo_anmr(argv: list[str]) -> int:
 
         coord_path = write_text_file(workdir / "coord", xyz_body_to_coord_text(xyz_body))
 
-        crest_cmd = [tools["crest"], str(coord_path)]
-        if str(args.solvent).strip().lower() != "gas":
-            crest_cmd.extend(["-g", str(args.solvent).strip().lower()])
-        crest_cmd.extend(["-gfn2", "-T", str(max(1, int(args.pal))), "-nmr"])
-        _run_logged(crest_cmd, cwd=workdir, log_path=workdir / "crest.out")
-
         ensemble_path = workdir / "crest_conformers.xyz"
+        if not (resume_mode and _crest_outputs_complete(workdir)):
+            crest_cmd = [tools["crest"], str(coord_path)]
+            if str(args.solvent).strip().lower() != "gas":
+                crest_cmd.extend(["-g", str(args.solvent).strip().lower()])
+            crest_cmd.extend(["-gfn2", "-T", str(max(1, int(args.pal))), "-nmr"])
+            _run_logged(crest_cmd, cwd=workdir, log_path=workdir / "crest.out")
         if not ensemble_path.is_file():
             raise RuntimeError("CREST finished without writing crest_conformers.xyz")
 
@@ -841,33 +904,36 @@ def _run_censo_anmr(argv: list[str]) -> int:
             pal=max(1, int(args.pal)),
             solvent=str(args.solvent).strip().lower(),
         )
-        _run_logged(censo_cmd, cwd=workdir, log_path=workdir / "censo.out")
+        if not (resume_mode and _censo_outputs_complete(workdir)):
+            _run_logged(censo_cmd, cwd=workdir, log_path=workdir / "censo.out")
         _ensure_censo_nmr_coords(workdir)
 
-        _run_logged(
-            _helper_launch_command(tools["c2anmr"]),
-            cwd=workdir,
-            log_path=workdir / "c2anmr.out",
-        )
         anmr_dir = workdir / "anmr"
+        if not (resume_mode and _c2anmr_outputs_complete(workdir)):
+            _run_logged(
+                _helper_launch_command(tools["c2anmr"]),
+                cwd=workdir,
+                log_path=workdir / "c2anmr.out",
+            )
         if not anmr_dir.is_dir():
             raise RuntimeError("c2anmr finished without creating the anmr/ folder")
         _ensure_anmr_coord_inputs(workdir=workdir, anmr_dir=anmr_dir)
 
-        tms_xyz, _num_atoms, _method, tms_error = smiles_to_xyz_quick("C[Si](C)(C)C")
-        if tms_error or not tms_xyz:
-            raise RuntimeError(f"Failed to generate TMS reference geometry: {tms_error or 'unknown error'}")
-        tms_body = "\n".join(line for line in tms_xyz.splitlines() if line.strip())
-        tms_inp = write_text_file(
-            workdir / "tms_reference.inp",
-            build_orca_reference_input(
-                tms_body,
-                solvent=str(args.solvent).strip().lower(),
-                pal=max(1, int(args.pal)),
-                maxcore=max(100, int(args.maxcore)),
-            ),
-        )
-        _run_logged([tools["orca"], str(tms_inp.name)], cwd=workdir, log_path=workdir / "tms_reference.log")
+        if not (resume_mode and _tms_reference_complete(workdir, anmr_dir)):
+            tms_xyz, _num_atoms, _method, tms_error = smiles_to_xyz_quick("C[Si](C)(C)C")
+            if tms_error or not tms_xyz:
+                raise RuntimeError(f"Failed to generate TMS reference geometry: {tms_error or 'unknown error'}")
+            tms_body = "\n".join(line for line in tms_xyz.splitlines() if line.strip())
+            tms_inp = write_text_file(
+                workdir / "tms_reference.inp",
+                build_orca_reference_input(
+                    tms_body,
+                    solvent=str(args.solvent).strip().lower(),
+                    pal=max(1, int(args.pal)),
+                    maxcore=max(100, int(args.maxcore)),
+                ),
+            )
+            _run_logged([tools["orca"], str(tms_inp.name)], cwd=workdir, log_path=workdir / "tms_reference.log")
         tms_out = _resolve_orca_reference_result_path(workdir=workdir, stem="tms_reference")
 
         tms_result = parse_nmr_orca(tms_out)
@@ -886,11 +952,12 @@ def _run_censo_anmr(argv: list[str]) -> int:
             ),
         )
 
-        anmr_cmd = f"ulimit -s unlimited && {shlex.quote(tools['anmr'])} -plain -mf {float(args.mhz):.1f}"
-        _run_logged_shell(anmr_cmd, cwd=anmr_dir, log_path=anmr_dir / "anmr.out")
+        if not (resume_mode and _anmr_outputs_complete(anmr_dir)):
+            anmr_cmd = f"ulimit -s unlimited && {shlex.quote(tools['anmr'])} -plain -mf {float(args.mhz):.1f}"
+            _run_logged_shell(anmr_cmd, cwd=anmr_dir, log_path=anmr_dir / "anmr.out")
 
-        plot_path = ""
-        if nmrplot_path:
+        plot_path = _existing_anmr_plot(anmr_dir) if resume_mode else ""
+        if nmrplot_path and not plot_path:
             ppm_min, ppm_max = _guess_plot_window(str(args.solvent).strip().lower())
             plot_cmd = [
                 *_helper_launch_command(nmrplot_path),
