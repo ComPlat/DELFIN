@@ -250,3 +250,26 @@ def test_render_anmr_png_writes_png_from_anmr_dat(tmp_path):
 
     assert output is not None
     assert output.is_file()
+
+
+def test_resume_detectors_identify_completed_outputs(tmp_path):
+    workdir = tmp_path
+    (workdir / "crest_conformers.xyz").write_text("2\nx\nH 0 0 0\nH 0 0 1\n", encoding="utf-8")
+    (workdir / "anmr_nucinfo").write_text("nucinfo\n", encoding="utf-8")
+    (workdir / "anmr_rotamer").write_text("rotamer\n", encoding="utf-8")
+    (workdir / "censo.out").write_text("...\nCENSO all done!\n", encoding="utf-8")
+    anmr_dir = workdir / "anmr"
+    anmr_dir.mkdir()
+    (anmr_dir / "anmr_enso").write_text("enso\n", encoding="utf-8")
+    (anmr_dir / "anmr.dat").write_text("0.0 1.0\n", encoding="utf-8")
+    (anmr_dir / "anmr.out").write_text("...\nAll done.\n", encoding="utf-8")
+    (anmr_dir / "anmr_spectrum.png").write_text("png\n", encoding="utf-8")
+    (workdir / "tms_reference.log").write_text("...\nORCA TERMINATED NORMALLY\n", encoding="utf-8")
+    (anmr_dir / ".anmrrc").write_text("[refs]\n", encoding="utf-8")
+
+    assert browser_workflows._crest_outputs_complete(workdir) is True
+    assert browser_workflows._censo_outputs_complete(workdir) is True
+    assert browser_workflows._c2anmr_outputs_complete(workdir) is True
+    assert browser_workflows._tms_reference_complete(workdir, anmr_dir) is True
+    assert browser_workflows._anmr_outputs_complete(anmr_dir) is True
+    assert browser_workflows._existing_anmr_plot(anmr_dir).endswith("anmr_spectrum.png")
