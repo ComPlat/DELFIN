@@ -123,3 +123,31 @@ def test_run_mode_orca_skips_nmr_postprocess_for_non_nmr_input(monkeypatch, tmp_
 
     assert rc == 0
     assert run_calls == [(inp_path.name, "plain.out")]
+
+
+def test_run_mode_censo_anmr_passes_resume_flag(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    xyz_path = tmp_path / "mol.xyz"
+    xyz_path.write_text("2\nx\nH 0 0 0\nH 0 0 1\n", encoding="utf-8")
+
+    monkeypatch.setenv("DELFIN_XYZ_FILE", str(xyz_path))
+    monkeypatch.setenv("DELFIN_WORKFLOW_LABEL", "mol_CENSO_ANMR")
+    monkeypatch.setenv("DELFIN_CENSO_NMR_SOLVENT", "chcl3")
+    monkeypatch.setenv("DELFIN_CENSO_NMR_CHARGE", "0")
+    monkeypatch.setenv("DELFIN_CENSO_NMR_MULTIPLICITY", "1")
+    monkeypatch.setenv("DELFIN_CENSO_NMR_MHZ", "400")
+    monkeypatch.setenv("DELFIN_CENSO_NMR_RESUME", "1")
+
+    captured = {}
+
+    def fake_run_and_tee(cmd, path):
+        captured["cmd"] = cmd
+        captured["path"] = path
+        return 0
+
+    monkeypatch.setattr(_MODULE, "_run_and_tee", fake_run_and_tee)
+
+    rc = _MODULE._run_mode("censo_anmr")
+
+    assert rc == 0
+    assert "--resume" in captured["cmd"]
