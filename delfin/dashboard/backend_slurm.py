@@ -1,6 +1,7 @@
 """SLURM job backend: sbatch / squeue / scancel."""
 
 import os
+import socket
 import subprocess
 from pathlib import Path
 from typing import List, Tuple
@@ -55,10 +56,23 @@ class SlurmJobBackend(JobBackend):
         },
     }
 
+    @staticmethod
+    def _detect_profile() -> str:
+        """Auto-detect the site profile from hostname / FQDN."""
+        try:
+            fqdn = socket.getfqdn().lower()
+        except Exception:
+            fqdn = ""
+        hostname = os.environ.get("HOSTNAME", "").lower() or fqdn.split(".")[0]
+        if "scc.kit.edu" in fqdn or hostname.startswith("uc3"):
+            return "bwunicluster3"
+        return ""
+
     def __init__(self, submit_templates_dir, orca_base=None, tool_binaries=None,
                  slurm_profile=None):
         self.submit_templates_dir = Path(submit_templates_dir)
-        self.slurm_profile = str(slurm_profile or '').strip()
+        explicit_profile = str(slurm_profile or '').strip()
+        self.slurm_profile = explicit_profile or self._detect_profile()
         self.orca_base = orca_base
         explicit = {
             canonical_tool_name(name): str(value).strip()
