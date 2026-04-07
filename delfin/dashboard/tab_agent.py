@@ -717,7 +717,7 @@ def create_tab(ctx):
         layout=widgets.Layout(width="195px"),
         style={"description_width": "42px"},
         tooltip="Permission profile: Plan=read-only, Default=ask all changes, "
-                "Erlaubt=repo free/calc asks, Full=everything except remote archive",
+                "Erlaubt=repo free/calc asks, Full=all free (archive always read-only)",
     )
 
     # Load saved preferences
@@ -1760,7 +1760,7 @@ def create_tab(ctx):
                     "plan": "Read-only — agent can only browse and analyze",
                     "default": "Ask for everything that changes",
                     "erlaubt": "Repo free, calc/archive need confirmation",
-                    "full": "Full access (remote archive still read-only)",
+                    "full": "Full access (archive + remote archive always read-only)",
                 }
                 for pid in valid:
                     marker = " ◀" if pid == cur else ""
@@ -2746,11 +2746,11 @@ def create_tab(ctx):
             "unknown":        (-1, True),
         },
         "full": {
-            # Everything works except remote archive
+            # Everything works except archive & remote archive
             "workspace":      (3, False),
             "calc":           (3, False),  # auto-approved
             "repo":           (3, False),  # auto-approved
-            "archive":        (3, False),  # writable!
+            "archive":        (0, True),   # read-only ALWAYS
             "remote_archive": (0, True),   # read-only ALWAYS
             "unknown":        (-1, True),
         },
@@ -2851,14 +2851,13 @@ def create_tab(ctx):
         max_tier, _ = perms.get(zone, (-1, True))
         if tier > max_tier:
             profile = state.get("_perm_profile", "default")
-            if zone == "remote_archive":
-                return "⛔ Blocked: Remote Archive is always read-only."
-            if zone == "archive" and profile != "full":
-                return "⛔ Blocked: Archive is read-only (use /perms full to unlock)."
+            if zone in ("archive", "remote_archive"):
+                label = "Remote Archive" if zone == "remote_archive" else "Archive"
+                return f"⛔ Blocked: {label} is always read-only."
             if zone == "unknown":
                 return "⛔ Blocked: Path is outside allowed directories."
             if profile == "plan":
-                return f"⛔ Blocked: Plan mode is read-only (use /perms default to allow changes)."
+                return "⛔ Blocked: Plan mode is read-only (use /perms default to allow changes)."
             return f"⛔ Blocked: Insufficient permissions for {zone} (profile: {profile})."
         return None
 
