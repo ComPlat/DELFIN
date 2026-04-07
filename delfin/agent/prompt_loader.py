@@ -8,7 +8,12 @@ from typing import Any
 try:
     import yaml
 except ImportError:
-    yaml = None  # type: ignore[assignment]
+    try:
+        from delfin.agent.api_client import _auto_install
+        _auto_install("pyyaml")
+        import yaml
+    except Exception:
+        yaml = None  # type: ignore[assignment]
 
 
 def _read_text(path: Path) -> str:
