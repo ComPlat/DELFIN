@@ -1376,6 +1376,14 @@ def create_tab(ctx):
 
         cmd = text.lower().strip()
 
+        # -- Global safety: archive directories are read-only (all modes) --
+        # Block destructive commands that target archive paths.
+        if _is_archive_path(text) and _command_tier(cmd) >= 2:
+            _append_system_message(
+                "\u26d4 Blocked: Archive directories are read-only."
+            )
+            return True
+
         if cmd == "/help":
             _append_system_message(
                 "Available commands:\n"
