@@ -67,6 +67,11 @@ class DashboardContext:
     # Agent engine (set by tab_agent, used cross-tab)
     agent_engine: Any = None
 
+    # Cross-tab refs for agent dashboard control
+    submit_refs: dict = field(default_factory=dict)
+    orca_builder_refs: dict = field(default_factory=dict)
+    job_status_refs: dict = field(default_factory=dict)
+
     # Templates
     default_control: str = ''
     only_goat_template: str = ''

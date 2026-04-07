@@ -70,6 +70,11 @@ Key functions: `read_control_file()`, `validate_control_text()`,
 Multi-phase parsing: literal eval → sequence blocks → template defaults merge.
 Handles OCCUPIER sequence blocks, GUPPY legacy syntax, ONIOM detection.
 
+ORCA input override system (advanced):
+- `keyword:<basename>=<kw>` — add/replace keywords in the ORCA `!` line
+- `addition:<basename>=<block>` — append blocks (%moinp, %geom, etc.)
+- Base names: `initial`, `ox_step_1-3`, `red_step_1-3`, `s0`, `s1`, `t1`
+
 #### CONTROL Validator (`delfin/common/control_validator.py`)
 Comprehensive field validation with type coercion and constraint checking.
 `FieldSpec` class defines each field's type, range, default, required status,
@@ -178,9 +183,67 @@ Integrates all components: config parsing, pipeline, job management, reporting.
 
 ### Domain-Specific Modules
 
+#### OCCUPIER System (`delfin/occupier*.py`, `delfin/parallel_occupier.py`)
+Electrochemical workflow: oxidation/reduction sequences for redox potential
+calculation. OCCUPIER defines a "tree" of electrochemical steps (deep/deep2)
+where each molecule undergoes sequential ox/red cycles.
+Key files:
+- `occupier.py`: Core OCCUPIER logic, step execution
+- `occupier_sequences.py`: Sequence definitions (deep, deep2 trees)
+- `occupier_auto.py`: Automatic OCCUPIER tree generation
+- `parallel_occupier.py`: `OccupierExecutionContext`, `build_flat_occupier_fob_jobs()`
+  — flattens the tree into parallel jobs for the shared scheduler
+- `occupier_flat_extraction.py`: Extracts results from flat job structure
+CONTROL keys: `OCCUPIER_method` (auto/manually), `OCCUPIER_tree` (deep/deep2).
+Each step produces a "FoB" (Fragment of Battery) — a single ORCA calculation
+in the oxidation/reduction sequence.
+
+#### Redox Potentials & Thermochemistry
+Redox potentials are computed from Gibbs free energy differences between
+oxidation states. `E_ref` is the reference electrode potential.
+Key functions: `get_E_ref()` in `config.py`, `compute_summary()` in
+`pipeline.py`, reporting in `delfin/reporting/`.
+The pipeline collects energies from all steps, computes ΔG, and converts
+to reduction potentials relative to the chosen reference electrode.
+CONTROL key: `E_ref` (reference electrode potential, e.g., SHE, Fc/Fc+).
+
+#### ESD Module — Excited State Dynamics (`delfin/esd_module.py`)
+Time-Dependent DFT (TD-DFT) calculations for excited states (S1, T1, etc.).
+Generates ORCA inputs with TD-DFT keywords, manages state-specific optimizations.
+Key files:
+- `esd_module.py`: Main logic — adds ESD jobs to the scheduler as dependencies
+  on the classic S0 ground-state calculation
+- `esd_input_generator.py`: Generates ORCA input with TD-DFT blocks
+- `esd_results.py`: Parses excited state energies, oscillator strengths
+- `reporting/esd_report.py`: UV-Vis spectra and ESD report generation
+CONTROL keys: `ESD_modul` (yes/no), `ESD_modus` (absorption/emission),
+`ESD_T1_opt` (yes/no), `states` (e.g., "3 S1 T1").
+
+#### ORCA Interface (`delfin/orca/`)
+Generates ORCA input files, parses output (energies, geometries, frequencies).
+- `common/orca_blocks.py`: Input block generation (keywords, coordinates, %pal, %maxcore, MOREAD)
+- `orca_recovery.py`: Recovery logic for crashes/restarts
+- `define.py`: ORCA keyword resolution and method definitions
+
+#### NMR/ANMR Workflow (`delfin/ensemble_nmr.py`)
+Ensemble NMR spectrum calculation via ANMR (Grimme's tool).
+Coordinates CREST conformer search → ORCA NMR shielding calculations →
+ANMR Boltzmann averaging → spectrum plot. CONTROL key: `anmr`.
+Resume support for interrupted workflows.
+
+#### CENSO Workflow (`delfin/analysis_tools/censo_wrapper.py`)
+Wrapper for CENSO (Commandline ENergetic SOrting) — multi-level conformer
+ensemble refinement. Stages: prescreening → screening → optimization → refinement.
+Supports xTB/DFT/hybrid; threshold-based conformer pruning.
+Used by ANMR and standalone conformer analysis.
+
+#### ChemDarwin (`delfin/dashboard/tab_chemdarwin.py`)
+Evolutionary algorithm for multi-parameter optimization of molecular properties.
+Dashboard tab for configuring and running genetic optimization campaigns.
+
 #### CO2 Coordinator (`delfin/co2/`)
-Places CO2 molecules near metal complexes. Uses Fibonacci sphere sampling for
-direction optimization, orientation scanning, and xTB/ORCA single-point ranking.
+Places CO2 molecules near metal complexes. Fibonacci sphere sampling for
+direction optimization, orientation scanning, xTB/ORCA single-point ranking.
 Key file: `CO2_Coordinator6.py`. CONTROL keys: `co2_coordination`, `place_axis`,
 `co2_species_delta`.
 
@@ -190,9 +253,54 @@ tetrahedral, square_planar, etc.) → PSO swarm placement (6 DOF per ligand) →
 optional BFGS refinement → optional xTB GFN2 re-ranking. CLI: `delfin-build2`.
 Uses VdW radii for clash detection, Procrustes init for bidentate+ ligands.
 
-#### ORCA Interface (`delfin/orca/`)
-Generates ORCA input files, parses output (energies, geometries, frequencies).
-Recovery logic in `orca_recovery.py` handles crashes and restarts.
+### Dashboard Tabs
+
+The dashboard has these tabs (all in `delfin/dashboard/`):
+- **Submit Job** (`tab_submit.py`): CONTROL editor, coords/SMILES input,
+  job name, validation, submission via backend. The agent can control it via
+  `ctx.submit_refs` (control_widget, coords_widget, submit_button).
+- **Recalc** (`tab_recalc.py`): Re-run calculations with modified parameters.
+- **Job Status** (`tab_job_status.py`): Live job list, cancel, refresh.
+  Agent access via `ctx.job_status_refs` (refresh_job_list).
+- **ORCA Builder** (`tab_orca_builder.py`): Visual ORCA input builder with
+  method/basis/charge/mult dropdowns, 3D preview, drag-drop XYZ.
+  Agent access via `ctx.orca_builder_refs` (all widget refs).
+- **Calculations** (`tab_calculations_browser.py`): File browser for calc_dir,
+  view outputs, recalc workflows, smart recalc.
+- **Archive** (`tab_archive_statistics.py`): Browse archived results.
+- **Agent** (`tab_agent.py`): AI agent chat with multi-agent pipeline.
+- **Settings** (`tab_settings.py`): Runtime, tools, agent config, SSH.
+- **ChemDarwin** (`tab_chemdarwin.py`): Evolutionary optimization (SLURM only).
+- **TURBOMOLE Builder** (`tab_turbomole_builder.py`): TURBOMOLE input (SLURM only).
+- **Remote Archive** (`tab_remote_archive.py`): SSH file transfer, remote browsing.
+
+Dashboard control slash commands (from Agent tab):
+`/tab`, `/control show|set|validate`, `/submit`, `/orca show|set|submit`, `/jobs`
+
+### Reporting (`delfin/reporting/`)
+- `delfin_collector.py`: Collects results from calculation directories into JSON
+- `delfin_reports.py`: Summary reports (energies, Gibbs, redox potentials)
+- `delfin_docx_report.py`: DOCX report generation
+- `esd_report.py`, `uv_vis_report.py`: Excited state and UV-Vis reports
+- `esp_report.py`: Electrostatic potential reports
+- `occupier_reports.py`: OCCUPIER sequence reports
+
+### CONTROL Keys Quick Reference
+
+| Category | Key | Values | Purpose |
+|----------|-----|--------|---------|
+| Molecule | `charge`, `mult` | int | Formal charge, spin multiplicity |
+| DFT | `functional`, `basis`, `dispersion` | string | PBE0, def2-SVP, D3BJ/D4 |
+| Solvent | `solvent` | string | CPCM solvent name |
+| Method | `method` | classic/manually | Workflow type |
+| Resources | `PAL`, `maxcore` | int | Cores per job, memory per core (MB) |
+| Geometry | `opt`, `freq` | yes/no | Optimization, frequency calculation |
+| OCCUPIER | `OCCUPIER_method`, `OCCUPIER_tree` | auto/manually, deep | Redox workflow |
+| Redox | `E_ref`, `calc_potential_method` | float, 1/2/3 | Reference electrode, method |
+| ESD | `ESD_modul`, `ESD_modus`, `states` | yes/no, tddft/deltaSCF | Excited states |
+| Spectroscopy | `anmr`, `hyperpol_xTB`, `tadf_xTB` | yes/no | NMR, hyperpolarizability, TADF |
+| CO2 | `co2_coordination`, `place_axis` | on/off, +z/-z | CO2 placement |
+| Overrides | `keyword:<base>=`, `addition:<base>=` | string | ORCA input customization |
 
 ### Testing
 Tests in `tests/`. Run with `python -m pytest tests/ -x -q`.
