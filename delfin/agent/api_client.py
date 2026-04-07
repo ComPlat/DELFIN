@@ -552,7 +552,8 @@ class OpenAIClient(_BaseClient):
         "o3": (2.0, 8.0),
     }
 
-    def __init__(self, api_key: str = "", model: str = ""):
+    def __init__(self, api_key: str = "", model: str = "",
+                 base_url: str = "", key_env_var: str = "OPENAI_API_KEY"):
         try:
             import openai  # noqa: F401
         except ImportError:
@@ -560,16 +561,19 @@ class OpenAIClient(_BaseClient):
                 "The 'openai' package is required for OpenAI mode. "
                 "Install with: pip install openai"
             )
-        resolved_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        resolved_key = api_key or os.environ.get(key_env_var, "")
         if not resolved_key:
             raise ValueError(
-                "No OpenAI API key found. Set the OPENAI_API_KEY "
+                f"No API key found. Set the {key_env_var} "
                 "environment variable before launching the dashboard."
             )
         import openai
 
         self.model = model or self.DEFAULT_MODEL
-        self.client = openai.OpenAI(api_key=resolved_key)
+        kwargs: dict[str, Any] = {"api_key": resolved_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self.client = openai.OpenAI(**kwargs)
 
     def switch_model(self, model: str) -> None:
         """Switch model (no process to kill, just update the name)."""
@@ -862,6 +866,13 @@ def create_client(
     cwd : str
         Working directory for the CLI process.
     """
+    if provider == "kit":
+        kit_key = api_key or os.environ.get("KIT_TOOLBOX_API_KEY", "")
+        return OpenAIClient(
+            api_key=kit_key, model=model,
+            base_url="https://ki-toolbox.scc.kit.edu/api/v1",
+            key_env_var="KIT_TOOLBOX_API_KEY",
+        )
     if provider == "openai":
         if backend == "cli":
             return CodexCLIClient(model=model, cwd=cwd)
