@@ -1,4 +1,4 @@
-"""Client backends for the DELFIN Agent: Claude Code CLI or Anthropic API."""
+"""Client backends for the DELFIN Agent: Claude CLI, Anthropic API, or OpenAI API."""
 
 from __future__ import annotations
 
@@ -521,11 +521,147 @@ class APIClient(_BaseClient):
 
 
 # ---------------------------------------------------------------------------
+# OpenAI backend (uses OpenAI API key)
+# ---------------------------------------------------------------------------
+
+class OpenAIClient(_BaseClient):
+    """Use the OpenAI Python SDK for GPT / o-series models.
+
+    Requires an API key (``OPENAI_API_KEY`` or passed explicitly).
+    Supports text streaming and cost tracking.
+    """
+
+    DEFAULT_MODEL = "gpt-4.1"
+
+    # Pricing per million tokens (USD).
+    _PRICING: dict[str, tuple[float, float]] = {
+        "gpt-4.1": (2.0, 8.0),
+        "gpt-4.1-mini": (0.40, 1.60),
+        "gpt-4.1-nano": (0.10, 0.40),
+        "o4-mini": (1.10, 4.40),
+        "o3": (2.0, 8.0),
+    }
+
+    def __init__(self, api_key: str = "", model: str = ""):
+        try:
+            import openai  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "The 'openai' package is required for OpenAI mode. "
+                "Install with: pip install openai"
+            )
+        resolved_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        if not resolved_key:
+            raise ValueError(
+                "No OpenAI API key found. Set the OPENAI_API_KEY "
+                "environment variable before launching the dashboard."
+            )
+        import openai
+
+        self.model = model or self.DEFAULT_MODEL
+        self.client = openai.OpenAI(api_key=resolved_key)
+
+    def switch_model(self, model: str) -> None:
+        """Switch model (no process to kill, just update the name)."""
+        if model and model != self.model:
+            self.model = model
+
+    def kill(self) -> None:
+        """No-op — API client has no persistent process."""
+
+    @property
+    def session_id(self) -> str:
+        """OpenAI backend has no session concept."""
+        return ""
+
+    def _estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
+        pricing = self._PRICING.get(self.model)
+        if not pricing:
+            pricing = (2.0, 8.0)
+        return (input_tokens * pricing[0] + output_tokens * pricing[1]) / 1_000_000
+
+    def stream_message(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int = 4096,
+        session_id: str = "",
+        thinking_budget: int = 0,
+    ) -> Generator[StreamEvent, None, None]:
+        """Stream via the OpenAI Chat Completions API."""
+        api_messages: list[dict[str, str]] = []
+        is_reasoning = self.model.startswith("o")
+
+        if system:
+            # o-series uses "developer" role instead of "system"
+            sys_role = "developer" if is_reasoning else "system"
+            api_messages.append({"role": sys_role, "content": system})
+
+        for msg in messages:
+            api_messages.append({
+                "role": msg["role"],
+                "content": msg["content"],
+            })
+
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": api_messages,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+
+        if is_reasoning:
+            kwargs["max_completion_tokens"] = max_tokens
+            # Map thinking budget to reasoning_effort
+            if thinking_budget > 30000:
+                kwargs["reasoning_effort"] = "high"
+            elif thinking_budget > 10000:
+                kwargs["reasoning_effort"] = "medium"
+            else:
+                kwargs["reasoning_effort"] = "low"
+        else:
+            kwargs["max_tokens"] = max_tokens
+
+        _total_in = 0
+        _total_out = 0
+
+        stream = self.client.chat.completions.create(**kwargs)
+        try:
+            for chunk in stream:
+                # Token usage (only in the final chunk with stream_options)
+                if chunk.usage:
+                    _total_in = chunk.usage.prompt_tokens or 0
+                    _total_out = chunk.usage.completion_tokens or 0
+
+                if not chunk.choices:
+                    continue
+
+                choice = chunk.choices[0]
+                delta = choice.delta
+
+                if delta and delta.content:
+                    yield StreamEvent(type="text_delta", text=delta.content)
+
+                if choice.finish_reason:
+                    cost = self._estimate_cost(_total_in, _total_out)
+                    yield StreamEvent(
+                        type="message_delta",
+                        input_tokens=_total_in,
+                        output_tokens=_total_out,
+                        cost_usd=cost,
+                        stop_reason=choice.finish_reason,
+                    )
+        finally:
+            stream.close()
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
 def create_client(
     backend: str = "cli",
+    provider: str = "claude",
     api_key: str = "",
     model: str = "",
     claude_path: str = "",
@@ -538,8 +674,10 @@ def create_client(
     ----------
     backend : str
         ``"cli"`` (default) or ``"api"``.
+    provider : str
+        ``"claude"`` (default) or ``"openai"``.
     api_key : str
-        Only needed for ``"api"`` backend.
+        Only needed for API backends.
     model : str
         Model name/alias.
     claude_path : str
@@ -550,6 +688,9 @@ def create_client(
     cwd : str
         Working directory for the CLI process.
     """
+    if provider == "openai":
+        openai_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        return OpenAIClient(api_key=openai_key, model=model)
     if backend == "api":
         return APIClient(api_key=api_key, model=model)
     return CLIClient(model=model, claude_path=claude_path,

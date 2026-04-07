@@ -571,16 +571,33 @@ def create_tab(ctx):
         layout=widgets.Layout(width="auto"),
     )
 
-    # Model selector (directly in the agent tab for quick switching)
-    model_dropdown = widgets.Dropdown(
-        options=[
-            ("Opus", "opus"),
-            ("Sonnet", "sonnet"),
-            ("Haiku", "haiku"),
+    # Provider selector (Claude vs OpenAI)
+    _PROVIDER_MODELS = {
+        "claude": [("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")],
+        "openai": [
+            ("GPT-4.1", "gpt-4.1"),
+            ("GPT-4.1-mini", "gpt-4.1-mini"),
+            ("GPT-4.1-nano", "gpt-4.1-nano"),
+            ("o4-mini", "o4-mini"),
         ],
+    }
+    _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-4.1-mini"}
+    _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-4.1-nano"}
+
+    provider_dropdown = widgets.Dropdown(
+        options=[("Claude", "claude"), ("OpenAI", "openai")],
+        value="claude",
+        description="Provider:",
+        layout=widgets.Layout(width="145px"),
+        style={"description_width": "55px"},
+    )
+
+    # Model selector (options depend on selected provider)
+    model_dropdown = widgets.Dropdown(
+        options=_PROVIDER_MODELS["claude"],
         value="opus",
         description="Model:",
-        layout=widgets.Layout(width="160px"),
+        layout=widgets.Layout(width="170px"),
         style={"description_width": "45px"},
     )
     # Effort selector (only affects API backend; CLI manages thinking internally)
@@ -617,8 +634,15 @@ def create_tab(ctx):
     try:
         from delfin.user_settings import load_settings
         _saved = (load_settings().get("agent", {}) or {})
+        # Restore provider first (updates model options)
+        _saved_provider = _saved.get("provider", "")
+        if _saved_provider in ("claude", "openai"):
+            provider_dropdown.value = _saved_provider
+            model_dropdown.options = _PROVIDER_MODELS[_saved_provider]
+            model_dropdown.value = _PROVIDER_DEFAULTS[_saved_provider]
         _saved_model = _saved.get("model", "")
-        if _saved_model in ("sonnet", "opus", "haiku"):
+        _valid_models = {v for _, v in model_dropdown.options}
+        if _saved_model in _valid_models:
             model_dropdown.value = _saved_model
         _saved_effort = _saved.get("effort", "")
         if _saved_effort in ("low", "medium", "high"):
@@ -694,7 +718,7 @@ def create_tab(ctx):
 
     controls_row = widgets.VBox([
         widgets.HBox(
-            [mode_dropdown, model_dropdown, effort_dropdown, perm_dropdown,
+            [mode_dropdown, provider_dropdown, model_dropdown, effort_dropdown, perm_dropdown,
              new_cycle_btn, advance_btn, stop_btn, undo_btn, export_btn,
              commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html],
             layout=widgets.Layout(flex_flow="row wrap"),
@@ -1029,6 +1053,9 @@ def create_tab(ctx):
 
     def _resolve_backend():
         """Determine which backend to use: cli or api."""
+        # OpenAI always uses API
+        if provider_dropdown.value == "openai":
+            return "api"
         settings = _get_agent_settings()
         preferred = settings.get("backend", "cli")
         if preferred == "cli" and _cli_available:
@@ -1049,8 +1076,12 @@ def create_tab(ctx):
             return state["engine"]
 
         settings = _get_agent_settings()
+        provider = provider_dropdown.value
         backend = _resolve_backend()
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if provider == "openai":
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+        else:
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         model = model_dropdown.value or settings.get("model", "")
 
         try:
@@ -1060,6 +1091,7 @@ def create_tab(ctx):
             engine = AgentEngine(
                 repo_dir=repo_dir,
                 backend=backend,
+                provider=provider,
                 api_key=api_key,
                 model=model,
                 mode=mode_dropdown.value,
@@ -1172,11 +1204,13 @@ def create_tab(ctx):
                 s["input_tokens"],
                 s["output_tokens"],
                 s["cost_usd"],
+                provider=s.get("provider", provider_dropdown.value),
             )
         else:
             backend = _resolve_backend() if _cli_available else "api"
             status_html.value = _render_status(
-                mode_dropdown.value, backend, "", 0, 0, 0, 0, 0.0
+                mode_dropdown.value, backend, "", 0, 0, 0, 0, 0.0,
+                provider=provider_dropdown.value,
             )
 
     def _set_working(active, label=""):
@@ -1257,7 +1291,8 @@ def create_tab(ctx):
                 "  /git diff        — Show staged/unstaged changes\n"
                 "  /git log         — Show recent commits\n"
                 "  /git branch      — Show branches\n"
-                "  /model <name>    — Switch model (opus/sonnet/haiku)\n"
+                "  /provider <name> — Switch provider (claude/openai)\n"
+                "  /model <name>    — Switch model (depends on provider)\n"
                 "  /effort <lvl>    — Set effort (low/medium/high)\n"
                 "  /mode <name>     — Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)\n"
                 "  /reset           — Reset engine for new cycle\n"
@@ -1330,13 +1365,15 @@ def create_tab(ctx):
                 out_t = s["output_tokens"]
                 cost = s["cost_usd"]
                 cost_str = f"${cost:.4f}" if cost > 0 else _estimate_cost_str(
-                    s["backend"], inp_t, out_t
+                    s["backend"], inp_t, out_t,
+                    provider=provider_dropdown.value,
                 )
                 _append_system_message(
                     f"Token usage:\n"
                     f"  Input:  {inp_t:,} tokens\n"
                     f"  Output: {out_t:,} tokens\n"
                     f"  Cost:   {cost_str}\n"
+                    f"  Provider: {provider_dropdown.value}\n"
                     f"  Model:  {model_dropdown.value}\n"
                     f"  Effort: {effort_dropdown.value}"
                 )
@@ -1357,15 +1394,21 @@ def create_tab(ctx):
             model = model_dropdown.value
             backend = s["backend"]
             cost_str = f"${cost:.4f}" if cost > 0 else _estimate_cost_str(
-                backend, inp_t, out_t
+                backend, inp_t, out_t,
+                provider=provider_dropdown.value,
             )
             # Per-model pricing estimate
             _PRICING = {
                 "opus":   {"input": 15.0, "output": 75.0},
                 "sonnet": {"input": 3.0,  "output": 15.0},
                 "haiku":  {"input": 0.25, "output": 1.25},
+                "gpt-4.1": {"input": 2.0, "output": 8.0},
+                "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
+                "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
+                "o4-mini": {"input": 1.10, "output": 4.40},
+                "o3": {"input": 2.0, "output": 8.0},
             }
-            pricing = _PRICING.get(model, _PRICING["sonnet"])
+            pricing = _PRICING.get(model, _PRICING.get("sonnet", {"input": 3.0, "output": 15.0}))
             est_in = inp_t * pricing["input"] / 1_000_000
             est_out = out_t * pricing["output"] / 1_000_000
             # Message counts
@@ -1384,6 +1427,7 @@ def create_tab(ctx):
                 dur = rate = "N/A"
             _append_system_message(
                 f"Session Usage:\n"
+                f"  Provider:    {provider_dropdown.value}\n"
                 f"  Model:       {model} ({backend})\n"
                 f"  Permission:  {perm_dropdown.value}\n"
                 f"  Effort:      {effort_dropdown.value}\n"
@@ -1415,6 +1459,7 @@ def create_tab(ctx):
                 _append_system_message(
                     f"Engine status:\n"
                     f"  Mode:    {s['mode']}\n"
+                    f"  Provider: {s.get('provider', 'claude')}\n"
                     f"  Backend: {s['backend']}\n"
                     f"  Role:    {_format_role_label(s['role'])} "
                     f"({s['role_index']+1}/{s['role_total']})\n"
@@ -1524,10 +1569,22 @@ def create_tab(ctx):
                 _append_system_message(f"git branch error: {e}")
             return True
 
+        # /provider <name>
+        if cmd.startswith("/provider "):
+            name = cmd[10:].strip().lower()
+            if name in ("claude", "openai"):
+                provider_dropdown.value = name
+                _append_system_message(f"Provider switched to {name}.")
+            else:
+                _append_system_message(
+                    f"Unknown provider '{name}'. Options: claude, openai"
+                )
+            return True
+
         # /model <name>
         if cmd.startswith("/model "):
             name = cmd[7:].strip()
-            valid = {"opus", "sonnet", "haiku"}
+            valid = {v for _, v in model_dropdown.options}
             if name in valid:
                 model_dropdown.value = name
                 _append_system_message(f"Model switched to {name}.")
@@ -3284,18 +3341,18 @@ def create_tab(ctx):
                     _base_budget = _AE.thinking_budget_for_role(_cur_role)
                     _budget = int(_base_budget * _mult)
 
-                    # Per-role model: switch CLI to optimal model
-                    _role_model = _AE.model_for_role(_cur_role)
-                    # Check user overrides from settings
-                    _agent_settings = _get_agent_settings()
-                    _role_models_cfg = _agent_settings.get("role_models", {})
-                    if _cur_role in _role_models_cfg:
-                        _role_model = _role_models_cfg[_cur_role]
-                    _user_model = model_dropdown.value
-                    _effective_model = _user_model if _role_model == "auto" else _role_model
-                    if (hasattr(engine.client, "switch_model")
-                            and _effective_model != getattr(engine.client, "model", "")):
-                        engine.client.switch_model(_effective_model)
+                    # Per-role model: switch to optimal model (Claude only)
+                    if provider_dropdown.value == "claude":
+                        _role_model = _AE.model_for_role(_cur_role)
+                        _agent_settings = _get_agent_settings()
+                        _role_models_cfg = _agent_settings.get("role_models", {})
+                        if _cur_role in _role_models_cfg:
+                            _role_model = _role_models_cfg[_cur_role]
+                        _user_model = model_dropdown.value
+                        _effective_model = _user_model if _role_model == "auto" else _role_model
+                        if (hasattr(engine.client, "switch_model")
+                                and _effective_model != getattr(engine.client, "model", "")):
+                            engine.client.switch_model(_effective_model)
 
                     # Track per-role costs
                     _cost_before = engine.cost_usd
@@ -3678,21 +3735,49 @@ def create_tab(ctx):
         if engine and not state["streaming"] and not engine.messages:
             engine.reset_cycle(mode=new_mode)
             _update_status()
-        # Dashboard mode: lock permission to default, model to Haiku
+        # Dashboard mode: lock permission to default, model to cheapest
         if new_mode == "dashboard":
             state["_perm_before_dashboard"] = perm_dropdown.value
             perm_dropdown.value = "default"
             perm_dropdown.disabled = True
             state["_model_before_dashboard"] = model_dropdown.value
-            model_dropdown.value = "Haiku"
+            _cheap = _PROVIDER_CHEAP.get(provider_dropdown.value, "haiku")
+            model_dropdown.value = _cheap
         else:
             perm_dropdown.disabled = state.get("streaming", False)
             saved = state.pop("_perm_before_dashboard", None)
             if saved and perm_dropdown.value == "default":
                 perm_dropdown.value = saved
             saved_model = state.pop("_model_before_dashboard", None)
-            if saved_model and model_dropdown.value == "Haiku":
+            _cheap = _PROVIDER_CHEAP.get(provider_dropdown.value, "haiku")
+            if saved_model and model_dropdown.value == _cheap:
                 model_dropdown.value = saved_model
+
+    def _on_provider_change(change):
+        """Switch provider (Claude / OpenAI), update model options."""
+        if state["streaming"]:
+            return
+        provider = change["new"]
+        models = _PROVIDER_MODELS.get(provider, _PROVIDER_MODELS["claude"])
+        model_dropdown.options = models
+        model_dropdown.value = _PROVIDER_DEFAULTS.get(provider, models[0][1])
+        # Invalidate engine
+        engine = state["engine"]
+        if engine:
+            if hasattr(engine.client, "kill"):
+                engine.client.kill()
+            state["engine"] = None
+        _append_system_message(f"Provider switched to {provider}.")
+        _update_status()
+        # Persist
+        try:
+            from delfin.user_settings import load_settings, save_settings
+            s = load_settings()
+            s.setdefault("agent", {})
+            s["agent"]["provider"] = provider
+            save_settings(s)
+        except Exception:
+            pass
 
     def _on_model_change(change):
         """Recreate engine with new model on next send."""
@@ -3906,6 +3991,7 @@ def create_tab(ctx):
     push_confirm_btn.on_click(_on_push_confirm)
     push_cancel_btn.on_click(_on_push_cancel)
     mode_dropdown.observe(_on_mode_change, names="value")
+    provider_dropdown.observe(_on_provider_change, names="value")
     model_dropdown.observe(_on_model_change, names="value")
     effort_dropdown.observe(_on_effort_change, names="value")
     perm_dropdown.observe(_on_perm_change, names="value")
@@ -4049,6 +4135,7 @@ def _render_status(
     input_tokens: int,
     output_tokens: int,
     cost_usd: float,
+    provider: str = "claude",
 ) -> str:
     """Render the status bar HTML."""
     role_label = _format_role_label(role)
@@ -4059,13 +4146,19 @@ def _render_status(
             f"({role_index + 1}/{role_total})</span>"
         )
 
-    backend_label = "CLI (OAuth)" if backend == "cli" else "API"
+    if provider == "openai":
+        backend_label = "OpenAI API"
+    elif backend == "cli":
+        backend_label = "CLI (OAuth)"
+    else:
+        backend_label = "API"
     backend_info = f'<span class="backend-badge">{backend_label}</span>'
 
     if cost_usd > 0:
         cost_str = f"${cost_usd:.3f}"
     else:
-        cost_str = _estimate_cost_str(backend, input_tokens, output_tokens)
+        cost_str = _estimate_cost_str(backend, input_tokens, output_tokens,
+                                      provider=provider)
 
     tokens_str = f"{input_tokens:,} in / {output_tokens:,} out"
 
@@ -4079,9 +4172,15 @@ def _render_status(
     )
 
 
-def _estimate_cost_str(backend: str, input_tokens: int, output_tokens: int) -> str:
+def _estimate_cost_str(
+    backend: str, input_tokens: int, output_tokens: int,
+    provider: str = "claude",
+) -> str:
     """Rough cost string."""
     if backend == "cli":
         return "included in subscription"
-    cost = (input_tokens * 3.0 + output_tokens * 15.0) / 1_000_000
+    if provider == "openai":
+        cost = (input_tokens * 2.0 + output_tokens * 8.0) / 1_000_000
+    else:
+        cost = (input_tokens * 3.0 + output_tokens * 15.0) / 1_000_000
     return f"~${cost:.3f}"
