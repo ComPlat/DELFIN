@@ -71,6 +71,8 @@ class DashboardContext:
     submit_refs: dict = field(default_factory=dict)
     orca_builder_refs: dict = field(default_factory=dict)
     job_status_refs: dict = field(default_factory=dict)
+    recalc_refs: dict = field(default_factory=dict)
+    calc_browser_refs: dict = field(default_factory=dict)
 
     # Templates
     default_control: str = ''
