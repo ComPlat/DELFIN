@@ -53,32 +53,54 @@ _MODE_RANK = {"quick": 0, "reviewed": 1, "cluster": 2, "full": 3}
 # planning roles need less.
 # Per-role model routing: use the right model for each job.
 # "auto" means use the user-selected model (no override).
+# Role → model mapping.  "auto" = user's choice from the dropdown.
+# Read-only roles use haiku (4-5x cheaper). Only builder/solo/critic
+# need expensive models for code generation / deep analysis.
 _ROLE_MODEL_MAP: dict[str, str] = {
-    "chief_agent": "sonnet",
-    "session_manager": "sonnet",
-    "critic_agent": "haiku",
-    "runtime_agent": "haiku",
-    "reviewer_agent": "haiku",
+    "chief_agent": "haiku",       # strategic summary, not code analysis
+    "session_manager": "haiku",   # plan creation, not implementation
+    "critic_agent": "sonnet",     # deep code review needs quality
+    "runtime_agent": "haiku",     # runtime categorization
+    "reviewer_agent": "haiku",    # final check, not deep redesign
     "builder_agent": "auto",      # user's choice (often sonnet/opus)
-    "test_agent": "sonnet",
-    "solo_agent": "auto",
-    "dashboard_agent": "haiku",   # only parses slash commands, cheap
-    "research_agent": "sonnet",
+    "test_agent": "haiku",        # run tests, assert results
+    "solo_agent": "auto",         # user's choice
+    "dashboard_agent": "haiku",   # only parses slash commands
+    "research_agent": "haiku",    # summarization, not generation
 }
 
 _ROLE_THINKING_BUDGETS: dict[str, int] = {
-    "chief_agent": 8000,
-    "session_manager": 8000,
-    "critic_agent": 16000,
-    "runtime_agent": 16000,
-    "builder_agent": 50000,
-    "reviewer_agent": 16000,
-    "test_agent": 16000,
-    "research_agent": 16000,
-    "solo_agent": 50000,
-    "dashboard_agent": 1024,
+    "chief_agent": 4000,          # strategic overview only
+    "session_manager": 4000,      # plan creation
+    "critic_agent": 16000,        # deep analysis
+    "runtime_agent": 8000,        # categorization
+    "builder_agent": 50000,       # complex implementation
+    "reviewer_agent": 8000,       # review check
+    "test_agent": 8000,           # test execution
+    "research_agent": 8000,       # research summary
+    "solo_agent": 50000,          # full capability
+    "dashboard_agent": 1024,      # minimal
 }
 _DEFAULT_THINKING_BUDGET = 10000
+
+# Code-level tool whitelist per role.
+# If a role emits a tool_use event for a tool NOT in its whitelist,
+# the engine silently blocks it.  This prevents prompt-injection or
+# model hallucination from bypassing role restrictions.
+_READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
+_GIT_BASH = frozenset({"Read", "Grep", "Glob", "Bash"})  # Bash limited by prompt to git
+_ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
+    "dashboard_agent": frozenset(),            # no direct tool use, only slash cmds
+    "research_agent":  _GIT_BASH,
+    "chief_agent":     _GIT_BASH,
+    "session_manager": _GIT_BASH,
+    "critic_agent":    _GIT_BASH,
+    "reviewer_agent":  _GIT_BASH,
+    "runtime_agent":   _GIT_BASH,
+    "test_agent":      frozenset({"Read", "Grep", "Glob", "Bash", "Edit", "Write"}),
+    "builder_agent":   frozenset({"Read", "Grep", "Glob", "Bash", "Edit", "Write"}),
+    "solo_agent":      frozenset({"Read", "Grep", "Glob", "Bash", "Edit", "Write"}),
+}
 
 
 class AgentEngine:
@@ -247,6 +269,12 @@ class AgentEngine:
                         on_thinking(event.text)
 
                 elif event.type == "tool_use":
+                    # Code-level tool whitelist enforcement
+                    role_id = self.route[self.current_role_index] if self.route else ""
+                    allowed = _ROLE_TOOL_WHITELIST.get(role_id)
+                    if allowed is not None and event.tool_name not in allowed:
+                        # Block unauthorized tool — don't call on_tool_use
+                        continue
                     if on_tool_use:
                         on_tool_use(event.tool_name, event.tool_input)
 
@@ -260,12 +288,15 @@ class AgentEngine:
                         self.session_id = event.text
 
                 elif event.type == "message_start":
+                    # Input tokens tracked here (authoritative count
+                    # including cache).  Do NOT also add in message_delta.
                     with self._lock:
                         self.token_usage["input"] += event.input_tokens
 
                 elif event.type == "message_delta":
                     with self._lock:
-                        self.token_usage["input"] += event.input_tokens
+                        # Only output tokens and cost from the final event.
+                        # Input tokens already counted in message_start.
                         self.token_usage["output"] += event.output_tokens
                         self.cost_usd += event.cost_usd
                     # Capture session ID from result event
@@ -477,9 +508,12 @@ class AgentEngine:
         The prior role outputs (stored in ``role_outputs``) are injected
         into the next role's system prompt, so the conversation history
         is no longer needed.
+
+        NOTE: The CLI process MUST be restarted because each role uses a
+        different system prompt (``--append-system-prompt`` is set at
+        process startup).  Keeping it alive would use the wrong prompt.
         """
         self.messages.clear()
-        # Kill the CLI process so a fresh one starts with clean context
         if hasattr(self.client, "kill"):
             self.client.kill()
         self.session_id = ""
