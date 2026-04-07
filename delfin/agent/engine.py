@@ -76,7 +76,7 @@ _ROLE_THINKING_BUDGETS: dict[str, int] = {
     "test_agent": 16000,
     "research_agent": 16000,
     "solo_agent": 50000,
-    "dashboard_agent": 4000,
+    "dashboard_agent": 1024,
 }
 _DEFAULT_THINKING_BUDGET = 10000
 
