@@ -3461,6 +3461,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         ('Haiku (fast/cheap)', 'haiku'),
     ]
     _AGENT_ROLES = [
+        ('Dashboard', 'dashboard_agent'),
         ('Session Manager', 'session_manager'),
         ('Critic', 'critic_agent'),
         ('Runtime Analyst', 'runtime_agent'),
@@ -3470,6 +3471,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         ('Solo Agent', 'solo_agent'),
     ]
     _ROLE_DEFAULTS = {
+        'dashboard_agent': 'haiku',
         'session_manager': 'sonnet',
         'critic_agent': 'haiku',
         'runtime_agent': 'haiku',

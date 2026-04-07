@@ -70,6 +70,7 @@ DEFAULT_SETTINGS = {
         "model": "sonnet",
         "max_tokens": 4096,
         "role_models": {
+            "dashboard_agent": "auto",
             "session_manager": "auto",
             "critic_agent": "auto",
             "runtime_agent": "auto",

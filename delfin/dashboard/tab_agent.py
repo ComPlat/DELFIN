@@ -532,8 +532,8 @@ def create_tab(ctx):
 
     # Mode selector
     mode_dropdown = widgets.Dropdown(
-        options=["solo", "quick", "reviewed", "tdd", "cluster", "full"],
-        value="quick",
+        options=["dashboard", "solo", "quick", "reviewed", "tdd", "cluster", "full"],
+        value="dashboard",
         description="Mode:",
         layout=widgets.Layout(width="200px"),
         style={"description_width": "45px"},
@@ -1214,7 +1214,7 @@ def create_tab(ctx):
                 "  /git branch      — Show branches\n"
                 "  /model <name>    — Switch model (opus/sonnet/haiku)\n"
                 "  /effort <lvl>    — Set effort (low/medium/high)\n"
-                "  /mode <name>     — Switch agent mode (solo/quick/reviewed/tdd/cluster/full)\n"
+                "  /mode <name>     — Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)\n"
                 "  /reset           — Reset engine for new cycle\n"
                 "\n"
                 "Dashboard control:\n"
@@ -3302,10 +3302,21 @@ def create_tab(ctx):
         _auto_save_session()
 
     def _on_mode_change(change):
+        new_mode = change["new"]
         engine = state["engine"]
         if engine and not state["streaming"] and not engine.messages:
-            engine.reset_cycle(mode=change["new"])
+            engine.reset_cycle(mode=new_mode)
             _update_status()
+        # Dashboard mode: lock permission to default (read-only)
+        if new_mode == "dashboard":
+            state["_perm_before_dashboard"] = perm_dropdown.value
+            perm_dropdown.value = "default"
+            perm_dropdown.disabled = True
+        else:
+            perm_dropdown.disabled = state.get("streaming", False)
+            saved = state.pop("_perm_before_dashboard", None)
+            if saved and perm_dropdown.value == "default":
+                perm_dropdown.value = saved
 
     def _on_model_change(change):
         """Recreate engine with new model on next send."""
