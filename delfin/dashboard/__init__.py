@@ -228,6 +228,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     ctx.submit_refs = refs1
     ctx.orca_builder_refs = refs4
     ctx.job_status_refs = refs3
+    ctx.recalc_refs = refs2
 
     # TURBOMOLE tab (only for SLURM backends)
     tab_tm = None
@@ -241,6 +242,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         remote_archive_enabled = False
 
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
+    ctx.calc_browser_refs = refs5
     tab6, refs6 = tab_archive_statistics.create_tab(ctx)
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
     tab_ag, refs_ag = tab_agent.create_tab(ctx)
