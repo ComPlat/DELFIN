@@ -86,6 +86,7 @@ ai-complex = [
 ]
 agent = [
     "anthropic>=0.40",
+    "openai>=1.0",
     "pyyaml",
 ]
 dev = [
