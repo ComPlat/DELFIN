@@ -2846,20 +2846,20 @@ def create_tab(ctx):
         return "unknown"
 
     def _zone_blocks(cmd: str, tier: int) -> str | None:
-        """Return a block message if *tier* exceeds zone permissions, else None."""
+        """Return a block message if *tier* exceeds zone permissions, else None.
+
+        Messages are intentionally generic to avoid leaking zone
+        classification to the agent (security: no directory enumeration).
+        """
         zone = _path_zone(cmd)
         perms = _active_perms()
         max_tier, _ = perms.get(zone, (-1, True))
         if tier > max_tier:
             profile = state.get("_perm_profile", "ask_all")
-            if zone in ("archive", "remote_archive"):
-                label = "Remote Archive" if zone == "remote_archive" else "Archive"
-                return f"⛔ Blocked: {label} is always read-only."
-            if zone == "unknown":
-                return "⛔ Blocked: Path is outside allowed directories."
             if profile == "plan":
-                return "⛔ Blocked: Plan mode is read-only (use /perms ask_all to allow changes)."
-            return f"⛔ Blocked: Insufficient permissions for {zone} (profile: {profile})."
+                return "⛔ Blocked: Current permission profile is read-only."
+            # Generic message — don't reveal zone name or directory structure
+            return "⛔ Blocked: This action is not permitted. Ask the user for approval."
         return None
 
     def _zone_needs_confirm(cmd: str) -> bool:
@@ -2869,10 +2869,17 @@ def create_tab(ctx):
         _, confirm = perms.get(zone, (-1, True))
         return confirm
 
-    # Keywords that indicate the user explicitly asked for a destructive action
-    _MUTATE_INTENT_KW = (
+    # Bulk operation intent detection.
+    # Requires BOTH an action keyword AND a scope keyword in the user's
+    # last message.  This prevents the agent from self-triggering bulk ops
+    # by mentioning just one keyword in its own output.
+    _BULK_ACTION_KW = (
         "recalc", "neuberechn", "submit", "absend", "abschick",
-        "cancel", "abbrech", "stopp", "alle",
+        "cancel", "abbrech", "stopp",
+    )
+    _BULK_SCOPE_KW = (
+        "all", "alle", "auto", "alles", "every", "sämtliche", "bulk",
+        "komplett", "gesamt",
     )
 
     def _dashboard_auto_exec(agent_text: str):
@@ -2939,14 +2946,17 @@ def create_tab(ctx):
                     results.append("BLOCKED: max 1 destructive action per response")
                     continue
 
-                # Bulk ops need explicit user intent
+                # Bulk ops need explicit user intent (action + scope)
                 cl = cmd_line.lower().strip()
                 if cl in ("/recalc auto", "/cancel all"):
                     user_msg = state.get("_last_user_message", "").lower()
-                    if not any(kw in user_msg for kw in _MUTATE_INTENT_KW):
+                    has_action = any(kw in user_msg for kw in _BULK_ACTION_KW)
+                    has_scope = any(kw in user_msg for kw in _BULK_SCOPE_KW)
+                    if not (has_action and has_scope):
                         _append_system_message(
                             "\u26d4 Blocked: Bulk operation requires explicit "
-                            "user request. Report findings and ask the user."
+                            "user request (e.g. 'recalc alle'). "
+                            "Report findings and ask the user."
                         )
                         results.append("BLOCKED: bulk op without user intent")
                         continue
