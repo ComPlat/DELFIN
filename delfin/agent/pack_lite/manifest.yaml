@@ -7,8 +7,12 @@ depends_on:
   base_pack: DELFIN_AGENT
   base_agents_dir: ../pack/agents
   base_shared_dir: ../pack/shared
-recommended_default_mode: solo
+recommended_default_mode: dashboard
 modes:
+  - id: dashboard
+    file: modes/dashboard.md
+    route:
+      - dashboard_agent
   - id: solo
     file: modes/solo.md
     route:

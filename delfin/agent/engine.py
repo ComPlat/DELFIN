@@ -62,6 +62,7 @@ _ROLE_MODEL_MAP: dict[str, str] = {
     "builder_agent": "auto",      # user's choice (often sonnet/opus)
     "test_agent": "sonnet",
     "solo_agent": "auto",
+    "dashboard_agent": "haiku",   # only parses slash commands, cheap
     "research_agent": "sonnet",
 }
 
@@ -75,6 +76,7 @@ _ROLE_THINKING_BUDGETS: dict[str, int] = {
     "test_agent": 16000,
     "research_agent": 16000,
     "solo_agent": 50000,
+    "dashboard_agent": 4000,
 }
 _DEFAULT_THINKING_BUDGET = 10000
 
