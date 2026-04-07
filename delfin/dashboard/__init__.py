@@ -67,6 +67,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
 
     from . import (
+        tab_agent,
         tab_archive_statistics,
         tab_calculations_browser,
         tab_remote_archive,
@@ -239,6 +240,10 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
     tab6, refs6 = tab_archive_statistics.create_tab(ctx)
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
+    tab_ag, refs_ag = tab_agent.create_tab(ctx)
+    _agent_backend_available = bool(
+        shutil.which("claude") or os.environ.get("ANTHROPIC_API_KEY", "")
+    )
 
     tab_specs = [
         {
@@ -290,6 +295,16 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'available': False,
             'fixed': False,
             'reason': 'Only available when the ChemDarwin tab module is installed.',
+        },
+        {
+            'id': 'agent',
+            'title': 'DELFIN Agent',
+            'widget': tab_ag,
+            'default_order': 55,
+            'default_visible': _agent_backend_available,
+            'available': True,
+            'fixed': False,
+            'reason': '' if _agent_backend_available else 'Install Claude Code CLI or set ANTHROPIC_API_KEY.',
         },
         {
             'id': 'job_status',
@@ -378,6 +393,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + refs6.get('init_js', '')
         + '\n'
         + refs7.get('init_js', '')
+        + '\n'
+        + refs_ag.get('init_js', '')
     )
     if _calc_init.strip():
         ctx.run_js(_calc_init)

@@ -282,6 +282,20 @@ def main(argv=None):
             "set 0.0.0.0 only when direct network access is required)"
         ),
     )
+    parser.add_argument(
+        "--token",
+        default=None,
+        help=(
+            "Authentication token for dashboard access. "
+            "Auto-generated if not set and --ip is 0.0.0.0. "
+            "Use --no-token to explicitly disable."
+        ),
+    )
+    parser.add_argument(
+        "--no-token",
+        action="store_true",
+        help="Disable token authentication (NOT recommended for network access)",
+    )
     args = parser.parse_args(argv)
 
     # Check that voila is installed in the current Python environment.
@@ -302,6 +316,27 @@ def main(argv=None):
 
     if args.ip is None:
         args.ip = "127.0.0.1"
+
+    # -- Token-based authentication ----------------------------------------
+    # Auto-generate a token when binding to non-localhost (security).
+    _token = ""
+    if args.no_token:
+        _token = ""
+        if args.ip != "127.0.0.1":
+            print(
+                "\n  ⚠  WARNING: Token auth disabled on non-localhost binding!\n"
+                "     The DELFIN Agent has FULL CLI ACCESS.\n"
+                "     Anyone who can reach this port can execute commands.\n",
+                file=sys.stderr,
+            )
+    elif args.token:
+        _token = args.token
+    elif args.ip != "127.0.0.1":
+        # Auto-generate token for network-facing deployments
+        import secrets
+        _token = secrets.token_urlsafe(32)
+        print(f"\n  🔑 Auto-generated access token (required in URL):\n")
+        print(f"     {_token}\n")
 
     if args.open_browser is True:
         open_browser = True
@@ -335,10 +370,18 @@ def main(argv=None):
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)",
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
-        "--Voila.tornado_settings=disable_check_xsrf=True",
+        # XSRF handled per-mode: disabled for localhost, enabled for network
         "--ServerApp.websocket_ping_interval=30000",
         "--ServerApp.websocket_ping_timeout=30000",
     ]
+
+    # Token authentication for Voilà/Jupyter
+    if _token:
+        cmd.append(f"--ServerApp.token={_token}")
+    elif args.ip == "127.0.0.1":
+        # Localhost: no token needed, disable for convenience
+        cmd.append("--ServerApp.token=")
+        cmd.append("--ServerApp.disable_check_xsrf=True")
 
     voila_static_root = _get_voila_static_root()
     if voila_static_root:
@@ -353,12 +396,13 @@ def main(argv=None):
         cmd.append("--theme=dark")
 
     bind_display = "localhost" if args.ip == "127.0.0.1" else args.ip
-    print(f"Starting DELFIN Dashboard on http://{bind_display}:{args.port}")
+    token_suffix = f"?token={_token}" if _token else ""
+    print(f"Starting DELFIN Dashboard on http://{bind_display}:{args.port}{token_suffix}")
 
     # Show all reachable URLs so remote users know exactly what to type.
     if args.ip == "0.0.0.0":
         for ip in _get_local_ips():
-            print(f"  -> http://{ip}:{args.port}")
+            print(f"  -> http://{ip}:{args.port}{token_suffix}")
 
     print()
     if args.ip == "0.0.0.0":

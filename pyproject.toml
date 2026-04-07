@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "delfin-complat"
-version = "1.1.12"
+version = "1.2.0"
 description = "DELFIN is a modular computational chemistry platform that automates end-to-end molecular workflows — from SMILES input to realistic property predictions. It combines structure generation, DFT, semi-empirical methods, ML potentials, and AI tools behind a unified interface with an interactive browser-based dashboard."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10,<3.12"
@@ -84,6 +84,10 @@ ai-complex = [
     "molSimplify",
     "architector",
 ]
+agent = [
+    "anthropic>=0.40",
+    "pyyaml",
+]
 dev = [
     "pytest>=6.0",
     "pytest-cov",
@@ -126,6 +130,8 @@ include = ["delfin*"]
     "ai_tools/*.txt",
     "submit_templates/*.sh",
 ]
+"delfin.agent.pack" = ["**/*.md", "**/*.yaml"]
+"delfin.agent.pack_lite" = ["**/*.md", "**/*.yaml"]
 "delfin.notebooks" = ["*.ipynb"]
 
 [tool.setuptools.exclude-package-data]
