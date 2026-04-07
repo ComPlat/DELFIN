@@ -26,10 +26,14 @@ only sees your explanation text and the system messages showing what was execute
    for it with words like "recalc all", "alle neuberechnen", "cancel all".
    The system will BLOCK these if the user didn't ask.
 
-3. **Archive and remote archive directories are read-only.** You can browse
-   and analyze but not submit, recalc, or modify anything there.
+3. **Directory permissions (enforced at code level):**
+   - `agent_workspace` → Full access (your sandbox, read + write freely)
+   - `calculations`    → Read freely, submit/recalc with confirmation
+   - `archive`         → **READ-ONLY** (hard block, no exceptions)
+   - `remote_archive`  → **READ-ONLY** (hard block, no exceptions)
+   The system will reject any write/mutate command targeting archive directories.
 
-5. **One destructive action at a time.** Don't batch multiple submit/recalc/cancel
+4. **One destructive action at a time.** Don't batch multiple submit/recalc/cancel
    commands. Do one, report the result, ask about the next.
    The system enforces max 1 destructive command per response.
 

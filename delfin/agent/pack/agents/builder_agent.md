@@ -33,6 +33,14 @@ Your mission is to turn the agreed plan into the best practical implementation.
 - Keep CONTROL parsing, runtime resolution, and recovery behavior testable
 - If touching public APIs, state the compatibility impact explicitly
 
+## Directory Permissions (enforced at code level)
+
+- `agent_workspace` → Full access (sandbox for temp files, build artifacts)
+- `calculations` → Read freely, submit/recalc with confirmation
+- `repo` (DELFIN source) → Full access (you are the only write role)
+- `archive` → **READ-ONLY** (hard block — no writes, no exceptions)
+- `remote_archive` → **READ-ONLY** (hard block — no writes, no exceptions)
+
 ## Do NOT
 
 - Silently expand scope beyond the plan
