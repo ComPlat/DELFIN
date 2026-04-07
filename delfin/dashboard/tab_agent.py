@@ -538,6 +538,7 @@ def create_tab(ctx):
         "session_start_time": None,  # monotonic time of first message
         "_agent_calc_path": "",       # relative path within calc_dir for browsing
         "_pending_dashboard_action": None,  # {action_id, description, callback}
+        "_perm_profile": "default",  # permission profile: plan/default/erlaubt/full
     }
 
     # -- widgets -----------------------------------------------------------
@@ -1307,12 +1308,14 @@ def create_tab(ctx):
                 s["output_tokens"],
                 s["cost_usd"],
                 provider=s.get("provider", provider_dropdown.value),
+                perm_profile=state.get("_perm_profile", "default"),
             )
         else:
             backend = _resolve_backend() if _cli_available else "api"
             status_html.value = _render_status(
                 mode_dropdown.value, backend, "", 0, 0, 0, 0, 0.0,
                 provider=provider_dropdown.value,
+                perm_profile=state.get("_perm_profile", "default"),
             )
 
     def _set_working(active, label=""):
@@ -1404,6 +1407,7 @@ def create_tab(ctx):
                 "  /model <name>    — Switch model (depends on provider)\n"
                 "  /effort <lvl>    — Set effort (low/medium/high)\n"
                 "  /mode <name>     — Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)\n"
+                "  /perms [profile] — Show/set permission profile (plan/default/erlaubt/full)\n"
                 "  /reset           — Reset engine for new cycle\n"
                 "\n"
                 "Dashboard control:\n"
@@ -1737,6 +1741,33 @@ def create_tab(ctx):
                 )
             return True
 
+        # /perms — switch permission profile
+        if cmd == "/perms" or cmd.startswith("/perms "):
+            arg = cmd[6:].strip() if len(cmd) > 6 else ""
+            valid = list(_PERM_PROFILES.keys())
+            if not arg:
+                cur = state.get("_perm_profile", "default")
+                lines = [f"Permission profile: **{cur}**\n"]
+                _labels = {
+                    "plan": "Read-only — agent can only browse and analyze",
+                    "default": "Ask for everything that changes",
+                    "erlaubt": "Repo free, calc/archive need confirmation",
+                    "full": "Full access (remote archive still read-only)",
+                }
+                for pid in valid:
+                    marker = " ◀" if pid == cur else ""
+                    lines.append(f"  {pid:10s} — {_labels.get(pid, '')}{marker}")
+                lines.append(f"\nUsage: /perms <{'/'.join(valid)}>")
+                _append_system_message("\n".join(lines))
+            elif arg in valid:
+                state["_perm_profile"] = arg
+                _append_system_message(f"Permission profile set to **{arg}**.")
+            else:
+                _append_system_message(
+                    f"Unknown profile '{arg}'. Options: {', '.join(valid)}"
+                )
+            return True
+
         # /export — save chat as Markdown file
         if cmd == "/export":
             _export_chat()
@@ -1957,7 +1988,7 @@ def create_tab(ctx):
                         ctx.select_tab("Job Status")
                     except Exception as exc:
                         _append_system_message(f"Submit error: {exc}")
-                _request_confirmation("submit_job", f"Submit job '{job_name}' from Submit tab?", _do_submit)
+                _confirm_or_exec("submit_job", f"Submit job '{job_name}' from Submit tab?", _do_submit, cmd_for_zone="/submit")
             else:
                 _append_system_message("Submit tab not available.")
             return True
@@ -2062,8 +2093,9 @@ def create_tab(ctx):
                 def _do_orca_submit():
                     btn.click()
                     _append_system_message("ORCA job submitted. Check Job Status tab.")
-                _request_confirmation(
-                    "orca_submit", "Submit ORCA job?", _do_orca_submit
+                _confirm_or_exec(
+                    "orca_submit", "Submit ORCA job?", _do_orca_submit,
+                    cmd_for_zone="/orca submit",
                 )
             else:
                 _append_system_message("ORCA Builder not available.")
@@ -2483,10 +2515,11 @@ def create_tab(ctx):
                         refresh()
                     except Exception:
                         pass
-            _request_confirmation(
+            _confirm_or_exec(
                 "recalc_auto",
                 f"Submit recalc for {len(needs)} folders: {names}",
                 _do_recalc_auto,
+                cmd_for_zone="/recalc auto",
             )
             return True
 
@@ -2528,10 +2561,11 @@ def create_tab(ctx):
                         ctx.select_tab("Job Status")
                     except Exception as exc:
                         _append_system_message(f"Recalc error: {exc}")
-                _request_confirmation(
+                _confirm_or_exec(
                     "recalc_single",
                     f"Submit recalc for '{folder}'?",
                     _do_recalc,
+                    cmd_for_zone=f"/recalc {folder}",
                 )
             return True
 
@@ -2569,10 +2603,11 @@ def create_tab(ctx):
                             refresh()
                         except Exception:
                             pass
-                _request_confirmation(
+                _confirm_or_exec(
                     "cancel_all",
                     f"Cancel {len(active)} active jobs: {names}",
                     _do_cancel_all,
+                    cmd_for_zone="/cancel all",
                 )
             else:
                 job_id = target
@@ -2592,7 +2627,7 @@ def create_tab(ctx):
                         ctx.select_tab("Job Status")
                     except Exception as exc:
                         _append_system_message(f"Cancel error: {exc}")
-                _request_confirmation("cancel_single", f"Cancel job {job_id}?", _do_cancel)
+                _confirm_or_exec("cancel_single", f"Cancel job {job_id}?", _do_cancel, cmd_for_zone=f"/cancel {job_id}")
             return True
 
         return False
@@ -2622,9 +2657,17 @@ def create_tab(ctx):
         jn = ctx.submit_refs.get("job_name_widget")
         if jn and jn.value.strip():
             parts.append(f"Job name: {jn.value.strip()}")
-        # calc_dir + workspace
+        # calc_dir + workspace + permissions
         parts.append(f"Calculations dir: {ctx.calc_dir}")
         parts.append(f"Agent workspace: {ctx.agent_dir}")
+        perm = state.get("_perm_profile", "default")
+        _perm_desc = {
+            "plan": "READ-ONLY everywhere",
+            "default": "ask for all changes",
+            "erlaubt": "repo free, calc asks",
+            "full": "full access (remote archive read-only)",
+        }
+        parts.append(f"Permissions: {perm} — {_perm_desc.get(perm, perm)}")
         # List workspace files if any
         try:
             ws_files = [p.name for p in ctx.agent_dir.iterdir() if p.is_file()]
@@ -2660,14 +2703,57 @@ def create_tab(ctx):
         # Tier 0: read-only
         return 0
 
+    # -- permission profiles -------------------------------------------------
+    # Each profile maps zone → (max_tier, confirm_tier3).
+    #   max_tier:       highest tier allowed (-1=blocked, 0=read, 3=all)
+    #   confirm_tier3:  True = tier-3 commands need Approve/Deny dialog
+    #
+    # remote_archive is ALWAYS read-only — no profile can override this.
+    _PERM_PROFILES: dict[str, dict[str, tuple[int, bool]]] = {
+        "plan": {
+            # Read-only everywhere — agent can only browse and analyze
+            "workspace":      (0, True),
+            "calc":           (0, True),
+            "repo":           (0, True),
+            "archive":        (0, True),
+            "remote_archive": (0, True),
+            "unknown":        (-1, True),
+        },
+        "default": {
+            # Ask for everything that changes
+            "workspace":      (3, False),  # agent sandbox — free
+            "calc":           (3, True),   # mutate with confirmation
+            "repo":           (3, True),   # mutate with confirmation
+            "archive":        (0, True),   # read-only
+            "remote_archive": (0, True),   # read-only ALWAYS
+            "unknown":        (-1, True),
+        },
+        "erlaubt": {
+            # Repo free, calc asks
+            "workspace":      (3, False),
+            "calc":           (3, True),   # still needs confirmation
+            "repo":           (3, False),  # auto-approved
+            "archive":        (0, True),   # read-only
+            "remote_archive": (0, True),   # read-only ALWAYS
+            "unknown":        (-1, True),
+        },
+        "full": {
+            # Everything works except remote archive
+            "workspace":      (3, False),
+            "calc":           (3, False),  # auto-approved
+            "repo":           (3, False),  # auto-approved
+            "archive":        (3, False),  # writable!
+            "remote_archive": (0, True),   # read-only ALWAYS
+            "unknown":        (-1, True),
+        },
+    }
+
+    def _active_perms() -> dict[str, tuple[int, bool]]:
+        """Return the zone permissions for the active profile."""
+        profile = state.get("_perm_profile", "default")
+        return _PERM_PROFILES.get(profile, _PERM_PROFILES["default"])
+
     # -- path zone classification -------------------------------------------
-    # Zones control what the agent may do in each directory:
-    #   workspace      → FULL ACCESS (agent's own sandbox, no confirmation)
-    #   calc           → read free, mutate with confirmation (tier 3)
-    #   repo           → code-agents only, with confirmation
-    #   archive        → READ-ONLY (hard block, even confirmation won't help)
-    #   remote_archive → READ-ONLY (hard block)
-    #   unknown        → BLOCKED
 
     def _path_zone(cmd: str) -> str:
         """Classify a /calc command's target into a permission zone.
@@ -2737,27 +2823,30 @@ def create_tab(ctx):
 
         return "unknown"
 
-    # Maximum tier allowed per zone.  Anything above is HARD BLOCKED.
-    _ZONE_MAX_TIER: dict[str, int] = {
-        "workspace":      3,   # full access, no confirmation needed
-        "calc":           3,   # full access, but tier 3 still needs confirmation
-        "repo":           3,   # code agents only, tier 3 needs confirmation
-        "archive":        0,   # read-only — HARD BLOCK on any write
-        "remote_archive": 0,   # read-only — HARD BLOCK on any write
-        "unknown":       -1,   # blocked entirely
-    }
-
     def _zone_blocks(cmd: str, tier: int) -> str | None:
         """Return a block message if *tier* exceeds zone permissions, else None."""
         zone = _path_zone(cmd)
-        max_tier = _ZONE_MAX_TIER.get(zone, -1)
+        perms = _active_perms()
+        max_tier, _ = perms.get(zone, (-1, True))
         if tier > max_tier:
-            if zone in ("archive", "remote_archive"):
-                return f"⛔ Blocked: {zone.replace('_', ' ').title()} is read-only."
+            profile = state.get("_perm_profile", "default")
+            if zone == "remote_archive":
+                return "⛔ Blocked: Remote Archive is always read-only."
+            if zone == "archive" and profile != "full":
+                return "⛔ Blocked: Archive is read-only (use /perms full to unlock)."
             if zone == "unknown":
                 return "⛔ Blocked: Path is outside allowed directories."
-            return f"⛔ Blocked: Insufficient permissions for {zone} zone."
+            if profile == "plan":
+                return f"⛔ Blocked: Plan mode is read-only (use /perms default to allow changes)."
+            return f"⛔ Blocked: Insufficient permissions for {zone} (profile: {profile})."
         return None
+
+    def _zone_needs_confirm(cmd: str) -> bool:
+        """True if a tier-3 command in this zone needs the confirmation dialog."""
+        zone = _path_zone(cmd)
+        perms = _active_perms()
+        _, confirm = perms.get(zone, (-1, True))
+        return confirm
 
     # Keywords that indicate the user explicitly asked for a destructive action
     _MUTATE_INTENT_KW = (
@@ -3087,6 +3176,19 @@ def create_tab(ctx):
         approve_btn.layout.display = "inline-flex"
         deny_btn.layout.display = "inline-flex"
         approval_row.layout.display = "flex"
+
+    def _confirm_or_exec(action_id, description, callback, cmd_for_zone=""):
+        """Either request confirmation or execute directly, based on permission profile.
+
+        If the active profile says this zone needs confirmation for tier-3,
+        show the Approve/Deny dialog.  Otherwise execute immediately.
+        """
+        if cmd_for_zone and not _zone_needs_confirm(cmd_for_zone):
+            # Profile allows auto-execution in this zone
+            callback()
+            return
+        # Needs confirmation
+        _request_confirmation(action_id, description, callback)
 
     def _show_approval_prompt(tool_name, detail):
         """Show approval request inline in chat + approval buttons."""
@@ -4437,6 +4539,7 @@ def _render_status(
     output_tokens: int,
     cost_usd: float,
     provider: str = "claude",
+    perm_profile: str = "default",
 ) -> str:
     """Render the status bar HTML."""
     role_label = _format_role_label(role)
@@ -4465,11 +4568,25 @@ def _render_status(
 
     tokens_str = f"{input_tokens:,} in / {output_tokens:,} out"
 
+    # Permission profile badge (color-coded)
+    _perm_colors = {
+        "plan": "#6c757d",     # gray
+        "default": "#0d6efd",  # blue
+        "erlaubt": "#198754",  # green
+        "full": "#dc3545",     # red
+    }
+    perm_color = _perm_colors.get(perm_profile, "#6c757d")
+    perm_badge = (
+        f'<span class="backend-badge" style="background:{perm_color}">'
+        f'{_html.escape(perm_profile)}</span>'
+    )
+
     return (
         f'<div class="delfin-agent-status">'
         f'<span class="mode-badge">{_html.escape(mode)}</span>'
         f"{role_info}"
         f"{backend_info}"
+        f"{perm_badge}"
         f'<span class="tokens-info">{tokens_str} · {cost_str}</span>'
         f"</div>"
     )
