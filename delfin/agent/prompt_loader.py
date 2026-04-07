@@ -179,14 +179,35 @@ class PromptLoader:
         if role_prompt:
             sections.append(role_prompt)
 
-        # 2. Shared DELFIN context
+        # 2. Shared DELFIN context (full only for roles that modify code
+        #    or make strategic decisions; brief summary for read-only roles)
+        _FULL_CONTEXT_ROLES = {
+            "builder_agent", "solo_agent", "session_manager",
+            "chief_agent", "critic_agent",
+        }
         shared = self.load_shared_context()
         if shared:
-            sections.append(shared)
+            if role_id in _FULL_CONTEXT_ROLES:
+                sections.append(shared)
+            else:
+                # Brief context: first paragraph + key paths only
+                lines = shared.split("\n")
+                brief = "\n".join(lines[:20])  # ~300 words intro
+                brief += (
+                    "\n\n(Full DELFIN context omitted for this role. "
+                    "Key paths: delfin/dashboard/, delfin/orca/, "
+                    "delfin/slurm/, delfin/agent/, tests/)"
+                )
+                sections.append(brief)
 
-        # 3. Mode description
+        # 3. Mode description (only for session_manager / chief who need it
+        #    for routing/strategic decisions; other roles get their
+        #    instructions from the role prompt itself)
+        _MODE_DESC_ROLES = {"session_manager", "chief_agent"}
         if mode_description:
-            sections.append(mode_description)
+            if role_id in _MODE_DESC_ROLES:
+                sections.append(mode_description)
+            # Others skip mode_description — their role prompt is sufficient
 
         # 4. Routing rules (only for session_manager)
         if role_id == "session_manager":
