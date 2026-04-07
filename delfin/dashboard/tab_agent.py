@@ -2721,15 +2721,7 @@ def create_tab(ctx):
             tier = _command_tier(cmd_line)
             short = cmd_line[:80] + ("..." if len(cmd_line) > 80 else "")
 
-            # --- Remote archive: completely blocked ---
-            if "/calc " in cmd_line.lower() and _is_remote_archive_path(cmd_line):
-                _append_system_message(
-                    "\u26d4 Blocked: Agent cannot access remote archive."
-                )
-                results.append("BLOCKED: remote archive access denied")
-                continue
-
-            # --- Archive: read-only (block tier 2+3 commands) ---
+            # --- Archive & remote archive: read-only (block tier 2+3) ---
             if _is_archive_path(cmd_line) and tier >= 2:
                 _append_system_message(
                     "\u26d4 Blocked: Archive is read-only for the agent."

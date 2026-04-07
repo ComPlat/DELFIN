@@ -16,6 +16,5 @@ Safety (enforced at code level):
 - Destructive operations (submit, recalc, cancel) require user confirmation
 - Max 1 destructive action per agent response
 - Bulk operations (/recalc auto, /cancel all) blocked unless user explicitly asked
-- Remote archive: completely blocked
-- Archive: read-only for the agent
+- Archive & remote archive: read-only for the agent
 - The agent must explain findings and ASK before taking any action
