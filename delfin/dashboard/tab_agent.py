@@ -703,20 +703,21 @@ def create_tab(ctx):
         tooltip="Thinking budget (only works with API backend; CLI manages thinking internally)",
     )
 
-    # Permission mode selector (identical to CLI)
+    # Unified permission profile selector
+    # Maps to BOTH zone permissions (slash commands) and CLI permission_mode (tools)
     perm_dropdown = widgets.Dropdown(
         options=[
-            ("Default", "default"),
-            ("Accept Edits", "acceptEdits"),
-            ("Plan Mode", "plan"),
-            ("Auto", "auto"),
-            ("Full Access", "bypassPermissions"),
+            ("Plan (read-only)", "plan"),
+            ("Default (ask all)", "default"),
+            ("Erlaubt (repo free)", "erlaubt"),
+            ("Full (all free)", "full"),
         ],
         value="default",
         description="Perms:",
-        layout=widgets.Layout(width="175px"),
+        layout=widgets.Layout(width="195px"),
         style={"description_width": "42px"},
-        tooltip="Permission mode: Default=ask all, Accept Edits=auto-accept file changes, Plan=plan only, Auto=smart auto, Full Access=skip all checks",
+        tooltip="Permission profile: Plan=read-only, Default=ask all changes, "
+                "Erlaubt=repo free/calc asks, Full=everything except remote archive",
     )
 
     # Load saved preferences
@@ -736,9 +737,16 @@ def create_tab(ctx):
         _saved_effort = _saved.get("effort", "")
         if _saved_effort in ("low", "medium", "high"):
             effort_dropdown.value = _saved_effort
-        _saved_perm = _saved.get("permission_mode", "")
-        if _saved_perm in ("default", "acceptEdits", "plan", "auto", "bypassPermissions"):
+        _saved_perm = _saved.get("permission_profile", _saved.get("permission_mode", ""))
+        # Migrate old CLI permission names to new profiles
+        _perm_migration = {
+            "acceptEdits": "erlaubt", "auto": "full",
+            "bypassPermissions": "full",
+        }
+        _saved_perm = _perm_migration.get(_saved_perm, _saved_perm)
+        if _saved_perm in ("plan", "default", "erlaubt", "full"):
             perm_dropdown.value = _saved_perm
+            state["_perm_profile"] = _saved_perm
     except Exception:
         pass
 
@@ -1198,7 +1206,7 @@ def create_tab(ctx):
                 api_key=api_key,
                 model=model,
                 mode=mode_dropdown.value,
-                permission_mode=perm_dropdown.value,
+                permission_mode=_active_cli_perm(),
             )
             state["engine"] = engine
             ctx.agent_engine = engine
@@ -1548,7 +1556,7 @@ def create_tab(ctx):
                 f"Session Usage:\n"
                 f"  Provider:    {provider_dropdown.value}\n"
                 f"  Model:       {model} ({backend})\n"
-                f"  Permission:  {perm_dropdown.value}\n"
+                f"  Permission:  {state.get('_perm_profile', 'default')} (CLI: {_active_cli_perm()})\n"
                 f"  Effort:      {effort_dropdown.value}\n"
                 f"  Session:     {s['session_id'][:16]}...\n"
                 f"\n"
@@ -1761,7 +1769,7 @@ def create_tab(ctx):
                 _append_system_message("\n".join(lines))
             elif arg in valid:
                 state["_perm_profile"] = arg
-                _append_system_message(f"Permission profile set to **{arg}**.")
+                perm_dropdown.value = arg  # sync dropdown → triggers _on_perm_change
             else:
                 _append_system_message(
                     f"Unknown profile '{arg}'. Options: {', '.join(valid)}"
@@ -2748,10 +2756,23 @@ def create_tab(ctx):
         },
     }
 
+    # Map DELFIN profile → Claude CLI permission_mode
+    _PROFILE_TO_CLI_PERM: dict[str, str] = {
+        "plan":    "plan",
+        "default": "default",
+        "erlaubt": "acceptEdits",
+        "full":    "auto",
+    }
+
     def _active_perms() -> dict[str, tuple[int, bool]]:
         """Return the zone permissions for the active profile."""
         profile = state.get("_perm_profile", "default")
         return _PERM_PROFILES.get(profile, _PERM_PROFILES["default"])
+
+    def _active_cli_perm() -> str:
+        """Return the Claude CLI permission_mode for the active profile."""
+        profile = state.get("_perm_profile", "default")
+        return _PROFILE_TO_CLI_PERM.get(profile, "default")
 
     # -- path zone classification -------------------------------------------
 
@@ -3289,24 +3310,25 @@ def create_tab(ctx):
             _on_send(None)
             return
 
-        # --- File operations: upgrade permission mode if needed ---
-        current_perm = perm_dropdown.value
-        _PERM_RANK = {"default": 0, "plan": 0, "acceptEdits": 1, "auto": 2, "bypassPermissions": 3}
-        current_rank = _PERM_RANK.get(current_perm, 0)
-        needed_rank = 1 if tool in ("Edit", "Write", "Read", "Glob", "Grep", "") else 2
+        # --- File operations: upgrade permission profile if needed ---
+        current_profile = state.get("_perm_profile", "default")
+        _PROFILE_RANK = {"plan": 0, "default": 1, "erlaubt": 2, "full": 3}
+        current_rank = _PROFILE_RANK.get(current_profile, 1)
+        # Edit/Write need "erlaubt", Bash needs "full"
+        needed_rank = 2 if tool in ("Edit", "Write", "Read", "Glob", "Grep", "") else 3
         need_upgrade = current_rank < needed_rank
 
         if need_upgrade:
-            new_perm = "acceptEdits" if needed_rank == 1 else "auto"
+            new_profile = "erlaubt" if needed_rank == 2 else "full"
             _append_system_message(
                 f"\u2705 Approved: {readable}\n"
-                f"\u2191 Upgrading permissions: {current_perm} \u2192 {new_perm}"
+                f"\u2191 Upgrading permissions: {current_profile} \u2192 {new_profile}"
             )
             old_engine = state["engine"]
             session_id = ""
             if old_engine:
                 session_id = old_engine.session_id
-            perm_dropdown.value = new_perm
+            perm_dropdown.value = new_profile  # triggers _on_perm_change → syncs state
             engine = _ensure_engine()
             if engine and session_id:
                 engine.session_id = session_id
@@ -4217,32 +4239,35 @@ def create_tab(ctx):
             pass
 
     def _on_perm_change(change):
-        """Recreate engine with new permission mode."""
+        """Sync permission profile from dropdown to state, recreate engine."""
         if state["streaming"]:
             return
-        new_perm = change["new"]
+        new_profile = change["new"]
+        state["_perm_profile"] = new_profile
         engine = state["engine"]
         if engine:
             state["engine"] = None
+            cli_perm = _PROFILE_TO_CLI_PERM.get(new_profile, "default")
             _append_system_message(
-                f"Permission mode → {new_perm}. Takes effect on next message."
+                f"Permissions → **{new_profile}** (CLI: {cli_perm}). "
+                f"Takes effect on next message."
             )
-        # Warn on dangerous permission modes
-        if new_perm in ("bypassPermissions", "auto"):
-            label = "Full Access" if new_perm == "bypassPermissions" else "Auto"
+        # Warn on full mode
+        if new_profile == "full":
             _append_system_message(
-                f"⚠ WARNING: '{label}' mode gives the agent unrestricted "
-                f"access to files, shell commands, and system resources. "
-                f"Only use this if you trust the prompts and understand the risks."
+                "⚠ WARNING: **full** mode gives the agent unrestricted "
+                "access to files, shell commands, and all directories "
+                "(except remote archive). Only use if you trust the setup."
             )
         try:
             from delfin.user_settings import load_settings, save_settings
             s = load_settings()
             s.setdefault("agent", {})
-            s["agent"]["permission_mode"] = new_perm
+            s["agent"]["permission_profile"] = new_profile
             save_settings(s)
         except Exception:
             pass
+        _update_status()
 
     def _on_commit(button):
         """Ask the agent to stage and commit current changes."""
