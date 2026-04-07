@@ -105,6 +105,7 @@ class AgentEngine:
         self,
         repo_dir: Path,
         backend: str = "cli",
+        provider: str = "claude",
         api_key: str = "",
         model: str = "",
         mode: str = "quick",
@@ -114,11 +115,12 @@ class AgentEngine:
         self.repo_dir = Path(repo_dir)
         self.loader = PromptLoader(repo_dir=pack_dir)
         self.client = create_client(
-            backend=backend, api_key=api_key, model=model,
-            permission_mode=permission_mode,
+            backend=backend, provider=provider, api_key=api_key,
+            model=model, permission_mode=permission_mode,
             cwd=str(self.repo_dir),
         )
         self.backend = backend
+        self.provider = provider
         self.mode = mode
         self.route: list[str] = []
         self.mode_description: str = ""
@@ -158,6 +160,7 @@ class AgentEngine:
         return {
             "mode": self.mode,
             "backend": self.backend,
+            "provider": self.provider,
             "role": self.current_role,
             "role_index": self.current_role_index,
             "role_total": len(self.route),
