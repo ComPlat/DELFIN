@@ -523,6 +523,8 @@ def create_tab(ctx):
         "recent_edits": [],       # list of {"file": path, "tool": name} for undo
         "message_queue": [],      # queued messages sent while agent is busy
         "session_start_time": None,  # monotonic time of first message
+        "_agent_calc_path": "",       # relative path within calc_dir for browsing
+        "_pending_dashboard_action": None,  # {action_id, description, callback}
     }
 
     # -- widgets -----------------------------------------------------------
@@ -1220,11 +1222,33 @@ def create_tab(ctx):
                 "  /control show    — Show CONTROL content from Submit tab\n"
                 "  /control set ... — Set CONTROL content in Submit tab\n"
                 "  /control validate — Validate CONTROL syntax\n"
-                "  /submit          — Submit job from Submit tab\n"
+                "  /submit          — Submit job (confirms first)\n"
                 "  /orca show       — Show ORCA Builder settings\n"
                 "  /orca set <p> <v> — Set ORCA Builder param (method/basis/charge/...)\n"
                 "  /orca submit     — Submit ORCA job\n"
                 "  /jobs            — Switch to Job Status tab\n"
+                "\n"
+                "Calculations & analysis:\n"
+                "  /calc ls [path]  — List calc directories/files\n"
+                "  /calc cd <path>  — Navigate calc folder\n"
+                "  /calc read <file> — Read a calc file\n"
+                "  /calc tail <file> — Read last 8KB of output\n"
+                "  /calc info <dir> — Show folder summary & status\n"
+                "  /calc tree [dir] — Show directory tree\n"
+                "  /calc search <p> — Search files by glob pattern\n"
+                "  /analyze <dir>   — Full analysis (energy+convergence+errors)\n"
+                "  /analyze energy <dir> — Extract energies (Gibbs/ZPE/electronic)\n"
+                "  /analyze convergence <dir> — Check SCF convergence\n"
+                "  /analyze errors <dir> — Scan for ORCA errors\n"
+                "  /analyze status  — Overview of all calc folders\n"
+                "\n"
+                "Recalc & cancel (require confirmation):\n"
+                "  /recalc check <dir> — Check if recalc needed\n"
+                "  /recalc check-all — Scan all folders\n"
+                "  /recalc <dir>    — Submit recalc (confirms first)\n"
+                "  /recalc auto     — Recalc all that need it (confirms first)\n"
+                "  /cancel <job_id> — Cancel a job (confirms first)\n"
+                "  /cancel all      — Cancel all active jobs (confirms first)\n"
                 "\n"
                 "Keyboard shortcuts:\n"
                 "  Enter            — Send message\n"
@@ -1588,12 +1612,16 @@ def create_tab(ctx):
         if cmd == "/submit":
             submit_fn = ctx.submit_refs.get("handle_submit")
             if submit_fn:
-                _append_system_message("Triggering job submission...")
-                try:
-                    submit_fn(None)
-                    _append_system_message("Job submitted. Check Job Status tab.")
-                except Exception as exc:
-                    _append_system_message(f"Submit error: {exc}")
+                jn = ctx.submit_refs.get("job_name_widget")
+                job_name = jn.value.strip() if jn else "?"
+                def _do_submit():
+                    try:
+                        submit_fn(None)
+                        _append_system_message("Job submitted. Check Job Status tab.")
+                        ctx.select_tab("Job Status")
+                    except Exception as exc:
+                        _append_system_message(f"Submit error: {exc}")
+                _request_confirmation("submit_job", f"Submit job '{job_name}' from Submit tab?", _do_submit)
             else:
                 _append_system_message("Submit tab not available.")
             return True
@@ -1712,6 +1740,520 @@ def create_tab(ctx):
                     pass
             ctx.select_tab("Job Status")
             _append_system_message("Switched to Job Status tab.")
+            return True
+
+        # -- Calculations browsing (all SAFE) --------------------------------
+
+        def _resolve_calc_path(subpath: str) -> Path:
+            """Resolve a path relative to agent's current calc dir."""
+            base = ctx.calc_dir
+            agent_rel = state.get("_agent_calc_path", "")
+            if agent_rel:
+                base = base / agent_rel
+            if subpath:
+                target = base / subpath
+            else:
+                target = base
+            # Security: don't escape calc_dir
+            try:
+                target.resolve().relative_to(ctx.calc_dir.resolve())
+            except ValueError:
+                return ctx.calc_dir
+            return target
+
+        if cmd == "/calc ls" or cmd.startswith("/calc ls "):
+            subpath = text[len("/calc ls"):].strip()
+            target = _resolve_calc_path(subpath)
+            if not target.exists():
+                _append_system_message(f"Not found: {target}")
+                return True
+            if target.is_file():
+                _append_system_message(f"{target.name} ({target.stat().st_size:,} bytes)")
+                return True
+            items = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name))
+            lines = []
+            for p in items[:100]:
+                if p.is_dir():
+                    lines.append(f"  [DIR]  {p.name}/")
+                else:
+                    sz = p.stat().st_size
+                    lines.append(f"  {sz:>10,}  {p.name}")
+            if len(items) > 100:
+                lines.append(f"  ... and {len(items) - 100} more")
+            rel = target.relative_to(ctx.calc_dir) if target != ctx.calc_dir else Path(".")
+            listing = "\n".join(lines) or "(empty)"
+            _append_system_message(f"calc/{rel}:\n{listing}")
+            return True
+
+        if cmd.startswith("/calc cd "):
+            subpath = text[len("/calc cd"):].strip()
+            if subpath in ("..", ".."):
+                cur = state.get("_agent_calc_path", "")
+                state["_agent_calc_path"] = str(Path(cur).parent) if cur else ""
+            elif subpath == "/":
+                state["_agent_calc_path"] = ""
+            else:
+                target = _resolve_calc_path(subpath)
+                if target.is_dir():
+                    try:
+                        rel = str(target.resolve().relative_to(ctx.calc_dir.resolve()))
+                        state["_agent_calc_path"] = rel if rel != "." else ""
+                    except ValueError:
+                        state["_agent_calc_path"] = ""
+                else:
+                    _append_system_message(f"Not a directory: {subpath}")
+                    return True
+            cur = state.get("_agent_calc_path", "") or "."
+            _append_system_message(f"calc dir: calc/{cur}")
+            return True
+
+        if cmd.startswith("/calc read "):
+            filepath = text[len("/calc read"):].strip()
+            target = _resolve_calc_path(filepath)
+            if not target.is_file():
+                _append_system_message(f"Not a file: {filepath}")
+                return True
+            size = target.stat().st_size
+            limit = 8192 if target.suffix in (".out", ".log") else 32768
+            try:
+                content = target.read_text(encoding="utf-8", errors="replace")[:limit]
+                if size > limit:
+                    content += f"\n... [truncated, {size:,} bytes total]"
+                _append_system_message(f"```\n{content}\n```")
+            except Exception as exc:
+                _append_system_message(f"Error reading: {exc}")
+            return True
+
+        if cmd.startswith("/calc tail "):
+            filepath = text[len("/calc tail"):].strip()
+            target = _resolve_calc_path(filepath)
+            if not target.is_file():
+                _append_system_message(f"Not a file: {filepath}")
+                return True
+            try:
+                size = target.stat().st_size
+                read_size = min(size, 8192)
+                with open(target, "rb") as f:
+                    f.seek(max(0, size - read_size))
+                    tail = f.read().decode("utf-8", errors="replace")
+                _append_system_message(f"Last {read_size:,} bytes of {target.name}:\n```\n{tail}\n```")
+            except Exception as exc:
+                _append_system_message(f"Error: {exc}")
+            return True
+
+        if cmd.startswith("/calc info "):
+            folder = text[len("/calc info"):].strip()
+            target = _resolve_calc_path(folder)
+            if not target.is_dir():
+                _append_system_message(f"Not a directory: {folder}")
+                return True
+            try:
+                from delfin.smart_recalc import has_ok_marker
+            except ImportError:
+                has_ok_marker = None
+            lines = [f"Folder: {target.name}"]
+            for f in sorted(target.iterdir()):
+                if f.is_file():
+                    sz = f.stat().st_size
+                    status = ""
+                    if f.suffix == ".out" and has_ok_marker:
+                        ok = has_ok_marker(f)
+                        status = " [OK]" if ok else " [INCOMPLETE/ERROR]"
+                    lines.append(f"  {sz:>10,}  {f.name}{status}")
+            control = target / "CONTROL.txt"
+            if control.exists():
+                lines.append(f"\n  CONTROL.txt present ({control.stat().st_size:,} bytes)")
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd.startswith("/calc tree"):
+            folder = text[len("/calc tree"):].strip()
+            target = _resolve_calc_path(folder) if folder else _resolve_calc_path("")
+            if not target.is_dir():
+                _append_system_message(f"Not a directory: {folder}")
+                return True
+            lines = [f"{target.name}/"]
+            def _tree(d, prefix, depth):
+                if depth > 2:
+                    return
+                items = sorted(d.iterdir(), key=lambda p: (p.is_file(), p.name))[:50]
+                for i, p in enumerate(items):
+                    connector = "\u2514\u2500 " if i == len(items) - 1 else "\u251c\u2500 "
+                    if p.is_dir():
+                        lines.append(f"{prefix}{connector}{p.name}/")
+                        ext = "   " if i == len(items) - 1 else "\u2502  "
+                        _tree(p, prefix + ext, depth + 1)
+                    else:
+                        lines.append(f"{prefix}{connector}{p.name}")
+            _tree(target, "", 0)
+            _append_system_message("\n".join(lines[:200]))
+            return True
+
+        if cmd.startswith("/calc search "):
+            pattern = text[len("/calc search"):].strip()
+            target = ctx.calc_dir
+            matches = sorted(target.glob(pattern))[:50]
+            if matches:
+                lines = [str(m.relative_to(target)) for m in matches]
+                _append_system_message(f"Found {len(matches)} matches:\n" + "\n".join(lines))
+            else:
+                _append_system_message(f"No matches for: {pattern}")
+            return True
+
+        # -- Analysis (all SAFE) ---------------------------------------------
+
+        if cmd.startswith("/analyze energy "):
+            folder = text[len("/analyze energy"):].strip()
+            target = _resolve_calc_path(folder)
+            if not target.is_dir():
+                _append_system_message(f"Not a directory: {folder}")
+                return True
+            try:
+                from delfin.energies import find_gibbs_energy, find_ZPE, find_electronic_energy
+            except ImportError:
+                _append_system_message("Energy parsing not available.")
+                return True
+            lines = [f"Energies for {target.name}:"]
+            for out_file in sorted(target.glob("*.out")):
+                e = find_electronic_energy(str(out_file))
+                g = find_gibbs_energy(str(out_file))
+                z = find_ZPE(str(out_file))
+                parts = []
+                if e is not None:
+                    parts.append(f"E={e:.6f}")
+                if g is not None:
+                    parts.append(f"G={g:.6f}")
+                if z is not None:
+                    parts.append(f"ZPE={z:.6f}")
+                if parts:
+                    lines.append(f"  {out_file.name}: {', '.join(parts)} Eh")
+                else:
+                    lines.append(f"  {out_file.name}: no energies found")
+            if len(lines) == 1:
+                lines.append("  (no .out files)")
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd.startswith("/analyze convergence "):
+            folder = text[len("/analyze convergence"):].strip()
+            target = _resolve_calc_path(folder)
+            if not target.is_dir():
+                _append_system_message(f"Not a directory: {folder}")
+                return True
+            lines = [f"Convergence check for {target.name}:"]
+            for out_file in sorted(target.glob("*.out")):
+                try:
+                    size = out_file.stat().st_size
+                    with open(out_file, "rb") as f:
+                        f.seek(max(0, size - 20480))
+                        tail = f.read().decode("utf-8", errors="replace")
+                    if "ORCA TERMINATED NORMALLY" in tail:
+                        lines.append(f"  {out_file.name}: CONVERGED OK")
+                    elif "SCF NOT CONVERGED" in tail or "CONVERGENCE" in tail.upper() and "FAILURE" in tail.upper():
+                        lines.append(f"  {out_file.name}: SCF NOT CONVERGED")
+                    elif "ABORTING" in tail or "ERROR" in tail:
+                        lines.append(f"  {out_file.name}: ERROR/ABORTED")
+                    else:
+                        lines.append(f"  {out_file.name}: INCOMPLETE (no termination marker)")
+                except Exception as exc:
+                    lines.append(f"  {out_file.name}: read error ({exc})")
+            if len(lines) == 1:
+                lines.append("  (no .out files)")
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd.startswith("/analyze errors "):
+            folder = text[len("/analyze errors"):].strip()
+            target = _resolve_calc_path(folder)
+            if not target.is_dir():
+                _append_system_message(f"Not a directory: {folder}")
+                return True
+            _ERROR_PATTERNS = [
+                "ABORTING THE RUN", "FATAL ERROR", "SCF NOT CONVERGED",
+                "Insufficient memory", "ran out of disk space",
+                "mpirun detected that one or more processes exited",
+                "TRAH STEP ABORTING", "ORCA finished by error termination",
+            ]
+            lines = [f"Error scan for {target.name}:"]
+            found_any = False
+            for out_file in sorted(target.glob("*.out")):
+                try:
+                    size = out_file.stat().st_size
+                    with open(out_file, "rb") as f:
+                        f.seek(max(0, size - 20480))
+                        tail = f.read().decode("utf-8", errors="replace")
+                    errors = [p for p in _ERROR_PATTERNS if p in tail]
+                    if errors:
+                        found_any = True
+                        lines.append(f"  {out_file.name}: {', '.join(errors)}")
+                except Exception:
+                    pass
+            if not found_any:
+                lines.append("  No errors found in .out files.")
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd == "/analyze status":
+            lines = ["Calculation status overview:"]
+            try:
+                from delfin.smart_recalc import has_ok_marker
+            except ImportError:
+                has_ok_marker = None
+            # Get running jobs
+            running_dirs = set()
+            try:
+                jobs = ctx.backend.list_jobs()
+                for j in jobs:
+                    if j.status.upper() in ("RUNNING", "R", "PENDING", "PD"):
+                        running_dirs.add(j.job_dir)
+            except Exception:
+                pass
+            ok_count, fail_count, running_count, empty_count = 0, 0, 0, 0
+            for d in sorted(ctx.calc_dir.iterdir()):
+                if not d.is_dir():
+                    continue
+                out_files = list(d.glob("*.out"))
+                if str(d) in running_dirs or str(d.resolve()) in running_dirs:
+                    lines.append(f"  RUNNING   {d.name}")
+                    running_count += 1
+                elif not out_files:
+                    empty_count += 1
+                else:
+                    all_ok = all(has_ok_marker(f) for f in out_files) if has_ok_marker else False
+                    if all_ok:
+                        ok_count += 1
+                    else:
+                        fail_count += 1
+                        lines.append(f"  FAILED    {d.name}")
+            lines.insert(1, f"  Completed: {ok_count}  |  Failed: {fail_count}  |  Running: {running_count}  |  Empty: {empty_count}")
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd.startswith("/analyze ") and not cmd.startswith("/analyze energy") and not cmd.startswith("/analyze convergence") and not cmd.startswith("/analyze errors") and cmd != "/analyze status":
+            # /analyze <folder> — full analysis
+            folder = text[len("/analyze"):].strip()
+            target = _resolve_calc_path(folder)
+            if not target.is_dir():
+                _append_system_message(f"Not a directory: {folder}")
+                return True
+            # Run all three: energy + convergence + errors
+            for sub_cmd in [f"/analyze energy {folder}", f"/analyze convergence {folder}", f"/analyze errors {folder}"]:
+                _handle_slash_command(sub_cmd)
+            return True
+
+        # -- Recalc (check = SAFE, submit = CONFIRMATION REQUIRED) -----------
+
+        if cmd.startswith("/recalc check-all"):
+            lines = ["Recalc check (all folders):"]
+            try:
+                from delfin.smart_recalc import has_ok_marker, fingerprint_unchanged
+            except ImportError:
+                _append_system_message("smart_recalc not available.")
+                return True
+            needs = []
+            for d in sorted(ctx.calc_dir.iterdir()):
+                if not d.is_dir():
+                    continue
+                for inp in d.glob("*.inp"):
+                    out = inp.with_suffix(".out")
+                    ok = has_ok_marker(out) if out.exists() else False
+                    fp = fingerprint_unchanged(inp) if ok else False
+                    if not ok or not fp:
+                        needs.append(d.name)
+                        reason = "no output" if not out.exists() else ("incomplete" if not ok else "input changed")
+                        lines.append(f"  NEEDS RECALC  {d.name} ({reason})")
+                        break
+            if not needs:
+                lines.append("  All calculations are up to date.")
+            else:
+                lines.append(f"\n  Total: {len(needs)} folders need recalc")
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd.startswith("/recalc check "):
+            folder = text[len("/recalc check"):].strip()
+            target = _resolve_calc_path(folder)
+            if not target.is_dir():
+                _append_system_message(f"Not a directory: {folder}")
+                return True
+            try:
+                from delfin.smart_recalc import has_ok_marker, fingerprint_unchanged
+            except ImportError:
+                _append_system_message("smart_recalc not available.")
+                return True
+            lines = [f"Recalc check for {target.name}:"]
+            for inp in sorted(target.glob("*.inp")):
+                out = inp.with_suffix(".out")
+                ok = has_ok_marker(out) if out.exists() else False
+                fp = fingerprint_unchanged(inp) if ok else False
+                needs = not ok or not fp
+                lines.append(
+                    f"  {inp.name}: ok={ok}, fingerprint_match={fp}, "
+                    f"{'NEEDS RECALC' if needs else 'up to date'}"
+                )
+            if len(lines) == 1:
+                lines.append("  (no .inp files)")
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd == "/recalc auto":
+            try:
+                from delfin.smart_recalc import has_ok_marker, fingerprint_unchanged
+            except ImportError:
+                _append_system_message("smart_recalc not available.")
+                return True
+            needs = []
+            for d in sorted(ctx.calc_dir.iterdir()):
+                if not d.is_dir():
+                    continue
+                for inp in d.glob("*.inp"):
+                    out = inp.with_suffix(".out")
+                    ok = has_ok_marker(out) if out.exists() else False
+                    fp = fingerprint_unchanged(inp) if ok else False
+                    if not ok or not fp:
+                        needs.append(d)
+                        break
+            if not needs:
+                _append_system_message("All calculations are up to date. Nothing to recalc.")
+                return True
+            names = ", ".join(d.name for d in needs[:10])
+            if len(needs) > 10:
+                names += f" ... (+{len(needs) - 10} more)"
+            def _do_recalc_auto():
+                submitted = 0
+                for job_dir in needs:
+                    control = job_dir / "CONTROL.txt"
+                    if not control.exists():
+                        _append_system_message(f"  Skip {job_dir.name}: no CONTROL.txt")
+                        continue
+                    try:
+                        result = ctx.backend.submit_delfin(
+                            job_dir=job_dir, job_name=job_dir.name,
+                            mode="delfin-recalc-classic",
+                        )
+                        if result.returncode == 0:
+                            submitted += 1
+                        else:
+                            _append_system_message(f"  Failed {job_dir.name}: {result.stderr[:200]}")
+                    except Exception as exc:
+                        _append_system_message(f"  Error {job_dir.name}: {exc}")
+                _append_system_message(f"Submitted {submitted}/{len(needs)} recalc jobs.")
+                refresh = ctx.job_status_refs.get("refresh_job_list")
+                if refresh:
+                    try:
+                        refresh()
+                    except Exception:
+                        pass
+            _request_confirmation(
+                "recalc_auto",
+                f"Submit recalc for {len(needs)} folders: {names}",
+                _do_recalc_auto,
+            )
+            return True
+
+        if cmd.startswith("/recalc ") and not cmd.startswith("/recalc check"):
+            folder = text[len("/recalc"):].strip()
+            if folder == "auto":
+                pass  # handled above
+            else:
+                target = _resolve_calc_path(folder)
+                if not target.is_dir():
+                    _append_system_message(f"Not a directory: {folder}")
+                    return True
+                control = target / "CONTROL.txt"
+                if not control.exists():
+                    _append_system_message(f"No CONTROL.txt in {folder}")
+                    return True
+                def _do_recalc(job_dir=target):
+                    try:
+                        result = ctx.backend.submit_delfin(
+                            job_dir=job_dir, job_name=job_dir.name,
+                            mode="delfin-recalc-classic",
+                        )
+                        if result.returncode == 0:
+                            _append_system_message(f"Recalc submitted for {job_dir.name}.")
+                        else:
+                            _append_system_message(f"Recalc failed: {result.stderr[:300]}")
+                        refresh = ctx.recalc_refs.get("refresh_recalc_folders")
+                        if refresh:
+                            try:
+                                refresh()
+                            except Exception:
+                                pass
+                        refresh2 = ctx.job_status_refs.get("refresh_job_list")
+                        if refresh2:
+                            try:
+                                refresh2()
+                            except Exception:
+                                pass
+                        ctx.select_tab("Job Status")
+                    except Exception as exc:
+                        _append_system_message(f"Recalc error: {exc}")
+                _request_confirmation(
+                    "recalc_single",
+                    f"Submit recalc for '{folder}'?",
+                    _do_recalc,
+                )
+            return True
+
+        # -- Cancel jobs (CONFIRMATION REQUIRED) -----------------------------
+
+        if cmd.startswith("/cancel "):
+            target = text[len("/cancel"):].strip()
+            if target == "all":
+                try:
+                    jobs = ctx.backend.list_jobs()
+                    active = [j for j in jobs if j.status.upper() in ("RUNNING", "R", "PENDING", "PD")]
+                except Exception:
+                    active = []
+                if not active:
+                    _append_system_message("No active jobs to cancel.")
+                    return True
+                names = ", ".join(f"{j.name}({j.job_id})" for j in active[:5])
+                if len(active) > 5:
+                    names += f" ... (+{len(active) - 5} more)"
+                def _do_cancel_all():
+                    cancelled = 0
+                    for j in active:
+                        try:
+                            ok, msg = ctx.backend.cancel_job(j.job_id)
+                            if ok:
+                                cancelled += 1
+                            else:
+                                _append_system_message(f"  Failed to cancel {j.name}: {msg}")
+                        except Exception as exc:
+                            _append_system_message(f"  Error cancelling {j.name}: {exc}")
+                    _append_system_message(f"Cancelled {cancelled}/{len(active)} jobs.")
+                    refresh = ctx.job_status_refs.get("refresh_job_list")
+                    if refresh:
+                        try:
+                            refresh()
+                        except Exception:
+                            pass
+                _request_confirmation(
+                    "cancel_all",
+                    f"Cancel {len(active)} active jobs: {names}",
+                    _do_cancel_all,
+                )
+            else:
+                job_id = target
+                def _do_cancel(jid=job_id):
+                    try:
+                        ok, msg = ctx.backend.cancel_job(jid)
+                        if ok:
+                            _append_system_message(f"Job {jid} cancelled.")
+                        else:
+                            _append_system_message(f"Cancel failed: {msg}")
+                        refresh = ctx.job_status_refs.get("refresh_job_list")
+                        if refresh:
+                            try:
+                                refresh()
+                            except Exception:
+                                pass
+                        ctx.select_tab("Job Status")
+                    except Exception as exc:
+                        _append_system_message(f"Cancel error: {exc}")
+                _request_confirmation("cancel_single", f"Cancel job {job_id}?", _do_cancel)
             return True
 
         return False
@@ -1928,6 +2470,26 @@ def create_tab(ctx):
             parts.append(f" {k}={sv}")
         return "".join(parts)
 
+    def _request_confirmation(action_id, description, callback):
+        """Show confirmation prompt for destructive dashboard operations.
+
+        Stores the pending action and shows Approve/Deny buttons.
+        When user approves, executes the callback.
+        """
+        state["_pending_dashboard_action"] = {
+            "action_id": action_id,
+            "description": description,
+            "callback": callback,
+        }
+        _append_chat_message(
+            "approval",
+            f"\u26a0\ufe0f {description}",
+        )
+        approval_info_html.value = ""
+        approve_btn.layout.display = "inline-flex"
+        deny_btn.layout.display = "inline-flex"
+        approval_row.layout.display = "flex"
+
     def _show_approval_prompt(tool_name, detail):
         """Show approval request inline in chat + approval buttons."""
         state["_pending_approval"] = {"tool": tool_name, "detail": detail}
@@ -1954,11 +2516,25 @@ def create_tab(ctx):
     def _on_approve(button):
         """User approves a blocked operation.
 
+        For dashboard actions: execute the stored callback.
         For Bash commands: execute directly via subprocess (reliable).
         For file ops: upgrade permission mode and let the agent retry.
         """
         import ast as _ast
         import subprocess as _sp
+
+        # Dashboard action confirmations (from /recalc, /cancel, /submit)
+        dashboard_action = state.get("_pending_dashboard_action")
+        if dashboard_action:
+            _hide_approval()
+            state["_pending_dashboard_action"] = None
+            desc = dashboard_action["description"]
+            _append_system_message(f"\u2705 Approved: {desc}")
+            try:
+                dashboard_action["callback"]()
+            except Exception as exc:
+                _append_system_message(f"\u274c Error: {exc}")
+            return
 
         pending = state.get("_pending_approval")
         if not pending:
@@ -2043,6 +2619,13 @@ def create_tab(ctx):
 
     def _on_deny(button):
         """User denies a blocked operation."""
+        # Dashboard action denial
+        dashboard_action = state.get("_pending_dashboard_action")
+        if dashboard_action:
+            _hide_approval()
+            state["_pending_dashboard_action"] = None
+            _append_system_message(f"\u274c Cancelled: {dashboard_action['description']}")
+            return
         pending = state.get("_pending_approval")
         _hide_approval()
         raw = pending.get("tool", "") if pending else ""
