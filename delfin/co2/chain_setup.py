@@ -136,6 +136,7 @@ _TRANSFER_KEYS = [
     "solvent",
     "PAL",
     "maxcore",
+    "place_axis",
 ]
 
 _CO2_DEFAULTS = {

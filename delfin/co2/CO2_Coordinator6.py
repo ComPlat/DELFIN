@@ -80,6 +80,9 @@ align_bond_index=
 neighbors=
 
 # CO2 placement
+# place_axis: z | x | y | -z | -x | -y
+#   Positive Achse: Richtungsoptimierung über volle Sphäre (Standard)
+#   Negative Achse: beide Halbkugeln optimieren, ungünstigere Seite verwenden
 ------------------------------------
 place_axis=z
 mode=side-on
@@ -564,7 +567,14 @@ def align_complex(infile, outfile, metal_index=None, metal_symbol=None, align_bo
 
 # === CO2 platzieren ===
 def _axis_vector(name):
-    return {"x": np.array([1, 0, 0]), "y": np.array([0, 1, 0]), "z": np.array([0, 0, 1])}[name]
+    return {
+        "x":  np.array([ 1.,  0.,  0.]),
+        "y":  np.array([ 0.,  1.,  0.]),
+        "z":  np.array([ 0.,  0.,  1.]),
+        "-x": np.array([-1.,  0.,  0.]),
+        "-y": np.array([ 0., -1.,  0.]),
+        "-z": np.array([ 0.,  0., -1.]),
+    }[name]
 
 def _co2_axis_center_indices(atoms):
     syms = atoms.get_chemical_symbols()
@@ -597,10 +607,14 @@ def _fibonacci_sphere(n_samples):
         dirs.append(np.array([x, y, z]))
     return dirs
 
-def _find_max_clearance_direction(atoms, metal_index, distance, samples=800, clearance_scale=1.0):
+def _find_max_clearance_direction(atoms, metal_index, distance, samples=800, clearance_scale=1.0,
+                                   hemisphere_dir=None):
     """
     Suche die Richtung, in der ein Punkt im Abstand 'distance' zur Metallposition
     den größten minimalen Abstand zu allen anderen Atomen besitzt.
+
+    hemisphere_dir: wenn gesetzt (unit vector), werden nur Richtungen mit
+    dot(dir, hemisphere_dir) >= 0 berücksichtigt (Halbraum-Filter).
     """
     if len(atoms) <= 1:
         return np.array([0.0, 0.0, 1.0]), np.inf
@@ -622,6 +636,8 @@ def _find_max_clearance_direction(atoms, metal_index, distance, samples=800, cle
 
     for direction in directions:
         direction = direction / np.linalg.norm(direction)
+        if hemisphere_dir is not None and np.dot(direction, hemisphere_dir) < 0:
+            continue
         candidate = direction * distance
         diffs = other_positions - candidate
         dists = np.linalg.norm(diffs, axis=1)
@@ -664,13 +680,45 @@ def place_co2_general(complex_path, co2_path, out_path, distance=5.0, place_axis
     clearance = None
     place_dir = axis_target
 
+    is_negative_axis = isinstance(place_axis, str) and place_axis.startswith("-")
+
     if optimize_direction and metal_index is not None:
-        best_dir, clearance = _find_max_clearance_direction(
-            comp, metal_index, distance,
-            samples=direction_samples,
-            clearance_scale=clearance_scale
-        )
-        place_dir = best_dir / np.linalg.norm(best_dir)
+        if is_negative_axis:
+            # Worst-Hemisphere-Logik: beide Halbräume optimieren, schlechtere Seite wählen
+            base_dir = _axis_vector(place_axis.lstrip("-"))   # z.B. "-z" → [0,0,1]
+            dir_pos, clr_pos = _find_max_clearance_direction(
+                comp, metal_index, distance,
+                samples=direction_samples,
+                clearance_scale=clearance_scale,
+                hemisphere_dir= base_dir,
+            )
+            dir_neg, clr_neg = _find_max_clearance_direction(
+                comp, metal_index, distance,
+                samples=direction_samples,
+                clearance_scale=clearance_scale,
+                hemisphere_dir=-base_dir,
+            )
+            base_name = place_axis.lstrip("-")
+            if clr_pos <= clr_neg:
+                place_dir = dir_pos / np.linalg.norm(dir_pos)
+                clearance = clr_pos
+                worse_label = f"+{base_name}"
+            else:
+                place_dir = dir_neg / np.linalg.norm(dir_neg)
+                clearance = clr_neg
+                worse_label = f"-{base_name}"
+            print(f"[INFO] Worst-hemisphere gewählt: {worse_label} "
+                  f"(clearance {clearance:.3f} Å, besser: "
+                  f"{'+' if clr_pos > clr_neg else '-'}{base_name} = "
+                  f"{max(clr_pos, clr_neg):.3f} Å)")
+        else:
+            best_dir, clearance = _find_max_clearance_direction(
+                comp, metal_index, distance,
+                samples=direction_samples,
+                clearance_scale=clearance_scale,
+            )
+            place_dir = best_dir / np.linalg.norm(best_dir)
+
         print(f"[INFO] Gefundene freie Richtung: "
               f"({place_dir[0]:+.3f}, {place_dir[1]:+.3f}, {place_dir[2]:+.3f})")
         if clearance is not None and np.isfinite(clearance):
