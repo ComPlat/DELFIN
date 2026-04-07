@@ -1,4 +1,4 @@
-"""Client backends for the DELFIN Agent: Claude CLI, Anthropic API, or OpenAI API."""
+"""Client backends for the DELFIN Agent: Claude CLI, Anthropic API, OpenAI API, or Codex CLI."""
 
 from __future__ import annotations
 
@@ -535,9 +535,19 @@ class OpenAIClient(_BaseClient):
 
     # Pricing per million tokens (USD).
     _PRICING: dict[str, tuple[float, float]] = {
+        # GPT-5 family
+        "gpt-5.4": (2.0, 8.0),
+        "gpt-5.4-mini": (0.40, 1.60),
+        "gpt-5.3-codex": (2.0, 8.0),
+        "gpt-5.2-codex": (2.0, 8.0),
+        "gpt-5.2": (2.0, 8.0),
+        "gpt-5.1-codex-max": (2.0, 8.0),
+        "gpt-5.1-codex-mini": (0.40, 1.60),
+        # GPT-4 family
         "gpt-4.1": (2.0, 8.0),
         "gpt-4.1-mini": (0.40, 1.60),
         "gpt-4.1-nano": (0.10, 0.40),
+        # o-series reasoning
         "o4-mini": (1.10, 4.40),
         "o3": (2.0, 8.0),
     }
@@ -656,6 +666,170 @@ class OpenAIClient(_BaseClient):
 
 
 # ---------------------------------------------------------------------------
+# Codex CLI backend (uses OpenAI Codex CLI binary)
+# ---------------------------------------------------------------------------
+
+class CodexCLIClient(_BaseClient):
+    """Use the OpenAI Codex CLI (``codex exec``) for agent tasks.
+
+    Spawns ``codex exec --json --ephemeral --full-auto`` per turn and
+    streams JSONL events from stdout.  Supports session resume via
+    thread IDs.
+
+    Parameters
+    ----------
+    model : str
+        Model name (``"gpt-5.4"``, ``"gpt-5.3-codex"``, etc.).
+    codex_path : str
+        Path to the ``codex`` binary.  Auto-detected if empty.
+    cwd : str
+        Working directory for the Codex process.
+    """
+
+    DEFAULT_MODEL = "gpt-5.4"
+
+    # Reuse OpenAI pricing table.
+    _PRICING = OpenAIClient._PRICING
+
+    def __init__(self, model: str = "", codex_path: str = "",
+                 cwd: str = ""):
+        self.model = model or self.DEFAULT_MODEL
+        self.cwd = cwd or None
+        self.codex_path = codex_path or shutil.which("codex") or "codex"
+        if not shutil.which(self.codex_path):
+            raise FileNotFoundError(
+                f"Codex CLI not found at '{self.codex_path}'. "
+                "Install with: npm install -g @openai/codex"
+            )
+        self._thread_id: str = ""
+
+    def _estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
+        pricing = self._PRICING.get(self.model)
+        if not pricing:
+            pricing = (2.0, 8.0)
+        return (input_tokens * pricing[0] + output_tokens * pricing[1]) / 1_000_000
+
+    def stream_message(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int = 4096,
+        session_id: str = "",
+        thinking_budget: int = 0,
+    ) -> Generator[StreamEvent, None, None]:
+        """Run ``codex exec --json`` and stream JSONL events.
+
+        Each call spawns a fresh process (Codex CLI is per-turn).
+        The system prompt and conversation are combined into a single
+        prompt string since Codex exec is non-interactive.
+        """
+        # Build prompt from system + messages
+        parts: list[str] = []
+        if system:
+            parts.append(f"[System instructions]\n{system}\n")
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+            if role == "user":
+                parts.append(f"[User]\n{content}\n")
+            elif role == "assistant":
+                parts.append(f"[Assistant]\n{content}\n")
+        prompt_text = "\n".join(parts)
+
+        cmd = [
+            self.codex_path, "exec",
+            "--json",
+            "--ephemeral",
+            "--full-auto",
+            "-m", self.model,
+        ]
+        if self.cwd:
+            cmd.extend(["-C", self.cwd])
+
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        # Send prompt via stdin
+        try:
+            proc.stdin.write(prompt_text)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+        # Read JSONL events from stdout
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            dtype = data.get("type", "")
+
+            if dtype == "thread.started":
+                tid = data.get("thread_id", "")
+                if tid:
+                    self._thread_id = tid
+                    yield StreamEvent(type="session_init", text=tid)
+
+            elif dtype == "item.completed":
+                item = data.get("item", {})
+                text = item.get("text", "")
+                if text:
+                    yield StreamEvent(type="text_delta", text=text)
+
+            elif dtype == "turn.completed":
+                usage = data.get("usage", {})
+                inp = usage.get("input_tokens", 0)
+                cached = usage.get("cached_input_tokens", 0)
+                out = usage.get("output_tokens", 0)
+                total_in = inp + cached
+                cost = self._estimate_cost(total_in, out)
+                yield StreamEvent(
+                    type="message_delta",
+                    input_tokens=total_in,
+                    output_tokens=out,
+                    cost_usd=cost,
+                    stop_reason="end_turn",
+                )
+
+            elif dtype == "error":
+                err_msg = data.get("message", "Unknown Codex error")
+                yield StreamEvent(type="text_delta", text=f"\n[Codex error: {err_msg}]")
+
+            elif dtype == "turn.failed":
+                err = data.get("error", {})
+                err_msg = err.get("message", "Turn failed")
+                yield StreamEvent(type="text_delta", text=f"\n[Codex error: {err_msg}]")
+                yield StreamEvent(
+                    type="message_delta",
+                    stop_reason="error",
+                )
+
+        proc.wait()
+
+    def switch_model(self, model: str) -> None:
+        """Switch model for next invocation."""
+        if model and model != self.model:
+            self.model = model
+
+    def kill(self) -> None:
+        """No persistent process to kill."""
+
+    @property
+    def session_id(self) -> str:
+        """Return the last thread ID."""
+        return self._thread_id
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -689,6 +863,8 @@ def create_client(
         Working directory for the CLI process.
     """
     if provider == "openai":
+        if backend == "cli":
+            return CodexCLIClient(model=model, cwd=cwd)
         openai_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         return OpenAIClient(api_key=openai_key, model=model)
     if backend == "api":

@@ -575,14 +575,21 @@ def create_tab(ctx):
     _PROVIDER_MODELS = {
         "claude": [("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")],
         "openai": [
+            ("GPT-5.4", "gpt-5.4"),
+            ("GPT-5.4-mini", "gpt-5.4-mini"),
+            ("GPT-5.3-codex", "gpt-5.3-codex"),
+            ("GPT-5.2-codex", "gpt-5.2-codex"),
+            ("GPT-5.2", "gpt-5.2"),
+            ("GPT-5.1-codex-max", "gpt-5.1-codex-max"),
+            ("GPT-5.1-codex-mini", "gpt-5.1-codex-mini"),
             ("GPT-4.1", "gpt-4.1"),
             ("GPT-4.1-mini", "gpt-4.1-mini"),
-            ("GPT-4.1-nano", "gpt-4.1-nano"),
             ("o4-mini", "o4-mini"),
+            ("o3", "o3"),
         ],
     }
-    _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-4.1-mini"}
-    _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-4.1-nano"}
+    _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4"}
+    _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini"}
 
     provider_dropdown = widgets.Dropdown(
         options=[("Claude", "claude"), ("OpenAI", "openai")],
@@ -1051,11 +1058,23 @@ def create_tab(ctx):
         except Exception:
             return {}
 
+    _codex_available = bool(shutil.which("codex"))
+
     def _resolve_backend():
         """Determine which backend to use: cli or api."""
-        # OpenAI always uses API
         if provider_dropdown.value == "openai":
-            return "api"
+            settings = _get_agent_settings()
+            preferred = settings.get("backend", "cli")
+            if preferred == "cli" and _codex_available:
+                return "cli"
+            if preferred == "api" and os.environ.get("OPENAI_API_KEY", ""):
+                return "api"
+            # Fallback: CLI first, then API
+            if _codex_available:
+                return "cli"
+            if os.environ.get("OPENAI_API_KEY", ""):
+                return "api"
+            return "cli"  # will error at runtime with helpful message
         settings = _get_agent_settings()
         preferred = settings.get("backend", "cli")
         if preferred == "cli" and _cli_available:
@@ -1402,9 +1421,15 @@ def create_tab(ctx):
                 "opus":   {"input": 15.0, "output": 75.0},
                 "sonnet": {"input": 3.0,  "output": 15.0},
                 "haiku":  {"input": 0.25, "output": 1.25},
+                "gpt-5.4": {"input": 2.0, "output": 8.0},
+                "gpt-5.4-mini": {"input": 0.40, "output": 1.60},
+                "gpt-5.3-codex": {"input": 2.0, "output": 8.0},
+                "gpt-5.2-codex": {"input": 2.0, "output": 8.0},
+                "gpt-5.2": {"input": 2.0, "output": 8.0},
+                "gpt-5.1-codex-max": {"input": 2.0, "output": 8.0},
+                "gpt-5.1-codex-mini": {"input": 0.40, "output": 1.60},
                 "gpt-4.1": {"input": 2.0, "output": 8.0},
                 "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
-                "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
                 "o4-mini": {"input": 1.10, "output": 4.40},
                 "o3": {"input": 2.0, "output": 8.0},
             }
@@ -4147,7 +4172,7 @@ def _render_status(
         )
 
     if provider == "openai":
-        backend_label = "OpenAI API"
+        backend_label = "Codex CLI" if backend == "cli" else "OpenAI API"
     elif backend == "cli":
         backend_label = "CLI (OAuth)"
     else:
