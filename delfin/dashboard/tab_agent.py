@@ -513,6 +513,19 @@ def create_tab(ctx):
         _yaml_ok = False
 
     _cli_available = bool(shutil.which("claude"))
+    _codex_cli_available = bool(shutil.which("codex"))
+
+    # Detect which providers are actually usable
+    _available_providers: list[tuple[str, str]] = []
+    if _cli_available or os.environ.get("ANTHROPIC_API_KEY", ""):
+        _available_providers.append(("Claude", "claude"))
+    if _codex_cli_available or os.environ.get("OPENAI_API_KEY", ""):
+        _available_providers.append(("OpenAI", "openai"))
+    if os.environ.get("KIT_TOOLBOX_API_KEY", ""):
+        _available_providers.append(("KIT Toolbox", "kit"))
+    # Fallback: always show at least Claude (will error with helpful message)
+    if not _available_providers:
+        _available_providers.append(("Claude", "claude"))
 
     # -- state -------------------------------------------------------------
     state = {
@@ -604,18 +617,19 @@ def create_tab(ctx):
                        "kit": "azure.gpt-4.1-nano"}
 
     provider_dropdown = widgets.Dropdown(
-        options=[("Claude", "claude"), ("OpenAI", "openai"),
-                 ("KIT Toolbox", "kit")],
-        value="claude",
+        options=_available_providers,
+        value=_available_providers[0][1],
         description="Provider:",
         layout=widgets.Layout(width="160px"),
         style={"description_width": "55px"},
     )
 
     # Model selector (options depend on selected provider)
+    _init_provider = _available_providers[0][1]
+    _init_models = _PROVIDER_MODELS[_init_provider]
     model_dropdown = widgets.Dropdown(
-        options=_PROVIDER_MODELS["claude"],
-        value="opus",
+        options=_init_models,
+        value=_PROVIDER_DEFAULTS.get(_init_provider, _init_models[0][1]),
         description="Model:",
         layout=widgets.Layout(width="170px"),
         style={"description_width": "45px"},
@@ -1071,8 +1085,6 @@ def create_tab(ctx):
         except Exception:
             return {}
 
-    _codex_available = bool(shutil.which("codex"))
-
     def _resolve_backend():
         """Determine which backend to use: cli or api."""
         if provider_dropdown.value == "kit":
@@ -1080,12 +1092,12 @@ def create_tab(ctx):
         if provider_dropdown.value == "openai":
             settings = _get_agent_settings()
             preferred = settings.get("backend", "cli")
-            if preferred == "cli" and _codex_available:
+            if preferred == "cli" and _codex_cli_available:
                 return "cli"
             if preferred == "api" and os.environ.get("OPENAI_API_KEY", ""):
                 return "api"
             # Fallback: CLI first, then API
-            if _codex_available:
+            if _codex_cli_available:
                 return "cli"
             if os.environ.get("OPENAI_API_KEY", ""):
                 return "api"
