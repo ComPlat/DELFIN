@@ -92,7 +92,8 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)"
         in captured["cmd"]
     )
-    assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.token=" in captured["cmd"]
     assert "--ServerApp.websocket_ping_interval=30000" in captured["cmd"]
     assert "--ServerApp.websocket_ping_timeout=30000" in captured["cmd"]
     assert "--Voila.static_root=/tmp/voila-static" in captured["cmd"]
@@ -164,7 +165,8 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
 
     assert "--no-browser" in captured["cmd"]
     assert "--Voila.ip=127.0.0.1" in captured["cmd"]
-    assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.token=" in captured["cmd"]
     assert "--ServerApp.websocket_ping_interval=30000" in captured["cmd"]
     assert "--ServerApp.websocket_ping_timeout=30000" in captured["cmd"]
     assert "--Voila.static_root=/tmp/voila-static" in captured["cmd"]
@@ -279,7 +281,8 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
         assert exc.code == 0
 
     assert "--Voila.open_browser=True" in captured["cmd"]
-    assert "--Voila.tornado_settings=disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.token=" in captured["cmd"]
     assert "--ServerApp.websocket_ping_interval=30000" in captured["cmd"]
     assert "--ServerApp.websocket_ping_timeout=30000" in captured["cmd"]
     assert "--Voila.static_root=/tmp/voila-static" in captured["cmd"]

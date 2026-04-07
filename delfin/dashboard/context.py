@@ -64,6 +64,9 @@ class DashboardContext:
     tab_specs: list = field(default_factory=list)
     rebuild_dashboard_tabs: Any = None
 
+    # Agent engine (set by tab_agent, used cross-tab)
+    agent_engine: Any = None
+
     # Templates
     default_control: str = ''
     only_goat_template: str = ''

@@ -1,0 +1,2912 @@
+"""DELFIN Agent tab: AI-powered chat assistant in the dashboard."""
+
+from __future__ import annotations
+
+import html as _html
+import os
+import re
+import shutil
+import threading
+import time
+from pathlib import Path
+
+import ipywidgets as widgets
+
+
+# ---------------------------------------------------------------------------
+# CSS for the chat interface
+# ---------------------------------------------------------------------------
+
+_AGENT_CSS = """\
+<style>
+.delfin-agent-chat {
+    max-height: calc(100vh - 420px);
+    overflow-y: auto;
+    overflow-anchor: auto;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #fafafa;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+}
+.delfin-chat-msg {
+    overflow-anchor: none;
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    max-width: 85%;
+    word-wrap: break-word;
+}
+.delfin-chat-user {
+    background: #dbeafe;
+    margin-left: auto;
+    text-align: left;
+    border-bottom-right-radius: 2px;
+}
+.delfin-chat-agent {
+    background: #f3f4f6;
+    margin-right: auto;
+    border-bottom-left-radius: 2px;
+}
+.delfin-chat-system {
+    background: #f3f4f6;
+    margin: 4px 0;
+    text-align: left;
+    font-size: 11px;
+    max-width: 100%;
+    padding: 4px 10px;
+    color: #6b7280;
+    border-left: 3px solid #d1d5db;
+    border-radius: 0 4px 4px 0;
+    font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+.delfin-chat-approval {
+    background: #fef3c7;
+    margin: 8px 0;
+    text-align: left;
+    font-size: 12px;
+    max-width: 100%;
+    padding: 10px 14px;
+    border-left: 4px solid #f59e0b;
+    border-radius: 0 8px 8px 0;
+    color: #92400e;
+    font-weight: 500;
+}
+.delfin-agent-approval-row {
+    background: #fffbeb;
+    border: 1px solid #f59e0b;
+    border-radius: 6px;
+    align-items: center;
+    gap: 8px;
+}
+.delfin-chat-handoff {
+    background: #fef3c7;
+    margin: 8px auto;
+    text-align: center;
+    font-style: italic;
+    font-size: 12px;
+    max-width: 70%;
+    padding: 8px 12px;
+    border-left: none;
+    border-radius: 8px;
+    color: #92400e;
+}
+.delfin-chat-role {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: #6b7280;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.delfin-chat-agent pre {
+    background: #1e1e2e;
+    color: #cdd6f4;
+    padding: 10px 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 12px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    line-height: 1.45;
+    margin: 6px 0;
+    border: 1px solid #313244;
+}
+.delfin-chat-agent pre .code-lang {
+    display: block;
+    font-size: 10px;
+    color: #6c7086;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.delfin-chat-agent code {
+    background: #e5e7eb;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+.delfin-chat-agent pre code {
+    background: none;
+    padding: 0;
+    color: inherit;
+}
+/* Syntax highlighting (dark theme) */
+.delfin-chat-agent pre .kw { color: #cba6f7; }
+.delfin-chat-agent pre .str { color: #a6e3a1; }
+.delfin-chat-agent pre .num { color: #fab387; }
+.delfin-chat-agent pre .cmt { color: #6c7086; font-style: italic; }
+.delfin-chat-agent pre .fn { color: #89b4fa; }
+.delfin-chat-agent pre .op { color: #89dceb; }
+.delfin-chat-agent pre .dec { color: #f9e2af; }
+/* Diff highlighting */
+.delfin-chat-agent pre .diff-add { color: #a6e3a1; }
+.delfin-chat-agent pre .diff-del { color: #f38ba8; }
+.delfin-chat-agent pre .diff-hdr { color: #89b4fa; font-weight: 600; }
+.delfin-agent-queue {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #dbeafe;
+    color: #1e40af;
+    font-size: 11px;
+    font-weight: 600;
+    margin: 4px 0;
+}
+.delfin-agent-status {
+    font-size: 12px;
+    color: #6b7280;
+    padding: 4px 8px;
+    background: #f9fafb;
+    border-radius: 4px;
+    border: 1px solid #e5e7eb;
+}
+.delfin-agent-status .mode-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: #dbeafe;
+    color: #1e40af;
+    font-weight: 600;
+    font-size: 11px;
+    margin-right: 8px;
+}
+.delfin-agent-status .role-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: #d1fae5;
+    color: #065f46;
+    font-weight: 600;
+    font-size: 11px;
+    margin-right: 8px;
+}
+.delfin-agent-status .backend-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: #ede9fe;
+    color: #5b21b6;
+    font-weight: 600;
+    font-size: 11px;
+    margin-right: 8px;
+}
+.delfin-agent-status .tokens-info {
+    color: #9ca3af;
+    font-size: 11px;
+}
+.delfin-agent-nokey {
+    padding: 20px;
+    text-align: center;
+    color: #6b7280;
+}
+.delfin-agent-nokey code {
+    background: #f3f4f6;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+@keyframes delfin-pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1.0; }
+}
+.delfin-agent-working {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: #fef3c7;
+    color: #92400e;
+    font-size: 12px;
+    font-weight: 600;
+    animation: delfin-pulse 1.5s ease-in-out infinite;
+    max-width: 90%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.delfin-chat-thinking {
+    background: #f5f3ff;
+    margin: 4px 0;
+    padding: 0;
+    max-width: 100%;
+    border-left: 3px solid #a78bfa;
+    border-radius: 0 4px 4px 0;
+    font-size: 11px;
+    color: #6d28d9;
+}
+.delfin-chat-thinking summary {
+    cursor: pointer;
+    padding: 4px 10px;
+    font-weight: 600;
+    user-select: none;
+}
+.delfin-chat-thinking .thinking-content {
+    padding: 4px 10px 8px 10px;
+    color: #5b21b6;
+    font-family: 'SF Mono', 'Consolas', monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+}
+/* Copy button on code blocks */
+.delfin-code-wrap {
+    position: relative;
+}
+.delfin-code-wrap .delfin-copy-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: #45475a;
+    color: #cdd6f4;
+    border: 1px solid #585b70;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 10px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+    z-index: 10;
+    font-family: inherit;
+}
+.delfin-code-wrap:hover .delfin-copy-btn {
+    opacity: 1;
+}
+.delfin-copy-btn.copied {
+    background: #a6e3a1 !important;
+    color: #1e1e2e !important;
+}
+/* Search highlight */
+.delfin-search-hl {
+    background: #fde68a;
+    padding: 0 2px;
+    border-radius: 2px;
+}
+/* Permission approval */
+.delfin-chat-approval {
+    background: #fef3c7;
+    border: 2px solid #f59e0b;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin: 8px 0;
+    max-width: 100%;
+}
+.delfin-chat-approval .approval-title {
+    font-weight: 700;
+    color: #92400e;
+    font-size: 12px;
+    margin-bottom: 6px;
+}
+.delfin-chat-approval .approval-detail {
+    font-family: 'SF Mono', 'Consolas', monospace;
+    font-size: 11px;
+    color: #78350f;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 120px;
+    overflow-y: auto;
+    margin-bottom: 8px;
+}
+/* Image display in chat */
+.delfin-chat-agent img {
+    max-width: 100%;
+    max-height: 400px;
+    border-radius: 6px;
+    border: 1px solid #d1d5db;
+    margin: 6px 0;
+}
+</style>
+"""
+
+# ---------------------------------------------------------------------------
+# Minimal markdown -> HTML conversion
+# ---------------------------------------------------------------------------
+
+
+def _syntax_highlight(code: str, lang: str) -> str:
+    """Basic syntax highlighting for code blocks.
+
+    Uses a stash-based approach: comments and strings are extracted first
+    (replaced with placeholders), then keywords/numbers are highlighted
+    on the remaining text, then stashed items are restored with their
+    own styling.  This prevents regex cross-contamination.
+    """
+    escaped = _html.escape(code)
+
+    # -- Diff: line-based colouring, no keyword highlighting ---------------
+    if lang in ("diff", "patch"):
+        lines = []
+        for line in escaped.split("\n"):
+            if line.startswith("+"):
+                lines.append(f'<span class="diff-add">{line}</span>')
+            elif line.startswith("-"):
+                lines.append(f'<span class="diff-del">{line}</span>')
+            elif line.startswith("@@"):
+                lines.append(f'<span class="diff-hdr">{line}</span>')
+            else:
+                lines.append(line)
+        return "\n".join(lines)
+
+    _SUPPORTED = {
+        "python", "py", "javascript", "js", "typescript", "ts",
+        "bash", "sh", "shell", "yaml", "yml", "json", "rust",
+        "go", "java", "c", "cpp", "ruby", "rb", "toml",
+    }
+    if lang not in _SUPPORTED:
+        return escaped
+
+    # Resolve aliases
+    _ALIAS = {
+        "py": "python", "js": "javascript", "ts": "javascript",
+        "sh": "bash", "shell": "bash", "yml": "yaml",
+        "cpp": "c", "rb": "ruby",
+    }
+    actual = _ALIAS.get(lang, lang)
+
+    # -- 1. Stash comments and strings (order matters) ---------------------
+    stash: list[str] = []
+
+    def _put(span_cls: str):
+        def _repl(m):
+            stash.append(f'<span class="{span_cls}">{m.group(0)}</span>')
+            return f"\x01S{len(stash)-1}\x01"
+        return _repl
+
+    # Comments
+    if actual in ("python", "bash", "ruby", "yaml", "toml"):
+        escaped = re.sub(r"#[^\n]*", _put("cmt"), escaped)
+    elif actual in ("javascript", "rust", "go", "java", "c"):
+        escaped = re.sub(r"//[^\n]*", _put("cmt"), escaped)
+
+    # Strings (HTML-escaped quotes: &quot; and &#x27;)
+    escaped = re.sub(
+        r'&quot;(?:[^&]|&(?!quot;))*?&quot;', _put("str"), escaped,
+    )
+    escaped = re.sub(
+        r"&#x27;(?:[^&]|&(?!#x27;))*?&#x27;", _put("str"), escaped,
+    )
+
+    # -- 2. Highlight keywords, numbers, decorators on clean text ----------
+    _KW = {
+        "python": r"\b(def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|as|yield|async|await|raise|pass|break|continue|and|or|not|in|is|None|True|False|self|lambda|global|nonlocal)\b",
+        "javascript": r"\b(function|const|let|var|return|if|else|for|while|try|catch|finally|throw|new|class|import|export|from|async|await|yield|true|false|null|undefined|this|typeof|instanceof)\b",
+        "bash": r"\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|return|in|echo|exit|export|source|local)\b",
+        "yaml": r"\b(true|false|null|yes|no)\b",
+        "json": r"\b(true|false|null)\b",
+        "rust": r"\b(fn|let|mut|pub|struct|enum|impl|trait|use|mod|if|else|for|while|loop|match|return|self|Self|true|false|None|Some|Ok|Err|async|await|move|unsafe|where|type|const|static)\b",
+        "go": r"\b(func|var|const|type|struct|interface|if|else|for|range|return|package|import|go|chan|defer|select|switch|case|true|false|nil|map|make|len|append)\b",
+        "java": r"\b(public|private|protected|class|interface|extends|implements|if|else|for|while|return|new|this|super|static|final|void|int|String|boolean|true|false|null|try|catch|throw|import|package)\b",
+        "c": r"\b(int|char|float|double|void|if|else|for|while|return|struct|typedef|enum|switch|case|break|continue|sizeof|const|static|unsigned|long|short|NULL|true|false|include|define)\b",
+        "ruby": r"\b(def|class|module|if|else|elsif|unless|while|until|for|do|end|return|yield|self|nil|true|false|require|include|attr_accessor|puts|print)\b",
+        "toml": r"\b(true|false)\b",
+    }
+
+    kw_pattern = _KW.get(actual)
+    if kw_pattern:
+        escaped = re.sub(kw_pattern, r'<span class="kw">\1</span>', escaped)
+
+    # Numbers (only bare numbers, not inside stash placeholders)
+    escaped = re.sub(r"(?<!\x01S)\b(\d+\.?\d*)\b", r'<span class="num">\1</span>', escaped)
+
+    # Decorators (Python)
+    if actual == "python":
+        escaped = re.sub(r"(@\w+)", r'<span class="dec">\1</span>', escaped)
+
+    # -- 3. Restore stashed items ------------------------------------------
+    for i, span in enumerate(stash):
+        escaped = escaped.replace(f"\x01S{i}\x01", span)
+
+    return escaped
+
+
+def _md_to_html(text: str) -> str:
+    """Convert markdown subset to HTML for chat display."""
+    # Protect code blocks first (extract, replace later)
+    code_blocks: list[str] = []
+
+    def _stash_code_block(m):
+        lang = m.group(1).strip().lower()
+        code = m.group(2).strip()
+        highlighted = _syntax_highlight(code, lang)
+        lang_label = f'<span class="code-lang">{_html.escape(lang)}</span>' if lang else ""
+        # data-code stores raw text for copy button
+        raw_escaped = _html.escape(code).replace('"', "&quot;")
+        idx = len(code_blocks)
+        code_blocks.append(
+            f'<div class="delfin-code-wrap">'
+            f'<button class="delfin-copy-btn" data-codeidx="{idx}" '
+            f'onclick="(function(b){{var p=b.closest(&quot;.delfin-code-wrap&quot;);'
+            f"var c=p.querySelector('code').textContent;"
+            f"navigator.clipboard.writeText(c).then(function(){{"
+            f"b.textContent='Copied!';b.classList.add('copied');"
+            f"setTimeout(function(){{b.textContent='Copy';b.classList.remove('copied');}},1500);"
+            f'}})}})(this)">Copy</button>'
+            f"<pre>{lang_label}<code>{highlighted}</code></pre></div>"
+        )
+        return f"\x00CB{len(code_blocks) - 1}\x00"
+
+    text = re.sub(r"```(\w*)\n?(.*?)```", _stash_code_block, text, flags=re.DOTALL)
+
+    escaped = _html.escape(text)
+
+    # Inline code
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    # Bold
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+    # Italic
+    escaped = re.sub(r"\*(.+?)\*", r"<i>\1</i>", escaped)
+    # Headers (## and ###)
+    escaped = re.sub(
+        r"^(#{1,3})\s+(.+)$",
+        lambda m: f"<b style='font-size:{15 - len(m.group(1))}px'>{m.group(2)}</b>",
+        escaped,
+        flags=re.MULTILINE,
+    )
+    # Horizontal rules
+    escaped = re.sub(r"^-{3,}$", "<hr style='margin:6px 0;border:none;border-top:1px solid #d1d5db'>", escaped, flags=re.MULTILINE)
+    # List items (- or *)
+    escaped = re.sub(r"^[\-\*]\s+(.+)$", r"&bull; \1", escaped, flags=re.MULTILINE)
+    # Numbered list items
+    escaped = re.sub(r"^(\d+)\.\s+(.+)$", r"\1. \2", escaped, flags=re.MULTILINE)
+    # Table rows: | a | b | → simple rendering
+    escaped = re.sub(
+        r"^\|[\s\-:|]+\|$", "", escaped, flags=re.MULTILINE,
+    )  # remove separator rows
+    escaped = re.sub(
+        r"^\|(.+)\|$",
+        lambda m: "<code>" + " | ".join(
+            c.strip() for c in m.group(1).split("|")
+        ) + "</code>",
+        escaped,
+        flags=re.MULTILINE,
+    )
+    # Newlines to <br>
+    escaped = escaped.replace("\n", "<br>")
+    # Restore code blocks
+    for i, block in enumerate(code_blocks):
+        escaped = escaped.replace(f"\x00CB{i}\x00", block)
+    return escaped
+
+
+# ---------------------------------------------------------------------------
+# Tab creation
+# ---------------------------------------------------------------------------
+
+
+def create_tab(ctx):
+    """Create the DELFIN Agent tab.
+
+    Returns ``(tab_widget, refs_dict)``.
+    """
+    # -- check if pyyaml is available (needed for prompt loading) ----------
+    try:
+        import yaml  # noqa: F401
+        _yaml_ok = True
+    except ImportError:
+        _yaml_ok = False
+
+    _cli_available = bool(shutil.which("claude"))
+
+    # -- state -------------------------------------------------------------
+    state = {
+        "engine": None,
+        "chat_messages": [],
+        "streaming": False,
+        "active_session_id": "",  # currently loaded CLI session ID
+        "recent_edits": [],       # list of {"file": path, "tool": name} for undo
+        "message_queue": [],      # queued messages sent while agent is busy
+        "session_start_time": None,  # monotonic time of first message
+    }
+
+    # -- widgets -----------------------------------------------------------
+    css_widget = widgets.HTML(value=_AGENT_CSS)
+
+    # Mode selector
+    mode_dropdown = widgets.Dropdown(
+        options=["solo", "quick", "reviewed", "tdd", "cluster", "full"],
+        value="quick",
+        description="Mode:",
+        layout=widgets.Layout(width="200px"),
+        style={"description_width": "45px"},
+    )
+
+    # Model selector (directly in the agent tab for quick switching)
+    model_dropdown = widgets.Dropdown(
+        options=[
+            ("Opus", "opus"),
+            ("Sonnet", "sonnet"),
+            ("Haiku", "haiku"),
+        ],
+        value="opus",
+        description="Model:",
+        layout=widgets.Layout(width="160px"),
+        style={"description_width": "45px"},
+    )
+    # Effort selector (only affects API backend; CLI manages thinking internally)
+    effort_dropdown = widgets.Dropdown(
+        options=[
+            ("Low", "low"),
+            ("Medium", "medium"),
+            ("High", "high"),
+        ],
+        value="medium",
+        description="Effort:",
+        layout=widgets.Layout(width="155px"),
+        style={"description_width": "42px"},
+        tooltip="Thinking budget (only works with API backend; CLI manages thinking internally)",
+    )
+
+    # Permission mode selector (identical to CLI)
+    perm_dropdown = widgets.Dropdown(
+        options=[
+            ("Default", "default"),
+            ("Accept Edits", "acceptEdits"),
+            ("Plan Mode", "plan"),
+            ("Auto", "auto"),
+            ("Full Access", "bypassPermissions"),
+        ],
+        value="default",
+        description="Perms:",
+        layout=widgets.Layout(width="175px"),
+        style={"description_width": "42px"},
+        tooltip="Permission mode: Default=ask all, Accept Edits=auto-accept file changes, Plan=plan only, Auto=smart auto, Full Access=skip all checks",
+    )
+
+    # Load saved preferences
+    try:
+        from delfin.user_settings import load_settings
+        _saved = (load_settings().get("agent", {}) or {})
+        _saved_model = _saved.get("model", "")
+        if _saved_model in ("sonnet", "opus", "haiku"):
+            model_dropdown.value = _saved_model
+        _saved_effort = _saved.get("effort", "")
+        if _saved_effort in ("low", "medium", "high"):
+            effort_dropdown.value = _saved_effort
+        _saved_perm = _saved.get("permission_mode", "")
+        if _saved_perm in ("default", "acceptEdits", "plan", "auto", "bypassPermissions"):
+            perm_dropdown.value = _saved_perm
+    except Exception:
+        pass
+
+    # Control buttons
+    new_cycle_btn = widgets.Button(
+        description="New Session",
+        button_style="warning",
+        layout=widgets.Layout(width="110px"),
+        tooltip="Save current session and start fresh",
+    )
+    stop_btn = widgets.Button(
+        description="Stop",
+        button_style="danger",
+        layout=widgets.Layout(width="80px"),
+    )
+    stop_btn.disabled = True
+
+    advance_btn = widgets.Button(
+        description="Next Role \u25b8",
+        button_style="info",
+        layout=widgets.Layout(width="110px"),
+        tooltip="Advance to the next agent role in the cycle",
+    )
+    advance_btn.disabled = True
+
+    # Git commit (agent-assisted) and push
+    commit_btn = widgets.Button(
+        description="Commit",
+        button_style="",
+        layout=widgets.Layout(width="90px"),
+        tooltip="Ask the agent to commit current changes with a descriptive message",
+    )
+    push_btn = widgets.Button(
+        description="Git Push",
+        button_style="",
+        layout=widgets.Layout(width="100px"),
+        tooltip="Push committed changes (requires confirmation)",
+    )
+    push_confirm_btn = widgets.Button(
+        description="Confirm Push",
+        button_style="danger",
+        layout=widgets.Layout(width="120px", display="none"),
+    )
+    push_cancel_btn = widgets.Button(
+        description="Cancel",
+        button_style="",
+        layout=widgets.Layout(width="80px", display="none"),
+    )
+    push_status_html = widgets.HTML(value="")
+
+    undo_btn = widgets.Button(
+        description="Undo Edit",
+        button_style="warning",
+        layout=widgets.Layout(width="100px"),
+        tooltip="Revert the last file edit (git checkout)",
+    )
+    undo_btn.disabled = True
+
+    # Export button
+    export_btn = widgets.Button(
+        description="Export",
+        button_style="",
+        layout=widgets.Layout(width="80px"),
+        tooltip="Export chat as Markdown file",
+    )
+
+    controls_row = widgets.HBox(
+        [mode_dropdown, model_dropdown, effort_dropdown, perm_dropdown,
+         new_cycle_btn, advance_btn, stop_btn, undo_btn, export_btn,
+         commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html],
+        layout=widgets.Layout(margin="0 0 6px 0", flex_flow="row wrap"),
+    )
+
+    # Session selector
+    session_dropdown = widgets.Dropdown(
+        options=[("+ New Session", "")],
+        value="",
+        description="Session:",
+        layout=widgets.Layout(width="380px"),
+        style={"description_width": "55px"},
+    )
+    load_session_btn = widgets.Button(
+        description="Load",
+        button_style="info",
+        layout=widgets.Layout(width="70px"),
+        tooltip="Load the selected session",
+    )
+    delete_session_btn = widgets.Button(
+        description="Delete",
+        button_style="danger",
+        layout=widgets.Layout(width="70px"),
+        tooltip="Delete the selected session",
+    )
+    session_row = widgets.HBox(
+        [session_dropdown, load_session_btn, delete_session_btn],
+        layout=widgets.Layout(margin="0 0 6px 0"),
+    )
+
+    # Search bar (toggle visibility with Ctrl+K or /search)
+    search_input = widgets.Text(
+        placeholder="Search in chat...",
+        layout=widgets.Layout(width="300px", display="none"),
+        continuous_update=True,
+    )
+    search_count_html = widgets.HTML(value="")
+    search_close_btn = widgets.Button(
+        description="X",
+        layout=widgets.Layout(width="30px", display="none"),
+    )
+    search_row = widgets.HBox(
+        [search_input, search_count_html, search_close_btn],
+        layout=widgets.Layout(margin="0 0 4px 0"),
+    )
+
+    # Permission approval widgets (shown inline between chat and input)
+    approve_btn = widgets.Button(
+        description="Approve (Enter)",
+        button_style="success",
+        layout=widgets.Layout(width="130px", height="34px", display="none"),
+    )
+    deny_btn = widgets.Button(
+        description="Deny (Esc)",
+        button_style="danger",
+        layout=widgets.Layout(width="110px", height="34px", display="none"),
+    )
+    approval_info_html = widgets.HTML(value="")
+    approval_row = widgets.HBox(
+        [approval_info_html, approve_btn, deny_btn],
+        layout=widgets.Layout(
+            margin="4px 0", padding="6px 10px",
+            display="none",
+        ),
+    )
+    approval_row.add_class("delfin-agent-approval-row")
+
+    # Status bar
+    status_html = widgets.HTML(
+        value=_render_status("quick", "cli", "session_manager", 0, 3, 0, 0, 0.0),
+    )
+
+    # Chat display
+    chat_html = widgets.HTML(
+        value='<div class="delfin-agent-chat"><i>Start a conversation...</i></div>',
+        layout=widgets.Layout(min_height="200px"),
+    )
+
+    # Input area
+    input_textarea = widgets.Textarea(
+        placeholder="Type your message here... (Enter = Send, Shift+Enter = new line, queues while busy)",
+        layout=widgets.Layout(width="100%", height="70px"),
+    )
+    input_textarea.add_class("delfin-agent-input")
+    send_btn = widgets.Button(
+        description="Send",
+        button_style="primary",
+        layout=widgets.Layout(width="80px", height="70px"),
+    )
+    input_row = widgets.HBox(
+        [input_textarea, send_btn],
+        layout=widgets.Layout(margin="6px 0 0 0"),
+    )
+    input_row.add_class("delfin-agent-send-row")
+
+    # Working indicator (animated spinner)
+    working_html = widgets.HTML(value="")
+
+    # Queue indicator (shown when messages are queued during streaming)
+    queue_html = widgets.HTML(value="")
+
+    # Keyboard shortcuts: dedicated Output widget (never cleared by scroll)
+    _enter_js_output = widgets.Output()
+    with _enter_js_output:
+        from IPython.display import display as _ipyd, Javascript as _JS
+        _ipyd(_JS("""
+(function() {
+    if (window.__delfinAgentKeys) return;
+    window.__delfinAgentKeys = true;
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            if (e.target && e.target.tagName === 'TEXTAREA') {
+                var container = e.target.closest
+                    ? e.target.closest('.delfin-agent-input') : null;
+                if (container) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    var sendBtn = document.querySelector('.delfin-agent-send-row button');
+                    if (sendBtn) sendBtn.click();
+                    return;
+                }
+            }
+        }
+        if (e.key === 'Escape') {
+            var btns = document.querySelectorAll('button');
+            for (var i = 0; i < btns.length; i++) {
+                if (btns[i].textContent.trim() === 'Stop' && !btns[i].disabled) {
+                    btns[i].click(); e.preventDefault(); return;
+                }
+            }
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+            var a = document.querySelector('.delfin-agent-chat');
+            if (a) {
+                e.preventDefault();
+                var ta = document.querySelector('.delfin-agent-input textarea');
+                if (ta) {
+                    var ns = Object.getOwnPropertyDescriptor(
+                        window.HTMLTextAreaElement.prototype, 'value').set;
+                    ns.call(ta, '/clear');
+                    ta.dispatchEvent(new Event('input', {bubbles: true}));
+                    setTimeout(function() {
+                        var sb = document.querySelector('.delfin-agent-send-row button');
+                        if (sb) sb.click();
+                    }, 50);
+                }
+            }
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+            var a = document.querySelector('.delfin-agent-chat');
+            if (a) {
+                e.preventDefault();
+                var ta = document.querySelector('.delfin-agent-input textarea');
+                if (ta) {
+                    var ns = Object.getOwnPropertyDescriptor(
+                        window.HTMLTextAreaElement.prototype, 'value').set;
+                    ns.call(ta, '/search');
+                    ta.dispatchEvent(new Event('input', {bubbles: true}));
+                    setTimeout(function() {
+                        var sb = document.querySelector('.delfin-agent-send-row button');
+                        if (sb) sb.click();
+                    }, 50);
+                }
+            }
+        }
+        // Shift+Tab: cycle permission mode
+        if (e.key === 'Tab' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            var a = document.querySelector('.delfin-agent-chat');
+            if (a) {
+                e.preventDefault();
+                e.stopPropagation();
+                var ta = document.querySelector('.delfin-agent-input textarea');
+                if (ta) {
+                    var ns = Object.getOwnPropertyDescriptor(
+                        window.HTMLTextAreaElement.prototype, 'value').set;
+                    ns.call(ta, '/perm-cycle');
+                    ta.dispatchEvent(new Event('input', {bubbles: true}));
+                    setTimeout(function() {
+                        var sb = document.querySelector('.delfin-agent-send-row button');
+                        if (sb) sb.click();
+                    }, 50);
+                }
+            }
+        }
+    }, true);
+
+    // --- Auto-scroll: poll every 150ms while agent is working ---
+    (function() {
+        if (window.__delfinChatScroll) return;
+        window.__delfinChatScroll = true;
+        setInterval(function() {
+            // Only auto-scroll when the working indicator is visible
+            var working = document.querySelector('.delfin-agent-working');
+            if (!working) return;
+            var chat = document.querySelector('.delfin-agent-chat');
+            if (chat) chat.scrollTop = chat.scrollHeight;
+        }, 150);
+    })();
+})();
+"""))
+
+    # -- layout assembly ---------------------------------------------------
+    agent_content = widgets.VBox(
+        [css_widget, _enter_js_output, controls_row, session_row, search_row,
+         status_html, chat_html, working_html, queue_html, approval_row, input_row],
+    )
+
+    if not _yaml_ok:
+        missing_html = widgets.HTML(
+            value=(
+                '<div class="delfin-agent-nokey">'
+                "<h3>DELFIN Agent</h3>"
+                "<p>Required package <code>pyyaml</code> not installed.</p>"
+                "<p>Run: <code>pip install pyyaml</code></p>"
+                "</div>"
+            ),
+        )
+        tab_widget = widgets.VBox([css_widget, missing_html])
+        return tab_widget, {}
+
+    # No backend block removed — tab always loads, shows hint on send if needed
+
+    # -- session helpers ---------------------------------------------------
+
+    def _refresh_session_dropdown():
+        """Rebuild the session dropdown from saved sessions."""
+        try:
+            from delfin.agent.session_store import list_sessions
+            sessions = list_sessions(limit=30)
+        except Exception:
+            sessions = []
+
+        options = [("+ New Session", "")]
+        for s in sessions:
+            title = s.get("title", "Untitled") or "Untitled"
+            if len(title) > 50:
+                title = title[:50] + "..."
+            mode = s.get("mode", "")
+            n_msgs = s.get("message_count", 0)
+            sid = s.get("session_id", "")
+            # Format: "title (mode, N msgs)"
+            label = f"{title}  [{mode}, {n_msgs} msgs]"
+            options.append((label, sid))
+
+        session_dropdown.options = options
+        # Keep current selection if still valid
+        active = state.get("active_session_id", "")
+        valid_ids = [v for _, v in options]
+        if active and active in valid_ids:
+            session_dropdown.value = active
+        else:
+            session_dropdown.value = ""
+
+    def _auto_save_session():
+        """Save the current session state to disk."""
+        engine = state["engine"]
+        if not engine or not engine.session_id:
+            return
+        try:
+            from delfin.agent.session_store import save_session
+            estate = engine.export_state()
+            save_session(
+                session_id=engine.session_id,
+                mode=estate["mode"],
+                role_index=estate["role_index"],
+                route=estate["route"],
+                role_outputs=estate["role_outputs"],
+                chat_messages=state["chat_messages"],
+                engine_messages=estate["engine_messages"],
+                token_usage=estate["token_usage"],
+                cost_usd=estate["cost_usd"],
+            )
+            state["active_session_id"] = engine.session_id
+            _refresh_session_dropdown()
+        except Exception:
+            pass  # non-critical — don't break the chat
+
+    def _load_saved_session(session_id):
+        """Load a saved session and restore engine + UI state."""
+        try:
+            from delfin.agent.session_store import load_session
+            data = load_session(session_id)
+        except Exception:
+            data = None
+        if not data:
+            _append_system_message(f"Session not found: {session_id[:12]}...")
+            return
+
+        # Restore or create engine with the saved mode (migrate legacy names)
+        _legacy_map = {"default": "quick", "high_risk": "reviewed",
+                       "runtime_cluster": "cluster", "release": "full"}
+        saved_mode = data.get("mode", "quick")
+        saved_mode = _legacy_map.get(saved_mode, saved_mode)
+        mode_dropdown.value = saved_mode
+
+        engine = _ensure_engine()
+        if not engine:
+            return
+
+        # Restore engine state
+        engine.restore_state({
+            "mode": saved_mode,
+            "role_index": data.get("role_index", 0),
+            "role_outputs": data.get("role_outputs", {}),
+            "engine_messages": data.get("engine_messages", []),
+            "token_usage": data.get("token_usage", {"input": 0, "output": 0}),
+            "cost_usd": data.get("cost_usd", 0.0),
+            "session_id": session_id,
+        })
+
+        # Restore chat UI
+        state["chat_messages"] = data.get("chat_messages", [])
+        state["active_session_id"] = session_id
+        _refresh_chat_html()
+        _update_status()
+        _update_button_states()
+
+        title = data.get("title", "")[:50] or session_id[:12]
+        _append_system_message(f"Session restored: {title}")
+
+    # -- helpers -----------------------------------------------------------
+
+    def _get_agent_settings():
+        """Load agent settings from user settings."""
+        try:
+            from delfin.user_settings import load_settings
+            return load_settings().get("agent", {}) or {}
+        except Exception:
+            return {}
+
+    def _resolve_backend():
+        """Determine which backend to use: cli or api."""
+        settings = _get_agent_settings()
+        preferred = settings.get("backend", "cli")
+        if preferred == "cli" and _cli_available:
+            return "cli"
+        if preferred == "api":
+            if os.environ.get("ANTHROPIC_API_KEY", ""):
+                return "api"
+        # Fallback: try CLI first, then API
+        if _cli_available:
+            return "cli"
+        if os.environ.get("ANTHROPIC_API_KEY", ""):
+            return "api"
+        return "cli"  # will error at runtime
+
+    def _ensure_engine():
+        """Create or re-use the engine."""
+        if state["engine"] is not None:
+            return state["engine"]
+
+        settings = _get_agent_settings()
+        backend = _resolve_backend()
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        model = model_dropdown.value or settings.get("model", "")
+
+        try:
+            from delfin.agent.engine import AgentEngine
+
+            repo_dir = ctx.repo_dir or Path.cwd()
+            engine = AgentEngine(
+                repo_dir=repo_dir,
+                backend=backend,
+                api_key=api_key,
+                model=model,
+                mode=mode_dropdown.value,
+                permission_mode=perm_dropdown.value,
+            )
+            state["engine"] = engine
+            ctx.agent_engine = engine
+            return engine
+        except Exception as exc:
+            _append_system_message(f"Engine error: {exc}")
+            return None
+
+    def _append_chat_message(role, content, role_label=""):
+        state["chat_messages"].append(
+            {"role": role, "content": content, "role_label": role_label}
+        )
+        _refresh_chat_html()
+
+    def _append_system_message(text):
+        _append_chat_message("system", text)
+
+    def _update_last_assistant(content, role_label=""):
+        """Update the last assistant message (for streaming)."""
+        msgs = state["chat_messages"]
+        if msgs and msgs[-1]["role"] == "assistant":
+            msgs[-1]["content"] = content
+            if role_label:
+                msgs[-1]["role_label"] = role_label
+        else:
+            msgs.append(
+                {"role": "assistant", "content": content, "role_label": role_label}
+            )
+        _refresh_chat_html()
+
+    def _refresh_chat_html():
+        """Rebuild the chat display HTML."""
+        if not state["chat_messages"]:
+            chat_html.value = (
+                '<div class="delfin-agent-chat">'
+                "<i>Start a conversation...</i></div>"
+            )
+            return
+        parts = ['<div class="delfin-agent-chat">']
+        for msg in state["chat_messages"]:
+            role = msg["role"]
+            content = _md_to_html(msg["content"])
+            if role == "user":
+                parts.append(
+                    f'<div class="delfin-chat-msg delfin-chat-user">{content}</div>'
+                )
+            elif role == "assistant":
+                label = msg.get("role_label", "Agent")
+                parts.append(
+                    f'<div class="delfin-chat-msg delfin-chat-agent">'
+                    f'<div class="delfin-chat-role">{_html.escape(label)}</div>'
+                    f"{content}</div>"
+                )
+            elif role == "thinking":
+                raw = msg["content"]
+                # Truncate for display, keep first 500 chars
+                preview = raw[:80].replace("\n", " ").strip()
+                if len(raw) > 80:
+                    preview += "..."
+                escaped_full = _html.escape(raw)
+                parts.append(
+                    f'<details class="delfin-chat-msg delfin-chat-thinking">'
+                    f'<summary>\U0001f9e0 {_html.escape(preview)}</summary>'
+                    f'<div class="thinking-content">{escaped_full}</div>'
+                    f'</details>'
+                )
+            elif role == "approval":
+                parts.append(
+                    f'<div class="delfin-chat-msg delfin-chat-approval">'
+                    f'\u26a0\ufe0f {content}'
+                    f'<div style="margin-top:4px;font-size:11px;color:#78350f;">'
+                    f'Press <b>Enter</b> to approve, <b>Esc</b> to deny</div>'
+                    f'</div>'
+                )
+            elif role == "system":
+                raw = msg["content"]
+                # Handoff/cycle messages get special styling
+                if raw.startswith("---") or raw.startswith("Session restored"):
+                    css_class = "delfin-chat-msg delfin-chat-handoff"
+                else:
+                    css_class = "delfin-chat-msg delfin-chat-system"
+                parts.append(f'<div class="{css_class}">{content}</div>')
+        # Scroll to bottom: <img onerror> is the only way to run JS inside
+        # ipywidgets.HTML (script tags are sanitized, but img onerror works).
+        parts.append(
+            '<img src="" onerror="'
+            "var c=this.closest('.delfin-agent-chat');"
+            "if(c)c.scrollTop=c.scrollHeight;"
+            "this.remove();"
+            '" style="display:none">'
+        )
+        parts.append("</div>")
+        chat_html.value = "\n".join(parts)
+
+    def _update_status():
+        """Update the status bar from engine state."""
+        engine = state["engine"]
+        if engine:
+            s = engine.get_status()
+            status_html.value = _render_status(
+                s["mode"],
+                s["backend"],
+                s["role"],
+                s["role_index"],
+                s["role_total"],
+                s["input_tokens"],
+                s["output_tokens"],
+                s["cost_usd"],
+            )
+        else:
+            backend = _resolve_backend() if _cli_available else "api"
+            status_html.value = _render_status(
+                mode_dropdown.value, backend, "", 0, 0, 0, 0, 0.0
+            )
+
+    def _set_working(active, label=""):
+        """Show or hide the working indicator."""
+        if active:
+            text = label or "Working..."
+            working_html.value = (
+                f'<span class="delfin-agent-working">'
+                f'\u23f3 {_html.escape(text)}</span>'
+            )
+        else:
+            working_html.value = ""
+
+    def _update_queue_display():
+        """Update the queue indicator."""
+        n = len(state["message_queue"])
+        if n > 0:
+            queue_html.value = (
+                f'<span class="delfin-agent-queue">'
+                f'{n} message{"s" if n != 1 else ""} queued</span>'
+            )
+        else:
+            queue_html.value = ""
+
+    def _update_button_states():
+        engine = state["engine"]
+        is_streaming = state["streaming"]
+        # Keep textarea + send enabled during streaming for message queuing
+        send_btn.disabled = False
+        input_textarea.disabled = False
+        stop_btn.disabled = not is_streaming
+        mode_dropdown.disabled = is_streaming
+        model_dropdown.disabled = is_streaming
+        effort_dropdown.disabled = is_streaming
+        perm_dropdown.disabled = is_streaming
+
+        if engine and not is_streaming:
+            can_advance = (
+                engine.current_role_index < len(engine.route) - 1
+                and len(engine.messages) > 0
+            )
+            advance_btn.disabled = not can_advance
+        else:
+            advance_btn.disabled = True
+
+    # -- event handlers ----------------------------------------------------
+
+    def _handle_slash_command(text: str) -> bool:
+        """Handle slash commands. Returns True if handled."""
+        import subprocess as _sp
+
+        cmd = text.lower().strip()
+
+        if cmd == "/help":
+            _append_system_message(
+                "Available commands:\n"
+                "  /help            — Show this help\n"
+                "  /clear           — Clear chat history\n"
+                "  /cost            — Show token usage & cost\n"
+                "  /compact         — Summarize context (reduce tokens)\n"
+                "  /stop            — Stop current generation\n"
+                "  /status          — Show engine status\n"
+                "  /usage           — Detailed token usage, cost & session stats\n"
+                "  /export          — Export chat as Markdown file\n"
+                "  /search <text>   — Search in chat history\n"
+                "  /retry           — Regenerate last response\n"
+                "  /git status      — Show git status\n"
+                "  /git diff        — Show staged/unstaged changes\n"
+                "  /git log         — Show recent commits\n"
+                "  /git branch      — Show branches\n"
+                "  /model <name>    — Switch model (opus/sonnet/haiku)\n"
+                "  /effort <lvl>    — Set effort (low/medium/high)\n"
+                "  /mode <name>     — Switch agent mode (solo/quick/reviewed/tdd/cluster/full)\n"
+                "  /reset           — Reset engine for new cycle\n"
+                "\n"
+                "Keyboard shortcuts:\n"
+                "  Enter            — Send message\n"
+                "  Shift+Enter      — New line\n"
+                "  Escape           — Stop generation\n"
+                "  Ctrl+L           — Clear chat\n"
+                "  Ctrl+K           — Toggle search\n"
+                "  Shift+Tab        — Cycle permission mode"
+            )
+            return True
+
+        if cmd == "/clear":
+            state["chat_messages"].clear()
+            _refresh_chat_html()
+            _append_system_message("Chat cleared.")
+            return True
+
+        if cmd == "/cost":
+            engine = state["engine"]
+            if engine:
+                s = engine.get_status()
+                inp_t = s["input_tokens"]
+                out_t = s["output_tokens"]
+                cost = s["cost_usd"]
+                cost_str = f"${cost:.4f}" if cost > 0 else _estimate_cost_str(
+                    s["backend"], inp_t, out_t
+                )
+                _append_system_message(
+                    f"Token usage:\n"
+                    f"  Input:  {inp_t:,} tokens\n"
+                    f"  Output: {out_t:,} tokens\n"
+                    f"  Cost:   {cost_str}\n"
+                    f"  Model:  {model_dropdown.value}\n"
+                    f"  Effort: {effort_dropdown.value}"
+                )
+            else:
+                _append_system_message("No active engine. Send a message first.")
+            return True
+
+        if cmd == "/usage":
+            engine = state["engine"]
+            if not engine:
+                _append_system_message("No active engine. Send a message first.")
+                return True
+            s = engine.get_status()
+            inp_t = s["input_tokens"]
+            out_t = s["output_tokens"]
+            total_t = inp_t + out_t
+            cost = s["cost_usd"]
+            model = model_dropdown.value
+            backend = s["backend"]
+            cost_str = f"${cost:.4f}" if cost > 0 else _estimate_cost_str(
+                backend, inp_t, out_t
+            )
+            # Per-model pricing estimate
+            _PRICING = {
+                "opus":   {"input": 15.0, "output": 75.0},
+                "sonnet": {"input": 3.0,  "output": 15.0},
+                "haiku":  {"input": 0.25, "output": 1.25},
+            }
+            pricing = _PRICING.get(model, _PRICING["sonnet"])
+            est_in = inp_t * pricing["input"] / 1_000_000
+            est_out = out_t * pricing["output"] / 1_000_000
+            # Message counts
+            user_msgs = sum(1 for m in state["chat_messages"] if m["role"] == "user")
+            asst_msgs = sum(1 for m in state["chat_messages"] if m["role"] == "assistant")
+            total_msgs = user_msgs + asst_msgs
+            avg_tok = total_t // max(total_msgs, 1)
+            # Session duration
+            start = state.get("session_start_time")
+            if start:
+                elapsed = time.monotonic() - start
+                mins, secs = int(elapsed // 60), int(elapsed % 60)
+                dur = f"{mins}m {secs}s"
+                rate = f"{total_t / max(elapsed, 1):.0f} tok/s"
+            else:
+                dur = rate = "N/A"
+            _append_system_message(
+                f"Session Usage:\n"
+                f"  Model:       {model} ({backend})\n"
+                f"  Permission:  {perm_dropdown.value}\n"
+                f"  Effort:      {effort_dropdown.value}\n"
+                f"  Session:     {s['session_id'][:16]}...\n"
+                f"\n"
+                f"Tokens:\n"
+                f"  Input:       {inp_t:,}\n"
+                f"  Output:      {out_t:,}\n"
+                f"  Total:       {total_t:,}\n"
+                f"\n"
+                f"Cost:\n"
+                f"  Input:       ${est_in:.4f} (${pricing['input']}/MTok)\n"
+                f"  Output:      ${est_out:.4f} (${pricing['output']}/MTok)\n"
+                f"  Total:       {cost_str}\n"
+                f"\n"
+                f"Stats:\n"
+                f"  Duration:    {dur}\n"
+                f"  Messages:    {user_msgs} sent / {asst_msgs} received\n"
+                f"  Avg tok/msg: {avg_tok:,}\n"
+                f"  Token rate:  {rate}\n"
+                f"  Context:     {len(engine.messages)} engine msgs"
+            )
+            return True
+
+        if cmd == "/status":
+            engine = state["engine"]
+            if engine:
+                s = engine.get_status()
+                _append_system_message(
+                    f"Engine status:\n"
+                    f"  Mode:    {s['mode']}\n"
+                    f"  Backend: {s['backend']}\n"
+                    f"  Role:    {_format_role_label(s['role'])} "
+                    f"({s['role_index']+1}/{s['role_total']})\n"
+                    f"  Session: {s['session_id'][:16]}...\n"
+                    f"  Cycle:   {'complete' if s['cycle_complete'] else 'in progress'}"
+                )
+            else:
+                _append_system_message("No active engine.")
+            return True
+
+        if cmd == "/stop":
+            _on_stop(None)
+            return True
+
+        if cmd == "/reset":
+            _on_new_cycle(None)
+            return True
+
+        if cmd == "/compact":
+            engine = state["engine"]
+            if not engine or not engine.messages:
+                _append_system_message("Nothing to compact.")
+                return True
+            # Keep only the last 4 messages (2 turns) to reduce context
+            n_before = len(engine.messages)
+            if n_before > 4:
+                # Summarize old messages into a single context note
+                old_msgs = engine.messages[:-4]
+                summary_parts = []
+                for m in old_msgs:
+                    role = m["role"]
+                    content = m["content"][:200]
+                    summary_parts.append(f"[{role}]: {content}...")
+                summary = "\n".join(summary_parts[-6:])  # last 6 entries
+                engine.messages = [
+                    {"role": "user", "content":
+                     f"[Context summary of {n_before - 4} earlier messages:\n"
+                     f"{summary}\n... End of summary]"},
+                    {"role": "assistant", "content": "Understood, I have the context."},
+                ] + engine.messages[-4:]
+                _append_system_message(
+                    f"Compacted: {n_before} messages → {len(engine.messages)} "
+                    f"(older context summarized)"
+                )
+            else:
+                _append_system_message(
+                    f"Only {n_before} messages — too few to compact."
+                )
+            return True
+
+        # /git commands
+        _repo_dir = str(ctx.repo_dir or ".")
+        if cmd == "/git status":
+            try:
+                r = _sp.run(
+                    ["git", "status", "--short"],
+                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
+                )
+                output = r.stdout.strip() or "Working tree clean."
+                _append_system_message(f"git status:\n{output}")
+            except Exception as e:
+                _append_system_message(f"git status error: {e}")
+            return True
+
+        if cmd == "/git diff":
+            try:
+                r = _sp.run(
+                    ["git", "diff", "--stat"],
+                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
+                )
+                output = r.stdout.strip() or "No unstaged changes."
+                # Also check staged
+                r2 = _sp.run(
+                    ["git", "diff", "--cached", "--stat"],
+                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
+                )
+                staged = r2.stdout.strip()
+                full = output
+                if staged:
+                    full += f"\n\nStaged:\n{staged}"
+                _append_system_message(f"git diff:\n{full}")
+            except Exception as e:
+                _append_system_message(f"git diff error: {e}")
+            return True
+
+        if cmd == "/git log":
+            try:
+                r = _sp.run(
+                    ["git", "log", "--oneline", "-15"],
+                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
+                )
+                output = r.stdout.strip() or "No commits."
+                _append_system_message(f"git log (last 15):\n{output}")
+            except Exception as e:
+                _append_system_message(f"git log error: {e}")
+            return True
+
+        if cmd == "/git branch":
+            try:
+                r = _sp.run(
+                    ["git", "branch", "-a", "--no-color"],
+                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
+                )
+                output = r.stdout.strip() or "No branches."
+                _append_system_message(f"git branch:\n{output}")
+            except Exception as e:
+                _append_system_message(f"git branch error: {e}")
+            return True
+
+        # /model <name>
+        if cmd.startswith("/model "):
+            name = cmd[7:].strip()
+            valid = {"opus", "sonnet", "haiku"}
+            if name in valid:
+                model_dropdown.value = name
+                _append_system_message(f"Model switched to {name}.")
+            else:
+                _append_system_message(
+                    f"Unknown model '{name}'. Options: {', '.join(sorted(valid))}"
+                )
+            return True
+
+        # /effort <level>
+        if cmd.startswith("/effort "):
+            level = cmd[8:].strip()
+            valid = {"low", "medium", "high"}
+            if level in valid:
+                effort_dropdown.value = level
+                _append_system_message(f"Effort set to {level}.")
+            else:
+                _append_system_message(
+                    f"Unknown effort '{level}'. Options: {', '.join(sorted(valid))}"
+                )
+            return True
+
+        # /mode <name>
+        if cmd.startswith("/mode "):
+            name = cmd[6:].strip()
+            opts = [v for _, v in mode_dropdown.options] if hasattr(mode_dropdown, 'options') else []
+            if not opts:
+                opts = [mode_dropdown.value]
+            if name in opts:
+                mode_dropdown.value = name
+                _append_system_message(f"Mode switched to {name}.")
+            else:
+                _append_system_message(
+                    f"Unknown mode '{name}'. Options: {', '.join(opts)}"
+                )
+            return True
+
+        # /export — save chat as Markdown file
+        if cmd == "/export":
+            _export_chat()
+            return True
+
+        # /search <text>
+        if cmd.startswith("/search"):
+            query = text[7:].strip()  # use original case
+            if query:
+                _do_search(query)
+            else:
+                # Toggle search bar visibility
+                _toggle_search()
+            return True
+
+        # /retry — regenerate last response
+        if cmd == "/retry":
+            _retry_last()
+            return True
+
+        # Internal: Shift+Tab permission cycling (not shown in /help)
+        if cmd == "/perm-cycle":
+            if state["streaming"]:
+                _append_system_message("Cannot change permissions while streaming.")
+                return True
+            perm_values = [v for _, v in perm_dropdown.options]
+            perm_labels = {v: label for label, v in perm_dropdown.options}
+            idx = perm_values.index(perm_dropdown.value) if perm_dropdown.value in perm_values else 0
+            next_idx = (idx + 1) % len(perm_values)
+            perm_dropdown.value = perm_values[next_idx]
+            _append_system_message(
+                f"Permission: {perm_labels[perm_values[next_idx]]} (Shift+Tab to cycle)"
+            )
+            return True
+
+        return False
+
+    # -- feature implementations -------------------------------------------
+
+    def _export_chat():
+        """Export the chat history as a Markdown file."""
+        if not state["chat_messages"]:
+            _append_system_message("Nothing to export.")
+            return
+        lines = [f"# DELFIN Agent Chat Export\n"]
+        engine = state["engine"]
+        if engine:
+            s = engine.get_status()
+            lines.append(f"**Mode:** {s['mode']} | **Model:** {model_dropdown.value} | **Tokens:** {s['input_tokens']:,} in / {s['output_tokens']:,} out\n")
+        lines.append("---\n")
+        for msg in state["chat_messages"]:
+            role = msg["role"]
+            content = msg["content"]
+            label = msg.get("role_label", "")
+            if role == "user":
+                lines.append(f"### User\n\n{content}\n")
+            elif role == "assistant":
+                rl = label or "Agent"
+                lines.append(f"### {rl}\n\n{content}\n")
+            elif role == "thinking":
+                lines.append(f"<details><summary>Thinking</summary>\n\n{content}\n\n</details>\n")
+            elif role == "system":
+                lines.append(f"> {content}\n")
+        md_text = "\n".join(lines)
+        # Write to file
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_dir = Path.home() / ".delfin" / "exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        export_path = export_dir / f"chat_{ts}.md"
+        export_path.write_text(md_text, encoding="utf-8")
+        _append_system_message(f"Chat exported to: {export_path}")
+
+    def _toggle_search():
+        """Toggle the search bar visibility."""
+        visible = search_input.layout.display != "none"
+        if visible:
+            search_input.layout.display = "none"
+            search_close_btn.layout.display = "none"
+            search_count_html.value = ""
+            search_input.value = ""
+            # Restore original chat HTML (remove highlights)
+            _refresh_chat_html()
+        else:
+            search_input.layout.display = "inline-flex"
+            search_close_btn.layout.display = "inline-flex"
+            # Focus will be handled by keyboard shortcut JS
+
+    def _do_search(query):
+        """Search chat messages and highlight matches."""
+        if not query:
+            _refresh_chat_html()
+            search_count_html.value = ""
+            return
+        count = 0
+        for msg in state["chat_messages"]:
+            if query.lower() in msg["content"].lower():
+                count += 1
+        search_count_html.value = (
+            f'<span style="font-size:11px;color:#6b7280;margin-left:6px;">'
+            f'{count} match{"es" if count != 1 else ""}</span>'
+        )
+        # Rebuild chat HTML with highlighted matches
+        if not state["chat_messages"]:
+            return
+        parts = ['<div class="delfin-agent-chat">']
+        q_lower = query.lower()
+        q_escaped = _html.escape(query)
+        for msg in state["chat_messages"]:
+            role = msg["role"]
+            content = _md_to_html(msg["content"])
+            # Highlight matches (case-insensitive)
+            if q_lower in msg["content"].lower():
+                # Highlight in the HTML output (rough but effective)
+                content = re.sub(
+                    re.escape(q_escaped),
+                    f'<span class="delfin-search-hl">{q_escaped}</span>',
+                    content,
+                    flags=re.IGNORECASE,
+                )
+            if role == "user":
+                parts.append(f'<div class="delfin-chat-msg delfin-chat-user">{content}</div>')
+            elif role == "assistant":
+                label = msg.get("role_label", "Agent")
+                parts.append(
+                    f'<div class="delfin-chat-msg delfin-chat-agent">'
+                    f'<div class="delfin-chat-role">{_html.escape(label)}</div>'
+                    f'{content}</div>'
+                )
+            elif role == "thinking":
+                raw = msg["content"]
+                preview = raw[:80].replace("\n", " ").strip()
+                if len(raw) > 80:
+                    preview += "..."
+                escaped_full = _html.escape(raw)
+                parts.append(
+                    f'<details class="delfin-chat-msg delfin-chat-thinking">'
+                    f'<summary>\U0001f9e0 {_html.escape(preview)}</summary>'
+                    f'<div class="thinking-content">{escaped_full}</div></details>'
+                )
+            elif role == "system":
+                raw = msg["content"]
+                css_class = "delfin-chat-msg delfin-chat-handoff" if (
+                    raw.startswith("---") or raw.startswith("Session restored")
+                ) else "delfin-chat-msg delfin-chat-system"
+                parts.append(f'<div class="{css_class}">{content}</div>')
+        parts.append(
+            '<img src="" onerror="'
+            "var c=this.closest('.delfin-agent-chat');"
+            "if(c)c.scrollTop=c.scrollHeight;"
+            "this.remove();"
+            '" style="display:none">'
+        )
+        parts.append("</div>")
+        chat_html.value = "\n".join(parts)
+
+    def _retry_last():
+        """Remove the last assistant response and re-send the last user message."""
+        if state["streaming"]:
+            _append_system_message("Cannot retry while streaming.")
+            return
+        engine = state["engine"]
+        if not engine or not engine.messages:
+            _append_system_message("Nothing to retry.")
+            return
+        # Find the last user message
+        last_user_text = ""
+        # Remove trailing assistant + thinking messages from chat
+        while state["chat_messages"] and state["chat_messages"][-1]["role"] in ("assistant", "thinking", "system"):
+            state["chat_messages"].pop()
+        if state["chat_messages"] and state["chat_messages"][-1]["role"] == "user":
+            last_user_text = state["chat_messages"][-1]["content"]
+            state["chat_messages"].pop()  # will be re-added by _on_send flow
+        # Remove from engine messages too
+        while engine.messages and engine.messages[-1]["role"] == "assistant":
+            engine.messages.pop()
+        if engine.messages and engine.messages[-1]["role"] == "user":
+            engine.messages.pop()
+        _refresh_chat_html()
+        if last_user_text:
+            # Re-send via the send flow
+            input_textarea.value = last_user_text
+            _on_send(None)
+        else:
+            _append_system_message("Could not find a user message to retry.")
+
+    def _check_auto_compact():
+        """Check if context is getting large and auto-compact or warn."""
+        engine = state["engine"]
+        if not engine:
+            return
+        total_tokens = engine.token_usage.get("input", 0)
+        n_msgs = len(engine.messages)
+        # Claude CLI auto-compacts internally, so we only do a silent
+        # fallback compact on our engine messages if they get very large.
+        if n_msgs > 30:
+            old_count = n_msgs
+            old_msgs = engine.messages[:-6]
+            summary_parts = []
+            for m in old_msgs[-8:]:
+                content = m["content"][:200]
+                summary_parts.append(f"[{m['role']}]: {content}...")
+            summary = "\n".join(summary_parts)
+            engine.messages = [
+                {"role": "user", "content":
+                 f"[Auto-compacted {old_count - 6} earlier messages:\n"
+                 f"{summary}\n... End]"},
+                {"role": "assistant", "content": "Understood, continuing with context."},
+            ] + engine.messages[-6:]
+
+    def _format_tool_description(raw):
+        """Parse a raw permission denial string into a readable description."""
+        import ast as _ast
+        try:
+            d = _ast.literal_eval(raw) if raw.strip().startswith("{") else {}
+        except Exception:
+            d = {}
+        if not d:
+            return raw[:200]
+        tool = d.get("tool_name", "Unknown")
+        inp = d.get("tool_input", {})
+        if not isinstance(inp, dict):
+            return f"{tool}"
+        # Build a human-readable summary per tool type
+        if tool == "Edit":
+            fp = inp.get("file_path", "")
+            old = inp.get("old_string", "")
+            new = inp.get("new_string", "")
+            fname = fp.rsplit("/", 1)[-1] if "/" in fp else fp
+            old_short = old[:60].replace("\n", " ")
+            new_short = new[:60].replace("\n", " ")
+            return f"Edit {fname}: \"{old_short}\" → \"{new_short}\""
+        if tool == "Write":
+            fp = inp.get("file_path", "")
+            fname = fp.rsplit("/", 1)[-1] if "/" in fp else fp
+            return f"Write file: {fname}"
+        if tool == "Bash":
+            cmd = inp.get("command", "")
+            return f"Run: {cmd[:120]}"
+        if tool in ("Read", "Glob", "Grep"):
+            target = inp.get("file_path", "") or inp.get("pattern", "") or inp.get("path", "")
+            return f"{tool}: {target[:120]}"
+        # Generic: show tool + first key
+        parts = [f"{tool}:"]
+        for k, v in list(inp.items())[:2]:
+            sv = str(v)[:80]
+            parts.append(f" {k}={sv}")
+        return "".join(parts)
+
+    def _show_approval_prompt(tool_name, detail):
+        """Show approval request inline in chat + approval buttons."""
+        state["_pending_approval"] = {"tool": tool_name, "detail": detail}
+        readable = _format_tool_description(detail)
+        # Show in chat as a special approval message
+        _append_chat_message(
+            "approval",
+            readable,
+        )
+        # Show only the buttons between chat and input (description is in chat)
+        approval_info_html.value = ""
+        approve_btn.layout.display = "inline-flex"
+        deny_btn.layout.display = "inline-flex"
+        approval_row.layout.display = "flex"
+
+    def _hide_approval():
+        """Hide approval UI."""
+        approve_btn.layout.display = "none"
+        deny_btn.layout.display = "none"
+        approval_row.layout.display = "none"
+        approval_info_html.value = ""
+        state.pop("_pending_approval", None)
+
+    def _on_approve(button):
+        """User approves a blocked operation.
+
+        For Bash commands: execute directly via subprocess (reliable).
+        For file ops: upgrade permission mode and let the agent retry.
+        """
+        import ast as _ast
+        import subprocess as _sp
+
+        pending = state.get("_pending_approval")
+        if not pending:
+            _hide_approval()
+            return
+        raw = pending.get("tool", "")
+        readable = _format_tool_description(raw)
+        _hide_approval()
+
+        # Parse the blocked tool call
+        try:
+            d = _ast.literal_eval(raw) if raw.strip().startswith("{") else {}
+        except Exception:
+            d = {}
+        tool = d.get("tool_name", "")
+        inp = d.get("tool_input", {}) if isinstance(d.get("tool_input"), dict) else {}
+
+        # --- Bash commands: run directly, report result to agent ---
+        if tool == "Bash" and inp.get("command"):
+            cmd = inp["command"]
+            _append_system_message(f"\u2705 Approved & executing: $ {cmd[:200]}")
+            try:
+                result = _sp.run(
+                    cmd, shell=True, capture_output=True, text=True,
+                    cwd=str(ctx.repo_dir or "."), timeout=60,
+                )
+                output = (result.stdout.strip() + "\n" + result.stderr.strip()).strip()
+                if result.returncode == 0:
+                    _append_system_message(
+                        f"\u2714 Command succeeded:\n{output[:500]}"
+                    )
+                    # Tell agent it worked
+                    input_textarea.value = (
+                        f"I ran the command for you. Result:\n```\n{output[:1000]}\n```\n"
+                        f"Continue with the next step."
+                    )
+                else:
+                    _append_system_message(
+                        f"\u2718 Command failed (exit {result.returncode}):\n{output[:500]}"
+                    )
+                    input_textarea.value = (
+                        f"The command failed (exit {result.returncode}):\n"
+                        f"```\n{output[:1000]}\n```\n"
+                        f"Please suggest an alternative approach."
+                    )
+            except _sp.TimeoutExpired:
+                _append_system_message("\u26a0 Command timed out after 60s.")
+                input_textarea.value = "The command timed out. Please try a different approach."
+            except Exception as exc:
+                _append_system_message(f"\u26a0 Error: {exc}")
+                input_textarea.value = f"Error running command: {exc}"
+            _on_send(None)
+            return
+
+        # --- File operations: upgrade permission mode if needed ---
+        current_perm = perm_dropdown.value
+        _PERM_RANK = {"default": 0, "plan": 0, "acceptEdits": 1, "auto": 2, "bypassPermissions": 3}
+        current_rank = _PERM_RANK.get(current_perm, 0)
+        needed_rank = 1 if tool in ("Edit", "Write", "Read", "Glob", "Grep", "") else 2
+        need_upgrade = current_rank < needed_rank
+
+        if need_upgrade:
+            new_perm = "acceptEdits" if needed_rank == 1 else "auto"
+            _append_system_message(
+                f"\u2705 Approved: {readable}\n"
+                f"\u2191 Upgrading permissions: {current_perm} \u2192 {new_perm}"
+            )
+            old_engine = state["engine"]
+            session_id = ""
+            if old_engine:
+                session_id = old_engine.session_id
+            perm_dropdown.value = new_perm
+            engine = _ensure_engine()
+            if engine and session_id:
+                engine.session_id = session_id
+            input_textarea.value = f"Please retry: {readable}"
+            _on_send(None)
+        else:
+            _append_system_message(f"\u2705 Approved: {readable}")
+            input_textarea.value = f"Yes, proceed with: {readable}"
+            _on_send(None)
+
+    def _on_deny(button):
+        """User denies a blocked operation."""
+        pending = state.get("_pending_approval")
+        _hide_approval()
+        raw = pending.get("tool", "") if pending else ""
+        readable = _format_tool_description(raw) if raw else "operation"
+        _append_system_message(f"\u274c Denied: {readable}")
+        input_textarea.value = f"No, do NOT do that. Find an alternative approach."
+        _on_send(None)
+
+    def _on_export(button):
+        """Export button handler."""
+        _export_chat()
+
+    def _on_search_change(change):
+        """Live search as user types."""
+        _do_search(change["new"])
+
+    def _on_search_close(button):
+        """Close search bar."""
+        _toggle_search()
+
+    # -- pipeline display helpers ----------------------------------------------
+
+    def _update_pipeline_display(eng):
+        """Show visual pipeline progress: SM ✓ → Critic ✓ → Builder ⏳ → Test ○"""
+        if not eng:
+            return
+        steps = eng.pipeline_status()
+        _icons = {"done": "\u2705", "active": "\u23f3", "pending": "\u25cb"}
+        parts = []
+        for s in steps:
+            icon = _icons.get(s["status"], "?")
+            label = _format_role_label(s["role"])
+            parts.append(f"{icon} {label}")
+        pipeline_str = " \u2192 ".join(parts)
+        _append_system_message(f"Pipeline: {pipeline_str}")
+
+    def _extract_retry_context(agent_output: str, source: str) -> str:
+        """Extract specific error context from agent output for targeted retry.
+
+        Parses test failures (tracebacks, assertion errors) or reviewer
+        findings (CRITICAL/MAJOR items) into a concise summary that helps
+        the Builder fix the exact issues.
+        """
+        lines = agent_output.split("\n")
+        findings = []
+
+        if source == "test":
+            # Extract pytest failures: FAILED lines, tracebacks, assertions
+            in_failure = False
+            failure_block: list[str] = []
+            for line in lines:
+                if "FAILED" in line or "FAIL" in line:
+                    findings.append(line.strip())
+                elif "Error" in line or "assert" in line.lower():
+                    findings.append(line.strip())
+                elif "Traceback" in line:
+                    in_failure = True
+                    failure_block = [line.strip()]
+                elif in_failure:
+                    failure_block.append(line.strip())
+                    if line.strip() and not line.startswith(" "):
+                        findings.append("\n".join(failure_block[-5:]))
+                        in_failure = False
+                        failure_block = []
+            # Also grab lines with file:line references
+            for line in lines:
+                if re.match(r".*\.py:\d+", line) and "FAIL" in line.upper():
+                    if line.strip() not in findings:
+                        findings.append(line.strip())
+
+        elif source == "reviewer":
+            # Extract CRITICAL and MAJOR findings
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith(("1.", "2.", "3.", "4.", "5.")):
+                    if any(kw in stripped.upper() for kw in
+                           ("CRITICAL", "MAJOR", "BUG", "FIX:")):
+                        findings.append(stripped)
+                elif "CRITICAL" in stripped.upper() or "MAJOR" in stripped.upper():
+                    findings.append(stripped)
+
+        if not findings:
+            # Fallback: last 500 chars of output
+            return agent_output[-500:]
+
+        return "\n".join(findings[:15])  # max 15 findings
+
+    def _check_acceptance_gate(eng):
+        """Check test agent output for acceptance criteria results."""
+        test_out = eng.role_outputs.get("test_agent", "")
+        if not test_out:
+            return ""
+
+        # Count PASS / FAIL / UNTESTED
+        pass_count = len(re.findall(r"\bPASS\b", test_out))
+        fail_count = len(re.findall(r"\bFAIL\b", test_out))
+        untested = len(re.findall(r"\bUNTESTED\b", test_out))
+
+        # Check for approve/reject verdict
+        has_approve = bool(re.search(r"\*\*status:\*\*\s*approve", test_out, re.I))
+        has_reject = bool(re.search(r"\*\*status:\*\*\s*reject", test_out, re.I))
+
+        parts = []
+        if pass_count:
+            parts.append(f"{pass_count} PASS")
+        if fail_count:
+            parts.append(f"{fail_count} FAIL")
+        if untested:
+            parts.append(f"{untested} UNTESTED")
+
+        summary = f"({', '.join(parts)})" if parts else ""
+
+        if has_reject or fail_count > 0:
+            return f"\u274c {summary}"
+        if has_approve:
+            return f"\u2705 {summary}"
+        return summary
+
+    # -- main event handlers -----------------------------------------------
+
+    def _on_send(button):
+        user_text = input_textarea.value.strip()
+        if not user_text:
+            return
+
+        # Slash commands execute immediately, even during streaming
+        if user_text.startswith("/"):
+            input_textarea.value = ""
+            _append_chat_message("user", user_text)
+            _handle_slash_command(user_text)
+            return
+
+        # If streaming, queue the message for later
+        if state["streaming"]:
+            state["message_queue"].append(user_text)
+            input_textarea.value = ""
+            _append_system_message(
+                f"Message queued ({len(state['message_queue'])} in queue). "
+                f"Will send when current response completes."
+            )
+            _update_queue_display()
+            return
+
+        engine = _ensure_engine()
+        if engine is None:
+            return
+
+        # Auto-mode suggestion: only on first message of a cycle, and only
+        # if user hasn't already been asked.  User must accept the switch.
+        if not engine.messages and not state.get("_mode_suggested"):
+            from delfin.agent.engine import AgentEngine as _AE
+            suggested = _AE.suggest_mode(user_text, mode_dropdown.value)
+            if suggested:
+                state["_mode_suggested"] = True
+                state["_pending_mode_msg"] = user_text
+                _append_chat_message("user", user_text)
+                _append_system_message(
+                    f"Mode suggestion: your message mentions files that "
+                    f"match **{suggested}** mode (current: {mode_dropdown.value}).\n"
+                    f"Type `/mode {suggested}` to switch, or just send "
+                    f"your next message to keep **{mode_dropdown.value}**."
+                )
+                input_textarea.value = ""
+                return
+
+        # Detect user approval to start pipeline from Session Manager
+        # If SM has already responded and user sends a short confirmation,
+        # advance past SM and auto-run the remaining pipeline.
+        _APPROVAL_WORDS = {
+            "ja", "yes", "go", "start", "los", "mach", "weiter", "ok",
+            "okay", "passt", "approved", "proceed", "ja bitte", "los gehts",
+            "do it", "sieht gut aus", "einverstanden", "starten", "anfangen",
+            "beginne", "lgtm", "ship it", "machen",
+        }
+        _sm_approval = False
+        if (engine.current_role == "session_manager"
+                and len(engine.messages) >= 2
+                and len(user_text) < 80):
+            _lower = user_text.lower().strip().rstrip("!.?")
+            if _lower in _APPROVAL_WORDS:
+                _sm_approval = True
+
+        input_textarea.value = ""
+        _append_chat_message("user", user_text)
+
+        state["streaming"] = True
+        state["_deny_count"] = 0  # Reset retry counter for new message
+        if state["session_start_time"] is None:
+            state["session_start_time"] = time.monotonic()
+        _update_button_states()
+        _set_working(True, "Thinking...")
+
+        role_label = _format_role_label(engine.current_role)
+
+        def _worker():
+            chunks = []
+            thinking_chunks = []
+            last_update = 0.0
+            try:
+
+                def _on_thinking(text):
+                    nonlocal last_update
+                    thinking_chunks.append(text)
+                    now = time.monotonic()
+                    if now - last_update > 0.15:
+                        # Show last ~80 chars of thinking in spinner
+                        full = "".join(thinking_chunks)
+                        snippet = full[-80:].replace("\n", " ").strip()
+                        if len(full) > 80:
+                            snippet = "..." + snippet
+                        _set_working(True, f"Thinking: {snippet}")
+                        last_update = now
+
+                def _on_token(text):
+                    nonlocal last_update
+                    # When first text arrives, flush thinking as collapsed block
+                    if thinking_chunks and not chunks:
+                        full_thinking = "".join(thinking_chunks)
+                        if full_thinking.strip():
+                            # Show as collapsed thinking block in chat
+                            _append_chat_message(
+                                "thinking",
+                                full_thinking.strip(),
+                            )
+                        thinking_chunks.clear()
+                    chunks.append(text)
+                    now = time.monotonic()
+                    if now - last_update > 0.1:
+                        _set_working(True, "Writing...")
+                        _update_last_assistant("".join(chunks), role_label)
+                        _update_status()
+                        last_update = now
+
+                def _on_tool_use(tool_name, tool_input):
+                    # Flush thinking if no text came before tool use
+                    if thinking_chunks:
+                        full_thinking = "".join(thinking_chunks)
+                        if full_thinking.strip():
+                            _append_chat_message("thinking", full_thinking.strip())
+                        thinking_chunks.clear()
+                    # Show detailed activity like Claude CLI
+                    try:
+                        import json as _j
+                        _p = _j.loads(tool_input)
+                    except Exception:
+                        _p = {}
+                    _fname = (_p.get("file_path") or _p.get("path") or "")
+                    if _fname:
+                        _fname = _fname.rsplit("/", 1)[-1]  # basename only
+                    _detail = {
+                        "Read":  f"Reading {_fname}..." if _fname else "Reading...",
+                        "Edit":  f"Editing {_fname}..." if _fname else "Editing...",
+                        "Write": f"Writing {_fname}..." if _fname else "Writing...",
+                        "Grep":  f"Searching: {_p.get('pattern', '')[:40]}...",
+                        "Glob":  f"Finding: {_p.get('pattern', '')[:40]}...",
+                        "Bash":  f"$ {(_p.get('command') or '')[:50]}...",
+                        "Agent": f"Sub-agent: {(_p.get('description') or '')[:40]}...",
+                    }.get(tool_name, f"Running {tool_name}...")
+                    _set_working(True, _detail)
+                    # Flush pending text as a finalized assistant message
+                    if chunks:
+                        _update_last_assistant("".join(chunks), role_label)
+                        chunks.clear()  # reset — next text starts fresh
+
+                    try:
+                        import json as _json
+                        parsed = _json.loads(tool_input)
+                    except Exception:
+                        parsed = {}
+
+                    # --- Edit/Write: show diff preview ---
+                    if tool_name in ("Edit", "Write") and parsed.get("file_path"):
+                        fpath = parsed["file_path"]
+                        short_path = fpath.replace(
+                            str(ctx.repo_dir or ""), ""
+                        ).lstrip("/")
+                        if tool_name == "Edit":
+                            old = parsed.get("old_string", "")
+                            new = parsed.get("new_string", "")
+                            old_preview = old[:150] + ("..." if len(old) > 150 else "")
+                            new_preview = new[:150] + ("..." if len(new) > 150 else "")
+                            _append_system_message(
+                                f"\u270f Edit: {short_path}\n"
+                                f"  - {old_preview}\n"
+                                f"  + {new_preview}"
+                            )
+                        else:
+                            content = parsed.get("content", "")
+                            _append_system_message(
+                                f"\u270f Write: {short_path} "
+                                f"({len(content)} chars)"
+                            )
+                        state["recent_edits"].append({
+                            "file": fpath, "tool": tool_name,
+                        })
+                        undo_btn.disabled = False
+                        return
+
+                    # --- Bash: show command ---
+                    if tool_name == "Bash" and parsed.get("command"):
+                        cmd = parsed["command"]
+                        if len(cmd) > 120:
+                            cmd = cmd[:120] + "..."
+                        _append_system_message(f"\u25b8 $ {cmd}")
+                        return
+
+                    # --- Other tools: show key param ---
+                    short = ""
+                    for key in ("file_path", "path", "pattern",
+                                "prompt", "description", "query"):
+                        if key in parsed:
+                            val = str(parsed[key])
+                            if len(val) > 80:
+                                val = val[:80] + "..."
+                            short = val
+                            break
+                    if not short:
+                        short = tool_input[:120]
+                    _append_system_message(
+                        f"\u25b8 {tool_name}({short})"
+                    )
+
+                def _on_permission_denied(description):
+                    if chunks:
+                        _update_last_assistant("".join(chunks), role_label)
+                        chunks.clear()
+                    denied_raw = str(description)
+                    readable = _format_tool_description(denied_raw)
+                    state["_last_denied"] = denied_raw
+                    # Track denials to stop retry loops
+                    deny_count = state.get("_deny_count", 0) + 1
+                    state["_deny_count"] = deny_count
+                    if deny_count >= 3:
+                        _append_system_message(
+                            f"\u26d4 Blocked 3x — stopping retries. "
+                            f"Change permission mode or do it manually."
+                        )
+                        engine.request_stop()
+                        return
+                    _append_system_message(
+                        f"\u26d4 Blocked ({deny_count}/3): {readable}"
+                    )
+                    # Show approval buttons for interactive approval
+                    _show_approval_prompt(denied_raw, denied_raw)
+
+                # Effort multiplier: scales the role-specific budget
+                _effort_mult = {"low": 0.5, "medium": 1.0, "high": 2.0}
+                _mult = _effort_mult.get(effort_dropdown.value, 1.0)
+
+                # Store original user task for handoff messages
+                original_task = user_text
+                current_msg = user_text
+                max_auto_steps = len(engine.route) + 1  # safety limit
+
+                for _step in range(max_auto_steps):
+                    if engine._stop_requested or engine.is_cycle_complete:
+                        break
+
+                    # Role-specific thinking budget and model routing
+                    from delfin.agent.engine import AgentEngine as _AE
+                    _cur_role = engine.current_role
+                    _base_budget = _AE.thinking_budget_for_role(_cur_role)
+                    _budget = int(_base_budget * _mult)
+
+                    # Per-role model: switch CLI to optimal model
+                    _role_model = _AE.model_for_role(_cur_role)
+                    # Check user overrides from settings
+                    _agent_settings = _get_agent_settings()
+                    _role_models_cfg = _agent_settings.get("role_models", {})
+                    if _cur_role in _role_models_cfg:
+                        _role_model = _role_models_cfg[_cur_role]
+                    _user_model = model_dropdown.value
+                    _effective_model = _user_model if _role_model == "auto" else _role_model
+                    if (hasattr(engine.client, "switch_model")
+                            and _effective_model != getattr(engine.client, "model", "")):
+                        engine.client.switch_model(_effective_model)
+
+                    # Track per-role costs
+                    _cost_before = engine.cost_usd
+                    _in_before = engine.token_usage["input"]
+                    _out_before = engine.token_usage["output"]
+
+                    role_label = _format_role_label(engine.current_role)
+                    chunks.clear()
+                    thinking_chunks.clear()
+
+                    engine.stream_response(
+                        user_message=current_msg,
+                        on_token=_on_token,
+                        on_tool_use=_on_tool_use,
+                        on_permission_denied=_on_permission_denied,
+                        on_thinking=_on_thinking,
+                        thinking_budget=_budget,
+                    )
+                    # Final update for this role
+                    if chunks:
+                        _update_last_assistant("".join(chunks), role_label)
+
+                    # Show per-role cost
+                    _role_cost = engine.cost_usd - _cost_before
+                    _role_in = engine.token_usage["input"] - _in_before
+                    _role_out = engine.token_usage["output"] - _out_before
+                    if _role_in > 0 or _role_out > 0:
+                        _cost_str = f"${_role_cost:.3f}" if _role_cost > 0 else ""
+                        _append_system_message(
+                            f"{role_label}: {_role_in:,} in / {_role_out:,} out"
+                            f"{' · ' + _cost_str if _cost_str else ''}"
+                            f" [{_effective_model}]"
+                        )
+
+                    if engine._stop_requested:
+                        break
+
+                    # --- Auto-advance logic ---
+                    prev_role_id = engine.current_role
+
+                    # --- Conditional skip: if agent says SKIP, advance ---
+                    last_out = ""
+                    for msg in reversed(engine.messages):
+                        if msg["role"] == "assistant":
+                            last_out = msg["content"]
+                            break
+                    if "SKIP" in last_out[:200].upper() and prev_role_id not in (
+                        "session_manager", "builder_agent", "test_agent",
+                    ):
+                        _append_system_message(
+                            f"--- {_format_role_label(prev_role_id)}: "
+                            f"nothing to do, skipping ---"
+                        )
+                        engine.advance_role()
+                        _update_status()
+                        _update_pipeline_display(engine)
+                        if engine.is_cycle_complete:
+                            _append_system_message("--- Cycle complete ---")
+                            break
+                        # Build handoff for next role
+                        current_msg = engine.build_handoff_message(original_task)
+                        continue
+
+                    # Session Manager: STOP and wait for user approval
+                    # The SM is conversational — user must review the plan
+                    # and explicitly approve before the pipeline continues.
+                    if prev_role_id == "session_manager" and not _sm_approval:
+                        _update_status()
+                        _update_pipeline_display(engine)
+                        break
+
+                    # Dynamic routing: parse SM's "Skip agents" section
+                    # and remove skipped roles from the route.
+                    if prev_role_id == "session_manager" and _sm_approval:
+                        _SKIPPABLE = {"critic_agent", "reviewer_agent", "runtime_agent"}
+                        skip_section = re.search(
+                            r"### Skip agents\s*\n(.*?)(?:\n###|\n\*\*|$)",
+                            last_out, re.DOTALL
+                        )
+                        if skip_section:
+                            skip_text = skip_section.group(1)
+                            skipped = []
+                            for role_name in _SKIPPABLE:
+                                if role_name in skip_text:
+                                    skipped.append(role_name)
+                            if skipped:
+                                engine.route = [
+                                    r for r in engine.route if r not in skipped
+                                ]
+                                labels = [_format_role_label(s) for s in skipped]
+                                _append_system_message(
+                                    f"--- Dynamic routing: skipping "
+                                    f"{', '.join(labels)} (SM recommendation) ---"
+                                )
+
+                    # --- Reviewer → Builder loop (max retries) ---
+                    if prev_role_id == "reviewer_agent":
+                        has_issues = "ISSUES" in last_out[:500].upper()
+                        _retries = state.get("_builder_retries", 0)
+                        if has_issues and _retries < 3:
+                            state["_builder_retries"] = _retries + 1
+                            # Extract specific findings for Builder
+                            _findings = _extract_retry_context(
+                                last_out, "reviewer"
+                            )
+                            engine.retry_from_builder()
+                            _append_system_message(
+                                f"--- Reviewer found issues. "
+                                f"Builder retry {_retries + 1}/3 ---"
+                            )
+                            engine.compact_for_next_role()
+                            current_msg = (
+                                f"RETRY from Reviewer (attempt {_retries + 1}/3).\n"
+                                f"Fix these specific issues:\n{_findings}\n\n"
+                                + engine.build_handoff_message(original_task)
+                            )
+                            _update_status()
+                            _update_pipeline_display(engine)
+                            continue
+
+                    # --- Test → Builder loop (max retries shared) ---
+                    if prev_role_id == "test_agent":
+                        _fail_kw = ("FAIL", "FAILED", "ERROR", "error:",
+                                    "Exception", "Traceback", "test failed")
+                        has_fail = any(k.lower() in last_out.lower() for k in _fail_kw)
+                        _retries = state.get("_builder_retries", 0)
+                        if has_fail and _retries < 3:
+                            state["_builder_retries"] = _retries + 1
+                            # Extract specific test failures for Builder
+                            _findings = _extract_retry_context(
+                                last_out, "test"
+                            )
+                            engine.retry_from_builder()
+                            _append_system_message(
+                                f"--- Test failures detected. "
+                                f"Builder retry {_retries + 1}/3 ---"
+                            )
+                            engine.compact_for_next_role()
+                            current_msg = (
+                                f"RETRY from Test Agent (attempt {_retries + 1}/3).\n"
+                                f"Fix these specific failures:\n{_findings}\n\n"
+                                + engine.build_handoff_message(original_task)
+                            )
+                            _update_status()
+                            _update_pipeline_display(engine)
+                            continue
+
+                    # Advance to next role
+                    has_next = engine.advance_role()
+                    if not has_next:
+                        state.pop("_retry_used", None)
+                        state.pop("_builder_retries", None)
+                        # Acceptance gate: check if test agent approved
+                        _cycle_verdict = _check_acceptance_gate(engine)
+                        _append_system_message(
+                            f"--- Cycle complete {_cycle_verdict} ---"
+                        )
+                        _update_pipeline_display(engine)
+                        break
+
+                    # Show pipeline progress + handoff in chat
+                    next_role = _format_role_label(engine.current_role)
+                    _append_system_message(
+                        f"--- Auto-handoff: "
+                        f"{_format_role_label(prev_role_id)} \u2192 {next_role} ---"
+                    )
+
+                    # Independent analysis: if two consecutive review roles
+                    # (e.g., Critic → Runtime), the second should NOT see
+                    # the first's output — they analyze independently.
+                    _ANALYSIS_ROLES = {"critic_agent", "runtime_agent"}
+                    next_id = engine.current_role
+                    if (prev_role_id in _ANALYSIS_ROLES
+                            and next_id in _ANALYSIS_ROLES):
+                        # Temporarily hide previous reviewer's output
+                        _saved_output = engine.role_outputs.pop(prev_role_id, None)
+                        _append_system_message(
+                            f"--- Independent analysis: {next_role} "
+                            f"reviews without seeing {_format_role_label(prev_role_id)}'s output ---"
+                        )
+
+                    # Compact context between roles to save tokens
+                    engine.compact_for_next_role()
+
+                    _update_status()
+                    _update_pipeline_display(engine)
+
+                    # Build context-rich handoff message for next agent
+                    current_msg = engine.build_handoff_message(original_task)
+
+                    # Restore hidden output after handoff message is built
+                    if (prev_role_id in _ANALYSIS_ROLES
+                            and next_id in _ANALYSIS_ROLES
+                            and _saved_output is not None):
+                        engine.role_outputs[prev_role_id] = _saved_output
+
+            except Exception as exc:
+                error_text = str(exc)
+                is_crash = (
+                    "CLI error" in error_text
+                    or "Not logged in" in error_text
+                    or "Broken pipe" in error_text
+                )
+                if is_crash:
+                    # Auto-recover: invalidate engine so next send recreates it
+                    state["engine"] = None
+                    _append_system_message(
+                        f"CLI process crashed: {error_text[:200]}\n"
+                        f"Engine will auto-restart on next message."
+                    )
+                elif chunks:
+                    _update_last_assistant(
+                        "".join(chunks) + f"\n\nError: {error_text}", role_label
+                    )
+                else:
+                    _append_system_message(f"Error: {error_text}")
+            finally:
+                state["streaming"] = False
+                _set_working(False)
+                _update_status()
+                _update_button_states()
+                _auto_save_session()
+                _check_auto_compact()
+                # Process next queued message if any
+                _process_queue()
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _process_queue():
+        """Send the next queued message, if any."""
+        if state["message_queue"] and not state["streaming"]:
+            next_msg = state["message_queue"].pop(0)
+            _update_queue_display()
+            input_textarea.value = next_msg
+            _on_send(None)
+
+    def _on_stop(button):
+        engine = state["engine"]
+        if engine:
+            engine.request_stop()
+            # Kill the persistent CLI process
+            if hasattr(engine.client, "kill"):
+                engine.client.kill()
+        state["streaming"] = False
+        _set_working(False)
+        _update_button_states()
+        _append_system_message("Generation stopped by user.")
+        if state["message_queue"]:
+            n = len(state["message_queue"])
+            state["message_queue"].clear()
+            _update_queue_display()
+            _append_system_message(f"Cleared {n} queued message(s).")
+
+    def _on_new_cycle(button):
+        # Save current session before clearing so it can be restored later
+        if state["chat_messages"]:
+            _auto_save_session()
+            _refresh_session_dropdown()
+        engine = state["engine"]
+        if engine:
+            engine.reset_cycle(mode=mode_dropdown.value)
+        else:
+            state["engine"] = None
+        state["chat_messages"].clear()
+        state["streaming"] = False
+        state["active_session_id"] = ""
+        state["recent_edits"].clear()
+        state.pop("_mode_suggested", None)
+        state.pop("_pending_mode_msg", None)
+        state.pop("_retry_used", None)
+        state.pop("_builder_retries", None)
+        state["message_queue"].clear()
+        state["session_start_time"] = None
+        queue_html.value = ""
+        undo_btn.disabled = True
+        session_dropdown.value = ""
+        _refresh_chat_html()
+        _update_status()
+        _update_button_states()
+
+    def _on_advance_role(button):
+        """Manual advance — fallback when auto-advance was stopped."""
+        engine = state["engine"]
+        if not engine:
+            return
+        prev_role = _format_role_label(engine.current_role)
+        has_next = engine.advance_role()
+        if has_next:
+            next_role = _format_role_label(engine.current_role)
+            _append_system_message(
+                f"--- Manual handoff: {prev_role} \u2192 {next_role} ---"
+            )
+        else:
+            state.pop("_retry_used", None)
+            _append_system_message("--- Cycle complete ---")
+        _update_status()
+        _update_button_states()
+        _auto_save_session()
+
+    def _on_mode_change(change):
+        engine = state["engine"]
+        if engine and not state["streaming"] and not engine.messages:
+            engine.reset_cycle(mode=change["new"])
+            _update_status()
+
+    def _on_model_change(change):
+        """Recreate engine with new model on next send."""
+        if state["streaming"]:
+            return
+        engine = state["engine"]
+        if engine:
+            # Force engine recreation with new model
+            state["engine"] = None
+            _append_system_message(
+                f"Model switched to {change['new']}. Next message uses new model."
+            )
+        # Persist the choice
+        try:
+            from delfin.user_settings import load_settings, save_settings
+            s = load_settings()
+            s.setdefault("agent", {})
+            s["agent"]["model"] = change["new"]
+            save_settings(s)
+        except Exception:
+            pass
+
+    def _on_effort_change(change):
+        """Persist effort preference."""
+        if state["streaming"]:
+            return
+        try:
+            from delfin.user_settings import load_settings, save_settings
+            s = load_settings()
+            s.setdefault("agent", {})
+            s["agent"]["effort"] = change["new"]
+            save_settings(s)
+        except Exception:
+            pass
+
+    def _on_perm_change(change):
+        """Recreate engine with new permission mode."""
+        if state["streaming"]:
+            return
+        new_perm = change["new"]
+        engine = state["engine"]
+        if engine:
+            state["engine"] = None
+            _append_system_message(
+                f"Permission mode → {new_perm}. Takes effect on next message."
+            )
+        # Warn on dangerous permission modes
+        if new_perm in ("bypassPermissions", "auto"):
+            label = "Full Access" if new_perm == "bypassPermissions" else "Auto"
+            _append_system_message(
+                f"⚠ WARNING: '{label}' mode gives the agent unrestricted "
+                f"access to files, shell commands, and system resources. "
+                f"Only use this if you trust the prompts and understand the risks."
+            )
+        try:
+            from delfin.user_settings import load_settings, save_settings
+            s = load_settings()
+            s.setdefault("agent", {})
+            s["agent"]["permission_mode"] = new_perm
+            save_settings(s)
+        except Exception:
+            pass
+
+    def _on_commit(button):
+        """Ask the agent to stage and commit current changes."""
+        if state["streaming"]:
+            return
+        input_textarea.value = (
+            "Please commit the current changes. "
+            "Run `git diff --stat` to see what changed, then `git add` the relevant files "
+            "and `git commit` with a concise, descriptive commit message in English. "
+            "Do NOT push."
+        )
+        _on_send(None)
+
+    def _on_push(button):
+        """Show confirmation for git push."""
+        import subprocess as _sp
+
+        # Show current branch and unpushed commits
+        try:
+            branch = _sp.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, cwd=str(ctx.repo_dir or "."),
+            ).stdout.strip()
+            unpushed = _sp.run(
+                ["git", "log", "--oneline", "@{upstream}..HEAD"],
+                capture_output=True, text=True, cwd=str(ctx.repo_dir or "."),
+            ).stdout.strip()
+            if not unpushed:
+                push_status_html.value = (
+                    '<span style="color:#757575;">No unpushed commits.</span>'
+                )
+                return
+            push_status_html.value = (
+                f'<span style="color:#ef6c00;">'
+                f'Push <b>{branch}</b>? '
+                f'({len(unpushed.splitlines())} commit(s))'
+                f'</span>'
+            )
+        except Exception:
+            push_status_html.value = (
+                '<span style="color:#ef6c00;">Push to remote?</span>'
+            )
+        push_btn.layout.display = "none"
+        push_confirm_btn.layout.display = "inline-flex"
+        push_cancel_btn.layout.display = "inline-flex"
+
+    def _on_push_confirm(button):
+        """Execute the push after user confirmation."""
+        import subprocess as _sp
+
+        push_confirm_btn.layout.display = "none"
+        push_cancel_btn.layout.display = "none"
+        push_btn.layout.display = "inline-flex"
+        try:
+            result = _sp.run(
+                ["git", "push"],
+                capture_output=True, text=True, cwd=str(ctx.repo_dir or "."),
+                timeout=30,
+            )
+            if result.returncode == 0:
+                output = result.stdout.strip() or result.stderr.strip()
+                push_status_html.value = (
+                    f'<span style="color:#2e7d32;">'
+                    f'\u2714 Pushed successfully. {_html.escape(output[:100])}'
+                    f'</span>'
+                )
+                _append_system_message(f"Git push completed: {output[:200]}")
+            else:
+                push_status_html.value = (
+                    f'<span style="color:#d32f2f;">'
+                    f'Push failed: {_html.escape(result.stderr.strip()[:150])}'
+                    f'</span>'
+                )
+        except Exception as exc:
+            push_status_html.value = (
+                f'<span style="color:#d32f2f;">Error: {_html.escape(str(exc))}</span>'
+            )
+
+    def _on_push_cancel(button):
+        """Cancel the push."""
+        push_confirm_btn.layout.display = "none"
+        push_cancel_btn.layout.display = "none"
+        push_btn.layout.display = "inline-flex"
+        push_status_html.value = ""
+
+    def _on_undo(button):
+        """Revert the last file edit via git checkout."""
+        if not state["recent_edits"]:
+            return
+        import subprocess as _sp
+        last = state["recent_edits"].pop()
+        fpath = last["file"]
+        short = fpath.replace(str(ctx.repo_dir or ""), "").lstrip("/")
+        try:
+            result = _sp.run(
+                ["git", "checkout", "--", fpath],
+                capture_output=True, text=True,
+                cwd=str(ctx.repo_dir or "."), timeout=10,
+            )
+            if result.returncode == 0:
+                _append_system_message(f"\u21a9 Reverted: {short}")
+            else:
+                _append_system_message(
+                    f"Undo failed: {result.stderr.strip()[:100]}"
+                )
+        except Exception as exc:
+            _append_system_message(f"Undo error: {exc}")
+        undo_btn.disabled = len(state["recent_edits"]) == 0
+
+    def _on_load_session(button):
+        sid = session_dropdown.value
+        if not sid:
+            # "New Session" selected — just reset
+            _on_new_cycle(button)
+            return
+        if state["streaming"]:
+            return
+        _load_saved_session(sid)
+
+    def _on_delete_session(button):
+        sid = session_dropdown.value
+        if not sid or state["streaming"]:
+            return
+        try:
+            from delfin.agent.session_store import delete_session
+            delete_session(sid)
+        except Exception:
+            pass
+        # If we're viewing this session, clear the UI
+        if state.get("active_session_id") == sid:
+            _on_new_cycle(button)
+        _refresh_session_dropdown()
+
+    # -- wire events -------------------------------------------------------
+    send_btn.on_click(_on_send)
+    stop_btn.on_click(_on_stop)
+    new_cycle_btn.on_click(_on_new_cycle)
+    advance_btn.on_click(_on_advance_role)
+    load_session_btn.on_click(_on_load_session)
+    delete_session_btn.on_click(_on_delete_session)
+    undo_btn.on_click(_on_undo)
+    commit_btn.on_click(_on_commit)
+    export_btn.on_click(_on_export)
+    approve_btn.on_click(_on_approve)
+    deny_btn.on_click(_on_deny)
+    search_input.observe(_on_search_change, names="value")
+    search_close_btn.on_click(_on_search_close)
+    push_btn.on_click(_on_push)
+    push_confirm_btn.on_click(_on_push_confirm)
+    push_cancel_btn.on_click(_on_push_cancel)
+    mode_dropdown.observe(_on_mode_change, names="value")
+    model_dropdown.observe(_on_model_change, names="value")
+    effort_dropdown.observe(_on_effort_change, names="value")
+    perm_dropdown.observe(_on_perm_change, names="value")
+
+    # -- initial state -----------------------------------------------------
+    _update_status()
+    _update_button_states()
+    _refresh_session_dropdown()
+
+    _enter_key_init_js = """
+(function() {
+    if (window.__delfinAgentKeys) return;
+    window.__delfinAgentKeys = true;
+    document.addEventListener('keydown', function(e) {
+        /* Enter = Approve (if approval pending) or Send */
+        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            /* Check if approval buttons are visible */
+            var approveBtn = document.querySelector('.delfin-agent-approval-row button');
+            if (approveBtn && approveBtn.offsetParent !== null) {
+                e.preventDefault();
+                e.stopPropagation();
+                approveBtn.click();
+                return;
+            }
+            if (e.target && e.target.tagName === 'TEXTAREA') {
+                var container = e.target.closest
+                    ? e.target.closest('.delfin-agent-input') : null;
+                if (container) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    var sendBtn = document.querySelector('.delfin-agent-send-row button');
+                    if (sendBtn) sendBtn.click();
+                    return;
+                }
+            }
+        }
+        /* Escape = Deny (if approval pending) or Stop generation */
+        if (e.key === 'Escape') {
+            /* Check if deny button is visible */
+            var approvalRow = document.querySelector('.delfin-agent-approval-row');
+            if (approvalRow && approvalRow.offsetParent !== null) {
+                var btns = approvalRow.querySelectorAll('button');
+                if (btns.length >= 2) {
+                    btns[1].click();
+                    e.preventDefault();
+                    return;
+                }
+            }
+            var stopBtns = document.querySelectorAll('button');
+            for (var i = 0; i < stopBtns.length; i++) {
+                if (stopBtns[i].textContent.trim() === 'Stop' && !stopBtns[i].disabled) {
+                    stopBtns[i].click();
+                    e.preventDefault();
+                    return;
+                }
+            }
+        }
+        /* Ctrl+L = Clear chat */
+        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+            /* Only if focus is in the agent area */
+            var agentArea = document.querySelector('.delfin-agent-chat');
+            if (agentArea) {
+                e.preventDefault();
+                /* Trigger /clear by setting textarea and clicking send */
+                var ta = document.querySelector('.delfin-agent-input textarea');
+                if (ta) {
+                    var nativeSet = Object.getOwnPropertyDescriptor(
+                        window.HTMLTextAreaElement.prototype, 'value').set;
+                    nativeSet.call(ta, '/clear');
+                    ta.dispatchEvent(new Event('input', {bubbles: true}));
+                    setTimeout(function() {
+                        var sendBtn = document.querySelector('.delfin-agent-send-row button');
+                        if (sendBtn) sendBtn.click();
+                    }, 50);
+                }
+            }
+        }
+        /* Ctrl+K = Toggle search */
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+            var agentArea = document.querySelector('.delfin-agent-chat');
+            if (agentArea) {
+                e.preventDefault();
+                var ta = document.querySelector('.delfin-agent-input textarea');
+                if (ta) {
+                    var nativeSet = Object.getOwnPropertyDescriptor(
+                        window.HTMLTextAreaElement.prototype, 'value').set;
+                    nativeSet.call(ta, '/search');
+                    ta.dispatchEvent(new Event('input', {bubbles: true}));
+                    setTimeout(function() {
+                        var sendBtn = document.querySelector('.delfin-agent-send-row button');
+                        if (sendBtn) sendBtn.click();
+                    }, 50);
+                }
+            }
+        }
+        /* Shift+Tab = Cycle permission mode */
+        if (e.key === 'Tab' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            var agentArea = document.querySelector('.delfin-agent-chat');
+            if (agentArea) {
+                e.preventDefault();
+                e.stopPropagation();
+                var ta = document.querySelector('.delfin-agent-input textarea');
+                if (ta) {
+                    var nativeSet = Object.getOwnPropertyDescriptor(
+                        window.HTMLTextAreaElement.prototype, 'value').set;
+                    nativeSet.call(ta, '/perm-cycle');
+                    ta.dispatchEvent(new Event('input', {bubbles: true}));
+                    setTimeout(function() {
+                        var sendBtn = document.querySelector('.delfin-agent-send-row button');
+                        if (sendBtn) sendBtn.click();
+                    }, 50);
+                }
+            }
+        }
+    }, true);
+})();
+"""
+
+    tab_widget = agent_content
+    return tab_widget, {"init_js": _enter_key_init_js}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _format_role_label(role_id: str) -> str:
+    """Convert role_id to a readable label."""
+    if not role_id:
+        return "Agent"
+    return role_id.replace("_", " ").title()
+
+
+def _render_status(
+    mode: str,
+    backend: str,
+    role: str,
+    role_index: int,
+    role_total: int,
+    input_tokens: int,
+    output_tokens: int,
+    cost_usd: float,
+) -> str:
+    """Render the status bar HTML."""
+    role_label = _format_role_label(role)
+    role_info = ""
+    if role_total > 0:
+        role_info = (
+            f'<span class="role-badge">{_html.escape(role_label)} '
+            f"({role_index + 1}/{role_total})</span>"
+        )
+
+    backend_label = "CLI (OAuth)" if backend == "cli" else "API"
+    backend_info = f'<span class="backend-badge">{backend_label}</span>'
+
+    if cost_usd > 0:
+        cost_str = f"${cost_usd:.3f}"
+    else:
+        cost_str = _estimate_cost_str(backend, input_tokens, output_tokens)
+
+    tokens_str = f"{input_tokens:,} in / {output_tokens:,} out"
+
+    return (
+        f'<div class="delfin-agent-status">'
+        f'<span class="mode-badge">{_html.escape(mode)}</span>'
+        f"{role_info}"
+        f"{backend_info}"
+        f'<span class="tokens-info">{tokens_str} · {cost_str}</span>'
+        f"</div>"
+    )
+
+
+def _estimate_cost_str(backend: str, input_tokens: int, output_tokens: int) -> str:
+    """Rough cost string."""
+    if backend == "cli":
+        return "included in subscription"
+    cost = (input_tokens * 3.0 + output_tokens * 15.0) / 1_000_000
+    return f"~${cost:.3f}"

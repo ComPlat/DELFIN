@@ -1,0 +1,59 @@
+pack_name: DELFIN_AGENT_LITE
+version: 1
+purpose: >
+  Cost-aware orchestration presets for DELFIN. Optimized for small, bounded work
+  cycles with risk-based escalation to additional agents only when justified.
+depends_on:
+  base_pack: DELFIN_AGENT
+  base_agents_dir: ../pack/agents
+  base_shared_dir: ../pack/shared
+recommended_default_mode: solo
+modes:
+  - id: solo
+    file: modes/solo.md
+    route:
+      - solo_agent
+  - id: quick
+    file: modes/quick.md
+    route:
+      - session_manager
+      - builder_agent
+      - test_agent
+  - id: reviewed
+    file: modes/reviewed.md
+    route:
+      - session_manager
+      - critic_agent
+      - builder_agent
+      - reviewer_agent
+      - test_agent
+  - id: cluster
+    file: modes/cluster.md
+    route:
+      - session_manager
+      - runtime_agent
+      - critic_agent
+      - builder_agent
+      - reviewer_agent
+      - test_agent
+  - id: tdd
+    file: modes/tdd.md
+    route:
+      - session_manager
+      - test_agent
+      - builder_agent
+      - reviewer_agent
+      - test_agent
+  - id: full
+    file: modes/full.md
+    route:
+      - chief_agent
+      - session_manager
+      - runtime_agent
+      - critic_agent
+      - builder_agent
+      - reviewer_agent
+      - test_agent
+shared:
+  - shared/selection_guide.md
+  - shared/escalation_rules.md

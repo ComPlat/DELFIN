@@ -36,3 +36,11 @@ delfin/qm_tools/HYPERPOLARIZABILITY_SETUP.txt
 
 # Local runtime/build cache
 .runtime_cache/
+
+# Environment files (API keys, secrets)
+.env
+.env.*
+
+# User settings (may contain API keys)
+.delfin_settings.json
+*_settings.json
