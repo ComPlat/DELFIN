@@ -1215,6 +1215,17 @@ def create_tab(ctx):
                 "  /mode <name>     — Switch agent mode (solo/quick/reviewed/tdd/cluster/full)\n"
                 "  /reset           — Reset engine for new cycle\n"
                 "\n"
+                "Dashboard control:\n"
+                "  /tab <name>      — Switch tab (submit/orca/jobs/calc/settings)\n"
+                "  /control show    — Show CONTROL content from Submit tab\n"
+                "  /control set ... — Set CONTROL content in Submit tab\n"
+                "  /control validate — Validate CONTROL syntax\n"
+                "  /submit          — Submit job from Submit tab\n"
+                "  /orca show       — Show ORCA Builder settings\n"
+                "  /orca set <p> <v> — Set ORCA Builder param (method/basis/charge/...)\n"
+                "  /orca submit     — Submit ORCA job\n"
+                "  /jobs            — Switch to Job Status tab\n"
+                "\n"
                 "Keyboard shortcuts:\n"
                 "  Enter            — Send message\n"
                 "  Shift+Enter      — New line\n"
@@ -1507,6 +1518,200 @@ def create_tab(ctx):
             _append_system_message(
                 f"Permission: {perm_labels[perm_values[next_idx]]} (Shift+Tab to cycle)"
             )
+            return True
+
+        # -- Dashboard control commands ----------------------------------------
+
+        # /tab <name> — navigate to a dashboard tab
+        if cmd.startswith("/tab "):
+            tab_name = text[5:].strip()
+            _tab_map = {
+                "submit": "Submit Job",
+                "recalc": "Recalc",
+                "jobs": "Job Status",
+                "orca": "ORCA Builder",
+                "calc": "Calculations",
+                "archive": "Archive",
+                "agent": "Agent",
+                "settings": "Settings",
+            }
+            title = _tab_map.get(tab_name.lower(), tab_name)
+            if ctx.select_tab(title):
+                _append_system_message(f"Switched to tab: {title}")
+            else:
+                avail = ", ".join(_tab_map.keys())
+                _append_system_message(f"Tab not found: {tab_name}\nAvailable: {avail}")
+            return True
+
+        # /control show — show current CONTROL content from Submit tab
+        if cmd == "/control show":
+            cw = ctx.submit_refs.get("control_widget")
+            if cw:
+                val = cw.value.strip()
+                if val:
+                    _append_system_message(f"Current CONTROL content:\n```\n{val}\n```")
+                else:
+                    _append_system_message("CONTROL widget is empty.")
+            else:
+                _append_system_message("Submit tab not available.")
+            return True
+
+        # /control set <content> — set CONTROL content in Submit tab
+        if cmd.startswith("/control set "):
+            content = text[len("/control set "):].strip()
+            cw = ctx.submit_refs.get("control_widget")
+            if cw:
+                cw.value = content
+                _append_system_message(
+                    f"CONTROL updated ({len(content)} chars). "
+                    "Switch to Submit tab to review."
+                )
+            else:
+                _append_system_message("Submit tab not available.")
+            return True
+
+        # /control validate — validate CONTROL content
+        if cmd == "/control validate":
+            cw = ctx.submit_refs.get("control_widget")
+            validate_fn = ctx.submit_refs.get("handle_validate_control")
+            if cw and validate_fn:
+                try:
+                    validate_fn(None)
+                    _append_system_message("CONTROL validation triggered. Check Submit tab for results.")
+                except Exception as exc:
+                    _append_system_message(f"Validation error: {exc}")
+            else:
+                _append_system_message("Submit tab not available.")
+            return True
+
+        # /submit — trigger job submission from Submit tab
+        if cmd == "/submit":
+            submit_fn = ctx.submit_refs.get("handle_submit")
+            if submit_fn:
+                _append_system_message("Triggering job submission...")
+                try:
+                    submit_fn(None)
+                    _append_system_message("Job submitted. Check Job Status tab.")
+                except Exception as exc:
+                    _append_system_message(f"Submit error: {exc}")
+            else:
+                _append_system_message("Submit tab not available.")
+            return True
+
+        # /orca show — show ORCA Builder settings
+        if cmd == "/orca show":
+            refs = ctx.orca_builder_refs
+            if refs:
+                method = refs.get("orca_method")
+                basis = refs.get("orca_basis")
+                job_type = refs.get("orca_job_type")
+                charge = refs.get("orca_charge")
+                mult = refs.get("orca_multiplicity")
+                disp = refs.get("orca_dispersion")
+                solv = refs.get("orca_solvent")
+                pal = refs.get("orca_pal")
+                maxcore = refs.get("orca_maxcore")
+                preview = refs.get("orca_preview")
+                info = (
+                    f"ORCA Builder settings:\n"
+                    f"  Method:       {method.value if method else '?'}\n"
+                    f"  Job type:     {job_type.value if job_type else '?'}\n"
+                    f"  Basis:        {basis.value if basis else '?'}\n"
+                    f"  Charge:       {charge.value if charge else '?'}\n"
+                    f"  Multiplicity: {mult.value if mult else '?'}\n"
+                    f"  Dispersion:   {disp.value if disp else '?'}\n"
+                    f"  Solvent:      {solv.value if solv else '?'}\n"
+                    f"  PAL:          {pal.value if pal else '?'}\n"
+                    f"  Maxcore:      {maxcore.value if maxcore else '?'}\n"
+                )
+                if preview and preview.value.strip():
+                    info += f"\nInput preview:\n```\n{preview.value.strip()}\n```"
+                _append_system_message(info)
+            else:
+                _append_system_message("ORCA Builder not available.")
+            return True
+
+        # /orca set <param> <value> — set ORCA Builder parameter
+        if cmd.startswith("/orca set "):
+            parts = text[len("/orca set "):].strip().split(None, 1)
+            if len(parts) < 2:
+                _append_system_message("Usage: /orca set <param> <value>\nParams: method, basis, job_type, charge, mult, dispersion, solvent, pal, maxcore, coords")
+                return True
+            param, value = parts[0].lower(), parts[1]
+            refs = ctx.orca_builder_refs
+            if not refs:
+                _append_system_message("ORCA Builder not available.")
+                return True
+            _orca_param_map = {
+                "method": "orca_method",
+                "basis": "orca_basis",
+                "job_type": "orca_job_type",
+                "charge": "orca_charge",
+                "mult": "orca_multiplicity",
+                "multiplicity": "orca_multiplicity",
+                "dispersion": "orca_dispersion",
+                "solvent": "orca_solvent",
+                "pal": "orca_pal",
+                "maxcore": "orca_maxcore",
+                "coords": "orca_coords",
+            }
+            widget_key = _orca_param_map.get(param)
+            if not widget_key:
+                _append_system_message(f"Unknown param: {param}\nAvailable: {', '.join(_orca_param_map.keys())}")
+                return True
+            w = refs.get(widget_key)
+            if w:
+                try:
+                    if hasattr(w, "options") and isinstance(value, str):
+                        # Dropdown — try exact match first, then case-insensitive
+                        opt_values = [v for _, v in w.options] if isinstance(w.options[0], tuple) else list(w.options)
+                        if value in opt_values:
+                            w.value = value
+                        else:
+                            match = next((v for v in opt_values if v.lower() == value.lower()), None)
+                            if match:
+                                w.value = match
+                            else:
+                                w.value = value
+                    elif isinstance(w.value, int):
+                        w.value = int(value)
+                    else:
+                        w.value = value
+                    _append_system_message(f"ORCA Builder: {param} = {w.value}")
+                    # Refresh preview
+                    update_fn = refs.get("update_orca_preview")
+                    if update_fn:
+                        try:
+                            update_fn()
+                        except Exception:
+                            pass
+                except Exception as exc:
+                    _append_system_message(f"Error setting {param}: {exc}")
+            else:
+                _append_system_message(f"Widget not available: {param}")
+            return True
+
+        # /orca submit — submit ORCA job
+        if cmd == "/orca submit":
+            btn = ctx.orca_builder_refs.get("orca_submit_btn")
+            if btn:
+                _append_system_message("Submitting ORCA job...")
+                btn.click()
+                _append_system_message("ORCA job submitted. Check Job Status tab.")
+            else:
+                _append_system_message("ORCA Builder not available.")
+            return True
+
+        # /jobs — show job status
+        if cmd == "/jobs":
+            refresh = ctx.job_status_refs.get("refresh_job_list")
+            if refresh:
+                try:
+                    refresh()
+                except Exception:
+                    pass
+            ctx.select_tab("Job Status")
+            _append_system_message("Switched to Job Status tab.")
             return True
 
         return False

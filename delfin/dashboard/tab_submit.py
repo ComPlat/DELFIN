@@ -2363,4 +2363,13 @@ def create_tab(ctx):
     _replace_mol_output_text('Please enter XYZ coordinates or SMILES.')
     tab_widget = widgets.VBox([submit_css, tab_widget], layout=widgets.Layout(width='100%'))
 
-    return tab_widget, {'reset_form': reset_form, 'mol_output': mol_output}
+    return tab_widget, {
+        'reset_form': reset_form,
+        'mol_output': mol_output,
+        'control_widget': control_widget,
+        'coords_widget': coords_widget,
+        'submit_button': submit_button,
+        'job_name_widget': job_name_widget,
+        'handle_submit': handle_submit,
+        'handle_validate_control': handle_validate_control,
+    }

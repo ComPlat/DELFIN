@@ -1512,4 +1512,19 @@ def create_tab(ctx):
         }, true);
     })();
     """
-    return tab_widget, {'orca_pal': orca_pal, 'orca_maxcore': orca_maxcore, 'init_js': _orca_drop_js}
+    return tab_widget, {
+        'orca_pal': orca_pal,
+        'orca_maxcore': orca_maxcore,
+        'orca_coords': orca_coords,
+        'orca_charge': orca_charge,
+        'orca_multiplicity': orca_multiplicity,
+        'orca_method': orca_method,
+        'orca_job_type': orca_job_type,
+        'orca_basis': orca_basis,
+        'orca_dispersion': orca_dispersion,
+        'orca_solvent': orca_solvent,
+        'orca_preview': orca_preview,
+        'orca_submit_btn': orca_submit_btn,
+        'update_orca_preview': update_orca_preview,
+        'init_js': _orca_drop_js,
+    }

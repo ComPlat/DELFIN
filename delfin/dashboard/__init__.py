@@ -222,9 +222,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab3, refs3 = tab_job_status.create_tab(ctx)
     tab4, refs4 = tab_orca_builder.create_tab(ctx)
 
-    # Wire cross-tab ORCA widget references
+    # Wire cross-tab widget references for agent dashboard control
     ctx.orca_pal_widget = refs4.get('orca_pal')
     ctx.orca_maxcore_widget = refs4.get('orca_maxcore')
+    ctx.submit_refs = refs1
+    ctx.orca_builder_refs = refs4
+    ctx.job_status_refs = refs3
 
     # TURBOMOLE tab (only for SLURM backends)
     tab_tm = None
