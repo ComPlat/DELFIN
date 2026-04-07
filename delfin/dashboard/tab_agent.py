@@ -584,8 +584,9 @@ def create_tab(ctx):
         layout=widgets.Layout(width="auto"),
     )
 
-    # Provider selector (Claude vs OpenAI)
-    _PROVIDER_MODELS = {
+    # Provider selector — models are fetched dynamically from the API
+    # Fallback lists used only when the API is unreachable.
+    _PROVIDER_MODELS_FALLBACK = {
         "claude": [("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")],
         "openai": [
             ("GPT-5.4", "gpt-5.4"),
@@ -604,17 +605,64 @@ def create_tab(ctx):
             ("Azure GPT-4.1-mini", "azure.gpt-4.1-mini"),
             ("Azure GPT-4.1", "azure.gpt-4.1"),
             ("Azure GPT-4.1-nano", "azure.gpt-4.1-nano"),
-            ("Azure o4-mini", "azure.o4-mini"),
-            ("Azure o3", "azure.o3"),
-            ("KIT Local 120B", "gpt-oss:120b"),
-            ("KIT Local 70B", "kit.llama-3.3-70b"),
-            ("KIT Local 8B", "kit.llama-3.1-8b"),
         ],
     }
     _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4",
                           "kit": "azure.gpt-4.1-mini"}
     _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini",
                        "kit": "azure.gpt-4.1-nano"}
+
+    # Skip patterns: models that should not appear in the dropdown
+    _KIT_SKIP = {"standard-external", "standard-local"}
+
+    def _fetch_models(provider):
+        """Fetch model list from API. Returns [(label, id), ...] or None."""
+        import json as _json
+        try:
+            if provider == "kit":
+                key = os.environ.get("KIT_TOOLBOX_API_KEY", "")
+                if not key:
+                    return None
+                url = "https://ki-toolbox.scc.kit.edu/api/v1/models"
+                import urllib.request
+                req = urllib.request.Request(
+                    url, headers={"Authorization": f"Bearer {key}"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = _json.loads(resp.read())
+            elif provider == "openai":
+                key = os.environ.get("OPENAI_API_KEY", "")
+                if not key:
+                    return None
+                url = "https://api.openai.com/v1/models"
+                import urllib.request
+                req = urllib.request.Request(
+                    url, headers={"Authorization": f"Bearer {key}"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = _json.loads(resp.read())
+            else:
+                return None
+
+            models = data.get("data", [])
+            result = []
+            for m in models:
+                mid = m.get("id", "")
+                if not mid or mid in _KIT_SKIP:
+                    continue
+                label = mid.replace("azure.", "Azure ").replace("kit.", "KIT ")
+                result.append((label, mid))
+            # Sort: azure/cloud first, then local, alphabetically within groups
+            result.sort(key=lambda x: (
+                0 if x[1].startswith("azure.") else 1 if x[1].startswith("kit.") else 2,
+                x[1],
+            ))
+            return result if result else None
+        except Exception:
+            return None
+
+    # Use _PROVIDER_MODELS_FALLBACK as the initial value; dynamically updated later
+    _PROVIDER_MODELS = dict(_PROVIDER_MODELS_FALLBACK)
 
     provider_dropdown = widgets.Dropdown(
         options=_available_providers,
@@ -626,10 +674,16 @@ def create_tab(ctx):
 
     # Model selector (options depend on selected provider)
     _init_provider = _available_providers[0][1]
+    # Try fetching live models at startup
+    _init_fetched = _fetch_models(_init_provider)
+    if _init_fetched:
+        _PROVIDER_MODELS[_init_provider] = _init_fetched
     _init_models = _PROVIDER_MODELS[_init_provider]
+    _init_default = _PROVIDER_DEFAULTS.get(_init_provider, _init_models[0][1])
+    _init_valid = {v for _, v in _init_models}
     model_dropdown = widgets.Dropdown(
         options=_init_models,
-        value=_PROVIDER_DEFAULTS.get(_init_provider, _init_models[0][1]),
+        value=_init_default if _init_default in _init_valid else _init_models[0][1],
         description="Model:",
         layout=widgets.Layout(width="170px"),
         style={"description_width": "45px"},
@@ -3808,20 +3862,31 @@ def create_tab(ctx):
                 model_dropdown.value = saved_model
 
     def _on_provider_change(change):
-        """Switch provider (Claude / OpenAI), update model options."""
+        """Switch provider (Claude / OpenAI / KIT), update model options."""
         if state["streaming"]:
             return
         provider = change["new"]
-        models = _PROVIDER_MODELS.get(provider, _PROVIDER_MODELS["claude"])
+        # Try fetching models dynamically from API
+        fetched = _fetch_models(provider)
+        if fetched:
+            _PROVIDER_MODELS[provider] = fetched
+        models = _PROVIDER_MODELS.get(provider, _PROVIDER_MODELS_FALLBACK.get(
+            provider, _PROVIDER_MODELS_FALLBACK["claude"]))
         model_dropdown.options = models
-        model_dropdown.value = _PROVIDER_DEFAULTS.get(provider, models[0][1])
+        default = _PROVIDER_DEFAULTS.get(provider, models[0][1])
+        valid_values = {v for _, v in models}
+        model_dropdown.value = default if default in valid_values else models[0][1]
         # Invalidate engine
         engine = state["engine"]
         if engine:
             if hasattr(engine.client, "kill"):
                 engine.client.kill()
             state["engine"] = None
-        _append_system_message(f"Provider switched to {provider}.")
+        n_models = len(models)
+        src = "live" if fetched else "fallback"
+        _append_system_message(
+            f"Provider switched to {provider}. {n_models} models loaded ({src})."
+        )
         _update_status()
         # Persist
         try:
