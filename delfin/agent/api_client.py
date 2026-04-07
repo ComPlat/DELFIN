@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import shutil
 import subprocess
+import sys
 from typing import Any, Generator
+
+
+def _auto_install(package: str, pip_spec: str = "") -> None:
+    """Install a missing Python package automatically via pip."""
+    spec = pip_spec or package
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "-q", spec],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    # Force re-import after install
+    importlib.invalidate_caches()
 
 
 # ---------------------------------------------------------------------------
@@ -373,10 +386,8 @@ class APIClient(_BaseClient):
         try:
             import anthropic  # noqa: F401
         except ImportError:
-            raise ImportError(
-                "The 'anthropic' package is required for API mode. "
-                "Install with: pip install 'anthropic>=0.40'"
-            )
+            _auto_install("anthropic", "anthropic>=0.40")
+            import anthropic  # noqa: F401
         resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         if not resolved_key:
             raise ValueError(
@@ -557,10 +568,8 @@ class OpenAIClient(_BaseClient):
         try:
             import openai  # noqa: F401
         except ImportError:
-            raise ImportError(
-                "The 'openai' package is required for OpenAI mode. "
-                "Install with: pip install openai"
-            )
+            _auto_install("openai", "openai>=1.0")
+            import openai  # noqa: F401
         resolved_key = api_key or os.environ.get(key_env_var, "")
         if not resolved_key:
             raise ValueError(
