@@ -232,7 +232,7 @@ class PromptLoader:
             _READ_ONLY_ROLES = {
                 "critic_agent", "reviewer_agent", "runtime_agent",
                 "chief_agent", "session_manager", "test_agent",
-                "dashboard_agent",
+                "dashboard_agent", "research_agent",
             }
             _WRITE_ROLES = {"builder_agent", "solo_agent"}
             if role_id in _READ_ONLY_ROLES:

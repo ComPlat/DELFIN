@@ -112,6 +112,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     archive_dir = configured_paths.get('archive_dir') or default_archive_dir
     archive_dir = Path(archive_dir).expanduser()
     archive_dir.mkdir(parents=True, exist_ok=True)
+    agent_dir = Path(configured_paths.get('agent_dir') or Path.home() / 'agent_workspace')
+    agent_dir.mkdir(parents=True, exist_ok=True)
 
     repo_dir = _find_delfin_root()
 
@@ -197,6 +199,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     ctx = DashboardContext(
         calc_dir=calc_dir,
         archive_dir=archive_dir,
+        agent_dir=agent_dir,
         primary_calc_dir=calc_dir,
         default_calc_dir=default_calc_dir,
         default_archive_dir=default_archive_dir,
@@ -761,6 +764,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             widgets.HBox(
                 [
                     busy_indicator,
+                    ctx.agent_status_html,
                     home_usage_label,
                     git_status_label,
                     branch_switch_dropdown,

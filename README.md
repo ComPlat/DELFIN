@@ -9,7 +9,12 @@
 
 > 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
 
-**DELFIN** is a modular computational chemistry platform that automates end-to-end molecular workflows — from SMILES input to realistic property predictions. It combines structure generation, DFT, semi-empirical methods, ML potentials, and AI tools behind a unified interface with an interactive browser-based dashboard.
+**DELFIN** is an agentic computational chemistry platform that automates end-to-end molecular workflows — from SMILES input to realistic property predictions. It combines structure generation, DFT, semi-empirical methods, ML potentials, and a multi-agent AI system behind a unified interface with an interactive browser-based dashboard.
+
+DELFIN can be used in three ways:
+- **CLI** — `delfin` runs automated workflows from `CONTROL.txt` configuration files
+- **Dashboard** — Interactive browser UI for job management, result analysis, and configuration
+- **Agent** — AI co-pilot that operates the dashboard, analyzes results, researches methods, and implements code changes through a multi-agent pipeline
 
 ### What DELFIN can do
 
@@ -27,6 +32,7 @@
 | **Crystal Structure Prediction** | Genarris integration for random crystal generation |
 | **CO2 Coordination** | Automated CO2 placement, distance/rotation scans |
 | **Reporting** | DOCX reports with embedded spectra, JSON export, text summaries |
+| **AI Agent** | Multi-agent orchestration: dashboard co-pilot, code implementation, literature research, result analysis with persistent memory |
 
 ---
 
@@ -130,7 +136,8 @@ ctx = create_dashboard(backend="auto")
 | **Job Status** | Real-time queue monitoring (local/SLURM), resource usage, job cancellation |
 | **Calculations** | File browser, search, recalculation trigger, energy statistics, browser-launched workflows such as `Calc NMR` and `Calc ANMR` |
 | **Archive** | Archive browser with statistics |
-| **Settings** | Tool detection, per-tool Install/Update buttons, runtime configuration |
+| **Agent** | AI co-pilot with multi-agent pipelines, dashboard control, result analysis, persistent memory |
+| **Settings** | Tool detection, per-tool Install/Update buttons, runtime configuration, agent model settings |
 
 ### GUI with Voila
 
@@ -142,6 +149,57 @@ delfin-voila --dark          # dark theme
 ```
 
 Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
+
+---
+
+## 🤖 AI Agent System
+
+DELFIN includes a built-in multi-agent AI system powered by Claude that can operate as a conversational co-pilot for the entire platform. The agent lives in the **Agent** dashboard tab and provides different operating modes depending on the task.
+
+### Agent Modes
+
+| Mode | Route | Purpose |
+|------|-------|---------|
+| **dashboard** | Dashboard Agent | Operate the dashboard via natural language — set CONTROL keys, configure ORCA Builder, browse calculations, analyze results, trigger smart recalc, manage jobs. Cheapest mode (Haiku). |
+| **solo** | Solo Agent | Direct conversation for code questions, small edits, debugging. Full tool access, no pipeline overhead. |
+| **research** | Research Agent | Literature search, DFT functional benchmarks, best-practice protocols, state-of-the-art methods. Web search enabled, read-only. |
+| **quick** | Session Manager → Builder → Test | Lightweight implementation pipeline for bugfixes, docs, isolated module changes. |
+| **reviewed** | SM → Critic → Builder → Reviewer → Test | Adds architectural review before and code review after implementation. For risky refactors and API changes. |
+| **tdd** | SM → Test → Builder → Reviewer → Test | Test-driven development: tests written first, then implementation. |
+| **cluster** | SM → Runtime → Critic → Builder → Test | Includes HPC/SLURM runtime specialist for submission scripts, job scheduling, error recovery. |
+| **full** | Chief → SM → Runtime → Critic → Builder → Test | Maximum oversight with strategic lead. For releases and milestones. |
+
+### Key Agent Features
+
+- **Endless conversation**: After a pipeline completes, the Builder stays active for follow-up questions and adjustments — no context lost until explicit `/reset`
+- **Dashboard co-pilot**: In dashboard mode, the agent reads current CONTROL/ORCA settings and executes slash commands that are visible in real-time (e.g., "setze BP86" → functional changes in Submit tab)
+- **Findings filter**: After Critic/Runtime review, the user can accept all findings or skip specific ones before the Builder starts
+- **Persistent memory**: `/remember`, `/memories`, `/forget` — facts and preferences persist across sessions and are injected into every agent prompt
+- **Agent workspace**: `~/agent_workspace/` directory for uploaded reference files, accessible to the agent
+- **Per-role model routing**: Each agent role uses the optimal model (Haiku for cheap review, Sonnet/Opus for implementation)
+- **Cost tracking**: Per-role token usage and USD cost displayed in real-time
+- **Session persistence**: Conversations can be saved, restored, and exported as Markdown
+
+### Agent Slash Commands
+
+The agent tab supports extensive slash commands for direct dashboard control:
+
+```
+/control key <key> <value>   — Change a single CONTROL key
+/orca set <param> <value>    — Configure ORCA Builder
+/calc ls, /calc read, /calc info, /calc tree — Browse calculations
+/analyze energy, /analyze convergence, /analyze errors — Analyze ORCA outputs
+/recalc check-all, /recalc auto — Smart recalculation
+/submit, /cancel — Job management (with confirmation)
+/remember, /memories, /forget — Persistent memory
+/workspace ls, /workspace read — Agent workspace
+```
+
+### Requirements & Architecture
+
+The agent requires [Claude Code CLI](https://claude.ai/code) (`claude` in PATH) with OAuth authentication. No API key needed for the CLI backend. An optional API backend is available with an `ANTHROPIC_API_KEY`.
+
+DELFIN treats Claude the same way it treats any other external tool (ORCA, xTB, CREST, Gaussian, ...): as a **subprocess dependency** that the user installs and authenticates independently. DELFIN does not bundle, redistribute, or modify the Claude CLI — it calls the official binary via its documented pipe interface (`claude -p --output-format stream-json`). All API usage runs through Anthropic's standard rate limits and billing under the user's own account.
 
 ---
 
@@ -525,7 +583,15 @@ delfin/
   analysis_tools/      ← Analysis wrappers (cclib, Packmol, Multiwfn, CENSO, ANMR, ...)
   csp_tools/           ← Crystal structure prediction (Genarris)
   runtime_setup.py     ← Auto-detection of 88 external programs
-  dashboard/           ← 10-tab interactive dashboard (Voila/JupyterLab)
+  dashboard/           ← 11-tab interactive dashboard (Voila/JupyterLab)
+  agent/               ← Multi-agent AI system
+    engine.py          ← Orchestration engine (mode routing, role transitions, cost tracking)
+    api_client.py      ← Claude CLI and API backends with streaming
+    prompt_loader.py   ← Role-specific prompt composition from pack system
+    memory_store.py    ← Persistent memory across sessions
+    session_store.py   ← Conversation persistence and restore
+    pack/              ← Agent role prompts (builder, critic, runtime, research, ...)
+    pack_lite/         ← Mode definitions and routing manifest
 ```
 
 All tool integrations follow the same pattern:
