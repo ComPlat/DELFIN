@@ -230,7 +230,15 @@ class PromptLoader:
                 f"- For overview/info questions, read README.md first. Only read more files if truly needed.\n"
                 f"- Prefer Grep over Read for searching. For implementation tasks, read as many files as needed.\n"
                 f"- Keep responses concise. No preamble, no restating what the user said.\n"
-                f"- NEVER run real ORCA, xTB, or SLURM computations. Only pytest unit tests."
+                f"- NEVER run real ORCA, xTB, or SLURM computations. Only pytest unit tests.\n"
+                f"---\n"
+                f"Directory permissions (enforced at code level):\n"
+                f"- agent_workspace → Full access (agent sandbox)\n"
+                f"- calculations → Read freely, mutate with user confirmation\n"
+                f"- repo (DELFIN source) → Code agents: full access. Dashboard: no access.\n"
+                f"- archive → READ-ONLY (hard block, no exceptions)\n"
+                f"- remote_archive → READ-ONLY (hard block, no exceptions)\n"
+                f"- Always ask the user before any destructive action."
             )
 
             # Tool isolation per role
