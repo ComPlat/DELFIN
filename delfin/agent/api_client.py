@@ -685,9 +685,9 @@ class OpenAIClient(_BaseClient):
 class CodexCLIClient(_BaseClient):
     """Use the OpenAI Codex CLI (``codex exec``) for agent tasks.
 
-    Spawns ``codex exec --json --ephemeral --full-auto`` per turn and
-    streams JSONL events from stdout.  Supports session resume via
-    thread IDs.
+    Spawns ``codex exec --json --ephemeral`` per turn and streams JSONL
+    events from stdout.  Sandbox/approval flags are derived from the
+    DELFIN permission profile via *permission_mode*.
 
     Parameters
     ----------
@@ -697,6 +697,12 @@ class CodexCLIClient(_BaseClient):
         Path to the ``codex`` binary.  Auto-detected if empty.
     cwd : str
         Working directory for the Codex process.
+    permission_mode : str
+        DELFIN permission profile mapped to Codex sandbox flags:
+        ``"plan"`` → ``--sandbox read-only``
+        ``"default"`` → ``--sandbox workspace-write``
+        ``"acceptEdits"`` → ``--full-auto`` (workspace-write + auto)
+        ``"auto"`` → ``--full-auto --sandbox danger-full-access``
     """
 
     DEFAULT_MODEL = "gpt-5.4"
@@ -704,10 +710,19 @@ class CodexCLIClient(_BaseClient):
     # Reuse OpenAI pricing table.
     _PRICING = OpenAIClient._PRICING
 
+    # Map Claude CLI permission names → Codex CLI flags
+    _PERM_TO_CODEX_FLAGS: dict[str, list[str]] = {
+        "plan":        ["--sandbox", "read-only"],
+        "default":     ["--sandbox", "workspace-write"],
+        "acceptEdits": ["--full-auto"],  # = workspace-write + auto-approve
+        "auto":        ["--full-auto", "--sandbox", "danger-full-access"],
+    }
+
     def __init__(self, model: str = "", codex_path: str = "",
-                 cwd: str = ""):
+                 cwd: str = "", permission_mode: str = ""):
         self.model = model or self.DEFAULT_MODEL
         self.cwd = cwd or None
+        self.permission_mode = permission_mode or "acceptEdits"
         self.codex_path = codex_path or shutil.which("codex") or "codex"
         if not shutil.which(self.codex_path):
             raise FileNotFoundError(
@@ -753,9 +768,13 @@ class CodexCLIClient(_BaseClient):
             self.codex_path, "exec",
             "--json",
             "--ephemeral",
-            "--full-auto",
             "-m", self.model,
         ]
+        # Add sandbox/approval flags based on permission profile
+        codex_flags = self._PERM_TO_CODEX_FLAGS.get(
+            self.permission_mode, ["--full-auto"]
+        )
+        cmd.extend(codex_flags)
         if self.cwd:
             cmd.extend(["-C", self.cwd])
 
@@ -884,7 +903,8 @@ def create_client(
         )
     if provider == "openai":
         if backend == "cli":
-            return CodexCLIClient(model=model, cwd=cwd)
+            return CodexCLIClient(model=model, cwd=cwd,
+                                  permission_mode=permission_mode)
         openai_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         return OpenAIClient(api_key=openai_key, model=model)
     if backend == "api":
