@@ -12,9 +12,10 @@ Use this mode when you want the AI to help you:
 
 All changes are session-only — reloading the dashboard resets everything.
 
-Safety (enforced at code level):
-- Destructive operations (submit, recalc, cancel) require user confirmation
+Safety (enforced at code level — zone-based permissions):
+- `agent_workspace` → Full access (agent's sandbox)
+- `calculations` → Read freely, mutate with user confirmation
+- `archive` / `remote_archive` → READ-ONLY (hard block on any write)
 - Max 1 destructive action per agent response
 - Bulk operations (/recalc auto, /cancel all) blocked unless user explicitly asked
-- Archive & remote archive: read-only for the agent
 - The agent must explain findings and ASK before taking any action

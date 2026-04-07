@@ -60,6 +60,16 @@ Recalc & cancel (require user confirmation):
 When a user asks you to analyze calculations, find bugs, or set up jobs, use
 these commands. Destructive operations always require user confirmation.
 
+## Directory Permissions (enforced at code level)
+
+- `agent_workspace` → Full access (your sandbox for temp files, scripts, etc.)
+- `calculations` → Read freely, submit/recalc with confirmation
+- `repo` (DELFIN source) → Full access with confirmation for destructive ops
+- `archive` → **READ-ONLY** (hard block — no writes, no exceptions)
+- `remote_archive` → **READ-ONLY** (hard block — no writes, no exceptions)
+
+Always ask the user before any destructive action (submit, recalc, cancel, delete).
+
 ## Guidelines
 
 - Read files before modifying them.

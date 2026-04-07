@@ -1376,12 +1376,11 @@ def create_tab(ctx):
 
         cmd = text.lower().strip()
 
-        # -- Global safety: archive directories are read-only (all modes) --
-        # Block destructive commands that target archive paths.
-        if _is_archive_path(text) and _command_tier(cmd) >= 2:
-            _append_system_message(
-                "\u26d4 Blocked: Archive directories are read-only."
-            )
+        # -- Global safety: zone-based permission check (all modes) ----------
+        tier = _command_tier(cmd)
+        block_msg = _zone_blocks(text, tier)
+        if block_msg:
+            _append_system_message(block_msg)
             return True
 
         if cmd == "/help":
@@ -2661,22 +2660,104 @@ def create_tab(ctx):
         # Tier 0: read-only
         return 0
 
-    def _is_remote_archive_path(cmd: str) -> bool:
-        """True if a /calc command targets the remote archive (completely blocked)."""
-        parts = cmd.split(None, 2)
-        if len(parts) < 3:
-            return False
-        p = parts[2].lower()
-        return "remote" in p and "archive" in p
+    # -- path zone classification -------------------------------------------
+    # Zones control what the agent may do in each directory:
+    #   workspace      → FULL ACCESS (agent's own sandbox, no confirmation)
+    #   calc           → read free, mutate with confirmation (tier 3)
+    #   repo           → code-agents only, with confirmation
+    #   archive        → READ-ONLY (hard block, even confirmation won't help)
+    #   remote_archive → READ-ONLY (hard block)
+    #   unknown        → BLOCKED
 
-    def _is_archive_path(cmd: str) -> bool:
-        """True if a /calc command targets archive directories."""
+    def _path_zone(cmd: str) -> str:
+        """Classify a /calc command's target into a permission zone.
+
+        Returns one of: 'workspace', 'calc', 'archive', 'remote_archive',
+        'repo', 'unknown'.  Commands without a path argument return 'calc'
+        (the default browsing root).
+        """
         parts = cmd.split(None, 2)
         if len(parts) < 3:
-            return False
-        p = parts[2].lower()
-        archive = str(ctx.archive_dir).lower()
-        return "archive" in p or p.startswith(archive)
+            return "calc"  # no path arg → default calc_dir
+
+        raw = parts[2]
+
+        # Resolve to absolute path for reliable comparison
+        agent_rel = state.get("_agent_calc_path", "")
+        base = ctx.calc_dir / agent_rel if agent_rel else ctx.calc_dir
+        target = (base / raw).resolve()
+
+        # Check zones in specificity order (most specific first)
+        try:
+            target.relative_to(ctx.agent_dir.resolve())
+            return "workspace"
+        except (ValueError, RuntimeError):
+            pass
+
+        # Remote archive (check before regular archive — may be a subdir)
+        _remote = ctx.runtime_settings.get("remote_archive_dir", "")
+        if _remote:
+            try:
+                target.relative_to(Path(_remote).resolve())
+                return "remote_archive"
+            except (ValueError, RuntimeError):
+                pass
+
+        # Archive
+        try:
+            target.relative_to(ctx.archive_dir.resolve())
+            return "archive"
+        except (ValueError, RuntimeError):
+            pass
+
+        # Fallback: check keywords in the raw path for commands like
+        # "/calc ls archive/" that may not resolve cleanly
+        p = raw.lower()
+        if "remote" in p and "archive" in p:
+            return "remote_archive"
+        if "archive" in p:
+            archive_str = str(ctx.archive_dir).lower()
+            if "archive" in p or p.startswith(archive_str):
+                return "archive"
+
+        # Calculations dir
+        try:
+            target.relative_to(ctx.calc_dir.resolve())
+            return "calc"
+        except (ValueError, RuntimeError):
+            pass
+
+        # Repo dir (for code agents)
+        if ctx.repo_dir:
+            try:
+                target.relative_to(Path(ctx.repo_dir).resolve())
+                return "repo"
+            except (ValueError, RuntimeError):
+                pass
+
+        return "unknown"
+
+    # Maximum tier allowed per zone.  Anything above is HARD BLOCKED.
+    _ZONE_MAX_TIER: dict[str, int] = {
+        "workspace":      3,   # full access, no confirmation needed
+        "calc":           3,   # full access, but tier 3 still needs confirmation
+        "repo":           3,   # code agents only, tier 3 needs confirmation
+        "archive":        0,   # read-only — HARD BLOCK on any write
+        "remote_archive": 0,   # read-only — HARD BLOCK on any write
+        "unknown":       -1,   # blocked entirely
+    }
+
+    def _zone_blocks(cmd: str, tier: int) -> str | None:
+        """Return a block message if *tier* exceeds zone permissions, else None."""
+        zone = _path_zone(cmd)
+        max_tier = _ZONE_MAX_TIER.get(zone, -1)
+        if tier > max_tier:
+            if zone in ("archive", "remote_archive"):
+                return f"⛔ Blocked: {zone.replace('_', ' ').title()} is read-only."
+            if zone == "unknown":
+                return "⛔ Blocked: Path is outside allowed directories."
+            return f"⛔ Blocked: Insufficient permissions for {zone} zone."
+        return None
 
     # Keywords that indicate the user explicitly asked for a destructive action
     _MUTATE_INTENT_KW = (
@@ -2688,11 +2769,10 @@ def create_tab(ctx):
         """Scan agent output for ACTION: /command lines and execute them.
 
         Safety enforcement (code-level, not prompt-level):
-        - Tier 0-1: auto-execute immediately
-        - Tier 2: auto-execute, show what changed
+        - Zone-based permissions: workspace=free, calc=confirm,
+          archive/remote_archive=read-only (HARD BLOCK), unknown=blocked
         - Tier 3: max 1 per response, bulk ops need explicit user intent
-        - Remote archive: completely blocked
-        - Archive: read-only (tier 3 commands blocked)
+        - Workspace zone: tier 3 skips confirmation gate
         """
         import re as _re
 
@@ -2729,13 +2809,14 @@ def create_tab(ctx):
             tier = _command_tier(cmd_line)
             short = cmd_line[:80] + ("..." if len(cmd_line) > 80 else "")
 
-            # --- Archive & remote archive: read-only (block tier 2+3) ---
-            if _is_archive_path(cmd_line) and tier >= 2:
-                _append_system_message(
-                    "\u26d4 Blocked: Archive is read-only for the agent."
-                )
-                results.append("BLOCKED: archive is read-only")
+            # --- Zone-based permission check ---
+            block_msg = _zone_blocks(cmd_line, tier)
+            if block_msg:
+                _append_system_message(block_msg)
+                results.append(f"BLOCKED: {block_msg}")
                 continue
+
+            zone = _path_zone(cmd_line)
 
             # --- Tier 3: max 1 per response ---
             if tier == 3:
