@@ -587,15 +587,28 @@ def create_tab(ctx):
             ("o4-mini", "o4-mini"),
             ("o3", "o3"),
         ],
+        "kit": [
+            ("Azure GPT-4.1-mini", "azure.gpt-4.1-mini"),
+            ("Azure GPT-4.1", "azure.gpt-4.1"),
+            ("Azure GPT-4.1-nano", "azure.gpt-4.1-nano"),
+            ("Azure o4-mini", "azure.o4-mini"),
+            ("Azure o3", "azure.o3"),
+            ("KIT Local 120B", "gpt-oss:120b"),
+            ("KIT Local 70B", "kit.llama-3.3-70b"),
+            ("KIT Local 8B", "kit.llama-3.1-8b"),
+        ],
     }
-    _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4"}
-    _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini"}
+    _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4",
+                          "kit": "azure.gpt-4.1-mini"}
+    _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini",
+                       "kit": "azure.gpt-4.1-nano"}
 
     provider_dropdown = widgets.Dropdown(
-        options=[("Claude", "claude"), ("OpenAI", "openai")],
+        options=[("Claude", "claude"), ("OpenAI", "openai"),
+                 ("KIT Toolbox", "kit")],
         value="claude",
         description="Provider:",
-        layout=widgets.Layout(width="145px"),
+        layout=widgets.Layout(width="160px"),
         style={"description_width": "55px"},
     )
 
@@ -643,7 +656,7 @@ def create_tab(ctx):
         _saved = (load_settings().get("agent", {}) or {})
         # Restore provider first (updates model options)
         _saved_provider = _saved.get("provider", "")
-        if _saved_provider in ("claude", "openai"):
+        if _saved_provider in ("claude", "openai", "kit"):
             provider_dropdown.value = _saved_provider
             model_dropdown.options = _PROVIDER_MODELS[_saved_provider]
             model_dropdown.value = _PROVIDER_DEFAULTS[_saved_provider]
@@ -1062,6 +1075,8 @@ def create_tab(ctx):
 
     def _resolve_backend():
         """Determine which backend to use: cli or api."""
+        if provider_dropdown.value == "kit":
+            return "api"  # KIT Toolbox is API-only
         if provider_dropdown.value == "openai":
             settings = _get_agent_settings()
             preferred = settings.get("backend", "cli")
@@ -1097,7 +1112,9 @@ def create_tab(ctx):
         settings = _get_agent_settings()
         provider = provider_dropdown.value
         backend = _resolve_backend()
-        if provider == "openai":
+        if provider == "kit":
+            api_key = os.environ.get("KIT_TOOLBOX_API_KEY", "")
+        elif provider == "openai":
             api_key = os.environ.get("OPENAI_API_KEY", "")
         else:
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -1597,12 +1614,12 @@ def create_tab(ctx):
         # /provider <name>
         if cmd.startswith("/provider "):
             name = cmd[10:].strip().lower()
-            if name in ("claude", "openai"):
+            if name in ("claude", "openai", "kit"):
                 provider_dropdown.value = name
                 _append_system_message(f"Provider switched to {name}.")
             else:
                 _append_system_message(
-                    f"Unknown provider '{name}'. Options: claude, openai"
+                    f"Unknown provider '{name}'. Options: claude, openai, kit"
                 )
             return True
 
@@ -4171,7 +4188,9 @@ def _render_status(
             f"({role_index + 1}/{role_total})</span>"
         )
 
-    if provider == "openai":
+    if provider == "kit":
+        backend_label = "KIT Toolbox"
+    elif provider == "openai":
         backend_label = "Codex CLI" if backend == "cli" else "OpenAI API"
     elif backend == "cli":
         backend_label = "CLI (OAuth)"
@@ -4202,6 +4221,8 @@ def _estimate_cost_str(
     provider: str = "claude",
 ) -> str:
     """Rough cost string."""
+    if provider == "kit":
+        return "free (KIT)"
     if backend == "cli":
         return "included in subscription"
     if provider == "openai":
