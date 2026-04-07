@@ -2048,13 +2048,16 @@ def create_tab(ctx):
                 _append_system_message(f"Widget not available: {param}")
             return True
 
-        # /orca submit — submit ORCA job
+        # /orca submit — submit ORCA job (requires confirmation)
         if cmd == "/orca submit":
             btn = ctx.orca_builder_refs.get("orca_submit_btn")
             if btn:
-                _append_system_message("Submitting ORCA job...")
-                btn.click()
-                _append_system_message("ORCA job submitted. Check Job Status tab.")
+                def _do_orca_submit():
+                    btn.click()
+                    _append_system_message("ORCA job submitted. Check Job Status tab.")
+                _request_confirmation(
+                    "orca_submit", "Submit ORCA job?", _do_orca_submit
+                )
             else:
                 _append_system_message("ORCA Builder not available.")
             return True
@@ -2624,12 +2627,64 @@ def create_tab(ctx):
             pass
         return "\n".join(parts)
 
+    # -- command safety tiers (enforced at CODE level, not prompt) ----------
+
+    _TIER3_EXACT = {"/submit", "/orca submit", "/recalc auto", "/cancel all"}
+    _TIER3_PREFIX = ("/recalc ", "/cancel ")
+    _TIER3_SAFE_PREFIX = ("/recalc check",)  # these stay tier 0
+
+    def _command_tier(cmd: str) -> int:
+        """Classify a slash command: 0=read, 1=navigate, 2=configure, 3=mutate."""
+        cl = cmd.lower().strip()
+        # Tier 3: destructive / irreversible
+        if cl in _TIER3_EXACT:
+            return 3
+        for pfx in _TIER3_PREFIX:
+            if cl.startswith(pfx):
+                if any(cl.startswith(sp) for sp in _TIER3_SAFE_PREFIX):
+                    return 0
+                return 3
+        # Tier 2: session-only config changes
+        if cl.startswith(("/control set", "/control key", "/orca set")):
+            return 2
+        # Tier 1: navigation
+        if cl.startswith(("/tab ", "/jobs", "/mode ", "/model ", "/provider ")):
+            return 1
+        # Tier 0: read-only
+        return 0
+
+    def _is_remote_archive_path(cmd: str) -> bool:
+        """True if a /calc command targets the remote archive (completely blocked)."""
+        parts = cmd.split(None, 2)
+        if len(parts) < 3:
+            return False
+        p = parts[2].lower()
+        return "remote" in p and "archive" in p
+
+    def _is_archive_path(cmd: str) -> bool:
+        """True if a /calc command targets archive directories."""
+        parts = cmd.split(None, 2)
+        if len(parts) < 3:
+            return False
+        p = parts[2].lower()
+        archive = str(ctx.archive_dir).lower()
+        return "archive" in p or p.startswith(archive)
+
+    # Keywords that indicate the user explicitly asked for a destructive action
+    _MUTATE_INTENT_KW = (
+        "recalc", "neuberechn", "submit", "absend", "abschick",
+        "cancel", "abbrech", "stopp", "alle",
+    )
+
     def _dashboard_auto_exec(agent_text: str):
         """Scan agent output for ACTION: /command lines and execute them.
 
-        For multi-line commands like ``/control set``, collects continuation
-        lines (not starting with ``ACTION:``) until the next ACTION or
-        a blank line / code fence.
+        Safety enforcement (code-level, not prompt-level):
+        - Tier 0-1: auto-execute immediately
+        - Tier 2: auto-execute, show what changed
+        - Tier 3: max 1 per response, bulk ops need explicit user intent
+        - Remote archive: completely blocked
+        - Archive: read-only (tier 3 commands blocked)
         """
         import re as _re
 
@@ -2660,10 +2715,53 @@ def create_tab(ctx):
                 i += 1
 
         results: list[str] = []
+        mutate_count = 0
+
         for cmd_line in commands[:10]:  # safety limit
+            tier = _command_tier(cmd_line)
             short = cmd_line[:80] + ("..." if len(cmd_line) > 80 else "")
+
+            # --- Remote archive: completely blocked ---
+            if "/calc " in cmd_line.lower() and _is_remote_archive_path(cmd_line):
+                _append_system_message(
+                    "\u26d4 Blocked: Agent cannot access remote archive."
+                )
+                results.append("BLOCKED: remote archive access denied")
+                continue
+
+            # --- Archive: read-only (block tier 2+3 commands) ---
+            if _is_archive_path(cmd_line) and tier >= 2:
+                _append_system_message(
+                    "\u26d4 Blocked: Archive is read-only for the agent."
+                )
+                results.append("BLOCKED: archive is read-only")
+                continue
+
+            # --- Tier 3: max 1 per response ---
+            if tier == 3:
+                mutate_count += 1
+                if mutate_count > 1:
+                    _append_system_message(
+                        "\u26d4 Blocked: Only one destructive action per response. "
+                        "Ask the user for the next step."
+                    )
+                    results.append("BLOCKED: max 1 destructive action per response")
+                    continue
+
+                # Bulk ops need explicit user intent
+                cl = cmd_line.lower().strip()
+                if cl in ("/recalc auto", "/cancel all"):
+                    user_msg = state.get("_last_user_message", "").lower()
+                    if not any(kw in user_msg for kw in _MUTATE_INTENT_KW):
+                        _append_system_message(
+                            "\u26d4 Blocked: Bulk operation requires explicit "
+                            "user request. Report findings and ask the user."
+                        )
+                        results.append("BLOCKED: bulk op without user intent")
+                        continue
+
+            # --- Execute ---
             _append_system_message(f"\u25b6 Executing: {short}")
-            # Capture system messages produced by the command
             n_before = len(state["chat_messages"])
             try:
                 handled = _handle_slash_command(cmd_line)
@@ -3187,6 +3285,9 @@ def create_tab(ctx):
             )
             _update_queue_display()
             return
+
+        # Track user message for safety intent-checking
+        state["_last_user_message"] = user_text
 
         engine = _ensure_engine()
         if engine is None:
