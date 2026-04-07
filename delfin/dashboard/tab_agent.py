@@ -538,7 +538,7 @@ def create_tab(ctx):
         "session_start_time": None,  # monotonic time of first message
         "_agent_calc_path": "",       # relative path within calc_dir for browsing
         "_pending_dashboard_action": None,  # {action_id, description, callback}
-        "_perm_profile": "default",  # permission profile: plan/default/erlaubt/full
+        "_perm_profile": "ask_all",  # permission profile: plan/ask_all/repo_free/all_free
     }
 
     # -- widgets -----------------------------------------------------------
@@ -707,12 +707,12 @@ def create_tab(ctx):
     # Maps to BOTH zone permissions (slash commands) and CLI permission_mode (tools)
     perm_dropdown = widgets.Dropdown(
         options=[
-            ("Plan (read-only)", "plan"),
-            ("Default (ask all)", "default"),
-            ("Erlaubt (repo free)", "erlaubt"),
-            ("Full (all free)", "full"),
+            ("Plan", "plan"),
+            ("Ask All", "ask_all"),
+            ("Repo Free", "repo_free"),
+            ("All Free", "all_free"),
         ],
-        value="default",
+        value="ask_all",
         description="Perms:",
         layout=widgets.Layout(width="195px"),
         style={"description_width": "42px"},
@@ -738,13 +738,14 @@ def create_tab(ctx):
         if _saved_effort in ("low", "medium", "high"):
             effort_dropdown.value = _saved_effort
         _saved_perm = _saved.get("permission_profile", _saved.get("permission_mode", ""))
-        # Migrate old CLI permission names to new profiles
+        # Migrate old permission names to new profiles
         _perm_migration = {
-            "acceptEdits": "erlaubt", "auto": "full",
-            "bypassPermissions": "full",
+            "default": "ask_all", "erlaubt": "repo_free", "full": "all_free",
+            "acceptEdits": "repo_free", "auto": "all_free",
+            "bypassPermissions": "all_free",
         }
         _saved_perm = _perm_migration.get(_saved_perm, _saved_perm)
-        if _saved_perm in ("plan", "default", "erlaubt", "full"):
+        if _saved_perm in ("plan", "ask_all", "repo_free", "all_free"):
             perm_dropdown.value = _saved_perm
             state["_perm_profile"] = _saved_perm
     except Exception:
@@ -1316,14 +1317,14 @@ def create_tab(ctx):
                 s["output_tokens"],
                 s["cost_usd"],
                 provider=s.get("provider", provider_dropdown.value),
-                perm_profile=state.get("_perm_profile", "default"),
+                perm_profile=state.get("_perm_profile", "ask_all"),
             )
         else:
             backend = _resolve_backend() if _cli_available else "api"
             status_html.value = _render_status(
                 mode_dropdown.value, backend, "", 0, 0, 0, 0, 0.0,
                 provider=provider_dropdown.value,
-                perm_profile=state.get("_perm_profile", "default"),
+                perm_profile=state.get("_perm_profile", "ask_all"),
             )
 
     def _set_working(active, label=""):
@@ -1415,7 +1416,7 @@ def create_tab(ctx):
                 "  /model <name>    — Switch model (depends on provider)\n"
                 "  /effort <lvl>    — Set effort (low/medium/high)\n"
                 "  /mode <name>     — Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)\n"
-                "  /perms [profile] — Show/set permission profile (plan/default/erlaubt/full)\n"
+                "  /perms [profile] — Show/set permission profile (plan/ask_all/repo_free/all_free)\n"
                 "  /reset           — Reset engine for new cycle\n"
                 "\n"
                 "Dashboard control:\n"
@@ -1754,13 +1755,13 @@ def create_tab(ctx):
             arg = cmd[6:].strip() if len(cmd) > 6 else ""
             valid = list(_PERM_PROFILES.keys())
             if not arg:
-                cur = state.get("_perm_profile", "default")
+                cur = state.get("_perm_profile", "ask_all")
                 lines = [f"Permission profile: **{cur}**\n"]
                 _labels = {
                     "plan": "Read-only — agent can only browse and analyze",
-                    "default": "Ask for everything that changes",
-                    "erlaubt": "Repo free, calc/archive need confirmation",
-                    "full": "Full access (archive + remote archive always read-only)",
+                    "ask_all": "Ask for everything that changes",
+                    "repo_free": "Repo free, calc needs confirmation",
+                    "all_free": "All free (archive + remote archive always read-only)",
                 }
                 for pid in valid:
                     marker = " ◀" if pid == cur else ""
@@ -2668,12 +2669,12 @@ def create_tab(ctx):
         # calc_dir + workspace + permissions
         parts.append(f"Calculations dir: {ctx.calc_dir}")
         parts.append(f"Agent workspace: {ctx.agent_dir}")
-        perm = state.get("_perm_profile", "default")
+        perm = state.get("_perm_profile", "ask_all")
         _perm_desc = {
             "plan": "READ-ONLY everywhere",
-            "default": "ask for all changes",
-            "erlaubt": "repo free, calc asks",
-            "full": "full access (remote archive read-only)",
+            "ask_all": "ask for all changes",
+            "repo_free": "repo free, calc asks",
+            "all_free": "full access (archive + remote archive read-only)",
         }
         parts.append(f"Permissions: {perm} — {_perm_desc.get(perm, perm)}")
         # List workspace files if any
@@ -2727,25 +2728,25 @@ def create_tab(ctx):
             "remote_archive": (0, True),
             "unknown":        (-1, True),
         },
-        "default": {
+        "ask_all": {
             # Ask for everything that changes
             "workspace":      (3, False),  # agent sandbox — free
             "calc":           (3, True),   # mutate with confirmation
             "repo":           (3, True),   # mutate with confirmation
-            "archive":        (0, True),   # read-only
+            "archive":        (0, True),   # read-only ALWAYS
             "remote_archive": (0, True),   # read-only ALWAYS
             "unknown":        (-1, True),
         },
-        "erlaubt": {
+        "repo_free": {
             # Repo free, calc asks
             "workspace":      (3, False),
             "calc":           (3, True),   # still needs confirmation
             "repo":           (3, False),  # auto-approved
-            "archive":        (0, True),   # read-only
+            "archive":        (0, True),   # read-only ALWAYS
             "remote_archive": (0, True),   # read-only ALWAYS
             "unknown":        (-1, True),
         },
-        "full": {
+        "all_free": {
             # Everything works except archive & remote archive
             "workspace":      (3, False),
             "calc":           (3, False),  # auto-approved
@@ -2758,20 +2759,20 @@ def create_tab(ctx):
 
     # Map DELFIN profile → Claude CLI permission_mode
     _PROFILE_TO_CLI_PERM: dict[str, str] = {
-        "plan":    "plan",
-        "default": "default",
-        "erlaubt": "acceptEdits",
-        "full":    "auto",
+        "plan":      "plan",
+        "ask_all":   "default",
+        "repo_free": "acceptEdits",
+        "all_free":  "auto",
     }
 
     def _active_perms() -> dict[str, tuple[int, bool]]:
         """Return the zone permissions for the active profile."""
-        profile = state.get("_perm_profile", "default")
-        return _PERM_PROFILES.get(profile, _PERM_PROFILES["default"])
+        profile = state.get("_perm_profile", "ask_all")
+        return _PERM_PROFILES.get(profile, _PERM_PROFILES["ask_all"])
 
     def _active_cli_perm() -> str:
         """Return the Claude CLI permission_mode for the active profile."""
-        profile = state.get("_perm_profile", "default")
+        profile = state.get("_perm_profile", "ask_all")
         return _PROFILE_TO_CLI_PERM.get(profile, "default")
 
     # -- path zone classification -------------------------------------------
@@ -2850,14 +2851,14 @@ def create_tab(ctx):
         perms = _active_perms()
         max_tier, _ = perms.get(zone, (-1, True))
         if tier > max_tier:
-            profile = state.get("_perm_profile", "default")
+            profile = state.get("_perm_profile", "ask_all")
             if zone in ("archive", "remote_archive"):
                 label = "Remote Archive" if zone == "remote_archive" else "Archive"
                 return f"⛔ Blocked: {label} is always read-only."
             if zone == "unknown":
                 return "⛔ Blocked: Path is outside allowed directories."
             if profile == "plan":
-                return "⛔ Blocked: Plan mode is read-only (use /perms default to allow changes)."
+                return "⛔ Blocked: Plan mode is read-only (use /perms ask_all to allow changes)."
             return f"⛔ Blocked: Insufficient permissions for {zone} (profile: {profile})."
         return None
 
@@ -3310,15 +3311,15 @@ def create_tab(ctx):
             return
 
         # --- File operations: upgrade permission profile if needed ---
-        current_profile = state.get("_perm_profile", "default")
-        _PROFILE_RANK = {"plan": 0, "default": 1, "erlaubt": 2, "full": 3}
+        current_profile = state.get("_perm_profile", "ask_all")
+        _PROFILE_RANK = {"plan": 0, "ask_all": 1, "repo_free": 2, "all_free": 3}
         current_rank = _PROFILE_RANK.get(current_profile, 1)
-        # Edit/Write need "erlaubt", Bash needs "full"
+        # Edit/Write need "repo_free", Bash needs "all_free"
         needed_rank = 2 if tool in ("Edit", "Write", "Read", "Glob", "Grep", "") else 3
         need_upgrade = current_rank < needed_rank
 
         if need_upgrade:
-            new_profile = "erlaubt" if needed_rank == 2 else "full"
+            new_profile = "repo_free" if needed_rank == 2 else "all_free"
             _append_system_message(
                 f"\u2705 Approved: {readable}\n"
                 f"\u2191 Upgrading permissions: {current_profile} \u2192 {new_profile}"
@@ -4151,7 +4152,7 @@ def create_tab(ctx):
         # Dashboard mode: lock permission to default, model to cheapest
         if new_mode == "dashboard":
             state["_perm_before_dashboard"] = perm_dropdown.value
-            perm_dropdown.value = "default"
+            perm_dropdown.value = "ask_all"
             perm_dropdown.disabled = True
             state["_model_before_dashboard"] = model_dropdown.value
             _cheap = _PROVIDER_CHEAP.get(provider_dropdown.value, "haiku")
@@ -4159,7 +4160,7 @@ def create_tab(ctx):
         else:
             perm_dropdown.disabled = state.get("streaming", False)
             saved = state.pop("_perm_before_dashboard", None)
-            if saved and perm_dropdown.value == "default":
+            if saved and perm_dropdown.value == "ask_all":
                 perm_dropdown.value = saved
             saved_model = state.pop("_model_before_dashboard", None)
             _cheap = _PROVIDER_CHEAP.get(provider_dropdown.value, "haiku")
@@ -4246,17 +4247,17 @@ def create_tab(ctx):
         engine = state["engine"]
         if engine:
             state["engine"] = None
-            cli_perm = _PROFILE_TO_CLI_PERM.get(new_profile, "default")
+            cli_perm = _PROFILE_TO_CLI_PERM.get(new_profile, "default")  # CLI default
             _append_system_message(
                 f"Permissions → **{new_profile}** (CLI: {cli_perm}). "
                 f"Takes effect on next message."
             )
         # Warn on full mode
-        if new_profile == "full":
+        if new_profile == "all_free":
             _append_system_message(
-                "⚠ WARNING: **full** mode gives the agent unrestricted "
+                "⚠ WARNING: **all_free** mode gives the agent unrestricted "
                 "access to files, shell commands, and all directories "
-                "(except remote archive). Only use if you trust the setup."
+                "(except archive & remote archive). Only use if you trust the setup."
             )
         try:
             from delfin.user_settings import load_settings, save_settings
@@ -4563,7 +4564,7 @@ def _render_status(
     output_tokens: int,
     cost_usd: float,
     provider: str = "claude",
-    perm_profile: str = "default",
+    perm_profile: str = "ask_all",
 ) -> str:
     """Render the status bar HTML."""
     role_label = _format_role_label(role)
@@ -4594,10 +4595,10 @@ def _render_status(
 
     # Permission profile badge (color-coded)
     _perm_colors = {
-        "plan": "#6c757d",     # gray
-        "default": "#0d6efd",  # blue
-        "erlaubt": "#198754",  # green
-        "full": "#dc3545",     # red
+        "plan": "#6c757d",      # gray
+        "ask_all": "#0d6efd",   # blue
+        "repo_free": "#198754", # green
+        "all_free": "#dc3545",  # red
     }
     perm_color = _perm_colors.get(perm_profile, "#6c757d")
     perm_badge = (
