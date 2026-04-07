@@ -65,6 +65,20 @@ DEFAULT_SETTINGS = {
             "hidden": [],
         },
     },
+    "agent": {
+        "backend": "cli",
+        "model": "sonnet",
+        "max_tokens": 4096,
+        "role_models": {
+            "session_manager": "auto",
+            "critic_agent": "auto",
+            "runtime_agent": "auto",
+            "reviewer_agent": "auto",
+            "builder_agent": "auto",
+            "test_agent": "auto",
+            "solo_agent": "auto",
+        },
+    },
 }
 
 

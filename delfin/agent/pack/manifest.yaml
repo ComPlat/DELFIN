@@ -1,0 +1,42 @@
+pack_name: DELFIN_AGENT
+version: 1
+purpose: >
+  Agent orchestration pack for DELFIN, optimized for workflow automation,
+  runtime reliability, scheduler safety, and architecture improvement.
+shared_context:
+  - shared/delfin_context.md
+  - shared/work_cycle_rules.md
+  - shared/universal_input_template.md
+  - shared/minimal_final_verdict.md
+routing:
+  - routing/minimal_workflow_routing.md
+  - routing/handoff_rules.md
+agents:
+  - id: chief_agent
+    prompt_file: agents/chief_agent.md
+    writes_production_code: false
+    purpose: strategic authority and final decision maker
+  - id: session_manager
+    prompt_file: agents/session_manager.md
+    writes_production_code: false
+    purpose: scope control, cycle shaping, acceptance criteria
+  - id: builder_agent
+    prompt_file: agents/builder_agent.md
+    writes_production_code: true
+    purpose: sole implementation agent by default
+  - id: critic_agent
+    prompt_file: agents/critic_agent.md
+    writes_production_code: false
+    purpose: architecture and regression counterweight
+  - id: test_agent
+    prompt_file: agents/test_agent.md
+    writes_production_code: false
+    purpose: validation and regression protection
+  - id: research_agent
+    prompt_file: agents/research_agent.md
+    writes_production_code: false
+    purpose: external patterns, prior art, and constraints
+  - id: runtime_agent
+    prompt_file: agents/runtime_agent.md
+    writes_production_code: false
+    purpose: local, cluster, submission, monitoring, recovery realism

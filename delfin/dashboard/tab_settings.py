@@ -3366,6 +3366,211 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     )
 
     # ══════════════════════════════════════════════════════════════════════
+    # Agent section
+    # ══════════════════════════════════════════════════════════════════════
+    import shutil as _shutil
+    _claude_cli_found = bool(_shutil.which('claude'))
+
+    agent_backend_input = widgets.Dropdown(
+        options=[
+            ('CLI - Claude Code (uses your subscription, no key needed)', 'cli'),
+            ('API - Anthropic API (pay-per-token, needs key)', 'api'),
+        ],
+        value='cli' if _claude_cli_found else 'api',
+        description='Backend:',
+        layout=widgets.Layout(width='560px'),
+        style={'description_width': '80px'},
+    )
+    agent_model_input = widgets.Dropdown(
+        options=[
+            ('Sonnet (recommended)', 'sonnet'),
+            ('Haiku (fast/cheap)', 'haiku'),
+            ('Opus (powerful)', 'opus'),
+        ],
+        value='sonnet',
+        description='Model:',
+        layout=widgets.Layout(width='400px'),
+        style={'description_width': '80px'},
+    )
+    agent_status_html = widgets.HTML(value='')
+    agent_cli_status = widgets.HTML(
+        value=(
+            '<span style="color:#2e7d32;">&#x2705; Claude Code CLI found</span>'
+            if _claude_cli_found
+            else '<span style="color:#ef6c00;">&#x26a0; Claude Code CLI not found in PATH</span>'
+        ),
+    )
+
+    def _load_agent_settings():
+        try:
+            s = load_settings().get('agent', {}) or {}
+            backend = s.get('backend', '')
+            if backend:
+                try:
+                    agent_backend_input.value = backend
+                except Exception:
+                    pass
+            model = s.get('model', '')
+            if model:
+                try:
+                    agent_model_input.value = model
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _save_agent_settings(_=None):
+        try:
+            payload = load_settings()
+            payload.setdefault('agent', {})
+            payload['agent']['backend'] = agent_backend_input.value
+            payload['agent']['model'] = agent_model_input.value
+            save_settings(payload, settings_path)
+            agent_status_html.value = (
+                '<span style="color:#2e7d32;">&#x2714; Agent settings saved. '
+                'Click "New Cycle" in the Agent tab to apply.</span>'
+            )
+        except Exception as exc:
+            agent_status_html.value = (
+                f'<span style="color:#d32f2f;">Error: {html.escape(str(exc))}</span>'
+            )
+
+    agent_save_btn = widgets.Button(
+        description='Save Agent Settings',
+        button_style='primary',
+        layout=widgets.Layout(width='180px'),
+    )
+    # on_click binding moved below to _save_agent_settings_with_roles
+
+    agent_env_hint = widgets.HTML(
+        value=(
+            '<span style="color:#757575;font-size:12px;">'
+            '<b>CLI backend</b> uses your Claude Pro/Max subscription via OAuth (no API key needed).<br>'
+            '<b>API backend</b> requires the <code>ANTHROPIC_API_KEY</code> environment variable '
+            '(set it in your shell before launching the dashboard). '
+            'Keys are never stored on disk.'
+            '</span>'
+        ),
+    )
+
+    # -- Per-role model overrides ------------------------------------------
+    _ROLE_MODEL_OPTIONS = [
+        ('Auto (use default)', 'auto'),
+        ('Opus (powerful)', 'opus'),
+        ('Sonnet (balanced)', 'sonnet'),
+        ('Haiku (fast/cheap)', 'haiku'),
+    ]
+    _AGENT_ROLES = [
+        ('Session Manager', 'session_manager'),
+        ('Critic', 'critic_agent'),
+        ('Runtime Analyst', 'runtime_agent'),
+        ('Reviewer', 'reviewer_agent'),
+        ('Builder', 'builder_agent'),
+        ('Test Agent', 'test_agent'),
+        ('Solo Agent', 'solo_agent'),
+    ]
+    _ROLE_DEFAULTS = {
+        'session_manager': 'sonnet',
+        'critic_agent': 'haiku',
+        'runtime_agent': 'haiku',
+        'reviewer_agent': 'haiku',
+        'builder_agent': 'auto',
+        'test_agent': 'sonnet',
+        'solo_agent': 'auto',
+    }
+
+    role_model_dropdowns: dict[str, widgets.Dropdown] = {}
+    role_model_rows = []
+    for _display_name, _role_id in _AGENT_ROLES:
+        _dd = widgets.Dropdown(
+            options=_ROLE_MODEL_OPTIONS,
+            value='auto',
+            layout=widgets.Layout(width='220px', height='28px'),
+        )
+        role_model_dropdowns[_role_id] = _dd
+        _label = widgets.HTML(
+            value=f'<span style="min-width:130px;display:inline-block;">{_display_name}</span>',
+        )
+        _default_hint = _ROLE_DEFAULTS.get(_role_id, 'auto')
+        _hint = widgets.HTML(
+            value=f'<span style="color:#9e9e9e;font-size:11px;">default: {_default_hint}</span>',
+        )
+        role_model_rows.append(
+            widgets.HBox([_label, _dd, _hint], layout=widgets.Layout(gap='8px'))
+        )
+
+    role_models_header = widgets.HTML(
+        value=(
+            '<b style="font-size:13px;">Per-Role Model Overrides</b><br>'
+            '<span style="color:#757575;font-size:12px;">'
+            '"Auto" uses the engine default for each role. '
+            'Override to control cost vs quality per agent.</span>'
+        ),
+    )
+    role_models_box = widgets.VBox(
+        [role_models_header] + role_model_rows,
+        layout=widgets.Layout(
+            padding='8px',
+            gap='4px',
+            border='1px solid #e0e0e0',
+            border_radius='4px',
+        ),
+    )
+
+    def _load_role_model_settings():
+        try:
+            s = load_settings().get('agent', {}) or {}
+            rm = s.get('role_models', {}) or {}
+            for rid, dd in role_model_dropdowns.items():
+                val = rm.get(rid, 'auto')
+                try:
+                    dd.value = val
+                except Exception:
+                    dd.value = 'auto'
+        except Exception:
+            pass
+
+    def _save_role_model_settings():
+        """Collect role_models dict from dropdowns."""
+        return {rid: dd.value for rid, dd in role_model_dropdowns.items()}
+
+    # Patch save to include role_models
+    _orig_save_agent = _save_agent_settings
+
+    def _save_agent_settings_with_roles(_=None):
+        try:
+            payload = load_settings()
+            payload.setdefault('agent', {})
+            payload['agent']['backend'] = agent_backend_input.value
+            payload['agent']['model'] = agent_model_input.value
+            payload['agent']['role_models'] = _save_role_model_settings()
+            save_settings(payload, settings_path)
+            agent_status_html.value = (
+                '<span style="color:#2e7d32;">&#x2714; Agent settings saved. '
+                'Click "New Session" in the Agent tab to apply.</span>'
+            )
+        except Exception as exc:
+            agent_status_html.value = (
+                f'<span style="color:#d32f2f;">Error: {html.escape(str(exc))}</span>'
+            )
+
+    agent_save_btn.on_click(_save_agent_settings_with_roles)
+
+    agent_section = widgets.VBox(
+        [
+            agent_backend_input,
+            agent_cli_status,
+            agent_model_input,
+            role_models_box,
+            widgets.HBox([agent_save_btn, agent_status_html]),
+            agent_env_hint,
+        ],
+        layout=widgets.Layout(padding='8px', gap='6px'),
+    )
+    _load_agent_settings()
+    _load_role_model_settings()
+
+    # ══════════════════════════════════════════════════════════════════════
     # Main accordion
     # ══════════════════════════════════════════════════════════════════════
     main_accordion = widgets.Accordion(
@@ -3374,6 +3579,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             tabs_section,
             runtime_section,
             tools_section,
+            agent_section,
             developer_section,
             transfer_section,
         ],
@@ -3382,8 +3588,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     main_accordion.set_title(1, 'Dashboard Tabs')
     main_accordion.set_title(2, 'Runtime Backend')
     main_accordion.set_title(3, 'Tool Installation')
-    main_accordion.set_title(4, 'Developer')
-    main_accordion.set_title(5, 'SSH Transfer & Remote Archive')
+    main_accordion.set_title(4, 'DELFIN Agent')
+    main_accordion.set_title(5, 'Developer')
+    main_accordion.set_title(6, 'SSH Transfer & Remote Archive')
     main_accordion.selected_index = 0  # Workspace open by default
 
     tab = widgets.VBox(
