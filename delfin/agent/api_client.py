@@ -356,9 +356,18 @@ class APIClient(_BaseClient):
     """Use the Anthropic Python SDK directly.
 
     Requires an API key (``ANTHROPIC_API_KEY`` or passed explicitly).
+    Supports text streaming, extended thinking, tool_use events,
+    cost tracking, and model switching.
     """
 
     DEFAULT_MODEL = "claude-sonnet-4-20250514"
+
+    # Pricing per million tokens (USD).
+    _PRICING: dict[str, tuple[float, float]] = {
+        "claude-opus-4-20250514": (15.0, 75.0),
+        "claude-sonnet-4-20250514": (3.0, 15.0),
+        "claude-haiku-4-5-20251001": (0.80, 4.0),
+    }
 
     def __init__(self, api_key: str = "", model: str = ""):
         try:
@@ -379,6 +388,26 @@ class APIClient(_BaseClient):
         self.model = model or self.DEFAULT_MODEL
         self.client = anthropic.Anthropic(api_key=resolved_key)
 
+    def switch_model(self, model: str) -> None:
+        """Switch model (no process to kill, just update the name)."""
+        if model and model != self.model:
+            self.model = model
+
+    def kill(self) -> None:
+        """No-op — API client has no persistent process."""
+
+    @property
+    def session_id(self) -> str:
+        """API backend has no session concept."""
+        return ""
+
+    def _estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
+        pricing = self._PRICING.get(self.model)
+        if not pricing:
+            # Fallback: assume Sonnet pricing
+            pricing = (3.0, 15.0)
+        return (input_tokens * pricing[0] + output_tokens * pricing[1]) / 1_000_000
+
     def stream_message(
         self,
         system: str,
@@ -387,7 +416,10 @@ class APIClient(_BaseClient):
         session_id: str = "",
         thinking_budget: int = 0,
     ) -> Generator[StreamEvent, None, None]:
-        """Stream via the Anthropic Messages API."""
+        """Stream via the Anthropic Messages API.
+
+        Handles text, thinking, tool_use, and cost events.
+        """
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens,
@@ -399,6 +431,14 @@ class APIClient(_BaseClient):
                 "type": "enabled",
                 "budget_tokens": thinking_budget,
             }
+
+        _in_thinking = False
+        _in_tool_use = False
+        _tool_name = ""
+        _tool_input_chunks: list[str] = []
+        _total_in = 0
+        _total_out = 0
+
         with self.client.messages.stream(**kwargs) as stream:
             for event in stream:
                 etype = getattr(event, "type", "")
@@ -408,29 +448,75 @@ class APIClient(_BaseClient):
                         getattr(event, "message", None), "usage", None
                     )
                     if usage:
+                        _total_in = getattr(usage, "input_tokens", 0)
+                        cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
+                        cache_read = getattr(usage, "cache_read_input_tokens", 0)
+                        _total_in += cache_creation + cache_read
                         yield StreamEvent(
                             type="message_start",
-                            input_tokens=getattr(usage, "input_tokens", 0),
+                            input_tokens=_total_in,
                         )
+
+                elif etype == "content_block_start":
+                    block = getattr(event, "content_block", None)
+                    block_type = getattr(block, "type", "") if block else ""
+                    if block_type == "thinking":
+                        _in_thinking = True
+                    elif block_type == "tool_use":
+                        _in_tool_use = True
+                        _tool_name = getattr(block, "name", "")
+                        _tool_input_chunks.clear()
 
                 elif etype == "content_block_delta":
                     delta = getattr(event, "delta", None)
-                    if delta and getattr(delta, "type", "") == "text_delta":
+                    if not delta:
+                        continue
+                    delta_type = getattr(delta, "type", "")
+                    if delta_type == "text_delta":
                         yield StreamEvent(
                             type="text_delta",
                             text=getattr(delta, "text", ""),
                         )
+                    elif delta_type == "thinking_delta":
+                        yield StreamEvent(
+                            type="thinking_delta",
+                            text=getattr(delta, "thinking", ""),
+                        )
+                    elif delta_type == "input_json_delta":
+                        _tool_input_chunks.append(
+                            getattr(delta, "partial_json", "")
+                        )
+
+                elif etype == "content_block_stop":
+                    if _in_thinking:
+                        _in_thinking = False
+                    if _in_tool_use:
+                        _in_tool_use = False
+                        tool_input = "".join(_tool_input_chunks)
+                        yield StreamEvent(
+                            type="tool_use",
+                            tool_name=_tool_name,
+                            tool_input=tool_input,
+                        )
+                        _tool_name = ""
+                        _tool_input_chunks.clear()
 
                 elif etype == "message_delta":
                     usage = getattr(event, "usage", None)
+                    out_tokens = (
+                        getattr(usage, "output_tokens", 0) if usage else 0
+                    )
+                    _total_out = out_tokens
+                    cost = self._estimate_cost(_total_in, _total_out)
                     yield StreamEvent(
                         type="message_delta",
-                        output_tokens=getattr(usage, "output_tokens", 0)
-                        if usage
-                        else 0,
-                        stop_reason=getattr(event.delta, "stop_reason", None)
-                        if hasattr(event, "delta")
-                        else None,
+                        output_tokens=out_tokens,
+                        stop_reason=(
+                            getattr(event.delta, "stop_reason", None)
+                            if hasattr(event, "delta")
+                            else None
+                        ),
+                        cost_usd=cost,
                     )
 
 

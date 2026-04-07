@@ -20,6 +20,7 @@ class DashboardContext:
     # Paths
     calc_dir: Path = field(default_factory=lambda: Path.home() / 'calc')
     archive_dir: Path = field(default_factory=lambda: Path.home() / 'archive')
+    agent_dir: Path = field(default_factory=lambda: Path.home() / 'agent_workspace')
     primary_calc_dir: Optional[Path] = None
     default_calc_dir: Path = field(default_factory=lambda: Path.home() / 'calc')
     default_archive_dir: Path = field(default_factory=lambda: Path.home() / 'archive')
@@ -66,6 +67,10 @@ class DashboardContext:
 
     # Agent engine (set by tab_agent, used cross-tab)
     agent_engine: Any = None
+    # Agent status indicator (shown in top header bar, updated by tab_agent)
+    agent_status_html: widgets.HTML = field(
+        default_factory=lambda: widgets.HTML(value='')
+    )
 
     # Cross-tab refs for agent dashboard control
     submit_refs: dict = field(default_factory=dict)

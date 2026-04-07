@@ -531,12 +531,44 @@ def create_tab(ctx):
     css_widget = widgets.HTML(value=_AGENT_CSS)
 
     # Mode selector
+    _MODE_DESCRIPTIONS = {
+        "dashboard": "Cheapest mode (Haiku) — operate the dashboard via slash commands: "
+                     "set CONTROL keys, configure ORCA Builder, browse & analyze calculations, "
+                     "trigger smart recalc, manage jobs. No code changes, session-only.",
+        "solo": "Single agent, direct conversation — ask questions about the codebase, "
+                "make small edits, explore code, debug issues. No review pipeline, "
+                "fastest for simple tasks.",
+        "research": "Research agent — literature search, DFT benchmarks, best practices, "
+                    "state-of-the-art methods. Web search enabled, read-only, no code changes.",
+        "quick": "Session Manager → Builder → Test — lightweight pipeline for bugfixes, "
+                 "docs updates, and isolated module changes. SM plans, Builder implements, "
+                 "Test Agent verifies with pytest.",
+        "reviewed": "Session Manager → Critic → Builder → Reviewer → Test — adds architectural "
+                    "review before and code review after implementation. Use for risky refactors, "
+                    "API changes, config semantics, or cross-module work.",
+        "tdd": "Session Manager → Test → Builder → Reviewer → Test — test-driven development: "
+               "Test Agent writes failing tests first, Builder implements until they pass, "
+               "Reviewer checks quality, Test Agent verifies. Best for well-defined features.",
+        "cluster": "Session Manager → Runtime → Critic → Builder → Reviewer → Test — "
+                   "includes HPC/SLURM runtime specialist. Use for submission scripts, "
+                   "job scheduling, scratch handling, error recovery, local vs. cluster differences.",
+        "full": "Chief → Session Manager → Runtime → Critic → Builder → Reviewer → Test — "
+                "maximum oversight with strategic lead (Chief). For releases, milestones, "
+                "broad architectural changes. Most expensive, highest confidence.",
+    }
     mode_dropdown = widgets.Dropdown(
-        options=["dashboard", "solo", "quick", "reviewed", "tdd", "cluster", "full"],
+        options=["dashboard", "solo", "research", "quick", "reviewed", "tdd", "cluster", "full"],
         value="dashboard",
         description="Mode:",
         layout=widgets.Layout(width="200px"),
         style={"description_width": "45px"},
+    )
+    mode_desc_html = widgets.HTML(
+        value=(
+            f'<span style="color:#888; font-size:12px; margin-left:4px;">'
+            f'{_MODE_DESCRIPTIONS.get("dashboard", "")}</span>'
+        ),
+        layout=widgets.Layout(width="auto"),
     )
 
     # Model selector (directly in the agent tab for quick switching)
@@ -660,12 +692,15 @@ def create_tab(ctx):
         tooltip="Export chat as Markdown file",
     )
 
-    controls_row = widgets.HBox(
-        [mode_dropdown, model_dropdown, effort_dropdown, perm_dropdown,
-         new_cycle_btn, advance_btn, stop_btn, undo_btn, export_btn,
-         commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html],
-        layout=widgets.Layout(margin="0 0 6px 0", flex_flow="row wrap"),
-    )
+    controls_row = widgets.VBox([
+        widgets.HBox(
+            [mode_dropdown, model_dropdown, effort_dropdown, perm_dropdown,
+             new_cycle_btn, advance_btn, stop_btn, undo_btn, export_btn,
+             commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html],
+            layout=widgets.Layout(flex_flow="row wrap"),
+        ),
+        mode_desc_html,
+    ], layout=widgets.Layout(margin="0 0 6px 0"))
 
     # Session selector
     session_dropdown = widgets.Dropdown(
@@ -1152,8 +1187,18 @@ def create_tab(ctx):
                 f'<span class="delfin-agent-working">'
                 f'\u23f3 {_html.escape(text)}</span>'
             )
+            # Global header spinner — visible from all tabs
+            short = text[:40] + ("…" if len(text) > 40 else "")
+            ctx.agent_status_html.value = (
+                f'<span style="font-family:monospace; color:#1565c0; '
+                f'padding:2px 6px; border:1px solid #90caf9; '
+                f'border-radius:4px; animation:pulse 1.5s infinite;">'
+                f'\u23f3 Agent: {_html.escape(short)}</span>'
+                f'<style>@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.5}}}}</style>'
+            )
         else:
             working_html.value = ""
+            ctx.agent_status_html.value = ""
 
     def _update_queue_display():
         """Update the queue indicator."""
@@ -1221,6 +1266,7 @@ def create_tab(ctx):
                 "  /tab <name>      — Switch tab (submit/orca/jobs/calc/settings)\n"
                 "  /control show    — Show CONTROL content from Submit tab\n"
                 "  /control set ... — Set CONTROL content in Submit tab\n"
+                "  /control key k v — Change single CONTROL key (e.g. /control key functional BP86)\n"
                 "  /control validate — Validate CONTROL syntax\n"
                 "  /submit          — Submit job (confirms first)\n"
                 "  /orca show       — Show ORCA Builder settings\n"
@@ -1249,6 +1295,16 @@ def create_tab(ctx):
                 "  /recalc auto     — Recalc all that need it (confirms first)\n"
                 "  /cancel <job_id> — Cancel a job (confirms first)\n"
                 "  /cancel all      — Cancel all active jobs (confirms first)\n"
+                "\n"
+                "Memory:\n"
+                "  /remember <text> — Save a persistent memory\n"
+                "  /memories        — List all memories\n"
+                "  /forget <index>  — Delete a memory by index\n"
+                "\n"
+                "Workspace:\n"
+                "  /workspace ls    — List files in agent workspace\n"
+                "  /workspace read <file> — Read a workspace file\n"
+                "  /workspace clean — Remove all workspace files\n"
                 "\n"
                 "Keyboard shortcuts:\n"
                 "  Enter            — Send message\n"
@@ -1544,6 +1600,86 @@ def create_tab(ctx):
             )
             return True
 
+        # -- Memory commands ---------------------------------------------------
+
+        if cmd == "/memories":
+            from delfin.agent.memory_store import load_memories
+            facts = load_memories()
+            if not facts:
+                _append_system_message("No memories stored. Use /remember <text> to add one.")
+            else:
+                lines = []
+                for i, f in enumerate(facts):
+                    lines.append(f"  [{i}] ({f.get('source', '?')}) {f['text']}")
+                _append_system_message("Agent memories:\n" + "\n".join(lines))
+            return True
+
+        if cmd.startswith("/remember "):
+            text_to_save = text[len("/remember "):].strip()
+            if text_to_save:
+                from delfin.agent.memory_store import save_memory
+                idx = save_memory(text_to_save, source="user")
+                _append_system_message(f"Memory [{idx}] saved: {text_to_save}")
+            else:
+                _append_system_message("Usage: /remember <text>")
+            return True
+
+        if cmd.startswith("/forget"):
+            arg = text[7:].strip()
+            if arg.isdigit():
+                from delfin.agent.memory_store import delete_memory
+                if delete_memory(int(arg)):
+                    _append_system_message(f"Memory [{arg}] deleted.")
+                else:
+                    _append_system_message(f"Invalid index: {arg}")
+            else:
+                _append_system_message("Usage: /forget <index>")
+            return True
+
+        # -- Workspace commands ------------------------------------------------
+
+        if cmd.startswith("/workspace"):
+            ws_cmd = text[10:].strip().lower()
+            ws_dir = ctx.agent_dir
+            if ws_cmd == "ls" or ws_cmd == "":
+                try:
+                    items = sorted(ws_dir.iterdir())
+                    if items:
+                        lines = []
+                        for p in items[:50]:
+                            kind = "dir" if p.is_dir() else f"{p.stat().st_size:,}B"
+                            lines.append(f"  {p.name}  ({kind})")
+                        _append_system_message(
+                            f"Agent workspace ({ws_dir}):\n" + "\n".join(lines)
+                        )
+                    else:
+                        _append_system_message(f"Agent workspace is empty: {ws_dir}")
+                except Exception as e:
+                    _append_system_message(f"Workspace error: {e}")
+            elif ws_cmd == "clean":
+                import shutil
+                for p in ws_dir.iterdir():
+                    if p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+                _append_system_message("Agent workspace cleaned.")
+            elif ws_cmd.startswith("read "):
+                fname = text[10:].strip()[5:].strip()
+                fpath = (ws_dir / fname).resolve()
+                if not str(fpath).startswith(str(ws_dir)):
+                    _append_system_message("Path outside workspace.")
+                elif fpath.is_file():
+                    content = fpath.read_text(encoding="utf-8", errors="replace")[:8000]
+                    _append_system_message(f"{fname}:\n{content}")
+                else:
+                    _append_system_message(f"File not found: {fname}")
+            else:
+                _append_system_message(
+                    "Workspace commands: /workspace ls, /workspace read <file>, /workspace clean"
+                )
+            return True
+
         # -- Dashboard control commands ----------------------------------------
 
         # /tab <name> — navigate to a dashboard tab
@@ -1592,6 +1728,34 @@ def create_tab(ctx):
                 )
             else:
                 _append_system_message("Submit tab not available.")
+            return True
+
+        # /control key <key> <value> — change a single key in CONTROL
+        if cmd.startswith("/control key "):
+            parts = text[len("/control key "):].strip().split(None, 1)
+            if len(parts) < 2:
+                _append_system_message("Usage: /control key <key> <value>")
+                return True
+            key, value = parts[0], parts[1]
+            cw = ctx.submit_refs.get("control_widget")
+            if not cw:
+                _append_system_message("Submit tab not available.")
+                return True
+            import re as _re
+            old = cw.value
+            # Match key=... (case-insensitive key match)
+            pattern = _re.compile(
+                r"^(" + _re.escape(key) + r")\s*=.*$",
+                _re.MULTILINE | _re.IGNORECASE,
+            )
+            if pattern.search(old):
+                new = pattern.sub(f"{key}={value}", old)
+                cw.value = new
+                _append_system_message(f"CONTROL: {key}={value}")
+            else:
+                # Key not found — append it
+                cw.value = old.rstrip() + f"\n{key}={value}\n"
+                _append_system_message(f"CONTROL: added {key}={value}")
             return True
 
         # /control validate — validate CONTROL content
@@ -2258,6 +2422,96 @@ def create_tab(ctx):
 
         return False
 
+    # -- dashboard mode helpers --------------------------------------------
+
+    def _build_dashboard_context() -> str:
+        """Build current dashboard state as context for the dashboard agent."""
+        parts = []
+        # CONTROL content
+        cw = ctx.submit_refs.get("control_widget")
+        if cw and cw.value.strip():
+            parts.append(f"Current CONTROL (Submit tab):\n```\n{cw.value.strip()}\n```")
+        # ORCA Builder settings
+        refs = ctx.orca_builder_refs
+        if refs:
+            method = refs.get("orca_method")
+            basis = refs.get("orca_basis")
+            charge = refs.get("orca_charge")
+            if method:
+                parts.append(
+                    f"ORCA Builder: method={method.value}, "
+                    f"basis={basis.value if basis else '?'}, "
+                    f"charge={charge.value if charge else '?'}"
+                )
+        # Job name
+        jn = ctx.submit_refs.get("job_name_widget")
+        if jn and jn.value.strip():
+            parts.append(f"Job name: {jn.value.strip()}")
+        # calc_dir + workspace
+        parts.append(f"Calculations dir: {ctx.calc_dir}")
+        parts.append(f"Agent workspace: {ctx.agent_dir}")
+        # List workspace files if any
+        try:
+            ws_files = [p.name for p in ctx.agent_dir.iterdir() if p.is_file()]
+            if ws_files:
+                parts.append(f"Workspace files: {', '.join(ws_files[:20])}")
+        except Exception:
+            pass
+        return "\n".join(parts)
+
+    def _dashboard_auto_exec(agent_text: str):
+        """Scan agent output for ACTION: /command lines and execute them.
+
+        For multi-line commands like ``/control set``, collects continuation
+        lines (not starting with ``ACTION:``) until the next ACTION or
+        a blank line / code fence.
+        """
+        import re as _re
+
+        lines = agent_text.split("\n")
+        commands: list[str] = []
+        i = 0
+        while i < len(lines):
+            m = _re.match(r"^ACTION:\s*(/\S+.*)$", lines[i])
+            if m:
+                cmd = m.group(1)
+                # For /control set: collect continuation lines as content
+                if cmd.lower().startswith("/control set "):
+                    content_lines = [cmd[len("/control set "):]]
+                    i += 1
+                    while i < len(lines):
+                        if _re.match(r"^ACTION:\s*/", lines[i]):
+                            break
+                        if lines[i].strip() in ("```", ""):
+                            i += 1
+                            continue
+                        content_lines.append(lines[i])
+                        i += 1
+                    commands.append("/control set " + "\n".join(content_lines))
+                else:
+                    commands.append(cmd)
+                    i += 1
+            else:
+                i += 1
+
+        results: list[str] = []
+        for cmd_line in commands[:10]:  # safety limit
+            short = cmd_line[:80] + ("..." if len(cmd_line) > 80 else "")
+            _append_system_message(f"\u25b6 Executing: {short}")
+            # Capture system messages produced by the command
+            n_before = len(state["chat_messages"])
+            try:
+                handled = _handle_slash_command(cmd_line)
+                if not handled:
+                    _append_system_message(f"Unknown command: {short}")
+            except Exception as exc:
+                _append_system_message(f"Error executing {short}: {exc}")
+            # Collect new system messages as feedback
+            for msg in state["chat_messages"][n_before:]:
+                if msg["role"] == "system":
+                    results.append(msg["content"])
+        return results
+
     # -- feature implementations -------------------------------------------
 
     def _export_chat():
@@ -2773,6 +3027,22 @@ def create_tab(ctx):
         if engine is None:
             return
 
+        # After cycle complete: enter follow-up mode (keep context alive).
+        # The user can continue chatting with the builder/solo agent.
+        # Use /reset to start a truly fresh cycle.
+        if engine.is_cycle_complete and not state.get("_follow_up"):
+            # Find best follow-up role: builder > solo > last in route
+            _fu_role = "builder_agent"
+            if _fu_role not in engine.route:
+                _fu_role = "solo_agent" if "solo_agent" in engine.route else engine.route[-1]
+            _fu_idx = engine.route.index(_fu_role) if _fu_role in engine.route else 0
+            engine.current_role_index = _fu_idx
+            state["_follow_up"] = True
+            _append_system_message(
+                f"--- Follow-up mode ({_fu_role.replace('_', ' ').title()}) "
+                f"— continue chatting or /reset for new task ---"
+            )
+
         # Auto-mode suggestion: only on first message of a cycle, and only
         # if user hasn't already been asked.  User must accept the switch.
         if not engine.messages and not state.get("_mode_suggested"):
@@ -2807,6 +3077,21 @@ def create_tab(ctx):
             _lower = user_text.lower().strip().rstrip("!.?")
             if _lower in _APPROVAL_WORDS:
                 _sm_approval = True
+
+        # Handle findings review response
+        _findings_review_role = state.pop("_awaiting_findings_review", None)
+        if _findings_review_role:
+            state["_findings_approved"] = True
+            _lower_msg = user_text.lower().strip().rstrip("!.?")
+            # If user wants to skip/filter findings, modify the role output
+            if _lower_msg not in _APPROVAL_WORDS and "skip" in _lower_msg:
+                # Append user's filter instructions to the role output
+                # so Builder sees them alongside the findings
+                old_output = engine.role_outputs.get(_findings_review_role, "")
+                engine.role_outputs[_findings_review_role] = (
+                    old_output + f"\n\n--- USER FILTER ---\n{user_text}\n"
+                    f"Address only the findings NOT mentioned above as skipped."
+                )
 
         input_textarea.value = ""
         _append_chat_message("user", user_text)
@@ -2977,7 +3262,16 @@ def create_tab(ctx):
 
                 # Store original user task for handoff messages
                 original_task = user_text
-                current_msg = user_text
+                # Dashboard mode: inject current widget state so the agent
+                # can read CONTROL, ORCA settings, etc. without tool calls.
+                if mode_dropdown.value == "dashboard":
+                    _ctx_text = _build_dashboard_context()
+                    current_msg = (
+                        f"[Dashboard state]\n{_ctx_text}\n\n"
+                        f"[User request]\n{user_text}"
+                    )
+                else:
+                    current_msg = user_text
                 max_auto_steps = len(engine.route) + 1  # safety limit
 
                 for _step in range(max_auto_steps):
@@ -3012,6 +3306,10 @@ def create_tab(ctx):
                     chunks.clear()
                     thinking_chunks.clear()
 
+                    # Load persistent memory for system prompt
+                    from delfin.agent.memory_store import format_memory_context
+                    _memory = format_memory_context()
+
                     engine.stream_response(
                         user_message=current_msg,
                         on_token=_on_token,
@@ -3019,10 +3317,37 @@ def create_tab(ctx):
                         on_permission_denied=_on_permission_denied,
                         on_thinking=_on_thinking,
                         thinking_budget=_budget,
+                        memory_context=_memory,
                     )
                     # Final update for this role
                     if chunks:
                         _update_last_assistant("".join(chunks), role_label)
+
+                    # Dashboard mode: auto-execute slash commands from agent output
+                    # and strip ACTION: lines from displayed chat
+                    if mode_dropdown.value == "dashboard" and chunks:
+                        raw = "".join(chunks)
+                        exec_results = _dashboard_auto_exec(raw)
+                        # Remove ACTION: lines from visible output
+                        import re as _re_strip
+                        cleaned = _re_strip.sub(
+                            r"^ACTION:\s*/.*$", "", raw, flags=_re_strip.MULTILINE
+                        ).strip()
+                        if cleaned != raw.strip():
+                            _update_last_assistant(
+                                cleaned or "(commands executed)",
+                                role_label,
+                            )
+                        # Inject execution results into engine context so the
+                        # agent sees them on the next turn (feedback loop).
+                        if exec_results:
+                            feedback = "[Command results]\n" + "\n".join(exec_results)
+                            engine.messages.append(
+                                {"role": "user", "content": feedback}
+                            )
+                            engine.messages.append(
+                                {"role": "assistant", "content": "Noted."}
+                            )
 
                     # Show per-role cost
                     _role_cost = engine.cost_usd - _cost_before
@@ -3097,6 +3422,30 @@ def create_tab(ctx):
                                     f"{', '.join(labels)} (SM recommendation) ---"
                                 )
 
+                    # --- Critic/Runtime findings gate ---
+                    # Pause after Critic or Runtime Agent so the user can
+                    # review findings and optionally skip some before Builder.
+                    _REVIEW_ROLES = {"critic_agent", "runtime_agent"}
+                    if (prev_role_id in _REVIEW_ROLES
+                            and not state.get("_findings_approved")
+                            and last_out.strip()):
+                        # Check if there are actual findings (not just "no issues")
+                        _no_issue_kw = ("no issues", "no findings", "lgtm",
+                                        "looks good", "no critical", "SKIP")
+                        _has_findings = not any(
+                            k.lower() in last_out[:500].lower() for k in _no_issue_kw
+                        )
+                        if _has_findings:
+                            _append_system_message(
+                                f"--- {_format_role_label(prev_role_id)} review done. "
+                                f"Reply 'go' to accept all findings, or describe "
+                                f"which to skip (e.g. 'skip finding about X') ---"
+                            )
+                            state["_awaiting_findings_review"] = prev_role_id
+                            _update_status()
+                            _update_pipeline_display(engine)
+                            break
+
                     # --- Reviewer → Builder loop (max retries) ---
                     if prev_role_id == "reviewer_agent":
                         has_issues = "ISSUES" in last_out[:500].upper()
@@ -3149,6 +3498,11 @@ def create_tab(ctx):
                             _update_pipeline_display(engine)
                             continue
 
+                    # Dashboard / follow-up: never advance — keep conversation open
+                    if mode_dropdown.value == "dashboard" or state.get("_follow_up"):
+                        _update_status()
+                        break
+
                     # Advance to next role
                     has_next = engine.advance_role()
                     if not has_next:
@@ -3160,6 +3514,16 @@ def create_tab(ctx):
                             f"--- Cycle complete {_cycle_verdict} ---"
                         )
                         _update_pipeline_display(engine)
+                        # Enter follow-up mode: route to builder for continued work
+                        _fu_role = "builder_agent"
+                        if _fu_role not in engine.route:
+                            _fu_role = engine.route[-1]
+                        _fu_idx = engine.route.index(_fu_role) if _fu_role in engine.route else 0
+                        engine.current_role_index = _fu_idx
+                        state["_follow_up"] = True
+                        _append_system_message(
+                            f"Continue chatting or /reset for new task."
+                        )
                         break
 
                     # Show pipeline progress + handoff in chat
@@ -3273,6 +3637,7 @@ def create_tab(ctx):
         state.pop("_pending_mode_msg", None)
         state.pop("_retry_used", None)
         state.pop("_builder_retries", None)
+        state.pop("_follow_up", None)
         state["message_queue"].clear()
         state["session_start_time"] = None
         queue_html.value = ""
@@ -3303,20 +3668,31 @@ def create_tab(ctx):
 
     def _on_mode_change(change):
         new_mode = change["new"]
+        # Update mode description label
+        desc = _MODE_DESCRIPTIONS.get(new_mode, "")
+        mode_desc_html.value = (
+            f'<span style="color:#888; font-size:12px; margin-left:4px;">'
+            f'{desc}</span>'
+        )
         engine = state["engine"]
         if engine and not state["streaming"] and not engine.messages:
             engine.reset_cycle(mode=new_mode)
             _update_status()
-        # Dashboard mode: lock permission to default (read-only)
+        # Dashboard mode: lock permission to default, model to Haiku
         if new_mode == "dashboard":
             state["_perm_before_dashboard"] = perm_dropdown.value
             perm_dropdown.value = "default"
             perm_dropdown.disabled = True
+            state["_model_before_dashboard"] = model_dropdown.value
+            model_dropdown.value = "Haiku"
         else:
             perm_dropdown.disabled = state.get("streaming", False)
             saved = state.pop("_perm_before_dashboard", None)
             if saved and perm_dropdown.value == "default":
                 perm_dropdown.value = saved
+            saved_model = state.pop("_model_before_dashboard", None)
+            if saved_model and model_dropdown.value == "Haiku":
+                model_dropdown.value = saved_model
 
     def _on_model_change(change):
         """Recreate engine with new model on next send."""

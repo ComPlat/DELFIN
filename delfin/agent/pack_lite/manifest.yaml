@@ -17,6 +17,10 @@ modes:
     file: modes/solo.md
     route:
       - solo_agent
+  - id: research
+    file: modes/research.md
+    route:
+      - research_agent
   - id: quick
     file: modes/quick.md
     route:
