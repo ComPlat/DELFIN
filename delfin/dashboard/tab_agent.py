@@ -4268,13 +4268,12 @@ def create_tab(ctx):
                     if chunks:
                         _update_last_assistant("".join(chunks), role_label)
 
-                    # Dashboard mode: auto-execute slash commands from agent output
-                    # and strip ACTION: lines from displayed chat.
-                    # Continuation loop: if commands returned results, let the
-                    # agent process them (up to _MAX_CONT turns to prevent runaway).
-                    _MAX_DASHBOARD_CONT = 10
+                    # Auto-execute slash commands from agent output (all modes).
+                    # Dashboard, Solo, Builder — any agent can control the UI
+                    # via ACTION: /command lines. Safety tiers still enforced.
+                    _MAX_ACTION_CONT = 10
                     _cont_turn = 0
-                    while mode_dropdown.value == "dashboard" and chunks and _cont_turn < _MAX_DASHBOARD_CONT:
+                    while chunks and _cont_turn < _MAX_ACTION_CONT:
                         _cont_turn += 1
                         raw = "".join(chunks)
                         exec_results = _dashboard_auto_exec(raw)

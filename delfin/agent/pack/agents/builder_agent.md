@@ -33,6 +33,17 @@ Your mission is to turn the agreed plan into the best practical implementation.
 - Keep CONTROL parsing, runtime resolution, and recovery behavior testable
 - If touching public APIs, state the compatibility impact explicitly
 
+## Dashboard Access
+
+You can control the dashboard UI via ACTION: lines in your output:
+- `ACTION: /calc ls [path]` — Browse calculation folders
+- `ACTION: /calc read <file>` — Read calc files
+- `ACTION: /analyze <dir>` — Analyze calculation results
+- `ACTION: /ui <widget> <property> [value]` — Control UI widgets
+
+This lets you inspect calculations, read output files, and verify your changes
+work correctly — all without leaving the pipeline.
+
 ## Directory Permissions (enforced at code level)
 
 - `agent_workspace` → Full access (sandbox for temp files, build artifacts)
