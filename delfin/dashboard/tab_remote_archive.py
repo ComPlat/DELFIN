@@ -5094,4 +5094,43 @@ def create_tab(ctx):
     }})();
     """
 
-    return tab_widget, {"init_js": init_js}
+    return tab_widget, {
+        "init_js": init_js,
+        # --- Agent-accessible widgets ---
+        # Navigation
+        "path_input": path_input,
+        "filter_input": filter_input,
+        "sort_dropdown": sort_dropdown,
+        "search_input": search_input,
+        # File operations
+        "new_folder_btn": new_folder_btn,
+        "new_folder_input": new_folder_input,
+        "rename_btn": rename_btn,
+        "rename_input": rename_input,
+        "duplicate_btn": duplicate_btn,
+        "copy_btn": copy_btn,
+        "copy_path_btn": copy_path_btn,
+        "download_btn": download_btn,
+        # Transfer
+        "transfer_back_btn": transfer_back_btn,
+        "transfer_to_archive_btn": transfer_to_archive_btn,
+        "transfer_jobs_btn": transfer_jobs_btn,
+        "transfer_jobs_refresh_btn": transfer_jobs_refresh_btn,
+        # Visualization
+        "view_toggle": view_toggle,
+        "viewer_png_btn": viewer_png_btn,
+        # Extract Table
+        "table_btn": table_btn,
+        "table_file_input": table_file_input,
+        "table_scope_dd": table_scope_dd,
+        "table_recursive_cb": table_recursive_cb,
+        "table_decimal_comma_btn": table_decimal_comma_btn,
+        "table_preset_name": table_preset_name,
+        "table_preset_save_btn": table_preset_save_btn,
+        "table_add_col_btn": table_add_col_btn,
+        "table_run_btn": table_run_btn,
+        "table_csv_btn": table_csv_btn,
+        "table_output_html": table_output_html,
+        # Delete (exposed for blocking — agent must NOT click)
+        "delete_btn": delete_btn,
+    }

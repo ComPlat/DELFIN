@@ -13024,4 +13024,54 @@ def create_tab(ctx):
         'calc_set_root': calc_set_root,
         'calc_set_primary_root': calc_set_primary_root,
         'init_js': _init_js,
+        # --- Agent-accessible widgets ---
+        # Navigation
+        'calc_path_input': calc_path_input,
+        'calc_sort_dropdown': calc_sort_dropdown,
+        'calc_folder_search': calc_folder_search,
+        'calc_search_input': calc_search_input,
+        # File operations
+        'calc_new_folder_btn': calc_new_folder_btn,
+        'calc_new_folder_input': calc_new_folder_input,
+        'calc_rename_btn': calc_rename_btn,
+        'calc_rename_input': calc_rename_input,
+        'calc_duplicate_btn': calc_duplicate_btn,
+        'calc_copy_btn': calc_copy_btn,
+        'calc_copy_path_btn': calc_copy_path_btn,
+        # Transfer / move
+        'calc_move_archive_btn': calc_move_archive_btn,
+        'calc_back_to_calculations_btn': calc_back_to_calculations_btn,
+        'calc_ssh_transfer_btn': calc_ssh_transfer_btn,
+        # Visualization & report
+        'calc_view_toggle': calc_view_toggle,
+        'calc_view_png_btn': calc_view_png_btn,
+        'calc_xyz_png_btn': calc_xyz_png_btn,
+        'calc_report_btn': calc_report_btn,
+        # Extract Table
+        'calc_table_btn': calc_table_btn,
+        'calc_table_file_input': calc_table_file_input,
+        'calc_table_scope_dd': calc_table_scope_dd,
+        'calc_table_recursive_cb': calc_table_recursive_cb,
+        'calc_table_decimal_comma_btn': calc_table_decimal_comma_btn,
+        'calc_table_preset_name': calc_table_preset_name,
+        'calc_table_preset_save_btn': calc_table_preset_save_btn,
+        'calc_table_add_col_btn': calc_table_add_col_btn,
+        'calc_table_run_btn': calc_table_run_btn,
+        'calc_table_csv_btn': calc_table_csv_btn,
+        'calc_table_output': calc_table_output,
+        # Recalc & editor
+        'calc_recalc_btn': calc_recalc_btn,
+        'calc_recalc_time': calc_recalc_time,
+        'calc_submit_recalc_btn': calc_submit_recalc_btn,
+        'calc_edit_area': calc_edit_area,
+        # Options dropdown (Recalc / Smart Recalc / Override / etc.)
+        'calc_options_dropdown': calc_options_dropdown,
+        'calc_override_input': calc_override_input,
+        'calc_override_time': calc_override_time,
+        'calc_override_btn': calc_override_btn,
+        # File browser selection
+        'calc_file_list': calc_file_list,
+        'calc_update_options_dropdown': calc_update_options_dropdown,
+        # Delete (exposed for blocking only — agent must NOT click)
+        'calc_delete_btn': calc_delete_btn,
     }
