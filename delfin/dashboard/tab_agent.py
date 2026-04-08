@@ -5062,6 +5062,7 @@ def create_tab(ctx):
         role_label = _format_role_label(engine.current_role)
 
         def _worker():
+            nonlocal _sm_approval
             chunks = []
             thinking_chunks = []
             last_update = 0.0
