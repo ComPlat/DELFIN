@@ -90,7 +90,7 @@ _DEFAULT_THINKING_BUDGET = 10000
 _READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
 _GIT_BASH = frozenset({"Read", "Grep", "Glob", "Bash"})  # Bash limited by prompt to git
 _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
-    "dashboard_agent": frozenset(),            # no direct tool use, only slash cmds
+    "dashboard_agent": _READ_TOOLS,             # read code to understand UI, no writes
     "research_agent":  _GIT_BASH,
     "chief_agent":     _GIT_BASH,
     "session_manager": _GIT_BASH,

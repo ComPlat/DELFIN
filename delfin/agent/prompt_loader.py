@@ -278,6 +278,15 @@ class PromptLoader:
                         f"- You may use Edit/Write ONLY to create or modify test files in tests/.\n"
                         f"- Do NOT modify production code. That is the Builder's job."
                     )
+                elif role_id == "dashboard_agent":
+                    cycle_info += (
+                        f"\n---\n"
+                        f"Tool access:\n"
+                        f"- You may use: Read, Grep, Glob (to read DELFIN source code and understand UI flows).\n"
+                        f"- Do NOT use Edit, Write, or Bash. You control the dashboard via ACTION: slash commands only.\n"
+                        f"- Read the dashboard code (delfin/dashboard/) to understand widget relationships\n"
+                        f"  and figure out the correct /ui command sequences."
+                    )
                 else:
                     cycle_info += (
                         f"\n---\n"

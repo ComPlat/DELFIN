@@ -1020,6 +1020,155 @@ def create_tab(ctx):
 })();
 """))
 
+    # -- UI widget registry (for /ui command) --------------------------------
+    _ui_widgets: dict[str, widgets.Widget] = {
+        "send-btn": send_btn,
+        "input": input_textarea,
+        "mode": mode_dropdown,
+        "perm": perm_dropdown,
+    }
+
+    # Widgets the agent must NEVER click (hard block)
+    _BLOCKED_WIDGETS = frozenset({
+        "calc-delete-btn", "remote-delete-btn",
+    })
+
+    def _build_full_widget_registry() -> dict[str, widgets.Widget]:
+        """Build registry including widgets from all dashboard tabs."""
+        reg = dict(_ui_widgets)  # start with agent-tab widgets
+
+        # Submit tab
+        _submit_map = {
+            "job-name": "job_name_widget",
+            "control": "control_widget",
+            "coords": "coords_widget",
+            "submit-btn": "submit_button",
+        }
+        for alias, ref_key in _submit_map.items():
+            w = ctx.submit_refs.get(ref_key)
+            if w is not None:
+                reg[alias] = w
+
+        # ORCA Builder tab
+        _orca_map = {
+            "orca-method": "orca_method",
+            "orca-basis": "orca_basis",
+            "orca-job-type": "orca_job_type",
+            "orca-charge": "orca_charge",
+            "orca-mult": "orca_multiplicity",
+            "orca-pal": "orca_pal",
+            "orca-maxcore": "orca_maxcore",
+            "orca-coords": "orca_coords",
+            "orca-dispersion": "orca_dispersion",
+            "orca-solvent": "orca_solvent",
+            "orca-submit-btn": "orca_submit_btn",
+            "orca-preview": "orca_preview",
+        }
+        for alias, ref_key in _orca_map.items():
+            w = ctx.orca_builder_refs.get(ref_key)
+            if w is not None:
+                reg[alias] = w
+
+        # Calculations Browser tab
+        _calc_map = {
+            # Navigation
+            "calc-path": "calc_path_input",
+            "calc-sort": "calc_sort_dropdown",
+            "calc-filter": "calc_folder_search",
+            "calc-search": "calc_search_input",
+            # File operations
+            "calc-new-folder-btn": "calc_new_folder_btn",
+            "calc-new-folder-name": "calc_new_folder_input",
+            "calc-rename-btn": "calc_rename_btn",
+            "calc-rename-name": "calc_rename_input",
+            "calc-duplicate-btn": "calc_duplicate_btn",
+            "calc-copy-btn": "calc_copy_btn",
+            "calc-copy-path-btn": "calc_copy_path_btn",
+            # Transfer / move
+            "calc-to-archive-btn": "calc_move_archive_btn",
+            "calc-to-calc-btn": "calc_back_to_calculations_btn",
+            "calc-ssh-btn": "calc_ssh_transfer_btn",
+            # Visualization & report
+            "calc-visualize": "calc_view_toggle",
+            "calc-png-btn": "calc_view_png_btn",
+            "calc-xyz-png-btn": "calc_xyz_png_btn",
+            "calc-report-btn": "calc_report_btn",
+            # Extract Table
+            "calc-table-btn": "calc_table_btn",
+            "calc-table-file": "calc_table_file_input",
+            "calc-table-scope": "calc_table_scope_dd",
+            "calc-table-recursive": "calc_table_recursive_cb",
+            "calc-table-decimal": "calc_table_decimal_comma_btn",
+            "calc-table-preset": "calc_table_preset_name",
+            "calc-table-save-btn": "calc_table_preset_save_btn",
+            "calc-table-add-col-btn": "calc_table_add_col_btn",
+            "calc-table-run-btn": "calc_table_run_btn",
+            "calc-table-csv-btn": "calc_table_csv_btn",
+            "calc-table-output": "calc_table_output",
+            # Recalc & editor
+            "calc-recalc-btn": "calc_recalc_btn",
+            "calc-recalc-time": "calc_recalc_time",
+            "calc-submit-recalc-btn": "calc_submit_recalc_btn",
+            "calc-editor": "calc_edit_area",
+            # Options dropdown (Recalc / Smart Recalc / Override / etc.)
+            "calc-options": "calc_options_dropdown",
+            "calc-override": "calc_override_input",
+            "calc-override-time": "calc_override_time",
+            "calc-override-btn": "calc_override_btn",
+            # Delete (blocked — agent cannot click)
+            "calc-delete-btn": "calc_delete_btn",
+        }
+        for alias, ref_key in _calc_map.items():
+            w = ctx.calc_browser_refs.get(ref_key)
+            if w is not None:
+                reg[alias] = w
+
+        # Remote Archive tab
+        _remote_map = {
+            "remote-path": "path_input",
+            "remote-filter": "filter_input",
+            "remote-sort": "sort_dropdown",
+            "remote-search": "search_input",
+            # File operations
+            "remote-new-folder-btn": "new_folder_btn",
+            "remote-new-folder-name": "new_folder_input",
+            "remote-rename-btn": "rename_btn",
+            "remote-rename-name": "rename_input",
+            "remote-duplicate-btn": "duplicate_btn",
+            "remote-copy-btn": "copy_btn",
+            "remote-copy-path-btn": "copy_path_btn",
+            "remote-download-btn": "download_btn",
+            # Transfer
+            "remote-to-calc-btn": "transfer_back_btn",
+            "remote-to-archive-btn": "transfer_to_archive_btn",
+            "remote-transfers-btn": "transfer_jobs_btn",
+            "remote-transfers-refresh-btn": "transfer_jobs_refresh_btn",
+            # Visualization
+            "remote-visualize": "view_toggle",
+            "remote-png-btn": "viewer_png_btn",
+            # Extract Table
+            "remote-table-btn": "table_btn",
+            "remote-table-file": "table_file_input",
+            "remote-table-scope": "table_scope_dd",
+            "remote-table-recursive": "table_recursive_cb",
+            "remote-table-decimal": "table_decimal_comma_btn",
+            "remote-table-preset": "table_preset_name",
+            "remote-table-save-btn": "table_preset_save_btn",
+            "remote-table-add-col-btn": "table_add_col_btn",
+            "remote-table-run-btn": "table_run_btn",
+            "remote-table-csv-btn": "table_csv_btn",
+            "remote-table-output": "table_output_html",
+            # Delete (blocked — agent cannot click)
+            "remote-delete-btn": "delete_btn",
+        }
+        _ra_refs = getattr(ctx, 'remote_archive_refs', {})
+        for alias, ref_key in _remote_map.items():
+            w = _ra_refs.get(ref_key)
+            if w is not None:
+                reg[alias] = w
+
+        return reg
+
     # -- layout assembly ---------------------------------------------------
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
@@ -1420,6 +1569,13 @@ def create_tab(ctx):
                 "  /reset           — Reset engine for new cycle\n"
                 "\n"
                 "Dashboard control:\n"
+                "  /ui list         — List all controllable widgets\n"
+                "  /ui <w> show     — Show widget properties & value\n"
+                "  /ui <w> click    — Press a button\n"
+                "  /ui <w> value <v> — Set widget value (text/number/dropdown)\n"
+                "  /ui <w> options  — Show dropdown choices\n"
+                "  /ui <w> style <s> — Button color (primary/danger/success/info/warning)\n"
+                "  /ui <w> text/disabled/visible/width/height <v>\n"
                 "  /tab <name>      — Switch tab (submit/orca/jobs/calc/settings)\n"
                 "  /control show    — Show CONTROL content from Submit tab\n"
                 "  /control set ... — Set CONTROL content in Submit tab\n"
@@ -1433,7 +1589,8 @@ def create_tab(ctx):
                 "\n"
                 "Calculations & analysis:\n"
                 "  /calc ls [path]  — List calc directories/files\n"
-                "  /calc cd <path>  — Navigate calc folder\n"
+                "  /calc cd <path>  — Navigate calc folder (syncs browser)\n"
+                "  /calc select <f> — Select file in browser (opens options dropdown)\n"
                 "  /calc read <file> — Read a calc file\n"
                 "  /calc tail <file> — Read last 8KB of output\n"
                 "  /calc info <dir> — Show folder summary & status\n"
@@ -1915,6 +2072,225 @@ def create_tab(ctx):
                 _append_system_message(f"Tab not found: {tab_name}\nAvailable: {avail}")
             return True
 
+        # /ui <widget> <property> [value] — modify dashboard widgets (session-only)
+        # /ui list — show all available widgets
+        if cmd == "/ui list":
+            _all_w = _build_full_widget_registry()
+            lines = []
+            for name in sorted(_all_w):
+                w = _all_w[name]
+                wtype = type(w).__name__
+                val_preview = ""
+                if hasattr(w, "value"):
+                    v = str(w.value)
+                    val_preview = f" = {v[:40]}{'...' if len(v) > 40 else ''}"
+                lines.append(f"  {name} ({wtype}){val_preview}")
+            _append_system_message("Available widgets:\n" + "\n".join(lines))
+            return True
+
+        if cmd.startswith("/ui "):
+            _all_w = _build_full_widget_registry()
+            _ui_parts = text[4:].strip().split(None, 2)
+            if len(_ui_parts) < 2:
+                _append_system_message(
+                    "Usage: /ui <widget> <property> [value]\n"
+                    "       /ui list — show all widgets\n"
+                    f"Widgets: {', '.join(sorted(_all_w))}\n"
+                    "Properties:\n"
+                    "  click          — press a button\n"
+                    "  value <v>      — set widget value (text, number, dropdown selection)\n"
+                    "  replace <old> <new> — find & replace text in widget value\n"
+                    "  show           — show current properties & value\n"
+                    "  options        — show dropdown options\n"
+                    "  style <s>      — button style (primary|danger|success|info|warning)\n"
+                    "  text <v>       — description / placeholder text\n"
+                    "  disabled true|false\n"
+                    "  visible true|false\n"
+                    "  width <css>    — e.g. 120px\n"
+                    "  height <css>   — e.g. 40px"
+                )
+                return True
+            _ui_wname = _ui_parts[0].lower()
+            _ui_prop = _ui_parts[1].lower()
+            _ui_val = _ui_parts[2] if len(_ui_parts) > 2 else ""
+            _ui_w = _all_w.get(_ui_wname)
+            if _ui_w is None:
+                _append_system_message(
+                    f"Unknown widget: {_ui_wname}\n"
+                    f"Available: {', '.join(sorted(_all_w))}"
+                )
+                return True
+
+            # show — display current properties
+            if _ui_prop == "show":
+                _props = []
+                if hasattr(_ui_w, "value"):
+                    v = str(_ui_w.value)
+                    _props.append(f"value: {v[:200]}{'...' if len(v) > 200 else ''}")
+                if hasattr(_ui_w, "description"):
+                    _props.append(f"text: {_ui_w.description}")
+                if hasattr(_ui_w, "button_style"):
+                    _props.append(f"style: {_ui_w.button_style}")
+                if hasattr(_ui_w, "options"):
+                    opts = list(_ui_w.options) if _ui_w.options else []
+                    _props.append(f"options: {opts[:20]}{'...' if len(opts) > 20 else ''}")
+                if hasattr(_ui_w, "disabled"):
+                    _props.append(f"disabled: {_ui_w.disabled}")
+                if hasattr(_ui_w, "layout"):
+                    _props.append(f"width: {_ui_w.layout.width}")
+                    _props.append(f"height: {_ui_w.layout.height}")
+                _props.append(f"visible: {getattr(_ui_w.layout, 'display', '') != 'none'}")
+                _props.append(f"type: {type(_ui_w).__name__}")
+                _append_system_message(
+                    f"Widget '{_ui_wname}':\n" + "\n".join(f"  {p}" for p in _props)
+                )
+                return True
+
+            # options — show dropdown options
+            if _ui_prop == "options":
+                if hasattr(_ui_w, "options"):
+                    opts = list(_ui_w.options)
+                    _append_system_message(
+                        f"'{_ui_wname}' options ({len(opts)}):\n"
+                        + "\n".join(f"  {o}" for o in opts)
+                    )
+                else:
+                    _append_system_message(f"Widget '{_ui_wname}' has no options.")
+                return True
+
+            # click — press a button
+            if _ui_prop == "click":
+                if _ui_wname in _BLOCKED_WIDGETS:
+                    _append_system_message(
+                        "Blocked: agent cannot use delete buttons. "
+                        "Use the dashboard UI directly."
+                    )
+                    return True
+                if not hasattr(_ui_w, "click"):
+                    _append_system_message(f"Widget '{_ui_wname}' is not a button.")
+                    return True
+                _ui_w.click()
+                _append_system_message(f"'{_ui_wname}' clicked.")
+                return True
+
+            # value — set the widget's value (text, int, dropdown selection)
+            if _ui_prop == "value":
+                if not hasattr(_ui_w, "value"):
+                    _append_system_message(f"Widget '{_ui_wname}' has no value property.")
+                    return True
+                # Dropdown: validate against options
+                if hasattr(_ui_w, "options") and _ui_w.options:
+                    opts = list(_ui_w.options)
+                    # Check for tuple options like (label, value)
+                    opt_values = [o[1] if isinstance(o, tuple) else o for o in opts]
+                    opt_labels = [o[0] if isinstance(o, tuple) else o for o in opts]
+                    # Try match by value or label (case-insensitive)
+                    matched = None
+                    for ov, ol in zip(opt_values, opt_labels):
+                        if str(ov).lower() == _ui_val.lower() or str(ol).lower() == _ui_val.lower():
+                            matched = ov
+                            break
+                    if matched is None:
+                        _append_system_message(
+                            f"Invalid option: {_ui_val}\n"
+                            f"Available: {', '.join(str(o) for o in opt_labels)}"
+                        )
+                        return True
+                    _ui_w.value = matched
+                    _append_system_message(f"'{_ui_wname}' -> {matched}")
+                # IntText / BoundedIntText
+                elif isinstance(_ui_w, (widgets.IntText, widgets.BoundedIntText)):
+                    try:
+                        _ui_w.value = int(_ui_val)
+                        _append_system_message(f"'{_ui_wname}' -> {_ui_w.value}")
+                    except ValueError:
+                        _append_system_message(f"'{_ui_wname}' expects an integer, got: {_ui_val}")
+                # FloatText
+                elif isinstance(_ui_w, (widgets.FloatText, widgets.BoundedFloatText)):
+                    try:
+                        _ui_w.value = float(_ui_val)
+                        _append_system_message(f"'{_ui_wname}' -> {_ui_w.value}")
+                    except ValueError:
+                        _append_system_message(f"'{_ui_wname}' expects a number, got: {_ui_val}")
+                # Text / Textarea — convert escaped \n to real newlines
+                else:
+                    _final_val = _ui_val.replace("\\n", "\n") if isinstance(_ui_w, widgets.Textarea) else _ui_val
+                    _ui_w.value = _final_val
+                    _preview = _final_val.replace("\n", " ")[:80]
+                    _append_system_message(f"'{_ui_wname}' -> {_preview}{'...' if len(_final_val) > 80 else ''}")
+                return True
+
+            # replace <old> <new> — find & replace text in a widget's value
+            if _ui_prop == "replace":
+                if not hasattr(_ui_w, "value") or not isinstance(_ui_w.value, str):
+                    _append_system_message(f"Widget '{_ui_wname}' has no text value to replace in.")
+                    return True
+                # _ui_val contains "old_text new_text" — split on first whitespace
+                _r_parts = _ui_val.split(None, 1)
+                if len(_r_parts) < 2:
+                    _append_system_message("Usage: /ui <widget> replace <old> <new>")
+                    return True
+                _r_old, _r_new = _r_parts
+                if _r_old not in _ui_w.value:
+                    _append_system_message(f"'{_r_old}' not found in '{_ui_wname}'.")
+                    return True
+                _ui_w.value = _ui_w.value.replace(_r_old, _r_new, 1)
+                _append_system_message(f"'{_ui_wname}': replaced '{_r_old}' with '{_r_new}'")
+                return True
+
+            # style — button color
+            if _ui_prop == "style":
+                if not hasattr(_ui_w, "button_style"):
+                    _append_system_message(f"Widget '{_ui_wname}' has no button_style.")
+                    return True
+                _valid_styles = ("primary", "danger", "success", "info", "warning", "")
+                if _ui_val not in _valid_styles:
+                    _append_system_message(
+                        f"Invalid style: {_ui_val}\n"
+                        f"Valid: {', '.join(s or '(empty)' for s in _valid_styles)}"
+                    )
+                    return True
+                _ui_w.button_style = _ui_val
+                _append_system_message(f"'{_ui_wname}' style -> {_ui_val or '(default)'}")
+                return True
+
+            # text — description / placeholder
+            if _ui_prop == "text":
+                if hasattr(_ui_w, "description"):
+                    _ui_w.description = _ui_val
+                    _append_system_message(f"'{_ui_wname}' text -> {_ui_val}")
+                elif hasattr(_ui_w, "placeholder"):
+                    _ui_w.placeholder = _ui_val
+                    _append_system_message(f"'{_ui_wname}' placeholder -> {_ui_val}")
+                else:
+                    _append_system_message(f"Widget '{_ui_wname}' has no text property.")
+                return True
+
+            # disabled
+            if _ui_prop == "disabled":
+                _ui_w.disabled = _ui_val.lower() in ("true", "1", "yes")
+                _append_system_message(f"'{_ui_wname}' disabled -> {_ui_w.disabled}")
+                return True
+
+            # visible
+            if _ui_prop == "visible":
+                _show = _ui_val.lower() in ("true", "1", "yes")
+                _ui_w.layout.display = "" if _show else "none"
+                _append_system_message(f"'{_ui_wname}' visible -> {_show}")
+                return True
+
+            # width / height
+            if _ui_prop in ("width", "height"):
+                setattr(_ui_w.layout, _ui_prop, _ui_val)
+                _append_system_message(f"'{_ui_wname}' {_ui_prop} -> {_ui_val}")
+                return True
+
+            _append_system_message(
+                f"Unknown property: {_ui_prop}\n"
+                "Valid: click, value, replace, show, options, style, text, disabled, visible, width, height"
+            )
+            return True
+
         # /control show — show current CONTROL content from Submit tab
         if cmd == "/control show":
             cw = ctx.submit_refs.get("control_widget")
@@ -2184,7 +2560,33 @@ def create_tab(ctx):
                     _append_system_message(f"Not a directory: {subpath}")
                     return True
             cur = state.get("_agent_calc_path", "") or "."
+            # Sync the actual browser widget to the same directory
+            _path_w = ctx.calc_browser_refs.get("calc_path_input")
+            if _path_w:
+                try:
+                    _full = str(ctx.calc_dir / cur) if cur != "." else str(ctx.calc_dir)
+                    _path_w.value = _full
+                except Exception:
+                    pass
             _append_system_message(f"calc dir: calc/{cur}")
+            return True
+
+        # /calc select <filename> — select a file in the browser (triggers options dropdown)
+        if cmd.startswith("/calc select "):
+            filename = text[len("/calc select"):].strip()
+            _path_w = ctx.calc_browser_refs.get("calc_path_input")
+            if not _path_w:
+                _append_system_message("Calc browser not available.")
+                return True
+            # Navigate the browser directly to the file — this triggers
+            # the browser's own path handler which opens the file and
+            # populates the options dropdown (Recalc/Smart Recalc/etc.)
+            target = _resolve_calc_path(filename)
+            if not target.exists():
+                _append_system_message(f"Not found: {filename}")
+                return True
+            _path_w.value = str(target)
+            _append_system_message(f"Selected: {target.name}")
             return True
 
         if cmd.startswith("/calc read "):
@@ -2706,6 +3108,22 @@ def create_tab(ctx):
         # Tier 2: session-only config changes
         if cl.startswith(("/control set", "/control key", "/orca set")):
             return 2
+        # /ui: tier depends on property and target widget
+        if cl.startswith("/ui "):
+            _ui_sub = cl[4:].strip().split(None, 2)
+            if cl == "/ui list":
+                return 0
+            if len(_ui_sub) >= 2 and _ui_sub[1] in ("show", "options"):
+                return 0
+            if len(_ui_sub) >= 2 and _ui_sub[1] == "click":
+                # Clicking submit/recalc/transfer buttons = Tier 3
+                _btn = _ui_sub[0] if _ui_sub else ""
+                if any(k in _btn for k in ("submit", "recalc", "ssh", "archive", "transfer", "cancel", "override")):
+                    return 3
+                return 2  # other button clicks = Tier 2
+            if len(_ui_sub) >= 2 and _ui_sub[1] in ("value", "replace"):
+                return 2
+            return 1  # style, text, visible, width, height, disabled
         # Tier 1: navigation
         if cl.startswith(("/tab ", "/jobs", "/mode ", "/model ", "/provider ")):
             return 1
@@ -3766,6 +4184,7 @@ def create_tab(ctx):
                     _budget = int(_base_budget * _mult)
 
                     # Per-role model: switch to optimal model (Claude only)
+                    _effective_model = model_dropdown.value
                     if provider_dropdown.value == "claude":
                         _role_model = _AE.model_for_role(_cur_role)
                         _agent_settings = _get_agent_settings()
@@ -3805,8 +4224,13 @@ def create_tab(ctx):
                         _update_last_assistant("".join(chunks), role_label)
 
                     # Dashboard mode: auto-execute slash commands from agent output
-                    # and strip ACTION: lines from displayed chat
-                    if mode_dropdown.value == "dashboard" and chunks:
+                    # and strip ACTION: lines from displayed chat.
+                    # Continuation loop: if commands returned results, let the
+                    # agent process them (up to _MAX_CONT turns to prevent runaway).
+                    _MAX_DASHBOARD_CONT = 3
+                    _cont_turn = 0
+                    while mode_dropdown.value == "dashboard" and chunks and _cont_turn < _MAX_DASHBOARD_CONT:
+                        _cont_turn += 1
                         raw = "".join(chunks)
                         exec_results = _dashboard_auto_exec(raw)
                         # Remove ACTION: lines from visible output
@@ -3819,16 +4243,30 @@ def create_tab(ctx):
                                 cleaned or "(commands executed)",
                                 role_label,
                             )
-                        # Inject execution results into engine context so the
-                        # agent sees them on the next turn (feedback loop).
-                        if exec_results:
-                            feedback = "[Command results]\n" + "\n".join(exec_results)
-                            engine.messages.append(
-                                {"role": "user", "content": feedback}
-                            )
-                            engine.messages.append(
-                                {"role": "assistant", "content": "Noted."}
-                            )
+                        # No results → nothing to continue on
+                        if not exec_results:
+                            break
+                        # Inject results and run the agent again
+                        feedback = "[Command results]\n" + "\n".join(exec_results)
+                        engine.messages.append(
+                            {"role": "user", "content": feedback}
+                        )
+                        if engine._stop_requested:
+                            break
+                        # Continuation turn
+                        chunks.clear()
+                        thinking_chunks.clear()
+                        engine.stream_response(
+                            user_message=feedback,
+                            on_token=_on_token,
+                            on_tool_use=_on_tool_use,
+                            on_permission_denied=_on_permission_denied,
+                            on_thinking=_on_thinking,
+                            thinking_budget=_budget,
+                            memory_context=_memory,
+                        )
+                        if chunks:
+                            _update_last_assistant("".join(chunks), role_label)
 
                     # Show per-role cost
                     _role_cost = engine.cost_usd - _cost_before
