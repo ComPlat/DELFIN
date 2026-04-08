@@ -904,15 +904,18 @@ class AgentEngine:
         text = output or ""
         status = AgentEngine.extract_status_field(text)
 
-        # Session Manager: validate plan completeness before routing work
+        # Session Manager: validate plan completeness before routing work.
+        # Conversational responses (greetings, clarifications) are not plan
+        # attempts — let the pipeline pause for plan approval instead.
         if role_id == "session_manager":
-            errors = AgentEngine.validate_role_output(role_id, text)
-            if errors:
-                return (
-                    "pause",
-                    "schema",
-                    "Session Manager plan is incomplete: " + "; ".join(errors[:4]),
-                )
+            if not AgentEngine.is_conversational(role_id, text):
+                errors = AgentEngine.validate_role_output(role_id, text)
+                if errors:
+                    return (
+                        "pause",
+                        "schema",
+                        "Session Manager plan is incomplete: " + "; ".join(errors[:4]),
+                    )
 
         if role_id in {"research_agent", "critic_agent", "runtime_agent"}:
             if status == "reject":
@@ -971,11 +974,32 @@ class AgentEngine:
         return ("continue", "", "")
 
     @staticmethod
+    def is_conversational(role_id: str, output: str) -> bool:
+        """Check whether a role output is conversational rather than structured.
+
+        Returns True if the output does not look like a structured plan or
+        report attempt — i.e. the agent responded conversationally (greeting,
+        clarification, waiting for input) rather than producing work output.
+        """
+        text = (output or "").strip()
+        if not text:
+            return False
+        upper = text[:500].upper()
+        if role_id == "session_manager":
+            # If there's no plan heading and no template markers, it's conversational
+            return "## PLAN" not in upper and "### GOAL LOCK" not in upper
+        return False
+
+    @staticmethod
     def validate_role_output(role_id: str, output: str) -> list[str]:
         """Validate a role output against the required structured contract."""
         text = (output or "").strip()
         if not text:
             return ["empty output"]
+
+        # Conversational responses are valid — the agent is waiting for a real task
+        if AgentEngine.is_conversational(role_id, text):
+            return []
 
         upper_head = text[:300].upper()
         if "QUESTION:" in text:

@@ -506,6 +506,33 @@ def test_evaluate_role_gate_pauses_on_incomplete_session_manager_plan():
     assert "Goal lock" in message or "Stage gates" in message
 
 
+def test_evaluate_role_gate_skips_conversational_session_manager():
+    """Test that conversational SM responses don't trigger a schema gate."""
+    from delfin.agent.engine import AgentEngine
+
+    greeting = "Hallo! Welcome to DELFIN. What would you like to work on?"
+    action, gate_type, message = AgentEngine.evaluate_role_gate("session_manager", greeting)
+    assert action == "continue"
+    assert gate_type == ""
+
+
+def test_is_conversational_detects_greetings():
+    """Test that greetings are detected as conversational."""
+    from delfin.agent.engine import AgentEngine
+
+    assert AgentEngine.is_conversational("session_manager", "Hello! How can I help?") is True
+    assert AgentEngine.is_conversational("session_manager", "## PLAN\n**Task:** Fix bug") is False
+    assert AgentEngine.is_conversational("session_manager", "") is False
+
+
+def test_validate_role_output_accepts_conversational():
+    """Test that conversational SM output passes validation."""
+    from delfin.agent.engine import AgentEngine
+
+    errors = AgentEngine.validate_role_output("session_manager", "Hi there! What's the task?")
+    assert errors == []
+
+
 def test_evaluate_role_gate_continues_on_complete_session_manager_plan():
     """Test that a complete Session Manager plan passes the gate."""
     from delfin.agent.engine import AgentEngine
