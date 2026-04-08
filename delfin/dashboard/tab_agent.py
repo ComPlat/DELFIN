@@ -5040,14 +5040,41 @@ def create_tab(ctx):
         if _gate_review_role:
             _lower_msg = user_text.lower().strip().rstrip("!.?")
             if _lower_msg not in _APPROVAL_WORDS:
+                # Not an approval — re-send to same agent with user guidance
                 _append_system_message(
                     f"Pipeline paused after {_format_role_label(_gate_review_role)}. "
                     f"Reply 'go' to continue, or /reset to stop this cycle."
                 )
                 input_textarea.value = ""
                 return
+            # Gate approved — advance to next role instead of re-sending
+            # "go" to the same agent (which would re-review unchanged code).
             _set_active_gate()
+            prev_label = _format_role_label(engine.current_role)
+            engine.compact_for_next_role()
+            has_next = engine.advance_role()
+            if has_next:
+                next_label = _format_role_label(engine.current_role)
+                _record_cycle_event("handoff", f"{prev_label} -> {next_label}")
+                _append_system_message(
+                    f"--- Gate approved: {prev_label} \u2192 {next_label} ---"
+                )
+                # Replace user_text with handoff message for the next agent
+                original_task = ""
+                for msg in state.get("_chat_messages", []):
+                    if msg.get("role") == "user":
+                        original_task = msg.get("content", "")
+                        break
+                user_text = engine.build_handoff_message(original_task)
+            else:
+                _record_cycle_event("cycle", "Cycle complete")
+                _append_system_message("--- Cycle complete ---")
+                _update_status()
+                _update_pipeline_display(engine)
+                input_textarea.value = ""
+                return
             _update_status()
+            _update_pipeline_display(engine)
 
         input_textarea.value = ""
         _append_chat_message("user", user_text)
