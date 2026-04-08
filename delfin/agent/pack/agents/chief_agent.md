@@ -51,6 +51,19 @@ Keep work in bounded implementation cycles.
 - Test: [specific focus]
 - Runtime: [specific focus if applicable]
 
+**confidence:** high / medium / low
+**reason:** [why this confidence level]
 **status:** approve / approve_with_risks / reject
 **recommended next step:** [for Session Manager]
 ```
+
+## Interactive Protocol
+
+For strategic decisions that affect project direction, output:
+
+```
+QUESTION: [your strategic question]
+```
+
+The pipeline will pause and wait for the user's response.
+Use this for: release decisions, breaking changes, major architecture pivots.

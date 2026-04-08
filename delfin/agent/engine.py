@@ -89,17 +89,19 @@ _DEFAULT_THINKING_BUDGET = 10000
 # model hallucination from bypassing role restrictions.
 _READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
 _GIT_BASH = frozenset({"Read", "Grep", "Glob", "Bash"})  # Bash limited by prompt to git
+_RESEARCH_TOOLS = frozenset({"Read", "Grep", "Glob", "Bash", "WebSearch", "WebFetch"})
+_FULL_TOOLS = frozenset({"Read", "Grep", "Glob", "Bash", "Edit", "Write"})
 _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
     "dashboard_agent": _READ_TOOLS,             # read code to understand UI, no writes
-    "research_agent":  _GIT_BASH,
+    "research_agent":  _RESEARCH_TOOLS,         # web search + code reading
     "chief_agent":     _GIT_BASH,
     "session_manager": _GIT_BASH,
     "critic_agent":    _GIT_BASH,
     "reviewer_agent":  _GIT_BASH,
     "runtime_agent":   _GIT_BASH,
-    "test_agent":      frozenset({"Read", "Grep", "Glob", "Bash", "Edit", "Write"}),
-    "builder_agent":   frozenset({"Read", "Grep", "Glob", "Bash", "Edit", "Write"}),
-    "solo_agent":      frozenset({"Read", "Grep", "Glob", "Bash", "Edit", "Write"}),
+    "test_agent":      _FULL_TOOLS,
+    "builder_agent":   _FULL_TOOLS,
+    "solo_agent":      _FULL_TOOLS,
 }
 
 
@@ -415,6 +417,38 @@ class AgentEngine:
         """Return the recommended model for a role ('auto' = user's choice)."""
         return _ROLE_MODEL_MAP.get(role_id, "auto")
 
+    def _load_cycle_memory(self, max_entries: int = 10) -> str:
+        """Load recent cycle summaries for Session Manager context."""
+        import json
+        mem_path = Path.home() / "agent_workspace" / ".cycle_memory.jsonl"
+        if not mem_path.exists():
+            return ""
+        try:
+            lines = mem_path.read_text(encoding="utf-8").strip().splitlines()
+            recent = lines[-max_entries:]
+            entries = []
+            for line in recent:
+                try:
+                    entry = json.loads(line)
+                    entries.append(
+                        f"- [{entry.get('timestamp', '?')[:10]}] "
+                        f"{entry.get('mode', '?')}: "
+                        f"{entry.get('task', '?')[:80]} "
+                        f"→ {entry.get('verdict', '?')} "
+                        f"(retries={entry.get('retries', 0)}, "
+                        f"${entry.get('cost_usd', 0):.2f})"
+                    )
+                except (json.JSONDecodeError, KeyError):
+                    continue
+            if entries:
+                return (
+                    "\n\n--- Cycle Memory (recent tasks) ---\n"
+                    + "\n".join(entries)
+                )
+        except Exception:
+            pass
+        return ""
+
     def _build_test_handoff(self, user_task: str, prior_summary: str) -> str:
         """Build a test handoff with extracted acceptance criteria."""
         sm_output = self.role_outputs.get("session_manager", "")
@@ -450,16 +484,31 @@ class AgentEngine:
                 parts.append(f"### {rid}\n{text}")
             prior_summary = "\n\n".join(parts)
 
+        # Load cycle memory for Session Manager
+        _cycle_memory_ctx = ""
+        if role == "session_manager":
+            _cycle_memory_ctx = self._load_cycle_memory()
+
         # Role-specific handoff instructions
         instructions = {
             "session_manager": (
                 f"The user wants:\n\n{user_task}\n\n"
                 f"Create a structured PLAN in the mandatory format. "
-                f"Start by running `git diff --stat` to see the current state."
+                f"Start by running `git diff --stat` to see the current state.\n"
+                f"If the task needs external research, add RESEARCH_NEEDED: [topic]. "
+                f"If not, add SKIP_RESEARCH.\n"
+                f"If the task is ambiguous, ask the user with QUESTION: [question]."
+                + (_cycle_memory_ctx or "")
             ),
             "chief_agent": (
                 f"The user wants:\n\n{user_task}\n\n"
                 f"Provide strategic direction as a CHIEF DIRECTIVE."
+            ),
+            "research_agent": (
+                f"Research the following for this task:\n\n{user_task}\n\n"
+                f"Prior agent outputs:\n{prior_summary}\n\n"
+                f"Focus on actionable findings for the Builder. "
+                f"Use WebSearch and WebFetch. Max 5 searches."
             ),
             "critic_agent": (
                 f"Review the plan and/or changes for this task:\n\n{user_task}\n\n"
@@ -475,7 +524,7 @@ class AgentEngine:
                 f"Implement the following task:\n\n{user_task}\n\n"
                 f"Prior agent outputs:\n{prior_summary}\n\n"
                 f"Follow the PLAN from Session Manager. Address all critical/major "
-                f"findings from Critic/Runtime. Run tests after implementation."
+                f"findings from Critic/Runtime/Research. Run tests after implementation."
             ),
             "test_agent": self._build_test_handoff(user_task, prior_summary),
         }

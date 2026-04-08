@@ -68,8 +68,21 @@ SKIP — no runtime/HPC impact, skipping runtime review.
 ### Environment assumptions
 - [assumption found] — [is it safe?]
 
+**confidence:** high / medium / low
+**reason:** [why this confidence level]
 **status:** approve / approve_with_risks / reject
 **key findings:** [summary list]
 **open risks:** [list]
 **recommended next step:** [for Builder]
 ```
+
+## Interactive Protocol
+
+If you find a critical runtime issue that requires a user decision
+(e.g., local vs cluster behavior trade-off), output:
+
+```
+QUESTION: [your question here]
+```
+
+The pipeline will pause and wait for the user's response.

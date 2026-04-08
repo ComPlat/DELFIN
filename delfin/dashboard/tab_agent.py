@@ -3996,6 +3996,32 @@ def create_tab(ctx):
             if _lower in _APPROVAL_WORDS:
                 _sm_approval = True
 
+        # Handle QUESTION: protocol — agent asked user, user replied
+        _question_role = state.pop("_awaiting_agent_question", None)
+        if _question_role:
+            # Inject user answer back to same agent (don't advance)
+            current_msg = f"[User answer to your question]\n{user_text}"
+            state["_question_answer"] = current_msg
+
+        # Handle cost governor resume
+        if state.pop("_cost_paused", False):
+            _lower_msg = user_text.lower().strip().rstrip("!.?")
+            if _lower_msg not in _APPROVAL_WORDS:
+                _append_system_message("Pipeline stopped. Use /reset for new task.")
+                input_textarea.value = ""
+                return
+
+        # Handle conflict resolution
+        if state.pop("_awaiting_conflict_resolution", False):
+            _lower_msg = user_text.lower().strip().rstrip("!.?")
+            if "reject" in _lower_msg or "stop" in _lower_msg or "nein" in _lower_msg:
+                _append_system_message("Pipeline stopped by user. Use /reset for new task.")
+                if engine:
+                    engine.request_stop()
+                input_textarea.value = ""
+                return
+            # else: continue to test
+
         # Handle findings review response
         _findings_review_role = state.pop("_awaiting_findings_review", None)
         if _findings_review_role:
@@ -4302,10 +4328,24 @@ def create_tab(ctx):
                     if engine._stop_requested:
                         break
 
+                    # --- Cost Governor ---
+                    _cost_budget = float(
+                        _get_agent_settings().get("max_cycle_cost_usd", 5.0)
+                    )
+                    if engine.cost_usd > _cost_budget > 0:
+                        _append_system_message(
+                            f"⚠️ Cost limit reached "
+                            f"(${engine.cost_usd:.2f} / ${_cost_budget:.2f}). "
+                            f"Pipeline paused. Reply 'go' to continue or /reset."
+                        )
+                        state["_cost_paused"] = True
+                        _update_status()
+                        break
+
                     # --- Auto-advance logic ---
                     prev_role_id = engine.current_role
 
-                    # --- Conditional skip: if agent says SKIP, advance ---
+                    # --- Get last assistant output for all gate checks ---
                     last_out = ""
                     for msg in reversed(engine.messages):
                         if msg["role"] == "assistant":
@@ -4328,6 +4368,35 @@ def create_tab(ctx):
                         current_msg = engine.build_handoff_message(original_task)
                         continue
 
+                    # --- QUESTION: Protocol — any agent can ask the user ---
+                    if "QUESTION:" in last_out:
+                        import re as _re_q
+                        _q_match = _re_q.search(
+                            r"QUESTION:\s*(.+?)(?:\n\n|\Z)", last_out, _re_q.DOTALL
+                        )
+                        if _q_match:
+                            _q_text = _q_match.group(1).strip()
+                            _append_system_message(
+                                f"--- {_format_role_label(prev_role_id)} "
+                                f"needs your input ---\n{_q_text}"
+                            )
+                            state["_awaiting_agent_question"] = prev_role_id
+                            _update_status()
+                            _update_pipeline_display(engine)
+                            break
+
+                    # --- Confidence Gate — pause on low confidence ---
+                    if "**confidence:** low" in last_out.lower():
+                        _append_system_message(
+                            f"--- {_format_role_label(prev_role_id)} "
+                            f"has low confidence. Review output and "
+                            f"reply 'go' to continue or give guidance ---"
+                        )
+                        state["_awaiting_agent_question"] = prev_role_id
+                        _update_status()
+                        _update_pipeline_display(engine)
+                        break
+
                     # Session Manager: STOP and wait for user approval
                     # The SM is conversational — user must review the plan
                     # and explicitly approve before the pipeline continues.
@@ -4336,10 +4405,10 @@ def create_tab(ctx):
                         _update_pipeline_display(engine)
                         break
 
-                    # Dynamic routing: parse SM's "Skip agents" section
-                    # and remove skipped roles from the route.
+                    # Dynamic routing: parse SM's routing directives.
                     if prev_role_id == "session_manager" and _sm_approval:
-                        _SKIPPABLE = {"critic_agent", "reviewer_agent", "runtime_agent"}
+                        # --- Skip agents ---
+                        _SKIPPABLE = {"critic_agent", "reviewer_agent", "runtime_agent", "research_agent"}
                         skip_section = re.search(
                             r"### Skip agents\s*\n(.*?)(?:\n###|\n\*\*|$)",
                             last_out, re.DOTALL
@@ -4359,6 +4428,49 @@ def create_tab(ctx):
                                     f"--- Dynamic routing: skipping "
                                     f"{', '.join(labels)} (SM recommendation) ---"
                                 )
+
+                        # --- SKIP_RESEARCH shorthand ---
+                        if "SKIP_RESEARCH" in last_out and "research_agent" in engine.route:
+                            engine.route = [r for r in engine.route if r != "research_agent"]
+                            _append_system_message(
+                                "--- Dynamic routing: skipping Research Agent "
+                                "(no external info needed) ---"
+                            )
+
+                        # --- Add agents (NEW) ---
+                        _ADDABLE = {"research_agent", "runtime_agent", "critic_agent", "reviewer_agent"}
+                        add_section = re.search(
+                            r"### Add agents\s*\n(.*?)(?:\n###|\n\*\*|$)",
+                            last_out, re.DOTALL
+                        )
+                        if add_section:
+                            add_text = add_section.group(1)
+                            added = []
+                            for role_name in _ADDABLE:
+                                if role_name in add_text and role_name not in engine.route:
+                                    # Insert before builder_agent
+                                    _b_idx = (engine.route.index("builder_agent")
+                                              if "builder_agent" in engine.route
+                                              else len(engine.route))
+                                    engine.route.insert(_b_idx, role_name)
+                                    added.append(role_name)
+                            if added:
+                                labels = [_format_role_label(a) for a in added]
+                                _append_system_message(
+                                    f"--- Dynamic routing: adding "
+                                    f"{', '.join(labels)} (SM recommendation) ---"
+                                )
+
+                        # --- RESEARCH_NEEDED shorthand ---
+                        if "RESEARCH_NEEDED:" in last_out and "research_agent" not in engine.route:
+                            _b_idx = (engine.route.index("builder_agent")
+                                      if "builder_agent" in engine.route
+                                      else len(engine.route))
+                            engine.route.insert(_b_idx, "research_agent")
+                            _append_system_message(
+                                "--- Dynamic routing: adding Research Agent "
+                                "(SM requested research) ---"
+                            )
 
                     # --- Critic/Runtime findings gate ---
                     # Pause after Critic or Runtime Agent so the user can
@@ -4436,6 +4548,24 @@ def create_tab(ctx):
                             _update_pipeline_display(engine)
                             continue
 
+                    # --- Conflict Resolution: Critic rejected but Builder approved ---
+                    if prev_role_id == "builder_agent":
+                        _critic_out = engine.role_outputs.get("critic_agent", "")
+                        if ("reject" in _critic_out[:500].lower()
+                                and "approve" in last_out[:500].lower()
+                                and not state.get("_conflict_resolved")):
+                            _append_system_message(
+                                "--- ⚠️ CONFLICT: Critic rejected the plan but "
+                                "Builder approved the implementation. Review both "
+                                "outputs and reply 'go' to continue testing, "
+                                "or 'reject' to stop ---"
+                            )
+                            state["_awaiting_conflict_resolution"] = True
+                            _update_status()
+                            _update_pipeline_display(engine)
+                            break
+                        state["_conflict_resolved"] = True
+
                     # Dashboard / follow-up: never advance — keep conversation open
                     if mode_dropdown.value == "dashboard" or state.get("_follow_up"):
                         _update_status()
@@ -4446,12 +4576,33 @@ def create_tab(ctx):
                     if not has_next:
                         state.pop("_retry_used", None)
                         state.pop("_builder_retries", None)
+                        state.pop("_conflict_resolved", None)
                         # Acceptance gate: check if test agent approved
                         _cycle_verdict = _check_acceptance_gate(engine)
                         _append_system_message(
                             f"--- Cycle complete {_cycle_verdict} ---"
                         )
                         _update_pipeline_display(engine)
+
+                        # --- Persistent Cycle Memory ---
+                        try:
+                            import json as _json_mem
+                            from datetime import datetime as _dt_mem
+                            _mem_path = ctx.agent_dir / ".cycle_memory.jsonl"
+                            _cycle_mem = {
+                                "task": original_task[:200],
+                                "mode": mode_dropdown.value,
+                                "route": engine.route,
+                                "verdict": _cycle_verdict,
+                                "retries": state.get("_builder_retries", 0),
+                                "cost_usd": round(engine.cost_usd, 4),
+                                "timestamp": _dt_mem.now().isoformat(),
+                            }
+                            with open(_mem_path, "a", encoding="utf-8") as _mf:
+                                _mf.write(_json_mem.dumps(_cycle_mem) + "\n")
+                        except Exception:
+                            pass
+
                         # Enter follow-up mode: route to builder for continued work
                         _fu_role = "builder_agent"
                         if _fu_role not in engine.route:

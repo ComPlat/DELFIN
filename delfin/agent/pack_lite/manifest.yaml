@@ -31,6 +31,7 @@ modes:
     file: modes/reviewed.md
     route:
       - session_manager
+      - research_agent
       - critic_agent
       - builder_agent
       - reviewer_agent
@@ -39,6 +40,7 @@ modes:
     file: modes/cluster.md
     route:
       - session_manager
+      - research_agent
       - runtime_agent
       - critic_agent
       - builder_agent
@@ -57,6 +59,7 @@ modes:
     route:
       - chief_agent
       - session_manager
+      - research_agent
       - runtime_agent
       - critic_agent
       - builder_agent

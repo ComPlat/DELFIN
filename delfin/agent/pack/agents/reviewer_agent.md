@@ -64,4 +64,7 @@ SKIP — trivial change, no code review needed.
 - ISSUES: Critical or major problems found. Builder must fix before testing.
 
 **Summary:** [1-2 sentence overall assessment]
+
+**confidence:** high / medium / low
+**reason:** [why this confidence level]
 ```

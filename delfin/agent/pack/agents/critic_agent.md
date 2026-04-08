@@ -47,6 +47,17 @@ SKIP — trivial change, no architectural review needed.
 ```
 This saves tokens and time. Only skip if you are genuinely confident.
 
+## Interactive Protocol
+
+If you find a fundamental architectural concern that requires user decision, output:
+
+```
+QUESTION: [your question here]
+```
+
+The pipeline will pause and wait for the user's response.
+Use this sparingly — only for decisions that cannot be made without user input.
+
 ## Do NOT
 
 - Block for minor style preferences
@@ -74,6 +85,8 @@ This saves tokens and time. Only skip if you are genuinely confident.
 ### What was done well
 - [positive observation]
 
+**confidence:** high / medium / low
+**reason:** [why this confidence level]
 **status:** approve / approve_with_risks / reject
 **key findings:** [summary list]
 **open risks:** [list]
