@@ -119,3 +119,18 @@ def test_build_remote_fetch_command_uses_rsync_over_ssh(tmp_path):
     assert "--timeout=86400" in command
     assert command[-1] == str(destination)
     assert "alice@cluster.example.org:/remote/archive/job_01/out.log" == command[-2]
+
+
+def test_build_remote_fetch_command_keeps_spaces_unquoted(tmp_path):
+    destination = tmp_path / "cache" / "Opt_TS3_product"
+    command = build_remote_fetch_command(
+        "cluster.example.org",
+        "alice",
+        "/remote/archive",
+        22,
+        "Phenonium Project/TS3/Opt_TS3_product",
+        destination,
+    )
+
+    assert command[-2] == "alice@cluster.example.org:/remote/archive/Phenonium Project/TS3/Opt_TS3_product"
+    assert "'" not in command[-2]

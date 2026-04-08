@@ -44,7 +44,7 @@ def test_normalize_ssh_transfer_settings_rejects_invalid_host():
 def test_remote_directory_spec_keeps_tilde_expansion_with_spaces():
     assert (
         remote_directory_spec("alice", "cluster.example.org", "~/archive target")
-        == "alice@cluster.example.org:~/'archive target/'"
+        == "alice@cluster.example.org:~/archive target/"
     )
 
 
@@ -170,6 +170,21 @@ def test_build_rsync_download_command_preserves_remote_relative_paths(tmp_path):
     assert "alice@cluster.example.org:/remote/archive/./job_01/out.log" == command[-3]
     assert "alice@cluster.example.org:/remote/archive/./job_02" == command[-2]
     assert command[-1] == str(destination)
+
+
+def test_build_rsync_download_command_keeps_spaces_unquoted(tmp_path):
+    destination = tmp_path / "archive"
+    command = build_rsync_download_command(
+        ["Phenonium Project/TS3/Opt_TS3_product"],
+        "cluster.example.org",
+        "alice",
+        "/remote/archive",
+        22,
+        destination,
+    )
+
+    assert command[-2] == "alice@cluster.example.org:/remote/archive/./Phenonium Project/TS3/Opt_TS3_product"
+    assert "'" not in command[-2]
 
 
 def test_build_rsync_verify_download_command_uses_checksum_dry_run(tmp_path):

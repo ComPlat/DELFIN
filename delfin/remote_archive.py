@@ -16,7 +16,6 @@ from delfin.ssh_transfer_jobs import (
     DEFAULT_RSYNC_TIMEOUT_SECONDS,
     build_rsync_ssh_command,
     build_ssh_command_base,
-    quote_remote_path,
 )
 from delfin.user_settings import normalize_ssh_transfer_settings
 
@@ -204,7 +203,7 @@ def build_remote_fetch_command(host, user, remote_path, port, relative_path, loc
         f"--timeout={DEFAULT_RSYNC_TIMEOUT_SECONDS}",
         "-e",
         build_rsync_ssh_command(host, user, port),
-        f"{user}@{host}:{quote_remote_path(remote_abs)}",
+        f"{user}@{host}:{remote_abs}",
         str(destination),
     ]
 

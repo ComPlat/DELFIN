@@ -50,11 +50,11 @@ def remote_directory_spec(user, host, remote_path):
     path = str(remote_path)
     if not path.endswith("/"):
         path = f"{path}/"
-    return f"{user}@{host}:{quote_remote_path(path)}"
+    return f"{user}@{host}:{path}"
 
 
 def remote_source_spec(user, host, remote_path):
-    return f"{user}@{host}:{quote_remote_path(remote_path)}"
+    return f"{user}@{host}:{remote_path}"
 
 
 def _default_control_path():
