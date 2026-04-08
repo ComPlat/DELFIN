@@ -5476,10 +5476,16 @@ def create_tab(ctx):
                         _update_pipeline_display(engine)
                         break
 
-                    # Session Manager: STOP and wait for user approval
-                    # The SM is conversational — user must review the plan
-                    # and explicitly approve before the pipeline continues.
+                    # Session Manager: STOP and wait for user approval.
+                    # If the SM responded conversationally (greeting, clarification),
+                    # just wait for the next user message — no gate needed.
                     if prev_role_id == "session_manager" and not _sm_approval:
+                        if _AE.is_conversational(prev_role_id, last_out):
+                            # Conversational response — stay in chat mode,
+                            # next user message will loop back here.
+                            _update_status()
+                            _update_pipeline_display(engine)
+                            break
                         _append_gate_message(
                             "plan-approval",
                             prev_role_id,
