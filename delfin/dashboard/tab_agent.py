@@ -5486,16 +5486,40 @@ def create_tab(ctx):
                             _update_status()
                             _update_pipeline_display(engine)
                             break
-                        _append_gate_message(
-                            "plan-approval",
-                            prev_role_id,
-                            "Plan approval required",
-                            "The Session Manager finished planning and is waiting for explicit approval.",
-                            "Reply 'go' to start the remaining pipeline or give corrections first.",
+
+                        # Auto-approve low-risk plans in quick mode to
+                        # avoid an unnecessary round-trip.
+                        _plan_risk = _AE.extract_plan_field(last_out, "Risk").lower().strip()
+                        _auto_approve = (
+                            engine.mode == "quick"
+                            and _plan_risk in ("low", "")
                         )
-                        _update_status()
-                        _update_pipeline_display(engine)
-                        break
+                        if _auto_approve:
+                            _sm_approval = True
+                            _append_chat_message(
+                                "system", "",
+                                role_label="Session Manager",
+                                content_html=(
+                                    '<span class="delfin-agent-queue">'
+                                    'Low-risk plan auto-approved in quick mode'
+                                    '</span>'
+                                ),
+                            )
+                        else:
+                            _append_gate_message(
+                                "plan-approval",
+                                prev_role_id,
+                                "Plan approval required",
+                                (
+                                    "The Session Manager produced a plan. "
+                                    "Review it and approve via the Continue button "
+                                    "or type corrections."
+                                ),
+                                "",
+                            )
+                            _update_status()
+                            _update_pipeline_display(engine)
+                            break
 
                     # Dynamic routing: parse SM's routing directives.
                     if prev_role_id == "session_manager" and _sm_approval:
