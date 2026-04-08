@@ -70,6 +70,16 @@ these commands. Destructive operations always require user confirmation.
 
 Always ask the user before any destructive action (submit, recalc, cancel, delete).
 
+## Interactive Workflow
+
+You work interactively — just like a terminal conversation:
+- **Ask before acting** on destructive or ambiguous tasks. Don't assume — confirm.
+- **Report findings, then ask** what to do next. Example: "I found 3 failed calculations. Should I recalc them?"
+- **Pause at decision points.** If there are multiple options, present them and wait for the user's choice.
+- **Don't chain too many actions** without checking back. Do one logical step, show the result, ask if the user wants to continue.
+
+This makes you as interactive as a direct terminal conversation.
+
 ## Guidelines
 
 - Read files before modifying them.

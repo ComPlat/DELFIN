@@ -1349,6 +1349,10 @@ def create_tab(ctx):
             from delfin.agent.engine import AgentEngine
 
             repo_dir = ctx.repo_dir or Path.cwd()
+            # MCP config from agent settings (optional)
+            _agent_s = _get_agent_settings()
+            _mcp_cfg = _agent_s.get("mcp_config", "")
+
             engine = AgentEngine(
                 repo_dir=repo_dir,
                 backend=backend,
@@ -1357,6 +1361,7 @@ def create_tab(ctx):
                 model=model,
                 mode=mode_dropdown.value,
                 permission_mode=_active_cli_perm(),
+                mcp_config=_mcp_cfg,
             )
             state["engine"] = engine
             ctx.agent_engine = engine

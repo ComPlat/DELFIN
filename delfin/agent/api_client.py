@@ -97,10 +97,12 @@ class CLIClient(_BaseClient):
     DEFAULT_MODEL = "sonnet"
 
     def __init__(self, model: str = "", claude_path: str = "",
-                 permission_mode: str = "", cwd: str = ""):
+                 permission_mode: str = "", cwd: str = "",
+                 mcp_config: str = ""):
         self.model = model or self.DEFAULT_MODEL
         self.permission_mode = permission_mode
         self.cwd = cwd or None
+        self.mcp_config = mcp_config  # path to MCP config JSON or empty
         self.claude_path = claude_path or shutil.which("claude") or "claude"
         if not shutil.which(self.claude_path):
             raise FileNotFoundError(
@@ -122,6 +124,7 @@ class CLIClient(_BaseClient):
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
+            "--include-hook-events",
             "--model", self.model,
             "--append-system-prompt", system,
         ]
@@ -131,6 +134,9 @@ class CLIClient(_BaseClient):
                 cmd.append("--dangerously-skip-permissions")
             else:
                 cmd.extend(["--permission-mode", self.permission_mode])
+
+        if self.mcp_config:
+            cmd.extend(["--mcp-config", self.mcp_config])
 
         if session_id:
             cmd.extend(["--resume", session_id])
@@ -876,6 +882,7 @@ def create_client(
     claude_path: str = "",
     permission_mode: str = "",
     cwd: str = "",
+    mcp_config: str = "",
 ) -> _BaseClient:
     """Create the appropriate client backend.
 
@@ -913,4 +920,5 @@ def create_client(
     if backend == "api":
         return APIClient(api_key=api_key, model=model)
     return CLIClient(model=model, claude_path=claude_path,
-                     permission_mode=permission_mode, cwd=cwd)
+                     permission_mode=permission_mode, cwd=cwd,
+                     mcp_config=mcp_config)

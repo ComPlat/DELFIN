@@ -133,13 +133,14 @@ class AgentEngine:
         mode: str = "quick",
         permission_mode: str = "",
         pack_dir: Path | None = None,
+        mcp_config: str = "",
     ):
         self.repo_dir = Path(repo_dir)
         self.loader = PromptLoader(repo_dir=pack_dir)
         self.client = create_client(
             backend=backend, provider=provider, api_key=api_key,
             model=model, permission_mode=permission_mode,
-            cwd=str(self.repo_dir),
+            cwd=str(self.repo_dir), mcp_config=mcp_config,
         )
         self.backend = backend
         self.provider = provider
