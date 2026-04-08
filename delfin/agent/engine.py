@@ -37,12 +37,26 @@ _ESCALATION_PATTERNS: list[tuple[str, str]] = [
     (r"backend_local\.py", "cluster"),
     (r"submit_templates/", "cluster"),
     (r"orca_recovery\.py", "cluster"),
-    # reviewed mode triggers
+    # reviewed mode triggers — infrastructure
     (r"delfin/cli\.py", "reviewed"),
     (r"pipeline\.py", "reviewed"),
     (r"parallel_classic_manually\.py", "reviewed"),
     (r"delfin/api\.py", "reviewed"),
     (r"config\.py", "reviewed"),
+    # reviewed mode triggers — chemistry workflows
+    (r"occupier\.py", "reviewed"),
+    (r"occupier_auto\.py", "reviewed"),
+    (r"esd_module\.py", "reviewed"),
+    (r"esd_input_generator\.py", "reviewed"),
+    (r"orca\.py", "reviewed"),
+    (r"xtb_crest\.py", "reviewed"),
+    (r"build_up_complex", "reviewed"),
+    (r"stability_constant\.py", "reviewed"),
+    (r"calculators\.py", "reviewed"),
+    (r"ensemble_nmr\.py", "reviewed"),
+    (r"smiles_converter\.py", "reviewed"),
+    (r"tadf_xtb\.py", "reviewed"),
+    (r"hyperpol\.py", "reviewed"),
 ]
 
 # Mode escalation order (higher index = heavier mode)
@@ -63,10 +77,21 @@ _DASHBOARD_KEYWORDS = (
     "open calc", "open calculation", "switch tab", "agent tab", "recalc",
 )
 _CHEMISTRY_KEYWORDS = (
+    # Core QC concepts
     "dft", "functional", "basis set", "dispersion", "solvation", "solvent model",
     "redox", "nmr", "excited state", "uv-vis", "spin state", "thermochemistry",
     "electrochem", "orca method", "smiles", "metal complex", "ligand", "conformer",
     "geometry optimization", "oxidation state", "coordination", "reaction mechanism",
+    # QC methods and programs
+    "crest", "censo", "anmr", "gfn", "gfn2", "semiempirical",
+    "cam-b3lyp", "pbe0", "tpss", "b97", "range-separated", "hybrid functional",
+    "multireference", "ccsd", "coupled cluster", "casscf", "broken symmetry",
+    # Properties and analysis
+    "frequency", "vibration", "ir spectrum", "transition state", "irc",
+    "homo", "lumo", "nbo", "population analysis", "spin-orbit",
+    # DELFIN-specific workflows
+    "occupier", "preoptimization", "preopt", "qm/mm", "molecular dynamics",
+    "stability constant", "log k", "hyperpolarizability", "tadf",
 )
 _CODE_CHANGE_KEYWORDS = (
     "fix", "implement", "change", "patch", "refactor", "add", "update", "edit",
@@ -111,7 +136,7 @@ _ROLE_MODEL_MAP: dict[str, str] = {
     "test_agent": "haiku",        # run tests, assert results
     "solo_agent": "auto",         # user's choice
     "dashboard_agent": "haiku",   # only parses slash commands
-    "research_agent": "haiku",    # summarization, not generation
+    "research_agent": "sonnet",   # chemistry method synthesis needs depth
 }
 
 _ROLE_THINKING_BUDGETS: dict[str, int] = {
@@ -122,7 +147,7 @@ _ROLE_THINKING_BUDGETS: dict[str, int] = {
     "builder_agent": 50000,       # complex implementation
     "reviewer_agent": 8000,       # review check
     "test_agent": 8000,           # test execution
-    "research_agent": 8000,       # research summary
+    "research_agent": 16000,      # deep chemistry method analysis
     "solo_agent": 64000,          # scales: low=32k, medium=64k, high=128k
     "dashboard_agent": 32000,     # scales: low=16k, medium=32k, high=64k
 }
@@ -743,14 +768,21 @@ class AgentEngine:
                 reasons.append(f"dashboard signals: {', '.join(dashboard_hits[:3])}")
             if stripped.startswith("/"):
                 reasons.append("slash-command style request")
-        elif chemistry_score >= max(2, code_score) and not code_change_hits:
+        elif chemistry_score >= 2:
             task_class = "chemistry"
-            intent = "research"
-            mode = "research"
-            confidence = "high" if chemistry_score >= 4 else "medium"
-            reasons.append("chemistry/scientific method signals detected")
             if chemistry_hits:
                 reasons.append(f"chemistry terms: {', '.join(chemistry_hits[:3])}")
+            if code_change_hits:
+                # Chemistry-informed code change → needs research context before building
+                intent = "change"
+                mode = "reviewed"
+                confidence = "high" if chemistry_score >= 4 else "medium"
+                reasons.append("chemistry code change needs research context")
+            else:
+                intent = "research"
+                mode = "research"
+                confidence = "high" if chemistry_score >= 4 else "medium"
+                reasons.append("chemistry/scientific method question")
         else:
             task_class = "coding"
             is_question = bool("?" in text or code_question_hits)

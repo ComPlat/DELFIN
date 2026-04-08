@@ -851,6 +851,58 @@ def test_recommend_task_route_escalates_reviewed_for_api_semantics():
     assert decision["intent"] == "change"
 
 
+def test_recommend_task_route_chemistry_code_change_goes_reviewed():
+    """Chemistry + code change verbs should route to reviewed (not quick)."""
+    from delfin.agent.engine import AgentEngine
+
+    decision = AgentEngine.recommend_task_route(
+        "Fix the CREST conformer search implementation for metal complexes.",
+        "quick",
+    )
+    assert decision["mode"] == "reviewed"
+    assert decision["task_class"] == "chemistry"
+    assert decision["intent"] == "change"
+
+
+def test_recommend_task_route_crest_keyword_recognized():
+    """Verify that new chemistry keywords like CREST are detected."""
+    from delfin.agent.engine import AgentEngine
+
+    decision = AgentEngine.recommend_task_route(
+        "What is the best CREST conformer search protocol for transition metals?",
+        "dashboard",
+    )
+    assert decision["task_class"] == "chemistry"
+    assert decision["mode"] == "research"
+
+
+def test_recommend_task_route_occupier_code_change():
+    """Changes to OCCUPIER workflow files should escalate to reviewed."""
+    from delfin.agent.engine import AgentEngine
+
+    decision = AgentEngine.recommend_task_route(
+        "Refactor the OCCUPIER auto tree logic in delfin/occupier_auto.py.",
+        "quick",
+    )
+    assert decision["mode"] == "reviewed"
+
+
+def test_suggest_mode_escalates_for_chemistry_files():
+    """Chemistry workflow files should trigger reviewed mode suggestion."""
+    from delfin.agent.engine import AgentEngine
+
+    assert AgentEngine.suggest_mode("Fix delfin/esd_module.py", "quick") == "reviewed"
+    assert AgentEngine.suggest_mode("Fix delfin/xtb_crest.py", "quick") == "reviewed"
+    assert AgentEngine.suggest_mode("Fix delfin/calculators.py", "quick") == "reviewed"
+
+
+def test_research_agent_uses_sonnet():
+    """Research agent should use sonnet for chemistry method synthesis."""
+    from delfin.agent.engine import AgentEngine
+
+    assert AgentEngine.model_for_role("research_agent") == "sonnet"
+
+
 def test_thinking_budget_for_role():
     """Test that different roles get different thinking budgets."""
     from delfin.agent.engine import AgentEngine
