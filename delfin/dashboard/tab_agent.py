@@ -2349,15 +2349,27 @@ def create_tab(ctx):
         # /control validate — validate CONTROL content
         if cmd == "/control validate":
             cw = ctx.submit_refs.get("control_widget")
-            validate_fn = ctx.submit_refs.get("handle_validate_control")
-            if cw and validate_fn:
-                try:
-                    validate_fn(None)
-                    _append_system_message("CONTROL validation triggered. Check Submit tab for results.")
-                except Exception as exc:
-                    _append_system_message(f"Validation error: {exc}")
-            else:
+            if not cw:
                 _append_system_message("Submit tab not available.")
+                return True
+            try:
+                from delfin.dashboard.tab_submit import validate_control_text, get_esd_hints
+                errors = validate_control_text(cw.value)
+                lines = []
+                if errors:
+                    lines.append("CONTROL validation failed:")
+                    for err in errors:
+                        lines.append(f"  - {err}")
+                else:
+                    lines.append("CONTROL looks valid.")
+                hints = get_esd_hints(cw.value)
+                if hints:
+                    lines.append("ESD hints:")
+                    for h in hints:
+                        lines.append(f"  i {h}")
+                _append_system_message("\n".join(lines))
+            except Exception as exc:
+                _append_system_message(f"Validation error: {exc}")
             return True
 
         # /submit — trigger job submission from Submit tab
