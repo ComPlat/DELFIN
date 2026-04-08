@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import concurrent.futures
 import math
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -541,6 +543,82 @@ def _is_metal_nitrogen_complex(smiles: str) -> bool:
     return has_metal and has_coord_n
 
 
+# ---------------------------------------------------------------------------
+# Timeout-guarded embedding
+# ---------------------------------------------------------------------------
+_EMBED_TIMEOUT: float = float(os.environ.get("DELFIN_EMBED_TIMEOUT", "10"))
+"""Per-call timeout (seconds) for RDKit EmbedMolecule / stk embedding.
+
+Large metal complexes with highly connected ring systems can cause ETKDG
+distance-bounds calculation to hang indefinitely.  This timeout prevents
+the converter from blocking forever.  Override via env var if needed.
+"""
+
+_OB_ROTOR_TIMEOUT: float = float(os.environ.get("DELFIN_OB_ROTOR_TIMEOUT", "15"))
+"""Per-call timeout (seconds) for Open Babel rotor search."""
+
+
+def _embed_with_timeout(mol, params=None, timeout: Optional[float] = None):
+    """Run AllChem.EmbedMolecule with a timeout guard.
+
+    Returns the embed result (0 on success, -1 on failure/timeout).
+    The *mol* is modified in-place on success (same as EmbedMolecule).
+    """
+    if timeout is None:
+        timeout = _EMBED_TIMEOUT
+
+    # Fast path: skip timeout machinery for very small molecules
+    if mol.GetNumAtoms() < 40:
+        if params is not None:
+            return AllChem.EmbedMolecule(mol, params)
+        return AllChem.EmbedMolecule(mol)
+
+    result = [-1]
+    exc_holder = [None]
+
+    def _do_embed():
+        try:
+            if params is not None:
+                result[0] = AllChem.EmbedMolecule(mol, params)
+            else:
+                result[0] = AllChem.EmbedMolecule(mol)
+        except Exception as e:
+            exc_holder[0] = e
+
+    t = threading.Thread(target=_do_embed, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+
+    if t.is_alive():
+        logger.debug(
+            "EmbedMolecule timed out after %.1fs for mol with %d atoms",
+            timeout, mol.GetNumAtoms(),
+        )
+        # Thread cannot be killed; it will finish eventually in the background.
+        # Return failure so the caller moves on to the next strategy.
+        return -1
+
+    if exc_holder[0] is not None:
+        raise exc_holder[0]
+
+    return result[0]
+
+
+def _make_random_embed_params(seed: int = 42):
+    """Create minimal embed params that skip ETKDG torsion/knowledge checks.
+
+    These are much faster for complex metal ring systems where the ETKDG
+    distance bounds matrix computation can hang.
+    """
+    params = AllChem.EmbedParameters()
+    params.randomSeed = seed
+    params.useRandomCoords = True
+    params.useBasicKnowledge = False
+    params.useExpTorsionAnglePrefs = False
+    params.enforceChirality = False
+    return params
+
+
 def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """Try multiple parsing strategies for metal complexes.
 
@@ -569,26 +647,42 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
         smiles_variants.append(denormalized)
 
     # Strategy 1: Try stk first (good for metal complexes)
-    # stk handles H atoms correctly based on the SMILES notation
+    # stk handles H atoms correctly based on the SMILES notation.
+    # stk.BuildingBlock internally runs ETKDG embedding which can hang
+    # on complex metal ring systems → guard with timeout.
     if STK_AVAILABLE:
         for smi in smiles_variants:
             try:
-                bb = stk.BuildingBlock(smi)
-                mol = bb.to_rdkit_mol()
+                _stk_result = [None]
+
+                def _stk_build(s=smi):
+                    try:
+                        bb = stk.BuildingBlock(s)
+                        _stk_result[0] = bb.to_rdkit_mol()
+                    except Exception:
+                        _stk_result[0] = None
+
+                _st = threading.Thread(target=_stk_build, daemon=True)
+                _st.start()
+                _st.join(timeout=_EMBED_TIMEOUT)
+                if _st.is_alive():
+                    errors.append(f"stk({smi[:30]}...): timed out")
+                    continue
+                mol = _stk_result[0]
                 if mol is not None:
                     # Embed if needed
                     if mol.GetNumConformers() == 0:
                         params = AllChem.ETKDGv3()
                         params.randomSeed = 42
                         params.useRandomCoords = True
-                        result = AllChem.EmbedMolecule(mol, params)
+                        result = _embed_with_timeout(mol, params)
+                        if result != 0:
+                            # Fallback: permissive embed (no ETKDG knowledge)
+                            result = _embed_with_timeout(
+                                mol, _make_random_embed_params(42))
                         if result != 0:
                             continue
 
-                    try:
-                        _enforce_donor_pi_coplanarity(mol)
-                    except Exception:
-                        pass
                     xyz_content = _mol_to_xyz(mol)
                     if output_path:
                         Path(output_path).write_text(xyz_content, encoding='utf-8')
@@ -611,12 +705,12 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
                 params = AllChem.ETKDGv3()
                 params.randomSeed = 42
                 params.useRandomCoords = True
-                result = AllChem.EmbedMolecule(mol, params)
+                result = _embed_with_timeout(mol, params)
+                if result != 0:
+                    # Fallback: permissive embed (no ETKDG knowledge)
+                    result = _embed_with_timeout(
+                        mol, _make_random_embed_params(42))
                 if result == 0:
-                    try:
-                        _enforce_donor_pi_coplanarity(mol)
-                    except Exception:
-                        pass
                     xyz_content = _mol_to_xyz(mol)
                     if output_path:
                         Path(output_path).write_text(xyz_content, encoding='utf-8')
@@ -1055,14 +1149,25 @@ def _openbabel_generate_conformer_xyz(
             errors.append(f"forcefield({ff_name}): {exc}")
             continue
 
-        try:
-            if deterministic:
-                ff.SystematicRotorSearch(target)
-            else:
-                ff.WeightedRotorSearch(target, max(25, int(rotor_steps)))
-            ff.GetConformers(ob_mol.OBMol)
-        except Exception as exc:
-            logger.debug("Open Babel conformer search failed, using initial 3D geometry: %s", exc)
+        # Run rotor search.  Skip for large molecules where
+        # SystematicRotorSearch is combinatorially explosive and holds the
+        # GIL, making thread-based timeouts ineffective.
+        n_heavy = sum(1 for a in pybel.ob.OBMolAtomIter(ob_mol.OBMol)
+                       if a.GetAtomicNum() > 1)
+        if n_heavy > 50:
+            logger.debug(
+                "Skipping OB rotor search for large molecule (%d heavy atoms), "
+                "using initial make3D geometry", n_heavy,
+            )
+        else:
+            try:
+                if deterministic:
+                    ff.SystematicRotorSearch(target)
+                else:
+                    ff.WeightedRotorSearch(target, max(25, int(rotor_steps)))
+                ff.GetConformers(ob_mol.OBMol)
+            except Exception as exc_inner:
+                logger.debug("Open Babel conformer search failed: %s", exc_inner)
 
         num_ob_confs = int(ob_mol.OBMol.NumConformers() or 0)
         if num_ob_confs <= 0:
@@ -16279,13 +16384,29 @@ def smiles_to_xyz(
         mol = None
         normalized_smiles = _normalize_metal_smiles(smiles)
         if has_metal and STK_AVAILABLE and len(hapto_groups) <= 1:
-            # Skip STK for multi-hapto systems (slow and usually fails)
-            try:
-                bb = stk.BuildingBlock(smiles)
-                mol = bb.to_rdkit_mol()
+            # Skip STK for multi-hapto systems (slow and usually fails).
+            # Guard with timeout: stk internally runs ETKDG which can hang.
+            _stk_mol_holder = [None]
+
+            def _stk_parse():
+                try:
+                    bb = stk.BuildingBlock(smiles)
+                    _stk_mol_holder[0] = bb.to_rdkit_mol()
+                except Exception:
+                    _stk_mol_holder[0] = None
+
+            _stk_t = threading.Thread(target=_stk_parse, daemon=True)
+            _stk_t.start()
+            _stk_t.join(timeout=_EMBED_TIMEOUT)
+            if _stk_t.is_alive():
+                logger.info("stk conversion timed out after %.1fs, falling back to RDKit", _EMBED_TIMEOUT)
+                mol = None
+                method = None
+            elif _stk_mol_holder[0] is not None:
+                mol = _stk_mol_holder[0]
                 method = "stk"
-            except Exception as e:
-                logger.info("stk conversion failed, falling back to RDKit: %s", e)
+            else:
+                logger.info("stk conversion failed, falling back to RDKit")
                 mol = None
                 method = None
 
@@ -16510,10 +16631,11 @@ def smiles_to_xyz(
                     params.randomSeed = seed
                     params.useRandomCoords = True
                     params.enforceChirality = False
-                    r = AllChem.EmbedMolecule(mol_try, params)
+                    r = _embed_with_timeout(mol_try, params)
                     if r != 0:
-                        r = AllChem.EmbedMolecule(
-                            mol_try, useRandomCoords=True, randomSeed=seed
+                        r = _embed_with_timeout(
+                            mol_try,
+                            _make_random_embed_params(seed),
                         )
                     if r != 0:
                         continue
@@ -16658,8 +16780,16 @@ def smiles_to_xyz(
         # (non-deterministic diversity) + RDKit ETKDG with
         # 12 diverse fixed seeds → up to ~500 conformers total.
         # Best geometry is selected by _geometry_quality_score.
+        #
+        # For large molecules (>50 heavy atoms): skip the expensive OB/ETKDG
+        # multi-conformer pipeline.  OB's SystematicRotorSearch is
+        # combinatorially explosive and holds the GIL (no thread-based timeout).
+        # ETKDG can also hang on complex metal ring systems.  These are initial
+        # geometries destined for GOAT/xTB anyway.
+        _n_heavy_atoms = sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() > 1)
+        _skip_expensive_pipeline = _n_heavy_atoms > 50
         result = -1
-        if has_metal:
+        if has_metal and not _skip_expensive_pipeline:
             all_conf_ids: List[int] = []
 
             # --- OB conformers (Avogadro-equivalent pipeline) ---
@@ -16704,10 +16834,17 @@ def smiles_to_xyz(
                     mol.RemoveAllConformers()
 
             # --- RDKit ETKDG with 12 diverse fixed seeds (~17 confs/seed) ---
+            # Use a thread-pool with a global timeout to prevent hangs on
+            # complex metal ring systems where ETKDG can stall.
             seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
             per_seed = max(1, 200 // len(seeds))
+            _etkdg_deadline = _EMBED_TIMEOUT * 3  # total budget for all seeds
+            _etkdg_start = __import__('time').monotonic()
             try:
                 for seed in seeds:
+                    if __import__('time').monotonic() - _etkdg_start > _etkdg_deadline:
+                        logger.debug("ETKDG multi-seed budget exhausted after %.1fs", _etkdg_deadline)
+                        break
                     params_multi = AllChem.ETKDGv3()
                     params_multi.randomSeed = seed
                     params_multi.useRandomCoords = True
@@ -16716,10 +16853,18 @@ def smiles_to_xyz(
                         params_multi.clearConfs = False  # append to OB conformers
                     except Exception:
                         pass
-                    new_ids = list(AllChem.EmbedMultipleConfs(
-                        mol, numConfs=per_seed, params=params_multi
-                    ))
-                    all_conf_ids.extend(new_ids)
+                    # Run with timeout to avoid hanging on single seed
+                    _multi_ids = [None]
+                    def _do_multi(m=mol, n=per_seed, p=params_multi):
+                        _multi_ids[0] = list(AllChem.EmbedMultipleConfs(m, numConfs=n, params=p))
+                    _mt = threading.Thread(target=_do_multi, daemon=True)
+                    _mt.start()
+                    _mt.join(timeout=_EMBED_TIMEOUT)
+                    if _mt.is_alive():
+                        logger.debug("EmbedMultipleConfs timed out for seed %d", seed)
+                        continue
+                    if _multi_ids[0]:
+                        all_conf_ids.extend(_multi_ids[0])
             except Exception:
                 pass
 
@@ -16750,15 +16895,30 @@ def smiles_to_xyz(
                 result = 0
 
         if result != 0:
-            params = AllChem.ETKDGv3()
-            params.randomSeed = 42  # For reproducibility
+            if _skip_expensive_pipeline:
+                # For large molecules: go straight to permissive embed.
+                # ETKDG with standard knowledge can hang on complex metal
+                # ring systems (GIL-holding C code, thread timeout ineffective).
+                logger.info(
+                    "Large molecule (%d heavy atoms): using permissive embed",
+                    _n_heavy_atoms,
+                )
+                result = AllChem.EmbedMolecule(mol, _make_random_embed_params(42))
+            else:
+                params = AllChem.ETKDGv3()
+                params.randomSeed = 42  # For reproducibility
 
-            result = AllChem.EmbedMolecule(mol, params)
+                result = _embed_with_timeout(mol, params)
 
-            if result != 0:
-                # Try with random coordinates if ETKDG fails
-                logger.warning("ETKDG embedding failed, trying random coordinates")
-                result = AllChem.EmbedMolecule(mol, AllChem.ETKDG())
+                if result != 0:
+                    # Try with random coordinates if ETKDG fails
+                    logger.warning("ETKDG embedding failed, trying random coordinates")
+                    result = _embed_with_timeout(mol, AllChem.ETKDG())
+
+                if result != 0:
+                    # Last resort: permissive embed without ETKDG knowledge
+                    logger.warning("ETKDG timed out or failed, trying permissive embed")
+                    result = AllChem.EmbedMolecule(mol, _make_random_embed_params(42))
 
         if result != 0:
             # Fallback to legacy embedding logic (used in older dashboards)
@@ -16800,14 +16960,6 @@ def smiles_to_xyz(
                 logger.debug("RDKit UFF optimization successful")
             except Exception as e:
                 logger.info(f"RDKit UFF optimization skipped: {e}")
-
-        # Enforce donor pi-coplanarity for all metal complexes:
-        # rotate planar donor fragments so the metal lies in the pi-plane.
-        if has_metal:
-            try:
-                _enforce_donor_pi_coplanarity(mol)
-            except Exception:
-                pass
 
         # Convert to XYZ format
         xyz_content = _mol_to_xyz(mol)
