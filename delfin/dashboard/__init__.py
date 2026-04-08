@@ -248,6 +248,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     ctx.calc_browser_refs = refs5
     tab6, refs6 = tab_archive_statistics.create_tab(ctx)
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
+    ctx.remote_archive_refs = refs7
     tab_ag, refs_ag = tab_agent.create_tab(ctx)
     _agent_backend_available = bool(
         shutil.which("claude") or os.environ.get("ANTHROPIC_API_KEY", "")
