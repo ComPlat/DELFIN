@@ -18,6 +18,7 @@ def agent_tree(tmp_path):
 
     (shared / "delfin_context.md").write_text("# Context")
     (shared / "work_cycle_rules.md").write_text("# Rules")
+    (shared / "goal_decomposition_rules.md").write_text("# Goal Decomposition")
     (shared / "universal_input_template.md").write_text("")
     (shared / "minimal_final_verdict.md").write_text("")
     (agents / "session_manager.md").write_text("# Session Manager")
@@ -369,6 +370,352 @@ def test_retry_from_builder(agent_tree, mock_client):
     assert "test_agent" in engine.role_outputs
 
 
+def test_extract_stage_gates():
+    """Test that stage gates are parsed from the Session Manager plan."""
+    from delfin.agent.engine import AgentEngine
+
+    plan = textwrap.dedent("""\
+        ## PLAN
+        **Task:** Improve agent handoffs
+        **Class:** agent architecture
+        **Risk:** medium
+        **Mode:** reviewed
+
+        ### Acceptance criteria
+        1. Builder gets the locked goal
+
+        ### Stage gates
+        1. Reproduce the orchestration weakness — Exit evidence: failing handoff identified
+        2. Patch engine handoffs — Exit evidence: builder sees stage gates
+        3. Add tests — Exit evidence: focused suite passes
+    """)
+
+    gates = AgentEngine.extract_stage_gates(plan)
+    assert len(gates) == 3
+    assert "Reproduce the orchestration weakness" in gates[0]
+    assert "Patch engine handoffs" in gates[1]
+
+
+def test_validate_session_manager_output_requires_goal_lock_and_stage_gates():
+    """Test that incomplete Session Manager plans are rejected."""
+    from delfin.agent.engine import AgentEngine
+
+    incomplete = textwrap.dedent("""\
+        ## PLAN
+        **Task:** Improve agent reliability
+        **Class:** agent architecture
+        **Risk:** medium
+        **Mode:** quick
+
+        ### Affected files
+        - `delfin/agent/engine.py` — update handoff logic
+
+        ### Scope
+        - Improve handoffs
+
+        ### Acceptance criteria
+        1. Builder sees the plan
+
+        ### Execution plan
+        1. Patch engine
+
+        ### Known risks
+        - Prompt drift
+
+        **confidence:** medium
+        **reason:** Missing fields on purpose
+    """)
+
+    errors = AgentEngine.validate_role_output("session_manager", incomplete)
+    assert "missing ### Goal lock" in errors
+    assert "missing ### Stage gates" in errors
+    assert "goal lock must include primary goal, success metric/oracle, and wrong proxy" in errors
+
+
+def test_validate_test_agent_output_requires_stage_gate_verification():
+    """Test that incomplete Test Agent reports are rejected."""
+    from delfin.agent.engine import AgentEngine
+
+    incomplete = textwrap.dedent("""\
+        ## TEST REPORT
+
+        **Test command:** `python -m pytest tests/ -q`
+        **Result:** 10 passed, 0 failed
+
+        **Acceptance criteria verification:**
+        1. Builder sees plan — PASS — verified manually
+
+        **Regression check:**
+        - None found
+
+        **confidence:** high
+        **reason:** Looked good
+        **status:** approve
+        **key findings:** none
+        **open risks:** none
+        **recommended next step:** done
+    """)
+
+    errors = AgentEngine.validate_role_output("test_agent", incomplete)
+    assert "missing **Stage gate verification:**" in errors
+    assert "missing **New tests written:**" in errors
+
+
+def test_validate_reviewer_output_accepts_skip_and_question():
+    """Test that reviewer special control outputs are allowed."""
+    from delfin.agent.engine import AgentEngine
+
+    assert AgentEngine.validate_role_output("reviewer_agent", "SKIP — trivial change.") == []
+    assert AgentEngine.validate_role_output("reviewer_agent", "QUESTION: should I block on this?") == []
+
+
+def test_evaluate_role_gate_pauses_on_incomplete_session_manager_plan():
+    """Test that incomplete Session Manager plans trigger a schema gate."""
+    from delfin.agent.engine import AgentEngine
+
+    incomplete_plan = textwrap.dedent("""\
+        ## PLAN
+        **Task:** Fix something
+        **Class:** bugfix
+        **Risk:** low
+        **Mode:** quick
+
+        ### Affected files
+        - `foo.py`
+
+        ### Scope
+        - Fix the thing
+
+        ### Acceptance criteria
+        1. It works
+
+        ### Execution plan
+        1. Do it
+
+        ### Known risks
+        - None
+
+        **confidence:** high
+        **reason:** simple
+    """)
+
+    action, gate_type, message = AgentEngine.evaluate_role_gate("session_manager", incomplete_plan)
+    assert action == "pause"
+    assert gate_type == "schema"
+    assert "incomplete" in message.lower()
+    assert "Goal lock" in message or "Stage gates" in message
+
+
+def test_evaluate_role_gate_continues_on_complete_session_manager_plan():
+    """Test that a complete Session Manager plan passes the gate."""
+    from delfin.agent.engine import AgentEngine
+
+    complete_plan = textwrap.dedent("""\
+        ## PLAN
+        **Task:** Fix something
+        **Class:** bugfix
+        **Risk:** low
+        **Mode:** quick
+
+        ### Affected files
+        - `foo.py` — fix the thing
+
+        ### Goal lock
+        - Primary goal: fix the actual bug
+        - Success metric / oracle: test passes with correct output
+        - Wrong proxy to avoid: silencing the error without fixing root cause
+
+        ### Scope
+        - Fix the thing
+
+        ### Out of scope
+        - Refactoring
+
+        ### Acceptance criteria
+        1. It works correctly
+
+        ### Stage gates
+        1. Reproduce the bug — Exit evidence: failing test
+        2. Fix the root cause — Exit evidence: test passes
+
+        ### Execution plan
+        1. Read the file
+        2. Fix the bug
+
+        ### Known risks
+        - None
+
+        **confidence:** high
+        **reason:** simple fix
+    """)
+
+    action, gate_type, message = AgentEngine.evaluate_role_gate("session_manager", complete_plan)
+    assert action == "continue"
+    assert gate_type == ""
+
+
+def test_evaluate_role_gate_pauses_on_research_risks():
+    """Test that risky review roles can trigger a communication gate."""
+    from delfin.agent.engine import AgentEngine
+
+    report = textwrap.dedent("""\
+        ## RESEARCH REPORT
+        **confidence:** high
+        **reason:** enough sources
+        **status:** approve_with_risks
+        **key findings:** proxy is weak
+        **recommended next step:** tighten the oracle
+    """)
+
+    action, gate_type, message = AgentEngine.evaluate_role_gate("research_agent", report)
+    assert action == "pause"
+    assert gate_type == "risk"
+    assert "approve_with_risks" in message
+
+
+def test_evaluate_role_gate_pauses_on_builder_partial_or_blocked():
+    """Test that Builder cannot silently pass partial or blocked work onward."""
+    from delfin.agent.engine import AgentEngine
+
+    report = textwrap.dedent("""\
+        ## BUILD REPORT
+
+        **Changes made:**
+        1. `delfin/agent/engine.py` — added something
+
+        **Stage gate status:**
+        1. Lock goal — DONE — extracted from plan
+        2. Carry gates into handoff — PARTIAL — builder sees them but reviewer does not
+
+        **Critic/Reviewer/Runtime findings addressed:**
+        - none
+
+        **Tests run:**
+        - `pytest -q` — passed
+
+        **Acceptance criteria status:**
+        1. Builder sees goal lock — DONE
+        2. Reviewer sees goal lock — BLOCKED
+
+        **Remaining work:**
+        - fix reviewer handoff
+
+        **confidence:** medium
+        **reason:** still incomplete
+        **status:** approve_with_risks
+        **open risks:** reviewer still blind
+        **recommended next step:** verify reviewer handoff
+    """)
+
+    action, gate_type, message = AgentEngine.evaluate_role_gate("builder_agent", report)
+    assert action == "pause"
+    assert gate_type == "partial"
+    assert ("blocked items" in message.lower()) or ("partial items" in message.lower())
+
+
+def test_evaluate_role_gate_pauses_on_reviewer_goal_lock_issues():
+    """Test that reviewer goal-lock failures are treated as a gate."""
+    from delfin.agent.engine import AgentEngine
+
+    report = textwrap.dedent("""\
+        ## CODE REVIEW
+
+        **Files reviewed:**
+        1. `delfin/agent/engine.py` — handoff changes
+
+        **Findings:**
+        1. [MINOR] `delfin/agent/engine.py:1` — none — no fix
+
+        **Goal-lock check:**
+        - ISSUES — builder solved a weaker proxy
+
+        **Verdict:** PASS
+        **Summary:** Logic compiles but the wrong goal was optimized.
+
+        **confidence:** high
+        **reason:** direct diff review
+    """)
+
+    action, gate_type, message = AgentEngine.evaluate_role_gate("reviewer_agent", report)
+    assert action == "pause"
+    assert gate_type == "goal-lock"
+    assert "goal-lock" in message.lower()
+
+
+def test_builder_handoff_includes_locked_contract(agent_tree, mock_client):
+    """Test that builder handoff includes the locked plan contract and stage gates."""
+    from delfin.agent.engine import AgentEngine
+
+    with patch("delfin.agent.engine.create_client", return_value=mock_client):
+        engine = AgentEngine(repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree)
+
+    engine.role_outputs["session_manager"] = textwrap.dedent("""\
+        ## PLAN
+        **Task:** Fix wrong success metric in agent cycle
+        **Class:** agent architecture
+        **Risk:** medium
+        **Mode:** quick
+
+        ### Goal lock
+        - Primary goal: preserve the user's actual target
+        - Success metric / oracle: downstream handoffs carry goal, scope, and gates
+        - Wrong proxy to avoid: "pipeline completed" without solving the right problem
+
+        ### Scope
+        - Update engine handoffs
+
+        ### Out of scope
+        - Rewriting the dashboard UI
+
+        ### Acceptance criteria
+        1. Builder sees locked goal details
+
+        ### Stage gates
+        1. Parse goal lock from Session Manager plan — Exit evidence: handoff contains goal lock
+        2. Pass stage gates to Builder — Exit evidence: handoff contains stage gates
+    """)
+    engine.current_role_index = 1  # builder_agent
+
+    handoff = engine.build_handoff_message("Improve the agent architecture")
+    assert "Locked plan contract:" in handoff
+    assert "Primary goal: preserve the user's actual target" in handoff
+    assert "Stage gates:" in handoff
+    assert "Do not silently substitute an easier proxy metric" in handoff
+
+
+def test_reviewer_handoff_is_role_specific(agent_tree, mock_client):
+    """Test that reviewer_agent receives a dedicated review handoff."""
+    from delfin.agent.engine import AgentEngine
+
+    with patch("delfin.agent.engine.create_client", return_value=mock_client):
+        engine = AgentEngine(repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree)
+
+    engine.route = ["session_manager", "builder_agent", "reviewer_agent", "test_agent"]
+    engine.current_role_index = 2
+    engine.role_outputs["session_manager"] = textwrap.dedent("""\
+        ## PLAN
+        **Task:** Review real changes against locked goal
+        **Class:** agent architecture
+        **Risk:** medium
+        **Mode:** reviewed
+
+        ### Goal lock
+        - Primary goal: catch goal drift in review
+
+        ### Acceptance criteria
+        1. Reviewer checks for goal drift
+
+        ### Stage gates
+        1. Add reviewer handoff — Exit evidence: reviewer sees locked contract
+    """)
+    engine.role_outputs["builder_agent"] = "## BUILD REPORT\nImplemented the new handoff."
+
+    handoff = engine.build_handoff_message("Improve reviewed mode")
+    assert "Review the implemented changes for this task" in handoff
+    assert "Check correctness, regressions, and whether the Builder stayed aligned" in handoff
+    assert "Primary goal: catch goal drift in review" in handoff
+
+
 def test_suggest_mode_detects_cluster():
     """Test that cluster files trigger cluster mode suggestion."""
     from delfin.agent.engine import AgentEngine
@@ -417,6 +764,64 @@ def test_suggest_mode_cluster_over_reviewed():
         "Change delfin/cli.py and backend_slurm.py together", "quick"
     )
     assert result == "cluster"
+
+
+def test_recommend_task_route_prefers_dashboard_for_dashboard_ops():
+    from delfin.agent.engine import AgentEngine
+
+    decision = AgentEngine.recommend_task_route(
+        "Please set CONTROL key METHOD to r2scan-3c and submit the job in the dashboard.",
+        "dashboard",
+    )
+    assert decision["mode"] == "dashboard"
+    assert decision["task_class"] == "dashboard"
+    assert decision["intent"] == "operate"
+
+
+def test_recommend_task_route_prefers_research_for_chemistry_questions():
+    from delfin.agent.engine import AgentEngine
+
+    decision = AgentEngine.recommend_task_route(
+        "Which DFT functional and basis set should I use for a Ni metal complex redox question?",
+        "dashboard",
+    )
+    assert decision["mode"] == "research"
+    assert decision["task_class"] == "chemistry"
+    assert decision["intent"] == "research"
+
+
+def test_recommend_task_route_prefers_solo_for_code_questions():
+    from delfin.agent.engine import AgentEngine
+
+    decision = AgentEngine.recommend_task_route(
+        "How does delfin/pipeline.py handle retry logic and where is it wired into the codebase?",
+        "dashboard",
+    )
+    assert decision["mode"] == "solo"
+    assert decision["task_class"] == "coding"
+    assert decision["intent"] == "question"
+
+
+def test_recommend_task_route_escalates_cluster_for_runtime_changes():
+    from delfin.agent.engine import AgentEngine
+
+    decision = AgentEngine.recommend_task_route(
+        "Fix restart handling in delfin/dashboard/backend_slurm.py and scratch recovery logic.",
+        "quick",
+    )
+    assert decision["mode"] == "cluster"
+    assert decision["risk_flags"]["cluster"] is True
+
+
+def test_recommend_task_route_escalates_reviewed_for_api_semantics():
+    from delfin.agent.engine import AgentEngine
+
+    decision = AgentEngine.recommend_task_route(
+        "Change CONTROL validation and public API semantics for result parsing.",
+        "quick",
+    )
+    assert decision["mode"] == "reviewed"
+    assert decision["intent"] == "change"
 
 
 def test_thinking_budget_for_role():

@@ -37,6 +37,7 @@ damage architecture, or undermine DELFIN's credibility.
 - Recovery and retry edge cases
 - API stability and user-facing semantics
 - Divergence between dashboard paths and CLI/API paths
+- Goal drift, weak success proxies, and missing old-vs-new oracles
 
 ## Conditional skip
 
@@ -81,6 +82,9 @@ Use this sparingly — only for decisions that cannot be made without user input
 
 ### Moderate findings
 1. [file:line] — [issue] — **Fix:** [concrete suggestion]
+
+### Goal-drift and measurement risks
+- [wrong proxy, missing oracle, or missing stage gate]
 
 ### What was done well
 - [positive observation]

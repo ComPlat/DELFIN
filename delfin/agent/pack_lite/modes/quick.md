@@ -39,3 +39,4 @@ Session Manager -> Builder -> Test
 - implementation is complete
 - tests or validation evidence are present
 - no known unreviewed high-risk behavior changes remain
+- the original user goal was met, not replaced by an easier proxy

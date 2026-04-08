@@ -202,6 +202,312 @@ _AGENT_CSS = """\
     color: #9ca3af;
     font-size: 11px;
 }
+.delfin-agent-status .gate-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-weight: 700;
+    font-size: 11px;
+    margin-right: 8px;
+}
+.delfin-agent-status .gate-text {
+    color: #92400e;
+    font-size: 11px;
+    font-weight: 600;
+}
+.delfin-cycle-inspector {
+    margin: 6px 0 8px 0;
+    padding: 10px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+.delfin-cycle-inspector .inspector-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+.delfin-cycle-inspector .inspector-title {
+    font-size: 12px;
+    font-weight: 800;
+    color: #111827;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+}
+.delfin-cycle-inspector .inspector-meta {
+    font-size: 11px;
+    color: #6b7280;
+}
+.delfin-cycle-inspector .inspector-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+}
+.delfin-cycle-actions {
+    margin: 0 0 8px 0;
+    padding: 6px 0 2px 0;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+.delfin-cycle-actions button {
+    min-width: 110px;
+}
+.delfin-cycle-actions-info {
+    font-size: 11px;
+    color: #6b7280;
+    padding-left: 2px;
+}
+.delfin-cycle-detail-box {
+    margin: 0 0 8px 0;
+    padding: 10px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: #ffffff;
+}
+.delfin-cycle-detail-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+.delfin-cycle-detail-label {
+    font-size: 11px;
+    font-weight: 800;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.35px;
+}
+.delfin-cycle-detail {
+    border-top: 1px solid #e5e7eb;
+    padding-top: 10px;
+}
+.delfin-cycle-detail .detail-title {
+    font-size: 13px;
+    font-weight: 800;
+    color: #111827;
+    margin-bottom: 4px;
+}
+.delfin-cycle-detail .detail-meta {
+    font-size: 11px;
+    color: #6b7280;
+    margin-bottom: 8px;
+}
+.delfin-cycle-detail .detail-body {
+    font-size: 12px;
+    color: #1f2937;
+    line-height: 1.5;
+    white-space: normal;
+}
+.delfin-cycle-detail .detail-body pre {
+    max-height: 260px;
+    overflow: auto;
+}
+.delfin-cycle-inspector .inspector-card {
+    min-height: 84px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.delfin-cycle-inspector .inspector-card.gate-card {
+    background: #fffbeb;
+    border-color: #fcd34d;
+}
+.delfin-cycle-inspector .inspector-card.risk-card {
+    background: #fff7ed;
+    border-color: #fdba74;
+}
+.delfin-cycle-inspector .inspector-card.retry-card {
+    background: #eff6ff;
+    border-color: #93c5fd;
+}
+.delfin-cycle-inspector .inspector-card.history-card {
+    background: #f8fafc;
+    border-color: #cbd5e1;
+}
+.delfin-cycle-inspector .card-label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: #6b7280;
+}
+.delfin-cycle-inspector .card-value {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+    color: #111827;
+    line-height: 1.35;
+}
+.delfin-cycle-inspector .card-note {
+    display: block;
+    margin-top: 6px;
+    font-size: 11px;
+    color: #6b7280;
+    line-height: 1.4;
+    white-space: pre-wrap;
+}
+.delfin-cycle-inspector .card-list {
+    margin: 6px 0 0 0;
+    padding-left: 16px;
+    color: #374151;
+    font-size: 11px;
+    line-height: 1.45;
+}
+.delfin-cycle-inspector .card-list li {
+    margin: 0 0 4px 0;
+}
+.delfin-cycle-inspector .history-list {
+    margin: 8px 0 0 0;
+    padding: 0;
+    list-style: none;
+}
+.delfin-cycle-inspector .history-item {
+    padding: 7px 0;
+    border-top: 1px solid #e5e7eb;
+}
+.delfin-cycle-inspector .history-item:first-child {
+    border-top: none;
+    padding-top: 0;
+}
+.delfin-cycle-inspector .history-kind {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: #e5e7eb;
+    color: #374151;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.35px;
+}
+.delfin-cycle-inspector .history-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #111827;
+}
+.delfin-cycle-inspector .history-detail {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #6b7280;
+    line-height: 1.4;
+    white-space: pre-wrap;
+}
+.delfin-cycle-inspector .gate-pill {
+    display: inline-block;
+    margin-bottom: 6px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    background: #8b5cf6;
+    color: white;
+}
+.delfin-gate-card {
+    margin: 8px 0;
+    max-width: 100%;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border-left: 4px solid #9ca3af;
+    background: #f9fafb;
+    color: #374151;
+}
+.delfin-gate-card .gate-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+}
+.delfin-gate-card .gate-title {
+    font-size: 12px;
+    font-weight: 700;
+}
+.delfin-gate-card .gate-role {
+    font-size: 11px;
+    font-weight: 600;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.delfin-gate-card .gate-body {
+    white-space: pre-wrap;
+    font-size: 12px;
+    line-height: 1.45;
+}
+.delfin-gate-card .gate-hint {
+    margin-top: 8px;
+    font-size: 11px;
+    color: #6b7280;
+}
+.delfin-gate-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+}
+.delfin-gate-risk {
+    background: #fef3c7;
+    border-left-color: #f59e0b;
+}
+.delfin-gate-risk .delfin-gate-badge {
+    background: #f59e0b;
+    color: #fff7ed;
+}
+.delfin-gate-schema {
+    background: #fee2e2;
+    border-left-color: #ef4444;
+}
+.delfin-gate-schema .delfin-gate-badge {
+    background: #ef4444;
+    color: white;
+}
+.delfin-gate-question,
+.delfin-gate-plan-approval,
+.delfin-gate-findings,
+.delfin-gate-approval,
+.delfin-gate-confidence,
+.delfin-gate-conflict,
+.delfin-gate-cost {
+    background: #ede9fe;
+    border-left-color: #8b5cf6;
+}
+.delfin-gate-question .delfin-gate-badge,
+.delfin-gate-plan-approval .delfin-gate-badge,
+.delfin-gate-findings .delfin-gate-badge,
+.delfin-gate-approval .delfin-gate-badge,
+.delfin-gate-confidence .delfin-gate-badge,
+.delfin-gate-conflict .delfin-gate-badge,
+.delfin-gate-cost .delfin-gate-badge {
+    background: #8b5cf6;
+    color: white;
+}
+.delfin-gate-partial,
+.delfin-gate-goal-lock,
+.delfin-gate-review {
+    background: #dbeafe;
+    border-left-color: #2563eb;
+}
+.delfin-gate-partial .delfin-gate-badge,
+.delfin-gate-goal-lock .delfin-gate-badge,
+.delfin-gate-review .delfin-gate-badge {
+    background: #2563eb;
+    color: white;
+}
 .delfin-agent-nokey {
     padding: 20px;
     text-align: center;
@@ -539,6 +845,11 @@ def create_tab(ctx):
         "_agent_calc_path": "",       # relative path within calc_dir for browsing
         "_pending_dashboard_action": None,  # {action_id, description, callback}
         "_perm_profile": "ask_all",  # permission profile: plan/ask_all/repo_free/all_free
+        "_active_gate": None,        # {type, role, title, detail}
+        "_cycle_history": [],        # recent gate / handoff / retry events
+        "_inspector_detail_key": "", # selected cycle inspector detail entry
+        "_mode_manual_override": False,
+        "_mode_change_internal": False,
     }
 
     # -- widgets -----------------------------------------------------------
@@ -890,6 +1201,89 @@ def create_tab(ctx):
     status_html = widgets.HTML(
         value=_render_status("quick", "cli", "session_manager", 0, 3, 0, 0, 0.0),
     )
+    cycle_inspector_html = widgets.HTML(
+        value=(
+            '<div class="delfin-cycle-inspector">'
+            '<div class="inspector-header">'
+            '<span class="inspector-title">Cycle Inspector</span>'
+            '<span class="inspector-meta">Noch kein aktiver Cycle</span>'
+            '</div>'
+            '<div class="inspector-grid">'
+            '<div class="inspector-card"><span class="card-label">Locked Goal</span>'
+            '<span class="card-value">Noch kein gelocktes Ziel.</span></div>'
+            '<div class="inspector-card gate-card"><span class="card-label">Current Gate</span>'
+            '<span class="card-value">Kein aktives Gate</span></div>'
+            '<div class="inspector-card"><span class="card-label">Next Role</span>'
+            '<span class="card-value">Session Manager</span></div>'
+            '<div class="inspector-card risk-card"><span class="card-label">Open Risks</span>'
+            '<span class="card-value">Keine offenen Risiken.</span></div>'
+            '<div class="inspector-card retry-card"><span class="card-label">Retry Count</span>'
+            '<span class="card-value">0</span></div>'
+            '<div class="inspector-card history-card"><span class="card-label">Recent Activity</span>'
+            '<span class="card-value">Noch keine Aktivität.</span></div>'
+            '</div></div>'
+        ),
+    )
+    inspector_primary_btn = widgets.Button(
+        description="Continue",
+        button_style="success",
+        layout=widgets.Layout(width="120px"),
+        tooltip="Approve gate or continue the cycle",
+    )
+    inspector_retry_btn = widgets.Button(
+        description="Retry Role",
+        button_style="warning",
+        layout=widgets.Layout(width="110px"),
+        tooltip="Retry the last role output",
+    )
+    inspector_stop_btn = widgets.Button(
+        description="Stop Cycle",
+        button_style="danger",
+        layout=widgets.Layout(width="110px"),
+        tooltip="Stop the running or paused cycle",
+    )
+    inspector_next_btn = widgets.Button(
+        description="Next Role",
+        button_style="info",
+        layout=widgets.Layout(width="110px"),
+        tooltip="Advance to the next role without extra chat input",
+    )
+    inspector_actions_info = widgets.HTML(
+        value='<span class="delfin-cycle-actions-info">Direkte Cycle-Steuerung.</span>',
+    )
+    inspector_actions_row = widgets.HBox(
+        [inspector_primary_btn, inspector_retry_btn, inspector_stop_btn, inspector_next_btn, inspector_actions_info],
+        layout=widgets.Layout(margin="0 0 6px 0"),
+    )
+    inspector_actions_row.add_class("delfin-cycle-actions")
+    inspector_detail_dropdown = widgets.Dropdown(
+        options=[("Keine Details verfügbar", "")],
+        value="",
+        layout=widgets.Layout(width="430px"),
+    )
+    inspector_detail_html = widgets.HTML(
+        value=(
+            '<div class="delfin-cycle-detail">'
+            '<div class="detail-title">Keine Details verfügbar</div>'
+            '<div class="detail-meta">Cycle Inspector</div>'
+            '<div class="detail-body">Sobald Gates, History oder Rollen-Outputs vorliegen, erscheinen sie hier.</div>'
+            '</div>'
+        ),
+    )
+    inspector_detail_box = widgets.VBox(
+        [
+            widgets.HBox(
+                [
+                    widgets.HTML('<span class="delfin-cycle-detail-label">Role Detail Drawer</span>'),
+                    inspector_detail_dropdown,
+                ],
+                layout=widgets.Layout(margin="0 0 4px 0"),
+            ),
+            inspector_detail_html,
+        ],
+        layout=widgets.Layout(margin="0 0 8px 0"),
+    )
+    inspector_detail_box.add_class("delfin-cycle-detail-box")
 
     # Chat display
     chat_html = widgets.HTML(
@@ -1172,7 +1566,7 @@ def create_tab(ctx):
     # -- layout assembly ---------------------------------------------------
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
-         status_html, chat_html, working_html, queue_html, approval_row, input_row],
+         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box, chat_html, working_html, queue_html, approval_row, input_row],
     )
 
     if not _yaml_ok:
@@ -1236,6 +1630,7 @@ def create_tab(ctx):
                 route=estate["route"],
                 role_outputs=estate["role_outputs"],
                 chat_messages=state["chat_messages"],
+                cycle_history=state.get("_cycle_history", []),
                 engine_messages=estate["engine_messages"],
                 token_usage=estate["token_usage"],
                 cost_usd=estate["cost_usd"],
@@ -1261,7 +1656,7 @@ def create_tab(ctx):
                        "runtime_cluster": "cluster", "release": "full"}
         saved_mode = data.get("mode", "quick")
         saved_mode = _legacy_map.get(saved_mode, saved_mode)
-        mode_dropdown.value = saved_mode
+        _set_mode_programmatically(saved_mode)
 
         engine = _ensure_engine()
         if not engine:
@@ -1280,12 +1675,16 @@ def create_tab(ctx):
 
         # Restore chat UI
         state["chat_messages"] = data.get("chat_messages", [])
+        state["_cycle_history"] = data.get("cycle_history", [])
+        state["_mode_manual_override"] = True
         state["active_session_id"] = session_id
+        _set_active_gate()
         _refresh_chat_html()
         _update_status()
         _update_button_states()
 
         title = data.get("title", "")[:50] or session_id[:12]
+        _record_cycle_event("session", "Session restored", title)
         _append_system_message(f"Session restored: {title}")
 
     # -- helpers -----------------------------------------------------------
@@ -1297,6 +1696,13 @@ def create_tab(ctx):
             return load_settings().get("agent", {}) or {}
         except Exception:
             return {}
+
+    def _set_mode_programmatically(new_mode: str):
+        state["_mode_change_internal"] = True
+        try:
+            mode_dropdown.value = new_mode
+        finally:
+            state["_mode_change_internal"] = False
 
     def _resolve_backend():
         """Determine which backend to use: cli or api."""
@@ -1370,14 +1776,514 @@ def create_tab(ctx):
             _append_system_message(f"Engine error: {exc}")
             return None
 
-    def _append_chat_message(role, content, role_label=""):
-        state["chat_messages"].append(
-            {"role": role, "content": content, "role_label": role_label}
-        )
+    def _append_chat_message(role, content, role_label="", **meta):
+        payload = {"role": role, "content": content, "role_label": role_label}
+        payload.update(meta)
+        state["chat_messages"].append(payload)
         _refresh_chat_html()
 
     def _append_system_message(text):
         _append_chat_message("system", text)
+
+    def _record_cycle_event(kind: str, title: str, detail: str = "", role: str = ""):
+        history = state.setdefault("_cycle_history", [])
+        entry = {
+            "kind": (kind or "event").strip(),
+            "title": (title or "").strip(),
+            "detail": (detail or "").strip(),
+            "role": (role or "").strip(),
+        }
+        if not entry["title"]:
+            return
+        if history and all(
+            history[-1].get(key, "") == entry.get(key, "")
+            for key in ("kind", "title", "detail", "role")
+        ):
+            return
+        history.append(entry)
+        if len(history) > 12:
+            del history[:-12]
+
+    def _set_active_gate(gate_type="", role="", title="", detail=""):
+        if gate_type:
+            state["_active_gate"] = {
+                "type": gate_type,
+                "role": role,
+                "title": title,
+                "detail": detail,
+            }
+        else:
+            state["_active_gate"] = None
+
+    def _gate_label(gate_type: str) -> str:
+        labels = {
+            "schema": "Schema Gate",
+            "risk": "Risk Gate",
+            "partial": "Completion Gate",
+            "goal-lock": "Goal Lock Gate",
+            "review": "Review Gate",
+            "question": "Question Gate",
+            "plan-approval": "Plan Approval",
+            "findings": "Findings Gate",
+            "approval": "Permission Gate",
+            "confidence": "Confidence Gate",
+            "conflict": "Conflict Gate",
+            "cost": "Cost Gate",
+        }
+        return labels.get(gate_type or "", "Gate")
+
+    def _compact_text(text: str, limit: int = 140) -> str:
+        clean = " ".join((text or "").strip().split())
+        if len(clean) <= limit:
+            return clean
+        return clean[: max(0, limit - 1)].rstrip() + "…"
+
+    def _extract_open_risks(text: str) -> list[str]:
+        risks: list[str] = []
+        in_section = False
+        for line in (text or "").splitlines():
+            stripped = line.strip()
+            lowered = stripped.lower()
+            if lowered.startswith("### open risks"):
+                in_section = True
+                continue
+            if lowered.startswith("**open risks:**"):
+                in_section = True
+                inline = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
+                if inline and inline.lower() not in {"none", "none.", "n/a", "no", "no risks"}:
+                    risks.append(inline)
+                continue
+            if in_section:
+                if stripped.startswith("###") or stripped.startswith("## ") or stripped.startswith("**"):
+                    break
+                match = re.match(r"^(?:\d+\.\s*|-\s*)(.*)", stripped)
+                if match and match.group(1).strip():
+                    item = match.group(1).strip()
+                    if item.lower() not in {"none", "none.", "n/a", "no", "no risks"}:
+                        risks.append(item)
+        return risks
+
+    def _render_cycle_inspector() -> str:
+        engine = state.get("engine")
+        active_gate = state.get("_active_gate") or {}
+        goal_text = "Noch kein gelocktes Ziel."
+        gate_value = "Kein aktives Gate"
+        gate_note = "Die Pipeline kann ohne Benutzerfreigabe weiterlaufen."
+        next_role_value = "Session Manager"
+        next_role_note = "Startet den nächsten Cycle."
+        risks: list[str] = []
+        retry_parts: list[str] = []
+        history = list(state.get("_cycle_history", []))
+        header_meta = "Noch kein aktiver Cycle"
+
+        if engine:
+            try:
+                from delfin.agent.engine import AgentEngine
+            except Exception:
+                AgentEngine = None  # type: ignore[assignment]
+
+            sm_output = engine.role_outputs.get("session_manager", "")
+            if not sm_output and engine.current_role == "session_manager":
+                for msg in reversed(engine.messages):
+                    if msg.get("role") == "assistant":
+                        sm_output = msg.get("content", "")
+                        break
+
+            if AgentEngine and sm_output:
+                goal_items = AgentEngine._extract_list_section(sm_output, ("### Goal lock",))
+                if goal_items:
+                    goal_text = _compact_text(goal_items[0], 180)
+                else:
+                    task_text = AgentEngine.extract_plan_field(sm_output, "Task")
+                    if task_text:
+                        goal_text = _compact_text(task_text, 180)
+
+            if active_gate:
+                gate_value = active_gate.get("title") or _gate_label(active_gate.get("type", ""))
+                gate_note = active_gate.get("detail") or "Wartet auf Benutzerentscheidung."
+                next_role_value = "User Input Required"
+                paused_role = active_gate.get("role", "")
+                next_role_note = (
+                    f"Pausiert nach {_format_role_label(paused_role)}."
+                    if paused_role else "Pausiert bis zur nächsten Freigabe."
+                )
+            elif engine.is_cycle_complete:
+                next_role_value = "Cycle Complete"
+                next_role_note = "Kein weiterer Rollenschritt offen."
+            elif engine.current_role:
+                next_role_value = _format_role_label(engine.current_role)
+                upcoming = ""
+                if engine.current_role_index + 1 < len(engine.route):
+                    upcoming = _format_role_label(engine.route[engine.current_role_index + 1])
+                next_role_note = (
+                    f"Danach: {upcoming}" if upcoming else "Danach: Abschluss des Cycles."
+                )
+
+            roles_to_scan = list(reversed(engine.route))
+            seen_roles: set[str] = set()
+            for role_id in roles_to_scan:
+                if role_id in seen_roles:
+                    continue
+                seen_roles.add(role_id)
+                out = engine.role_outputs.get(role_id, "")
+                if not out:
+                    continue
+                for item in _extract_open_risks(out):
+                    if item not in risks:
+                        risks.append(item)
+                if len(risks) >= 3:
+                    break
+
+            if active_gate.get("type") == "risk" and active_gate.get("detail"):
+                gate_risk = active_gate["detail"].strip()
+                if gate_risk and gate_risk not in risks:
+                    risks.insert(0, gate_risk)
+
+            builder_retries = int(state.get("_builder_retries", 0) or 0)
+            if builder_retries:
+                retry_parts.append(f"Builder {builder_retries}")
+            schema_counts = state.get("_schema_retry_counts", {}) or {}
+            schema_total = sum(int(v) for v in schema_counts.values() if str(v).isdigit())
+            if schema_total:
+                retry_parts.append(f"Schema {schema_total}")
+
+            role_total = len(engine.route)
+            if engine.is_cycle_complete:
+                header_meta = f"{engine.mode} · cycle complete · ${engine.cost_usd:.2f}"
+            else:
+                header_meta = (
+                    f"{engine.mode} · step {engine.current_role_index + 1}/{max(role_total, 1)}"
+                    f" · {_format_role_label(engine.current_role)}"
+                )
+                if state.get("streaming"):
+                    header_meta += " · running"
+                header_meta += f" · ${engine.cost_usd:.2f}"
+
+        retry_value = "0"
+        retry_note = "Keine aktiven Retries."
+        if retry_parts:
+            retry_value = " · ".join(retry_parts)
+            retry_note = "Aktive Wiederholungen im aktuellen Cycle."
+
+        gate_type = active_gate.get("type", "")
+        gate_pill = _gate_label(gate_type) if gate_type else "Open"
+        gate_pill_html = (
+            f'<span class="gate-pill">{_html.escape(gate_pill)}</span>'
+            if active_gate else ""
+        )
+
+        risk_body = (
+            f'<ul class="card-list">{"".join(f"<li>{_html.escape(_compact_text(risk, 120))}</li>" for risk in risks[:3])}</ul>'
+            if risks else
+            '<span class="card-note">Keine offenen Risiken aus den letzten Agent-Ausgaben.</span>'
+        )
+        history_items = history[-4:]
+        history_body = (
+            '<ul class="history-list">' +
+            "".join(
+                '<li class="history-item">'
+                f'<span class="history-kind">{_html.escape(item.get("kind", "event"))}</span>'
+                f'<span class="history-title">{_html.escape(_compact_text(item.get("title", ""), 90))}</span>'
+                + (
+                    f'<div class="history-detail">{_html.escape(_compact_text(item.get("detail", ""), 140))}</div>'
+                    if item.get("detail") else ""
+                )
+                + '</li>'
+                for item in reversed(history_items)
+            ) +
+            '</ul>'
+            if history_items else
+            '<span class="card-note">Noch keine Gates, Handoffs oder Retries im aktuellen Cycle.</span>'
+        )
+
+        return (
+            '<div class="delfin-cycle-inspector">'
+            '<div class="inspector-header">'
+            '<span class="inspector-title">Cycle Inspector</span>'
+            f'<span class="inspector-meta">{_html.escape(header_meta)}</span>'
+            '</div>'
+            '<div class="inspector-grid">'
+            '<div class="inspector-card">'
+            '<span class="card-label">Locked Goal</span>'
+            f'<span class="card-value">{_html.escape(goal_text)}</span>'
+            '<span class="card-note">Gelocktes Ziel aus dem Session-Manager-Plan.</span>'
+            '</div>'
+            '<div class="inspector-card gate-card">'
+            '<span class="card-label">Current Gate</span>'
+            f'{gate_pill_html}'
+            f'<span class="card-value">{_html.escape(_compact_text(gate_value, 90))}</span>'
+            f'<span class="card-note">{_html.escape(_compact_text(gate_note, 160))}</span>'
+            '</div>'
+            '<div class="inspector-card">'
+            '<span class="card-label">Next Role</span>'
+            f'<span class="card-value">{_html.escape(next_role_value)}</span>'
+            f'<span class="card-note">{_html.escape(next_role_note)}</span>'
+            '</div>'
+            '<div class="inspector-card risk-card">'
+            '<span class="card-label">Open Risks</span>'
+            f'<span class="card-value">{_html.escape(str(len(risks)) if risks else "0")}</span>'
+            f'{risk_body}'
+            '</div>'
+            '<div class="inspector-card retry-card">'
+            '<span class="card-label">Retry Count</span>'
+            f'<span class="card-value">{_html.escape(retry_value)}</span>'
+            f'<span class="card-note">{_html.escape(retry_note)}</span>'
+            '</div>'
+            '<div class="inspector-card history-card">'
+            '<span class="card-label">Recent Activity</span>'
+            f'<span class="card-value">{_html.escape(str(len(history)) if history else "0")}</span>'
+            f'{history_body}'
+            '</div>'
+            '</div>'
+            '</div>'
+        )
+
+    def _build_inspector_detail_entries() -> list[dict[str, str]]:
+        entries: list[dict[str, str]] = []
+        engine = state.get("engine")
+        active_gate = state.get("_active_gate") or {}
+        history = list(state.get("_cycle_history", []))
+
+        if active_gate:
+            entries.append({
+                "key": "gate:active",
+                "label": f"Active Gate · {_compact_text(active_gate.get('title', ''), 50)}",
+                "title": active_gate.get("title") or _gate_label(active_gate.get("type", "")),
+                "meta": " · ".join(
+                    part for part in [
+                        _gate_label(active_gate.get("type", "")),
+                        _format_role_label(active_gate.get("role", "")) if active_gate.get("role") else "",
+                    ] if part
+                ),
+                "body": active_gate.get("detail") or "Kein weiteres Detail hinterlegt.",
+            })
+
+        for idx, item in enumerate(reversed(history[-6:]), 1):
+            entries.append({
+                "key": f"history:{idx}",
+                "label": f"History · {_compact_text(item.get('title', ''), 54)}",
+                "title": item.get("title", "History"),
+                "meta": " · ".join(
+                    part for part in [
+                        item.get("kind", "event").upper(),
+                        _format_role_label(item.get("role", "")) if item.get("role") else "",
+                    ] if part
+                ),
+                "body": item.get("detail") or "Kein weiteres Detail hinterlegt.",
+            })
+
+        if engine:
+            role_order = list(reversed(engine.route))
+            seen: set[str] = set()
+            for role_id in role_order:
+                if role_id in seen:
+                    continue
+                seen.add(role_id)
+                output = engine.role_outputs.get(role_id, "")
+                if not output:
+                    continue
+                entries.append({
+                    "key": f"role:{role_id}",
+                    "label": f"Role Output · {_format_role_label(role_id)}",
+                    "title": f"{_format_role_label(role_id)} output",
+                    "meta": "Role output",
+                    "body": output[:4000],
+                })
+                if len(entries) >= 10:
+                    break
+
+            if engine.messages:
+                for msg in reversed(engine.messages):
+                    if msg.get("role") == "assistant":
+                        entries.append({
+                            "key": "role:current",
+                            "label": f"Current Output · {_format_role_label(engine.current_role)}",
+                            "title": f"{_format_role_label(engine.current_role)} current output",
+                            "meta": "Current assistant message",
+                            "body": msg.get("content", "")[:4000],
+                        })
+                        break
+
+        return entries[:12]
+
+    def _render_inspector_detail_panel(entry: dict[str, str] | None) -> str:
+        if not entry:
+            return (
+                '<div class="delfin-cycle-detail">'
+                '<div class="detail-title">Keine Details verfügbar</div>'
+                '<div class="detail-meta">Cycle Inspector</div>'
+                '<div class="detail-body">Sobald Gates, History oder Rollen-Outputs vorliegen, erscheinen sie hier.</div>'
+                '</div>'
+            )
+        body_html = _md_to_html(entry.get("body", "") or "Kein weiteres Detail hinterlegt.")
+        return (
+            '<div class="delfin-cycle-detail">'
+            f'<div class="detail-title">{_html.escape(entry.get("title", "Detail"))}</div>'
+            f'<div class="detail-meta">{_html.escape(entry.get("meta", ""))}</div>'
+            f'<div class="detail-body">{body_html}</div>'
+            '</div>'
+        )
+
+    def _update_cycle_inspector():
+        cycle_inspector_html.value = _render_cycle_inspector()
+
+    def _update_inspector_detail(force_reset: bool = False):
+        entries = _build_inspector_detail_entries()
+        options = [(entry["label"], entry["key"]) for entry in entries] or [("Keine Details verfügbar", "")]
+        selected = state.get("_inspector_detail_key", "")
+        valid_keys = {value for _, value in options}
+        if force_reset or selected not in valid_keys:
+            selected = options[0][1]
+        inspector_detail_dropdown.options = options
+        inspector_detail_dropdown.value = selected
+        state["_inspector_detail_key"] = selected
+        selected_entry = next((entry for entry in entries if entry["key"] == selected), None)
+        inspector_detail_html.value = _render_inspector_detail_panel(selected_entry)
+
+    def _update_inspector_actions():
+        engine = state.get("engine")
+        active_gate = state.get("_active_gate") or {}
+        is_streaming = bool(state.get("streaming"))
+        has_pending_approval = bool(
+            state.get("_pending_dashboard_action") or state.get("_pending_approval")
+        )
+        awaiting_gate = any(
+            bool(state.get(key))
+            for key in (
+                "_awaiting_agent_question",
+                "_awaiting_findings_review",
+                "_awaiting_gate_review",
+                "_awaiting_conflict_resolution",
+            )
+        ) or bool(state.get("_cost_paused"))
+
+        inspector_primary_btn.disabled = False
+        inspector_retry_btn.disabled = is_streaming or not (engine and engine.messages)
+        inspector_stop_btn.disabled = not (is_streaming or engine or active_gate)
+        inspector_next_btn.disabled = True
+
+        if has_pending_approval:
+            inspector_primary_btn.description = "Approve"
+            inspector_primary_btn.tooltip = "Approve the pending permission or dashboard action"
+            inspector_actions_info.value = (
+                '<span class="delfin-cycle-actions-info">'
+                'Eine Freigabe wartet auf Bestätigung.</span>'
+            )
+        elif active_gate or awaiting_gate:
+            inspector_primary_btn.description = "Continue"
+            inspector_primary_btn.tooltip = "Continue past the current gate with a go signal"
+            inspector_actions_info.value = (
+                '<span class="delfin-cycle-actions-info">'
+                'Gate aktiv: direkt freigeben, retryen oder stoppen.</span>'
+            )
+        elif is_streaming:
+            inspector_primary_btn.description = "Running"
+            inspector_primary_btn.tooltip = "The cycle is currently running"
+            inspector_primary_btn.disabled = True
+            inspector_actions_info.value = (
+                '<span class="delfin-cycle-actions-info">'
+                'Agent läuft gerade. Stopptaste beendet den aktuellen Schritt.</span>'
+            )
+        elif engine and not engine.is_cycle_complete and engine.current_role_index < len(engine.route) - 1 and engine.messages:
+            inspector_primary_btn.description = "Continue"
+            inspector_primary_btn.tooltip = "Advance to the next role"
+            inspector_next_btn.disabled = False
+            inspector_actions_info.value = (
+                '<span class="delfin-cycle-actions-info">'
+                'Cycle bereit für den nächsten Rollenschritt.</span>'
+            )
+        elif engine and engine.is_cycle_complete:
+            inspector_primary_btn.description = "Complete"
+            inspector_primary_btn.tooltip = "Cycle is complete"
+            inspector_primary_btn.disabled = True
+            inspector_actions_info.value = (
+                '<span class="delfin-cycle-actions-info">'
+                'Cycle abgeschlossen. Neue Session starten oder Follow-up schicken.</span>'
+            )
+        else:
+            inspector_primary_btn.description = "Continue"
+            inspector_primary_btn.tooltip = "Start or continue the cycle"
+            inspector_primary_btn.disabled = not bool(engine)
+            inspector_actions_info.value = (
+                '<span class="delfin-cycle-actions-info">'
+                'Cycle-Steuerung steht bereit.</span>'
+            )
+
+    def _send_control_reply(text: str):
+        if state.get("streaming"):
+            return
+        input_textarea.value = text
+        _on_send(None)
+
+    def _on_inspector_detail_change(change):
+        if change.get("name") != "value":
+            return
+        state["_inspector_detail_key"] = change.get("new", "") or ""
+        entries = _build_inspector_detail_entries()
+        selected_entry = next(
+            (entry for entry in entries if entry["key"] == state["_inspector_detail_key"]),
+            None,
+        )
+        inspector_detail_html.value = _render_inspector_detail_panel(selected_entry)
+
+    def _on_inspector_primary(button):
+        if state.get("streaming"):
+            return
+        if state.get("_pending_dashboard_action") or state.get("_pending_approval"):
+            _on_approve(button)
+            return
+        if (state.get("_active_gate")
+                or state.get("_awaiting_agent_question")
+                or state.get("_awaiting_findings_review")
+                or state.get("_awaiting_gate_review")
+                or state.get("_awaiting_conflict_resolution")
+                or state.get("_cost_paused")):
+            _send_control_reply("go")
+            return
+        _on_advance_role(button)
+
+    def _on_inspector_retry(button):
+        _retry_last()
+
+    def _on_inspector_stop(button):
+        if state.get("streaming"):
+            _on_stop(button)
+            return
+        engine = state.get("engine")
+        if engine:
+            engine.request_stop()
+        for key in (
+            "_awaiting_agent_question",
+            "_awaiting_findings_review",
+            "_awaiting_gate_review",
+            "_awaiting_conflict_resolution",
+            "_cost_paused",
+        ):
+            state.pop(key, None)
+        _set_active_gate()
+        _record_cycle_event("pause", "Pipeline paused by user")
+        _append_system_message("Pipeline paused by user. Use Continue, Next Role or send a new instruction.")
+        _update_status()
+        _update_button_states()
+
+    def _on_inspector_next(button):
+        _on_advance_role(button)
+
+    def _append_gate_message(gate_type, role, title, detail="", hint=""):
+        _set_active_gate(gate_type, role, title, detail)
+        _record_cycle_event(gate_type or "gate", title, detail, role)
+        body = detail.strip()
+        if hint:
+            body = f"{body}\n\n{hint}".strip()
+        _append_chat_message(
+            "gate",
+            body,
+            role_label=_format_role_label(role) if role else "",
+            gate_type=gate_type,
+            gate_title=title,
+            gate_hint=hint,
+        )
+        _update_status()
 
     def _update_last_assistant(content, role_label=""):
         """Update the last assistant message (for streaming)."""
@@ -1436,6 +2342,32 @@ def create_tab(ctx):
                     f'Press <b>Enter</b> to approve, <b>Esc</b> to deny</div>'
                     f'</div>'
                 )
+            elif role == "gate":
+                gate_type = msg.get("gate_type", "")
+                gate_title = msg.get("gate_title", _gate_label(gate_type))
+                gate_hint = msg.get("gate_hint", "")
+                gate_role = msg.get("role_label", "")
+                card_cls = f"delfin-chat-msg delfin-gate-card delfin-gate-{_html.escape(gate_type or 'review')}"
+                badge = _gate_label(gate_type)
+                hint_html = (
+                    f'<div class="gate-hint">{_html.escape(gate_hint)}</div>'
+                    if gate_hint else ""
+                )
+                role_html = (
+                    f'<span class="gate-role">{_html.escape(gate_role)}</span>'
+                    if gate_role else ""
+                )
+                parts.append(
+                    f'<div class="{card_cls}">'
+                    f'<div class="gate-header">'
+                    f'<span class="delfin-gate-badge">{_html.escape(badge)}</span>'
+                    f'<span class="gate-title">{_html.escape(gate_title)}</span>'
+                    f'{role_html}'
+                    f'</div>'
+                    f'<div class="gate-body">{content}</div>'
+                    f'{hint_html}'
+                    f'</div>'
+                )
             elif role == "system":
                 raw = msg["content"]
                 # Handoff/cycle messages get special styling
@@ -1459,6 +2391,7 @@ def create_tab(ctx):
     def _update_status():
         """Update the status bar from engine state."""
         engine = state["engine"]
+        active_gate = state.get("_active_gate") or {}
         if engine:
             s = engine.get_status()
             status_html.value = _render_status(
@@ -1472,6 +2405,8 @@ def create_tab(ctx):
                 s["cost_usd"],
                 provider=s.get("provider", provider_dropdown.value),
                 perm_profile=state.get("_perm_profile", "ask_all"),
+                active_gate_type=active_gate.get("type", ""),
+                active_gate_text=active_gate.get("title", ""),
             )
         else:
             backend = _resolve_backend() if _cli_available else "api"
@@ -1479,7 +2414,12 @@ def create_tab(ctx):
                 mode_dropdown.value, backend, "", 0, 0, 0, 0, 0.0,
                 provider=provider_dropdown.value,
                 perm_profile=state.get("_perm_profile", "ask_all"),
+                active_gate_type=active_gate.get("type", ""),
+                active_gate_text=active_gate.get("title", ""),
             )
+        _update_cycle_inspector()
+        _update_inspector_actions()
+        _update_inspector_detail()
 
     def _set_working(active, label=""):
         """Show or hide the working indicator."""
@@ -3437,6 +4377,9 @@ def create_tab(ctx):
                 lines.append(f"### {rl}\n\n{content}\n")
             elif role == "thinking":
                 lines.append(f"<details><summary>Thinking</summary>\n\n{content}\n\n</details>\n")
+            elif role == "gate":
+                gate_title = msg.get("gate_title", "Gate")
+                lines.append(f"> [GATE] {gate_title}\n>\n> {content}\n")
             elif role == "system":
                 lines.append(f"> {content}\n")
         md_text = "\n".join(lines)
@@ -3516,6 +4459,32 @@ def create_tab(ctx):
                     f'<summary>\U0001f9e0 {_html.escape(preview)}</summary>'
                     f'<div class="thinking-content">{escaped_full}</div></details>'
                 )
+            elif role == "gate":
+                gate_type = msg.get("gate_type", "")
+                gate_title = msg.get("gate_title", _gate_label(gate_type))
+                gate_hint = msg.get("gate_hint", "")
+                gate_role = msg.get("role_label", "")
+                card_cls = f"delfin-chat-msg delfin-gate-card delfin-gate-{_html.escape(gate_type or 'review')}"
+                badge = _gate_label(gate_type)
+                hint_html = (
+                    f'<div class="gate-hint">{_html.escape(gate_hint)}</div>'
+                    if gate_hint else ""
+                )
+                role_html = (
+                    f'<span class="gate-role">{_html.escape(gate_role)}</span>'
+                    if gate_role else ""
+                )
+                parts.append(
+                    f'<div class="{card_cls}">'
+                    f'<div class="gate-header">'
+                    f'<span class="delfin-gate-badge">{_html.escape(badge)}</span>'
+                    f'<span class="gate-title">{_html.escape(gate_title)}</span>'
+                    f'{role_html}'
+                    f'</div>'
+                    f'<div class="gate-body">{content}</div>'
+                    f'{hint_html}'
+                    f'</div>'
+                )
             elif role == "system":
                 raw = msg["content"]
                 css_class = "delfin-chat-msg delfin-chat-handoff" if (
@@ -3544,8 +4513,9 @@ def create_tab(ctx):
         # Find the last user message
         last_user_text = ""
         # Remove trailing assistant + thinking messages from chat
-        while state["chat_messages"] and state["chat_messages"][-1]["role"] in ("assistant", "thinking", "system"):
+        while state["chat_messages"] and state["chat_messages"][-1]["role"] in ("assistant", "thinking", "system", "gate", "approval"):
             state["chat_messages"].pop()
+        _set_active_gate()
         if state["chat_messages"] and state["chat_messages"][-1]["role"] == "user":
             last_user_text = state["chat_messages"][-1]["content"]
             state["chat_messages"].pop()  # will be re-added by _on_send flow
@@ -3636,10 +4606,12 @@ def create_tab(ctx):
             "description": description,
             "callback": callback,
         }
+        _set_active_gate("approval", "", "Dashboard approval required", description)
         _append_chat_message(
             "approval",
             f"\u26a0\ufe0f {description}",
         )
+        _update_status()
         approval_info_html.value = ""
         approve_btn.layout.display = "inline-flex"
         deny_btn.layout.display = "inline-flex"
@@ -3662,11 +4634,13 @@ def create_tab(ctx):
         """Show approval request inline in chat + approval buttons."""
         state["_pending_approval"] = {"tool": tool_name, "detail": detail}
         readable = _format_tool_description(detail)
+        _set_active_gate("approval", "", "Tool approval required", readable)
         # Show in chat as a special approval message
         _append_chat_message(
             "approval",
             readable,
         )
+        _update_status()
         # Show only the buttons between chat and input (description is in chat)
         approval_info_html.value = ""
         approve_btn.layout.display = "inline-flex"
@@ -3680,6 +4654,9 @@ def create_tab(ctx):
         approval_row.layout.display = "none"
         approval_info_html.value = ""
         state.pop("_pending_approval", None)
+        if (state.get("_active_gate") or {}).get("type") == "approval":
+            _set_active_gate()
+            _update_status()
 
     def _on_approve(button):
         """User approves a blocked operation.
@@ -3945,6 +4922,37 @@ def create_tab(ctx):
         if engine is None:
             return
 
+        if not engine.messages and not state.get("_mode_manual_override"):
+            from delfin.agent.engine import AgentEngine as _AE
+            route_decision = _AE.recommend_task_route(user_text, mode_dropdown.value)
+            recommended = route_decision.get("mode", mode_dropdown.value)
+            reasons = route_decision.get("reasons", []) or []
+            task_class = route_decision.get("task_class", "task")
+            confidence = route_decision.get("confidence", "low")
+            if recommended != mode_dropdown.value:
+                should_auto = (
+                    mode_dropdown.value == "dashboard"
+                    or confidence == "high"
+                    or task_class in {"dashboard", "chemistry"}
+                )
+                reason_text = "; ".join(reasons[:2]) if reasons else task_class
+                if should_auto:
+                    _set_mode_programmatically(recommended)
+                    _append_system_message(
+                        f"Auto mode: **{recommended}** "
+                        f"({task_class}, {confidence}) — {reason_text}."
+                    )
+                    engine = _ensure_engine()
+                    if engine is None:
+                        return
+                elif not state.get("_mode_suggested"):
+                    state["_mode_suggested"] = True
+                    _append_system_message(
+                        f"Mode hint: **{recommended}** would likely be cheaper/better "
+                        f"for this {task_class} task ({confidence}). "
+                        f"Reason: {reason_text}."
+                    )
+
         # After cycle complete: enter follow-up mode (keep context alive).
         # The user can continue chatting with the builder/solo agent.
         # Use /reset to start a truly fresh cycle.
@@ -3960,24 +4968,6 @@ def create_tab(ctx):
                 f"--- Follow-up mode ({_fu_role.replace('_', ' ').title()}) "
                 f"— continue chatting or /reset for new task ---"
             )
-
-        # Auto-mode suggestion: only on first message of a cycle, and only
-        # if user hasn't already been asked.  User must accept the switch.
-        if not engine.messages and not state.get("_mode_suggested"):
-            from delfin.agent.engine import AgentEngine as _AE
-            suggested = _AE.suggest_mode(user_text, mode_dropdown.value)
-            if suggested:
-                state["_mode_suggested"] = True
-                state["_pending_mode_msg"] = user_text
-                _append_chat_message("user", user_text)
-                _append_system_message(
-                    f"Mode suggestion: your message mentions files that "
-                    f"match **{suggested}** mode (current: {mode_dropdown.value}).\n"
-                    f"Type `/mode {suggested}` to switch, or just send "
-                    f"your next message to keep **{mode_dropdown.value}**."
-                )
-                input_textarea.value = ""
-                return
 
         # Detect user approval to start pipeline from Session Manager
         # If SM has already responded and user sends a short confirmation,
@@ -4002,6 +4992,8 @@ def create_tab(ctx):
             # Inject user answer back to same agent (don't advance)
             current_msg = f"[User answer to your question]\n{user_text}"
             state["_question_answer"] = current_msg
+            _set_active_gate()
+            _update_status()
 
         # Handle cost governor resume
         if state.pop("_cost_paused", False):
@@ -4010,6 +5002,8 @@ def create_tab(ctx):
                 _append_system_message("Pipeline stopped. Use /reset for new task.")
                 input_textarea.value = ""
                 return
+            _set_active_gate()
+            _update_status()
 
         # Handle conflict resolution
         if state.pop("_awaiting_conflict_resolution", False):
@@ -4021,6 +5015,8 @@ def create_tab(ctx):
                 input_textarea.value = ""
                 return
             # else: continue to test
+            _set_active_gate()
+            _update_status()
 
         # Handle findings review response
         _findings_review_role = state.pop("_awaiting_findings_review", None)
@@ -4036,6 +5032,22 @@ def create_tab(ctx):
                     old_output + f"\n\n--- USER FILTER ---\n{user_text}\n"
                     f"Address only the findings NOT mentioned above as skipped."
                 )
+            _set_active_gate()
+            _update_status()
+
+        # Handle generic gate review response
+        _gate_review_role = state.pop("_awaiting_gate_review", None)
+        if _gate_review_role:
+            _lower_msg = user_text.lower().strip().rstrip("!.?")
+            if _lower_msg not in _APPROVAL_WORDS:
+                _append_system_message(
+                    f"Pipeline paused after {_format_role_label(_gate_review_role)}. "
+                    f"Reply 'go' to continue, or /reset to stop this cycle."
+                )
+                input_textarea.value = ""
+                return
+            _set_active_gate()
+            _update_status()
 
         input_textarea.value = ""
         _append_chat_message("user", user_text)
@@ -4332,10 +5344,15 @@ def create_tab(ctx):
                         _get_agent_settings().get("max_cycle_cost_usd", 5.0)
                     )
                     if engine.cost_usd > _cost_budget > 0:
-                        _append_system_message(
-                            f"⚠️ Cost limit reached "
-                            f"(${engine.cost_usd:.2f} / ${_cost_budget:.2f}). "
-                            f"Pipeline paused. Reply 'go' to continue or /reset."
+                        _append_gate_message(
+                            "cost",
+                            prev_role_id if 'prev_role_id' in locals() else engine.current_role,
+                            "Cost limit reached",
+                            (
+                                f"Cycle cost is ${engine.cost_usd:.2f} / ${_cost_budget:.2f}.\n"
+                                f"The pipeline is paused before spending more."
+                            ),
+                            "Reply 'go' to continue or /reset to stop this cycle.",
                         )
                         state["_cost_paused"] = True
                         _update_status()
@@ -4350,6 +5367,64 @@ def create_tab(ctx):
                         if msg["role"] == "assistant":
                             last_out = msg["content"]
                             break
+
+                    # --- Structured output validation gate ---
+                    _schema_errors = engine.validate_role_output(prev_role_id, last_out)
+                    if _schema_errors:
+                        _schema_retry_counts = state.setdefault("_schema_retry_counts", {})
+                        _schema_retry = int(_schema_retry_counts.get(prev_role_id, 0))
+                        if _schema_retry < 2:
+                            _schema_retry_counts[prev_role_id] = _schema_retry + 1
+                            _err_lines = "\n".join(f"- {err}" for err in _schema_errors)
+                            _append_gate_message(
+                                "schema",
+                                prev_role_id,
+                                f"{_format_role_label(prev_role_id)} output invalid",
+                                _err_lines,
+                                f"Automatic schema retry {_schema_retry + 1}/2 is being attempted.",
+                            )
+                            current_msg = (
+                                "Your previous output did not match the required structured format.\n"
+                                "Fix the schema violations below and resend the full output in the "
+                                "mandatory format for your role.\n\n"
+                                f"Schema violations:\n{_err_lines}\n\n"
+                                f"Original task:\n{original_task}"
+                            )
+                            _update_status()
+                            _update_pipeline_display(engine)
+                            continue
+                        _append_gate_message(
+                            "schema",
+                            prev_role_id,
+                            f"{_format_role_label(prev_role_id)} output still invalid",
+                            "\n".join(f"- {err}" for err in _schema_errors),
+                            "Give guidance or let the same role try again.",
+                        )
+                        state["_awaiting_agent_question"] = prev_role_id
+                        _update_status()
+                        _update_pipeline_display(engine)
+                        break
+                    else:
+                        _schema_retry_counts = state.setdefault("_schema_retry_counts", {})
+                        _schema_retry_counts.pop(prev_role_id, None)
+
+                    # --- Communication gate: explicit review for risky/partial handoffs ---
+                    _gate_action, _gate_type, _gate_message = engine.evaluate_role_gate(
+                        prev_role_id, last_out
+                    )
+                    if _gate_action == "pause":
+                        _append_gate_message(
+                            _gate_type or "review",
+                            prev_role_id,
+                            f"{_format_role_label(prev_role_id)} gate triggered",
+                            _gate_message,
+                            "Reply 'go' to continue anyway, or give guidance.",
+                        )
+                        state["_awaiting_gate_review"] = prev_role_id
+                        _update_status()
+                        _update_pipeline_display(engine)
+                        break
+
                     if "SKIP" in last_out[:200].upper() and prev_role_id not in (
                         "session_manager", "builder_agent", "test_agent",
                     ):
@@ -4375,9 +5450,12 @@ def create_tab(ctx):
                         )
                         if _q_match:
                             _q_text = _q_match.group(1).strip()
-                            _append_system_message(
-                                f"--- {_format_role_label(prev_role_id)} "
-                                f"needs your input ---\n{_q_text}"
+                            _append_gate_message(
+                                "question",
+                                prev_role_id,
+                                f"{_format_role_label(prev_role_id)} needs input",
+                                _q_text,
+                                "Reply with the missing decision or clarification.",
                             )
                             state["_awaiting_agent_question"] = prev_role_id
                             _update_status()
@@ -4386,10 +5464,12 @@ def create_tab(ctx):
 
                     # --- Confidence Gate — pause on low confidence ---
                     if "**confidence:** low" in last_out.lower():
-                        _append_system_message(
-                            f"--- {_format_role_label(prev_role_id)} "
-                            f"has low confidence. Review output and "
-                            f"reply 'go' to continue or give guidance ---"
+                        _append_gate_message(
+                            "confidence",
+                            prev_role_id,
+                            f"{_format_role_label(prev_role_id)} has low confidence",
+                            "The agent reported low confidence for this step.",
+                            "Review the output and reply 'go' to continue or give guidance.",
                         )
                         state["_awaiting_agent_question"] = prev_role_id
                         _update_status()
@@ -4400,6 +5480,13 @@ def create_tab(ctx):
                     # The SM is conversational — user must review the plan
                     # and explicitly approve before the pipeline continues.
                     if prev_role_id == "session_manager" and not _sm_approval:
+                        _append_gate_message(
+                            "plan-approval",
+                            prev_role_id,
+                            "Plan approval required",
+                            "The Session Manager finished planning and is waiting for explicit approval.",
+                            "Reply 'go' to start the remaining pipeline or give corrections first.",
+                        )
                         _update_status()
                         _update_pipeline_display(engine)
                         break
@@ -4490,6 +5577,13 @@ def create_tab(ctx):
                                 f"Reply 'go' to accept all findings, or describe "
                                 f"which to skip (e.g. 'skip finding about X') ---"
                             )
+                            _append_gate_message(
+                                "findings",
+                                prev_role_id,
+                                "Findings review required",
+                                f"{_format_role_label(prev_role_id)} produced findings that need explicit review.",
+                                "Reply 'go' to accept all findings, or describe which ones to skip.",
+                            )
                             state["_awaiting_findings_review"] = prev_role_id
                             _update_status()
                             _update_pipeline_display(engine)
@@ -4506,6 +5600,12 @@ def create_tab(ctx):
                                 last_out, "reviewer"
                             )
                             engine.retry_from_builder()
+                            _record_cycle_event(
+                                "retry",
+                                f"Builder retry {_retries + 1}/3 from Reviewer",
+                                _compact_text(_findings, 160),
+                                "reviewer_agent",
+                            )
                             _append_system_message(
                                 f"--- Reviewer found issues. "
                                 f"Builder retry {_retries + 1}/3 ---"
@@ -4533,6 +5633,12 @@ def create_tab(ctx):
                                 last_out, "test"
                             )
                             engine.retry_from_builder()
+                            _record_cycle_event(
+                                "retry",
+                                f"Builder retry {_retries + 1}/3 from Test",
+                                _compact_text(_findings, 160),
+                                "test_agent",
+                            )
                             _append_system_message(
                                 f"--- Test failures detected. "
                                 f"Builder retry {_retries + 1}/3 ---"
@@ -4553,11 +5659,12 @@ def create_tab(ctx):
                         if ("reject" in _critic_out[:500].lower()
                                 and "approve" in last_out[:500].lower()
                                 and not state.get("_conflict_resolved")):
-                            _append_system_message(
-                                "--- ⚠️ CONFLICT: Critic rejected the plan but "
-                                "Builder approved the implementation. Review both "
-                                "outputs and reply 'go' to continue testing, "
-                                "or 'reject' to stop ---"
+                            _append_gate_message(
+                                "conflict",
+                                prev_role_id,
+                                "Critic / Builder conflict",
+                                "Critic rejected the plan but Builder approved the implementation.",
+                                "Reply 'go' to continue testing, or 'reject' to stop.",
                             )
                             state["_awaiting_conflict_resolution"] = True
                             _update_status()
@@ -4567,15 +5674,18 @@ def create_tab(ctx):
 
                     # Dashboard / follow-up: never advance — keep conversation open
                     if mode_dropdown.value == "dashboard" or state.get("_follow_up"):
+                        _set_active_gate()
                         _update_status()
                         break
 
                     # Advance to next role
                     has_next = engine.advance_role()
+                    _set_active_gate()
                     if not has_next:
                         state.pop("_retry_used", None)
                         state.pop("_builder_retries", None)
                         state.pop("_conflict_resolved", None)
+                        _record_cycle_event("cycle", "Cycle complete")
                         # Acceptance gate: check if test agent approved
                         _cycle_verdict = _check_acceptance_gate(engine)
                         _append_system_message(
@@ -4616,6 +5726,11 @@ def create_tab(ctx):
 
                     # Show pipeline progress + handoff in chat
                     next_role = _format_role_label(engine.current_role)
+                    _record_cycle_event(
+                        "handoff",
+                        f"{_format_role_label(prev_role_id)} -> {next_role}",
+                        role=prev_role_id,
+                    )
                     _append_system_message(
                         f"--- Auto-handoff: "
                         f"{_format_role_label(prev_role_id)} \u2192 {next_role} ---"
@@ -4698,8 +5813,10 @@ def create_tab(ctx):
             if hasattr(engine.client, "kill"):
                 engine.client.kill()
         state["streaming"] = False
+        _set_active_gate()
         _set_working(False)
         _update_button_states()
+        _record_cycle_event("pause", "Generation stopped by user")
         _append_system_message("Generation stopped by user.")
         if state["message_queue"]:
             n = len(state["message_queue"])
@@ -4726,6 +5843,9 @@ def create_tab(ctx):
         state.pop("_retry_used", None)
         state.pop("_builder_retries", None)
         state.pop("_follow_up", None)
+        state["_cycle_history"] = []
+        state["_mode_manual_override"] = False
+        _set_active_gate()
         state["message_queue"].clear()
         state["session_start_time"] = None
         queue_html.value = ""
@@ -4742,13 +5862,16 @@ def create_tab(ctx):
             return
         prev_role = _format_role_label(engine.current_role)
         has_next = engine.advance_role()
+        _set_active_gate()
         if has_next:
             next_role = _format_role_label(engine.current_role)
+            _record_cycle_event("handoff", f"{prev_role} -> {next_role}")
             _append_system_message(
                 f"--- Manual handoff: {prev_role} \u2192 {next_role} ---"
             )
         else:
             state.pop("_retry_used", None)
+            _record_cycle_event("cycle", "Cycle complete")
             _append_system_message("--- Cycle complete ---")
         _update_status()
         _update_button_states()
@@ -4756,6 +5879,8 @@ def create_tab(ctx):
 
     def _on_mode_change(change):
         new_mode = change["new"]
+        if not state.get("_mode_change_internal"):
+            state["_mode_manual_override"] = True
         # Update mode description label
         desc = _MODE_DESCRIPTIONS.get(new_mode, "")
         mode_desc_html.value = (
@@ -5023,6 +6148,11 @@ def create_tab(ctx):
     stop_btn.on_click(_on_stop)
     new_cycle_btn.on_click(_on_new_cycle)
     advance_btn.on_click(_on_advance_role)
+    inspector_primary_btn.on_click(_on_inspector_primary)
+    inspector_retry_btn.on_click(_on_inspector_retry)
+    inspector_stop_btn.on_click(_on_inspector_stop)
+    inspector_next_btn.on_click(_on_inspector_next)
+    inspector_detail_dropdown.observe(_on_inspector_detail_change, names="value")
     load_session_btn.on_click(_on_load_session)
     delete_session_btn.on_click(_on_delete_session)
     undo_btn.on_click(_on_undo)
@@ -5182,6 +6312,8 @@ def _render_status(
     cost_usd: float,
     provider: str = "claude",
     perm_profile: str = "ask_all",
+    active_gate_type: str = "",
+    active_gate_text: str = "",
 ) -> str:
     """Render the status bar HTML."""
     role_label = _format_role_label(role)
@@ -5223,12 +6355,38 @@ def _render_status(
         f'{_html.escape(perm_profile)}</span>'
     )
 
+    gate_info = ""
+    if active_gate_type:
+        _gate_colors = {
+            "schema": ("#ef4444", "white"),
+            "risk": ("#f59e0b", "#fff7ed"),
+            "partial": ("#2563eb", "white"),
+            "goal-lock": ("#2563eb", "white"),
+            "review": ("#2563eb", "white"),
+            "question": ("#8b5cf6", "white"),
+            "plan-approval": ("#8b5cf6", "white"),
+            "findings": ("#8b5cf6", "white"),
+            "approval": ("#8b5cf6", "white"),
+            "confidence": ("#8b5cf6", "white"),
+            "conflict": ("#8b5cf6", "white"),
+            "cost": ("#8b5cf6", "white"),
+        }
+        bg, fg = _gate_colors.get(active_gate_type, ("#6b7280", "white"))
+        label = active_gate_type.replace("-", " ")
+        label = " ".join(part.capitalize() for part in label.split())
+        gate_text = _html.escape(active_gate_text[:80]) if active_gate_text else ""
+        gate_info = (
+            f'<span class="gate-badge" style="background:{bg};color:{fg}">{_html.escape(label)}</span>'
+            f'<span class="gate-text">{gate_text}</span>'
+        )
+
     return (
         f'<div class="delfin-agent-status">'
         f'<span class="mode-badge">{_html.escape(mode)}</span>'
         f"{role_info}"
         f"{backend_info}"
         f"{perm_badge}"
+        f"{gate_info}"
         f'<span class="tokens-info">{tokens_str} · {cost_str}</span>'
         f"</div>"
     )

@@ -23,6 +23,8 @@ local systems and clusters.
    - What happens if scratch space is unavailable?
    - Are environment assumptions (PATH, modules, conda) explicit?
 4. **Flag any divergence** between local and cluster behavior.
+5. **Challenge the plan** if the runtime-facing success proxy is too weak
+   (for example, "job starts" instead of "job recovers correctly").
 
 ## DELFIN-specific focus
 
@@ -67,6 +69,9 @@ SKIP — no runtime/HPC impact, skipping runtime review.
 
 ### Environment assumptions
 - [assumption found] — [is it safe?]
+
+### Goal-drift and measurement risks
+- [weak runtime proxy, missing oracle, or missing stage gate]
 
 **confidence:** high / medium / low
 **reason:** [why this confidence level]

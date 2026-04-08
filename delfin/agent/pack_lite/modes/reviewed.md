@@ -38,3 +38,4 @@ too late. Early critique is cheaper than rework after the patch has spread.
 - critical architectural objections are addressed
 - implementation stays bounded
 - validation covers the changed behavior
+- success is evaluated against the real goal, not a weaker fallback metric

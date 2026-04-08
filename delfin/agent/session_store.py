@@ -41,6 +41,7 @@ def save_session(
     route: list[str] | None = None,
     role_outputs: dict[str, str] | None = None,
     chat_messages: list[dict[str, Any]] | None = None,
+    cycle_history: list[dict[str, Any]] | None = None,
     engine_messages: list[dict[str, Any]] | None = None,
     token_usage: dict[str, int] | None = None,
     cost_usd: float = 0.0,
@@ -62,6 +63,8 @@ def save_session(
         Collected outputs from completed roles.
     chat_messages : list
         The UI chat messages (user/assistant/system with role_label).
+    cycle_history : list
+        Recent gate / handoff / retry events for the Cycle Inspector.
     engine_messages : list
         The engine's conversation messages (role + content).
     token_usage : dict
@@ -98,6 +101,7 @@ def save_session(
         "route": route or [],
         "role_outputs": role_outputs or {},
         "chat_messages": chat_messages or [],
+        "cycle_history": cycle_history or [],
         "engine_messages": engine_messages or [],
         "token_usage": token_usage or {"input": 0, "output": 0},
         "cost_usd": cost_usd,

@@ -6,6 +6,7 @@ purpose: >
 shared_context:
   - shared/delfin_context.md
   - shared/work_cycle_rules.md
+  - shared/goal_decomposition_rules.md
   - shared/universal_input_template.md
   - shared/minimal_final_verdict.md
 routing:

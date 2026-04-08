@@ -35,3 +35,4 @@ expensive rework discovered only after implementation.
 - runtime and cluster concerns are explicitly reviewed
 - implementation is complete
 - test evidence is strong
+- the release decision is based on the locked target, not on a substituted proxy

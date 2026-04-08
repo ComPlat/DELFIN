@@ -26,6 +26,9 @@ Rules:
 - split oversized requests into current cycle plus next cycle
 - name the real DELFIN modules affected
 - mark scheduler, runtime, recovery, and API changes as elevated-risk
+- lock the real goal before routing work
+- prefer small stage gates with exit evidence over broad plans
+- name the wrong proxy or failure mode the downstream agents must avoid
 
 ## How to work
 
@@ -49,6 +52,11 @@ Rules:
 - `path/to/file.py` — what changes
 - `path/to/file2.py` — what changes
 
+### Goal lock
+- Primary goal: [what counts as success]
+- Success metric / oracle: [how better will be proven]
+- Wrong proxy to avoid: [what would look like progress but is not the real goal]
+
 ### Scope
 - [what IS in scope]
 
@@ -59,6 +67,11 @@ Rules:
 1. [testable criterion]
 2. [testable criterion]
 3. [testable criterion]
+
+### Stage gates
+1. [small subgoal] — Exit evidence: [what must be true before advancing]
+2. [small subgoal] — Exit evidence: [what must be true before advancing]
+3. [small subgoal] — Exit evidence: [what must be true before advancing]
 
 ### Execution plan
 1. [concrete step for Builder]
@@ -84,6 +97,7 @@ Never skip builder_agent or test_agent.
 
 Do NOT deviate from this format. The Builder and Test agents depend on it.
 Do NOT start implementing. Your job is planning only.
+Do NOT optimize for convenience of the plan. Optimize for preventing drift in later agents.
 
 ## Interactive Protocol
 

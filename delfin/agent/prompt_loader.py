@@ -67,14 +67,16 @@ class PromptLoader:
     # -- shared context ----------------------------------------------------
 
     def load_shared_context(self) -> str:
-        """Load delfin_context.md + work_cycle_rules.md."""
+        """Load core shared DELFIN agent context files."""
         parts = []
-        ctx = self._cached_read(self.agent_dir / "shared" / "delfin_context.md")
-        if ctx:
-            parts.append(ctx)
-        rules = self._cached_read(self.agent_dir / "shared" / "work_cycle_rules.md")
-        if rules:
-            parts.append(rules)
+        for rel in (
+            "delfin_context.md",
+            "work_cycle_rules.md",
+            "goal_decomposition_rules.md",
+        ):
+            text = self._cached_read(self.agent_dir / "shared" / rel)
+            if text:
+                parts.append(text)
         return "\n\n".join(parts)
 
     def load_role_prompt(self, role_id: str) -> str:
@@ -238,6 +240,9 @@ class PromptLoader:
                 f"- Read the prior agent outputs carefully before starting your work.\n"
                 f"- Produce your output in the MANDATORY structured format from your role prompt.\n"
                 f"- The next agent in the route will parse your output. Be precise.\n"
+                f"- Do NOT silently redefine the task, success metric, or scope.\n"
+                f"- If you believe the goal or metric is wrong, raise QUESTION instead of drifting.\n"
+                f"- Prefer small stage gates with explicit exit evidence over broad implementation claims.\n"
                 f"- If you are the Builder: address all critical/major Critic/Runtime findings.\n"
                 f"- If you are the Test Agent: run pytest and verify acceptance criteria.\n"
                 f"---\n"

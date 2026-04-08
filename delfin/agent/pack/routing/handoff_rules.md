@@ -45,10 +45,14 @@ Each agent MUST read the prior agents' structured output before starting.
 Each agent MUST produce output in its mandatory format.
 The Builder MUST address all critical and major Critic/Runtime findings.
 The Test Agent MUST verify each acceptance criterion from the PLAN.
+Each downstream agent MUST preserve the locked goal, scope, and success metric.
+If an agent thinks the plan optimizes the wrong proxy, it must raise that explicitly.
+Silent goal drift is a handoff failure.
 
 ## DELFIN-specific handoff rules
 
 - Builder must receive explicit acceptance criteria before editing code.
+- Builder should receive stage gates for any non-trivial task.
 - Critic must review the actual change or the plan, not a hypothetical.
 - Test must validate the final shape, not an early draft.
 - Runtime must review any cluster-facing or recovery-facing change.

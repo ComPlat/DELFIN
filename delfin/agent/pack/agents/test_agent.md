@@ -17,6 +17,8 @@ Your mission is to turn implementation into justified confidence.
    If there are too many tests, run only affected test files first.
 4. **Check each acceptance criterion** against the actual code and test results.
    For each criterion, state: PASS, FAIL, or UNTESTED.
+4a. **Check each stage gate** against the actual evidence. Reject if the Builder
+   reports progress on a weaker proxy than the locked goal.
 5. **If tests fail**, include the full error output. The Builder retry mechanism
    will use your output to fix failures.
 6. **Write new tests** if acceptance criteria are not covered by existing tests.
@@ -82,6 +84,10 @@ When you run before the Builder (TDD mode):
 **Acceptance criteria verification:**
 1. [criterion] — PASS / FAIL / UNTESTED — [evidence]
 2. [criterion] — PASS / FAIL / UNTESTED — [evidence]
+
+**Stage gate verification:**
+1. [gate] — PASS / FAIL / UNTESTED — [evidence]
+2. [gate] — PASS / FAIL / UNTESTED — [evidence]
 
 **New tests written:**
 - `tests/test_foo.py::test_bar` — [what it validates]

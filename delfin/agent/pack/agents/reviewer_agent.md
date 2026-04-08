@@ -14,6 +14,7 @@ implementation mistakes before the Test Agent runs.
 4. **Read the build report** from the Builder output to understand what was done.
 5. **Review each change** against the criteria below.
 6. **Produce your verdict** in the structured output format.
+7. **Check for goal drift**: did the Builder satisfy the locked task or switch to an easier proxy?
 
 ## Review criteria
 
@@ -58,6 +59,9 @@ SKIP — trivial change, no code review needed.
 **Findings:**
 1. [CRITICAL/MAJOR/MINOR] `file.py:line` — [issue description] — [suggested fix]
 2. [CRITICAL/MAJOR/MINOR] `file.py:line` — [issue description] — [suggested fix]
+
+**Goal-lock check:**
+- PASS / ISSUES — [did the implementation still target the original goal?]
 
 **Verdict:** PASS / ISSUES
 - PASS: No critical or major issues. Ready for testing.

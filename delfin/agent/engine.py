@@ -46,7 +46,52 @@ _ESCALATION_PATTERNS: list[tuple[str, str]] = [
 ]
 
 # Mode escalation order (higher index = heavier mode)
-_MODE_RANK = {"quick": 0, "reviewed": 1, "cluster": 2, "full": 3}
+_MODE_RANK = {
+    "dashboard": 0,
+    "research": 0,
+    "solo": 0,
+    "quick": 1,
+    "reviewed": 2,
+    "cluster": 3,
+    "full": 4,
+}
+
+_DASHBOARD_KEYWORDS = (
+    "/control", "/orca", "/calc", "/remote", "/job", "/submit", "/analyze",
+    "dashboard", "control key", "orca builder", "calc browser", "remote archive",
+    "job status", "set control", "submit job", "show jobs", "browse calculations",
+    "open calc", "open calculation", "switch tab", "agent tab", "recalc",
+)
+_CHEMISTRY_KEYWORDS = (
+    "dft", "functional", "basis set", "dispersion", "solvation", "solvent model",
+    "redox", "nmr", "excited state", "uv-vis", "spin state", "thermochemistry",
+    "electrochem", "orca method", "smiles", "metal complex", "ligand", "conformer",
+    "geometry optimization", "oxidation state", "coordination", "reaction mechanism",
+)
+_CODE_CHANGE_KEYWORDS = (
+    "fix", "implement", "change", "patch", "refactor", "add", "update", "edit",
+    "rewrite", "improve", "extend", "optimize", "debug", "repair", "modify",
+)
+_CODE_QUESTION_KEYWORDS = (
+    "how does", "how do", "why does", "what does", "explain", "where is",
+    "show me", "walk through", "understand", "question", "why is",
+)
+_FILE_OR_CODE_HINTS = (
+    ".py", ".md", ".yaml", ".yml", ".json", "pytest", "test_", "stack trace",
+    "traceback", "function", "class ", "module", "repo", "codebase", "diff",
+)
+_FULL_RISK_KEYWORDS = (
+    "release", "milestone", "broad architecture", "major redesign",
+    "multi entry point", "cross-cutting", "large refactor", "final confidence",
+)
+_REVIEWED_RISK_KEYWORDS = (
+    "api semantics", "public behavior", "config semantics", "parser", "validation",
+    "architecture", "cross-module", "user-facing behavior", "result semantics",
+)
+_CLUSTER_RISK_KEYWORDS = (
+    "cluster", "slurm", "sbatch", "squeue", "scancel", "runtime", "scheduler",
+    "scratch", "restart", "recovery", "backend_local", "backend_slurm", "submit template",
+)
 
 # -- Role-specific thinking budgets -------------------------------------------
 # Builder needs the most thinking (implementation), review roles need moderate,
@@ -453,17 +498,88 @@ class AgentEngine:
         """Build a test handoff with extracted acceptance criteria."""
         sm_output = self.role_outputs.get("session_manager", "")
         criteria = self.extract_acceptance_criteria(sm_output)
+        gates = self.extract_stage_gates(sm_output)
         checklist = ""
         if criteria:
             items = "\n".join(f"  - [ ] {c}" for c in criteria)
             checklist = f"\n\nAcceptance criteria checklist:\n{items}\n"
+        gate_list = ""
+        if gates:
+            items = "\n".join(f"  - [ ] {g}" for g in gates)
+            gate_list = f"\n\nStage gate checklist:\n{items}\n"
         return (
             f"Validate the implementation for this task:\n\n{user_task}\n\n"
             f"Prior agent outputs:\n{prior_summary}\n"
-            f"{checklist}\n"
+            f"{checklist}{gate_list}\n"
             f"Run `python -m pytest tests/ -v --tb=short` and verify each "
-            f"criterion above as PASS / FAIL / UNTESTED."
+            f"criterion and gate above as PASS / FAIL / UNTESTED."
         )
+
+    @staticmethod
+    def extract_plan_field(session_manager_output: str, field_name: str) -> str:
+        """Extract a ``**Field:** value`` entry from the Session Manager plan."""
+        pattern = rf"^\*\*{re.escape(field_name)}:\*\*\s*(.+)$"
+        match = re.search(pattern, session_manager_output, flags=re.MULTILINE)
+        return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def _extract_list_section(
+        session_manager_output: str,
+        headings: tuple[str, ...],
+    ) -> list[str]:
+        """Extract bullet/numbered items from a named markdown section."""
+        items: list[str] = []
+        in_section = False
+        heading_tokens = tuple(h.lower() for h in headings)
+        for line in session_manager_output.splitlines():
+            stripped = line.strip()
+            lowered = stripped.lower()
+            if any(lowered.startswith(token) for token in heading_tokens):
+                in_section = True
+                continue
+            if in_section:
+                if stripped.startswith("###") or stripped.startswith("## "):
+                    break
+                match = re.match(r"^(?:\d+\.\s*|-\s*)(.*)", stripped)
+                if match and match.group(1).strip():
+                    items.append(match.group(1).strip())
+        return items
+
+    def _build_locked_plan_contract(self) -> str:
+        """Summarize the Session Manager plan for downstream handoffs."""
+        sm_output = self.role_outputs.get("session_manager", "")
+        if not sm_output:
+            return ""
+
+        task = self.extract_plan_field(sm_output, "Task")
+        goal_lock = self._extract_list_section(sm_output, ("### Goal lock",))
+        scope = self._extract_list_section(sm_output, ("### Scope",))
+        out_of_scope = self._extract_list_section(sm_output, ("### Out of scope",))
+        criteria = self.extract_acceptance_criteria(sm_output)
+        gates = self.extract_stage_gates(sm_output)
+
+        lines = ["Locked plan contract:"]
+        if task:
+            lines.append(f"- Task: {task}")
+        if goal_lock:
+            lines.append("- Goal lock:")
+            lines.extend(f"  - {item}" for item in goal_lock)
+        if scope:
+            lines.append("- Scope:")
+            lines.extend(f"  - {item}" for item in scope)
+        if out_of_scope:
+            lines.append("- Out of scope:")
+            lines.extend(f"  - {item}" for item in out_of_scope)
+        if criteria:
+            lines.append("- Acceptance criteria:")
+            lines.extend(f"  - {item}" for item in criteria)
+        if gates:
+            lines.append("- Stage gates:")
+            lines.extend(f"  - {item}" for item in gates)
+        lines.append(
+            "- Downstream rule: do not redefine this contract silently. Raise QUESTION if it is wrong."
+        )
+        return "\n".join(lines)
 
     def build_handoff_message(self, user_task: str) -> str:
         """Build a context-rich handoff message for the current role.
@@ -488,6 +604,8 @@ class AgentEngine:
         _cycle_memory_ctx = ""
         if role == "session_manager":
             _cycle_memory_ctx = self._load_cycle_memory()
+        locked_contract = self._build_locked_plan_contract()
+        contract_block = f"\n\n{locked_contract}\n" if locked_contract else "\n"
 
         # Role-specific handoff instructions
         instructions = {
@@ -495,6 +613,8 @@ class AgentEngine:
                 f"The user wants:\n\n{user_task}\n\n"
                 f"Create a structured PLAN in the mandatory format. "
                 f"Start by running `git diff --stat` to see the current state.\n"
+                f"Lock the real goal, define the success oracle, and break non-trivial work "
+                f"into small stage gates with exit evidence.\n"
                 f"If the task needs external research, add RESEARCH_NEEDED: [topic]. "
                 f"If not, add SKIP_RESEARCH.\n"
                 f"If the task is ambiguous, ask the user with QUESTION: [question]."
@@ -506,27 +626,47 @@ class AgentEngine:
             ),
             "research_agent": (
                 f"Research the following for this task:\n\n{user_task}\n\n"
+                f"{locked_contract}\n\n"
                 f"Prior agent outputs:\n{prior_summary}\n\n"
                 f"Focus on actionable findings for the Builder. "
-                f"Use WebSearch and WebFetch. Max 5 searches."
+                f"Use WebSearch and WebFetch. Max 5 searches. "
+                f"Call out weak proxies, missing benchmarks, or missing comparison oracles."
             ),
             "critic_agent": (
                 f"Review the plan and/or changes for this task:\n\n{user_task}\n\n"
+                f"{locked_contract}\n\n"
                 f"Prior agent outputs:\n{prior_summary}\n\n"
-                f"Produce a structured REVIEW. Focus on critical and major issues."
+                f"Produce a structured REVIEW. Focus on critical and major issues. "
+                f"Explicitly flag goal drift, weak success proxies, and missing stage gates."
             ),
             "runtime_agent": (
                 f"Review the runtime implications for this task:\n\n{user_task}\n\n"
+                f"{locked_contract}\n\n"
                 f"Prior agent outputs:\n{prior_summary}\n\n"
-                f"Produce a structured RUNTIME REVIEW. Check local vs cluster behavior."
+                f"Produce a structured RUNTIME REVIEW. Check local vs cluster behavior and "
+                f"whether the runtime-facing success metric is actually sufficient."
             ),
             "builder_agent": (
                 f"Implement the following task:\n\n{user_task}\n\n"
+                f"{locked_contract}\n\n"
                 f"Prior agent outputs:\n{prior_summary}\n\n"
                 f"Follow the PLAN from Session Manager. Address all critical/major "
-                f"findings from Critic/Runtime/Research. Run tests after implementation."
+                f"findings from Critic/Runtime/Research. Work through stage gates in order. "
+                f"Do not silently substitute an easier proxy metric for the locked goal. "
+                f"Run tests after implementation."
             ),
-            "test_agent": self._build_test_handoff(user_task, prior_summary),
+            "reviewer_agent": (
+                f"Review the implemented changes for this task:\n\n{user_task}\n\n"
+                f"{locked_contract}\n\n"
+                f"Prior agent outputs:\n{prior_summary}\n\n"
+                f"Review the actual diff, not the hypothetical plan. "
+                f"Check correctness, regressions, and whether the Builder stayed aligned "
+                f"with the locked goal instead of solving an easier proxy problem."
+            ),
+            "test_agent": (
+                self._build_test_handoff(user_task, prior_summary)
+                + contract_block
+            ),
         }
         return instructions.get(role, f"Continue with the task:\n\n{user_task}")
 
@@ -538,16 +678,128 @@ class AgentEngine:
         or None if the current mode is sufficient.
         """
         current_rank = _MODE_RANK.get(current_mode, 0)
-        best_mode = current_mode
+        decision = AgentEngine.recommend_task_route(user_message, current_mode)
+        suggested = decision.get("mode", current_mode)
+        if _MODE_RANK.get(suggested, 0) > current_rank:
+            return suggested
+        return None
+
+    @staticmethod
+    def recommend_task_route(user_message: str, current_mode: str = "dashboard") -> dict[str, Any]:
+        """Recommend the cheapest capable mode for a task.
+
+        Returns a dict with:
+        - ``mode``: recommended mode
+        - ``task_class``: dashboard / chemistry / coding / general
+        - ``intent``: operate / research / question / change
+        - ``confidence``: low / medium / high
+        - ``reasons``: short rationale list
+        - ``risk_flags``: reviewed / cluster / full flags when present
+        """
+        text = user_message or ""
+        lower = text.lower()
+        stripped = lower.strip()
+
+        def _contains_any(keywords: tuple[str, ...]) -> list[str]:
+            return [kw for kw in keywords if kw in lower]
+
+        dashboard_hits = _contains_any(_DASHBOARD_KEYWORDS)
+        chemistry_hits = _contains_any(_CHEMISTRY_KEYWORDS)
+        code_change_hits = _contains_any(_CODE_CHANGE_KEYWORDS)
+        code_question_hits = _contains_any(_CODE_QUESTION_KEYWORDS)
+        code_hint_hits = _contains_any(_FILE_OR_CODE_HINTS)
+        reviewed_hits = _contains_any(_REVIEWED_RISK_KEYWORDS)
+        cluster_hits = _contains_any(_CLUSTER_RISK_KEYWORDS)
+        full_hits = _contains_any(_FULL_RISK_KEYWORDS)
 
         for pattern, mode in _ESCALATION_PATTERNS:
-            if re.search(pattern, user_message):
-                if _MODE_RANK.get(mode, 0) > _MODE_RANK.get(best_mode, 0):
-                    best_mode = mode
+            if re.search(pattern, text):
+                if mode == "cluster":
+                    cluster_hits.append(pattern)
+                elif mode == "reviewed":
+                    reviewed_hits.append(pattern)
 
-        if _MODE_RANK.get(best_mode, 0) > current_rank:
-            return best_mode
-        return None
+        dashboard_score = len(dashboard_hits) * 2 + (3 if stripped.startswith("/") else 0)
+        chemistry_score = len(chemistry_hits) * 2
+        code_score = len(code_change_hits) * 2 + len(code_hint_hits)
+        if re.search(r"\bdelfin/[\w/.\-]+", lower):
+            code_score += 3
+        if "?" in text:
+            chemistry_score += 1 if chemistry_hits else 0
+            code_score += 1 if code_hint_hits or code_change_hits else 0
+
+        task_class = "general"
+        intent = "question"
+        confidence = "low"
+        mode = current_mode or "dashboard"
+        reasons: list[str] = []
+
+        if dashboard_score >= max(2, chemistry_score, code_score):
+            task_class = "dashboard"
+            intent = "operate"
+            mode = "dashboard"
+            confidence = "high" if dashboard_score >= 3 else "medium"
+            if dashboard_hits:
+                reasons.append(f"dashboard signals: {', '.join(dashboard_hits[:3])}")
+            if stripped.startswith("/"):
+                reasons.append("slash-command style request")
+        elif chemistry_score >= max(2, code_score) and not code_change_hits:
+            task_class = "chemistry"
+            intent = "research"
+            mode = "research"
+            confidence = "high" if chemistry_score >= 4 else "medium"
+            reasons.append("chemistry/scientific method signals detected")
+            if chemistry_hits:
+                reasons.append(f"chemistry terms: {', '.join(chemistry_hits[:3])}")
+        else:
+            task_class = "coding"
+            is_question = bool("?" in text or code_question_hits)
+            is_change = bool(
+                code_change_hits
+                or re.search(r"\b(test|bug|feature|refactor|implement|fix|patch|change|edit|add|update)\b", lower)
+            )
+            if is_question:
+                intent = "question"
+                mode = "solo"
+                confidence = "medium" if code_score or code_question_hits else "low"
+                reasons.append("read-only codebase question")
+            else:
+                intent = "change"
+                mode = "quick"
+                confidence = "medium"
+                if full_hits:
+                    mode = "full"
+                    confidence = "high"
+                elif cluster_hits:
+                    mode = "cluster"
+                    confidence = "high"
+                elif reviewed_hits:
+                    mode = "reviewed"
+                    confidence = "high"
+                if code_change_hits:
+                    reasons.append(f"code-change verbs: {', '.join(code_change_hits[:3])}")
+                if code_hint_hits:
+                    reasons.append(f"code targets: {', '.join(code_hint_hits[:3])}")
+
+        if task_class == "coding" and current_mode == "dashboard" and mode == "quick" and not code_change_hits and code_hint_hits:
+            # Questions about code from dashboard should use solo, not a full cycle.
+            mode = "solo"
+            intent = "question"
+            confidence = "medium"
+            reasons.append("de-escalated to single-agent code exploration")
+
+        return {
+            "mode": mode,
+            "task_class": task_class,
+            "intent": intent,
+            "confidence": confidence,
+            "reasons": reasons[:4],
+            "risk_flags": {
+                "reviewed": bool(reviewed_hits),
+                "cluster": bool(cluster_hits),
+                "full": bool(full_hits),
+            },
+        }
 
     # -- context compaction ---------------------------------------------------
 
@@ -592,6 +844,259 @@ class AgentEngine:
                 if m and m.group(1).strip():
                     criteria.append(m.group(1).strip())
         return criteria
+
+    @staticmethod
+    def extract_stage_gates(session_manager_output: str) -> list[str]:
+        """Parse stage gates from the Session Manager's PLAN output."""
+        return AgentEngine._extract_list_section(
+            session_manager_output,
+            ("### Stage gates",),
+        )
+
+    @staticmethod
+    def extract_status_field(agent_output: str) -> str:
+        """Extract the canonical ``**status:**`` verdict if present."""
+        match = re.search(
+            r"^\*\*status:\*\*\s*(approve_with_risks|approve|reject)\s*$",
+            agent_output or "",
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+        return match.group(1).lower() if match else ""
+
+    @staticmethod
+    def extract_named_verdict(agent_output: str, label: str) -> str:
+        """Extract a non-status verdict line such as ``**Verdict:** PASS``."""
+        pattern = rf"^\*\*{re.escape(label)}:\*\*\s*(.+?)\s*$"
+        match = re.search(pattern, agent_output or "", flags=re.IGNORECASE | re.MULTILINE)
+        return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def extract_check_statuses(agent_output: str, heading: str) -> list[tuple[str, str]]:
+        """Extract ``item -> status`` rows from a markdown checklist section."""
+        results: list[tuple[str, str]] = []
+        in_section = False
+        target = heading.lower()
+        for line in (agent_output or "").splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith(target):
+                in_section = True
+                continue
+            if in_section:
+                if stripped.startswith("###") or stripped.startswith("## ") or stripped.startswith("**"):
+                    break
+                match = re.match(
+                    r"^(?:\d+\.\s*|-\s*)(.*?)\s+[-—]\s+(PASS|FAIL|UNTESTED|DONE|PARTIAL|BLOCKED)\b",
+                    stripped,
+                    flags=re.IGNORECASE,
+                )
+                if match:
+                    results.append((match.group(1).strip(), match.group(2).upper()))
+        return results
+
+    @staticmethod
+    def evaluate_role_gate(role_id: str, output: str) -> tuple[str, str, str]:
+        """Return a communication-gate decision for a completed role.
+
+        Returns ``(action, gate_type, message)`` where action is one of:
+        - ``continue``: safe to auto-advance
+        - ``pause``: stop and ask the user to review/approve
+        """
+        text = output or ""
+        status = AgentEngine.extract_status_field(text)
+
+        # Session Manager: validate plan completeness before routing work
+        if role_id == "session_manager":
+            errors = AgentEngine.validate_role_output(role_id, text)
+            if errors:
+                return (
+                    "pause",
+                    "schema",
+                    "Session Manager plan is incomplete: " + "; ".join(errors[:4]),
+                )
+
+        if role_id in {"research_agent", "critic_agent", "runtime_agent"}:
+            if status == "reject":
+                return (
+                    "pause",
+                    "risk",
+                    "reported `status: reject`; review the findings before continuing.",
+                )
+            if status == "approve_with_risks":
+                return (
+                    "pause",
+                    "risk",
+                    "reported `status: approve_with_risks`; review the open risks before continuing.",
+                )
+
+        if role_id == "builder_agent":
+            stage_statuses = AgentEngine.extract_check_statuses(text, "**Stage gate status:**")
+            crit_statuses = AgentEngine.extract_check_statuses(text, "**Acceptance criteria status:**")
+            blocked = [name for name, state in stage_statuses + crit_statuses if state == "BLOCKED"]
+            partial = [name for name, state in stage_statuses + crit_statuses if state == "PARTIAL"]
+            if status == "reject":
+                return (
+                    "pause",
+                    "partial",
+                    "reported `status: reject`; implementation did not close safely.",
+                )
+            if blocked:
+                return (
+                    "pause",
+                    "partial",
+                    "left blocked items: " + "; ".join(blocked[:4]),
+                )
+            if partial:
+                return (
+                    "pause",
+                    "partial",
+                    "left partial items: " + "; ".join(partial[:4]),
+                )
+
+        if role_id == "reviewer_agent":
+            verdict = AgentEngine.extract_named_verdict(text, "Verdict").upper()
+            goal_lock = AgentEngine.extract_named_verdict(text, "Goal-lock check").upper()
+            if "ISSUES" in verdict:
+                return (
+                    "pause",
+                    "review",
+                    "reported `Verdict: ISSUES`; builder should address review findings.",
+                )
+            if "ISSUES" in goal_lock:
+                return (
+                    "pause",
+                    "goal-lock",
+                    "flagged goal-lock issues; review whether the builder solved the correct problem.",
+                )
+
+        return ("continue", "", "")
+
+    @staticmethod
+    def validate_role_output(role_id: str, output: str) -> list[str]:
+        """Validate a role output against the required structured contract."""
+        text = (output or "").strip()
+        if not text:
+            return ["empty output"]
+
+        upper_head = text[:300].upper()
+        if "QUESTION:" in text:
+            return []
+        if role_id in {"critic_agent", "reviewer_agent", "runtime_agent", "research_agent"}:
+            if upper_head.startswith("SKIP") or "\nSKIP" in upper_head:
+                return []
+
+        def _missing(token: str, label: str | None = None) -> str:
+            return f"missing {label or token}"
+
+        def _contains(token: str) -> bool:
+            return token.lower() in text.lower()
+
+        errors: list[str] = []
+
+        if role_id == "session_manager":
+            required_tokens = [
+                "## PLAN",
+                "**Task:**",
+                "**Class:**",
+                "**Risk:**",
+                "**Mode:**",
+                "### Affected files",
+                "### Goal lock",
+                "### Scope",
+                "### Out of scope",
+                "### Acceptance criteria",
+                "### Stage gates",
+                "### Execution plan",
+                "### Known risks",
+                "**confidence:**",
+                "**reason:**",
+            ]
+            for token in required_tokens:
+                if not _contains(token):
+                    errors.append(_missing(token))
+            if not AgentEngine.extract_acceptance_criteria(text):
+                errors.append("missing numbered acceptance criteria")
+            if not AgentEngine.extract_stage_gates(text):
+                errors.append("missing numbered stage gates")
+            goal_lock = AgentEngine._extract_list_section(text, ("### Goal lock",))
+            if len(goal_lock) < 3:
+                errors.append("goal lock must include primary goal, success metric/oracle, and wrong proxy")
+
+        elif role_id == "critic_agent":
+            required_tokens = [
+                "## REVIEW",
+                "**Overall assessment:**",
+                "**Risk level:**",
+                "### Critical findings",
+                "### Major findings",
+                "### Moderate findings",
+                "### Goal-drift and measurement risks",
+                "**confidence:**",
+                "**reason:**",
+                "**status:**",
+                "**key findings:**",
+                "**open risks:**",
+                "**recommended next step:**",
+            ]
+            for token in required_tokens:
+                if not _contains(token):
+                    errors.append(_missing(token))
+
+        elif role_id == "runtime_agent":
+            required_tokens = [
+                "## RUNTIME REVIEW",
+                "**Overall assessment:**",
+                "### Local implications",
+                "### Cluster implications",
+                "### Failure modes",
+                "### Environment assumptions",
+                "### Goal-drift and measurement risks",
+                "**confidence:**",
+                "**reason:**",
+                "**status:**",
+                "**key findings:**",
+                "**open risks:**",
+                "**recommended next step:**",
+            ]
+            for token in required_tokens:
+                if not _contains(token):
+                    errors.append(_missing(token))
+
+        elif role_id == "reviewer_agent":
+            required_tokens = [
+                "## CODE REVIEW",
+                "**Files reviewed:**",
+                "**Findings:**",
+                "**Goal-lock check:**",
+                "**Verdict:**",
+                "**Summary:**",
+                "**confidence:**",
+                "**reason:**",
+            ]
+            for token in required_tokens:
+                if not _contains(token):
+                    errors.append(_missing(token))
+
+        elif role_id == "test_agent":
+            required_tokens = [
+                "## TEST REPORT",
+                "**Test command:**",
+                "**Result:**",
+                "**Acceptance criteria verification:**",
+                "**Stage gate verification:**",
+                "**New tests written:**",
+                "**Regression check:**",
+                "**confidence:**",
+                "**reason:**",
+                "**status:**",
+                "**key findings:**",
+                "**open risks:**",
+                "**recommended next step:**",
+            ]
+            for token in required_tokens:
+                if not _contains(token):
+                    errors.append(_missing(token))
+
+        return errors
 
     # -- pipeline progress tracking -------------------------------------------
 
