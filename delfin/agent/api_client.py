@@ -636,9 +636,9 @@ class OpenAIClient(_BaseClient):
         if is_reasoning:
             kwargs["max_completion_tokens"] = max_tokens
             # Map thinking budget to reasoning_effort
-            if thinking_budget > 30000:
+            if thinking_budget >= 64000:
                 kwargs["reasoning_effort"] = "high"
-            elif thinking_budget > 10000:
+            elif thinking_budget >= 16000:
                 kwargs["reasoning_effort"] = "medium"
             else:
                 kwargs["reasoning_effort"] = "low"

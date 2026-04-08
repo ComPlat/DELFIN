@@ -4195,7 +4195,7 @@ def create_tab(ctx):
                     from delfin.agent.engine import AgentEngine as _AE
                     _cur_role = engine.current_role
                     _base_budget = _AE.thinking_budget_for_role(_cur_role)
-                    _budget = int(_base_budget * _mult)
+                    _budget = min(int(_base_budget * _mult), 128000)
 
                     # Per-role model: switch to optimal model (Claude only)
                     _effective_model = model_dropdown.value
