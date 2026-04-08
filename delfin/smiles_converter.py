@@ -568,7 +568,12 @@ def _embed_with_timeout(mol, params=None, timeout: Optional[float] = None):
         timeout = _EMBED_TIMEOUT
 
     # Fast path: skip timeout machinery for very small molecules
-    if mol.GetNumAtoms() < 40:
+    # BUT always use timeout for highly connected molecules (many ring bonds)
+    # which can cause ETKDG to hang even at low atom counts (e.g. borane cages).
+    n_atoms = mol.GetNumAtoms()
+    n_bonds = mol.GetNumBonds()
+    highly_connected = n_bonds > 2 * n_atoms  # cage/cluster topology
+    if n_atoms < 40 and not highly_connected:
         if params is not None:
             return AllChem.EmbedMolecule(mol, params)
         return AllChem.EmbedMolecule(mol)
@@ -795,13 +800,13 @@ def _smiles_to_xyz_no_valence_check(smiles: str) -> Tuple[Optional[str], Optiona
         embed_params.useBasicKnowledge = False  # Don't use standard geometry knowledge
         embed_params.enforceChirality = False
 
-        result = AllChem.EmbedMolecule(mol, embed_params)
+        result = _embed_with_timeout(mol, embed_params)
 
         if result != 0:
             # Try with different random seeds
             for seed in [123, 456, 789, 1000]:
                 embed_params.randomSeed = seed
-                result = AllChem.EmbedMolecule(mol, embed_params)
+                result = _embed_with_timeout(mol, embed_params)
                 if result == 0:
                     break
 
@@ -885,8 +890,11 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
             local_coords = [(0.0, 0.0, 0.0)] * n_atoms
             local_placed: set = set()
 
-            for mi in metal_indices:
-                local_coords[mi] = (0.0, 0.0, 0.0)
+            # Offset each metal so multi-metal complexes don't overlap
+            _metal_offset = 4.0  # Angstrom separation between metal centers
+            for metal_rank, mi in enumerate(metal_indices):
+                mx = _metal_offset * metal_rank
+                local_coords[mi] = (mx, 0.0, 0.0)
                 local_placed.add(mi)
 
                 neighbors = [nbr.GetIdx() for nbr in mol.GetAtomWithIdx(mi).GetNeighbors()]
@@ -897,6 +905,16 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                     vectors = _COORD_VECTORS_BASE.get(n_coord, _COORD_VECTORS_BASE.get(6, []))
 
                 metal_sym = mol.GetAtomWithIdx(mi).GetSymbol()
+                # For high-CN systems (>8), use Fibonacci sphere for even distribution
+                if n_coord > 8:
+                    golden_ratio = (1 + math.sqrt(5)) / 2
+                    vectors = []
+                    for fi in range(n_coord):
+                        theta = math.acos(1 - 2 * (fi + 0.5) / n_coord)
+                        phi = 2 * math.pi * fi / golden_ratio
+                        vectors.append((math.sin(theta) * math.cos(phi),
+                                        math.sin(theta) * math.sin(phi),
+                                        math.cos(theta)))
                 for i, nbr_idx in enumerate(neighbors):
                     donor_sym = mol.GetAtomWithIdx(nbr_idx).GetSymbol()
                     bond_len = _get_ml_bond_length(metal_sym, donor_sym)
@@ -912,11 +930,12 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                         vx = bond_len * math.cos(angle)
                         vy = bond_len * math.sin(angle)
                         vz = 0.0
-                    local_coords[nbr_idx] = (vx, vy, vz)
+                    local_coords[nbr_idx] = (mx + vx, vy, vz)
                     local_placed.add(nbr_idx)
 
             # BFS to place remaining atoms
             bond_len_default = 1.4
+            _bfs_counter = [0]  # mutable counter for unique directions
             queue = list(local_placed)
             while queue:
                 current = queue.pop(0)
@@ -937,12 +956,35 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                             dz += cz - oz
                     mag = math.sqrt(dx**2 + dy**2 + dz**2)
                     if mag < 1e-8:
-                        dx, dy, dz = 1.0 + 0.1 * k, 0.3 * k, 0.0
-                        mag = math.sqrt(dx**2 + dy**2 + dz**2)
+                        # Use Fibonacci sphere direction for unique placement
+                        _bfs_counter[0] += 1
+                        golden = (1 + math.sqrt(5)) / 2
+                        theta = math.acos(1 - 2 * (_bfs_counter[0] % 50 + 0.5) / 50)
+                        phi = 2 * math.pi * _bfs_counter[0] / golden
+                        dx = math.sin(theta) * math.cos(phi)
+                        dy = math.sin(theta) * math.sin(phi)
+                        dz = math.cos(theta)
+                        mag = 1.0
                     dx = dx/mag * bond_len_default
                     dy = dy/mag * bond_len_default
                     dz = dz/mag * bond_len_default
-                    local_coords[nbr_idx] = (cx + dx, cy + dy, cz + dz)
+                    # Clash check: if target position is too close to any placed atom, nudge
+                    nx, ny, nz = cx + dx, cy + dy, cz + dz
+                    for _attempt in range(5):
+                        too_close = False
+                        for pi in local_placed:
+                            px, py, pz = local_coords[pi]
+                            dd = math.sqrt((nx-px)**2 + (ny-py)**2 + (nz-pz)**2)
+                            if dd < 0.8:
+                                too_close = True
+                                break
+                        if not too_close:
+                            break
+                        # Rotate direction by 60 degrees around z
+                        cos60, sin60 = 0.5, 0.866
+                        dx, dy = dx*cos60 - dy*sin60, dx*sin60 + dy*cos60
+                        nx, ny, nz = cx + dx, cy + dy, cz + dz
+                    local_coords[nbr_idx] = (nx, ny, nz)
                     local_placed.add(nbr_idx)
                     queue.append(nbr_idx)
 
@@ -1909,8 +1951,15 @@ def _find_hapto_groups(mol) -> List[Tuple[int, List[int]]]:
         if atom.GetSymbol() not in _METAL_SET:
             continue
         metal_idx = atom.GetIdx()
-        c_neighbors = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 6]
+        all_neighbors = list(atom.GetNeighbors())
+        c_neighbors = [n.GetIdx() for n in all_neighbors if n.GetAtomicNum() == 6]
         if len(c_neighbors) < 2:
+            continue
+        # Skip cluster compounds (borane/carborane cages): if >50% of
+        # metal neighbours are B atoms, the C atoms are cage vertices,
+        # not part of a cyclopentadienyl-type hapto ligand.
+        b_count = sum(1 for n in all_neighbors if n.GetAtomicNum() == 5)
+        if b_count > len(all_neighbors) / 2:
             continue
 
         c_set = set(c_neighbors)
@@ -5915,7 +5964,34 @@ def _assemble_secondary_metal_coordination_modules(
             for nbr in atom.GetNeighbors()
             if nbr.GetSymbol() not in _METAL_SET and nbr.GetAtomicNum() > 1
         ]
-        if len(donor_indices) < 2:
+        if len(donor_indices) == 0:
+            continue
+        if len(donor_indices) == 1:
+            # Single-donor fallback: place metal along donor→COM direction
+            donor_idx = donor_indices[0]
+            donor_pos = conf.GetAtomPosition(donor_idx)
+            dp = np.array([donor_pos.x, donor_pos.y, donor_pos.z])
+            all_pos = []
+            for a2 in mol.GetAtoms():
+                if a2.GetSymbol() not in _METAL_SET:
+                    p2 = conf.GetAtomPosition(a2.GetIdx())
+                    all_pos.append(np.array([p2.x, p2.y, p2.z]))
+            com = np.mean(all_pos, axis=0) if all_pos else dp
+            direction = dp - com
+            norm = np.linalg.norm(direction)
+            if norm < 1e-6:
+                direction = np.array([1.0, 0.0, 0.0])
+                norm = 1.0
+            direction = direction / norm
+            try:
+                bond_len = _secondary_donor_target_length(mol, metal_sym, donor_idx)
+            except Exception:
+                bond_len = 2.1
+            metal_pos = dp + direction * bond_len
+            conf.SetAtomPosition(metal_idx, Geometry.Point3D(*metal_pos))
+            placed_secondary.add(metal_idx)
+            module_atoms.add(metal_idx)
+            module_atoms.add(donor_idx)
             continue
 
         donor_positions = []
@@ -11895,6 +11971,18 @@ def _no_spurious_bonds(xyz_delfin: str, original_smiles: str) -> bool:
             pair = frozenset([n1, n2])
             if pair in _CHECKED_HOMODIATOMIC:
                 orig_homo.add(pair)
+        # For multi-metal complexes with bridging O atoms, O-O perception
+        # by OB is expected (two oxo/hydroxo on neighbouring metals) — skip.
+        metal_count = sum(1 for a in orig_mol.GetAtoms() if a.GetSymbol() in _METAL_SET)
+        if metal_count >= 2:
+            o_on_metal = 0
+            for a in orig_mol.GetAtoms():
+                if a.GetAtomicNum() == 8 and any(
+                    n.GetSymbol() in _METAL_SET for n in a.GetNeighbors()
+                ):
+                    o_on_metal += 1
+            if o_on_metal >= 2:
+                orig_homo.add(frozenset([8, 8]))
 
         # Homodiatomic pairs OB perceives in XYZ
         lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
@@ -16058,14 +16146,26 @@ def smiles_to_xyz_isomers(
             # Fragment topology check: organic ligand fragments must match the
             # original SMILES (catches broken/fused ligands while preserving
             # fac/mer isomers which have identical fragment sets).
+            # For multi-metal complexes, skip strict fragment check — the
+            # complex bridging topology causes frequent false-positive
+            # mismatches in OB bond perception.
+            _n_metals_in_mol = sum(
+                1 for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET
+            )
             if not _fragment_topology_ok(xyz, smiles):
-                logger.debug("Skipping conformer %d: fragment topology mismatch", cid)
-                if (
-                    _fragment_topology_relaxed_fallback_ok(xyz, smiles)
-                    and _xyz_passes_final_geometry_checks(xyz, mol)
-                ):
-                    relaxed_fragment_results.append((xyz, display))
-                continue
+                if _n_metals_in_mol >= 2:
+                    # Accept multi-metal conformers with relaxed topology
+                    logger.debug(
+                        "Accepting conformer %d despite fragment mismatch "
+                        "(multi-metal complex)", cid)
+                else:
+                    logger.debug("Skipping conformer %d: fragment topology mismatch", cid)
+                    if (
+                        _fragment_topology_relaxed_fallback_ok(xyz, smiles)
+                        and _xyz_passes_final_geometry_checks(xyz, mol)
+                    ):
+                        relaxed_fragment_results.append((xyz, display))
+                    continue
             results.append((xyz, display))
 
         if not results:
@@ -16370,6 +16470,28 @@ def smiles_to_xyz(
                         "for universal candidate selection."
                     )
         method = None
+
+        # Cluster compounds (borane/carborane cages, etc.): extremely dense
+        # ring-closure topologies cause ETKDG to hang.  Route directly to
+        # the manual metal embed fallback which places atoms geometrically.
+        if has_metal and not hapto_groups:
+            _cluster_mol = Chem.MolFromSmiles(smiles, sanitize=False)
+            if _cluster_mol is not None:
+                _nb = _cluster_mol.GetNumBonds()
+                _na = _cluster_mol.GetNumAtoms()
+                if _na > 0 and _nb > 2 * _na:
+                    logger.info(
+                        "Detected cluster topology (%d bonds / %d atoms = %.1f), "
+                        "using manual metal embed", _nb, _na, _nb / _na)
+                    xyz_content, manual_err = _manual_metal_embed(smiles)
+                    if xyz_content:
+                        if apply_uff:
+                            uff_xyz = _optimize_xyz_openbabel(xyz_content)
+                            if uff_xyz:
+                                xyz_content = uff_xyz
+                        if output_path:
+                            Path(output_path).write_text(xyz_content, encoding='utf-8')
+                        return xyz_content, None
 
         # For metal-nitrogen coordination complexes (both neutral and charged notation),
         # use the multi-strategy approach that tries multiple parsing methods
@@ -17124,7 +17246,7 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
             pass
 
         try:
-            result = AllChem.EmbedMolecule(mol, params, maxAttempts=200)
+            result = _embed_with_timeout(mol, params)
         except (TypeError, Exception):
             result = -1
 
@@ -17141,7 +17263,7 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
                 relaxed.ignoreSmoothingFailures = True
             except Exception:
                 pass
-            result = AllChem.EmbedMolecule(mol, relaxed)
+            result = _embed_with_timeout(mol, relaxed)
 
         if result != 0:
             return None, "Failed to generate 3D coordinates (unsanitized)"
