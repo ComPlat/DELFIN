@@ -3332,7 +3332,9 @@ def create_tab(ctx):
                         i += 1
                     commands.append("/control set " + "\n".join(content_lines))
                 else:
-                    commands.append(cmd)
+                    # Convert escaped \n to real newlines (agents often
+                    # output literal \n for multiline values like coords)
+                    commands.append(cmd.replace("\\n", "\n"))
                     i += 1
             else:
                 i += 1
