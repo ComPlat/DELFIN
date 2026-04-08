@@ -3191,8 +3191,8 @@ def create_tab(ctx):
     _PROFILE_TO_CLI_PERM: dict[str, str] = {
         "plan":      "plan",
         "ask_all":   "default",
-        "repo_free": "acceptEdits",
-        "all_free":  "auto",
+        "repo_free": "bypassPermissions",  # CLI runs non-interactive; DELFIN zone system enforces safety
+        "all_free":  "bypassPermissions",  # CLI runs non-interactive; DELFIN zone system enforces safety
     }
 
     def _active_perms() -> dict[str, tuple[int, bool]]:
@@ -4241,7 +4241,7 @@ def create_tab(ctx):
                     # and strip ACTION: lines from displayed chat.
                     # Continuation loop: if commands returned results, let the
                     # agent process them (up to _MAX_CONT turns to prevent runaway).
-                    _MAX_DASHBOARD_CONT = 3
+                    _MAX_DASHBOARD_CONT = 10
                     _cont_turn = 0
                     while mode_dropdown.value == "dashboard" and chunks and _cont_turn < _MAX_DASHBOARD_CONT:
                         _cont_turn += 1

@@ -127,7 +127,10 @@ class CLIClient(_BaseClient):
         ]
 
         if self.permission_mode and self.permission_mode != "default":
-            cmd.extend(["--permission-mode", self.permission_mode])
+            if self.permission_mode in ("auto", "bypassPermissions"):
+                cmd.append("--dangerously-skip-permissions")
+            else:
+                cmd.extend(["--permission-mode", self.permission_mode])
 
         if session_id:
             cmd.extend(["--resume", session_id])
