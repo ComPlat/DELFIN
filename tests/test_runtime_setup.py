@@ -47,6 +47,9 @@ def test_resolve_orca_base_prefers_backend_specific_setting(tmp_path):
 def test_resolve_orca_base_has_no_hardcoded_local_fallback_by_default(monkeypatch):
     monkeypatch.setattr(runtime_setup, "discover_orca_installations", lambda search_roots=None: [])
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.delenv("DELFIN_ORCA_BASE", raising=False)
+    monkeypatch.delenv("ORCA_BINARY", raising=False)
+    monkeypatch.delenv("ORCA_PATH", raising=False)
     assert resolve_orca_base(None, {}, "local", auto_candidates=[]) == ""
 
 

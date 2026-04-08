@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -1479,13 +1480,25 @@ def collect_runtime_diagnostics(
         )
         if genarris_ok:
             try:
-                # Verify C extension loads
-                import gnrs.cgenarris  # noqa: F401
-
-                diagnostics.append(
-                    {"name": "cgenarris", "status": "ok", "detail": "C extension OK"}
+                # Verify the C extension in a subprocess. Importing it directly
+                # can abort the current interpreter on MPI-misconfigured hosts.
+                probe = subprocess.run(
+                    [sys.executable, "-c", "import gnrs.cgenarris"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=10,
                 )
-            except ImportError as exc:
+                if probe.returncode == 0:
+                    diagnostics.append(
+                        {"name": "cgenarris", "status": "ok", "detail": "C extension OK"}
+                    )
+                else:
+                    detail = (probe.stdout or "").strip() or "C extension probe failed"
+                    diagnostics.append(
+                        {"name": "cgenarris", "status": "missing", "detail": detail}
+                    )
+            except (ImportError, OSError, subprocess.SubprocessError) as exc:
                 diagnostics.append(
                     {"name": "cgenarris", "status": "missing", "detail": f"C extension failed: {exc}"}
                 )
