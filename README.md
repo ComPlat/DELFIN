@@ -154,7 +154,7 @@ Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
 
 ## 🤖 AI Agent System
 
-DELFIN includes a built-in multi-agent AI system powered by Claude that can operate as a conversational co-pilot for the entire platform. The agent lives in the **Agent** dashboard tab and provides different operating modes depending on the task.
+DELFIN includes a built-in multi-agent AI system that can operate as a conversational co-pilot for the entire platform. The agent lives in the **Agent** dashboard tab and supports multiple LLM providers: **Claude** (Anthropic), **OpenAI / Codex**, and **KIT Toolbox** (university-hosted). The provider and model are selectable per session from the dashboard.
 
 ### Agent Modes
 
@@ -169,16 +169,41 @@ DELFIN includes a built-in multi-agent AI system powered by Claude that can oper
 | **cluster** | SM → Runtime → Critic → Builder → Test | Includes HPC/SLURM runtime specialist for submission scripts, job scheduling, error recovery. |
 | **full** | Chief → SM → Runtime → Critic → Builder → Test | Maximum oversight with strategic lead. For releases and milestones. |
 
+### Automatic Task Routing
+
+The agent classifies each task and selects the cheapest capable mode automatically:
+
+- **Dashboard operations** (slash commands, CONTROL editing) → dashboard mode
+- **Chemistry / method questions** (DFT functionals, basis sets, spin states) → research mode
+- **Code questions** (how does X work, explain Y) → solo mode (single-agent, no pipeline overhead)
+- **Code changes** (fix, implement, refactor) → quick mode, escalated to reviewed/cluster/full only when risk signals are detected (API semantics, SLURM changes, release scope)
+
+Manual mode selection always takes priority over automatic routing.
+
+### Goal-Lock Orchestration
+
+Multi-agent pipelines use a structured contract to prevent goal drift:
+
+1. **Session Manager** locks the real goal, defines a success oracle, names the wrong proxy to avoid, and breaks work into small **stage gates** with explicit exit evidence
+2. **Builder** reports gate status (DONE / PARTIAL / BLOCKED) for each stage gate
+3. **Critic / Runtime / Reviewer** verify the implementation against the locked goal, not a substituted proxy
+4. **Test Agent** verifies each acceptance criterion and stage gate as PASS / FAIL / UNTESTED
+5. **Communication gates** automatically pause the pipeline when: plans are incomplete, builds are partial or blocked, reviews flag goal drift, or risk verdicts require user attention
+
+The **Cycle Inspector** in the dashboard visualises gate decisions, open risks, retry history, and provides action buttons (Continue / Retry / Stop / Next).
+
 ### Key Agent Features
 
+- **Multi-provider support**: Claude (CLI or API), OpenAI / Codex (API or CLI), KIT Toolbox — selectable per session with auto-detection of available providers
+- **Per-role model routing**: Each agent role uses the optimal model tier (e.g., Haiku for cheap review roles, Sonnet/Opus for implementation)
 - **Endless conversation**: After a pipeline completes, the Builder stays active for follow-up questions and adjustments — no context lost until explicit `/reset`
-- **Dashboard co-pilot**: In dashboard mode, the agent reads current CONTROL/ORCA settings and executes slash commands that are visible in real-time (e.g., "setze BP86" → functional changes in Submit tab)
+- **Dashboard co-pilot**: In dashboard mode, the agent reads current CONTROL/ORCA settings and executes slash commands visible in real-time (e.g., "setze BP86" → functional changes in Submit tab)
 - **Findings filter**: After Critic/Runtime review, the user can accept all findings or skip specific ones before the Builder starts
 - **Persistent memory**: `/remember`, `/memories`, `/forget` — facts and preferences persist across sessions and are injected into every agent prompt
 - **Agent workspace**: `~/agent_workspace/` directory for uploaded reference files, accessible to the agent
-- **Per-role model routing**: Each agent role uses the optimal model (Haiku for cheap review, Sonnet/Opus for implementation)
 - **Cost tracking**: Per-role token usage and USD cost displayed in real-time
 - **Session persistence**: Conversations can be saved, restored, and exported as Markdown
+- **Tool whitelists**: Each role has a code-level tool whitelist that blocks unauthorized tool use regardless of prompt content
 
 ### Agent Slash Commands
 
@@ -197,9 +222,15 @@ The agent tab supports extensive slash commands for direct dashboard control:
 
 ### Requirements & Architecture
 
-The agent requires [Claude Code CLI](https://claude.ai/code) (`claude` in PATH) with OAuth authentication. No API key needed for the CLI backend. An optional API backend is available with an `ANTHROPIC_API_KEY`.
+The agent supports three LLM providers:
 
-DELFIN treats Claude the same way it treats any other external tool (ORCA, xTB, CREST, Gaussian, ...): as a **subprocess dependency** that the user installs and authenticates independently. DELFIN does not bundle, redistribute, or modify the Claude CLI — it calls the official binary via its documented pipe interface (`claude -p --output-format stream-json`). All API usage runs through Anthropic's standard rate limits and billing under the user's own account.
+| Provider | Backend | Setup |
+|----------|---------|-------|
+| **Claude** (default) | CLI (`claude` in PATH) or API (`ANTHROPIC_API_KEY`) | [Claude Code CLI](https://claude.ai/code) with OAuth — no API key needed for CLI |
+| **OpenAI / Codex** | CLI (`codex` in PATH) or API (`OPENAI_API_KEY`) | [Codex CLI](https://github.com/openai/codex) or OpenAI API key |
+| **KIT Toolbox** | API (`KIT_TOOLBOX_API_KEY`) | University-hosted endpoint, OpenAI-compatible |
+
+Available providers are auto-detected from PATH and environment variables. DELFIN treats each LLM the same way it treats any other external tool (ORCA, xTB, CREST, ...): as a **subprocess dependency** that the user installs and authenticates independently. DELFIN does not bundle or redistribute any LLM binary — it calls official binaries via their documented interfaces. All API usage runs through each provider's standard rate limits and billing under the user's own account.
 
 ---
 
@@ -584,13 +615,14 @@ delfin/
   csp_tools/           ← Crystal structure prediction (Genarris)
   runtime_setup.py     ← Auto-detection of 88 external programs
   dashboard/           ← 11-tab interactive dashboard (Voila/JupyterLab)
-  agent/               ← Multi-agent AI system
-    engine.py          ← Orchestration engine (mode routing, role transitions, cost tracking)
-    api_client.py      ← Claude CLI and API backends with streaming
+  agent/               ← Multi-agent AI system (Claude, OpenAI/Codex, KIT Toolbox)
+    engine.py          ← Orchestration engine (task routing, goal-lock gates, role transitions, cost tracking)
+    api_client.py      ← LLM backends: Claude CLI, Anthropic API, OpenAI API, Codex CLI
     prompt_loader.py   ← Role-specific prompt composition from pack system
     memory_store.py    ← Persistent memory across sessions
     session_store.py   ← Conversation persistence and restore
     pack/              ← Agent role prompts (builder, critic, runtime, research, ...)
+      shared/          ← Shared context: DELFIN rules, goal decomposition, work cycle rules
     pack_lite/         ← Mode definitions and routing manifest
 ```
 
@@ -782,7 +814,7 @@ delfin/
   qm_tools/                # external QM binary management
 
   # ── Dashboard ──
-  dashboard/               # 10-tab interactive dashboard (Voila/JupyterLab)
+  dashboard/               # 11-tab interactive dashboard (Voila/JupyterLab)
 
   # ── Reporting ──
   reporting/               # DOCX, JSON, text report generation
