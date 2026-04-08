@@ -721,10 +721,11 @@ class CodexCLIClient(_BaseClient):
 
     # Map Claude CLI permission names → Codex CLI flags
     _PERM_TO_CODEX_FLAGS: dict[str, list[str]] = {
-        "plan":        ["--sandbox", "read-only"],
-        "default":     ["--sandbox", "workspace-write"],
-        "acceptEdits": ["--full-auto"],  # = workspace-write + auto-approve
-        "auto":        ["--full-auto", "--sandbox", "danger-full-access"],
+        "plan":                ["--sandbox", "read-only"],
+        "default":             ["--sandbox", "workspace-write"],
+        "acceptEdits":         ["--full-auto"],  # = workspace-write + auto-approve
+        "auto":                ["--full-auto", "--sandbox", "danger-full-access"],
+        "bypassPermissions":   ["--full-auto", "--sandbox", "danger-full-access"],
     }
 
     def __init__(self, model: str = "", codex_path: str = "",
