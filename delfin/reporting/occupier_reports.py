@@ -336,6 +336,20 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
 
     # ----------------------- energy band ---------------------------------------
     valid_all = [(e["index"], f) for e, f in zip(sequence, fspe_values) if f is not None]
+    if not valid_all:
+        # All ORCA runs failed — no energies to compare.
+        report_path = Path("OCCUPIER.txt")
+        hours_e, remainder_e = divmod(duration, 3600)
+        minutes_e, seconds_e = divmod(remainder_e, 60)
+        report_path.write_text(
+            f"OCCUPIER REPORT\n{'=' * 60}\n\n"
+            f"All FoB calculations failed — no valid energies obtained.\n"
+            f"Check the individual output files for ORCA error details.\n\n"
+            f"Duration: {int(hours_e):02d}h {int(minutes_e):02d}m {seconds_e:05.2f}s\n",
+            encoding="utf-8",
+        )
+        logger.error("OCCUPIER: all FoB energies are None — no valid result to select")
+        return
     valid = [pair for pair in valid_all if within_dev_limit(pair[0])] or valid_all
     energies_by_idx = {i: f for i, f in valid_all}
 
@@ -1000,6 +1014,19 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
 
     # ----------------------- energy band ---------------------------------------
     valid_all = [(e["index"], f) for e, f in zip(sequence, fspe_values) if f is not None]
+    if not valid_all:
+        report_path = Path("OCCUPIER.txt")
+        hours_e, remainder_e = divmod(duration, 3600)
+        minutes_e, seconds_e = divmod(remainder_e, 60)
+        report_path.write_text(
+            f"OCCUPIER REPORT\n{'=' * 60}\n\n"
+            f"All FoB calculations failed — no valid energies obtained.\n"
+            f"Check the individual output files for ORCA error details.\n\n"
+            f"Duration: {int(hours_e):02d}h {int(minutes_e):02d}m {seconds_e:05.2f}s\n",
+            encoding="utf-8",
+        )
+        logger.error("OCCUPIER: all FoB energies are None — no valid result to select")
+        return
     valid = [pair for pair in valid_all if within_dev_limit(pair[0])] or valid_all
     energies_by_idx = {i: f for i, f in valid_all}
 
