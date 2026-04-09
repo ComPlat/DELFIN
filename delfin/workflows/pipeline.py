@@ -158,23 +158,34 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             all_jobs = build_flat_occupier_fob_jobs(config)
             sc_embedded = False
             if str(config.get("stability_constant", "no")).strip().lower() == "yes":
-                from delfin.stability_constant import build_stability_constant_plan
+                from delfin.stability_constant import (
+                    build_stability_constant_plan,
+                    build_stability_reaction_plan,
+                )
 
                 try:
-                    sc_plan = build_stability_constant_plan(
-                        ctx,
-                        initial_completion_dependency=config.get("_occ_initial_energy_job"),
-                    )
+                    sc_mode = str(config.get("stability_constant_mode", "auto")).strip().lower() or "auto"
+                    if sc_mode == "reaction":
+                        sc_plan = build_stability_reaction_plan(
+                            ctx,
+                            initial_completion_dependency=config.get("_occ_initial_energy_job"),
+                        )
+                    else:
+                        sc_plan = build_stability_constant_plan(
+                            ctx,
+                            initial_completion_dependency=config.get("_occ_initial_energy_job"),
+                        )
                     all_jobs.extend(sc_plan.jobs)
                     sc_embedded = True
                     logger.info(
-                        "[SC] Embedded stability constant jobs into the OCCUPIER shared scheduler "
-                        "(initial dependency: %s).",
+                        "[SC] Embedded thermodynamics jobs into the OCCUPIER shared scheduler "
+                        "(mode=%s, initial dependency: %s).",
+                        sc_mode,
                         config.get("_occ_initial_energy_job") or "none",
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
-                        "[SC] Could not embed stability constant workflow into OCCUPIER run: %s",
+                        "[SC] Could not embed thermodynamics workflow into OCCUPIER run: %s",
                         exc,
                         exc_info=True,
                     )
@@ -199,7 +210,7 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
 
                     if sc_embedded and "sc_postprocess" in manager.completed_jobs:
                         ctx.extra["stability_constant_embedded_complete"] = True
-                        logger.info("[SC] Embedded stability constant workflow completed within OCCUPIER run.")
+                        logger.info("[SC] Embedded thermodynamics workflow completed within OCCUPIER run.")
                     elif sc_embedded:
                         logger.warning(
                             "[SC] Embedded stability constant workflow did not complete inside OCCUPIER run; "
@@ -746,6 +757,7 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
 
     preopt = str(config.get('hyperpol_xTB_preopt', 'none')).strip().lower()
     engine = str(config.get('hyperpol_xTB_engine', 'std2')).strip().lower()
+    use_bfw = str(config.get('hyperpol_xTB_bfw', 'no')).strip().lower() == 'yes'
     import math
     raw_wl = str(config.get('hyperpol_xTB_wavelengths', '')).strip()
     if raw_wl and raw_wl.lower() not in ('', 'none', 'static'):
@@ -778,6 +790,7 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
             cores=resolved_cores,
             maxcore=resolved_maxcore,
             workdir=workdir,
+            use_bfw=use_bfw,
         )
         ctx.extra['hyperpol_xtb_result'] = result
 
@@ -793,6 +806,7 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
                     "charge": result.charge,
                     "multiplicity": result.multiplicity,
                     "energy_window_ev": result.energy_window_ev,
+                    "bfw": use_bfw,
                     "requested_wavelengths_nm": result.requested_wavelengths_nm,
                 },
                 "dipole_moment": {
@@ -840,6 +854,7 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
             f"  Charge         = {result.charge}",
             f"  Multiplicity   = {result.multiplicity}",
             f"  Energy window  = {result.energy_window_ev} eV",
+            f"  BFW            = {'yes' if use_bfw else 'no'}",
             "",
             sep,
             "Dipole moment:",
@@ -909,6 +924,7 @@ def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
 
     preopt = str(config.get('tadf_xTB_preopt', 'none')).strip().lower()
     excited_method = str(config.get('tadf_xTB_excited_method', 'stda')).strip().lower()
+    use_bfw = str(config.get('tadf_xTB_bfw', 'no')).strip().lower() == 'yes'
     energy_window = float(config.get('tadf_xTB_energy_window', 10.0))
     run_t1_opt = str(config.get('tadf_xTB_run_t1_opt', 'yes')).strip().lower() == 'yes'
     xtb_method = str(config.get('xTB_method', 'XTB2')).strip()
@@ -945,6 +961,7 @@ def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
             run_t1_opt=run_t1_opt,
             t1_multiplicity=3,
             optimize_s0=optimize_s0,
+            use_bfw=use_bfw,
         )
         ctx.extra['tadf_xtb_result'] = result
 
@@ -965,6 +982,7 @@ def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
                     "multiplicity": result.multiplicity,
                     "energy_window_ev": energy_window,
                     "preopt": preopt,
+                    "bfw": use_bfw,
                     "run_t1_opt": run_t1_opt,
                 },
                 "excited_states": {
@@ -1032,6 +1050,7 @@ def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
             f"  Charge            = {result.charge}",
             f"  Multiplicity      = {result.multiplicity}",
             f"  Preopt            = {preopt}",
+            f"  BFW               = {'yes' if use_bfw else 'no'}",
             f"  Energy window     = {energy_window} eV",
             f"  T1 optimization   = {'yes' if run_t1_opt else 'no'}",
             "",
