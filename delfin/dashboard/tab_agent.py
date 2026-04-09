@@ -1519,8 +1519,10 @@ def create_tab(ctx):
         "calc-recalc-btn",         # triggers recalculation
         "calc-submit-recalc-btn",  # submits recalc
     })
-    # Hard-blocked: nothing — all buttons accessible with confirmation
-    _BLOCKED_WIDGETS = frozenset()
+    # Hard-blocked: agent can NEVER click these, even with confirmation
+    _BLOCKED_WIDGETS = frozenset({
+        "calc-delete-btn", "remote-delete-btn",
+    })
 
     def _build_full_widget_registry() -> dict[str, widgets.Widget]:
         """Build registry including widgets from all dashboard tabs."""
@@ -3332,6 +3334,10 @@ def create_tab(ctx):
                 if not hasattr(_ui_w, "click"):
                     _append_system_message(f"Widget '{_ui_wname}' is not a button.")
                     return True
+                # Hard-blocked buttons: agent can never click these
+                if _ui_wname in _BLOCKED_WIDGETS:
+                    _append_system_message(f"⛔ Blocked: '{_ui_wname}' cannot be clicked by the agent.")
+                    return True
                 # Confirmation-required buttons: ask user before executing
                 if _ui_wname in _CONFIRM_WIDGETS:
                     _readable = _ui_wname.replace("-", " ").replace("btn", "").strip()
@@ -4391,7 +4397,14 @@ def create_tab(ctx):
         return _PERM_PROFILES.get(profile, _PERM_PROFILES["ask_all"])
 
     def _active_cli_perm() -> str:
-        """Return the Claude CLI permission_mode for the active profile."""
+        """Return the Claude CLI permission_mode for the active profile.
+
+        Dashboard mode always uses 'default' (asks before write tools)
+        because the dashboard agent should never write files directly.
+        """
+        cur_mode = mode_dropdown.value
+        if cur_mode == "dashboard":
+            return "default"
         profile = state.get("_perm_profile", "ask_all")
         return _PROFILE_TO_CLI_PERM.get(profile, "default")
 
