@@ -6296,8 +6296,6 @@ def create_tab(ctx):
         _is_minimal = new_mode in ("solo", "dashboard")
         # Hide mode description (saves vertical space)
         mode_desc_html.layout.display = "none" if _is_minimal else "block"
-        # Hide session row (accessible via /session)
-        session_row.layout.display = "none" if _is_minimal else "flex"
         # Hide pipeline-only buttons (but keep commit/push visible)
         advance_btn.layout.display = "none" if _is_minimal else "inline-flex"
 
@@ -6572,7 +6570,6 @@ def create_tab(ctx):
     _init_mode = mode_dropdown.value
     if _init_mode in ("solo", "dashboard"):
         mode_desc_html.layout.display = "none"
-        session_row.layout.display = "none"
         advance_btn.layout.display = "none"
 
     _enter_key_init_js = """
