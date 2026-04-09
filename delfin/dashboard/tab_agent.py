@@ -5651,9 +5651,9 @@ def create_tab(ctx):
                             ),
                             "",
                         )
-                            _update_status()
-                            _update_pipeline_display(engine)
-                            break
+                        _update_status()
+                        _update_pipeline_display(engine)
+                        break
 
                     # Dynamic routing: parse SM's routing directives.
                     if prev_role_id == "session_manager" and _sm_approval:
