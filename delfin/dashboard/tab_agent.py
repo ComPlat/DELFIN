@@ -5182,8 +5182,10 @@ def create_tab(ctx):
             if recommended != mode_dropdown.value:
                 should_auto = (
                     mode_dropdown.value == "dashboard"
-                    or confidence == "high"
-                    or task_class in {"dashboard", "chemistry"}
+                    or (confidence == "high"
+                        and mode_dropdown.value not in ("solo",))
+                    or (task_class in {"dashboard", "chemistry"}
+                        and mode_dropdown.value not in ("solo",))
                 )
                 reason_text = "; ".join(reasons[:2]) if reasons else task_class
                 if should_auto:
