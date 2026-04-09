@@ -2390,103 +2390,146 @@ def create_tab(ctx):
             msgs.append(
                 {"role": "assistant", "content": content, "role_label": role_label}
             )
-        _refresh_chat_html()
+        _refresh_chat_html(streaming=True)
 
-    def _refresh_chat_html():
-        """Rebuild the chat display HTML."""
-        if not state["chat_messages"]:
+    # HTML cache: stores rendered HTML for messages that haven't changed.
+    # During streaming, only the last (assistant) message is re-rendered.
+    _html_cache: dict[str, str] = {"prefix": "", "prefix_count": 0}
+
+    def _render_single_msg(msg):
+        """Render a single chat message to HTML."""
+        role = msg["role"]
+        content = _md_to_html(msg["content"])
+        if role == "user":
+            return (
+                f'<div class="delfin-chat-msg delfin-chat-user">{content}</div>'
+            )
+        elif role == "assistant":
+            label = msg.get("role_label", "Agent")
+            return (
+                f'<div class="delfin-chat-msg delfin-chat-agent">'
+                f'<div class="delfin-chat-role">{_html.escape(label)}</div>'
+                f"{content}</div>"
+            )
+        elif role == "thinking":
+            raw = msg["content"]
+            preview = raw[:80].replace("\n", " ").strip()
+            if len(raw) > 80:
+                preview += "..."
+            escaped_full = _html.escape(raw)
+            return (
+                f'<details class="delfin-chat-msg delfin-chat-thinking">'
+                f'<summary>\U0001f9e0 {_html.escape(preview)}</summary>'
+                f'<div class="thinking-content">{escaped_full}</div>'
+                f'</details>'
+            )
+        elif role == "approval":
+            return (
+                f'<div class="delfin-chat-msg delfin-chat-approval">'
+                f'\u26a0\ufe0f {content}'
+                f'<div style="margin-top:4px;font-size:11px;color:#78350f;">'
+                f'Press <b>Enter</b> to approve, <b>Esc</b> to deny</div>'
+                f'</div>'
+            )
+        elif role == "gate":
+            gate_type = msg.get("gate_type", "")
+            gate_title = msg.get("gate_title", _gate_label(gate_type))
+            gate_hint = msg.get("gate_hint", "")
+            gate_role = msg.get("role_label", "")
+            card_cls = f"delfin-chat-msg delfin-gate-card delfin-gate-{_html.escape(gate_type or 'review')}"
+            badge = _gate_label(gate_type)
+            hint_html = (
+                f'<div class="gate-hint">{_html.escape(gate_hint)}</div>'
+                if gate_hint else ""
+            )
+            role_html = (
+                f'<span class="gate-role">{_html.escape(gate_role)}</span>'
+                if gate_role else ""
+            )
+            return (
+                f'<div class="{card_cls}">'
+                f'<div class="gate-header">'
+                f'<span class="delfin-gate-badge">{_html.escape(badge)}</span>'
+                f'<span class="gate-title">{_html.escape(gate_title)}</span>'
+                f'{role_html}'
+                f'</div>'
+                f'<div class="gate-body">{content}</div>'
+                f'{hint_html}'
+                f'</div>'
+            )
+        elif role == "tool":
+            return (
+                f'<div class="delfin-chat-msg delfin-chat-tool">'
+                f'{msg["content"]}</div>'
+            )
+        elif role == "system":
+            raw = msg["content"]
+            if raw.startswith("---") or raw.startswith("Session restored"):
+                css_class = "delfin-chat-msg delfin-chat-handoff"
+            else:
+                css_class = "delfin-chat-msg delfin-chat-system"
+            return f'<div class="{css_class}">{content}</div>'
+        return ""
+
+    _SCROLL_TAG = (
+        '<img src="" onerror="'
+        "var c=this.closest('.delfin-agent-chat');"
+        "if(c)c.scrollTop=c.scrollHeight;"
+        "this.remove();"
+        '" style="display:none">'
+    )
+
+    def _refresh_chat_html(streaming=False):
+        """Rebuild the chat display HTML.
+
+        When *streaming* is True, only the last message is re-rendered;
+        all earlier messages use a cached HTML prefix.  This avoids
+        markdown-converting the entire history on every token chunk.
+        """
+        msgs = state["chat_messages"]
+        if not msgs:
             chat_html.value = (
                 '<div class="delfin-agent-chat">'
                 "<i>Start a conversation...</i></div>"
             )
+            _html_cache["prefix"] = ""
+            _html_cache["prefix_count"] = 0
             return
-        parts = ['<div class="delfin-agent-chat">']
-        for msg in state["chat_messages"]:
-            role = msg["role"]
-            content = _md_to_html(msg["content"])
-            if role == "user":
-                parts.append(
-                    f'<div class="delfin-chat-msg delfin-chat-user">{content}</div>'
-                )
-            elif role == "assistant":
-                label = msg.get("role_label", "Agent")
-                parts.append(
-                    f'<div class="delfin-chat-msg delfin-chat-agent">'
-                    f'<div class="delfin-chat-role">{_html.escape(label)}</div>'
-                    f"{content}</div>"
-                )
-            elif role == "thinking":
-                raw = msg["content"]
-                # Truncate for display, keep first 500 chars
-                preview = raw[:80].replace("\n", " ").strip()
-                if len(raw) > 80:
-                    preview += "..."
-                escaped_full = _html.escape(raw)
-                parts.append(
-                    f'<details class="delfin-chat-msg delfin-chat-thinking">'
-                    f'<summary>\U0001f9e0 {_html.escape(preview)}</summary>'
-                    f'<div class="thinking-content">{escaped_full}</div>'
-                    f'</details>'
-                )
-            elif role == "approval":
-                parts.append(
-                    f'<div class="delfin-chat-msg delfin-chat-approval">'
-                    f'\u26a0\ufe0f {content}'
-                    f'<div style="margin-top:4px;font-size:11px;color:#78350f;">'
-                    f'Press <b>Enter</b> to approve, <b>Esc</b> to deny</div>'
-                    f'</div>'
-                )
-            elif role == "gate":
-                gate_type = msg.get("gate_type", "")
-                gate_title = msg.get("gate_title", _gate_label(gate_type))
-                gate_hint = msg.get("gate_hint", "")
-                gate_role = msg.get("role_label", "")
-                card_cls = f"delfin-chat-msg delfin-gate-card delfin-gate-{_html.escape(gate_type or 'review')}"
-                badge = _gate_label(gate_type)
-                hint_html = (
-                    f'<div class="gate-hint">{_html.escape(gate_hint)}</div>'
-                    if gate_hint else ""
-                )
-                role_html = (
-                    f'<span class="gate-role">{_html.escape(gate_role)}</span>'
-                    if gate_role else ""
-                )
-                parts.append(
-                    f'<div class="{card_cls}">'
-                    f'<div class="gate-header">'
-                    f'<span class="delfin-gate-badge">{_html.escape(badge)}</span>'
-                    f'<span class="gate-title">{_html.escape(gate_title)}</span>'
-                    f'{role_html}'
-                    f'</div>'
-                    f'<div class="gate-body">{content}</div>'
-                    f'{hint_html}'
-                    f'</div>'
-                )
-            elif role == "tool":
-                # Tool messages use pre-formatted HTML (not markdown-converted)
-                parts.append(
-                    f'<div class="delfin-chat-msg delfin-chat-tool">'
-                    f'{msg["content"]}</div>'
-                )
-            elif role == "system":
-                raw = msg["content"]
-                # Handoff/cycle messages get special styling
-                if raw.startswith("---") or raw.startswith("Session restored"):
-                    css_class = "delfin-chat-msg delfin-chat-handoff"
-                else:
-                    css_class = "delfin-chat-msg delfin-chat-system"
-                parts.append(f'<div class="{css_class}">{content}</div>')
-        # Scroll to bottom: <img onerror> is the only way to run JS inside
-        # ipywidgets.HTML (script tags are sanitized, but img onerror works).
-        parts.append(
-            '<img src="" onerror="'
-            "var c=this.closest('.delfin-agent-chat');"
-            "if(c)c.scrollTop=c.scrollHeight;"
-            "this.remove();"
-            '" style="display:none">'
+
+        n = len(msgs)
+
+        # Fast path: during streaming, only re-render the last message.
+        # The prefix (all messages before the last) is cached.
+        if streaming and n > 1 and _html_cache["prefix_count"] == n - 1:
+            last_html = _render_single_msg(msgs[-1])
+            chat_html.value = (
+                '<div class="delfin-agent-chat">'
+                + _html_cache["prefix"]
+                + "\n" + last_html
+                + "\n" + _SCROLL_TAG
+                + "</div>"
+            )
+            return
+
+        # Full rebuild: render all messages and cache the prefix
+        parts = []
+        for msg in msgs:
+            parts.append(_render_single_msg(msg))
+
+        # Cache everything except the last message
+        if n > 1:
+            _html_cache["prefix"] = "\n".join(parts[:-1])
+            _html_cache["prefix_count"] = n - 1
+        else:
+            _html_cache["prefix"] = ""
+            _html_cache["prefix_count"] = 0
+
+        chat_html.value = (
+            '<div class="delfin-agent-chat">'
+            + "\n".join(parts)
+            + "\n" + _SCROLL_TAG
+            + "</div>"
         )
-        parts.append("</div>")
-        chat_html.value = "\n".join(parts)
 
     def _update_status():
         """Update the status bar from engine state."""
@@ -5446,6 +5489,34 @@ def create_tab(ctx):
                             f'<span class="tool-name">{_e(tool_name)}</span>  {param}'
                         )
 
+                def _on_tool_result(tool_name, tool_output):
+                    """Display tool execution results in terminal style."""
+                    if not tool_output:
+                        return
+                    # Truncate large outputs (file contents, grep results)
+                    output = tool_output
+                    _MAX_LINES = 12
+                    _MAX_CHARS = 1200
+                    lines = output.split("\n")
+                    truncated = False
+                    if len(lines) > _MAX_LINES:
+                        output = "\n".join(lines[:_MAX_LINES])
+                        truncated = True
+                    if len(output) > _MAX_CHARS:
+                        output = output[:_MAX_CHARS]
+                        truncated = True
+                    suffix = ""
+                    if truncated:
+                        total = len(tool_output)
+                        suffix = (
+                            f'\n<span style="color:#565f89;">'
+                            f"... ({total:,} chars total)</span>"
+                        )
+                    _append_tool_message(
+                        f'<span style="color:#565f89;">'
+                        f'{_html.escape(output)}</span>{suffix}'
+                    )
+
                 def _on_permission_denied(description):
                     if chunks:
                         _update_last_assistant("".join(chunks), role_label)
@@ -5532,6 +5603,7 @@ def create_tab(ctx):
                         user_message=current_msg,
                         on_token=_on_token,
                         on_tool_use=_on_tool_use,
+                        on_tool_result=_on_tool_result,
                         on_permission_denied=_on_permission_denied,
                         on_thinking=_on_thinking,
                         thinking_budget=_budget,
@@ -5577,6 +5649,7 @@ def create_tab(ctx):
                             user_message=feedback,
                             on_token=_on_token,
                             on_tool_use=_on_tool_use,
+                            on_tool_result=_on_tool_result,
                             on_permission_denied=_on_permission_denied,
                             on_thinking=_on_thinking,
                             thinking_budget=_budget,

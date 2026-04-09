@@ -303,6 +303,7 @@ class AgentEngine:
         memory_context: str = "",
         on_token: Callable[[str], None] | None = None,
         on_tool_use: Callable[[str, str], None] | None = None,
+        on_tool_result: Callable[[str, str], None] | None = None,
         on_permission_denied: Callable[[str], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
         thinking_budget: int = 0,
@@ -320,6 +321,8 @@ class AgentEngine:
             Called with each text chunk as it arrives.
         on_tool_use : callable, optional
             Called with (tool_name, tool_input_json) when agent uses a tool.
+        on_tool_result : callable, optional
+            Called with (tool_name, tool_output) when a tool returns its result.
         on_permission_denied : callable, optional
             Called with (description) when a tool call was blocked.
         on_thinking : callable, optional
@@ -372,6 +375,10 @@ class AgentEngine:
                         continue
                     if on_tool_use:
                         on_tool_use(event.tool_name, event.tool_input)
+
+                elif event.type == "tool_result":
+                    if on_tool_result and event.tool_output:
+                        on_tool_result(event.tool_name, event.tool_output)
 
                 elif event.type == "permission_denied":
                     if on_permission_denied:

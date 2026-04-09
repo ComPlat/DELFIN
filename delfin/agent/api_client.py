@@ -30,7 +30,7 @@ class StreamEvent:
     """A single event from a streaming Claude response."""
 
     __slots__ = ("type", "text", "input_tokens", "output_tokens", "stop_reason",
-                 "cost_usd", "tool_name", "tool_input")
+                 "cost_usd", "tool_name", "tool_input", "tool_output")
 
     def __init__(
         self,
@@ -42,6 +42,7 @@ class StreamEvent:
         cost_usd: float = 0.0,
         tool_name: str = "",
         tool_input: str = "",
+        tool_output: str = "",
     ):
         self.type = type
         self.text = text
@@ -51,6 +52,7 @@ class StreamEvent:
         self.cost_usd = cost_usd
         self.tool_name = tool_name
         self.tool_input = tool_input
+        self.tool_output = tool_output
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +206,11 @@ class CLIClient(_BaseClient):
         current_tool_name = ""
         current_tool_input_chunks: list[str] = []
         in_thinking_block = False
+        in_tool_result_block = False
+        tool_result_chunks: list[str] = []
+        # Map tool_use IDs to names so we can label tool_result events
+        _tool_id_to_name: dict[str, str] = {}
+        _last_tool_use_id = ""
 
         for line in proc.stdout:
             line = line.strip()
@@ -228,24 +235,37 @@ class CLIClient(_BaseClient):
 
                 if etype == "content_block_start":
                     block = evt.get("content_block", {})
-                    if block.get("type") == "tool_use":
+                    btype = block.get("type", "")
+                    if btype == "tool_use":
                         current_tool_name = block.get("name", "")
                         current_tool_input_chunks = []
-                    elif block.get("type") == "thinking":
+                        # Track tool_use ID for matching with tool_result
+                        tid = block.get("id", "")
+                        if tid and current_tool_name:
+                            _tool_id_to_name[tid] = current_tool_name
+                            _last_tool_use_id = tid
+                    elif btype == "thinking":
                         in_thinking_block = True
+                    elif btype == "tool_result":
+                        in_tool_result_block = True
+                        tool_result_chunks = []
 
                 elif etype == "content_block_delta":
                     delta = evt.get("delta", {})
-                    if delta.get("type") == "text_delta":
+                    dtyp = delta.get("type", "")
+                    if dtyp == "text_delta":
                         text = delta.get("text", "")
                         if text:
-                            emitted_text = True
-                            yield StreamEvent(type="text_delta", text=text)
-                    elif delta.get("type") == "thinking_delta":
+                            if in_tool_result_block:
+                                tool_result_chunks.append(text)
+                            else:
+                                emitted_text = True
+                                yield StreamEvent(type="text_delta", text=text)
+                    elif dtyp == "thinking_delta":
                         text = delta.get("thinking", "")
                         if text:
                             yield StreamEvent(type="thinking_delta", text=text)
-                    elif delta.get("type") == "input_json_delta":
+                    elif dtyp == "input_json_delta":
                         current_tool_input_chunks.append(
                             delta.get("partial_json", "")
                         )
@@ -253,6 +273,20 @@ class CLIClient(_BaseClient):
                 elif etype == "content_block_stop":
                     if in_thinking_block:
                         in_thinking_block = False
+                    elif in_tool_result_block:
+                        in_tool_result_block = False
+                        result_text = "".join(tool_result_chunks)
+                        if result_text:
+                            # Match to last tool_use name if possible
+                            result_tool = _tool_id_to_name.get(
+                                _last_tool_use_id, ""
+                            )
+                            yield StreamEvent(
+                                type="tool_result",
+                                tool_name=result_tool,
+                                tool_output=result_text,
+                            )
+                        tool_result_chunks = []
                     elif current_tool_name:
                         tool_input = "".join(current_tool_input_chunks)
                         yield StreamEvent(
@@ -278,16 +312,44 @@ class CLIClient(_BaseClient):
             elif dtype == "assistant":
                 msg = data.get("message", {})
                 for block in msg.get("content", []):
-                    if block.get("type") == "tool_use":
+                    btype = block.get("type", "")
+                    if btype == "tool_use":
                         tool_name = block.get("name", "")
                         tool_input = json.dumps(
                             block.get("input", {}), ensure_ascii=False
                         )
+                        # Track ID
+                        tid = block.get("id", "")
+                        if tid and tool_name:
+                            _tool_id_to_name[tid] = tool_name
+                            _last_tool_use_id = tid
                         if not current_tool_name:
                             yield StreamEvent(
                                 type="tool_use",
                                 tool_name=tool_name,
                                 tool_input=tool_input,
+                            )
+
+            elif dtype == "user":
+                # User messages contain tool_result blocks (CLI internal)
+                msg = data.get("message", {})
+                for block in msg.get("content", []):
+                    if block.get("type") == "tool_result":
+                        content = block.get("content", "")
+                        # content can be string or list of content blocks
+                        if isinstance(content, list):
+                            parts = []
+                            for cb in content:
+                                if isinstance(cb, dict) and cb.get("type") == "text":
+                                    parts.append(cb.get("text", ""))
+                            content = "\n".join(parts)
+                        if content:
+                            tid = block.get("tool_use_id", "")
+                            result_tool = _tool_id_to_name.get(tid, "")
+                            yield StreamEvent(
+                                type="tool_result",
+                                tool_name=result_tool,
+                                tool_output=str(content),
                             )
 
             elif dtype == "result":
