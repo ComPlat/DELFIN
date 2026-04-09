@@ -2186,7 +2186,7 @@ def create_tab(ctx):
                 "_awaiting_gate_review",
                 "_awaiting_conflict_resolution",
             )
-        ) or bool(state.get("_cost_paused"))
+        )
 
         inspector_primary_btn.disabled = False
         inspector_retry_btn.disabled = is_streaming or not (engine and engine.messages)
@@ -2267,8 +2267,7 @@ def create_tab(ctx):
                 or state.get("_awaiting_agent_question")
                 or state.get("_awaiting_findings_review")
                 or state.get("_awaiting_gate_review")
-                or state.get("_awaiting_conflict_resolution")
-                or state.get("_cost_paused")):
+                or state.get("_awaiting_conflict_resolution")):
             _send_control_reply("go")
             return
         _on_advance_role(button)
@@ -2288,7 +2287,6 @@ def create_tab(ctx):
             "_awaiting_findings_review",
             "_awaiting_gate_review",
             "_awaiting_conflict_resolution",
-            "_cost_paused",
         ):
             state.pop(key, None)
         _set_active_gate()
@@ -5054,16 +5052,6 @@ def create_tab(ctx):
             _set_active_gate()
             _update_status()
 
-        # Handle cost governor resume
-        if state.pop("_cost_paused", False):
-            _lower_msg = user_text.lower().strip().rstrip("!.?")
-            if _lower_msg not in _APPROVAL_WORDS:
-                _append_system_message("Pipeline stopped. Use /reset for new task.")
-                input_textarea.value = ""
-                return
-            _set_active_gate()
-            _update_status()
-
         # Handle conflict resolution
         if state.pop("_awaiting_conflict_resolution", False):
             _lower_msg = user_text.lower().strip().rstrip("!.?")
@@ -5431,32 +5419,16 @@ def create_tab(ctx):
                         break
 
                     # --- Cost Governor ---
-                    # Default raised to $15 — pausing + restarting wastes more
-                    # money than letting the pipeline finish.  Show a warning
-                    # at 80% but only hard-pause at the limit.
-                    _cost_budget = float(
-                        _get_agent_settings().get("max_cycle_cost_usd", 15.0)
-                    )
-                    if _cost_budget > 0 and engine.cost_usd > _cost_budget:
-                        _append_gate_message(
-                            "cost",
-                            prev_role_id if 'prev_role_id' in locals() else engine.current_role,
-                            "Cost limit reached",
-                            (
-                                f"Cycle cost is ${engine.cost_usd:.2f} / ${_cost_budget:.2f}.\n"
-                                f"The pipeline is paused before spending more."
-                            ),
-                            "Reply 'go' to continue or /reset to stop this cycle.",
-                        )
-                        state["_cost_paused"] = True
-                        _update_status()
-                        break
-                    elif _cost_budget > 0 and engine.cost_usd > _cost_budget * 0.8:
-                        if not state.get("_cost_warned"):
-                            state["_cost_warned"] = True
+                    # No hard stop — pausing + restarting wastes more money
+                    # than letting the pipeline finish. Show milestones so the
+                    # user can see how much is being spent.
+                    _cost_milestones = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
+                    _passed = state.setdefault("_cost_milestones_passed", set())
+                    for _ms in _cost_milestones:
+                        if engine.cost_usd >= _ms and _ms not in _passed:
+                            _passed.add(_ms)
                             _append_system_message(
-                                f"Cost at ${engine.cost_usd:.2f} / ${_cost_budget:.2f} (80%). "
-                                f"Pipeline continues automatically."
+                                f"Cost milestone: ${engine.cost_usd:.2f} (passed ${_ms:.0f})"
                             )
 
                     # --- Auto-advance logic ---
