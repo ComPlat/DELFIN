@@ -1220,16 +1220,17 @@ def create_tab(ctx):
     )
     settings_toggle.add_class("delfin-settings-toggle")
 
-    # Essential controls (always visible): mode, stop
+    # Essential controls (always visible): mode, provider, model, stop, commit, push
     _essential_row = widgets.HBox(
-        [mode_dropdown, stop_btn, settings_toggle],
+        [mode_dropdown, provider_dropdown, model_dropdown, stop_btn,
+         commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html,
+         settings_toggle],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
-    # Extra controls (collapsed in solo/dashboard)
+    # Extra controls (collapsed in solo/dashboard): pipeline-specific stuff
     _extra_row = widgets.HBox(
-        [provider_dropdown, model_dropdown, effort_dropdown, perm_dropdown,
-         new_cycle_btn, advance_btn, undo_btn, export_btn,
-         commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html],
+        [effort_dropdown, perm_dropdown,
+         new_cycle_btn, advance_btn, undo_btn, export_btn],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
     controls_row = widgets.VBox([
