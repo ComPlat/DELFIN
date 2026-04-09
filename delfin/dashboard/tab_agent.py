@@ -881,6 +881,7 @@ def create_tab(ctx):
         "engine": None,
         "chat_messages": [],
         "streaming": False,
+        "_generation_id": 0,      # monotonic counter — prevents stale worker cleanup
         "active_session_id": "",  # currently loaded CLI session ID
         "recent_edits": [],       # list of {"file": path, "tool": name} for undo
         "message_queue": [],      # queued messages sent while agent is busy
@@ -5208,6 +5209,8 @@ def create_tab(ctx):
         _append_chat_message("user", user_text)
 
         state["streaming"] = True
+        state["_generation_id"] = state.get("_generation_id", 0) + 1
+        _my_gen_id = state["_generation_id"]
         state["_deny_count"] = 0  # Reset retry counter for new message
         if state["session_start_time"] is None:
             state["session_start_time"] = time.monotonic()
@@ -5947,14 +5950,20 @@ def create_tab(ctx):
                 else:
                     _append_system_message(f"Error: {error_text}")
             finally:
-                state["streaming"] = False
-                _set_working(False)
-                _update_status()
-                _update_button_states()
-                _auto_save_session()
-                _check_auto_compact()
-                # Process next queued message if any
-                _process_queue()
+                # Only clean up UI state if no newer generation has started
+                # (prevents stale worker from clobbering a fresh send after Stop)
+                if state.get("_generation_id") == _my_gen_id:
+                    state["streaming"] = False
+                    _set_working(False)
+                    _update_status()
+                    _update_button_states()
+                    _auto_save_session()
+                    _check_auto_compact()
+                    # Process next queued message if any
+                    _process_queue()
+                else:
+                    # Stale worker — just save session, don't touch UI
+                    _auto_save_session()
 
         threading.Thread(target=_worker, daemon=True).start()
 
