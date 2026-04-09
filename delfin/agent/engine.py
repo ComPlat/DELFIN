@@ -124,14 +124,13 @@ _CLUSTER_RISK_KEYWORDS = (
 # Per-role model routing: use the right model for each job.
 # "auto" means use the user-selected model (no override).
 # Role → model mapping.  "auto" = user's choice from the dropdown.
-# Read-only roles use haiku (4-5x cheaper). Only builder/solo/critic
-# need expensive models for code generation / deep analysis.
+# Planning and review roles need quality models — haiku can't plan well.
 _ROLE_MODEL_MAP: dict[str, str] = {
-    "chief_agent": "haiku",       # strategic summary, not code analysis
-    "session_manager": "haiku",   # plan creation, not implementation
+    "chief_agent": "sonnet",      # strategic decisions need quality
+    "session_manager": "sonnet",  # planning is the most critical step
     "critic_agent": "sonnet",     # deep code review needs quality
     "runtime_agent": "haiku",     # runtime categorization
-    "reviewer_agent": "haiku",    # final check, not deep redesign
+    "reviewer_agent": "sonnet",   # code review needs quality
     "builder_agent": "auto",      # user's choice (often sonnet/opus)
     "test_agent": "haiku",        # run tests, assert results
     "solo_agent": "auto",         # user's choice
@@ -140,18 +139,34 @@ _ROLE_MODEL_MAP: dict[str, str] = {
 }
 
 _ROLE_THINKING_BUDGETS: dict[str, int] = {
-    "chief_agent": 4000,          # strategic overview only
-    "session_manager": 4000,      # plan creation
+    "chief_agent": 16000,         # strategic decisions need depth
+    "session_manager": 32000,     # planning is critical — needs deep analysis
     "critic_agent": 16000,        # deep analysis
     "runtime_agent": 8000,        # categorization
     "builder_agent": 50000,       # complex implementation
-    "reviewer_agent": 8000,       # review check
+    "reviewer_agent": 16000,      # code review needs depth
     "test_agent": 8000,           # test execution
     "research_agent": 16000,      # deep chemistry method analysis
     "solo_agent": 64000,          # scales: low=32k, medium=64k, high=128k
     "dashboard_agent": 32000,     # scales: low=16k, medium=32k, high=64k
 }
 _DEFAULT_THINKING_BUDGET = 10000
+
+# Max output tokens per role.  Builder/Solo need long responses for
+# complex implementations.  Review roles need less.
+_ROLE_MAX_TOKENS: dict[str, int] = {
+    "builder_agent": 32768,
+    "solo_agent": 32768,
+    "session_manager": 16384,
+    "critic_agent": 16384,
+    "reviewer_agent": 16384,
+    "chief_agent": 8192,
+    "research_agent": 8192,
+    "test_agent": 8192,
+    "runtime_agent": 8192,
+    "dashboard_agent": 8192,
+}
+_DEFAULT_MAX_TOKENS = 8192
 
 # Code-level tool whitelist per role.
 # If a role emits a tool_use event for a tool NOT in its whitelist,
@@ -291,6 +306,7 @@ class AgentEngine:
         on_permission_denied: Callable[[str], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
         thinking_budget: int = 0,
+        max_tokens: int = 0,
     ) -> str:
         """Send a user message and stream the response.
 
@@ -310,6 +326,8 @@ class AgentEngine:
             Called with thinking text chunks as the model reasons.
         thinking_budget : int
             Extended thinking budget in tokens (0 = default/auto).
+        max_tokens : int
+            Max output tokens (0 = use role default).
 
         Returns
         -------
@@ -321,11 +339,15 @@ class AgentEngine:
         self.messages.append({"role": "user", "content": user_message})
         system_prompt = self._build_current_system_prompt(memory_context)
 
+        # Resolve max_tokens: caller override > role default > global default
+        effective_max = max_tokens or self.max_tokens_for_role(self.current_role)
+
         chunks: list[str] = []
         try:
             for event in self.client.stream_message(
                 system=system_prompt,
                 messages=self.messages,
+                max_tokens=effective_max,
                 session_id=self.session_id,
                 thinking_budget=thinking_budget,
             ):
@@ -487,6 +509,11 @@ class AgentEngine:
         """Return the recommended model for a role ('auto' = user's choice)."""
         return _ROLE_MODEL_MAP.get(role_id, "auto")
 
+    @staticmethod
+    def max_tokens_for_role(role_id: str) -> int:
+        """Return the max output tokens for a role."""
+        return _ROLE_MAX_TOKENS.get(role_id, _DEFAULT_MAX_TOKENS)
+
     def _load_cycle_memory(self, max_entries: int = 10) -> str:
         """Load recent cycle summaries for Session Manager context."""
         import json
@@ -614,11 +641,18 @@ class AgentEngine:
         """
         role = self.current_role
         prior_summary = ""
+        # Role-aware prior output limits — SM plan is critical for Builder
+        _PRIOR_LIMITS = {
+            "session_manager": 8000,
+            "critic_agent": 6000,
+            "runtime_agent": 6000,
+            "reviewer_agent": 4000,
+            "research_agent": 4000,
+        }
         if self.role_outputs:
             parts = []
             for rid, output in self.role_outputs.items():
-                # Include more from critical roles
-                limit = 4000 if rid in ("critic_agent", "runtime_agent") else 2000
+                limit = _PRIOR_LIMITS.get(rid, 2000)
                 text = output[:limit]
                 if len(output) > limit:
                     text += "\n... [truncated]"
@@ -956,12 +990,8 @@ class AgentEngine:
                     "risk",
                     "reported `status: reject`; review the findings before continuing.",
                 )
-            if status == "approve_with_risks":
-                return (
-                    "pause",
-                    "risk",
-                    "reported `status: approve_with_risks`; review the open risks before continuing.",
-                )
+            # approve_with_risks: auto-continue — pausing wastes tokens
+            # and forces agents to restart from scratch
 
         if role_id == "builder_agent":
             stage_statuses = AgentEngine.extract_check_statuses(text, "**Stage gate status:**")

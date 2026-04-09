@@ -64,7 +64,7 @@ class _BaseClient:
         self,
         system: str,
         messages: list[dict[str, Any]],
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         session_id: str = "",
         thinking_budget: int = 0,
     ) -> Generator[StreamEvent, None, None]:
@@ -155,7 +155,7 @@ class CLIClient(_BaseClient):
         self,
         system: str,
         messages: list[dict[str, Any]],
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         session_id: str = "",
         thinking_budget: int = 0,
     ) -> Generator[StreamEvent, None, None]:
@@ -432,7 +432,7 @@ class APIClient(_BaseClient):
         self,
         system: str,
         messages: list[dict[str, Any]],
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         session_id: str = "",
         thinking_budget: int = 0,
     ) -> Generator[StreamEvent, None, None]:
@@ -616,7 +616,7 @@ class OpenAIClient(_BaseClient):
         self,
         system: str,
         messages: list[dict[str, Any]],
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         session_id: str = "",
         thinking_budget: int = 0,
     ) -> Generator[StreamEvent, None, None]:
@@ -751,7 +751,7 @@ class CodexCLIClient(_BaseClient):
         self,
         system: str,
         messages: list[dict[str, Any]],
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         session_id: str = "",
         thinking_budget: int = 0,
     ) -> Generator[StreamEvent, None, None]:
@@ -855,7 +855,20 @@ class CodexCLIClient(_BaseClient):
                     stop_reason="error",
                 )
 
-        proc.wait()
+        rc = proc.wait()
+        # Surface errors that Codex CLI wrote to stderr
+        if rc != 0:
+            stderr_text = ""
+            try:
+                stderr_text = (proc.stderr.read() or "").strip()
+            except Exception:
+                pass
+            if stderr_text:
+                yield StreamEvent(
+                    type="text_delta",
+                    text=f"\n[Codex CLI error (exit {rc})]: {stderr_text[:500]}",
+                )
+                yield StreamEvent(type="message_delta", stop_reason="error")
 
     def switch_model(self, model: str) -> None:
         """Switch model for next invocation."""

@@ -81,9 +81,14 @@ _AGENT_CSS = """\
 .delfin-agent-approval-row {
     background: #fffbeb;
     border: 1px solid #f59e0b;
-    border-radius: 6px;
+    border-radius: 8px;
     align-items: center;
     gap: 8px;
+    padding: 8px 12px;
+    margin: 4px 0;
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
 }
 .delfin-chat-handoff {
     background: #fef3c7;
@@ -1422,10 +1427,17 @@ def create_tab(ctx):
         "perm": perm_dropdown,
     }
 
-    # Widgets the agent must NEVER click (hard block)
-    _BLOCKED_WIDGETS = frozenset({
+    # Widgets that require user confirmation before the agent can click them.
+    # The agent CAN click these, but only after the user confirms.
+    _CONFIRM_WIDGETS = frozenset({
         "calc-delete-btn", "remote-delete-btn",
+        "submit-btn",              # submits real job
+        "orca-submit-btn",         # submits real ORCA job
+        "calc-recalc-btn",         # triggers recalculation
+        "calc-submit-recalc-btn",  # submits recalc
     })
+    # Hard-blocked: nothing — all buttons accessible with confirmation
+    _BLOCKED_WIDGETS = frozenset()
 
     def _build_full_widget_registry() -> dict[str, widgets.Widget]:
         """Build registry including widgets from all dashboard tabs."""
@@ -1455,8 +1467,17 @@ def create_tab(ctx):
             "orca-coords": "orca_coords",
             "orca-dispersion": "orca_dispersion",
             "orca-solvent": "orca_solvent",
-            "orca-submit-btn": "orca_submit_btn",
             "orca-preview": "orca_preview",
+            # Safe buttons (no real computation, no deletion)
+            "orca-convert-btn": "orca_convert_smiles_btn",
+            "orca-copy-coords-btn": "orca_copy_coords_btn",
+            "orca-check-numbering-btn": "orca_check_numbering_btn",
+            "orca-apply-numbering-btn": "orca_apply_numbering_btn",
+            "orca-save-btn": "orca_save_btn",
+            "orca-mol-prev-btn": "orca_mol_prev_btn",
+            "orca-mol-next-btn": "orca_mol_next_btn",
+            # Destructive buttons — registered but require user confirmation
+            "orca-submit-btn": "orca_submit_btn",
         }
         for alias, ref_key in _orca_map.items():
             w = ctx.orca_builder_refs.get(ref_key)
@@ -2125,6 +2146,16 @@ def create_tab(ctx):
         )
 
     def _update_cycle_inspector():
+        # Hide Cycle Inspector for dashboard/solo — only relevant for pipelines
+        _is_pipeline = mode_dropdown.value not in ("dashboard", "solo")
+        _vis = "visible" if _is_pipeline else "hidden"
+        _h = "auto" if _is_pipeline else "0px"
+        for _w in (cycle_inspector_html, inspector_actions_row, inspector_detail_box):
+            _w.layout.visibility = _vis
+            _w.layout.height = _h
+            _w.layout.overflow = "hidden" if not _is_pipeline else "visible"
+        if not _is_pipeline:
+            return
         cycle_inspector_html.value = _render_cycle_inspector()
 
     def _update_inspector_detail(force_reset: bool = False):
@@ -3105,14 +3136,17 @@ def create_tab(ctx):
 
             # click — press a button
             if _ui_prop == "click":
-                if _ui_wname in _BLOCKED_WIDGETS:
-                    _append_system_message(
-                        "Blocked: agent cannot use delete buttons. "
-                        "Use the dashboard UI directly."
-                    )
-                    return True
                 if not hasattr(_ui_w, "click"):
                     _append_system_message(f"Widget '{_ui_wname}' is not a button.")
+                    return True
+                # Confirmation-required buttons: ask user before executing
+                if _ui_wname in _CONFIRM_WIDGETS:
+                    _readable = _ui_wname.replace("-", " ").replace("btn", "").strip()
+                    _request_confirmation(
+                        f"ui-click-{_ui_wname}",
+                        f"Agent wants to click **{_readable}**",
+                        lambda: (_ui_w.click(), _append_system_message(f"'{_ui_wname}' clicked (confirmed).")),
+                    )
                     return True
                 _ui_w.click()
                 _append_system_message(f"'{_ui_wname}' clicked.")
@@ -4897,8 +4931,19 @@ def create_tab(ctx):
         if not user_text:
             return
 
-        # Slash commands execute immediately, even during streaming
-        if user_text.startswith("/"):
+        # Slash commands execute immediately, even during streaming.
+        # But file paths like /home/... are NOT slash commands — only
+        # short tokens like /help, /calc, /orca etc. count.
+        _first_token = user_text.split()[0].lower() if user_text else ""
+        _SLASH_PREFIXES = {
+            "/help", "/clear", "/cost", "/compact", "/stop", "/status",
+            "/usage", "/export", "/search", "/retry", "/git", "/provider",
+            "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
+            "/memories", "/remember", "/forget", "/workspace", "/tab", "/ui",
+            "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
+            "/recalc", "/cancel",
+        }
+        if _first_token in _SLASH_PREFIXES:
             input_textarea.value = ""
             _append_chat_message("user", user_text)
             _handle_slash_command(user_text)
@@ -5265,8 +5310,12 @@ def create_tab(ctx):
                     # Role-specific thinking budget and model routing
                     from delfin.agent.engine import AgentEngine as _AE
                     _cur_role = engine.current_role
-                    _base_budget = _AE.thinking_budget_for_role(_cur_role)
-                    _budget = min(int(_base_budget * _mult), 128000)
+                    # Solo: adaptive thinking (0 = CLI manages it)
+                    if _cur_role == "solo_agent":
+                        _budget = 0
+                    else:
+                        _base_budget = _AE.thinking_budget_for_role(_cur_role)
+                        _budget = min(int(_base_budget * _mult), 128000)
 
                     # Per-role model: switch to optimal model (Claude only)
                     _effective_model = model_dropdown.value
@@ -5368,10 +5417,13 @@ def create_tab(ctx):
                         break
 
                     # --- Cost Governor ---
+                    # Default raised to $15 — pausing + restarting wastes more
+                    # money than letting the pipeline finish.  Show a warning
+                    # at 80% but only hard-pause at the limit.
                     _cost_budget = float(
-                        _get_agent_settings().get("max_cycle_cost_usd", 5.0)
+                        _get_agent_settings().get("max_cycle_cost_usd", 15.0)
                     )
-                    if engine.cost_usd > _cost_budget > 0:
+                    if _cost_budget > 0 and engine.cost_usd > _cost_budget:
                         _append_gate_message(
                             "cost",
                             prev_role_id if 'prev_role_id' in locals() else engine.current_role,
@@ -5385,6 +5437,13 @@ def create_tab(ctx):
                         state["_cost_paused"] = True
                         _update_status()
                         break
+                    elif _cost_budget > 0 and engine.cost_usd > _cost_budget * 0.8:
+                        if not state.get("_cost_warned"):
+                            state["_cost_warned"] = True
+                            _append_system_message(
+                                f"Cost at ${engine.cost_usd:.2f} / ${_cost_budget:.2f} (80%). "
+                                f"Pipeline continues automatically."
+                            )
 
                     # --- Auto-advance logic ---
                     prev_role_id = engine.current_role
@@ -5617,30 +5676,22 @@ def create_tab(ctx):
                             )
 
                     # --- Critic/Runtime findings gate ---
-                    # Pause after Critic or Runtime Agent so the user can
-                    # review findings and optionally skip some before Builder.
+                    # Only pause on REJECT — approve/approve_with_risks auto-continues.
+                    # This avoids wasting tokens by pausing on every review.
                     _REVIEW_ROLES = {"critic_agent", "runtime_agent"}
                     if (prev_role_id in _REVIEW_ROLES
                             and not state.get("_findings_approved")
                             and last_out.strip()):
-                        # Check if there are actual findings (not just "no issues")
-                        _no_issue_kw = ("no issues", "no findings", "lgtm",
-                                        "looks good", "no critical", "SKIP")
-                        _has_findings = not any(
-                            k.lower() in last_out[:500].lower() for k in _no_issue_kw
-                        )
-                        if _has_findings:
-                            _append_system_message(
-                                f"--- {_format_role_label(prev_role_id)} review done. "
-                                f"Reply 'go' to accept all findings, or describe "
-                                f"which to skip (e.g. 'skip finding about X') ---"
-                            )
+                        _lower500 = last_out[:500].lower()
+                        _is_reject = ("reject" in _lower500
+                                      and "approve" not in _lower500)
+                        if _is_reject:
                             _append_gate_message(
                                 "findings",
                                 prev_role_id,
-                                "Findings review required",
-                                f"{_format_role_label(prev_role_id)} produced findings that need explicit review.",
-                                "Reply 'go' to accept all findings, or describe which ones to skip.",
+                                f"{_format_role_label(prev_role_id)} rejected",
+                                f"The review found critical issues. Review and decide.",
+                                "Reply 'go' to continue anyway, or /reset to stop.",
                             )
                             state["_awaiting_findings_review"] = prev_role_id
                             _update_status()
@@ -5966,6 +6017,8 @@ def create_tab(ctx):
             _cheap = _PROVIDER_CHEAP.get(provider_dropdown.value, "haiku")
             if saved_model and model_dropdown.value == _cheap:
                 model_dropdown.value = saved_model
+        # Show/hide Cycle Inspector based on mode
+        _update_cycle_inspector()
 
     def _on_provider_change(change):
         """Switch provider (Claude / OpenAI / KIT), update model options."""

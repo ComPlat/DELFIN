@@ -176,6 +176,15 @@ class PromptLoader:
         """
         sections = []
 
+        # Solo mode: minimal prompt only — behave like terminal CLI
+        if role_id == "solo_agent":
+            role_prompt = self.load_role_prompt(role_id)
+            if role_prompt:
+                sections.append(role_prompt)
+            if memory_context:
+                sections.append(f"--- Project Memory ---\n{memory_context}")
+            return "\n\n".join(sections)
+
         # 1. Role prompt (highest attention)
         role_prompt = self.load_role_prompt(role_id)
         if role_prompt:
@@ -184,7 +193,7 @@ class PromptLoader:
         # 2. Shared DELFIN context (full only for roles that modify code
         #    or make strategic decisions; brief summary for read-only roles)
         _FULL_CONTEXT_ROLES = {
-            "builder_agent", "solo_agent", "session_manager",
+            "builder_agent", "session_manager",
             "chief_agent", "critic_agent",
         }
         shared = self.load_shared_context()
@@ -322,12 +331,18 @@ class PromptLoader:
             sections.append(cycle_info)
 
         # 7. Prior role outputs (role-aware truncation)
+        # SM plan is critical for Builder/Test — keep most of it
+        _PRIOR_LIMITS = {
+            "session_manager": 8000,
+            "critic_agent": 6000,
+            "runtime_agent": 6000,
+            "reviewer_agent": 4000,
+            "research_agent": 4000,
+        }
         if prior_outputs:
-            # Critic/Runtime reviews are critical for Builder — keep more
-            _HIGH_VALUE_ROLES = {"critic_agent", "runtime_agent", "reviewer_agent"}
             parts = ["--- Prior Role Outputs ---"]
             for rid, output in prior_outputs.items():
-                limit = 4000 if rid in _HIGH_VALUE_ROLES else 1000
+                limit = _PRIOR_LIMITS.get(rid, 2000)
                 truncated = output[:limit]
                 if len(output) > limit:
                     truncated += "\n... [truncated]"

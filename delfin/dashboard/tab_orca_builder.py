@@ -1524,7 +1524,14 @@ def create_tab(ctx):
         'orca_dispersion': orca_dispersion,
         'orca_solvent': orca_solvent,
         'orca_preview': orca_preview,
-        'orca_submit_btn': orca_submit_btn,
+        'orca_submit_btn': orca_submit_btn,          # destructive: starts real ORCA job
+        'orca_convert_smiles_btn': orca_convert_smiles_btn,  # safe: SMILES→XYZ conversion
+        'orca_copy_coords_btn': orca_copy_coords_btn,
+        'orca_check_numbering_btn': orca_check_numbering_btn,
+        'orca_apply_numbering_btn': orca_apply_numbering_btn,
+        'orca_save_btn': orca_save_btn,
+        'orca_mol_prev_btn': orca_mol_prev_btn,
+        'orca_mol_next_btn': orca_mol_next_btn,
         'update_orca_preview': update_orca_preview,
         'init_js': _orca_drop_js,
     }

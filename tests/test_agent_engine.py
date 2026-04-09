@@ -581,8 +581,8 @@ def test_evaluate_role_gate_continues_on_complete_session_manager_plan():
     assert gate_type == ""
 
 
-def test_evaluate_role_gate_pauses_on_research_risks():
-    """Test that risky review roles can trigger a communication gate."""
+def test_evaluate_role_gate_continues_on_approve_with_risks():
+    """approve_with_risks should auto-continue — pausing wastes tokens."""
     from delfin.agent.engine import AgentEngine
 
     report = textwrap.dedent("""\
@@ -595,9 +595,13 @@ def test_evaluate_role_gate_pauses_on_research_risks():
     """)
 
     action, gate_type, message = AgentEngine.evaluate_role_gate("research_agent", report)
-    assert action == "pause"
-    assert gate_type == "risk"
-    assert "approve_with_risks" in message
+    assert action == "continue"
+
+    # But reject should still pause
+    reject_report = report.replace("approve_with_risks", "reject")
+    action2, gate_type2, _ = AgentEngine.evaluate_role_gate("research_agent", reject_report)
+    assert action2 == "pause"
+    assert gate_type2 == "risk"
 
 
 def test_evaluate_role_gate_pauses_on_builder_partial_or_blocked():
