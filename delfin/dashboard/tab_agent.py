@@ -5203,13 +5203,9 @@ def create_tab(ctx):
             task_class = route_decision.get("task_class", "task")
             confidence = route_decision.get("confidence", "low")
             if recommended != mode_dropdown.value:
-                should_auto = (
-                    mode_dropdown.value == "dashboard"
-                    or (confidence == "high"
-                        and mode_dropdown.value not in ("solo",))
-                    or (task_class in {"dashboard", "chemistry"}
-                        and mode_dropdown.value not in ("solo",))
-                )
+                # Only auto-switch from the default "dashboard" mode.
+                # If the user explicitly chose a mode, respect it.
+                should_auto = mode_dropdown.value == "dashboard"
                 reason_text = "; ".join(reasons[:2]) if reasons else task_class
                 if should_auto:
                     _set_mode_programmatically(recommended)
@@ -5220,13 +5216,7 @@ def create_tab(ctx):
                     engine = _ensure_engine()
                     if engine is None:
                         return
-                elif not state.get("_mode_suggested") and mode_dropdown.value != "solo":
-                    state["_mode_suggested"] = True
-                    _append_system_message(
-                        f"Mode hint: **{recommended}** would likely be cheaper/better "
-                        f"for this {task_class} task ({confidence}). "
-                        f"Reason: {reason_text}."
-                    )
+                # No mode hints — respect the user's choice silently
 
         # After cycle complete: enter follow-up mode (keep context alive).
         # The user can continue chatting with the builder/solo agent.

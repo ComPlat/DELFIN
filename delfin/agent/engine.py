@@ -75,6 +75,20 @@ _DASHBOARD_KEYWORDS = (
     "dashboard", "control key", "orca builder", "calc browser", "remote archive",
     "job status", "set control", "submit job", "show jobs", "browse calculations",
     "open calc", "open calculation", "switch tab", "agent tab", "recalc",
+    # UI manipulation (natural language → dashboard agent)
+    "button", "btn", "widget", "style", "farbe", "color", "colour",
+    "rot ", "grün", "blau", "gelb", "schwarz", "weiß",
+    "red ", "green ", "blue ", "yellow ",
+    "disable", "enable", "versteck", "zeig ",
+    "send-btn", "send button", "stop button", "submit button",
+    "input feld", "dropdown", "sichtbar", "unsichtbar",
+    # CONTROL / ORCA setting commands (natural language)
+    "setze ", "functional", "basis ", "basisset", "charge ", "mult ",
+    "pal ", "maxcore", "dispersion", "solvent",
+    "job name", "job-name", "ordner ",
+    # Calc/analysis operations
+    "tabelle", "table ", "report", "energien", "energie ",
+    "konvergenz", "convergence", "archiv", "visuali",
 )
 _CHEMISTRY_KEYWORDS = (
     # Core QC concepts
